@@ -18,10 +18,11 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 0 (bootstrap) in progress.** Scaffolding is in place; the
-remaining steps (commit, push, branch protection) finish the phase.
-No code yet. See [`docs/roadmap.md`](docs/roadmap.md) for the full
-13-phase plan. The spec itself is not yet written —
+**Phase 0 (bootstrap) complete.** Scaffolding, docs, and CI
+(`docs-lint`) are in place; `main` is protected. No code yet.
+Phase 1 (next) writes the core-concepts chapters of `spec/v0/` and
+the first JSON Schemas. See [`docs/roadmap.md`](docs/roadmap.md) for
+the full 13-phase plan. The spec itself is not yet written —
 [`spec/v0/README.md`](spec/v0/README.md) lists the planned chapters
 with their target phases.
 

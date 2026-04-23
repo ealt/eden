@@ -10,8 +10,8 @@ implementation** (`reference/`), and the **conformance suite**
 
 ## Current phase
 
-**Phase 0 (bootstrap) in progress.** Scaffolding and docs are in place;
-first commit + push + branch protection finish the phase. There is no
+**Phase 0 (bootstrap) complete.** Scaffolding, docs, and CI
+(`docs-lint`) are in place and `main` is protected. There is no
 runnable code yet — the reference implementation and conformance suite
 are stubs. The spec itself is not yet written; only the section READMEs
 exist. See [`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase
