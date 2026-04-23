@@ -1,0 +1,60 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/phase-2/20260423T103051/1-03-roles.md	2026-04-23 10:40:40
++++ /Users/ericalt/Documents/eden/spec/v0/03-roles.md	2026-04-23 10:44:44
+@@ -262,11 +262,16 @@
+    per-metric type rules
+    ([`02-data-model.md`](02-data-model.md) §1.3, §7.2).
+ 2. Optionally upload supporting artifacts (logs, captured outputs,
+-   diagnostic files) and populate the trial's `artifacts_uri`.
+-3. Set the trial's `completed_at` timestamp.
++   diagnostic files).
+ 
+-The evaluator MUST NOT modify the worker branch or any other
+-protocol-owned mutable state.
++The evaluator MUST NOT modify the worker branch or any
++protocol-owned mutable state other than the trial fields the
++submission writes (§4.4) and the task it holds a claim on. In
++particular, the evaluator MUST NOT write to the trial's
++`completed_at`, `metrics`, `artifacts_uri`, `description`, or
++`status` directly; those writes are performed by the orchestrator
++when the submitted task reaches its terminal state (§4.4,
++[`04-task-protocol.md`](04-task-protocol.md) §4.3).
+ 
+ ### 4.3 Non-interference
+ 
+@@ -299,10 +304,34 @@
+     ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
+ - `metrics` — the metrics object described in §4.2. MAY be absent
+   when `status == "eval_error"`.
++- `artifacts_uri` — OPTIONAL. A URI the evaluator uploaded
++  supporting artifacts to.
+ 
++On a `submitted → completed` or `submitted → failed` transition
++(per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the
++orchestrator MUST write the following trial fields atomically with
++the event:
++
++- `status` — the trial status implied by the submission: `"success"`
++  when the submission's `status == "success"`; `"error"` when the
++  submission's `status == "error"`; unchanged from `"starting"`
++  when the submission's `status == "eval_error"` (see §4.4 above
++  for the terminal-retry case).
++- `metrics` — set to the submission's `metrics` when
++  `status ∈ {"success", "error"}`; MAY be left unchanged when
++  `status == "eval_error"`.
++- `artifacts_uri` — set to the submission's `artifacts_uri` when
++  provided and `status ∈ {"success", "error"}`.
++- `completed_at` — set to the time of the terminal trial
++  transition, i.e. written exactly once, when the trial's status
++  leaves `"starting"` (either on a `"success"`/`"error"`
++  submission, or on the retry-exhausted `"eval_error"`
++  transition). Intermediate `eval_error` submissions MUST NOT
++  advance `completed_at`.
++
+ Resubmission is idempotent under the same rules as §3.4: identical
+-`trial_id` + `metrics` + `status` MUST be accepted; inconsistent
+-resubmission MUST be rejected.
++`trial_id` + `status` + `metrics` + `artifacts_uri` MUST be
++accepted; inconsistent resubmission MUST be rejected.
+ 
+ ## 5. Integrator
+ 

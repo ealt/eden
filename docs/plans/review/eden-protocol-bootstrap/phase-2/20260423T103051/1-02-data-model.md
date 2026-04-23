@@ -244,7 +244,7 @@ A proposal is the planner's output.
 | `priority` | yes | number | Ordering hint; higher dispatches earlier. |
 | `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
 | `artifacts_uri` | yes | string (URI) | Where the planner's output documents live. |
-| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the implementer's attempt has finished (successfully or not); the trial's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
+| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. |
 | `created_at` | yes | timestamp | When the proposal was created. |
 
 ### 5.2 Parent commits
@@ -299,7 +299,7 @@ A trial is one completed attempt.
 | `description` | no | string | Human-readable summary. |
 | `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
 | `started_at` | yes | timestamp | When the implementer began. |
-| `completed_at` | no | timestamp | Set when the trial reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+| `completed_at` | no | timestamp | When the evaluator submitted. |
 
 ### 7.2 Metrics payload
 
