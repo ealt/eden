@@ -1,0 +1,7 @@
+**Findings**
+- Risk — [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:320), §4.4 still leaves `metrics`/`artifacts_uri` persistence on `eval_error` under-specified. The text says `metrics` “MAY be left unchanged when `status == "eval_error"`,” and [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:323) only says `artifacts_uri` is written when `status ∈ {"success", "error"}`. But [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:307) allows an evaluator submission to carry `artifacts_uri`, and [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:223) allows a trial to become terminal `eval_error` after retries exhaust. Two conforming implementations could still diverge on whether eval-side debug artifacts or partial metrics are retained, discarded, or only persisted on the final retry-exhausted path. If the intent is one of those, it should be pinned with `MUST`/`MUST NOT`.
+
+**Assessment**
+The prior blockers look fixed. I don’t see remaining state-machine contradictions, claim-lifetime inconsistencies, or proposal-lifecycle holes in this round.
+
+This is close to ready. I’d tighten the one `eval_error` persistence rule above first; after that, I’d consider the chapters mergeable.

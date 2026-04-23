@@ -1,0 +1,39 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/phase-2/20260423T103051/1-04-task-protocol.md	2026-04-23 10:40:40
++++ /Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md	2026-04-23 10:45:15
+@@ -343,8 +343,8 @@
+ The task state machine is not the only lifecycle in the system.
+ Proposals ([`02-data-model.md`](02-data-model.md) §5.1) and trials
+ ([`02-data-model.md`](02-data-model.md) §7) have their own state
+-fields. The task protocol interacts with these lifecycles at two
+-points:
++fields. The task protocol interacts with these lifecycles at the
++following points:
+ 
+ - **Plan submit.** A successful plan-task submission MAY reference
+   proposals that have been transitioned to `state == "ready"` by
+@@ -353,13 +353,18 @@
+   the proposal as a value produced by the planner.
+ - **Implement submit.** A successful implement-task submission
+   requires a trial created and advanced by the implementer
+-  ([`03-roles.md`](03-roles.md) §3.2). On transitioning the
+-  implement task to `completed`, the orchestrator MUST also
+-  transition the referenced proposal's `state` from `"dispatched"`
+-  to `"completed"`, atomically with the task-completion event.
+-  On transitioning the implement task to `failed`, the proposal's
+-  state is unchanged; higher-level retry or abandonment policy is
+-  out of this chapter's scope.
++  ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition
++  of the implement task (whether `submitted → completed` or
++  `submitted → failed`), the orchestrator MUST transition the
++  referenced proposal's `state` from `"dispatched"` to
++  `"completed"`, atomically with the task's terminal event. The
++  proposal's `"completed"` state therefore means *"the
++  implementer's attempt on this proposal has finished"*, not
++  *"the attempt succeeded"*; the trial's `status` field records
++  the outcome. A proposal in `"dispatched"` always names a
++  non-terminal implement task; no proposal remains in
++  `"dispatched"` after its implement task has reached a terminal
++  state.
+ - **Evaluate submit.** A successful evaluate-task submission
+   populates the trial's `metrics`, `completed_at`, and (per
+   worker-declared status) the trial's `status`. The integrator's

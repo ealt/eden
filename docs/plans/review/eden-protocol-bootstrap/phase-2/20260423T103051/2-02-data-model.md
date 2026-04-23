@@ -299,7 +299,7 @@ A trial is one completed attempt.
 | `description` | no | string | Human-readable summary. |
 | `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
 | `started_at` | yes | timestamp | When the implementer began. |
-| `completed_at` | no | timestamp | Set when the trial reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+| `completed_at` | no | timestamp | When the evaluator submitted. |
 
 ### 7.2 Metrics payload
 

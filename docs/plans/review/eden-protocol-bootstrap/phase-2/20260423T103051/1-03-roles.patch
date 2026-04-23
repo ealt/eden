@@ -1,0 +1,90 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/phase-2/20260423T103051/0-03-roles.md	2026-04-23 10:30:51
++++ /Users/ericalt/Documents/eden/spec/v0/03-roles.md	2026-04-23 10:40:20
+@@ -40,8 +40,11 @@
+    [`04-task-protocol.md`](04-task-protocol.md) §3.
+ 3. **Execute.** The worker performs its role-specific work using the
+    task payload and any context the protocol grants it (§2–§4
+-   below). The worker MAY report progress; it MUST NOT mutate any
+-   protocol-owned object other than the task it holds a claim on.
++   below). The worker MAY report progress. It MUST NOT mutate any
++   protocol-owned object other than (a) the task it holds a claim
++   on and (b) the outputs its role is specified to produce (§2.2,
++   §3.2, §4.2). The restrictions in §1.2 apply to every worker role
++   in addition to the per-role rules below.
+ 4. **Submit.** The worker atomically moves the task from `claimed`
+    to `submitted`, presenting its claim token and a result (§2–§4
+    below). A submitted task then advances to `completed` or `failed`
+@@ -140,9 +143,11 @@
+ When its work on a `plan` task is complete, the planner MUST submit
+ the task (§1 step 4). The submission payload MUST include:
+ 
+-- `proposal_ids` — the identifiers of every proposal the planner
+-  created under this task, in the order the planner considers most
+-  preferred. MAY be empty.
++- `proposal_ids` — the set of identifiers of every proposal the
++  planner created under this task. Order is not significant;
++  dispatch ordering is determined by each proposal's `priority`
++  field ([`02-data-model.md`](02-data-model.md) §5.1). MAY be
++  empty.
+ - `status` — one of `"success"` (the planner completed normally,
+   regardless of proposal count) or `"error"` (the planner could
+   not complete; any partially-written proposals MUST remain in
+@@ -164,8 +169,14 @@
+   `payload.proposal_id == P`).
+ - Read access to the proposal `P`. The orchestrator MUST ensure
+   `P.state == "ready"` before dispatch.
+-- Access to the git repository identified by the experiment
+-  config, at a revision reachable from `P.parent_commits`.
++- Read and write access to the git repository associated with
++  `P.experiment_id`, at a revision reachable from
++  `P.parent_commits`. How the repository is located and how
++  access is granted is a role-binding concern (§6,
++  [`02-data-model.md`](02-data-model.md) §2.4); the protocol
++  constrains only that the implementer's writes land under
++  `work/*` and that no commit is introduced whose history does
++  not descend from `P.parent_commits` (§3.3).
+ - Read access to the artifacts at `P.artifacts_uri`.
+ 
+ ### 3.2 Outputs
+@@ -236,8 +247,9 @@
+ - Read access to the trial `T`. The orchestrator MUST ensure
+   `T.status == "starting"` and `T.commit_sha` is set before
+   dispatch.
+-- Read access to the repository at `T.commit_sha` on the worker
+-  branch (`T.branch`).
++- Read access to the git repository at `T.commit_sha` on the
++  worker branch (`T.branch`). Repository location and access are
++  a role-binding concern, as for the implementer (§3.1).
+ - Read access to the experiment's `metrics_schema` and
+   `objective`.
+ 
+@@ -261,8 +273,9 @@
+ The evaluator reads the repository at the trial's worker-branch tip
+ but MUST NOT push, rewrite, or delete that branch, and MUST NOT
+ write to the canonical trial lineage. Any side effects of evaluation
+-(test caches, build outputs) MUST be local to the evaluator's own
+-workspace.
++(test caches, build outputs, captured logs) MUST NOT be observable
++through any protocol-owned store, ref, or artifact location except
++via the evaluator's declared outputs (§4.2).
+ 
+ ### 4.4 Submission
+ 
+@@ -277,10 +290,13 @@
+     metrics.
+   - `"eval_error"` — the evaluator itself failed for reasons
+     unrelated to the trial's code (infrastructure fault,
+-    evaluator bug). The trial's final status remains `starting`
+-    until reconciled; the task protocol treats this as a task
+-    failure and permits redispatch per
+-    [`04-task-protocol.md`](04-task-protocol.md) §4.3.
++    evaluator bug). While a fresh evaluate task MAY still be
++    created for this trial, the trial's status MUST remain
++    `"starting"`. If the orchestrator's retry policy is
++    exhausted (or the operator abandons evaluation), the
++    orchestrator MUST transition the trial's status to
++    `"eval_error"`, making that status terminal for the trial
++    ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
+ - `metrics` — the metrics object described in §4.2. MAY be absent
+   when `status == "eval_error"`.
+ 

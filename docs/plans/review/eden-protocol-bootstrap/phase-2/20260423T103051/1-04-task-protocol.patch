@@ -1,0 +1,148 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/phase-2/20260423T103051/0-04-task-protocol.md	2026-04-23 10:30:51
++++ /Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md	2026-04-23 10:39:27
+@@ -159,22 +159,31 @@
+ - A result payload whose shape depends on `kind`
+   ([`03-roles.md`](03-roles.md) §2.4, §3.4, §4.4).
+ 
+-A successful submit transitions `claimed → submitted` (or, under the
+-conditions in §4.3, `claimed → failed`) atomically with persisting
+-the result payload.
++A successful submit transitions `claimed → submitted` atomically
++with persisting the result payload. The terminal transition to
++`completed` or `failed` is the orchestrator's subsequent step
++(§4.3), even when the submission itself declared failure.
+ 
+ ### 4.2 Idempotency
+ 
+-A resubmission — a second submit carrying the same token as an
+-earlier successful submit — MUST be handled as follows:
++A resubmission is a second submit carrying the token recorded on
++the task's `claim` object (which is retained through `submitted`
++per [`02-data-model.md`](02-data-model.md) §3.4). A resubmit against
++a task whose claim has been cleared — because the task was
++reclaimed or reached a terminal state — MUST be rejected
++regardless of the presented token (§4.4, §5.2).
+ 
++When the token matches, the task store MUST handle the
++resubmission as follows:
++
+ - If the resubmission's result payload is **content-equivalent** to
+   the already-recorded payload, the task store MUST accept it and
+   MUST NOT change the task's state or recorded result. "Content
+   equivalence" means the normative fields identified per role
+   agree:
+-  - `plan` — the set of `proposal_ids` (as a set, not a sequence)
+-    and `status`.
++  - `plan` — the set of `proposal_ids` (compared as sets; order
++    is not significant per [`03-roles.md`](03-roles.md) §2.4) and
++    `status`.
+   - `implement` — `trial_id`, `status`, and `commit_sha`
+     (when present).
+   - `evaluate` — `trial_id`, `status`, and `metrics` (compared as
+@@ -210,14 +219,21 @@
+       `"starting"` (the trial itself was not shown to be bad;
+       only the evaluator-side attempt failed). A fresh
+       `evaluate` task MAY be created for the same trial; the
+-      protocol does not mandate automatic retry.
++      protocol does not mandate automatic retry. If the
++      orchestrator's policy exhausts retries for this trial
++      (or the operator abandons it), the orchestrator MUST
++      transition the trial's `status` from `"starting"` to
++      `"eval_error"`, at which point the trial status is
++      terminal.
+ 
+ Every terminal transition produces exactly one state-change event
+-in the log ([`05-event-protocol.md`](05-event-protocol.md)). The
+-orchestrator MAY implement the `claimed → submitted → completed`
+-(or `failed`) sequence as two distinct persisted states or as a
+-single store transaction whose event stream includes both
+-transitions, but subscribers MUST observe both events in order.
++in the log ([`05-event-protocol.md`](05-event-protocol.md)) and
++MUST clear the task's `claim` object
++([`02-data-model.md`](02-data-model.md) §3.4). The orchestrator MAY
++implement the `claimed → submitted → completed` (or `failed`)
++sequence as two distinct persisted states or as a single store
++transaction whose event stream includes both transitions, but
++subscribers MUST observe both events in order.
+ 
+ ### 4.4 Post-terminal writes prohibited
+ 
+@@ -234,15 +250,20 @@
+ ### 5.1 When reclamation is permitted
+ 
+ A conforming task store MAY reclaim a task — move it from
+-`claimed` or `submitted` back to `pending` — in any of the
+-following cases:
++`claimed` back to `pending` — in any of the following cases:
+ 
+-- The `claim.expires_at` timestamp has passed and the task is not
+-  in a terminal state.
++- The `claim.expires_at` timestamp has passed.
+ - An operator invokes an explicit reclaim action on the task.
+ - A task-store-defined health policy determines the claiming worker
+   is unreachable.
+ 
++A task in `submitted` state MAY be reclaimed **only** by an
++explicit operator action; automatic reclaim (expires_at, health
++policy) MUST NOT apply to `submitted` tasks. After submit the
++worker's reachability is no longer a relevant liveness signal; the
++orchestrator is expected to advance the task to a terminal state
++(§4.3).
++
+ A task store MUST NOT reclaim a task in a terminal state.
+ 
+ ### 5.2 Effect of reclamation
+@@ -271,15 +292,27 @@
+ token has been invalidated, it MUST discontinue work on the task
+ and MUST NOT submit ([`03-roles.md`](03-roles.md) §1 step 5).
+ 
+-### 5.4 No implicit reclamation from `submitted`
++### 5.4 Reclamation effect on role outputs
+ 
+-A task that has reached `submitted` MUST be processed by the
+-orchestrator (transition to `completed` or `failed`) rather than
+-silently reclaimed. Reclamation from `submitted` is permitted only
+-under the explicit conditions in §5.1; in particular, automatic
+-`expires_at`-based reclamation SHOULD NOT apply to `submitted`
+-tasks, since the worker has already discharged its obligation.
++When a reclaimed task had created role-owned objects during its
++prior execution, the orchestrator MUST reconcile those objects as
++follows:
+ 
++- **Implement reclamation.** If the prior execution created a
++  trial with `status == "starting"`, the orchestrator MUST
++  transition that trial's `status` to `"error"` atomically with
++  the reclaim event. A subsequent re-claim of the implement task
++  produces a **new** trial; starting trials are never shared
++  across implementer attempts.
++- **Plan reclamation.** If the prior execution persisted
++  proposals in `"drafting"` state, those proposals remain in
++  `"drafting"` and are not dispatched. Implementations MAY expose
++  them to operators for inspection or removal; the task protocol
++  does not mandate automatic cleanup.
++- **Evaluate reclamation.** The trial the task referenced is
++  unchanged by reclamation (it was produced by the implementer,
++  not the evaluator).
++
+ ## 6. Ordering and concurrency
+ 
+ ### 6.1 Per-task serialization
+@@ -320,11 +353,13 @@
+   the proposal as a value produced by the planner.
+ - **Implement submit.** A successful implement-task submission
+   requires a trial created and advanced by the implementer
+-  ([`03-roles.md`](03-roles.md) §3.2). The orchestrator, on
+-  accepting the submission, MAY transition the referenced
+-  proposal's `state` from `dispatched` to `completed`. Whether to
+-  do so is left to the orchestrator's higher-level logic; the
+-  task protocol does not mandate it.
++  ([`03-roles.md`](03-roles.md) §3.2). On transitioning the
++  implement task to `completed`, the orchestrator MUST also
++  transition the referenced proposal's `state` from `"dispatched"`
++  to `"completed"`, atomically with the task-completion event.
++  On transitioning the implement task to `failed`, the proposal's
++  state is unchanged; higher-level retry or abandonment policy is
++  out of this chapter's scope.
+ - **Evaluate submit.** A successful evaluate-task submission
+   populates the trial's `metrics`, `completed_at`, and (per
+   worker-declared status) the trial's `status`. The integrator's

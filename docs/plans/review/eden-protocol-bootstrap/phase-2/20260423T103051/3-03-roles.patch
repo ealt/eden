@@ -1,0 +1,38 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/phase-2/20260423T103051/2-03-roles.md	2026-04-23 10:45:44
++++ /Users/ericalt/Documents/eden/spec/v0/03-roles.md	2026-04-23 10:47:19
+@@ -318,10 +318,18 @@
+   when the submission's `status == "eval_error"` (see §4.4 above
+   for the terminal-retry case).
+ - `metrics` — set to the submission's `metrics` when
+-  `status ∈ {"success", "error"}`; MAY be left unchanged when
+-  `status == "eval_error"`.
++  `status ∈ {"success", "error"}`. When `status == "eval_error"`
++  the orchestrator MUST NOT write `metrics` on the trial; any
++  submission-carried `metrics` is discarded.
+ - `artifacts_uri` — set to the submission's `artifacts_uri` when
+-  provided and `status ∈ {"success", "error"}`.
++  provided and `status ∈ {"success", "error"}`. When
++  `status == "eval_error"` the orchestrator MUST NOT write
++  `artifacts_uri` on the trial; any submission-carried
++  `artifacts_uri` is discarded. (An evaluator that wishes to
++  retain diagnostic artifacts from a failed attempt MAY reference
++  them in the `task.failed` event for that evaluate task; that
++  channel is defined in
++  [`05-event-protocol.md`](05-event-protocol.md).)
+ - `completed_at` — set to the time of the terminal trial
+   transition, i.e. written exactly once, when the trial's status
+   leaves `"starting"` (either on a `"success"`/`"error"`
+@@ -329,6 +337,13 @@
+   transition). Intermediate `eval_error` submissions MUST NOT
+   advance `completed_at`.
+ 
++On the retry-exhausted `"eval_error"` terminal transition itself,
++the orchestrator MUST NOT graft metrics or artifacts from any
++prior `eval_error` submission onto the trial; the trial's
++`metrics` and `artifacts_uri` fields remain unset. This keeps the
++trial object canonical: a trial either carries the outputs of a
++successful or code-level-failed evaluation, or it carries nothing.
++
+ Resubmission is idempotent under the same rules as §3.4: identical
+ `trial_id` + `status` + `metrics` + `artifacts_uri` MUST be
+ accepted; inconsistent resubmission MUST be rejected.

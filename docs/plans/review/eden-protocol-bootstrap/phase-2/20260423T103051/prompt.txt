@@ -1,0 +1,27 @@
+Review two paired EDEN protocol specification chapters:
+- spec/v0/03-roles.md — role contracts (planner, implementer, evaluator, integrator)
+- spec/v0/04-task-protocol.md — task state machine, claim semantics, idempotent submit, reclamation
+
+Context: Read the project CLAUDE.md, then the existing chapters the new ones cite:
+- spec/v0/00-overview.md (scope, conformance classes, versioning)
+- spec/v0/01-concepts.md (vocabulary)
+- spec/v0/02-data-model.md (entity shapes; especially §3 task, §5 proposal, §7 trial)
+- spec/v0/schemas/task.schema.json (task JSON Schema)
+- spec/v0/schemas/proposal.schema.json
+- spec/v0/schemas/trial.schema.json
+
+These chapters are normative. Use RFC 2119 language. The repo framing is protocol-first: the spec is the source of truth, the reference implementation is one valid impl of many possible. Evaluate the two chapters together as one review chunk — roles reference task lifecycle and vice versa.
+
+Evaluate in the following order. Each level builds on the prior — if you have significant concerns at a given level, focus your feedback there. Later levels may not be relevant until those are resolved.
+
+1. **Protocol-vs-impl framing.** For each required field in the submission payloads and each MUST/SHOULD in the chapters, ask: would a conforming implementation hosted *differently* (remote HTTP service, in-process adapter, a human with a Web UI, a CLI subprocess, a wasm module) still have a meaningful value / observable meaning for this field or rule? If not, it is impl-specific and should be moved to an extension point or deferred. Flag specifically any place these chapters implicitly assume a particular hosting model (local subprocess, shared filesystem, direct DB access, etc).
+
+2. **Normative completeness.** Does every role contract make its input, output, and invariants unambiguous? Does the task state machine enumerate every legal transition and explicitly rule out every illegal one? Are there states or transitions a reader could reach that have no specified behavior?
+
+3. **Cross-chapter consistency.** Do 03 and 04 agree with each other and with the already-frozen chapters (00, 01, 02) and the JSON Schemas? In particular: task state enum (02 §3.2 & task.schema.json), task payload shapes per kind (02 §3.3 & task.schema.json allOf), proposal states (02 §5.1), trial states (02 §7), claim object shape (02 §3.4 & task.schema.json), timestamp/URI/SHA conventions (02 §1).
+
+4. **State-machine soundness.** Claim atomicity (§3), single active claim, idempotent submit with content-equivalence (§4.2), terminal-state immutability (§4.4), reclamation boundaries (§5) — are these internally consistent? Any race condition a conforming impl could hit that the spec leaves under-specified?
+
+5. **Normative crispness.** Are MUST/SHOULD/MAY used correctly per RFC 2119? Are there sentences that sound normative but lack a keyword, or keywords that contradict each other? Any under-specification (vague "appropriate" / "suitable" without definition)?
+
+For each issue you find, cite the exact section and quote the text. Categorize severity: Bug (spec is wrong or internally contradictory), Gap (missing normative content a conforming impl needs), Risk (under-specified; implementations will diverge), Nit (wording/style). End with an overall assessment and whether you consider the chapters ready to merge.
