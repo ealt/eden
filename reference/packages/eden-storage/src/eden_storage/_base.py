@@ -1,51 +1,40 @@
-"""In-memory task/event/proposal/trial store enforcing the v0 invariants.
+"""Backend-agnostic transition logic shared by every ``Store`` backend.
 
-This module is the reference implementation of the three stores named
-in [`spec/v0/08-storage.md`](../../../../spec/v0/08-storage.md) — task
-store, event log, proposal/trial persistence — collapsed into a single
-in-process object. Collapsing is allowed by §7 (implementation
-latitude) and is the simplest arrangement that still honors the
-transactional invariant.
+Every EDEN store backend — in-memory, SQLite, a future Postgres or
+remote backend — has to enforce the same state-machine, the same
+composite commits (``spec/v0/05-event-protocol.md`` §2.2), the same
+token/idempotency/terminal-immutability rules, and the same metrics
+validation. Factoring that logic out of any one backend and sharing
+it is the only way to make "passes the same conformance suite"
+mean what it says.
 
-The invariant (`05-event-protocol.md` §2): every state change commits
-atomically with its event(s). In a single-threaded in-memory store we
-realize this by staging all mutations in a `_Tx` object and only
-applying them in one shot at the end of the operation; any
-precondition failure raises before `commit`, so readers never observe
-a partial write.
+``_StoreBase`` owns:
 
-Every stored object is a deep copy of the value passed in, and every
-read-side return is a deep copy of the stored value. Without this a
-caller could mutate an `eden_contracts` Pydantic model in place (those
-models are not frozen) and silently corrupt store state or the event
-log without going through a store method — a direct violation of
-05 §2. The internal dicts hold the canonical copies; callers see
-snapshots.
+- The public method surface (``claim``, ``submit``, ``accept``,
+  ``reject``, ``reclaim``, ``create_*``, ``read_*``, ``list_*``,
+  ``events``, ``validate_acceptance``, ``validate_terminal``,
+  ``create_proposal``, ``mark_proposal_ready``, ``create_trial``,
+  ``declare_trial_eval_error``, ``integrate_trial``).
+- All validation, composite-commit staging, and event construction.
 
-The ``submit`` operation is idempotent per `04-task-protocol.md` §4.2:
-a resubmit with the current token and a content-equivalent payload
-succeeds without mutating state; an inconsistent resubmit is rejected.
-Content equivalence is role-specific and is computed against the
-submission dataclasses defined here, not against the spec's wire
-format, because submissions are not part of the wire-format schemas
-in v0.
+Subclasses own:
 
-Integration (`06-integrator.md`) is collapsed into a single
-``integrate_trial`` operation: the in-memory store has no git
-topology to express, so it persists only the ``trial_commit_sha``
-field + the ``trial.integrated`` event. Phase 7 will replace this
-with a real git integrator.
+- ``_atomic_operation`` — the transaction scope. In-memory wraps an
+  ``RLock``; SQLite wraps ``BEGIN IMMEDIATE``…``COMMIT``.
+- ``_get_task``/``_get_proposal``/``_get_trial``/``_get_submission``
+  — primitive lookups.
+- ``_iter_tasks``/``_iter_proposals``/``_iter_trials``/``_iter_events``
+  — ordered iteration.
+- ``_apply_commit(tx)`` — apply the staged ``_Tx`` inside the already-
+  open transaction, without committing it. The outer
+  ``_atomic_operation`` context does the actual commit.
 
-Role negative rules (`03-roles.md` §1.2) are **not** structurally
-enforced by this store. The store exposes every mutating operation
-(``create_trial``, ``integrate_trial``, ``mark_proposal_ready``, …)
-to every caller; the scripted reference workers comply by
-construction, but a misbehaving worker with access to the store
-could violate the negative rules. Phase 11's conformance suite is
-the correct place to detect such violations in a
-deployment-agnostic way; an in-process reference store could only
-enforce them by introducing role-scoped handles, which would be
-substantial surface for no extra protocol guarantee.
+Every public method follows the same pattern: open an atomic
+operation, perform reads + validations (which may raise before any
+write), stage all writes into a ``_Tx`` object, and call
+``self._apply_commit(tx)`` exactly once. If validation raises the
+atomic operation aborts and no partial state becomes visible
+(chapter 8 §6.1–§6.3).
 """
 
 from __future__ import annotations
@@ -54,10 +43,10 @@ import copy
 import itertools
 import secrets
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from threading import RLock
-from typing import Any, Literal
+from typing import Any
 
 from eden_contracts import (
     EvaluatePayload,
@@ -85,10 +74,13 @@ from .errors import (
     NotFound,
     WrongToken,
 )
-
-PlanStatus = Literal["success", "error"]
-ImplementStatus = Literal["success", "error"]
-EvaluateStatus = Literal["success", "error", "eval_error"]
+from .submissions import (
+    EvaluateSubmission,
+    ImplementSubmission,
+    PlanSubmission,
+    Submission,
+    submissions_equivalent,
+)
 
 _METRIC_PY_TYPES: dict[str, tuple[type, ...]] = {
     # spec/v0/02-data-model.md §1.3 type mapping: integer / real / text.
@@ -99,44 +91,15 @@ _METRIC_PY_TYPES: dict[str, tuple[type, ...]] = {
 }
 
 
-@dataclass(frozen=True)
-class PlanSubmission:
-    """Planner submission result. See spec/v0/03-roles.md §2.4."""
-
-    status: PlanStatus
-    proposal_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ImplementSubmission:
-    """Implementer submission result. See spec/v0/03-roles.md §3.4."""
-
-    status: ImplementStatus
-    trial_id: str
-    commit_sha: str | None = None
-
-
-@dataclass(frozen=True)
-class EvaluateSubmission:
-    """Evaluator submission result. See spec/v0/03-roles.md §4.4."""
-
-    status: EvaluateStatus
-    trial_id: str
-    metrics: dict[str, Any] | None = None
-    artifacts_uri: str | None = None
-
-
-Submission = PlanSubmission | ImplementSubmission | EvaluateSubmission
-
-
 @dataclass
 class _Tx:
     """Staged writes for a single atomic operation.
 
-    A public store method stages all mutations here and calls
-    ``commit`` exactly once at the end. Any precondition failure
-    raises before ``commit``, so readers never observe a partial
-    state change.
+    A public method stages all mutations here and calls
+    ``_apply_commit`` exactly once at the end. Any precondition
+    failure raises before ``_apply_commit``, so readers never observe
+    a partial state change. Subclasses apply the contents against
+    whatever backing store they use (dicts, SQLite tables, …).
     """
 
     tasks: dict[str, Task] = field(default_factory=dict)
@@ -150,16 +113,16 @@ class _Tx:
 def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
     """Return a copy of ``model`` with ``changes`` applied and re-validated.
 
-    This replaces Pydantic's ``model_copy(update=...)``, which does
-    **not** re-run validators. Without re-validation a caller could
-    stamp an invalid ``commit_sha``, ``artifacts_uri``, or
-    ``metrics`` shape onto a stored trial. Re-validating on every
-    update is the reference store's way of honoring ``03-roles.md``
-    §3.4, §4.4 and ``08-storage.md`` §3.
+    Replaces Pydantic's ``model_copy(update=...)``, which does **not**
+    re-run validators. Without re-validation a caller could stamp an
+    invalid ``commit_sha``, ``artifacts_uri``, or ``metrics`` shape
+    onto a stored trial. Re-validating on every update is how every
+    backend honors ``03-roles.md`` §3.4, §4.4 and ``08-storage.md``
+    §3.
 
     Passing ``None`` for a field removes it (matches the ``NotNone``
-    rule on optional typed fields in ``_common.py``: absent is
-    permitted, explicit null is not).
+    rule on optional typed fields in ``eden_contracts._common``:
+    absent is permitted, explicit null is not).
     """
     data = model.model_dump(mode="json", exclude_none=True)
     for key, value in changes.items():
@@ -178,17 +141,19 @@ def _deep[M: BaseModel](model: M) -> M:
     Used to insulate readers (``read_*``, ``list_*``, ``events``)
     from in-place mutation of stored values, and to insulate the
     store from mutation of caller-supplied values at ``create_*``
-    time.
+    time. Backends whose read path inherently rehydrates a fresh
+    instance (e.g. SQLite's JSON round-trip) still go through
+    ``_deep`` for uniformity.
     """
     return model.model_copy(deep=True)
 
 
-class InMemoryStore:
-    """Reference in-memory implementation of the three v0 stores.
+class _StoreBase:
+    """Shared transaction/validation/event logic for every store backend.
 
-    Thread-safe under a single process lock. All public operations
-    are atomic: either every staged write and event is applied, or
-    none is.
+    Subclasses implement the backend primitives listed at module-top.
+    The public surface here is the union of everything ``protocol.Store``
+    declares.
     """
 
     def __init__(
@@ -206,12 +171,6 @@ class InMemoryStore:
         self._event_ids = itertools.count(1)
         self._event_id_factory = event_id_factory or self._default_event_id
         self._token_factory = token_factory or (lambda: secrets.token_hex(16))
-        self._tasks: dict[str, Task] = {}
-        self._proposals: dict[str, Proposal] = {}
-        self._trials: dict[str, Trial] = {}
-        self._submissions: dict[str, Submission] = {}
-        self._events: list[Event] = []
-        self._lock = RLock()
 
     def _default_event_id(self) -> str:
         return f"evt-{next(self._event_ids):06d}"
@@ -222,29 +181,87 @@ class InMemoryStore:
         return self._experiment_id
 
     # ------------------------------------------------------------------
-    # Read API
+    # Backend primitives (subclasses MUST override)
+    # ------------------------------------------------------------------
+
+    def _atomic_operation(self) -> AbstractContextManager[None]:
+        """Return a context manager providing atomic-operation semantics.
+
+        Either every write staged inside the context lands, or none of
+        them does. The outer context manager's exit is responsible for
+        committing (normal exit) or rolling back (exception); the inner
+        ``_apply_commit`` call stages the writes without committing.
+        """
+        raise NotImplementedError
+
+    def _get_task(self, task_id: str) -> Task | None:
+        """Return the stored task, or ``None`` if absent."""
+        raise NotImplementedError
+
+    def _get_proposal(self, proposal_id: str) -> Proposal | None:
+        """Return the stored proposal, or ``None`` if absent."""
+        raise NotImplementedError
+
+    def _get_trial(self, trial_id: str) -> Trial | None:
+        """Return the stored trial, or ``None`` if absent."""
+        raise NotImplementedError
+
+    def _get_submission(self, task_id: str) -> Submission | None:
+        """Return the committed submission, or ``None`` if absent."""
+        raise NotImplementedError
+
+    def _iter_tasks(
+        self, *, kind: str | None = None, state: str | None = None
+    ) -> Iterable[Task]:
+        """Iterate tasks matching the optional filters."""
+        raise NotImplementedError
+
+    def _iter_proposals(self, *, state: str | None = None) -> Iterable[Proposal]:
+        """Iterate proposals matching the optional filter."""
+        raise NotImplementedError
+
+    def _iter_trials(self, *, status: str | None = None) -> Iterable[Trial]:
+        """Iterate trials matching the optional filter."""
+        raise NotImplementedError
+
+    def _iter_events(self) -> Iterable[Event]:
+        """Iterate events in log order."""
+        raise NotImplementedError
+
+    def _apply_commit(self, tx: _Tx) -> None:
+        """Stage the contents of ``tx`` for the current atomic operation.
+
+        For in-memory backends this applies directly to dicts. For
+        SQLite it issues INSERT/UPDATE/DELETE statements against the
+        already-open transaction; COMMIT fires when
+        ``_atomic_operation`` exits without an exception.
+        """
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Public read API
     # ------------------------------------------------------------------
 
     def read_task(self, task_id: str) -> Task:
         """Return a snapshot of the current task, or raise ``NotFound``."""
-        with self._lock:
-            task = self._tasks.get(task_id)
+        with self._atomic_operation():
+            task = self._get_task(task_id)
             if task is None:
                 raise NotFound(f"task {task_id!r}")
             return _deep(task)
 
     def read_proposal(self, proposal_id: str) -> Proposal:
         """Return a snapshot of the current proposal, or raise ``NotFound``."""
-        with self._lock:
-            proposal = self._proposals.get(proposal_id)
+        with self._atomic_operation():
+            proposal = self._get_proposal(proposal_id)
             if proposal is None:
                 raise NotFound(f"proposal {proposal_id!r}")
             return _deep(proposal)
 
     def read_trial(self, trial_id: str) -> Trial:
         """Return a snapshot of the current trial, or raise ``NotFound``."""
-        with self._lock:
-            trial = self._trials.get(trial_id)
+        with self._atomic_operation():
+            trial = self._get_trial(trial_id)
             if trial is None:
                 raise NotFound(f"trial {trial_id!r}")
             return _deep(trial)
@@ -257,8 +274,8 @@ class InMemoryStore:
         caller could mutate the committed metrics in place and
         corrupt future idempotency decisions.
         """
-        with self._lock:
-            submission = self._submissions.get(task_id)
+        with self._atomic_operation():
+            submission = self._get_submission(task_id)
             if submission is None:
                 return None
             return copy.deepcopy(submission)
@@ -270,50 +287,162 @@ class InMemoryStore:
         state: str | None = None,
     ) -> list[Task]:
         """Return snapshots of tasks matching an optional ``kind`` and ``state``."""
-        with self._lock:
-            out: list[Task] = []
-            for task in self._tasks.values():
-                if kind is not None and task.kind != kind:
-                    continue
-                if state is not None and task.state != state:
-                    continue
-                out.append(_deep(task))
-            return out
+        with self._atomic_operation():
+            return [_deep(task) for task in self._iter_tasks(kind=kind, state=state)]
 
     def list_proposals(self, *, state: str | None = None) -> list[Proposal]:
         """Return snapshots of proposals matching an optional ``state`` filter."""
-        with self._lock:
-            return [
-                _deep(p)
-                for p in self._proposals.values()
-                if state is None or p.state == state
-            ]
+        with self._atomic_operation():
+            return [_deep(p) for p in self._iter_proposals(state=state)]
 
     def list_trials(self, *, status: str | None = None) -> list[Trial]:
         """Return snapshots of trials matching an optional ``status`` filter."""
-        with self._lock:
-            return [
-                _deep(t)
-                for t in self._trials.values()
-                if status is None or t.status == status
-            ]
+        with self._atomic_operation():
+            return [_deep(t) for t in self._iter_trials(status=status)]
 
     def events(self) -> list[Event]:
         """Return an ordered snapshot of the full event log.
 
         Every returned event is a deep copy; mutation of the return
-        value cannot rewrite log entries.
+        value cannot rewrite log entries. Equivalent to ``replay()``;
+        retained as the pre-Phase-6 convenience name.
         """
-        with self._lock:
-            return [_deep(e) for e in self._events]
+        return self.replay()
+
+    def replay(self) -> list[Event]:
+        """Return every event for this experiment in log order.
+
+        Chapter 8 §2.1 / §4.4. Every returned event is a deep copy.
+        """
+        with self._atomic_operation():
+            return [_deep(e) for e in self._iter_events()]
+
+    def read_range(self, cursor: int | None = None) -> list[Event]:
+        """Return events after ``cursor`` in log order (chapter 8 §2.1).
+
+        ``cursor`` is the **cumulative** count of events the caller
+        has already consumed — i.e. the total number of events the
+        caller has observed, not the size of its last chunk. A
+        caller polling in a loop advances ``cursor`` by the length
+        of each returned chunk; passing the size of the last chunk
+        alone would skip everything the caller has already read past
+        that point.
+
+        The reference backends' log order is total (chapter 8 §2.2),
+        so indexing by cumulative count is stable. A ``None`` cursor
+        (or ``0``) is equivalent to ``replay()``.
+        """
+        with self._atomic_operation():
+            events = [_deep(e) for e in self._iter_events()]
+        if cursor is None or cursor <= 0:
+            return events
+        return events[cursor:]
 
     # ------------------------------------------------------------------
     # Task lifecycle — creation
     # ------------------------------------------------------------------
 
+    def create_task(self, task: Task) -> Task:
+        """Spec-literal ``create_task`` per chapter 8 §1.1.
+
+        Inserts a fully-formed task object in ``state="pending"``.
+        For ``implement`` tasks the composite-commit from
+        ``05-event-protocol.md`` §2.2 also transitions the referenced
+        proposal from ``ready`` to ``dispatched``; for ``evaluate``
+        tasks the referenced trial's ``starting``/``commit_sha``
+        precondition is enforced.
+
+        The typed helpers ``create_plan_task`` / ``create_implement_task``
+        / ``create_evaluate_task`` build the task payload for the
+        caller; both paths converge on the same commit.
+        """
+        if task.state != "pending":
+            raise InvalidPrecondition(
+                f"new task must be in 'pending' state, not {task.state!r}"
+            )
+        if task.claim is not None:
+            raise InvalidPrecondition(
+                "new task must not carry a claim (08-storage.md §1.1)"
+            )
+        if task.kind == "plan":
+            assert isinstance(task, PlanTask)
+            return self._insert_plan_task(task)
+        if task.kind == "implement":
+            assert isinstance(task, ImplementTask)
+            return self._insert_implement_task(task)
+        assert isinstance(task, EvaluateTask)
+        return self._insert_evaluate_task(task)
+
+    def _insert_plan_task(self, task: PlanTask) -> PlanTask:
+        if task.payload.experiment_id != self._experiment_id:
+            raise InvalidPrecondition(
+                f"plan task payload.experiment_id={task.payload.experiment_id!r} "
+                f"does not match store experiment {self._experiment_id!r}"
+            )
+        with self._atomic_operation():
+            self._require_no_task(task.task_id)
+            tx = _Tx()
+            tx.tasks[task.task_id] = _deep(task)
+            tx.events.append(
+                self._event("task.created", {"task_id": task.task_id, "kind": "plan"})
+            )
+            self._apply_commit(tx)
+            return _deep(task)
+
+    def _insert_implement_task(self, task: ImplementTask) -> ImplementTask:
+        with self._atomic_operation():
+            self._require_no_task(task.task_id)
+            proposal_id = task.payload.proposal_id
+            proposal = self._get_proposal(proposal_id)
+            if proposal is None:
+                raise NotFound(f"proposal {proposal_id!r}")
+            if proposal.state != "ready":
+                raise InvalidPrecondition(
+                    f"proposal {proposal_id!r} must be 'ready' "
+                    f"to dispatch, not {proposal.state!r}"
+                )
+            tx = _Tx()
+            tx.tasks[task.task_id] = _deep(task)
+            tx.proposals[proposal_id] = _validated_update(proposal, state="dispatched")
+            tx.events.append(
+                self._event("task.created", {"task_id": task.task_id, "kind": "implement"})
+            )
+            tx.events.append(
+                self._event(
+                    "proposal.dispatched",
+                    {"proposal_id": proposal_id, "task_id": task.task_id},
+                )
+            )
+            self._apply_commit(tx)
+            return _deep(task)
+
+    def _insert_evaluate_task(self, task: EvaluateTask) -> EvaluateTask:
+        with self._atomic_operation():
+            self._require_no_task(task.task_id)
+            trial_id = task.payload.trial_id
+            trial = self._get_trial(trial_id)
+            if trial is None:
+                raise NotFound(f"trial {trial_id!r}")
+            if trial.status != "starting":
+                raise InvalidPrecondition(
+                    f"trial {trial_id!r} must be 'starting' to dispatch eval, "
+                    f"not {trial.status!r}"
+                )
+            if trial.commit_sha is None:
+                raise InvalidPrecondition(
+                    f"trial {trial_id!r} has no commit_sha; implementer must set it first"
+                )
+            tx = _Tx()
+            tx.tasks[task.task_id] = _deep(task)
+            tx.events.append(
+                self._event("task.created", {"task_id": task.task_id, "kind": "evaluate"})
+            )
+            self._apply_commit(tx)
+            return _deep(task)
+
     def create_plan_task(self, task_id: str) -> PlanTask:
         """Create a ``plan`` task. Emits ``task.created`` atomically."""
-        with self._lock:
+        with self._atomic_operation():
             self._require_no_task(task_id)
             now = self._ts()
             task = PlanTask(
@@ -327,7 +456,7 @@ class InMemoryStore:
             tx = _Tx()
             tx.tasks[task_id] = task
             tx.events.append(self._event("task.created", {"task_id": task_id, "kind": "plan"}))
-            self._commit(tx)
+            self._apply_commit(tx)
             return _deep(task)
 
     def create_implement_task(self, task_id: str, proposal_id: str) -> ImplementTask:
@@ -337,9 +466,9 @@ class InMemoryStore:
         and transitioning the referenced proposal from ``ready`` to
         ``dispatched`` land in one atomic commit.
         """
-        with self._lock:
+        with self._atomic_operation():
             self._require_no_task(task_id)
-            proposal = self._proposals.get(proposal_id)
+            proposal = self._get_proposal(proposal_id)
             if proposal is None:
                 raise NotFound(f"proposal {proposal_id!r}")
             if proposal.state != "ready":
@@ -368,14 +497,14 @@ class InMemoryStore:
                     {"proposal_id": proposal_id, "task_id": task_id},
                 )
             )
-            self._commit(tx)
+            self._apply_commit(tx)
             return _deep(task)
 
     def create_evaluate_task(self, task_id: str, trial_id: str) -> EvaluateTask:
         """Create an ``evaluate`` task against a starting trial with ``commit_sha``."""
-        with self._lock:
+        with self._atomic_operation():
             self._require_no_task(task_id)
-            trial = self._trials.get(trial_id)
+            trial = self._get_trial(trial_id)
             if trial is None:
                 raise NotFound(f"trial {trial_id!r}")
             if trial.status != "starting":
@@ -401,7 +530,7 @@ class InMemoryStore:
             tx.events.append(
                 self._event("task.created", {"task_id": task_id, "kind": "evaluate"})
             )
-            self._commit(tx)
+            self._apply_commit(tx)
             return _deep(task)
 
     # ------------------------------------------------------------------
@@ -420,7 +549,7 @@ class InMemoryStore:
         Rejects if the task is not in ``pending`` state
         (``04-task-protocol.md`` §3.4). Issues a fresh token.
         """
-        with self._lock:
+        with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state != "pending":
                 raise IllegalTransition(
@@ -447,7 +576,7 @@ class InMemoryStore:
                     {"task_id": task_id, "worker_id": worker_id},
                 )
             )
-            self._commit(tx)
+            self._apply_commit(tx)
             return _deep(claim)
 
     def submit(self, task_id: str, token: str, submission: Submission) -> None:
@@ -458,7 +587,7 @@ class InMemoryStore:
         succeed without mutating state; an inconsistent resubmit MUST
         be rejected.
         """
-        with self._lock:
+        with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state not in {"claimed", "submitted"}:
                 raise IllegalTransition(
@@ -470,12 +599,12 @@ class InMemoryStore:
             self._validate_submission_ref_binding(task, submission)
 
             if task.state == "submitted":
-                prior = self._submissions.get(task_id)
+                prior = self._get_submission(task_id)
                 if prior is None:
                     raise IllegalTransition(
                         f"task {task_id!r} is submitted but has no recorded submission"
                     )
-                if not _submissions_equivalent(prior, submission):
+                if not submissions_equivalent(prior, submission):
                     raise ConflictingResubmission(
                         f"resubmit of {task_id!r} disagrees with committed result"
                     )
@@ -486,7 +615,7 @@ class InMemoryStore:
             tx.tasks[task_id] = _validated_update(task, state="submitted", updated_at=now)
             tx.submissions[task_id] = copy.deepcopy(submission)
             tx.events.append(self._event("task.submitted", {"task_id": task_id}))
-            self._commit(tx)
+            self._apply_commit(tx)
 
     def validate_acceptance(self, task_id: str) -> str | None:
         """Return an orchestrator-side reason to reject this submission, or ``None``.
@@ -498,28 +627,31 @@ class InMemoryStore:
         validation without mutating state; the driver calls it
         before deciding between ``accept`` and ``reject``.
         """
-        with self._lock:
-            task = self._require_task(task_id)
-            if task.state != "submitted":
-                return None
-            submission = self._submissions.get(task_id)
-            if submission is None:
-                return "no submission recorded"
-            if isinstance(submission, PlanSubmission):
-                if submission.status != "success":
-                    return None
-                return self._validate_plan_acceptance(submission)
-            if isinstance(submission, ImplementSubmission):
-                if submission.status != "success":
-                    return None
-                assert isinstance(task, ImplementTask)
-                return self._validate_implement_acceptance(task, submission)
-            if isinstance(submission, EvaluateSubmission):
-                if submission.status != "success":
-                    return None
-                assert isinstance(task, EvaluateTask)
-                return self._validate_evaluate_acceptance(task, submission)
+        with self._atomic_operation():
+            return self._validate_acceptance_locked(task_id)
+
+    def _validate_acceptance_locked(self, task_id: str) -> str | None:
+        task = self._require_task(task_id)
+        if task.state != "submitted":
             return None
+        submission = self._get_submission(task_id)
+        if submission is None:
+            return "no submission recorded"
+        if isinstance(submission, PlanSubmission):
+            if submission.status != "success":
+                return None
+            return self._validate_plan_acceptance(submission)
+        if isinstance(submission, ImplementSubmission):
+            if submission.status != "success":
+                return None
+            assert isinstance(task, ImplementTask)
+            return self._validate_implement_acceptance(task, submission)
+        if isinstance(submission, EvaluateSubmission):
+            if submission.status != "success":
+                return None
+            assert isinstance(task, EvaluateTask)
+            return self._validate_evaluate_acceptance(task, submission)
+        return None
 
     def validate_terminal(self, task_id: str) -> tuple[str, str | None]:
         """Decide how to terminalize a submitted task.
@@ -540,15 +672,15 @@ class InMemoryStore:
         The driver calls this before every ``accept`` / ``reject`` and
         uses the returned decision to pick the correct `reason`.
         """
-        with self._lock:
+        with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state != "submitted":
                 return ("accept", None)
-            submission = self._submissions.get(task_id)
+            submission = self._get_submission(task_id)
             if submission is None:
                 return ("reject_validation", "no submission recorded")
             if submission.status == "success":
-                reason = self.validate_acceptance(task_id)
+                reason = self._validate_acceptance_locked(task_id)
                 if reason is not None:
                     return ("reject_validation", reason)
                 return ("accept", None)
@@ -570,13 +702,13 @@ class InMemoryStore:
         events (``05-event-protocol.md`` §2.2). Clears the task's
         ``claim``.
         """
-        with self._lock:
+        with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state != "submitted":
                 raise IllegalTransition(
                     f"cannot accept task in state {task.state!r}"
                 )
-            submission = self._submissions.get(task_id)
+            submission = self._get_submission(task_id)
             if submission is None:
                 raise IllegalTransition(
                     f"task {task_id!r} is submitted but has no recorded submission"
@@ -595,13 +727,13 @@ class InMemoryStore:
         effect depends on whether the worker declared ``error`` or
         ``eval_error`` (``04-task-protocol.md`` §4.3).
         """
-        with self._lock:
+        with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state != "submitted":
                 raise IllegalTransition(
                     f"cannot reject task in state {task.state!r}"
                 )
-            submission = self._submissions.get(task_id)
+            submission = self._get_submission(task_id)
             if submission is None:
                 raise IllegalTransition(
                     f"task {task_id!r} is submitted but has no recorded submission"
@@ -624,7 +756,7 @@ class InMemoryStore:
         ``error`` atomically with the reclaim
         (``05-event-protocol.md`` §2.2).
         """
-        with self._lock:
+        with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state in {"completed", "failed"}:
                 raise IllegalTransition(
@@ -645,7 +777,7 @@ class InMemoryStore:
             tx.tasks[task_id] = _validated_update(
                 task, state="pending", claim=None, updated_at=now
             )
-            if task_id in self._submissions:
+            if self._get_submission(task_id) is not None:
                 tx.task_deletes_submission.add(task_id)
             tx.events.append(
                 self._event("task.reclaimed", {"task_id": task_id, "cause": cause})
@@ -661,7 +793,7 @@ class InMemoryStore:
                         self._event("trial.errored", {"trial_id": trial.trial_id})
                     )
 
-            self._commit(tx)
+            self._apply_commit(tx)
 
     # ------------------------------------------------------------------
     # Proposal store
@@ -669,8 +801,8 @@ class InMemoryStore:
 
     def create_proposal(self, proposal: Proposal) -> None:
         """Persist a new proposal in ``drafting``. Emits ``proposal.drafted``."""
-        with self._lock:
-            if proposal.proposal_id in self._proposals:
+        with self._atomic_operation():
+            if self._get_proposal(proposal.proposal_id) is not None:
                 raise AlreadyExists(f"proposal {proposal.proposal_id!r}")
             if proposal.experiment_id != self._experiment_id:
                 raise InvalidPrecondition(
@@ -686,11 +818,11 @@ class InMemoryStore:
             tx.events.append(
                 self._event("proposal.drafted", {"proposal_id": proposal.proposal_id})
             )
-            self._commit(tx)
+            self._apply_commit(tx)
 
     def mark_proposal_ready(self, proposal_id: str) -> None:
         """Transition a proposal ``drafting → ready``. Emits ``proposal.ready``."""
-        with self._lock:
+        with self._atomic_operation():
             proposal = self._require_proposal(proposal_id)
             if proposal.state != "drafting":
                 raise IllegalTransition(
@@ -699,7 +831,7 @@ class InMemoryStore:
             tx = _Tx()
             tx.proposals[proposal_id] = _validated_update(proposal, state="ready")
             tx.events.append(self._event("proposal.ready", {"proposal_id": proposal_id}))
-            self._commit(tx)
+            self._apply_commit(tx)
 
     # ------------------------------------------------------------------
     # Trial store
@@ -707,8 +839,8 @@ class InMemoryStore:
 
     def create_trial(self, trial: Trial) -> None:
         """Persist a new trial in ``starting``. Emits ``trial.started``."""
-        with self._lock:
-            if trial.trial_id in self._trials:
+        with self._atomic_operation():
+            if self._get_trial(trial.trial_id) is not None:
                 raise AlreadyExists(f"trial {trial.trial_id!r}")
             if trial.status != "starting":
                 raise InvalidPrecondition(
@@ -727,7 +859,7 @@ class InMemoryStore:
                     {"trial_id": trial.trial_id, "proposal_id": trial.proposal_id},
                 )
             )
-            self._commit(tx)
+            self._apply_commit(tx)
 
     def declare_trial_eval_error(self, trial_id: str) -> None:
         """Retry-exhausted terminal: ``starting → eval_error`` (``05-event-protocol.md`` §2.2).
@@ -735,7 +867,7 @@ class InMemoryStore:
         Writes ``completed_at`` atomically; MUST NOT set metrics or
         artifacts_uri (``03-roles.md`` §4.4).
         """
-        with self._lock:
+        with self._atomic_operation():
             trial = self._require_trial(trial_id)
             if trial.status != "starting":
                 raise IllegalTransition(
@@ -747,7 +879,7 @@ class InMemoryStore:
                 trial, status="eval_error", completed_at=now
             )
             tx.events.append(self._event("trial.eval_errored", {"trial_id": trial_id}))
-            self._commit(tx)
+            self._apply_commit(tx)
 
     def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
         """Integrator promotion: write ``trial_commit_sha`` and emit ``trial.integrated``.
@@ -756,7 +888,7 @@ class InMemoryStore:
         post-terminal write permitted on a trial; it must be written
         atomically with its event.
         """
-        with self._lock:
+        with self._atomic_operation():
             trial = self._require_trial(trial_id)
             if trial.status != "success":
                 raise InvalidPrecondition(
@@ -777,10 +909,10 @@ class InMemoryStore:
                     {"trial_id": trial_id, "trial_commit_sha": trial_commit_sha},
                 )
             )
-            self._commit(tx)
+            self._apply_commit(tx)
 
     # ------------------------------------------------------------------
-    # Internal dispatch
+    # Internal dispatch — accept/reject helpers
     # ------------------------------------------------------------------
 
     def _accept_plan(self, task: Task, submission: Submission) -> None:
@@ -796,7 +928,7 @@ class InMemoryStore:
             task, state="completed", claim=None, updated_at=now
         )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
-        self._commit(tx)
+        self._apply_commit(tx)
 
     def _reject_plan(self, task: Task, reason: FailReason) -> None:
         now = self._ts()
@@ -807,7 +939,7 @@ class InMemoryStore:
         tx.events.append(
             self._event("task.failed", {"task_id": task.task_id, "reason": reason})
         )
-        self._commit(tx)
+        self._apply_commit(tx)
 
     def _accept_implement(self, task: Task, submission: Submission) -> None:
         assert isinstance(task, ImplementTask)
@@ -835,7 +967,7 @@ class InMemoryStore:
                 {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
             )
         )
-        self._commit(tx)
+        self._apply_commit(tx)
 
     def _reject_implement(
         self,
@@ -850,7 +982,7 @@ class InMemoryStore:
             # Only touch the trial if it was created under this very
             # task's proposal — submission.trial_id is caller-supplied
             # and could reference an unrelated trial.
-            trial = self._trials.get(submission.trial_id)
+            trial = self._get_trial(submission.trial_id)
             if (
                 trial is not None
                 and trial.status == "starting"
@@ -880,7 +1012,7 @@ class InMemoryStore:
             tx.events.append(
                 self._event("trial.errored", {"trial_id": trial_for_error.trial_id})
             )
-        self._commit(tx)
+        self._apply_commit(tx)
 
     def _accept_evaluate(self, task: Task, submission: Submission) -> None:
         assert isinstance(task, EvaluateTask)
@@ -911,7 +1043,7 @@ class InMemoryStore:
                 {"trial_id": trial.trial_id, "commit_sha": trial.commit_sha},
             )
         )
-        self._commit(tx)
+        self._apply_commit(tx)
 
     def _reject_evaluate(
         self,
@@ -961,7 +1093,7 @@ class InMemoryStore:
             tx.events.append(self._event("trial.errored", {"trial_id": trial.trial_id}))
         # status in {"eval_error", "success"} — no trial-side writes.
 
-        self._commit(tx)
+        self._apply_commit(tx)
 
     # ------------------------------------------------------------------
     # Validation helpers
@@ -982,7 +1114,7 @@ class InMemoryStore:
         """
         if isinstance(submission, PlanSubmission):
             for pid in submission.proposal_ids:
-                proposal = self._proposals.get(pid)
+                proposal = self._get_proposal(pid)
                 if proposal is None:
                     raise IllegalTransition(
                         f"plan submission references unknown proposal {pid!r}"
@@ -995,7 +1127,7 @@ class InMemoryStore:
                     )
         elif isinstance(submission, ImplementSubmission):
             assert isinstance(task, ImplementTask)
-            trial = self._trials.get(submission.trial_id)
+            trial = self._get_trial(submission.trial_id)
             if trial is None:
                 raise IllegalTransition(
                     f"implement submission references unknown trial "
@@ -1017,7 +1149,7 @@ class InMemoryStore:
 
     def _validate_plan_acceptance(self, submission: PlanSubmission) -> str | None:
         for pid in submission.proposal_ids:
-            proposal = self._proposals.get(pid)
+            proposal = self._get_proposal(pid)
             if proposal is None:
                 return f"proposal {pid!r} no longer exists"
             if proposal.state == "drafting":
@@ -1029,7 +1161,7 @@ class InMemoryStore:
     ) -> str | None:
         if submission.commit_sha is None:
             return "success submission requires commit_sha (03-roles.md §3.4)"
-        trial = self._trials.get(submission.trial_id)
+        trial = self._get_trial(submission.trial_id)
         if trial is None:
             return f"referenced trial {submission.trial_id!r} does not exist"
         if trial.proposal_id != task.payload.proposal_id:
@@ -1055,7 +1187,7 @@ class InMemoryStore:
     ) -> str | None:
         if submission.trial_id != task.payload.trial_id:
             return "submission trial_id does not match task's trial_id"
-        trial = self._trials.get(submission.trial_id)
+        trial = self._get_trial(submission.trial_id)
         if trial is None:
             return f"trial {submission.trial_id!r} does not exist"
         if trial.status != "starting":
@@ -1089,7 +1221,7 @@ class InMemoryStore:
         """Validate fields that a `status=error` evaluate submit would write."""
         if submission.trial_id != task.payload.trial_id:
             return "submission trial_id does not match task's trial_id"
-        trial = self._trials.get(submission.trial_id)
+        trial = self._get_trial(submission.trial_id)
         if trial is None:
             return f"trial {submission.trial_id!r} does not exist"
         if submission.metrics is not None:
@@ -1134,12 +1266,12 @@ class InMemoryStore:
                 )
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Require-or-raise helpers
     # ------------------------------------------------------------------
 
     def _find_starting_trial_for_implement_task(self, task: Task) -> Trial | None:
         assert isinstance(task, ImplementTask)
-        for trial in self._trials.values():
+        for trial in self._iter_trials():
             if (
                 trial.proposal_id == task.payload.proposal_id
                 and trial.status == "starting"
@@ -1162,26 +1294,30 @@ class InMemoryStore:
             )
 
     def _require_no_task(self, task_id: str) -> None:
-        if task_id in self._tasks:
+        if self._get_task(task_id) is not None:
             raise AlreadyExists(f"task {task_id!r}")
 
     def _require_task(self, task_id: str) -> Task:
-        task = self._tasks.get(task_id)
+        task = self._get_task(task_id)
         if task is None:
             raise NotFound(f"task {task_id!r}")
         return task
 
     def _require_proposal(self, proposal_id: str) -> Proposal:
-        proposal = self._proposals.get(proposal_id)
+        proposal = self._get_proposal(proposal_id)
         if proposal is None:
             raise NotFound(f"proposal {proposal_id!r}")
         return proposal
 
     def _require_trial(self, trial_id: str) -> Trial:
-        trial = self._trials.get(trial_id)
+        trial = self._get_trial(trial_id)
         if trial is None:
             raise NotFound(f"trial {trial_id!r}")
         return trial
+
+    # ------------------------------------------------------------------
+    # Event + timestamp helpers
+    # ------------------------------------------------------------------
 
     def _event(self, type_: str, data: dict[str, Any]) -> Event:
         return Event(
@@ -1210,52 +1346,6 @@ class InMemoryStore:
         else:
             value = value.astimezone(UTC)
         return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-    def _commit(self, tx: _Tx) -> None:
-        for task_id, task in tx.tasks.items():
-            self._tasks[task_id] = task
-        for proposal_id, proposal in tx.proposals.items():
-            self._proposals[proposal_id] = proposal
-        for trial_id, trial in tx.trials.items():
-            self._trials[trial_id] = trial
-        for task_id, submission in tx.submissions.items():
-            self._submissions[task_id] = submission
-        for task_id in tx.task_deletes_submission:
-            self._submissions.pop(task_id, None)
-        self._events.extend(tx.events)
-
-
-def _submissions_equivalent(a: Submission, b: Submission) -> bool:
-    """Content equivalence per ``04-task-protocol.md`` §4.2.
-
-    The normative fields per role (§4.2):
-      plan     — status + set of proposal_ids (order not significant).
-      implement — status + trial_id + commit_sha.
-      evaluate — status + trial_id + metrics (as JSON values).
-
-    ``artifacts_uri`` is deliberately absent from evaluate equivalence:
-    §4.2 does not list it, so two submissions that agree on the
-    normative fields are equivalent even if they differ in
-    artifacts_uri, and the first submission's artifacts_uri is the
-    committed one.
-    """
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, PlanSubmission) and isinstance(b, PlanSubmission):
-        return a.status == b.status and set(a.proposal_ids) == set(b.proposal_ids)
-    if isinstance(a, ImplementSubmission) and isinstance(b, ImplementSubmission):
-        return (
-            a.status == b.status
-            and a.trial_id == b.trial_id
-            and a.commit_sha == b.commit_sha
-        )
-    if isinstance(a, EvaluateSubmission) and isinstance(b, EvaluateSubmission):
-        return (
-            a.status == b.status
-            and a.trial_id == b.trial_id
-            and a.metrics == b.metrics
-        )
-    return False
 
 
 def iter_events_by_type(events: Iterable[Event], type_: str) -> Iterator[Event]:

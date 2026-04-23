@@ -1,0 +1,100 @@
+--- docs/plans/review/phase-6-storage/impl/20260423T163433/1.md	2026-04-23 16:48:49
++++ docs/plans/review/phase-6-storage/impl/20260423T163433/2.md	2026-04-23 16:54:40
+@@ -1,5 +1,34 @@
+-# Implementation Review: Phase 6 — reference storage backend (`eden-storage`) — round 1
++# Implementation Review: Phase 6 — reference storage backend (`eden-storage`) — round 2
+ 
++## What changed since round 1
++
++Addressed the round-1 blocker + all three non-blockers:
++
++1. **Cross-experiment PlanTask payload consistency (round-1 blocker).**
++   `_insert_plan_task` now validates
++   `task.payload.experiment_id == self._experiment_id` and raises
++   `InvalidPrecondition` on mismatch. Regression test added at
++   `tests/test_protocol_operations.py::test_plan_task_cross_experiment_payload_rejected`.
++   ImplementTask and EvaluateTask do not carry `experiment_id` in
++   their payloads (they link via proposal_id/trial_id which must
++   already exist in the store), so the same hole does not apply to
++   those task kinds.
++2. **Protocol module docstring scope.** `protocol.py` module
++   docstring rewritten to say "task-side stores … task store §1,
++   event log reads §2.1, proposal/trial persistence §1.7" and
++   explicitly list the artifact store (§5, Phase 10) and the
++   streaming `subscribe` (§2.1, Phase 8) as out of scope.
++3. **`read_range` cursor semantics clarified.** Docstring now
++   explicitly states cursor is the **cumulative** count of events
++   already consumed, and that callers polling in a loop advance
++   cursor by the length of each returned chunk — not the size of
++   the last chunk alone.
++4. **Regression tests added (round-1 suggestion).**
++   - `test_reopen_with_reordered_schema_keys_accepted`
++   - `test_event_id_counter_resumes_past_default_format_boundary`
++
++Tests: 246 passing across both backends.
++
+ ## What changed since round 0
+ 
+ Addressed all four round-0 blockers:
+@@ -239,41 +268,25 @@
+    `_apply_commit`-callable in both backends), but it does mean the
+    "one BEGIN per public op" rule is enforced by discipline, not
+    structurally.
+-3. **`_max_event_seq` sniffs only the default `evt-NNNNNN` format.**
+-   A caller-supplied `event_id_factory` is responsible for its own
+-   collision avoidance on reopen; I don't try to interpret arbitrary
+-   event_id patterns. This is a reasonable boundary because the
+-   factory is caller-controlled, but a reviewer may prefer that I
+-   persist the counter explicitly (e.g. in the `experiment` row)
+-   rather than inferring it from max(event_id).
+-4. **WAL + `synchronous = NORMAL`.** Industry-standard durability
+-   for a reference impl. `synchronous = FULL` would give crash
+-   safety against kernel panics / power loss; `NORMAL` gives crash
+-   safety against process death, which is the scenario chapter 8
+-   §3.1 is worded around. A reviewer who interprets §3.1 as
+-   requiring fsync-on-commit may want `FULL`.
+-5. **No Postgres, no blob store.** Per Phase 6 non-goals. I want
+-   this confirmed rather than assumed — please flag if chapter 8
+-   §5 (artifact store) is close enough to a storage-chapter
+-   deliverable that Phase 6 should have shipped a stub.
++3. **`_next_event_seq` uses `MAX(seq)+1` on the event row's
++   AUTOINCREMENT primary key.** Format-independent; the
++   `evt-NNNNNN` label is no longer load-bearing. A reviewer might
++   still prefer persisting the counter explicitly (e.g. in a
++   `counter` cell on the `experiment` row) instead of deriving it
++   from `MAX(seq)` — the current approach happens to work because
++   `seq` is contiguous under append-only usage. That's an
++   acceptable reference-impl tradeoff; worth flagging for later
++   backends that might not preserve the contiguity assumption.
++4. **No Postgres, no blob store.** Per Phase 6 non-goals, now
++   explicitly documented in `README.md`, `CLAUDE.md`, roadmap, and
++   `protocol.py`.
+ 
+-## Scope this review should cover
++## Scope this round should cover
+ 
+-1. Does the Protocol faithfully express chapter 8 §1 + §1.7 + §2?
+-2. Does `SqliteStore` satisfy chapter 8 §3 (durability + crash
+-   recovery) under the reading that a process crash is the
+-   unit test's close/reopen boundary, given WAL + `synchronous =
+-   NORMAL`?
+-3. Does every composite commit in `05-event-protocol.md` §2.2
+-   actually land atomically in SQLite — i.e. either all rows of
+-   a `_Tx` persist, or none do, including on exceptions raised
+-   mid-commit? The monkey-patched test asserts this for one such
+-   commit; are there composites I should also spot-check?
+-4. Is the re-entrant transaction model correct, or does it hide a
+-   bug where a helper's `_apply_commit` could succeed while the
+-   outer transaction is already doomed?
+-5. Is the `_max_event_seq` reconstruction approach defensible, or
+-   should the counter live in its own persisted cell?
+-6. Any corners of chapter 8 the refactor missed (event log
+-   retention §2.4, no-fabrication §3.4, artifact-store §5
+-   boundary)?
++1. Does the cross-experiment `PlanTask` validation actually close
++   the round-1 hole, or is there another path where caller-supplied
++   task payload fields could bypass store invariants?
++2. Are there other round-1-adjacent issues (read_range cursor
++   semantics, docstring scope, stale brief text) that still need
++   addressing?
++3. Any new gaps the expansion introduced that round 1 missed?

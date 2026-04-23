@@ -15,12 +15,6 @@ from collections.abc import Callable
 import pytest
 from eden_contracts import MetricsSchema, Proposal, Trial
 from eden_dispatch import (
-    ConflictingResubmission,
-    EvaluateSubmission,
-    IllegalTransition,
-    ImplementSubmission,
-    InMemoryStore,
-    PlanSubmission,
     ScriptedEvaluator,
     ScriptedImplementer,
     ScriptedPlanner,
@@ -31,9 +25,17 @@ from eden_dispatch.workers import (
     ImplementOutcome,
     ProposalTemplate,
 )
+from eden_storage import (
+    ConflictingResubmission,
+    EvaluateSubmission,
+    IllegalTransition,
+    ImplementSubmission,
+    PlanSubmission,
+    Store,
+)
 
 
-def _ready_proposal(store: InMemoryStore, proposal_id: str) -> None:
+def _ready_proposal(store: Store, proposal_id: str) -> None:
     store.create_proposal(
         Proposal(
             proposal_id=proposal_id,
@@ -49,7 +51,7 @@ def _ready_proposal(store: InMemoryStore, proposal_id: str) -> None:
     store.mark_proposal_ready(proposal_id)
 
 
-def _starting_trial(store: InMemoryStore, trial_id: str, proposal_id: str) -> None:
+def _starting_trial(store: Store, trial_id: str, proposal_id: str) -> None:
     store.create_trial(
         Trial(
             trial_id=trial_id,
@@ -67,7 +69,7 @@ class TestReadIsolation:
     """Read-side mutations MUST NOT corrupt stored state or the event log."""
 
     def test_read_task_mutation_does_not_leak(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         store.create_plan_task("t1")
@@ -77,7 +79,7 @@ class TestReadIsolation:
         assert store.read_task("t1").state == "pending"
 
     def test_list_trials_mutation_does_not_leak(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -87,7 +89,7 @@ class TestReadIsolation:
         assert store.read_trial("tr-1").status == "starting"
 
     def test_events_mutation_does_not_rewrite_log(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         store.create_plan_task("t1")
@@ -96,7 +98,7 @@ class TestReadIsolation:
         assert store.events()[0].data["task_id"] == "t1"
 
     def test_create_proposal_mutation_does_not_leak(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """Mutating the instance passed to ``create_proposal`` after the call
         must not alter the stored proposal."""
@@ -116,7 +118,7 @@ class TestReadIsolation:
         assert store.read_proposal("p1").state == "drafting"
 
     def test_submission_metrics_mutation_does_not_leak(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """The submission's nested ``metrics`` dict must be deep-copied on store
         and on read. Otherwise a caller could mutate the committed result in
@@ -155,7 +157,7 @@ class TestSubmissionBinding:
     """A submission's referenced IDs must match the task's payload."""
 
     def test_evaluate_submit_with_wrong_trial_id_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -180,7 +182,7 @@ class TestSubmissionBinding:
             )
 
     def test_implement_submit_with_unrelated_trial_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """An implementer MUST NOT submit a trial that belongs to another proposal."""
         store = make_store()
@@ -199,7 +201,7 @@ class TestSubmissionBinding:
             )
 
     def test_plan_submit_with_unknown_proposal_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         store.create_plan_task("t-plan")
@@ -212,7 +214,7 @@ class TestSubmissionBinding:
             )
 
     def test_plan_submit_with_drafting_proposal_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """03-roles.md §2.4: planner MUST NOT submit while any proposal is drafting."""
         store = make_store()
@@ -243,7 +245,7 @@ class TestValidationErrorRouting:
     contract MUST become task.failed(validation_error)."""
 
     def test_implement_success_without_commit_sha_routed_to_validation_error(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -260,7 +262,7 @@ class TestValidationErrorRouting:
         assert "commit_sha" in reason
 
     def test_evaluate_success_without_metrics_routed_to_validation_error(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -285,7 +287,7 @@ class TestValidationErrorRouting:
         assert "metrics" in reason
 
     def test_driver_routes_malformed_success_to_validation_error(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """End-to-end: a malformed success submission lands as task.failed(validation_error)."""
         store = make_store("exp-vr")
@@ -343,10 +345,10 @@ class TestMetricsSchemaEnforcement:
     """08-storage.md §4.1–§4.3: trial.metrics writes MUST validate against the schema."""
 
     def test_unknown_metric_key_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
-        store = InMemoryStore(
-            experiment_id="exp-m",
+        store = make_store(
+            "exp-m",
             metrics_schema=MetricsSchema({"score": "real"}),
         )
         _ready_proposal(store, "p1")
@@ -375,10 +377,10 @@ class TestMetricsSchemaEnforcement:
         assert "metrics_schema" in reason
 
     def test_wrong_type_metric_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
-        store = InMemoryStore(
-            experiment_id="exp-m",
+        store = make_store(
+            "exp-m",
             metrics_schema=MetricsSchema({"score": "integer"}),
         )
         _ready_proposal(store, "p1")
@@ -407,11 +409,11 @@ class TestMetricsSchemaEnforcement:
         assert "score" in reason
 
     def test_bool_is_not_integer(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """Spec §1.3 treats integer/real/text as distinct; bool is not a number."""
-        store = InMemoryStore(
-            experiment_id="exp-m",
+        store = make_store(
+            "exp-m",
             metrics_schema=MetricsSchema({"score": "integer"}),
         )
         _ready_proposal(store, "p1")
@@ -448,7 +450,7 @@ class TestFieldValidationOnUpdate:
     """
 
     def test_invalid_commit_sha_routed_to_validation_error(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -474,10 +476,10 @@ class TestFieldValidationOnUpdate:
         assert trial.commit_sha is None
 
     def test_invalid_artifacts_uri_routed_to_validation_error(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
-        store = InMemoryStore(
-            experiment_id="exp-m",
+        store = make_store(
+            "exp-m",
             metrics_schema=MetricsSchema({"score": "real"}),
         )
         _ready_proposal(store, "p1")
@@ -526,7 +528,7 @@ class TestEvaluateResubmitEquivalence:
 
     def _submit_eval_success(
         self,
-        store: InMemoryStore,
+        store: Store,
         artifacts_uri: str,
     ) -> str:
         _ready_proposal(store, "p1")
@@ -554,7 +556,7 @@ class TestEvaluateResubmitEquivalence:
         return ec.token
 
     def test_resubmit_differing_only_in_artifacts_uri_accepted(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         token = self._submit_eval_success(store, "https://artifacts.example/first")
@@ -575,7 +577,7 @@ class TestEvaluateResubmitEquivalence:
         assert committed.artifacts_uri == "https://artifacts.example/first"
 
     def test_resubmit_differing_metrics_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         token = self._submit_eval_success(store, "https://artifacts.example/first")
@@ -596,7 +598,7 @@ class TestAcceptRejectSymmetry:
     """Bookkeeping: accept and reject both clear the claim and event-emit."""
 
     def test_reject_clears_claim(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -616,15 +618,15 @@ class TestMetricsSchemaValidationIndependentOfSuccess:
     """Metrics schema validation also applies to error submissions that include metrics."""
 
     def test_error_submission_with_bad_metrics_routed_to_validation_error(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """04 §4.3 + 03 §4.4: an ``error`` submission with malformed metrics
         becomes ``task.failed(validation_error)`` and drives the trial to
         ``error``. The invalid metrics MUST NOT land on the trial — but the
         trial-side transition itself is mandatory because the worker
         declared trial failure."""
-        store = InMemoryStore(
-            experiment_id="exp-m",
+        store = make_store(
+            "exp-m",
             metrics_schema=MetricsSchema({"score": "integer"}),
         )
         _ready_proposal(store, "p1")

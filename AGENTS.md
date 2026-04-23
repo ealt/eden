@@ -18,31 +18,39 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 5 complete.** The `eden-dispatch` package ships the in-memory
-reference implementation of the task store, event log, and
-proposal/trial persistence — one in-process object that enforces the
-transactional invariant from `05-event-protocol.md` §2 and the
-composite-commit rules from §2.2. Scripted planner, implementer, and
-evaluator workers drive the stores through a complete experiment
-lifecycle with deterministic fake outputs, and the pytest suite
-covers the full task state machine, every composite commit, and an
-end-to-end 3-trial experiment. Phase 6 is next: a persistent
-SQLite-backed storage backend (`eden-storage`) that preserves the
-same behavioral contract across restarts. See
-[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
+**Phase 6 complete.** The `eden-storage` package ships the `Store`
+structural interface for the task store, event log, and
+proposal/trial persistence sides of chapter 8 — collapsed into a
+single Protocol per §7 implementation latitude. Two conforming
+backends satisfy it: `InMemoryStore` (fast, non-durable; moved from
+`eden-dispatch`) and `SqliteStore` (durable across restarts via a
+WAL-mode SQLite database with `synchronous=FULL`, matching §3.1's
+crash-survival requirement). The Protocol covers the spec-literal
+`create_task` / `replay` / `read_range` operations alongside the
+typed convenience helpers. Both backends share the transition logic
+in `_base.py`, and the same conformance scenarios are parametrized
+across both — drift from the Protocol surfaces in tests, not in
+production. Restart-safety tests close and reopen a SQLite store
+mid-experiment to confirm state, event log, and claim tokens
+survive, and a monkey-patched `_apply_commit` failure verifies
+rollback. The artifact store (§5), `subscribe` streaming (§2.1),
+and Postgres remain non-goals for Phase 6; they land in Phase 10 /
+Phase 8 / later respectively. Phase 7 is next: the reference git
+integrator (`eden-git`). See [`docs/roadmap.md`](docs/roadmap.md)
+for the full 13-phase plan.
 
 ## Commands
 
-At Phase 5, markdown linting, JSON Schema validation, and the Python
-toolchain for the `eden-contracts` and `eden-dispatch` reference
-packages are wired up.
+At Phase 6, markdown linting, JSON Schema validation, and the Python
+toolchain for the `eden-contracts`, `eden-dispatch`, and `eden-storage`
+reference packages are wired up.
 
 | Command | Purpose |
 |---|---|
 | `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
 | `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
 | `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
-| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts` + `reference/packages/eden-dispatch`) |
+| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts` + `reference/packages/eden-dispatch` + `reference/packages/eden-storage`) |
 | `uv run ruff check .` | Lint Python (config in root `pyproject.toml`) |
 | `uv run pyright` | Type-check the reference Python packages |
 | `uv run pytest -q` | Run the reference-package test suite (includes schema ↔ model parity) |

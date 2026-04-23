@@ -27,13 +27,13 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from eden_contracts import EvaluateTask
+from eden_storage import Store
 
-from .store import InMemoryStore
 from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 
 def run_experiment(
-    store: InMemoryStore,
+    store: Store,
     planner: ScriptedPlanner,
     implementer: ScriptedImplementer,
     evaluator: ScriptedEvaluator,
@@ -73,7 +73,7 @@ def run_experiment(
             return
 
 
-def _finalize_submitted(store: InMemoryStore, *, kind: str) -> bool:
+def _finalize_submitted(store: Store, *, kind: str) -> bool:
     """Accept/reject every submitted task of ``kind``.
 
     Uses ``store.validate_terminal`` to pick the right terminal
@@ -97,7 +97,7 @@ def _finalize_submitted(store: InMemoryStore, *, kind: str) -> bool:
 
 
 def _dispatch_implement_tasks(
-    store: InMemoryStore, factory: Callable[[], str]
+    store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
     for proposal in store.list_proposals(state="ready"):
@@ -108,7 +108,7 @@ def _dispatch_implement_tasks(
 
 
 def _dispatch_evaluate_tasks(
-    store: InMemoryStore, factory: Callable[[], str]
+    store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
     for trial in _list_trials_needing_evaluation(store):
@@ -119,7 +119,7 @@ def _dispatch_evaluate_tasks(
 
 
 def _promote_successful_trials(
-    store: InMemoryStore, factory: Callable[[str], str]
+    store: Store, factory: Callable[[str], str]
 ) -> bool:
     progress = False
     for trial in store.list_trials(status="success"):
@@ -130,7 +130,7 @@ def _promote_successful_trials(
     return progress
 
 
-def _list_trials_needing_evaluation(store: InMemoryStore):  # noqa: ANN202 - iterator
+def _list_trials_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
     dispatched = _trials_with_evaluate_task(store)
     out = []
     for trial in store.list_trials(status="starting"):
@@ -142,7 +142,7 @@ def _list_trials_needing_evaluation(store: InMemoryStore):  # noqa: ANN202 - ite
     return out
 
 
-def _trials_with_evaluate_task(store: InMemoryStore) -> set[str]:
+def _trials_with_evaluate_task(store: Store) -> set[str]:
     dispatched: set[str] = set()
     for task in store.list_tasks(kind="evaluate"):
         assert isinstance(task, EvaluateTask)

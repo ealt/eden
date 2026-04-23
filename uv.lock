@@ -7,6 +7,7 @@ members = [
     "eden",
     "eden-contracts",
     "eden-dispatch",
+    "eden-storage",
 ]
 
 [[package]]
@@ -45,6 +46,7 @@ source = { virtual = "." }
 dev = [
     { name = "eden-contracts" },
     { name = "eden-dispatch" },
+    { name = "eden-storage" },
     { name = "jsonschema" },
     { name = "pyright" },
     { name = "pytest" },
@@ -59,6 +61,7 @@ dev = [
 dev = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
+    { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "jsonschema", specifier = ">=4.21" },
     { name = "pyright", specifier = ">=1.1.380" },
     { name = "pytest", specifier = ">=8.0" },
@@ -86,6 +89,23 @@ requires-dist = [
 name = "eden-dispatch"
 version = "0.0.1"
 source = { editable = "reference/packages/eden-dispatch" }
+dependencies = [
+    { name = "eden-contracts" },
+    { name = "eden-storage" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-storage", editable = "reference/packages/eden-storage" },
+    { name = "pydantic", specifier = ">=2.9,<3" },
+]
+
+[[package]]
+name = "eden-storage"
+version = "0.0.1"
+source = { editable = "reference/packages/eden-storage" }
 dependencies = [
     { name = "eden-contracts" },
     { name = "pydantic" },
