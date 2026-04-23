@@ -18,37 +18,37 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 2 complete.** `spec/v0/03-roles.md` (planner, implementer,
-evaluator, integrator contracts) and `spec/v0/04-task-protocol.md`
-(state machine, claim tokens, idempotent submit, reclamation) have
-merged to the protected `main`, alongside the Phase 1 core-concepts
-chapters and six JSON Schemas. Both CI checks (`docs-lint` and
-`schema-validity`) remain green. See
-[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
-Phase 3 next ports a Pydantic-bound reference contracts package and
-wires schema-model parity into CI.
+**Phase 3 complete.** The `reference/packages/eden-contracts` package
+ships Pydantic v2 bindings for the six spec/v0 JSON Schemas, along with
+the first Python toolchain wiring (uv workspace, ruff, pyright, pytest)
+and four new CI jobs — `python-lint`, `python-typecheck`, `python-test`,
+and `schema-parity`. All six CI checks on `main` are green. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan. Phase 4
+is next: the event protocol, integrator chapter, and storage chapter —
+and the corresponding event schema.
 
 ## Commands
 
-At Phase 1, markdown linting and JSON Schema validation are wired up.
+At Phase 3, markdown linting, JSON Schema validation, and the Python
+toolchain for the `eden-contracts` reference package are wired up.
 
 | Command | Purpose |
 |---|---|
 | `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
 | `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
 | `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
+| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts`) |
+| `uv run ruff check .` | Lint Python (config in root `pyproject.toml`) |
+| `uv run pyright` | Type-check the reference Python packages |
+| `uv run pytest -q` | Run the reference-package test suite (includes schema ↔ model parity) |
+| `uv run pytest reference/packages/eden-contracts/tests/test_schema_parity.py` | Run only the schema ↔ Pydantic model parity check |
 
 ### Commands that will exist in later phases
 
-These are listed for orientation; none of the tooling is wired up yet.
+These are listed for orientation; the tooling is not wired up yet.
 
 | Command | Lands in |
 |---|---|
-| `uv sync` | Phase 3 (first `pyproject.toml`) |
-| `uv run ruff check .` | Phase 3 |
-| `uv run pyright` | Phase 3 |
-| `uv run pytest -q` | Phase 3 |
-| Schema ↔ Pydantic parity check | Phase 3 |
 | `docker compose up` end-to-end | Phase 10 |
 
 ## Contribution conventions

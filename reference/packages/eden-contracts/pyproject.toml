@@ -1,0 +1,18 @@
+[project]
+name = "eden-contracts"
+version = "0.0.1"
+description = "Pydantic models for the EDEN protocol wire formats (reference bindings for spec/v0)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.9,<3",
+    "rfc3986-validator>=0.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eden_contracts"]

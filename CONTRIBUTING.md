@@ -10,16 +10,17 @@ implementation** (`reference/`), and the **conformance suite**
 
 ## Current phase
 
-**Phase 0 (bootstrap) complete.** Scaffolding, docs, and CI
-(`docs-lint`) are in place and `main` is protected. There is no
-runnable code yet — the reference implementation and conformance suite
-are stubs. The spec itself is not yet written; only the section READMEs
-exist. See [`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase
-plan and the current state of each deliverable.
+**Phase 3 complete.** The spec/v0 core concepts, role contracts, task
+protocol, and six JSON Schemas are on the protected `main` alongside
+the Pydantic reference bindings in `reference/packages/eden-contracts`
+and a full Python toolchain (uv workspace + ruff + pyright + pytest).
+CI runs six checks — `docs-lint`, `schema-validity`, `python-lint`,
+`python-typecheck`, `python-test`, and `schema-parity`. See
+[`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 4–13 work.
 
-If you want to contribute, the most useful thing today is reviewing
-[`docs/plans/eden-protocol-bootstrap.md`](docs/plans/eden-protocol-bootstrap.md)
-and the roadmap, and raising issues on framing or omissions.
+If you want to contribute, the most useful next areas are the Phase 4
+chapters (event protocol, integrator, storage) and any gaps you spot
+in the spec or the contracts-package bindings.
 
 ## Contributing to the spec
 
@@ -35,9 +36,9 @@ the spec is a change to what "EDEN" means.
   **MAY**. If prose doesn't use one, it's informative.
 - **Wire-format changes propagate.** A change to a JSON Schema file
   under `spec/v*/schemas/` must be reflected in the Markdown chapter
-  and (from Phase 3 onward) in the Pydantic bindings in
-  `reference/packages/eden-contracts/`. CI will enforce schema ↔ model
-  parity.
+  and in the Pydantic bindings in `reference/packages/eden-contracts/`.
+  CI's `schema-parity` job enforces that models and schemas agree on
+  the accept/reject corpus and on round-trip emission.
 - **No technology choices in normative text.** The spec talks about
   *semantics*, not mechanisms. "A conforming task store MUST provide
   atomic claim with linearizable semantics" — yes. "Uses Postgres `SELECT
@@ -56,18 +57,18 @@ the spec is a change to what "EDEN" means.
 
 Standard code-review workflow applies.
 
-### Prerequisites (future phases)
+### Prerequisites
 
-Once the Python reference implementation lands in Phase 3, contributors
-will need:
+Contributors touching the reference implementation need:
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/) (run `uv sync` at the repo root to
+  install the workspace virtualenv)
 - (Phase 9+) Node.js 20+ for the reference web UI
 - (Phase 10+) Docker for the Compose stack
 
-Phase 0 requires only a markdown linter for local pre-push checks; see
-[`AGENTS.md`](AGENTS.md#commands) for the exact pinned command
+Spec-only contributors need only the Node-based markdown linter; see
+[`AGENTS.md`](AGENTS.md#commands) for the exact pinned commands
 (version-matched to CI to avoid works-locally / fails-in-CI drift).
 
 ### Impl conventions
