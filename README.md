@@ -23,13 +23,18 @@ with other conforming components.
 
 ## Status
 
-**Phase 1 complete.** The core-concepts chapters of `spec/v0/`
-(`00-overview.md`, `01-concepts.md`, `02-data-model.md`), six JSON
-Schemas under `spec/v0/schemas/`, the migrated experiment fixture,
-and the `schema-validity` CI job are in place on a protected `main`;
-both CI checks are green. There is still **no runnable code yet** —
-the reference implementation lands in Phase 3. Phase 2 next writes
-the role contracts and the task-protocol state machine. See
+**Phase 2 complete.** Both Phase 2 chapters have landed on the
+protected `main`: `spec/v0/03-roles.md` (planner, implementer,
+evaluator, integrator contracts) and `spec/v0/04-task-protocol.md`
+(task state machine, claim tokens, idempotent submission,
+reclamation policy). Together with the Phase 1 core-concepts
+chapters, six JSON Schemas, the migrated experiment fixture, and
+the `docs-lint` + `schema-validity` CI jobs, the protocol surface
+the reference implementation will target is fully specified for
+the planner/implementer/evaluator lifecycle. There is still **no
+runnable code yet** — the reference implementation lands in
+Phase 3. Phase 3 next ports a Pydantic-bound reference contracts
+package and wires schema-model parity into CI. See
 [`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
 
 ## Contributing
