@@ -158,21 +158,31 @@ implementable. Single process; no git yet; no persistence.
 
 **Units:**
 
-- **5a** — In-memory task queue + event log with the transactional
-  invariant enforced.
-- **5b** — Scripted planner/implementer/evaluator workers (fake
-  outputs, real state transitions) driving the queue through a full
-  trial lifecycle.
-- **5c** — First conformance scenarios (state-machine coverage)
-  implemented as pytest-based black-box tests against 5a+5b.
+- **5a — complete.** `eden_dispatch.InMemoryStore` collapses the task
+  store, event log, and proposal/trial persistence into one in-process
+  object. Every mutating operation stages writes in a `_Tx` and
+  applies them in a single `_commit`; precondition failures raise
+  before commit, so readers never observe a partial state change.
+  All six composite-commit patterns from `05-event-protocol.md` §2.2
+  land atomically.
+- **5b — complete.** `ScriptedPlanner`, `ScriptedImplementer`, and
+  `ScriptedEvaluator` participate in the real task protocol (claim →
+  execute → submit) with deterministic fake outputs. `run_experiment`
+  orchestrates a full plan → implement → evaluate → integrate cycle.
+- **5c — complete.** 36 pytest scenarios cover every legal
+  transition in §1.2, every negative rule, claim-token authorization
+  (§3.3), idempotent resubmit (§4.2), terminal immutability (§4.4),
+  the reclamation policy (§5), every composite commit (§2.2), and a
+  3-trial end-to-end experiment whose event log alone reconstructs
+  every entity's lifecycle.
 
 **Chunks:** 5a one chunk; 5b + 5c one chunk (scenarios need a worker
 harness to drive).
 
 **Non-goals:** git integration; SQLite persistence; cross-process.
 
-**Exit:** the in-memory loop runs a 3-trial experiment end-to-end and
-conformance scenarios pass.
+**Exit achieved:** the in-memory loop runs a 3-trial experiment end
+to end; 36 conformance scenarios pass; all CI gates green.
 
 ---
 
