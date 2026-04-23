@@ -1,0 +1,3 @@
+No remaining issue in the reviewed sections.
+
+[spec/v0/08-storage.md](/Users/ericalt/Documents/eden/spec/v0/08-storage.md:291) now correctly says the eval manifest may reference artifacts via the optional `artifacts_uri` field, which matches [spec/v0/06-integrator.md](/Users/ericalt/Documents/eden/spec/v0/06-integrator.md:248) §4.2. The targeted inconsistency is resolved, and I did not spot a new regression in these sections.

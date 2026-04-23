@@ -1,0 +1,15 @@
+**Findings**
+
+1. Bug — [spec/v0/06-integrator.md](/Users/ericalt/Documents/eden/spec/v0/06-integrator.md:346) §5.3 and [spec/v0/06-integrator.md](/Users/ericalt/Documents/eden/spec/v0/06-integrator.md:370) §6 still use the old “tree matches `commit_sha` tree” wording. Round 1 fixed §3.2 to require `tree(commit_sha)` plus exactly one added manifest file, but the idempotency check and the implementation-latitude summary were not updated. As written, repeat promotion is judged against an impossible predicate for a valid integrated commit. Fix by restating both spots in terms of the revised §3.2 invariant: worker-tip tree plus exactly the eval-manifest path, with no other path changes.
+
+2. Risk — [spec/v0/05-event-protocol.md](/Users/ericalt/Documents/eden/spec/v0/05-event-protocol.md:262) §3.4 still overreaches after the observability rewrite. It now correctly drops the full event-sourcing claim, but it says a subscriber that needs entity content “at a given point in time” MUST read the entity from its store. The storage contract only defines current-object `Read`/`List` operations in [spec/v0/08-storage.md](/Users/ericalt/Documents/eden/spec/v0/08-storage.md:103); it does not provide historical snapshots. After later updates, a current read cannot recover prior point-in-time content. Fix by removing the “at a given point in time” phrasing, or by explicitly defining versioned/historical reads if that capability is intended.
+
+3. Risk — [spec/v0/08-storage.md](/Users/ericalt/Documents/eden/spec/v0/08-storage.md:288) §5.2 and [spec/v0/08-storage.md](/Users/ericalt/Documents/eden/spec/v0/08-storage.md:297) §5.3 now have stale manifest references after the Round 1 integrator changes. They point to `06-integrator.md` §4.3, which is now the optional `evaluator` object, and §5.3 says the manifest records `sha256`/`bytes` per artifact as if that inventory were always present. In Round 1, those fields became optional under §4.4. Fix the cross-references and make the guarantee conditional: `artifacts_uri` comes from §4.2, per-file `sha256`/`bytes` come from optional §4.4 inventory when present.
+
+4. Nit — [spec/v0/08-storage.md](/Users/ericalt/Documents/eden/spec/v0/08-storage.md:324) §6 still says the central invariant must hold for every mutating operation in §1.1. Round 1 added proposal/trial persistence in §1.7 specifically to close that gap, so this summary sentence is now narrower than the chapter around it. Fix by broadening it to all protocol-owned writes, not just the task operations in §1.1.
+
+**Overall Assessment**
+
+Most of the round-0 issues were addressed cleanly. The replay/retention contract is now consistent, and adding proposal/trial persistence materially tightened the storage chapter. I did not find any new schema↔model parity issue; the binding side still looks aligned with the event schema.
+
+I would still request one more revision before considering the re-review clean. The remaining blocker is the stale exact-tree wording left behind in the integrator chapter. The other items are smaller, but they are real spec-level ambiguities introduced or left behind by the Round 1 edits.

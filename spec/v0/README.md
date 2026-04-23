@@ -1,7 +1,9 @@
 # EDEN Protocol v0
 
-This is the first lineage of the EDEN protocol specification. It is
-currently **in development** — no normative chapters exist yet.
+This is the first lineage of the EDEN protocol specification.
+Chapters 00–06 and 08 are written as of Phase 4. Chapter 07
+(control plane) lands in Phase 12; Chapter 09 (conformance) lands
+in Phase 11.
 
 ## Planned chapters
 
