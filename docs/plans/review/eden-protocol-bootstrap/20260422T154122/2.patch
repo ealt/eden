@@ -1,0 +1,294 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/20260422T154122/1.md	2026-04-22 15:46:48
++++ /Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md	2026-04-22 15:49:52
+@@ -75,100 +75,149 @@
+ 
+ ### A. Top-level layout
+ 
++Two trees below. The **first** is exactly what exists at the end of
++Phase 0. The **second** is the eventual target shape (filled in over
++Phases 1–13), included so the bootstrap directory structure makes
++sense to readers — but none of the italicized future files are written
++at bootstrap.
++
++#### A.1 Phase 0 output (what *this* task creates)
++
+ ```
+ eden/
+-├── spec/                          # Normative protocol specification
+-│   ├── README.md                  # "What is the EDEN protocol"; versioning
++├── spec/
++│   ├── README.md                  # "What is the EDEN protocol"; versioning policy
+ │   └── v0/
+-│       ├── 00-overview.md         # Protocol scope, goals, non-goals
+-│       ├── 01-concepts.md         # Experiment, trial, proposal, role, etc.
+-│       ├── 02-data-model.md       # Canonical objects (narrative) + links to schemas
+-│       ├── 03-roles.md            # Planner / implementer / evaluator contracts
+-│       ├── 04-task-protocol.md    # Claim/submit/release state machine + wire format
+-│       ├── 05-event-protocol.md   # Event log semantics + transactional invariant
+-│       ├── 06-integrator.md       # Git topology + work/trial/main invariants
+-│       ├── 07-control-plane.md    # Experiment registration + leases
+-│       ├── 08-storage.md          # Durability + repository interface
+-│       ├── 09-conformance.md      # What a conforming impl must prove
+-│       └── schemas/               # JSON Schema files (.schema.json)
+-│           ├── experiment-config.schema.json
+-│           ├── task.schema.json
+-│           ├── event.schema.json
+-│           ├── proposal.schema.json
+-│           ├── trial.schema.json
+-│           └── metrics-schema.schema.json  (the meta-schema for per-experiment metrics)
+-├── reference/                     # One valid implementation
+-│   ├── README.md                  # "This is a reference impl; it is not THE impl"
++│       ├── README.md              # Table of planned chapters; "populated in Phases 1,2,4"
++│       └── schemas/
++│           └── .gitkeep           # Empty; first schema lands in Phase 1
++├── reference/
++│   ├── README.md                  # "This is a reference impl; not THE impl"
+ │   ├── services/
+-│   │   ├── control-plane/
+-│   │   ├── orchestrator/
+-│   │   ├── planner/
+-│   │   ├── implementer/
+-│   │   ├── evaluator/
+-│   │   └── web-ui/
++│   │   ├── control-plane/.gitkeep
++│   │   ├── orchestrator/.gitkeep
++│   │   ├── planner/.gitkeep
++│   │   ├── implementer/.gitkeep
++│   │   ├── evaluator/.gitkeep
++│   │   └── web-ui/.gitkeep
+ │   ├── packages/
+-│   │   ├── eden-contracts/        # Pydantic bindings for schemas (convenience)
+-│   │   ├── eden-storage/
+-│   │   ├── eden-git/
+-│   │   └── eden-blob/
++│   │   ├── eden-contracts/.gitkeep
++│   │   ├── eden-storage/.gitkeep
++│   │   ├── eden-git/.gitkeep
++│   │   └── eden-blob/.gitkeep
+ │   ├── scripts/
+-│   │   └── setup-experiment/
++│   │   └── setup-experiment/.gitkeep
+ │   └── compose/
+-├── conformance/                   # Black-box test suite (roadmapped; stub for now)
+-│   └── README.md                  # "How to run conformance against your impl"
+-├── docs/                          # Non-normative human docs
+-│   ├── naming.md                  # (exists)
+-│   ├── roadmap.md                 # Incremental build plan
+-│   ├── archive/
+-│   │   └── microservices-refactor-plan.md   # (the doc we're moving)
+-│   └── (future: tutorials, ADRs, changelogs)
+-├── tests/                         # Tests for the reference impl
+-│   ├── unit/
+-│   └── integration/
+-├── .github/workflows/ci.yml       # At bootstrap: markdownlint job only
++│       └── .gitkeep
++├── conformance/
++│   └── README.md                  # Stub: "suite lands Phase 11"
++├── docs/
++│   ├── naming.md                  # (already exists, untouched)
++│   ├── roadmap.md                 # Phase 0–13
++│   ├── plans/
++│   │   └── eden-protocol-bootstrap.md  # (this doc, already copied in)
++│   └── archive/
++│       └── microservices-refactor-plan.md   # moved from docs/plans/
++├── tests/
++│   ├── unit/.gitkeep
++│   └── integration/.gitkeep
++├── .github/workflows/ci.yml       # docs-lint job only
+ ├── .gitignore
+ ├── .markdownlint.json
+-├── README.md                      # Top-level: "EDEN is a protocol…"
++├── README.md                      # "EDEN is a protocol…"
+ ├── AGENTS.md                      # Coding-agent guide
+ ├── CLAUDE.md                      # → AGENTS.md (symlink)
+-├── CONTRIBUTING.md                # Two paths: contributing to spec vs. to reference impl
++├── CONTRIBUTING.md                # Two paths: contributing to spec vs. impl
+ ├── STYLE_GUIDE.md
+-└── LICENSE                        # (exists)
++└── LICENSE                        # (already exists, untouched)
+ ```
+ 
+-### B. The spec itself (`spec/v0/`)
++Everything above is in scope for Phase 0. Nothing else. In particular:
++**no numbered spec chapter files, no `*.schema.json` files, no
++`pyproject.toml`, no Python, no code of any kind.**
+ 
+-Written in RFC-style prose: **normative language** (MUST / SHOULD /
+-MAY per RFC 2119), numbered sections, explicit cross-references, and
+-*no* references to specific technology choices. Example boundaries:
++#### A.2 Eventual target layout *(not created by this bootstrap)*
+ 
+-- `04-task-protocol.md` defines the task state machine, the claim-token
+-  rule, the submit-idempotency rule, and the wire format for task
+-  objects. It does **not** say "Postgres `tasks` table" — that's a
+-  reference-impl detail. It may say "a conforming task store MUST
+-  provide atomic claim with linearizable semantics" and leave the
+-  mechanism to the implementor.
+-- `05-event-protocol.md` defines the event object shape, the
+-  transactional invariant (event insert MUST be atomic with the
+-  state change it describes), and the delivery guarantees subscribers
+-  can rely on. Whether that's LISTEN/NOTIFY, Kafka, or a WebSocket
+-  is out of scope.
+-- `06-integrator.md` pins git topology invariants: namespaces
+-  (`work/*`, `trial/*`, `main`), sole-integrator rule, squash rule,
+-  eval-manifest shape. Applies regardless of git host.
++This is the eventual shape once the spec and reference impl are
++written. Shown here for *orientation only*; Phase 0 does not create
++any of these files.
+ 
+-Every wire-format object has a JSON Schema under `spec/v0/schemas/`.
+-The Markdown docs link to them. CI validates they're valid schemas and
+-that the reference impl's Pydantic models match.
++```
++spec/v0/
++  00-overview.md            # Phase 1
++  01-concepts.md            # Phase 1
++  02-data-model.md          # Phase 1
++  03-roles.md               # Phase 2
++  04-task-protocol.md       # Phase 2
++  05-event-protocol.md      # Phase 4
++  06-integrator.md          # Phase 4
++  07-control-plane.md       # Phase 12
++  08-storage.md             # Phase 4
++  09-conformance.md         # Phase 11
++  schemas/
++    experiment-config.schema.json   # Phase 1
++    task.schema.json                # Phase 1
++    event.schema.json               # Phase 1
++    proposal.schema.json            # Phase 1
++    trial.schema.json               # Phase 1
++    metrics-schema.schema.json      # Phase 1 (meta-schema for per-experiment metrics)
+ 
++reference/packages/eden-contracts/pyproject.toml   # Phase 3
++reference/packages/eden-contracts/...              # Phase 3
++reference/packages/eden-storage/...                # Phase 6
++reference/packages/eden-git/...                    # Phase 7
++reference/services/orchestrator/...                # Phase 8
++... (see docs/roadmap.md for the full mapping)
++
++pyproject.toml           # Phase 3 (uv workspace root lands with first member)
++.python-version          # Phase 3
++```
++
++### B. The spec itself (`spec/v0/`)
++
++**Phase 0 writes only `spec/README.md` and `spec/v0/README.md`.** Those
++READMEs describe the versioning policy and enumerate the planned
++chapters (with a "filled in Phase N" note beside each), but no
++chapter content or schema files are written at bootstrap. The
++conventions below apply to those later-phase writes.
++
++When chapters are eventually written (Phases 1, 2, 4, 11, 12):
++**normative language** (MUST / SHOULD / MAY per RFC 2119), numbered
++sections, explicit cross-references, and *no* references to specific
++technology choices. Example boundaries:
++
++- `04-task-protocol.md` (Phase 2) will define the task state machine,
++  the claim-token rule, the submit-idempotency rule, and the wire
++  format for task objects. It will **not** say "Postgres `tasks` table"
++  — that's a reference-impl detail. It may say "a conforming task
++  store MUST provide atomic claim with linearizable semantics" and
++  leave the mechanism to the implementor.
++- `05-event-protocol.md` (Phase 4) will define the event object shape,
++  the transactional invariant (event insert MUST be atomic with the
++  state change it describes), and the delivery guarantees subscribers
++  can rely on. Whether that's LISTEN/NOTIFY, Kafka, or a WebSocket is
++  out of scope.
++- `06-integrator.md` (Phase 4) will pin git topology invariants:
++  namespaces (`work/*`, `trial/*`, `main`), sole-integrator rule,
++  squash rule, eval-manifest shape. Applies regardless of git host.
++
++Every wire-format object will eventually have a JSON Schema under
++`spec/v0/schemas/` (first ones land in Phase 1). The Markdown docs
++link to them. CI validates schemas from Phase 1 onward and enforces
++reference-impl Pydantic-model parity from Phase 3 onward.
++
+ ### C. `reference/` at bootstrap
+ 
+ - `reference/README.md` — "What's implemented, what's stubbed, what
+-  spec version is targeted." At bootstrap: `targets: eden-protocol/v0`,
+-  all services empty.
+-- Each `reference/services/*/` and `reference/packages/*/` — a `.gitkeep`
+-  only. Per-member `pyproject.toml` files land as each phase adds code.
+-- **No code yet.** Bootstrap is structure; Phase 1 is the spec content.
++  spec version is targeted." At bootstrap: declares `targets:
++  eden-protocol/v0 (draft — chapters not yet written)` and lists all
++  services/packages as "empty; lands in Phase N".
++- Each `reference/services/*/` and `reference/packages/*/` — a
++  `.gitkeep` only. Root `pyproject.toml` and per-member
++  `pyproject.toml` files **land in Phase 3** with the first real
++  package (`eden-contracts`), not at bootstrap.
++- **No code yet.** Bootstrap is structure + section-level READMEs.
++  Phase 1 starts writing the spec.
+ 
+ ### D. `conformance/` at bootstrap
+ 
+@@ -366,22 +415,37 @@
+ 
+ ## Execution Order
+ 
++Each step lists the **exact** files it creates/moves. Nothing outside
++this list is written at Phase 0.
++
+ 1. Read direvo's `AGENTS.md`, `pyproject.toml`, `STYLE_GUIDE.md` in full.
+-2. Create `docs/archive/` and `git mv` equivalent (via Bash) of the old
+-   plan, prepending a historical-context header.
+-3. Scaffold top-level directories (`spec/v0/schemas/`, `reference/services/*`,
+-   `reference/packages/*`, `reference/scripts/setup-experiment/`,
+-   `reference/compose/`, `conformance/`, `docs/`, `tests/unit`,
+-   `tests/integration`, `.github/workflows/`) with `.gitkeep`s where empty.
+-4. Write placeholder READMEs for `spec/`, `spec/v0/`, `reference/`,
+-   `conformance/` — each briefly describing the section's purpose.
+-   These frame the repo; fleshed-out spec content is Phase 1.
++2. Create `docs/archive/` and move
++   `docs/plans/eden-microservices-refactor.md` →
++   `docs/archive/microservices-refactor-plan.md`, prepending a
++   historical-context header note.
++3. Create empty directory tree with `.gitkeep` files per the section
++   A.1 tree. Directories: `spec/v0/schemas/`, every `reference/services/*`
++   and `reference/packages/*` directory, `reference/scripts/setup-experiment/`,
++   `reference/compose/`, `tests/unit/`, `tests/integration/`,
++   `.github/workflows/`. No `.gitkeep` in directories that contain a
++   real file (e.g. `spec/v0/` contains `README.md`).
++4. Write section READMEs:
++   - `spec/README.md` — what the EDEN protocol is, versioning policy,
++     pointer to `v0/README.md`.
++   - `spec/v0/README.md` — the planned-chapters table from section A.2,
++     each annotated with "(Phase N)".
++   - `reference/README.md` — "one valid implementation", target spec
++     version, per-service/package Phase-N map.
++   - `conformance/README.md` — stub; "suite lands Phase 11".
++   - **No numbered spec chapter files, no `*.schema.json` files.**
+ 5. Write `.gitignore` (port from direvo) and `.markdownlint.json`
+    (copy direvo's `{"MD013": false}`).
+-6. Write root `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `STYLE_GUIDE.md`.
+-   **No `pyproject.toml` yet** — that lands in Phase 3.
+-7. Create `CLAUDE.md` as relative symlink to `AGENTS.md`.
+-8. Write `docs/roadmap.md` (Phase 0–13 with exit criteria).
++6. Write root `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
++   `STYLE_GUIDE.md`. **No `pyproject.toml`**, **no `.python-version`**
++   — those land in Phase 3.
++7. Create `CLAUDE.md` as a relative symlink to `AGENTS.md`.
++8. Write `docs/roadmap.md` (Phase 0–13 with exit criteria and the
++   section-A.2 file-to-phase mapping).
+ 9. Write `.github/workflows/ci.yml` — the `docs-lint` job only, per
+    section G. Pin `markdownlint-cli2` to a specific major version.
+ 10. Run local verification (steps 1–3 of Verification above).
+@@ -398,9 +462,14 @@
+ 
+ ## Out of Scope for This Bootstrap
+ 
+-- **Any spec content.** `spec/v0/` gets scaffolding + a section-level
+-  README; the actual normative prose and schemas are Phase 1.
+-- **Any reference code.** `reference/` is empty directories.
++- **Any spec chapter content.** Phase 0 writes `spec/README.md` and
++  `spec/v0/README.md` only. **No `00-overview.md`, `01-concepts.md`,
++  or any other numbered chapter file is created.** Those land in
++  Phases 1, 2, 4, 11, 12 per the section-A.2 mapping.
++- **Any JSON Schema files.** `spec/v0/schemas/` is empty (just
++  `.gitkeep`) at end of Phase 0. First schema lands in Phase 1.
++- **Any reference code.** `reference/` tree has `.gitkeep`s and a
++  top-level `README.md` only.
+ - **Any conformance tests.** Just the `conformance/README.md`.
+ - **Python toolchain** — `pyproject.toml`, `.python-version`, uv
+   workspace, ruff/pyright config, per-member `pyproject.toml` files.

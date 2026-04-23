@@ -1,0 +1,36 @@
+# Editors
+.vscode
+.idea
+
+# Python (lands in Phase 3)
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+
+# Databases (reference impl may write these)
+*.db
+*.sqlite
+*.sqlite-journal
+*.log
+
+# Node (reference web-ui, lands in Phase 9)
+node_modules/
+
+# macOS
+.DS_Store
+
+# Review artifacts
+# Track durable review content (*-review.md, *.patch) so future sessions
+# can learn from past reviews; ignore large Codex transcript files that
+# are regenerable from the next review run.
+docs/plans/review/**/*.jsonl
+docs/plans/review/**/*.stderr
+docs/plans/review/**/*.stdout

@@ -1,0 +1,361 @@
+# EDEN Roadmap
+
+Incremental build-up from empty repo to a complete EDEN protocol
+specification, reference implementation, and conformance suite.
+
+## Two orthogonal concepts
+
+- **Units** — the fine-grained decomposition. Each unit is a distinct,
+  named piece of work with its own exit criterion. Units are the
+  progress-tracking granularity: a unit can be crossed off even when it
+  ships in a shared commit with siblings.
+- **Chunks** — execution grouping. Units that must be designed and
+  implemented together (cross-referencing spec chapters, protocol
+  alongside its first consumer, shared commit-sized work) travel as one
+  chunk. Chunks are the review/commit granularity.
+
+**Rule:** a chunk can span multiple units; no unit spans chunks. If
+implementation runs over context mid-chunk, stop at the next unit
+boundary — never mid-unit. That keeps handoffs, resumes, and partial
+progress legible across sessions.
+
+Each phase also has explicit **non-goals** to prevent creep.
+
+---
+
+## Phase 0 — Bootstrap
+
+Repo shape, documentation shell, CI, GitHub hygiene. No runnable code
+and no spec content.
+
+**Units:**
+
+- **0a** — Repo scaffold (directory tree + section READMEs + root docs +
+  CI workflow + `.gitignore` + `.markdownlint.json` + `CLAUDE.md`
+  symlink). First `main` commit on GitHub; branch protection requiring
+  `docs-lint`.
+
+**Chunk:** 0a is one chunk — this bootstrap.
+
+**Non-goals:** any spec chapter content; any JSON Schema files; any
+Python; any reference code; any conformance scenarios.
+
+**Exit:** `docs-lint` CI job green on `main`; protected branch in place;
+all root and section READMEs accurately describe what's in the repo and
+what's next.
+
+---
+
+## Phase 1 — Spec v0 core concepts + schemas + fixture migration
+
+Writes the first normative chapters and the JSON Schemas they describe.
+
+**Units:**
+
+- **1a** — `spec/v0/00-overview.md`, `01-concepts.md`,
+  `02-data-model.md` prose. Defines experiment, trial, proposal, role,
+  artifact, metric, worker.
+- **1b** — JSON Schemas for config, task, event, proposal, trial,
+  metrics-meta under `spec/v0/schemas/`. Each cited from the data-model
+  chapter.
+- **1c** — Migrate `tests/fixtures/experiment/.eden/config.yaml` from
+  direvo; assert `experiment-config.schema.json` validates it. Add a
+  `schema-validity` CI job.
+
+**Chunk:** 1a + 1b + 1c — one chunk. Prose, schemas, and fixture
+cross-constrain each other; splitting would produce inconsistency.
+
+**Non-goals:** role contracts (Phase 2); event/integrator/storage
+chapters (Phase 4); any Pydantic code (Phase 3).
+
+**Exit:** schemas validate the fixture; `schema-validity` CI green;
+`02-data-model.md` cross-references all six schemas.
+
+---
+
+## Phase 2 — Spec v0 role contracts + task protocol
+
+Two more chapters. Defines what each role does and the task lifecycle
+they operate against.
+
+**Units:**
+
+- **2a** — `03-roles.md`. Planner, implementer, evaluator contracts:
+  discovery, claiming, context reading, execution, submission, release.
+  Per-role outputs and their expected schema shapes.
+- **2b** — `04-task-protocol.md`. Full task state machine (legal and
+  illegal transitions enumerated), claim-token semantics, submit
+  idempotency rule, wire format for task objects.
+
+**Chunk:** 2a + 2b — one chunk. Role contracts reference task
+lifecycle and vice versa.
+
+**Non-goals:** event protocol (Phase 4); any implementation (Phase 5+).
+
+**Exit:** state machine is pinned; `04-task-protocol.md` enumerates
+every legal transition with its pre- and post-conditions.
+
+---
+
+## Phase 3 — Reference contracts package (`eden-contracts`)
+
+First real Python code: Pydantic bindings for the v0 JSON Schemas.
+Introduces the uv workspace + Python toolchain.
+
+**Units:**
+
+- **3a** — Pydantic models for the six v0 schemas, along with the
+  root `pyproject.toml` (uv workspace root), a per-package
+  `reference/packages/eden-contracts/pyproject.toml`, and a
+  `.python-version` file. Ruff/pyright config ported from direvo.
+  CI jobs: `python-lint` (ruff), `python-typecheck` (pyright),
+  `python-test` (pytest).
+- **3b** — Schema ↔ model parity check. CI job `schema-parity` that
+  loads each JSON Schema and asserts the matching Pydantic model can
+  round-trip any instance; fails CI on drift.
+
+**Chunk:** 3a + 3b — one chunk.
+
+**Non-goals:** any domain logic, just data types; storage, git,
+dispatch (later phases).
+
+**Exit:** all six Pydantic models exist and parity CI is green against
+the Phase 1 schemas.
+
+---
+
+## Phase 4 — Spec v0 events + integrator + storage
+
+Three more chapters. Heavy cross-referencing: the integrator emits
+events; storage persists them.
+
+**Units:**
+
+- **4a** — `05-event-protocol.md` + `event.schema.json` refinement.
+  Transactional invariant (state change + event insert must commit
+  atomically); delivery guarantees subscribers can rely on.
+- **4b** — `06-integrator.md`. Git topology invariants: `work/*`,
+  `trial/*`, `main` namespaces; sole-integrator rule; squash rule;
+  eval-manifest shape (metrics + blob URIs + hashes).
+- **4c** — `08-storage.md`. Repository interface as protocol-level
+  contract; durability requirements; per-experiment metrics schemas.
+
+**Chunk:** 4a + 4b + 4c — one chunk. Cross-references are dense and
+splitting risks inconsistency.
+
+**Non-goals:** control-plane (Phase 12); conformance chapter (Phase 11);
+any code.
+
+**Exit:** three chapters land with consistent cross-references; schema
+updates (if any) pass parity.
+
+---
+
+## Phase 5 — In-memory reference dispatch loop
+
+First executable implementation. Proves the spec's state machines are
+implementable. Single process; no git yet; no persistence.
+
+**Units:**
+
+- **5a** — In-memory task queue + event log with the transactional
+  invariant enforced.
+- **5b** — Scripted planner/implementer/evaluator workers (fake
+  outputs, real state transitions) driving the queue through a full
+  trial lifecycle.
+- **5c** — First conformance scenarios (state-machine coverage)
+  implemented as pytest-based black-box tests against 5a+5b.
+
+**Chunks:** 5a one chunk; 5b + 5c one chunk (scenarios need a worker
+harness to drive).
+
+**Non-goals:** git integration; SQLite persistence; cross-process.
+
+**Exit:** the in-memory loop runs a 3-trial experiment end-to-end and
+conformance scenarios pass.
+
+---
+
+## Phase 6 — Reference storage backend (`eden-storage`)
+
+Makes Phase 5 persist across restarts.
+
+**Units:**
+
+- **6a** — Repository interface (Python `Protocol`) matching spec
+  chapter 8.
+- **6b** — SQLite concrete impl + schema migrations + wiring into the
+  dispatch loop.
+
+**Chunk:** 6a + 6b — one chunk.
+
+**Non-goals:** Postgres (later); blob storage (Phase 10).
+
+**Exit:** restart-safe 3-trial experiment; existing conformance
+scenarios still pass.
+
+---
+
+## Phase 7 — Reference git integrator (`eden-git`)
+
+Git topology: `work/*` branches for implementers, `trial/*` for
+canonical records, squashed trial commits with eval manifests.
+
+**Units:**
+
+- **7a** — Port `git_manager.py` from direvo into
+  `reference/packages/eden-git/` (worktree + branch ops). Adapt to the
+  new repo's naming conventions.
+- **7b** — Integrator flow: create `work/<trial-id>-impl` at parent;
+  after implementer submits, squash into `trial/<id>-<slug>`; attach
+  eval manifest under `.eden/trials/<id>/eval.json`.
+
+**Chunks:** 7a one chunk; 7b one chunk.
+
+**Non-goals:** Gitea / remote hosts (Phase 10); multi-parent proposals
+(deferred beyond v0).
+
+**Exit:** trials produce canonical `trial/*` commits against a local
+bare repo; eval manifest shape matches spec chapter 6.
+
+---
+
+## Phase 8 — Cross-process reference
+
+Extracts the dispatch loop into separate processes over a wire
+protocol. First point at which a third-party component in any
+language could participate.
+
+**Units:**
+
+- **8a** — Wire-protocol definition (HTTP endpoints for claim, submit,
+  release, plus event subscription) documented alongside spec chapters
+  2/4. Orchestrator implemented as a standalone process consuming this
+  protocol.
+- **8b** — Planner, implementer, evaluator worker hosts as standalone
+  processes. Each authenticates via a shared token (scaffolding; real
+  auth is Milestone 3 work).
+- **8c** — Cut-over: remove all in-process code paths; the only way
+  components talk is the wire protocol.
+
+**Chunks:** 8a one chunk (protocol + first consumer coupled); 8b one
+chunk; 8c one chunk.
+
+**Non-goals:** UI (Phase 9); Compose packaging (Phase 10); k8s
+(Phase 13).
+
+**Exit:** 3-trial experiment runs with each role in its own process;
+conformance scenarios pass against the HTTP surface.
+
+---
+
+## Phase 9 — Reference Web UI
+
+Browser-based claim/submit flows for each role, plus observability.
+
+**Units:**
+
+- **9a** — UI shell: routing, auth stub, navigation, experiment list.
+- **9b** — Planner module: claim / markdown form / submit.
+- **9c** — Implementer module: claim / manifest / submit SHA.
+- **9d** — Evaluator module: claim / metrics form / artifact upload.
+- **9e** — Observability views (trial timeline, task queue filtered by
+  kind + claim status) + admin-reclaim action on stranded claims.
+
+**Chunks:** 9a + 9b one chunk (shell + first role module together —
+the first role establishes the component pattern); 9c one; 9d one;
+9e one.
+
+**Non-goals:** full auth / multi-tenancy (Milestone 3); in-UI code
+editing (implementers work in their own environment).
+
+**Exit:** a human can fully play any one role for at least one trial
+via the Web UI; admin-reclaim on a stranded claim works end-to-end.
+
+---
+
+## Phase 10 — Reference Compose stack
+
+Everything runs locally via `docker compose up`. Equivalent to the old
+microservices plan's Milestone 1, now explicitly "one valid deployment
+topology."
+
+**Units:**
+
+- **10a** — Infrastructure containers (Postgres for durable backend,
+  Gitea for git host, blob volume) + Compose skeleton that stands them
+  up.
+- **10b** — Each reference service dockerized with its own image.
+- **10c** — `setup-experiment` script: registers an experiment
+  end-to-end (builds experiment-specific image, initializes the bare
+  git repo, writes per-service sub-configs, registers with the control
+  plane).
+- **10d** — LLM worker hosts: planner host (context-accumulating
+  Claude session), implementer host (spawns per-task sandbox
+  containers running `implement_command`), evaluator host.
+- **10e** — End-to-end Compose integration test exercising the full
+  loop including Web UI, admin-reclaim, and termination.
+
+**Chunks:** 10a one; 10b + 10c one chunk (dockerize + setup script
+co-evolve — each image's env vars and entrypoints feed the script);
+10d one; 10e one.
+
+**Non-goals:** k8s (Phase 13); S3 blob backend (Phase 13); Gitea auth
+(Phase 13).
+
+**Exit:** the fixture experiment runs to completion in Compose with
+comparable results to direvo's monolith; e2e test green in CI.
+
+---
+
+## Phase 11 — Conformance suite v1
+
+Formalizes black-box scenarios that any component can run against
+itself.
+
+**Units:**
+
+- **11a** — Harness: fixture infrastructure + implementation-under-test
+  adapter + scenario-execution driver. First scenarios validate the
+  harness itself (bootstrap problem).
+- **11b** — State-machine scenarios (task lifecycle, claim tokens,
+  transactional event invariant) — expands on Phase 5's scenarios.
+- **11c** — Role-contract scenarios (per-role submission semantics,
+  backpressure, idempotency).
+- **11d** — Integrator scenarios (squash shape, eval-manifest shape,
+  `work/*` access discipline).
+
+**Chunks:** 11a + 11b one chunk (harness needs first scenarios to
+validate itself); 11c one; 11d one.
+
+**Non-goals:** multi-experiment scenarios (Phase 12); k8s-specific
+tests (Phase 13).
+
+**Exit:** reference impl passes the full v1 suite; suite is documented
+as the conformance contract for `eden-protocol/v0`.
+
+---
+
+## Phase 12 — Multi-experiment (leases, control plane, switcher)
+
+Units and chunking to be named closer to execution — too far ahead to
+estimate coupling accurately. Scope:
+
+- Control plane service + lease data model.
+- Multi-replica orchestrator; chaos test: kill lease-holder, another
+  replica takes over.
+- Cross-experiment views in the shared planner.
+- Experiment switcher in the Web UI.
+- Multi-experiment conformance scenarios.
+
+---
+
+## Phase 13 — Kubernetes reference deployment
+
+Units and chunking to be named closer to execution. Scope:
+
+- Base Helm chart for the reference services.
+- Implementer as a k8s Job (GPU node selection).
+- Managed Postgres migration.
+- S3/GCS blob backend.
+- Gitea with auth + per-branch ACLs + native PR review enabled.

@@ -1,0 +1,282 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/20260422T154122/0.md	2026-04-22 15:41:22
++++ /Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md	2026-04-22 15:46:41
+@@ -23,6 +23,7 @@
+ 
+ Analogues: Language Server Protocol (spec + reference servers + clients),
+ Model Context Protocol (spec repo + reference SDKs), OpenTelemetry (spec
++
+ - reference SDKs per language), Kubernetes CRI/CNI/CSI (wire APIs + many
+ interoperable implementations).
+ 
+@@ -35,8 +36,9 @@
+ - GitHub: **personal account, private**, name `eden`.
+ - Existing microservices plan: **move to archive**; new spec + roadmap
+   become authoritative.
+-- GitHub setup: repo create + push + CI (ruff/pyright/pytest +
+-  markdownlint + JSON Schema validation) + branch protection on `main`.
++- GitHub setup: repo create + push + CI (**markdownlint only at
++  bootstrap**; Python and JSON Schema gates phase in as those artifacts
++  land) + branch protection on `main` requiring the one CI check.
+ 
+ ## Core Design Decisions
+ 
+@@ -56,10 +58,17 @@
+ - **Versioned spec.** `spec/v0/…` from day 0. Breaking changes go to `v1/`,
+   not mutated in place. Reference impl declares which spec version it
+   targets.
+-- **uv workspace for the reference impl**, members under
+-  `reference/services/*` and `reference/packages/*`. Root `pyproject.toml`
+-  is the workspace root; the spec itself has no Python.
+-- **Python 3.12+, ruff + pyright**, embedded config ported from direvo.
++- **No Python toolchain at bootstrap.** Phase 0 creates zero `.py`
++  files, so no `pyproject.toml`, no `.python-version`, no uv
++  workspace, no ruff/pyright config. These land in **Phase 3** when
++  the first reference package (`eden-contracts`) gets actual code.
++  This avoids CI gates that can't meaningfully run yet (pytest on
++  no tests exits non-zero; ruff/pyright on an empty tree is a
++  no-signal green that creates false confidence).
++- **Target Python version and tooling are pinned for later phases**:
++  Python 3.12+, ruff + pyright, uv workspace with members under
++  `reference/services/*` and `reference/packages/*`. Config will be
++  ported from direvo's `pyproject.toml` when Phase 3 introduces it.
+ - **`CLAUDE.md` → `AGENTS.md` symlink** (user convention).
+ 
+ ## What Gets Created
+@@ -116,9 +125,7 @@
+ ├── tests/                         # Tests for the reference impl
+ │   ├── unit/
+ │   └── integration/
+-├── .github/workflows/ci.yml
+-├── pyproject.toml                 # uv workspace root
+-├── .python-version
++├── .github/workflows/ci.yml       # At bootstrap: markdownlint job only
+ ├── .gitignore
+ ├── .markdownlint.json
+ ├── README.md                      # Top-level: "EDEN is a protocol…"
+@@ -224,12 +231,14 @@
+   `reference/`, `conformance/`, `docs/roadmap.md`. Current status:
+   "Phase 0 (bootstrap); nothing runnable yet."
+ - **`AGENTS.md`** — agent-facing. Layout tour with the spec/reference/
+-  conformance split made loud. Commands (uv sync, ruff, pyright,
+-  pytest, jsonschema validation). Contribution conventions: **spec
+-  edits require extra care** (versioned, normative, reviewed);
++  conformance split made loud. Commands section lists only what
++  currently works (markdownlint) and calls out what's planned
++  (`uv sync`, `ruff`, `pyright`, `pytest`, schema validation — to
++  be added in Phase 3+). Contribution conventions: **spec edits
++  require extra care** (versioned, normative, reviewed);
+   **reference edits are normal code changes**; **schema changes
+   must update the spec and the Pydantic bindings in lockstep** (CI
+-  enforces).
++  enforces this starting in Phase 3).
+ - **`CONTRIBUTING.md`** — two-path structure mirroring the repo
+   structure: "Contributing to the spec" (RFC discipline, change
+   proposals, versioning) and "Contributing to the reference
+@@ -239,21 +248,35 @@
+ 
+ ### G. Build & CI config
+ 
+-- `pyproject.toml` (uv workspace root) — members declared as
+-  `reference/services/*` and `reference/packages/*`. Globs may error
+-  on empty dirs; fallback is to leave `[tool.uv.workspace]` out until
+-  Phase 1 adds the first real member (mirrors how uv sync behaves).
+-- `.github/workflows/ci.yml` — jobs:
+-  1. **markdownlint + prose lint** on `spec/` and `docs/` (catch
+-     normative-doc drift early).
+-  2. **JSON Schema validity**: every `.schema.json` under
+-     `spec/**/schemas/` parses cleanly via `check-jsonschema` or
+-     equivalent. (No schemas exist at bootstrap; job is a no-op that
+-     still proves the tooling runs.)
+-  3. **uv sync + ruff + pyright + pytest** on the reference impl.
+-  4. Later: **schema ↔ Pydantic parity** check (once Phase 3 lands).
+-  5. Later: **conformance run** against reference (once Phase 11 lands).
++**Bootstrap is docs-only**, so CI runs exactly one check.
+ 
++- `.github/workflows/ci.yml` — single workflow named `ci`, single job
++  named **`docs-lint`**. That job name is also the required status
++  check in branch protection (pinned explicitly so the `gh api` call
++  is deterministic).
++- The `docs-lint` job:
++  1. Checks out.
++  2. Runs `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv"` (or
++     pinned-version equivalent). Configuration comes from the repo's
++     `.markdownlint.json`.
++  3. Exits 0 if all markdown passes.
++- **No Python job** at bootstrap (no Python files exist).
++- **No JSON Schema job** at bootstrap (no schemas exist, and an
++  empty-glob job is brittle — either a find returning nothing exits 0
++  quietly and hides a real misconfiguration, or the tool errors on
++  no-input. Easier to add this job in Phase 1 when the first schema
++  lands.)
++- **Later phases add jobs**, each as a distinct job name (so branch
++  protection can require each one as it stabilizes):
++  - Phase 1: `schema-validity` — validates `spec/v0/schemas/*.schema.json`.
++  - Phase 3: `python-lint` (ruff), `python-typecheck` (pyright),
++    `python-test` (pytest) — once the first package exists and has a
++    real test.
++  - Phase 3+: `schema-parity` — Pydantic models match their JSON
++    Schemas.
++  - Phase 11: `conformance` — runs the conformance suite against
++    the reference impl.
++
+ ### H. Git + GitHub execution
+ 
+ Same as before:
+@@ -266,11 +289,47 @@
+ 5. `gh repo edit --add-topic protocol --add-topic specification \
+    --add-topic directed-evolution --add-topic orchestration \
+    --add-topic ai --add-topic research-automation`.
+-6. Wait for first CI run to complete (so status checks exist in
+-   GitHub's awareness), **then** enable branch protection requiring
+-   PR + status checks on `main`. Admin bypass left on so the repo
+-   owner can hotfix.
++6. Wait for the first `docs-lint` run on `main` to complete (so the
++   check name is registered in GitHub's status-check cache), **then**
++   enable branch protection.
++7. Branch protection uses **classic branch protection** (not the
++   newer repository rulesets — classic is better-documented for
++   scripted setup and the two tools can coexist). Call:
+ 
++   ```bash
++   gh api -X PUT "repos/<user>/eden/branches/main/protection" \
++     -H "Accept: application/vnd.github+json" \
++     --input - <<'JSON'
++   {
++     "required_status_checks": {
++       "strict": true,
++       "contexts": ["docs-lint"]
++     },
++     "enforce_admins": false,
++     "required_pull_request_reviews": {
++       "required_approving_review_count": 0,
++       "dismiss_stale_reviews": false,
++       "require_code_owner_reviews": false
++     },
++     "restrictions": null,
++     "allow_force_pushes": false,
++     "allow_deletions": false
++   }
++   JSON
++   ```
++
++   Rationale for each field:
++   - `contexts: ["docs-lint"]` — exact CI job name pinned in section G.
++     Added to as Phase 3 / Phase 11 introduce more jobs.
++   - `enforce_admins: false` — solo-repo hotfix path stays open.
++   - `required_approving_review_count: 0` — solo contributor;
++     bumping this to 1+ would block every merge. Increase when
++     collaborators arrive.
++   - `strict: true` — branches must be up-to-date with `main` before
++     merging; cheap safety on a low-traffic repo.
++   - `allow_force_pushes: false`, `allow_deletions: false` — keep
++     `main` durable.
++
+ ## Files to Reference
+ 
+ - `direvo/pyproject.toml` — ruff/pyright config template.
+@@ -292,16 +351,18 @@
+ 1. `tree -L 3` shows: `spec/`, `reference/`, `conformance/`, `docs/`
+    at top level; `spec/v0/` present; `docs/archive/microservices-refactor-plan.md`
+    present; old `docs/plans/eden-microservices-refactor.md` gone.
+-2. `readlink CLAUDE.md` → `AGENTS.md`.
+-3. `uv sync` succeeds.
+-4. `uv run ruff check .` passes.
+-5. `uv run pyright` passes.
+-6. `uv run pytest` passes (0 tests collected is fine).
+-7. `markdownlint docs/ spec/` passes (or is no-op if no docs yet).
+-8. Remote: `gh repo view <user>/eden --json visibility,description,url`
++2. `readlink CLAUDE.md` prints `AGENTS.md`.
++3. `markdownlint-cli2 "**/*.md" "#node_modules"` passes locally over
++   every `.md` we wrote.
++4. No Python-tool gates run — there are no Python files. (Intentional:
++   those gates land with Phase 3.)
++5. Remote: `gh repo view <user>/eden --json visibility,description,url`
+    confirms private + correct description.
+-9. First CI run is green.
+-10. `gh api repos/<user>/eden/branches/main/protection` confirms rules.
++6. `gh run list --limit 1` shows the first CI run; `gh run view` shows
++   the `docs-lint` job green.
++7. `gh api repos/<user>/eden/branches/main/protection` returns the
++   exact payload from section H step 7 — in particular
++   `required_status_checks.contexts == ["docs-lint"]`.
+ 
+ ## Execution Order
+ 
+@@ -315,20 +376,23 @@
+ 4. Write placeholder READMEs for `spec/`, `spec/v0/`, `reference/`,
+    `conformance/` — each briefly describing the section's purpose.
+    These frame the repo; fleshed-out spec content is Phase 1.
+-5. Write `pyproject.toml`, `.python-version`, `.gitignore`,
+-   `.markdownlint.json`.
++5. Write `.gitignore` (port from direvo) and `.markdownlint.json`
++   (copy direvo's `{"MD013": false}`).
+ 6. Write root `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `STYLE_GUIDE.md`.
++   **No `pyproject.toml` yet** — that lands in Phase 3.
+ 7. Create `CLAUDE.md` as relative symlink to `AGENTS.md`.
+ 8. Write `docs/roadmap.md` (Phase 0–13 with exit criteria).
+-9. Write `.github/workflows/ci.yml` (lint + type + test; JSON Schema
+-   job stubbed for when schemas exist).
+-10. Run local verification (steps 3–7 of Verification).
++9. Write `.github/workflows/ci.yml` — the `docs-lint` job only, per
++   section G. Pin `markdownlint-cli2` to a specific major version.
++10. Run local verification (steps 1–3 of Verification above).
+ 11. `git init -b main`, commit everything.
+-12. `gh auth status` sanity check.
++12. `gh auth status` sanity check (stop if unauthenticated).
+ 13. `gh repo create … --push`.
+ 14. `gh repo edit --add-topic …`.
+-15. Wait for first CI run (`gh run watch`); fix anything red.
+-16. Enable branch protection via `gh api`.
++15. `gh run watch` the first CI run; fix anything red before enabling
++    branch protection.
++16. Enable branch protection via `gh api` with the exact payload in
++    section H step 7.
+ 17. Report back: repo URL, the protocol-first framing summary, what
+     Phase 1 looks like.
+ 
+@@ -338,21 +402,23 @@
+   README; the actual normative prose and schemas are Phase 1.
+ - **Any reference code.** `reference/` is empty directories.
+ - **Any conformance tests.** Just the `conformance/README.md`.
+-- Per-member `pyproject.toml` files (added per-phase as members
+-  get real code).
++- **Python toolchain** — `pyproject.toml`, `.python-version`, uv
++  workspace, ruff/pyright config, per-member `pyproject.toml` files.
++  All land in Phase 3 with the first real package.
++- **Python / JSON Schema CI jobs** — added per-phase as the artifacts
++  they gate on come into existence.
+ - Pre-commit hooks, issue templates, CODEOWNERS.
+ - Porting the fixture experiment — Phase 1.
+ - Moving/renaming anything inside `direvo/` (untouched).
+ 
+ ## Known Risks / Things to Watch
+ 
+-- **uv workspace with empty globbed members.** Defer the workspace
+-  block until Phase 1 if `uv sync` rejects it; confirmed during
+-  execution.
+-- **Branch protection before any CI run has landed on main.** Required
+-  checks can't reference a check that's never run. Order: push →
+-  first CI run completes → enable protection.
+-- **`gh auth status` failing.** Surface clearly and stop; don't guess.
++- **Branch protection before the first CI run on `main`.** GitHub
++  won't let you require a status-check context it has never seen.
++  Order is hard-required: push → wait for `docs-lint` to complete on
++  `main` → enable protection. The `gh run watch` step enforces this.
++- **`gh auth status` failing.** Surface clearly and stop; don't guess
++  at credentials.
+ - **Protocol versioning discipline from day 0** — tempting to write
+   `spec/` without a `v0/` subdirectory "for now." Resist: adding the
+   version layer later means rewriting every cross-reference.
+@@ -360,3 +426,12 @@
+   reference *impl*; `docs/archive/` (not `docs/reference/`) holds the
+   old plan. Avoiding the collision is why the old plan goes to
+   `archive/`, not `reference/`.
++- **Classic branch protection vs. rulesets.** Both exist; rulesets
++  are GitHub's newer system. This plan uses **classic protection**
++  because it's better-supported by `gh api` one-liners and the solo
++  use case doesn't need rulesets' evaluate-before-enforce mode. If
++  the user later wants rulesets, migration is a drop-in replacement
++  of the `gh api` call.
++- **`markdownlint-cli2` version pinning.** Use a specific major in
++  CI (e.g., `markdownlint-cli2@v0.14`) so Phase 0 doesn't silently
++  break when the tool upgrades.

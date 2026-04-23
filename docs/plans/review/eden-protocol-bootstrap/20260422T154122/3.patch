@@ -1,0 +1,37 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/20260422T154122/2.md	2026-04-22 15:49:58
++++ /Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md	2026-04-22 15:51:24
+@@ -305,9 +305,18 @@
+   is deterministic).
+ - The `docs-lint` job:
+   1. Checks out.
+-  2. Runs `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv"` (or
+-     pinned-version equivalent). Configuration comes from the repo's
+-     `.markdownlint.json`.
++  2. Runs exactly this command (same in CI and local verification):
++
++     ```bash
++     markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**"
++     ```
++
++     Configuration comes from the repo's `.markdownlint.json`. The
++     `docs/archive/**` exclusion is deliberate: archived historical
++     documents (moved, not rewritten) should not be held to the new
++     lint rules — that would be busywork against the archive's
++     purpose. The `#node_modules` and `#.venv` exclusions guard
++     against noise from future dependency installs.
+   3. Exits 0 if all markdown passes.
+ - **No Python job** at bootstrap (no Python files exist).
+ - **No JSON Schema job** at bootstrap (no schemas exist, and an
+@@ -401,8 +410,10 @@
+    at top level; `spec/v0/` present; `docs/archive/microservices-refactor-plan.md`
+    present; old `docs/plans/eden-microservices-refactor.md` gone.
+ 2. `readlink CLAUDE.md` prints `AGENTS.md`.
+-3. `markdownlint-cli2 "**/*.md" "#node_modules"` passes locally over
+-   every `.md` we wrote.
++3. The exact CI command passes locally:
++   `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**"`.
++   (Running the identical command locally avoids works-locally /
++   fails-in-CI drift.)
+ 4. No Python-tool gates run — there are no Python files. (Intentional:
+    those gates land with Phase 3.)
+ 5. Remote: `gh repo view <user>/eden --json visibility,description,url`

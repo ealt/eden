@@ -1,0 +1,18 @@
+**1. Missing Context**
+
+Assessment: mostly well-defined. I don’t see a blocking problem-definition gap, but one execution-critical detail is still implicit.
+
+- The GitHub protection step is underspecified. The plan says to wait for the first CI run and then require status checks on `main`, but it never pins the exact check names or whether this should use classic branch protection or a ruleset. That makes the last mile non-deterministic for whoever executes it. Add the intended mechanism and required check names. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:269), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:304))
+
+**2. Feasibility**
+
+Assessment: significant concerns. As written, the bootstrap gates do not line up with the intentionally empty scaffold.
+
+- Phase 0 explicitly creates no reference code, no per-member `pyproject.toml` files, and no conformance tests, but CI still requires `uv sync + ruff + pyright + pytest` “on the reference impl.” There is no reference implementation yet to lint, type-check, or test. Either seed one minimal Python member plus a trivial test, or make Phase 0 CI repo-level/docs-only and defer reference-impl gates to Phase 1 or 3. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:157), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:246), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:337))
+- The verification step is incorrect about `pytest`: “0 tests collected is fine” is not a passing outcome under normal pytest behavior. As written, the plan’s own verification can fail even if the scaffold is correct. Fix by adding a placeholder smoke test or removing pytest from Phase 0 success criteria. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:299))
+- The `uv` workspace story is internally inconsistent. The plan scaffolds `reference/services/*` and `reference/packages/*` as empty directories, then says workspace globs “may” need to be deferred if `uv` rejects them. This should be an explicit default decision, not something discovered during execution. Otherwise the default path points `uv` at members that are not Python projects yet. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:59), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:162), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:242), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:349))
+- The JSON Schema CI job is described as a no-op before schemas exist, but the plan does not say how to implement that safely. Empty-glob behavior is brittle in CI; add an explicit conditional or seed one minimal schema file. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:249))
+
+I stopped at feasibility. Alternatives, completeness, and edge-case review are lower-value until the Phase 0 toolchain and verification contract are made internally consistent.
+
+Overall assessment: the framing is strong and the protocol-first reorientation is coherent with the refactor doc, but the plan is not implementation-ready yet. The main issue is not strategy; it is that the bootstrap’s “empty scaffold” goal conflicts with its CI and verification gates.
