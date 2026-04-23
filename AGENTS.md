@@ -18,14 +18,15 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 1 in progress.** `spec/v0/` core-concepts chapters
+**Phase 1 complete.** `spec/v0/` core-concepts chapters
 (`00-overview.md`, `01-concepts.md`, `02-data-model.md`) and the
-first six JSON Schemas under `spec/v0/schemas/` are in place, and
-the `schema-validity` CI job validates them against the Draft 2020-12
-meta-schema and validates the migrated experiment fixture against
-`experiment-config.schema.json`. See [`docs/roadmap.md`](docs/roadmap.md)
-for the full 13-phase plan. Phase 2 next writes the role contracts
-and the task-protocol state machine.
+first six JSON Schemas under `spec/v0/schemas/` are on a protected
+`main`, and the `schema-validity` CI job validates them against the
+Draft 2020-12 meta-schema and validates the migrated experiment
+fixture against `experiment-config.schema.json`. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
+Phase 2 next writes the role contracts and the task-protocol state
+machine.
 
 ## Commands
 

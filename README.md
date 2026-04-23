@@ -23,12 +23,13 @@ with other conforming components.
 
 ## Status
 
-**Phase 1 in progress.** Scaffolding, documentation, and CI are in
-place on a protected `main`; the Phase 1 spec work (core-concepts
-chapters of `spec/v0/`, six JSON Schemas, fixture migration,
-`schema-validity` CI job) is on a feature branch awaiting review.
-There is still **no runnable code yet** — the reference
-implementation lands in Phase 3. See
+**Phase 1 complete.** The core-concepts chapters of `spec/v0/`
+(`00-overview.md`, `01-concepts.md`, `02-data-model.md`), six JSON
+Schemas under `spec/v0/schemas/`, the migrated experiment fixture,
+and the `schema-validity` CI job are in place on a protected `main`;
+both CI checks are green. There is still **no runnable code yet** —
+the reference implementation lands in Phase 3. Phase 2 next writes
+the role contracts and the task-protocol state machine. See
 [`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
 
 ## Contributing
