@@ -18,15 +18,15 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 1 complete.** `spec/v0/` core-concepts chapters
-(`00-overview.md`, `01-concepts.md`, `02-data-model.md`) and the
-first six JSON Schemas under `spec/v0/schemas/` are on a protected
-`main`, and the `schema-validity` CI job validates them against the
-Draft 2020-12 meta-schema and validates the migrated experiment
-fixture against `experiment-config.schema.json`. See
+**Phase 2 complete.** `spec/v0/03-roles.md` (planner, implementer,
+evaluator, integrator contracts) and `spec/v0/04-task-protocol.md`
+(state machine, claim tokens, idempotent submit, reclamation) have
+merged to the protected `main`, alongside the Phase 1 core-concepts
+chapters and six JSON Schemas. Both CI checks (`docs-lint` and
+`schema-validity`) remain green. See
 [`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
-Phase 2 next writes the role contracts and the task-protocol state
-machine.
+Phase 3 next ports a Pydantic-bound reference contracts package and
+wires schema-model parity into CI.
 
 ## Commands
 
