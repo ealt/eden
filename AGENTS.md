@@ -18,21 +18,24 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 0 (bootstrap) complete.** Scaffolding, docs, and CI
-(`docs-lint`) are in place; `main` is protected. No code yet.
-Phase 1 (next) writes the core-concepts chapters of `spec/v0/` and
-the first JSON Schemas. See [`docs/roadmap.md`](docs/roadmap.md) for
-the full 13-phase plan. The spec itself is not yet written —
-[`spec/v0/README.md`](spec/v0/README.md) lists the planned chapters
-with their target phases.
+**Phase 1 in progress.** `spec/v0/` core-concepts chapters
+(`00-overview.md`, `01-concepts.md`, `02-data-model.md`) and the
+first six JSON Schemas under `spec/v0/schemas/` are in place, and
+the `schema-validity` CI job validates them against the Draft 2020-12
+meta-schema and validates the migrated experiment fixture against
+`experiment-config.schema.json`. See [`docs/roadmap.md`](docs/roadmap.md)
+for the full 13-phase plan. Phase 2 next writes the role contracts
+and the task-protocol state machine.
 
 ## Commands
 
-At Phase 0 only markdown linting is in play.
+At Phase 1, markdown linting and JSON Schema validation are wired up.
 
 | Command | Purpose |
 |---|---|
 | `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
+| `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
+| `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
 
 ### Commands that will exist in later phases
 
@@ -44,7 +47,6 @@ These are listed for orientation; none of the tooling is wired up yet.
 | `uv run ruff check .` | Phase 3 |
 | `uv run pyright` | Phase 3 |
 | `uv run pytest -q` | Phase 3 |
-| `check-jsonschema --schemafile ...` | Phase 1 (first JSON Schema) |
 | Schema ↔ Pydantic parity check | Phase 3 |
 | `docker compose up` end-to-end | Phase 10 |
 

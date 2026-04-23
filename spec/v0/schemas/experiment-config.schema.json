@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN experiment config",
+  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, metrics schema, concurrency bound, termination bounds. Role bindings (how the planner, implementer, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and land under additional properties until the role-binding chapter is written in Phase 2.",
+  "type": "object",
+  "required": [
+    "parallel_trials",
+    "max_trials",
+    "max_wall_time",
+    "metrics_schema",
+    "objective"
+  ],
+  "properties": {
+    "parallel_trials": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum trials in flight simultaneously."
+    },
+    "max_trials": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Hard ceiling on trials attempted."
+    },
+    "max_wall_time": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[smhd]$",
+      "description": "Hard ceiling on elapsed wall time; format is a positive integer followed by one of s, m, h, d."
+    },
+    "metrics_schema": {
+      "$ref": "metrics-schema.schema.json"
+    },
+    "objective": {
+      "type": "object",
+      "required": ["expr", "direction"],
+      "properties": {
+        "expr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scalar expression over fields of metrics_schema."
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["maximize", "minimize"]
+        }
+      }
+    },
+    "convergence_window": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Terminate if the objective has not improved in this many trials."
+    },
+    "target_condition": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Condition over metrics that terminates the experiment when satisfied."
+    }
+  }
+}

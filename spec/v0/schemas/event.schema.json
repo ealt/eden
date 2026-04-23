@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN event envelope",
+  "description": "The envelope every event appended to an EDEN event log MUST carry. Type-specific payload shapes under data are enumerated in 05-event-protocol.md.",
+  "type": "object",
+  "required": ["event_id", "type", "occurred_at", "experiment_id", "data"],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier for this event within the log."
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "Dotted type name, e.g. task.claimed, trial.evaluated."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "When the state change happened; UTC (trailing Z) required."
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "data": {
+      "type": "object",
+      "description": "Type-specific payload; shape fixed by the event's type registry."
+    }
+  }
+}
