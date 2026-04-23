@@ -73,6 +73,47 @@ These are listed for orientation; the tooling is not wired up yet.
 + The reference impl is explicitly not a monopoly on correctness. A
   third-party implementation that passes conformance is equally valid.
 
+### Adding or extending a JSON Schema + Pydantic binding
+
+The `schema-parity` CI job is only as strong as what both sides of the
+test actually enforce. Several Pydantic and `jsonschema` defaults let
+drift through silently. When adding a new schema — or a new field type
+to an existing one — evaluate each of the following; reusable
+implementations live in
+[`reference/packages/eden-contracts/src/eden_contracts/_common.py`](reference/packages/eden-contracts/src/eden_contracts/_common.py).
+
++ **Strict numeric parsing.** Top-level models set
+  `ConfigDict(strict=True, extra="allow")`. Non-strict mode coerces
+  `True`/`"2"` into int, but the schemas treat `type: integer` /
+  `type: number` as strict JSON types. New models must keep
+  `strict=True`.
++ **Format assertions on both sides.** `format` keywords (`uri`,
+  `date-time`, …) are advisory by default in both the `jsonschema`
+  library and Pydantic. The schema-side validator wires a custom
+  `FormatChecker` in
+  [`tests/conftest.py`](reference/packages/eden-contracts/tests/conftest.py),
+  and the model side uses the reusable types in `_common.py`. A new
+  `format` keyword in any schema requires handlers on *both* sides;
+  the `test_format_coverage` test fails loudly if the schema-side
+  handler is missing.
++ **Real date-time / URI validation, not just regex or `urlparse`.**
+  The regex on `DateTimeStr` accepts impossible values like
+  `2026-99-99T…Z`; an `AfterValidator` runs `datetime.fromisoformat`
+  to reject those. `UriStr` uses `rfc3986-validator`, not
+  `urllib.parse.urlparse`, which accepts malformed schemeful URIs
+  (e.g., spaces in the host).
++ **Null vs absent.** JSON Schema's `type: X` rejects explicit `null`,
+  but Pydantic's `X | None = None` accepts it. Wrap every optional
+  typed field with `NotNone` from `_common.py` so absent is accepted
+  and explicit null is rejected.
++ **Round-trip emission.** `model.model_dump(mode="json",
+  exclude_none=True)` must re-validate against the schema. Add any
+  new model to `tests/test_roundtrip.py` so this is checked.
++ **Corpus coverage.** Parity is asserted over the fixture corpus in
+  `tests/cases.py`. A new field type deserves at least one accept
+  fixture and one reject fixture per constraint the schema imposes
+  (required, pattern, enum, min/max, format, cross-field).
+
 ## Commit guidelines
 
 + Short imperative subjects (e.g., "Add event protocol chapter",

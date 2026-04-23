@@ -47,10 +47,30 @@ MODEL_NAMES: tuple[str, ...] = (
 )
 
 
-_FORMAT_CHECKER = FormatChecker()
+FORMAT_CHECKER = FormatChecker()
+
+EXPLICIT_FORMATS: set[str] = set()
+"""Formats with a custom handler registered below.
+
+``jsonschema.FormatChecker()`` pre-registers permissive defaults for
+many well-known formats (``uri``, ``email``, ``uuid``, …), so a naive
+"is this format in the checker?" test green-lights any format at all.
+We want parity to be explicit — every format the schemas use has a
+handler we wrote, with matching enforcement on the model side — so
+we track our deliberate registrations separately from the built-ins.
+"""
 
 
-@_FORMAT_CHECKER.checks("uri", raises=ValueError)
+def _register_format(name: str) -> Any:
+    def decorator(func: Any) -> Any:
+        EXPLICIT_FORMATS.add(name)
+        FORMAT_CHECKER.checks(name, raises=ValueError)(func)
+        return func
+
+    return decorator
+
+
+@_register_format("uri")
 def _check_uri(instance: Any) -> bool:
     if not isinstance(instance, str):
         return True
@@ -59,7 +79,7 @@ def _check_uri(instance: Any) -> bool:
     return True
 
 
-@_FORMAT_CHECKER.checks("date-time", raises=ValueError)
+@_register_format("date-time")
 def _check_datetime(instance: Any) -> bool:
     if not isinstance(instance, str):
         return True
@@ -84,7 +104,7 @@ def schema_validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(
         schema={"$ref": f"{BASE_URI}{name}.schema.json"},
         registry=_REGISTRY,
-        format_checker=_FORMAT_CHECKER,
+        format_checker=FORMAT_CHECKER,
     )
 
 
