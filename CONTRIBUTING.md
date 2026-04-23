@@ -10,17 +10,18 @@ implementation** (`reference/`), and the **conformance suite**
 
 ## Current phase
 
-**Phase 3 complete.** The spec/v0 core concepts, role contracts, task
-protocol, and six JSON Schemas are on the protected `main` alongside
-the Pydantic reference bindings in `reference/packages/eden-contracts`
-and a full Python toolchain (uv workspace + ruff + pyright + pytest).
-CI runs six checks — `docs-lint`, `schema-validity`, `python-lint`,
+**Phase 4 complete.** Chapters 00–06 and 08 of spec/v0 are on the
+protected `main` alongside the Pydantic reference bindings in
+`reference/packages/eden-contracts` (now including a discriminated-
+union model for the 15 registered event types) and a full Python
+toolchain (uv workspace + ruff + pyright + pytest). CI runs six
+checks — `docs-lint`, `schema-validity`, `python-lint`,
 `python-typecheck`, `python-test`, and `schema-parity`. See
-[`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 4–13 work.
+[`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 5–13 work.
 
-If you want to contribute, the most useful next areas are the Phase 4
-chapters (event protocol, integrator, storage) and any gaps you spot
-in the spec or the contracts-package bindings.
+If you want to contribute, the most useful next area is Phase 5
+(the in-memory reference dispatch loop) and any gaps you spot in
+the spec or the contracts-package bindings.
 
 ## Contributing to the spec
 

@@ -2,7 +2,29 @@
 
 from ._common import CommitSha, DateTimeStr
 from .config import Direction, ExperimentConfig, ObjectiveSpec, WallTime
-from .event import Event
+from .event import (
+    REGISTERED_EVENT_TYPES,
+    Event,
+    FailReason,
+    ProposalCompletedEvent,
+    ProposalDispatchedEvent,
+    ProposalDraftedEvent,
+    ProposalReadyEvent,
+    ReclaimCause,
+    RegisteredEvent,
+    RegisteredEventAdapter,
+    TaskClaimedEvent,
+    TaskCompletedEvent,
+    TaskCreatedEvent,
+    TaskFailedEvent,
+    TaskReclaimedEvent,
+    TaskSubmittedEvent,
+    TrialErroredEvent,
+    TrialEvalErroredEvent,
+    TrialIntegratedEvent,
+    TrialStartedEvent,
+    TrialSucceededEvent,
+)
 from .metrics import MetricName, MetricsSchema, MetricType
 from .proposal import Proposal, ProposalState, Slug
 from .task import (
@@ -21,6 +43,7 @@ from .task import (
 from .trial import Trial, TrialStatus, WorkBranch
 
 __all__ = [
+    "REGISTERED_EVENT_TYPES",
     "CommitSha",
     "DateTimeStr",
     "Direction",
@@ -28,6 +51,7 @@ __all__ = [
     "EvaluateTask",
     "Event",
     "ExperimentConfig",
+    "FailReason",
     "ImplementPayload",
     "ImplementTask",
     "MetricName",
@@ -37,15 +61,33 @@ __all__ = [
     "PlanPayload",
     "PlanTask",
     "Proposal",
+    "ProposalCompletedEvent",
+    "ProposalDispatchedEvent",
+    "ProposalDraftedEvent",
+    "ProposalReadyEvent",
     "ProposalState",
+    "ReclaimCause",
+    "RegisteredEvent",
+    "RegisteredEventAdapter",
     "Slug",
     "Task",
     "TaskAdapter",
     "TaskClaim",
+    "TaskClaimedEvent",
+    "TaskCompletedEvent",
+    "TaskCreatedEvent",
+    "TaskFailedEvent",
     "TaskKind",
+    "TaskReclaimedEvent",
     "TaskState",
+    "TaskSubmittedEvent",
     "Trial",
+    "TrialErroredEvent",
+    "TrialEvalErroredEvent",
+    "TrialIntegratedEvent",
+    "TrialStartedEvent",
     "TrialStatus",
+    "TrialSucceededEvent",
     "WallTime",
     "WorkBranch",
 ]

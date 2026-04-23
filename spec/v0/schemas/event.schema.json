@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN event envelope",
-  "description": "The envelope every event appended to an EDEN event log MUST carry. Type-specific payload shapes under data are enumerated in 05-event-protocol.md.",
+  "description": "The envelope every event appended to an EDEN event log MUST carry. Registered types have per-type payload shapes enumerated under allOf; types outside the registry pass the envelope only. Full normative registry and semantics are in 05-event-protocol.md.",
   "type": "object",
   "required": ["event_id", "type", "occurred_at", "experiment_id", "data"],
   "properties": {
@@ -13,7 +13,7 @@
     "type": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
-      "description": "Dotted type name, e.g. task.claimed, trial.evaluated."
+      "description": "Dotted type name, e.g. task.claimed, trial.succeeded."
     },
     "occurred_at": {
       "type": "string",
@@ -27,7 +27,238 @@
     },
     "data": {
       "type": "object",
-      "description": "Type-specific payload; shape fixed by the event's type registry."
+      "description": "Type-specific payload; shape fixed by the registry entry for the event's type."
     }
-  }
+  },
+  "$defs": {
+    "taskId": {"type": "string", "minLength": 1},
+    "proposalId": {"type": "string", "minLength": 1},
+    "trialId": {"type": "string", "minLength": 1},
+    "workerId": {"type": "string", "minLength": 1},
+    "taskKind": {"type": "string", "enum": ["plan", "implement", "evaluate"]},
+    "commitSha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "failReason": {"type": "string", "enum": ["worker_error", "validation_error", "policy_limit"]},
+    "reclaimCause": {"type": "string", "enum": ["expired", "operator", "health_policy"]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "task.created"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id", "kind"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"},
+              "kind": {"$ref": "#/$defs/taskKind"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "task.claimed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id", "worker_id"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"},
+              "worker_id": {"$ref": "#/$defs/workerId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "task.submitted"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "task.completed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "task.failed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id", "reason"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"},
+              "reason": {"$ref": "#/$defs/failReason"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "task.reclaimed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id", "cause"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"},
+              "cause": {"$ref": "#/$defs/reclaimCause"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "proposal.drafted"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["proposal_id"],
+            "properties": {
+              "proposal_id": {"$ref": "#/$defs/proposalId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "proposal.ready"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["proposal_id"],
+            "properties": {
+              "proposal_id": {"$ref": "#/$defs/proposalId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "proposal.dispatched"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["proposal_id", "task_id"],
+            "properties": {
+              "proposal_id": {"$ref": "#/$defs/proposalId"},
+              "task_id": {"$ref": "#/$defs/taskId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "proposal.completed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["proposal_id", "task_id"],
+            "properties": {
+              "proposal_id": {"$ref": "#/$defs/proposalId"},
+              "task_id": {"$ref": "#/$defs/taskId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "trial.started"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["trial_id", "proposal_id"],
+            "properties": {
+              "trial_id": {"$ref": "#/$defs/trialId"},
+              "proposal_id": {"$ref": "#/$defs/proposalId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "trial.succeeded"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["trial_id", "commit_sha"],
+            "properties": {
+              "trial_id": {"$ref": "#/$defs/trialId"},
+              "commit_sha": {"$ref": "#/$defs/commitSha"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "trial.errored"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["trial_id"],
+            "properties": {
+              "trial_id": {"$ref": "#/$defs/trialId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "trial.eval_errored"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["trial_id"],
+            "properties": {
+              "trial_id": {"$ref": "#/$defs/trialId"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "trial.integrated"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["trial_id", "trial_commit_sha"],
+            "properties": {
+              "trial_id": {"$ref": "#/$defs/trialId"},
+              "trial_commit_sha": {"$ref": "#/$defs/commitSha"}
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -19,10 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from eden_contracts import (
+    REGISTERED_EVENT_TYPES,
     Event,
     ExperimentConfig,
     MetricsSchema,
     Proposal,
+    RegisteredEventAdapter,
     TaskAdapter,
     Trial,
 )
@@ -108,10 +110,23 @@ def schema_validator(name: str) -> Draft202012Validator:
     )
 
 
+def _validate_event(data: Any) -> object:
+    """Envelope-first, then per-type payload for registered types.
+
+    Mirrors the schema's ``allOf`` dispatch: every event MUST satisfy the
+    envelope; events whose ``type`` is registered (spec §3.1–§3.3) MUST
+    additionally satisfy the per-type payload shape.
+    """
+    envelope = Event.model_validate(data)
+    if envelope.type in REGISTERED_EVENT_TYPES:
+        RegisteredEventAdapter.validate_python(data)
+    return envelope
+
+
 _MODEL_VALIDATORS: dict[str, Callable[[Any], object]] = {
     "experiment-config": ExperimentConfig.model_validate,
     "task": TaskAdapter.validate_python,
-    "event": Event.model_validate,
+    "event": _validate_event,
     "proposal": Proposal.model_validate,
     "trial": Trial.model_validate,
     "metrics-schema": MetricsSchema.model_validate,

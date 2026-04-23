@@ -18,18 +18,19 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
-**Phase 3 complete.** The `reference/packages/eden-contracts` package
-ships Pydantic v2 bindings for the six spec/v0 JSON Schemas, along with
-the first Python toolchain wiring (uv workspace, ruff, pyright, pytest)
-and four new CI jobs — `python-lint`, `python-typecheck`, `python-test`,
-and `schema-parity`. All six CI checks on `main` are green. See
-[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan. Phase 4
-is next: the event protocol, integrator chapter, and storage chapter —
-and the corresponding event schema.
+**Phase 4 complete.** The v0 spec now ships the event protocol
+(`05-event-protocol.md`), integrator contract (`06-integrator.md`),
+and storage contract (`08-storage.md`). `event.schema.json` now
+pins per-type payload shapes for the 15 registered event types via
+`if/then` dispatch on `type`, and the `eden-contracts` package has a
+matching discriminated-union `RegisteredEvent` model plus corpus
+coverage. All six CI checks on `main` remain green. Phase 5 is next:
+the in-memory reference dispatch loop. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
 
 ## Commands
 
-At Phase 3, markdown linting, JSON Schema validation, and the Python
+At Phase 4, markdown linting, JSON Schema validation, and the Python
 toolchain for the `eden-contracts` reference package are wired up.
 
 | Command | Purpose |

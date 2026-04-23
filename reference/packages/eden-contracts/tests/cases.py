@@ -395,32 +395,22 @@ TASK_CASES: list[Case] = [
 
 
 EVENT_CASES: list[Case] = [
+    # --- envelope-only (§1) and unregistered-type behavior (§3.5) ---
     Case(
-        "task_claimed",
+        "unregistered_type_open_data",
         {
-            "event_id": "evt-1",
-            "type": "task.claimed",
-            "occurred_at": _DT,
-            "experiment_id": "exp-1",
-            "data": {"task_id": "t-1", "worker_id": "w-1"},
-        },
-        True,
-    ),
-    Case(
-        "nested_type",
-        {
-            "event_id": "evt-2",
-            "type": "trial.evaluated.success",
+            "event_id": "evt-unreg-1",
+            "type": "operator.paused",
             "occurred_at": _DT2,
             "experiment_id": "exp-1",
-            "data": {},
+            "data": {"note": "anything"},
         },
         True,
     ),
     Case(
         "type_without_dot",
         {
-            "event_id": "evt-3",
+            "event_id": "evt-bad-1",
             "type": "claimed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
@@ -431,7 +421,7 @@ EVENT_CASES: list[Case] = [
     Case(
         "type_uppercase",
         {
-            "event_id": "evt-4",
+            "event_id": "evt-bad-2",
             "type": "Task.Claimed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
@@ -442,32 +432,288 @@ EVENT_CASES: list[Case] = [
     Case(
         "occurred_at_with_offset",
         {
-            "event_id": "evt-5",
+            "event_id": "evt-bad-3",
             "type": "task.claimed",
             "occurred_at": "2026-04-23T12:00:00+00:00",
             "experiment_id": "exp-1",
-            "data": {},
+            "data": {"task_id": "t-1", "worker_id": "w-1"},
         },
         False,
     ),
     Case(
         "missing_experiment_id",
         {
-            "event_id": "evt-6",
+            "event_id": "evt-bad-4",
             "type": "task.claimed",
             "occurred_at": _DT,
-            "data": {},
+            "data": {"task_id": "t-1", "worker_id": "w-1"},
         },
         False,
     ),
     Case(
         "data_not_object",
         {
-            "event_id": "evt-7",
+            "event_id": "evt-bad-5",
             "type": "task.claimed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
             "data": "hello",
+        },
+        False,
+    ),
+    # --- registered types: task.* ---
+    Case(
+        "task_created_ok",
+        {
+            "event_id": "evt-tc-1",
+            "type": "task.created",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "kind": "plan"},
+        },
+        True,
+    ),
+    Case(
+        "task_created_bad_kind",
+        {
+            "event_id": "evt-tc-2",
+            "type": "task.created",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "kind": "integrate"},
+        },
+        False,
+    ),
+    Case(
+        "task_created_missing_kind",
+        {
+            "event_id": "evt-tc-3",
+            "type": "task.created",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1"},
+        },
+        False,
+    ),
+    Case(
+        "task_claimed_ok",
+        {
+            "event_id": "evt-tcl-1",
+            "type": "task.claimed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "worker_id": "w-1"},
+        },
+        True,
+    ),
+    Case(
+        "task_claimed_missing_worker",
+        {
+            "event_id": "evt-tcl-2",
+            "type": "task.claimed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1"},
+        },
+        False,
+    ),
+    Case(
+        "task_submitted_ok",
+        {
+            "event_id": "evt-ts-1",
+            "type": "task.submitted",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1"},
+        },
+        True,
+    ),
+    Case(
+        "task_completed_ok",
+        {
+            "event_id": "evt-tcp-1",
+            "type": "task.completed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1"},
+        },
+        True,
+    ),
+    Case(
+        "task_failed_ok",
+        {
+            "event_id": "evt-tf-1",
+            "type": "task.failed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "reason": "worker_error"},
+        },
+        True,
+    ),
+    Case(
+        "task_failed_bad_reason",
+        {
+            "event_id": "evt-tf-2",
+            "type": "task.failed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "reason": "oops"},
+        },
+        False,
+    ),
+    Case(
+        "task_reclaimed_ok",
+        {
+            "event_id": "evt-tr-1",
+            "type": "task.reclaimed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "cause": "expired"},
+        },
+        True,
+    ),
+    Case(
+        "task_reclaimed_bad_cause",
+        {
+            "event_id": "evt-tr-2",
+            "type": "task.reclaimed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"task_id": "t-1", "cause": "timeout"},
+        },
+        False,
+    ),
+    # --- registered types: proposal.* ---
+    Case(
+        "proposal_drafted_ok",
+        {
+            "event_id": "evt-pd-1",
+            "type": "proposal.drafted",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"proposal_id": "p-1"},
+        },
+        True,
+    ),
+    Case(
+        "proposal_ready_ok",
+        {
+            "event_id": "evt-pr-1",
+            "type": "proposal.ready",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"proposal_id": "p-1"},
+        },
+        True,
+    ),
+    Case(
+        "proposal_dispatched_ok",
+        {
+            "event_id": "evt-pdi-1",
+            "type": "proposal.dispatched",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"proposal_id": "p-1", "task_id": "t-1"},
+        },
+        True,
+    ),
+    Case(
+        "proposal_dispatched_missing_task",
+        {
+            "event_id": "evt-pdi-2",
+            "type": "proposal.dispatched",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"proposal_id": "p-1"},
+        },
+        False,
+    ),
+    Case(
+        "proposal_completed_ok",
+        {
+            "event_id": "evt-pc-1",
+            "type": "proposal.completed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"proposal_id": "p-1", "task_id": "t-1"},
+        },
+        True,
+    ),
+    # --- registered types: trial.* ---
+    Case(
+        "trial_started_ok",
+        {
+            "event_id": "evt-ts-100",
+            "type": "trial.started",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1", "proposal_id": "p-1"},
+        },
+        True,
+    ),
+    Case(
+        "trial_succeeded_ok",
+        {
+            "event_id": "evt-ts-200",
+            "type": "trial.succeeded",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1", "commit_sha": _SHA1},
+        },
+        True,
+    ),
+    Case(
+        "trial_succeeded_bad_sha",
+        {
+            "event_id": "evt-ts-201",
+            "type": "trial.succeeded",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1", "commit_sha": "abc123"},
+        },
+        False,
+    ),
+    Case(
+        "trial_errored_ok",
+        {
+            "event_id": "evt-te-1",
+            "type": "trial.errored",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1"},
+        },
+        True,
+    ),
+    Case(
+        "trial_eval_errored_ok",
+        {
+            "event_id": "evt-tee-1",
+            "type": "trial.eval_errored",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1"},
+        },
+        True,
+    ),
+    Case(
+        "trial_integrated_ok",
+        {
+            "event_id": "evt-ti-1",
+            "type": "trial.integrated",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1", "trial_commit_sha": _SHA256},
+        },
+        True,
+    ),
+    Case(
+        "trial_integrated_missing_sha",
+        {
+            "event_id": "evt-ti-2",
+            "type": "trial.integrated",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"trial_id": "trial-1"},
         },
         False,
     ),

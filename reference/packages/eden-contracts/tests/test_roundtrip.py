@@ -9,17 +9,35 @@ includes ``null`` keys would fail schema validation.
 
 from __future__ import annotations
 
+from typing import Any
+
 from eden_contracts import (
+    REGISTERED_EVENT_TYPES,
     Event,
     ExperimentConfig,
     MetricsSchema,
     Proposal,
+    RegisteredEventAdapter,
     TaskAdapter,
     Trial,
 )
 
 from .cases import ALL_CASES
 from .conftest import schema_validator
+
+
+def _dump_event(data: Any) -> Any:
+    """Dump through the registered-type model when ``type`` is registered.
+
+    An envelope-only dump would discard per-type payload validation, which
+    would mask round-trip drift for registered events.
+    """
+    envelope = Event.model_validate(data)
+    if envelope.type in REGISTERED_EVENT_TYPES:
+        typed = RegisteredEventAdapter.validate_python(data)
+        return RegisteredEventAdapter.dump_python(typed, mode="json", exclude_none=True)
+    return envelope.model_dump(mode="json", exclude_none=True)
+
 
 _MODEL_DUMPERS = {
     "experiment-config": lambda d: ExperimentConfig.model_validate(d).model_dump(
@@ -28,7 +46,7 @@ _MODEL_DUMPERS = {
     "task": lambda d: TaskAdapter.dump_python(
         TaskAdapter.validate_python(d), mode="json", exclude_none=True
     ),
-    "event": lambda d: Event.model_validate(d).model_dump(mode="json", exclude_none=True),
+    "event": _dump_event,
     "proposal": lambda d: Proposal.model_validate(d).model_dump(mode="json", exclude_none=True),
     "trial": lambda d: Trial.model_validate(d).model_dump(mode="json", exclude_none=True),
     "metrics-schema": lambda d: MetricsSchema.model_validate(d).model_dump(
