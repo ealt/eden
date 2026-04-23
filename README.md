@@ -23,12 +23,13 @@ with other conforming components.
 
 ## Status
 
-**Phase 0 (bootstrap) complete.** Scaffolding, documentation, and CI
-are in place; `main` has its first commit, CI (`docs-lint`) is green,
-and branch protection is enabled. There is **no runnable code yet**.
-See [`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan;
-the next phase (Phase 1) writes the core-concepts chapters of the spec
-and the JSON Schemas for the shared data model.
+**Phase 1 in progress.** Scaffolding, documentation, and CI are in
+place on a protected `main`; the Phase 1 spec work (core-concepts
+chapters of `spec/v0/`, six JSON Schemas, fixture migration,
+`schema-validity` CI job) is on a feature branch awaiting review.
+There is still **no runnable code yet** — the reference
+implementation lands in Phase 3. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
 
 ## Contributing
 

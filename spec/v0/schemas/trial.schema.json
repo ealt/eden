@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN trial",
+  "description": "One completed (or in-flight) attempt to improve the experiment's objective. The metrics object's shape is constrained by the experiment's metrics_schema; this schema does not itself constrain metric key/value types, since those vary per experiment.",
+  "type": "object",
+  "required": [
+    "trial_id",
+    "experiment_id",
+    "proposal_id",
+    "status",
+    "parent_commits",
+    "started_at"
+  ],
+  "properties": {
+    "trial_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["starting", "success", "error", "eval_error"]
+    },
+    "parent_commits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+      }
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^work/.+$",
+      "description": "Worker branch under work/*; present once the implementer starts."
+    },
+    "commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+      "description": "Worker-branch tip; present once the implementer completes."
+    },
+    "trial_commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+      "description": "Canonical-lineage SHA on trial/*; set only by the integrator."
+    },
+    "artifacts_uri": {
+      "type": "string",
+      "format": "uri"
+    },
+    "description": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Metrics payload; keys MUST be a subset of the experiment's declared metrics_schema and values MUST match the declared types (or be null)."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    }
+  }
+}

@@ -24,3 +24,27 @@ jobs:
       - name: Lint markdown
         run: |
           markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"
+
+  schema-validity:
+    name: schema-validity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install check-jsonschema
+        run: pip install 'check-jsonschema==0.29.4'
+
+      - name: Validate each schema against Draft 2020-12 meta-schema
+        run: |
+          check-jsonschema --check-metaschema spec/v0/schemas/*.schema.json
+
+      - name: Validate experiment fixture against experiment-config schema
+        run: |
+          check-jsonschema \
+            --schemafile spec/v0/schemas/experiment-config.schema.json \
+            tests/fixtures/experiment/.eden/config.yaml
