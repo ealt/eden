@@ -186,18 +186,42 @@ to end; 36 conformance scenarios pass; all CI gates green.
 
 ---
 
-## Phase 6 — Reference storage backend (`eden-storage`)
+## Phase 6 — Reference storage backend (`eden-storage`) — complete
 
 Makes Phase 5 persist across restarts.
 
 **Units:**
 
-- **6a** — Repository interface (Python `Protocol`) matching spec
-  chapter 8.
-- **6b** — SQLite concrete impl + schema migrations + wiring into the
-  dispatch loop.
+- **6a — complete.** `Store` Protocol in `reference/packages/eden-storage/
+  src/eden_storage/protocol.py` covers the task store, event log reads
+  (`replay`, `read_range`; `events()` retained as alias), and
+  proposal/trial persistence sides of chapter 8; the spec-literal
+  `create_task(task)` sits alongside typed convenience helpers
+  (`create_plan_task`, etc.). The artifact store (§5), `subscribe`
+  streaming (§2.1), and cross-process wire transport are out of scope
+  for Phase 6 and are tracked for Phase 10 / Phase 8 respectively.
+  Shared transition logic lives in `_base.py`; `InMemoryStore` (moved
+  from `eden-dispatch`) and the new `SqliteStore` both satisfy the
+  Protocol and inherit the same validation and composite-commit paths.
+- **6b — complete.** SQLite-backed backend in `eden_storage/sqlite.py`
+  with a linear-migration schema in `_schema.py`. Every public op opens
+  a `BEGIN IMMEDIATE` transaction; commit on success, rollback on
+  exception. `WAL` + `synchronous = FULL` provides fsync-on-commit
+  durability matching the strict reading of chapter 8 §3.1
+  ("survives a subsequent crash of the store's host"). A reopened
+  store resumes the event-id counter from the persisted event count
+  (via the AUTOINCREMENT `seq` column — format-independent), inherits
+  the metrics schema, and rejects a reopen whose `experiment_id`
+  mismatches or whose `metrics_schema` differs semantically (compared
+  via `sort_keys=True`, so key-order noise doesn't false-trigger §4.2).
+  Migrations run inside an explicit `BEGIN`/`COMMIT` so a partial DDL
+  failure rolls back cleanly. Conformance scenarios (65 per backend)
+  run via a parametrized `make_store` fixture, and 9 restart-safety
+  tests close/reopen a SQLite store mid-experiment and verify
+  state/events/tokens survive. A monkey-patched `_apply_commit`
+  failure test asserts rollback.
 
-**Chunk:** 6a + 6b — one chunk.
+**Chunk:** 6a + 6b — one chunk, shipped together.
 
 **Non-goals:** Postgres (later); blob storage (Phase 10).
 

@@ -11,17 +11,17 @@ from __future__ import annotations
 
 import pytest
 from eden_contracts import Proposal
-from eden_dispatch import (
+from eden_storage import (
     ConflictingResubmission,
     IllegalTransition,
-    InMemoryStore,
     NotFound,
     PlanSubmission,
+    Store,
     WrongToken,
 )
 
 
-def _make_ready_proposal(store: InMemoryStore, proposal_id: str) -> None:
+def _make_ready_proposal(store: Store, proposal_id: str) -> None:
     proposal = Proposal(
         proposal_id=proposal_id,
         experiment_id=store.experiment_id,

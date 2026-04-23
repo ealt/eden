@@ -24,12 +24,11 @@ from eden_contracts import (
     Proposal,
     Trial,
 )
-
-from .store import (
+from eden_storage import (
     EvaluateSubmission,
     ImplementSubmission,
-    InMemoryStore,
     PlanSubmission,
+    Store,
 )
 
 
@@ -95,7 +94,7 @@ class ScriptedPlanner:
         """Opaque worker identifier this planner claims tasks under."""
         return self._worker_id
 
-    def run_pending(self, store: InMemoryStore) -> int:
+    def run_pending(self, store: Store) -> int:
         """Claim and process every pending plan task. Returns count processed."""
         count = 0
         while True:
@@ -107,7 +106,7 @@ class ScriptedPlanner:
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: InMemoryStore, task: PlanTask) -> None:
+    def _handle(self, store: Store, task: PlanTask) -> None:
         claim = store.claim(task.task_id, self._worker_id)
         templates = self._plan_fn(task)
         proposal_ids: list[str] = []
@@ -161,7 +160,7 @@ class ScriptedImplementer:
         """Opaque worker identifier this implementer claims tasks under."""
         return self._worker_id
 
-    def run_pending(self, store: InMemoryStore) -> int:
+    def run_pending(self, store: Store) -> int:
         """Claim and process every pending implement task. Returns count processed."""
         count = 0
         while True:
@@ -173,7 +172,7 @@ class ScriptedImplementer:
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: InMemoryStore, task: ImplementTask) -> None:
+    def _handle(self, store: Store, task: ImplementTask) -> None:
         proposal = store.read_proposal(task.payload.proposal_id)
         claim = store.claim(task.task_id, self._worker_id)
 
@@ -227,7 +226,7 @@ class ScriptedEvaluator:
         """Opaque worker identifier this evaluator claims tasks under."""
         return self._worker_id
 
-    def run_pending(self, store: InMemoryStore) -> int:
+    def run_pending(self, store: Store) -> int:
         """Claim and process every pending evaluate task. Returns count processed."""
         count = 0
         while True:
@@ -239,7 +238,7 @@ class ScriptedEvaluator:
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: InMemoryStore, task: EvaluateTask) -> None:
+    def _handle(self, store: Store, task: EvaluateTask) -> None:
         trial = store.read_trial(task.payload.trial_id)
         claim = store.claim(task.task_id, self._worker_id)
         outcome = self._evaluate_fn(task, trial)

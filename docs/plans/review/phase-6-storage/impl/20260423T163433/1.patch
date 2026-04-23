@@ -1,0 +1,135 @@
+--- docs/plans/review/phase-6-storage/impl/20260423T163433/0.md	2026-04-23 16:35:53
++++ docs/plans/review/phase-6-storage/impl/20260423T163433/1.md	2026-04-23 16:48:49
+@@ -1,5 +1,44 @@
+-# Implementation Review: Phase 6 — reference storage backend (`eden-storage`)
++# Implementation Review: Phase 6 — reference storage backend (`eden-storage`) — round 1
+ 
++## What changed since round 0
++
++Addressed all four round-0 blockers:
++
++1. **Protocol fidelity.** Added the spec-literal `create_task(task)`
++   to the `Store` Protocol and both backends; it dispatches by
++   `task.kind` into the existing composite-commit helpers. Added
++   `replay()` and `read_range(cursor=None)` per chapter 8 §2.1.
++   `events()` kept as a deprecated-friendly alias delegating to
++   `replay()`. The brief and CLAUDE.md now explicitly scope the
++   Protocol to task store + event log reads + proposal/trial
++   persistence, calling out the artifact store (§5) and the
++   streaming `subscribe` operation as Phase 6 non-goals (Phase 10
++   and Phase 8 respectively). 20 new parametrized scenarios in
++   `tests/test_protocol_operations.py` exercise `create_task`,
++   `replay`, and `read_range` across both backends.
++2. **Durability.** SQLite PRAGMA switched from `synchronous=NORMAL`
++   to `synchronous=FULL`, matching the strict reading of chapter
++   8 §3.1 ("survives a subsequent crash of the store's host").
++3. **`_max_event_seq` fragility.** Replaced with
++   `_next_event_seq()` which uses `MAX(seq)+1` on the event
++   table's AUTOINCREMENT primary key. Resumption is independent
++   of the `event_id` string format.
++4. **Metrics-schema literal-JSON comparison.** `_initialize_experiment`
++   canonicalizes both sides via `json.dumps(..., sort_keys=True)`
++   before comparing, so a reopen with the same logical schema in
++   a different key order is not mistaken for a mutation.
++
++Plus two of the non-blocker brief-accuracy issues:
++
++- `ensure_schema` now runs migrations inside an explicit `BEGIN` /
++  `COMMIT` by issuing DDL via `execute()` per statement rather than
++  `executescript`.
++- Brief wording: "monkey-patched `_apply_commit` failure" (the test
++  injects a failure during the stage phase, not during SQLite's
++  `COMMIT` statement).
++
++Tests: 242 passing across both backends.
++
+ ## Plan
+ 
+ This phase has no standalone plan file; the plan is the roadmap's
+@@ -55,9 +94,14 @@
+ - Chapter 8 defines three stores (task, event log, proposal/trial)
+   but §7 explicitly permits one physical backend to serve all three.
+   The `Store` Protocol collapses them into a single structural
+-  interface; this is the smallest surface that lets `05-event-
+-  protocol.md` §2.2 composite commits ("this write + that event both
+-  land or neither does") be expressed naturally as one atomic method.
++  interface — covering the task store (§1), the event log reads
++  (§2.1 `replay` + `read_range`), and proposal/trial persistence
++  (§1.7). Out of scope at Phase 6: the artifact store (§5 — Phase
++  10); streaming `subscribe` (§2.1 — Phase 8 when cross-process
++  lands). The collapse is the smallest surface that lets
++  `05-event-protocol.md` §2.2 composite commits ("this write + that
++  event both land or neither does") be expressed naturally as one
++  atomic method.
+ - `InMemoryStore` moved from `eden-dispatch` to `eden-storage`
+   **unchanged in behavior** — every field, every method, every
+   validation path is bit-for-bit equivalent. The only changes are
+@@ -93,26 +137,36 @@
+   columns cannot silently diverge from the canonical JSON (drift
+   would surface at the next read).
+ - PRAGMAs: `foreign_keys = ON`, `journal_mode = WAL`,
+-  `synchronous = NORMAL`. WAL + NORMAL is the standard durability
+-  point for a single-process reference impl; chapter 8 §3.1
+-  requires "survives a subsequent crash of the store's host", which
+-  WAL satisfies.
++  `synchronous = FULL`. Chapter 8 §3.1 requires a committed write
++  to survive a crash of the store's host; SQLite's own docs say
++  WAL + NORMAL may lose committed transactions on system crash,
++  while WAL + FULL fsyncs on commit. The stricter setting is the
++  one that matches a literal reading of §3.1; the cost is a fsync
++  per composite commit.
+ - Migrations are linear. `_MIGRATIONS` is a list of callables
+   indexed by version; `ensure_schema` applies every pending one
+-  under a single outer transaction. Adding a future migration means
+-  appending a function.
++  inside an explicit `BEGIN` / `COMMIT` (DDL issued via `execute()`
++  per statement rather than `executescript`, because `executescript`
++  auto-commits and would break the bounding). A partial-DDL failure
++  rolls back cleanly. Adding a future migration means appending a
++  function.
+ - The default `event_id` counter in `_StoreBase` starts at 1 every
+   time a store object is constructed. On reopen that would produce
+   duplicate `event_id` values and violate the table's UNIQUE
+-  constraint. `SqliteStore.__init__` resumes the counter from the
+-  persisted max when the caller didn't supply their own factory
+-  (caller-supplied factories are responsible for their own
+-  collision avoidance).
++  constraint. `SqliteStore.__init__` resumes the counter from
++  `MAX(seq)+1` on the event table's AUTOINCREMENT primary key —
++  format-independent; the `evt-NNNNNN` string convention is not
++  load-bearing. Caller-supplied factories are responsible for
++  their own collision avoidance on reopen.
+ - `_initialize_experiment` enforces chapter 8 §4.2 (metrics-schema
+   immutability): on reopen, the stored `experiment_id` must match
+   the requested one, and a supplied `metrics_schema` must match
+-  the persisted JSON. Reopen without a schema argument inherits the
+-  persisted one so §4.3 metric validation keeps running.
++  the persisted one up to JSON key order. Comparison canonicalizes
++  both sides via `json.dumps(..., sort_keys=True)` so semantically
++  identical schemas in different key orders are not rejected —
++  §4.2 constrains semantic identity, not lexical representation.
++  Reopen without a schema argument inherits the persisted one so
++  §4.3 metric validation keeps running.
+ 
+ ### Conformance across backends
+ 
+@@ -157,13 +211,13 @@
+    - "only one code path for the state machine" — grep confirms
+      no duplication of transition logic in `memory.py` or
+      `sqlite.py`; both only override the primitive hooks.
+-   - "WAL + NORMAL satisfies §3.1" — this is a claim about SQLite
+-     behavior, not about my code. The test asserts close/reopen
+-     preserves every acknowledged write; the WAL claim is
+-     conventional and is the conventional interpretation of the
+-     spec's "survives a subsequent crash" language.
++   - "WAL + FULL satisfies §3.1" — a claim about SQLite behavior,
++     not about code. SQLite's own docs say `synchronous=FULL`
++     fsyncs on every commit so a committed write cannot be lost
++     on system crash; that matches §3.1's "survives a subsequent
++     crash of the store's host" literally.
+    - "backends inherit every invariant for free" — verified by
+-     parametrizing 55 conformance scenarios across both backends;
++     parametrizing 65 conformance scenarios across both backends;
+      both pass without any scenario-side accommodation.
+ 
+ ## Notable design decisions to audit

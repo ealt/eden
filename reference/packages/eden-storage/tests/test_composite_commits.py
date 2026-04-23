@@ -11,16 +11,16 @@ from collections.abc import Callable
 
 import pytest
 from eden_contracts import Proposal, Trial
-from eden_dispatch import (
+from eden_storage import (
     EvaluateSubmission,
     ImplementSubmission,
-    InMemoryStore,
     InvalidPrecondition,
     PlanSubmission,
+    Store,
 )
 
 
-def _ready_proposal(store: InMemoryStore, proposal_id: str, slug: str = "feat-a") -> None:
+def _ready_proposal(store: Store, proposal_id: str, slug: str = "feat-a") -> None:
     store.create_proposal(
         Proposal(
             proposal_id=proposal_id,
@@ -37,7 +37,7 @@ def _ready_proposal(store: InMemoryStore, proposal_id: str, slug: str = "feat-a"
 
 
 def _starting_trial(
-    store: InMemoryStore, trial_id: str, proposal_id: str, commit_sha: str | None = None
+    store: Store, trial_id: str, proposal_id: str, commit_sha: str | None = None
 ) -> None:
     kwargs = {
         "trial_id": trial_id,
@@ -56,14 +56,14 @@ def _starting_trial(
         _ = current
 
 
-def _type_sequence(store: InMemoryStore) -> list[str]:
+def _type_sequence(store: Store) -> list[str]:
     return [e.type for e in store.events()]
 
 
 class TestImplementDispatchComposite:
     """`task.created` (implement) + `proposal.dispatched` land together."""
 
-    def test_dispatch_emits_both_events(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_dispatch_emits_both_events(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
         store.create_implement_task("t-impl", "p1")
@@ -72,7 +72,7 @@ class TestImplementDispatchComposite:
         assert types[-2:] == ["task.created", "proposal.dispatched"]
         assert store.read_proposal("p1").state == "dispatched"
 
-    def test_dispatch_requires_ready(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_dispatch_requires_ready(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         store.create_proposal(
             Proposal(
@@ -95,7 +95,7 @@ class TestImplementDispatchComposite:
 class TestImplementTerminalComposite:
     """`task.completed` (or failed) + `proposal.completed` land together."""
 
-    def test_accept_emits_both(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_accept_emits_both(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
         store.create_implement_task("t-impl", "p1")
@@ -113,7 +113,7 @@ class TestImplementTerminalComposite:
         assert store.read_trial("tr-1").commit_sha == "b" * 40
 
     def test_reject_with_starting_trial_triples_composite(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """Implement reject + trial.errored + proposal.completed all commit together."""
         store = make_store()
@@ -136,7 +136,7 @@ class TestImplementTerminalComposite:
 class TestEvaluateTerminalComposite:
     """`task.completed`/`failed` + `trial.succeeded`/`errored` land together."""
 
-    def _advance_to_trial_with_commit(self, store: InMemoryStore) -> None:
+    def _advance_to_trial_with_commit(self, store: Store) -> None:
         _ready_proposal(store, "p1")
         store.create_implement_task("t-impl", "p1")
         claim = store.claim("t-impl", "impl-w")
@@ -148,7 +148,7 @@ class TestEvaluateTerminalComposite:
         )
         store.accept("t-impl")
 
-    def test_evaluate_success_composite(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_evaluate_success_composite(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         self._advance_to_trial_with_commit(store)
         store.create_evaluate_task("t-eval", "tr-1")
@@ -166,7 +166,7 @@ class TestEvaluateTerminalComposite:
         assert trial.metrics == {"score": 0.9}
         assert trial.completed_at is not None
 
-    def test_evaluate_error_composite(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_evaluate_error_composite(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         self._advance_to_trial_with_commit(store)
         store.create_evaluate_task("t-eval", "tr-1")
@@ -184,7 +184,7 @@ class TestEvaluateTerminalComposite:
         assert trial.metrics == {"score": 0.0}
 
     def test_evaluate_eval_error_leaves_trial_starting(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         """§4.4: eval_error MUST NOT write metrics/artifacts; trial stays in starting."""
         store = make_store()
@@ -216,7 +216,7 @@ class TestImplementReclaimComposite:
     """`task.reclaimed` + `trial.errored` when the reclaimed implement had a starting trial."""
 
     def test_reclaim_with_starting_trial_errors_it(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -233,7 +233,7 @@ class TestImplementReclaimComposite:
 class TestEvalErrorTerminalComposite:
     """Retry-exhausted `trial.eval_errored` emits atomically with the status write."""
 
-    def test_declare_eval_error(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_declare_eval_error(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
         store.create_implement_task("t-impl", "p1")
@@ -258,7 +258,7 @@ class TestEvalErrorTerminalComposite:
 class TestIntegrationComposite:
     """`trial.integrated` + `trial_commit_sha` land together."""
 
-    def test_integrate_success_trial(self, make_store: Callable[..., InMemoryStore]) -> None:
+    def test_integrate_success_trial(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
         store.create_implement_task("t-impl", "p1")
@@ -286,7 +286,7 @@ class TestIntegrationComposite:
         assert events[-1].data == {"trial_id": "tr-1", "trial_commit_sha": "c" * 40}
 
     def test_integrate_non_success_rejected(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_proposal(store, "p1")
@@ -299,7 +299,7 @@ class TestPlanSubmissionNoCompositeProposalEvent:
     """Plan-task terminal transitions emit `task.completed` alone."""
 
     def test_plan_accept_emits_only_task_completed(
-        self, make_store: Callable[..., InMemoryStore]
+        self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         store.create_plan_task("t-plan")
