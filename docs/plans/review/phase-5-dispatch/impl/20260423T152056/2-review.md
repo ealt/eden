@@ -1,0 +1,9 @@
+**Findings**
+
+- **Bug** — malformed `evaluate status="error"` submissions now terminalize the task as `validation_error` but leave the trial in `starting`, which conflicts with the role contract. In [store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:524), [store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:559), and [store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:916), `validate_terminal()` routes malformed evaluate-`error` payloads to `reject(validation_error)`, and `_reject_evaluate()` then skips all trial writes whenever `reason == "validation_error"`. I reproduced this with `status="error"` plus an invalid `artifacts_uri`: the task ends `failed`, but the trial stays `starting` with no `completed_at` and no `trial.errored` event. That contradicts 03 §4.4 / 04 §4.3, which require `status=="error"` to drive the referenced trial to `error`. The new test at [test_store_hardening.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/tests/test_store_hardening.py:620) currently locks in that wrong behavior.
+
+- **Nit** — the driver module docstring is stale after the `validate_terminal()` refactor. [driver.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/driver.py:15) still says finalization asks `validate_acceptance` about malformed `success` submissions, but the implementation now uses `validate_terminal()` for both success and error paths.
+
+**Assessment**
+
+Needs one more round. The submission deep-copy fix works, and the previous crash-on-terminal-validation paths are closed for the cases I probed. The remaining issue is narrower now, but it is still a spec-level bug in the evaluate `status="error"` path.

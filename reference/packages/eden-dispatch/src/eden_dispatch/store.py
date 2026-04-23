@@ -14,6 +14,14 @@ applying them in one shot at the end of the operation; any
 precondition failure raises before `commit`, so readers never observe
 a partial write.
 
+Every stored object is a deep copy of the value passed in, and every
+read-side return is a deep copy of the stored value. Without this a
+caller could mutate an `eden_contracts` Pydantic model in place (those
+models are not frozen) and silently corrupt store state or the event
+log without going through a store method — a direct violation of
+05 §2. The internal dicts hold the canonical copies; callers see
+snapshots.
+
 The ``submit`` operation is idempotent per `04-task-protocol.md` §4.2:
 a resubmit with the current token and a content-equivalent payload
 succeeds without mutating state; an inconsistent resubmit is rejected.
@@ -27,10 +35,22 @@ Integration (`06-integrator.md`) is collapsed into a single
 topology to express, so it persists only the ``trial_commit_sha``
 field + the ``trial.integrated`` event. Phase 7 will replace this
 with a real git integrator.
+
+Role negative rules (`03-roles.md` §1.2) are **not** structurally
+enforced by this store. The store exposes every mutating operation
+(``create_trial``, ``integrate_trial``, ``mark_proposal_ready``, …)
+to every caller; the scripted reference workers comply by
+construction, but a misbehaving worker with access to the store
+could violate the negative rules. Phase 11's conformance suite is
+the correct place to detect such violations in a
+deployment-agnostic way; an in-process reference store could only
+enforce them by introducing role-scoped handles, which would be
+substantial surface for no extra protocol guarantee.
 """
 
 from __future__ import annotations
 
+import copy
 import itertools
 import secrets
 from collections.abc import Callable, Iterable, Iterator
@@ -46,6 +66,7 @@ from eden_contracts import (
     FailReason,
     ImplementPayload,
     ImplementTask,
+    MetricsSchema,
     PlanPayload,
     PlanTask,
     Proposal,
@@ -54,6 +75,7 @@ from eden_contracts import (
     TaskClaim,
     Trial,
 )
+from pydantic import BaseModel, ValidationError
 
 from .errors import (
     AlreadyExists,
@@ -67,6 +89,14 @@ from .errors import (
 PlanStatus = Literal["success", "error"]
 ImplementStatus = Literal["success", "error"]
 EvaluateStatus = Literal["success", "error", "eval_error"]
+
+_METRIC_PY_TYPES: dict[str, tuple[type, ...]] = {
+    # spec/v0/02-data-model.md §1.3 type mapping: integer / real / text.
+    # bool is excluded from "integer" even though it is a Python int subclass.
+    "integer": (int,),
+    "real": (int, float),
+    "text": (str,),
+}
 
 
 @dataclass(frozen=True)
@@ -117,6 +147,42 @@ class _Tx:
     events: list[Event] = field(default_factory=list)
 
 
+def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
+    """Return a copy of ``model`` with ``changes`` applied and re-validated.
+
+    This replaces Pydantic's ``model_copy(update=...)``, which does
+    **not** re-run validators. Without re-validation a caller could
+    stamp an invalid ``commit_sha``, ``artifacts_uri``, or
+    ``metrics`` shape onto a stored trial. Re-validating on every
+    update is the reference store's way of honoring ``03-roles.md``
+    §3.4, §4.4 and ``08-storage.md`` §3.
+
+    Passing ``None`` for a field removes it (matches the ``NotNone``
+    rule on optional typed fields in ``_common.py``: absent is
+    permitted, explicit null is not).
+    """
+    data = model.model_dump(mode="json", exclude_none=True)
+    for key, value in changes.items():
+        if value is None:
+            data.pop(key, None)
+        elif isinstance(value, BaseModel):
+            data[key] = value.model_dump(mode="json", exclude_none=True)
+        else:
+            data[key] = value
+    return type(model).model_validate(data)
+
+
+def _deep[M: BaseModel](model: M) -> M:
+    """Return a deep copy of a Pydantic model.
+
+    Used to insulate readers (``read_*``, ``list_*``, ``events``)
+    from in-place mutation of stored values, and to insulate the
+    store from mutation of caller-supplied values at ``create_*``
+    time.
+    """
+    return model.model_copy(deep=True)
+
+
 class InMemoryStore:
     """Reference in-memory implementation of the three v0 stores.
 
@@ -129,11 +195,13 @@ class InMemoryStore:
         self,
         experiment_id: str,
         *,
+        metrics_schema: MetricsSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         token_factory: Callable[[], str] | None = None,
     ) -> None:
         self._experiment_id = experiment_id
+        self._metrics_schema = metrics_schema
         self._now = now or (lambda: datetime.now(UTC))
         self._event_ids = itertools.count(1)
         self._event_id_factory = event_id_factory or self._default_event_id
@@ -158,33 +226,42 @@ class InMemoryStore:
     # ------------------------------------------------------------------
 
     def read_task(self, task_id: str) -> Task:
-        """Return the current task object, or raise ``NotFound``."""
+        """Return a snapshot of the current task, or raise ``NotFound``."""
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 raise NotFound(f"task {task_id!r}")
-            return task
+            return _deep(task)
 
     def read_proposal(self, proposal_id: str) -> Proposal:
-        """Return the current proposal, or raise ``NotFound``."""
+        """Return a snapshot of the current proposal, or raise ``NotFound``."""
         with self._lock:
             proposal = self._proposals.get(proposal_id)
             if proposal is None:
                 raise NotFound(f"proposal {proposal_id!r}")
-            return proposal
+            return _deep(proposal)
 
     def read_trial(self, trial_id: str) -> Trial:
-        """Return the current trial, or raise ``NotFound``."""
+        """Return a snapshot of the current trial, or raise ``NotFound``."""
         with self._lock:
             trial = self._trials.get(trial_id)
             if trial is None:
                 raise NotFound(f"trial {trial_id!r}")
-            return trial
+            return _deep(trial)
 
     def read_submission(self, task_id: str) -> Submission | None:
-        """Return the committed submission for a task, or ``None`` if not submitted."""
+        """Return the committed submission for a task, or ``None`` if not submitted.
+
+        Returns a deep copy. Submission dataclasses are ``frozen``,
+        but their nested ``metrics`` dict is not; without deep copy a
+        caller could mutate the committed metrics in place and
+        corrupt future idempotency decisions.
+        """
         with self._lock:
-            return self._submissions.get(task_id)
+            submission = self._submissions.get(task_id)
+            if submission is None:
+                return None
+            return copy.deepcopy(submission)
 
     def list_tasks(
         self,
@@ -192,7 +269,7 @@ class InMemoryStore:
         kind: str | None = None,
         state: str | None = None,
     ) -> list[Task]:
-        """Return tasks matching an optional ``kind`` and ``state`` filter."""
+        """Return snapshots of tasks matching an optional ``kind`` and ``state``."""
         with self._lock:
             out: list[Task] = []
             for task in self._tasks.values():
@@ -200,45 +277,35 @@ class InMemoryStore:
                     continue
                 if state is not None and task.state != state:
                     continue
-                out.append(task)
+                out.append(_deep(task))
             return out
 
     def list_proposals(self, *, state: str | None = None) -> list[Proposal]:
-        """Return proposals matching an optional ``state`` filter."""
+        """Return snapshots of proposals matching an optional ``state`` filter."""
         with self._lock:
-            out = [
-                p
+            return [
+                _deep(p)
                 for p in self._proposals.values()
                 if state is None or p.state == state
             ]
-            return out
 
     def list_trials(self, *, status: str | None = None) -> list[Trial]:
-        """Return trials matching an optional ``status`` filter."""
+        """Return snapshots of trials matching an optional ``status`` filter."""
         with self._lock:
-            out = [
-                t
+            return [
+                _deep(t)
                 for t in self._trials.values()
                 if status is None or t.status == status
             ]
-            return out
 
     def events(self) -> list[Event]:
-        """Return a snapshot of the full event log in append order."""
-        with self._lock:
-            return list(self._events)
+        """Return an ordered snapshot of the full event log.
 
-    def subscribe(self) -> Iterator[Event]:
-        """Yield every event currently in the log. Call again to pick up new events.
-
-        Reference subscription: take-a-snapshot-now, not a live
-        stream. The spec requires at-least-once delivery with full
-        replay (§4.3, §4.4); a single snapshot read satisfies that
-        for synchronous workers that drive the loop themselves.
+        Every returned event is a deep copy; mutation of the return
+        value cannot rewrite log entries.
         """
         with self._lock:
-            events = list(self._events)
-        yield from events
+            return [_deep(e) for e in self._events]
 
     # ------------------------------------------------------------------
     # Task lifecycle — creation
@@ -261,7 +328,7 @@ class InMemoryStore:
             tx.tasks[task_id] = task
             tx.events.append(self._event("task.created", {"task_id": task_id, "kind": "plan"}))
             self._commit(tx)
-            return task
+            return _deep(task)
 
     def create_implement_task(self, task_id: str, proposal_id: str) -> ImplementTask:
         """Create an ``implement`` task; composite-commits ``proposal.dispatched``.
@@ -291,7 +358,7 @@ class InMemoryStore:
             )
             tx = _Tx()
             tx.tasks[task_id] = task
-            tx.proposals[proposal_id] = proposal.model_copy(update={"state": "dispatched"})
+            tx.proposals[proposal_id] = _validated_update(proposal, state="dispatched")
             tx.events.append(
                 self._event("task.created", {"task_id": task_id, "kind": "implement"})
             )
@@ -302,7 +369,7 @@ class InMemoryStore:
                 )
             )
             self._commit(tx)
-            return task
+            return _deep(task)
 
     def create_evaluate_task(self, task_id: str, trial_id: str) -> EvaluateTask:
         """Create an ``evaluate`` task against a starting trial with ``commit_sha``."""
@@ -335,7 +402,7 @@ class InMemoryStore:
                 self._event("task.created", {"task_id": task_id, "kind": "evaluate"})
             )
             self._commit(tx)
-            return task
+            return _deep(task)
 
     # ------------------------------------------------------------------
     # Task lifecycle — claim, submit, accept, reject, reclaim
@@ -371,8 +438,8 @@ class InMemoryStore:
             claim = TaskClaim(**claim_kwargs)
             now = self._ts()
             tx = _Tx()
-            tx.tasks[task_id] = task.model_copy(
-                update={"state": "claimed", "claim": claim, "updated_at": now}
+            tx.tasks[task_id] = _validated_update(
+                task, state="claimed", claim=claim, updated_at=now
             )
             tx.events.append(
                 self._event(
@@ -381,7 +448,7 @@ class InMemoryStore:
                 )
             )
             self._commit(tx)
-            return claim
+            return _deep(claim)
 
     def submit(self, task_id: str, token: str, submission: Submission) -> None:
         """Transition a claimed task to submitted, persisting the result.
@@ -400,6 +467,7 @@ class InMemoryStore:
             if task.claim is None or task.claim.token != token:
                 raise WrongToken(f"token does not match current claim on {task_id!r}")
             self._require_submission_kind_matches(task, submission)
+            self._validate_submission_ref_binding(task, submission)
 
             if task.state == "submitted":
                 prior = self._submissions.get(task_id)
@@ -415,12 +483,85 @@ class InMemoryStore:
 
             now = self._ts()
             tx = _Tx()
-            tx.tasks[task_id] = task.model_copy(
-                update={"state": "submitted", "updated_at": now}
-            )
-            tx.submissions[task_id] = submission
+            tx.tasks[task_id] = _validated_update(task, state="submitted", updated_at=now)
+            tx.submissions[task_id] = copy.deepcopy(submission)
             tx.events.append(self._event("task.submitted", {"task_id": task_id}))
             self._commit(tx)
+
+    def validate_acceptance(self, task_id: str) -> str | None:
+        """Return an orchestrator-side reason to reject this submission, or ``None``.
+
+        ``04-task-protocol.md`` §4.3 requires the orchestrator to
+        transition a submitted task to ``failed`` when the result
+        violates the role's success contract, even if the worker's
+        declared status was ``success``. This helper performs that
+        validation without mutating state; the driver calls it
+        before deciding between ``accept`` and ``reject``.
+        """
+        with self._lock:
+            task = self._require_task(task_id)
+            if task.state != "submitted":
+                return None
+            submission = self._submissions.get(task_id)
+            if submission is None:
+                return "no submission recorded"
+            if isinstance(submission, PlanSubmission):
+                if submission.status != "success":
+                    return None
+                return self._validate_plan_acceptance(submission)
+            if isinstance(submission, ImplementSubmission):
+                if submission.status != "success":
+                    return None
+                assert isinstance(task, ImplementTask)
+                return self._validate_implement_acceptance(task, submission)
+            if isinstance(submission, EvaluateSubmission):
+                if submission.status != "success":
+                    return None
+                assert isinstance(task, EvaluateTask)
+                return self._validate_evaluate_acceptance(task, submission)
+            return None
+
+    def validate_terminal(self, task_id: str) -> tuple[str, str | None]:
+        """Decide how to terminalize a submitted task.
+
+        Returns one of:
+          * ``("accept", None)`` — worker-declared success and result
+            satisfies the role's success contract.
+          * ``("reject_worker", None)`` — worker-declared error/eval_error,
+            and the recorded result is writable as specified in
+            ``03-roles.md`` §2.4/§3.4/§4.4.
+          * ``("reject_validation", reason)`` — the orchestrator must
+            treat this submission as a validation failure per
+            ``04-task-protocol.md`` §4.3, either because the worker
+            declared ``success`` with a malformed payload, or because
+            the worker declared ``error`` but the accompanying trial
+            fields (metrics, artifacts_uri) would not validate.
+
+        The driver calls this before every ``accept`` / ``reject`` and
+        uses the returned decision to pick the correct `reason`.
+        """
+        with self._lock:
+            task = self._require_task(task_id)
+            if task.state != "submitted":
+                return ("accept", None)
+            submission = self._submissions.get(task_id)
+            if submission is None:
+                return ("reject_validation", "no submission recorded")
+            if submission.status == "success":
+                reason = self.validate_acceptance(task_id)
+                if reason is not None:
+                    return ("reject_validation", reason)
+                return ("accept", None)
+            # status is "error" or "eval_error" — worker_error is the
+            # default, but a malformed payload on `error` still has to
+            # be treated as validation_error so no invalid field
+            # actually lands on the trial.
+            if isinstance(submission, EvaluateSubmission) and submission.status == "error":
+                assert isinstance(task, EvaluateTask)
+                reason = self._validate_evaluate_error(task, submission)
+                if reason is not None:
+                    return ("reject_validation", reason)
+            return ("reject_worker", None)
 
     def accept(self, task_id: str) -> None:
         """Orchestrator accept: ``submitted → completed`` with composite effects.
@@ -501,8 +642,8 @@ class InMemoryStore:
 
             now = self._ts()
             tx = _Tx()
-            tx.tasks[task_id] = task.model_copy(
-                update={"state": "pending", "claim": None, "updated_at": now}
+            tx.tasks[task_id] = _validated_update(
+                task, state="pending", claim=None, updated_at=now
             )
             if task_id in self._submissions:
                 tx.task_deletes_submission.add(task_id)
@@ -513,8 +654,8 @@ class InMemoryStore:
             if task.kind == "implement":
                 trial = self._find_starting_trial_for_implement_task(task)
                 if trial is not None:
-                    tx.trials[trial.trial_id] = trial.model_copy(
-                        update={"status": "error", "completed_at": now}
+                    tx.trials[trial.trial_id] = _validated_update(
+                        trial, status="error", completed_at=now
                     )
                     tx.events.append(
                         self._event("trial.errored", {"trial_id": trial.trial_id})
@@ -541,7 +682,7 @@ class InMemoryStore:
                     f"new proposal must start in 'drafting', not {proposal.state!r}"
                 )
             tx = _Tx()
-            tx.proposals[proposal.proposal_id] = proposal
+            tx.proposals[proposal.proposal_id] = _deep(proposal)
             tx.events.append(
                 self._event("proposal.drafted", {"proposal_id": proposal.proposal_id})
             )
@@ -556,7 +697,7 @@ class InMemoryStore:
                     f"cannot mark proposal ready from state {proposal.state!r}"
                 )
             tx = _Tx()
-            tx.proposals[proposal_id] = proposal.model_copy(update={"state": "ready"})
+            tx.proposals[proposal_id] = _validated_update(proposal, state="ready")
             tx.events.append(self._event("proposal.ready", {"proposal_id": proposal_id}))
             self._commit(tx)
 
@@ -579,7 +720,7 @@ class InMemoryStore:
                     f"does not match store experiment {self._experiment_id!r}"
                 )
             tx = _Tx()
-            tx.trials[trial.trial_id] = trial
+            tx.trials[trial.trial_id] = _deep(trial)
             tx.events.append(
                 self._event(
                     "trial.started",
@@ -602,8 +743,8 @@ class InMemoryStore:
                 )
             now = self._ts()
             tx = _Tx()
-            tx.trials[trial_id] = trial.model_copy(
-                update={"status": "eval_error", "completed_at": now}
+            tx.trials[trial_id] = _validated_update(
+                trial, status="eval_error", completed_at=now
             )
             tx.events.append(self._event("trial.eval_errored", {"trial_id": trial_id}))
             self._commit(tx)
@@ -627,8 +768,8 @@ class InMemoryStore:
                     f"trial {trial_id!r} is already integrated"
                 )
             tx = _Tx()
-            tx.trials[trial_id] = trial.model_copy(
-                update={"trial_commit_sha": trial_commit_sha}
+            tx.trials[trial_id] = _validated_update(
+                trial, trial_commit_sha=trial_commit_sha
             )
             tx.events.append(
                 self._event(
@@ -643,12 +784,16 @@ class InMemoryStore:
     # ------------------------------------------------------------------
 
     def _accept_plan(self, task: Task, submission: Submission) -> None:
-        if not isinstance(submission, PlanSubmission):
-            raise IllegalTransition("plan task requires PlanSubmission")
+        assert isinstance(submission, PlanSubmission)
+        reason = self._validate_plan_acceptance(submission)
+        if reason is not None:
+            raise IllegalTransition(
+                f"cannot accept plan {task.task_id!r}: {reason}"
+            )
         now = self._ts()
         tx = _Tx()
-        tx.tasks[task.task_id] = task.model_copy(
-            update={"state": "completed", "claim": None, "updated_at": now}
+        tx.tasks[task.task_id] = _validated_update(
+            task, state="completed", claim=None, updated_at=now
         )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         self._commit(tx)
@@ -656,8 +801,8 @@ class InMemoryStore:
     def _reject_plan(self, task: Task, reason: FailReason) -> None:
         now = self._ts()
         tx = _Tx()
-        tx.tasks[task.task_id] = task.model_copy(
-            update={"state": "failed", "claim": None, "updated_at": now}
+        tx.tasks[task.task_id] = _validated_update(
+            task, state="failed", claim=None, updated_at=now
         )
         tx.events.append(
             self._event("task.failed", {"task_id": task.task_id, "reason": reason})
@@ -665,36 +810,29 @@ class InMemoryStore:
         self._commit(tx)
 
     def _accept_implement(self, task: Task, submission: Submission) -> None:
-        if not isinstance(submission, ImplementSubmission):
-            raise IllegalTransition("implement task requires ImplementSubmission")
-        if submission.status != "success":
-            raise IllegalTransition(
-                "implement submission with status != 'success' cannot be accepted; "
-                "orchestrator must reject"
-            )
-        if submission.commit_sha is None:
-            raise IllegalTransition(
-                "implement submission with status='success' requires commit_sha"
-            )
         assert isinstance(task, ImplementTask)
-        proposal_id = task.payload.proposal_id
-        proposal = self._require_proposal(proposal_id)
+        assert isinstance(submission, ImplementSubmission)
+        reason = self._validate_implement_acceptance(task, submission)
+        if reason is not None:
+            raise IllegalTransition(
+                f"cannot accept implement {task.task_id!r}: {reason}"
+            )
+        assert submission.commit_sha is not None
+        proposal = self._require_proposal(task.payload.proposal_id)
         trial = self._require_trial(submission.trial_id)
 
         now = self._ts()
         tx = _Tx()
-        tx.tasks[task.task_id] = task.model_copy(
-            update={"state": "completed", "claim": None, "updated_at": now}
+        tx.tasks[task.task_id] = _validated_update(
+            task, state="completed", claim=None, updated_at=now
         )
-        tx.proposals[proposal_id] = proposal.model_copy(update={"state": "completed"})
-        tx.trials[trial.trial_id] = trial.model_copy(
-            update={"commit_sha": submission.commit_sha}
-        )
+        tx.proposals[task.payload.proposal_id] = _validated_update(proposal, state="completed")
+        tx.trials[trial.trial_id] = _validated_update(trial, commit_sha=submission.commit_sha)
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(
             self._event(
                 "proposal.completed",
-                {"proposal_id": proposal_id, "task_id": task.task_id},
+                {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
             )
         )
         self._commit(tx)
@@ -706,32 +844,38 @@ class InMemoryStore:
         reason: FailReason,
     ) -> None:
         assert isinstance(task, ImplementTask)
-        proposal_id = task.payload.proposal_id
-        proposal = self._require_proposal(proposal_id)
+        proposal = self._require_proposal(task.payload.proposal_id)
         trial_for_error: Trial | None = None
         if isinstance(submission, ImplementSubmission):
+            # Only touch the trial if it was created under this very
+            # task's proposal — submission.trial_id is caller-supplied
+            # and could reference an unrelated trial.
             trial = self._trials.get(submission.trial_id)
-            if trial is not None and trial.status == "starting":
+            if (
+                trial is not None
+                and trial.status == "starting"
+                and trial.proposal_id == task.payload.proposal_id
+            ):
                 trial_for_error = trial
 
         now = self._ts()
         tx = _Tx()
-        tx.tasks[task.task_id] = task.model_copy(
-            update={"state": "failed", "claim": None, "updated_at": now}
+        tx.tasks[task.task_id] = _validated_update(
+            task, state="failed", claim=None, updated_at=now
         )
-        tx.proposals[proposal_id] = proposal.model_copy(update={"state": "completed"})
+        tx.proposals[task.payload.proposal_id] = _validated_update(proposal, state="completed")
         tx.events.append(
             self._event("task.failed", {"task_id": task.task_id, "reason": reason})
         )
         tx.events.append(
             self._event(
                 "proposal.completed",
-                {"proposal_id": proposal_id, "task_id": task.task_id},
+                {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
             )
         )
         if trial_for_error is not None:
-            tx.trials[trial_for_error.trial_id] = trial_for_error.model_copy(
-                update={"status": "error", "completed_at": now}
+            tx.trials[trial_for_error.trial_id] = _validated_update(
+                trial_for_error, status="error", completed_at=now
             )
             tx.events.append(
                 self._event("trial.errored", {"trial_id": trial_for_error.trial_id})
@@ -739,34 +883,26 @@ class InMemoryStore:
         self._commit(tx)
 
     def _accept_evaluate(self, task: Task, submission: Submission) -> None:
-        if not isinstance(submission, EvaluateSubmission):
-            raise IllegalTransition("evaluate task requires EvaluateSubmission")
-        if submission.status != "success":
+        assert isinstance(task, EvaluateTask)
+        assert isinstance(submission, EvaluateSubmission)
+        reason = self._validate_evaluate_acceptance(task, submission)
+        if reason is not None:
             raise IllegalTransition(
-                "evaluate submission with status != 'success' cannot be accepted"
+                f"cannot accept evaluate {task.task_id!r}: {reason}"
             )
         trial = self._require_trial(submission.trial_id)
-        if trial.status != "starting":
-            raise IllegalTransition(
-                f"cannot succeed trial {trial.trial_id!r} from status {trial.status!r}"
-            )
-        if trial.commit_sha is None:
-            raise IllegalTransition(
-                f"trial {trial.trial_id!r} has no commit_sha at success time"
-            )
 
         now = self._ts()
         tx = _Tx()
-        tx.tasks[task.task_id] = task.model_copy(
-            update={"state": "completed", "claim": None, "updated_at": now}
+        tx.tasks[task.task_id] = _validated_update(
+            task, state="completed", claim=None, updated_at=now
         )
-        tx.trials[trial.trial_id] = trial.model_copy(
-            update={
-                "status": "success",
-                "metrics": dict(submission.metrics) if submission.metrics else None,
-                "artifacts_uri": submission.artifacts_uri,
-                "completed_at": now,
-            }
+        tx.trials[trial.trial_id] = _validated_update(
+            trial,
+            status="success",
+            metrics=dict(submission.metrics) if submission.metrics else None,
+            artifacts_uri=submission.artifacts_uri,
+            completed_at=now,
         )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(
@@ -783,40 +919,219 @@ class InMemoryStore:
         submission: Submission,
         reason: FailReason,
     ) -> None:
-        if not isinstance(submission, EvaluateSubmission):
-            raise IllegalTransition("evaluate task requires EvaluateSubmission")
-        trial = self._require_trial(submission.trial_id)
+        assert isinstance(task, EvaluateTask)
+        assert isinstance(submission, EvaluateSubmission)
+        # submission.trial_id is already bound to task.payload.trial_id
+        # by _validate_submission_ref_binding at submit time.
+        trial = self._require_trial(task.payload.trial_id)
 
         now = self._ts()
         tx = _Tx()
-        tx.tasks[task.task_id] = task.model_copy(
-            update={"state": "failed", "claim": None, "updated_at": now}
+        tx.tasks[task.task_id] = _validated_update(
+            task, state="failed", claim=None, updated_at=now
         )
         tx.events.append(
             self._event("task.failed", {"task_id": task.task_id, "reason": reason})
         )
 
-        if submission.status == "eval_error":
-            # Per 03-roles.md §4.4: no trial writes; trial stays in starting.
-            pass
-        else:
+        # Trial-side effect depends on the submission status, not on
+        # the orchestrator's reason (03-roles.md §4.4):
+        #   • eval_error — trial stays in starting; evaluator-side
+        #     failure does not condemn the trial.
+        #   • success — reject can only happen via validation_error
+        #     (malformed success). Trial stays in starting: the
+        #     evaluator has not produced a verdict either way.
+        #   • error — trial MUST transition to error, because the
+        #     worker declared trial failure. If the payload is
+        #     malformed (reason=validation_error), drop the invalid
+        #     metrics/artifacts_uri but still record trial.errored.
+        if submission.status == "error":
             if trial.status != "starting":
                 raise IllegalTransition(
                     f"cannot error trial {trial.trial_id!r} from status {trial.status!r}"
                 )
-            tx.trials[trial.trial_id] = trial.model_copy(
-                update={
-                    "status": "error",
-                    "metrics": (
-                        dict(submission.metrics) if submission.metrics else None
-                    ),
-                    "artifacts_uri": submission.artifacts_uri,
-                    "completed_at": now,
-                }
-            )
+            update_kwargs: dict[str, Any] = {"status": "error", "completed_at": now}
+            if reason != "validation_error":
+                if submission.metrics is not None:
+                    self._validate_metrics(submission.metrics)
+                    update_kwargs["metrics"] = dict(submission.metrics)
+                if submission.artifacts_uri is not None:
+                    update_kwargs["artifacts_uri"] = submission.artifacts_uri
+            tx.trials[trial.trial_id] = _validated_update(trial, **update_kwargs)
             tx.events.append(self._event("trial.errored", {"trial_id": trial.trial_id}))
+        # status in {"eval_error", "success"} — no trial-side writes.
 
         self._commit(tx)
+
+    # ------------------------------------------------------------------
+    # Validation helpers
+    # ------------------------------------------------------------------
+
+    def _validate_submission_ref_binding(
+        self, task: Task, submission: Submission
+    ) -> None:
+        """Reject a submission whose referenced IDs don't match the task.
+
+        Per ``04-task-protocol.md`` §4.1, the submission's result
+        payload is scoped to the task it is being submitted against.
+        A plan submission's proposal_ids must reference existing
+        proposals (03-roles §2.4); an implement submission's
+        trial_id must refer to a trial under the task's proposal
+        (03-roles §3.4); an evaluate submission's trial_id must
+        equal the task payload's trial_id (03-roles §4.4).
+        """
+        if isinstance(submission, PlanSubmission):
+            for pid in submission.proposal_ids:
+                proposal = self._proposals.get(pid)
+                if proposal is None:
+                    raise IllegalTransition(
+                        f"plan submission references unknown proposal {pid!r}"
+                    )
+                if proposal.state == "drafting":
+                    raise IllegalTransition(
+                        f"plan submission references drafting proposal {pid!r}; "
+                        "planner MUST NOT submit while proposals are in drafting "
+                        "(03-roles.md §2.4)"
+                    )
+        elif isinstance(submission, ImplementSubmission):
+            assert isinstance(task, ImplementTask)
+            trial = self._trials.get(submission.trial_id)
+            if trial is None:
+                raise IllegalTransition(
+                    f"implement submission references unknown trial "
+                    f"{submission.trial_id!r}"
+                )
+            if trial.proposal_id != task.payload.proposal_id:
+                raise IllegalTransition(
+                    f"implement submission trial_id={submission.trial_id!r} "
+                    f"belongs to proposal {trial.proposal_id!r}, not the "
+                    f"task's proposal {task.payload.proposal_id!r}"
+                )
+        elif isinstance(submission, EvaluateSubmission):
+            assert isinstance(task, EvaluateTask)
+            if submission.trial_id != task.payload.trial_id:
+                raise IllegalTransition(
+                    f"evaluate submission trial_id={submission.trial_id!r} "
+                    f"does not match task's trial {task.payload.trial_id!r}"
+                )
+
+    def _validate_plan_acceptance(self, submission: PlanSubmission) -> str | None:
+        for pid in submission.proposal_ids:
+            proposal = self._proposals.get(pid)
+            if proposal is None:
+                return f"proposal {pid!r} no longer exists"
+            if proposal.state == "drafting":
+                return f"proposal {pid!r} is still in drafting at accept time"
+        return None
+
+    def _validate_implement_acceptance(
+        self, task: ImplementTask, submission: ImplementSubmission
+    ) -> str | None:
+        if submission.commit_sha is None:
+            return "success submission requires commit_sha (03-roles.md §3.4)"
+        trial = self._trials.get(submission.trial_id)
+        if trial is None:
+            return f"referenced trial {submission.trial_id!r} does not exist"
+        if trial.proposal_id != task.payload.proposal_id:
+            return (
+                f"referenced trial {submission.trial_id!r} belongs to a "
+                "different proposal"
+            )
+        if trial.status != "starting":
+            return (
+                f"referenced trial {submission.trial_id!r} is "
+                f"{trial.status!r}, not 'starting'"
+            )
+        # Dry-run the trial write so an invalid commit_sha pattern
+        # surfaces as validation_error instead of crashing accept.
+        try:
+            _validated_update(trial, commit_sha=submission.commit_sha)
+        except ValidationError as exc:
+            return f"invalid commit_sha: {exc.errors()[0]['msg']}"
+        return None
+
+    def _validate_evaluate_acceptance(
+        self, task: EvaluateTask, submission: EvaluateSubmission
+    ) -> str | None:
+        if submission.trial_id != task.payload.trial_id:
+            return "submission trial_id does not match task's trial_id"
+        trial = self._trials.get(submission.trial_id)
+        if trial is None:
+            return f"trial {submission.trial_id!r} does not exist"
+        if trial.status != "starting":
+            return f"trial {submission.trial_id!r} is {trial.status!r}, not 'starting'"
+        if trial.commit_sha is None:
+            return f"trial {submission.trial_id!r} has no commit_sha"
+        if submission.metrics is None:
+            return "success submission requires metrics (03-roles.md §4.4)"
+        try:
+            self._validate_metrics(submission.metrics)
+        except InvalidPrecondition as exc:
+            return str(exc)
+        # Dry-run the trial write so an invalid artifacts_uri (or
+        # any other field) surfaces as validation_error instead of
+        # crashing accept.
+        try:
+            _validated_update(
+                trial,
+                status="success",
+                metrics=dict(submission.metrics),
+                artifacts_uri=submission.artifacts_uri,
+                completed_at=self._ts(),
+            )
+        except ValidationError as exc:
+            return f"invalid trial update: {exc.errors()[0]['msg']}"
+        return None
+
+    def _validate_evaluate_error(
+        self, task: EvaluateTask, submission: EvaluateSubmission
+    ) -> str | None:
+        """Validate fields that a `status=error` evaluate submit would write."""
+        if submission.trial_id != task.payload.trial_id:
+            return "submission trial_id does not match task's trial_id"
+        trial = self._trials.get(submission.trial_id)
+        if trial is None:
+            return f"trial {submission.trial_id!r} does not exist"
+        if submission.metrics is not None:
+            try:
+                self._validate_metrics(submission.metrics)
+            except InvalidPrecondition as exc:
+                return str(exc)
+        try:
+            _validated_update(
+                trial,
+                status="error",
+                metrics=dict(submission.metrics) if submission.metrics else None,
+                artifacts_uri=submission.artifacts_uri,
+                completed_at=self._ts(),
+            )
+        except ValidationError as exc:
+            return f"invalid trial update: {exc.errors()[0]['msg']}"
+        return None
+
+    def _validate_metrics(self, metrics: dict[str, Any]) -> None:
+        """Validate metrics against the registered schema (``08-storage.md`` §4)."""
+        if self._metrics_schema is None:
+            return
+        schema = self._metrics_schema.root
+        for key, value in metrics.items():
+            if key not in schema:
+                raise InvalidPrecondition(
+                    f"metric key {key!r} is not in the experiment's metrics_schema"
+                )
+            if value is None:
+                continue
+            mtype = schema[key]
+            # Reject bools for integer/real per spec §1.3 (bool is a separate domain).
+            if isinstance(value, bool):
+                raise InvalidPrecondition(
+                    f"metric {key!r} is bool; declared type is {mtype!r}"
+                )
+            expected = _METRIC_PY_TYPES[mtype]
+            if not isinstance(value, expected):
+                raise InvalidPrecondition(
+                    f"metric {key!r} value {value!r} is not of declared type {mtype!r}"
+                )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -913,10 +1228,16 @@ class InMemoryStore:
 def _submissions_equivalent(a: Submission, b: Submission) -> bool:
     """Content equivalence per ``04-task-protocol.md`` §4.2.
 
-    Plan: compare status and the *set* of proposal_ids (order is not
-    significant per ``03-roles.md`` §2.4). Implement: compare status,
-    trial_id, commit_sha. Evaluate: compare status, trial_id, metrics
-    (as JSON values, so dict equality), artifacts_uri.
+    The normative fields per role (§4.2):
+      plan     — status + set of proposal_ids (order not significant).
+      implement — status + trial_id + commit_sha.
+      evaluate — status + trial_id + metrics (as JSON values).
+
+    ``artifacts_uri`` is deliberately absent from evaluate equivalence:
+    §4.2 does not list it, so two submissions that agree on the
+    normative fields are equivalent even if they differ in
+    artifacts_uri, and the first submission's artifacts_uri is the
+    committed one.
     """
     if type(a) is not type(b):
         return False
@@ -933,7 +1254,6 @@ def _submissions_equivalent(a: Submission, b: Submission) -> bool:
             a.status == b.status
             and a.trial_id == b.trial_id
             and a.metrics == b.metrics
-            and a.artifacts_uri == b.artifacts_uri
         )
     return False
 

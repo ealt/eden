@@ -1,0 +1,11 @@
+**Findings**
+
+- **Risk** — [store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:301) still exposes the event log only as a full snapshot via `events()`. That is fine for the in-process Phase 5 loop, but it is still short of the storage/event-log surface described in 08 §2.1 / 05 §4 if this implementation is being read as full storage-contract conformance rather than the scoped in-memory reference.
+
+- **Risk** — [workers.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/workers.py:98), [workers.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/workers.py:164), [workers.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/workers.py:230), [store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:314) still enforce the role negative rules by convention, not by capability boundaries. The scripted workers behave correctly, but a different in-process caller still has direct access to all store mutators. That remains a downstream Phase 8 concern, not a Round 3 regression.
+
+I did not find a remaining bug in the Round 3 delta. The evaluate `status="error"` path is now aligned with 03 §4.4 / 04 §4.3: malformed payloads route to `task.failed(reason="validation_error")`, the trial still transitions to `error`, invalid trial fields are dropped, and `trial.errored` is emitted ([store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:524), [store.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/store.py:916), [test_store_hardening.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/tests/test_store_hardening.py:615)). The driver docstring is also corrected ([driver.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/driver.py:15)). I re-ran `uv run pytest -q reference/packages/eden-dispatch/tests`; `57 passed`.
+
+**Assessment**
+
+Ready for Phase 5 sign-off, with the previously deferred storage-surface and capability-isolation risks unchanged.

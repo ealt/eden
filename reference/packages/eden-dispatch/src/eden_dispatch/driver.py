@@ -11,20 +11,24 @@ Every write goes through the store, so the transactional invariant
 (``05-event-protocol.md`` §2) is enforced regardless of driver
 behavior. The driver's own responsibility is scheduling: decide which
 task to move next, and who to give it to.
+
+Finalization honors ``04-task-protocol.md`` §4.3: a submission that
+declared ``success`` but does not satisfy the role's success contract,
+or a `status="error"` evaluate submission whose metrics/artifacts_uri
+would fail validation, turns into ``task.failed`` with
+``reason=validation_error``. The driver asks the store via
+``validate_terminal`` which terminal transition to issue — accept,
+reject(worker_error), or reject(validation_error) — and takes that
+action.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from eden_contracts import EvaluateTask, ImplementTask
+from eden_contracts import EvaluateTask
 
-from .store import (
-    EvaluateSubmission,
-    ImplementSubmission,
-    InMemoryStore,
-    PlanSubmission,
-)
+from .store import InMemoryStore
 from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 
@@ -56,28 +60,38 @@ def run_experiment(
     while True:
         progress = False
         progress |= planner.run_pending(store) > 0
-        progress |= _finalize_submitted_plans(store)
+        progress |= _finalize_submitted(store, kind="plan")
         progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
         progress |= implementer.run_pending(store) > 0
-        progress |= _finalize_submitted_implements(store)
+        progress |= _finalize_submitted(store, kind="implement")
         progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
         progress |= evaluator.run_pending(store) > 0
-        progress |= _finalize_submitted_evaluates(store)
+        progress |= _finalize_submitted(store, kind="evaluate")
         if integrator_commit_factory is not None:
             progress |= _promote_successful_trials(store, integrator_commit_factory)
         if not progress:
             return
 
 
-def _finalize_submitted_plans(store: InMemoryStore) -> bool:
+def _finalize_submitted(store: InMemoryStore, *, kind: str) -> bool:
+    """Accept/reject every submitted task of ``kind``.
+
+    Uses ``store.validate_terminal`` to pick the right terminal
+    transition: accept, reject(worker_error), or reject(validation_error).
+    Malformed payloads on either success or error submissions surface
+    as ``validation_error`` rather than propagating as exceptions, so
+    the task always reaches a terminal state (``04-task-protocol.md``
+    §4.3).
+    """
     progress = False
-    for task in store.list_tasks(kind="plan", state="submitted"):
-        submission = store.read_submission(task.task_id)
-        assert isinstance(submission, PlanSubmission)
-        if submission.status == "success":
+    for task in store.list_tasks(kind=kind, state="submitted"):
+        decision, _reason = store.validate_terminal(task.task_id)
+        if decision == "accept":
             store.accept(task.task_id)
-        else:
+        elif decision == "reject_worker":
             store.reject(task.task_id, "worker_error")
+        else:
+            store.reject(task.task_id, "validation_error")
         progress = True
     return progress
 
@@ -93,20 +107,6 @@ def _dispatch_implement_tasks(
     return progress
 
 
-def _finalize_submitted_implements(store: InMemoryStore) -> bool:
-    progress = False
-    for task in store.list_tasks(kind="implement", state="submitted"):
-        assert isinstance(task, ImplementTask)
-        submission = store.read_submission(task.task_id)
-        assert isinstance(submission, ImplementSubmission)
-        if submission.status == "success":
-            store.accept(task.task_id)
-        else:
-            store.reject(task.task_id, "worker_error")
-        progress = True
-    return progress
-
-
 def _dispatch_evaluate_tasks(
     store: InMemoryStore, factory: Callable[[], str]
 ) -> bool:
@@ -114,20 +114,6 @@ def _dispatch_evaluate_tasks(
     for trial in _list_trials_needing_evaluation(store):
         task_id = factory()
         store.create_evaluate_task(task_id, trial.trial_id)
-        progress = True
-    return progress
-
-
-def _finalize_submitted_evaluates(store: InMemoryStore) -> bool:
-    progress = False
-    for task in store.list_tasks(kind="evaluate", state="submitted"):
-        assert isinstance(task, EvaluateTask)
-        submission = store.read_submission(task.task_id)
-        assert isinstance(submission, EvaluateSubmission)
-        if submission.status == "success":
-            store.accept(task.task_id)
-        else:
-            store.reject(task.task_id, "worker_error")
         progress = True
     return progress
 

@@ -25,10 +25,10 @@ def _make_ready_proposal(store: InMemoryStore, proposal_id: str) -> None:
     proposal = Proposal(
         proposal_id=proposal_id,
         experiment_id=store.experiment_id,
-        slug="change-x",
+        slug=f"change-{proposal_id}",
         priority=1.0,
         parent_commits=["a" * 40],
-        artifacts_uri="https://artifacts.example/p1",
+        artifacts_uri=f"https://artifacts.example/{proposal_id}",
         state="drafting",
         created_at="2026-04-23T00:00:00.000Z",
     )
@@ -207,6 +207,8 @@ class TestIdempotentResubmit:
 
     def test_identical_resubmit_is_noop(self, make_store) -> None:
         store = make_store()
+        _make_ready_proposal(store, "p1")
+        _make_ready_proposal(store, "p2")
         store.create_plan_task("t1")
         claim = store.claim("t1", "planner-1")
         store.submit("t1", claim.token, PlanSubmission(status="success", proposal_ids=("p1", "p2")))
@@ -217,6 +219,8 @@ class TestIdempotentResubmit:
     def test_set_equivalent_resubmit_accepted(self, make_store) -> None:
         """§4.2: plan proposal_ids compared as sets, order not significant."""
         store = make_store()
+        _make_ready_proposal(store, "p1")
+        _make_ready_proposal(store, "p2")
         store.create_plan_task("t1")
         claim = store.claim("t1", "planner-1")
         store.submit("t1", claim.token, PlanSubmission(status="success", proposal_ids=("p1", "p2")))
@@ -225,6 +229,7 @@ class TestIdempotentResubmit:
 
     def test_conflicting_resubmit_rejected(self, make_store) -> None:
         store = make_store()
+        _make_ready_proposal(store, "p1")
         store.create_plan_task("t1")
         claim = store.claim("t1", "planner-1")
         store.submit("t1", claim.token, PlanSubmission(status="success", proposal_ids=("p1",)))
