@@ -1,0 +1,52 @@
+[project]
+name = "eden"
+version = "0"
+description = "EDEN workspace root (non-installable). Reference-implementation packages live under reference/packages/*."
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+# Add future reference packages here as they are scaffolded; a glob over
+# `reference/packages/*` would pick up the .gitkeep placeholder directories
+# that Phase 0 created for packages landing in later phases.
+members = ["reference/packages/eden-contracts"]
+
+[tool.uv.sources]
+eden-contracts = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7",
+    "pyright>=1.1.380",
+    "pytest>=8.0",
+    "jsonschema>=4.21",
+    "referencing>=0.30",
+    "pyyaml>=6.0",
+    "eden-contracts",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["A", "B", "D", "E", "F", "I", "PT", "SIM", "UP"]
+ignore = ["D100", "D104", "D105", "D107", "SIM108"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"reference/packages/*/tests/**" = ["D"]
+
+[tool.pyright]
+include = ["reference/packages/eden-contracts"]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+reportUnnecessaryTypeIgnoreComment = "warning"
+reportMissingTypeStubs = "none"
+
+[tool.pytest.ini_options]
+testpaths = ["reference/packages/eden-contracts/tests"]

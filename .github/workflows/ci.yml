@@ -48,3 +48,78 @@ jobs:
           check-jsonschema \
             --schemafile spec/v0/schemas/experiment-config.schema.json \
             tests/fixtures/experiment/.eden/config.yaml
+
+  python-lint:
+    name: python-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check .
+
+  python-typecheck:
+    name: python-typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Pyright
+        run: uv run pyright
+
+  python-test:
+    name: python-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Pytest
+        run: uv run pytest -q
+
+  schema-parity:
+    name: schema-parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Schema ↔ model parity
+        run: |
+          uv run pytest -q \
+            reference/packages/eden-contracts/tests/test_schema_parity.py \
+            reference/packages/eden-contracts/tests/test_roundtrip.py

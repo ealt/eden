@@ -23,18 +23,21 @@ with other conforming components.
 
 ## Status
 
-**Phase 2 complete.** Both Phase 2 chapters have landed on the
-protected `main`: `spec/v0/03-roles.md` (planner, implementer,
-evaluator, integrator contracts) and `spec/v0/04-task-protocol.md`
-(task state machine, claim tokens, idempotent submission,
-reclamation policy). Together with the Phase 1 core-concepts
-chapters, six JSON Schemas, the migrated experiment fixture, and
-the `docs-lint` + `schema-validity` CI jobs, the protocol surface
-the reference implementation will target is fully specified for
-the planner/implementer/evaluator lifecycle. There is still **no
-runnable code yet** — the reference implementation lands in
-Phase 3. Phase 3 next ports a Pydantic-bound reference contracts
-package and wires schema-model parity into CI. See
+**Phase 3 complete.** The reference repository now ships its first
+Python package, `reference/packages/eden-contracts` — Pydantic v2
+bindings for all six spec/v0 JSON Schemas, with a discriminated-union
+task model, strict numeric parsing, URI and date-time format
+validation, and enforcement of the cross-field invariants the schemas
+express via `if/then/else` (task claim-presence, per-kind payloads,
+reserved metric names). A uv workspace wires ruff, pyright, and pytest
+at the repo root, and CI now runs six jobs — `docs-lint`,
+`schema-validity`, `python-lint`, `python-typecheck`, `python-test`,
+and `schema-parity`. The `schema-parity` job enforces that every
+fixture accepted by the models is also accepted by the JSON Schemas
+and vice versa, plus a round-trip check on `model_dump(exclude_none=
+True)`. There is still **no end-to-end runnable orchestration** —
+that starts landing in Phase 5. Phase 4 is next: event protocol,
+integrator, and storage specification. See
 [`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
 
 ## Contributing
