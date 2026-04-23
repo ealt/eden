@@ -1,0 +1,41 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/phase-5-dispatch/impl/20260423T152056/2.md	2026-04-23 15:49:47
++++ /Users/ericalt/Documents/eden/docs/plans/review/phase-5-dispatch/impl/20260423T152056/3.md	2026-04-23 15:54:00
+@@ -226,7 +226,35 @@
+ / replay API is a Phase 6 concern, where the storage backend becomes
+ real. Documented explicitly in the module docstring.
+ 
+-### Round 2 — awaiting follow-up review
++### Round 2 — addressed
+ 
+-Pytest: 158 passing (80 contracts + 78 dispatch). ruff + pyright +
+-markdownlint + spec-xref-check all clean.
++**Bug: malformed evaluate `status="error"` left the trial in starting.**
++Correct. Per 03-roles.md §4.4, `status="error"` always drives the trial
++to `error` — the worker declared trial failure, independent of whether
++the payload fields are valid. Refactored `_reject_evaluate`:
++
++- Trial-side transition is now a function of `submission.status`, not
++  of the orchestrator's reject `reason`.
++- `status="error"` → trial transitions to `error`, `completed_at` is
++  written, `trial.errored` emitted. If `reason=="validation_error"`,
++  the invalid `metrics`/`artifacts_uri` are dropped; the trial-side
++  transition itself still happens.
++- `status="eval_error"` → trial stays in `starting` (§4.4 evaluator-
++  side failure).
++- `status="success"` (only reachable via validation_error on a
++  malformed success) → trial stays in `starting` (orchestrator never
++  observed a valid success verdict).
++
++The test that previously encoded the wrong behavior
++(`test_error_submission_with_bad_metrics_routed_to_validation_error`)
++now asserts the correct post-condition: `trial.status=="error"`,
++`metrics=None` (dropped), `completed_at` set, `trial.errored` in the
++log.
++
++**Nit: stale driver docstring.** Updated to reference
++`validate_terminal` rather than `validate_acceptance` and to call out
++the validation-error path for `status="error"` submissions too.
++
++### Round 3 — awaiting follow-up review
++
++Pytest: 158 passing. All gates clean.

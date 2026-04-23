@@ -1,0 +1,56 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/phase-5-dispatch/impl/20260423T152056/1.md	2026-04-23 15:40:08
++++ /Users/ericalt/Documents/eden/docs/plans/review/phase-5-dispatch/impl/20260423T152056/2.md	2026-04-23 15:49:47
+@@ -181,4 +181,52 @@
+ evaluate resubmit equivalence per 04 §4.2). Total: 57 dispatch
+ scenarios + 80 contracts scenarios = 137 pytest; still all green.
+ 
+-### Round 1 — awaiting follow-up review
++### Round 1 — addressed
++
++**Bug: submission mutability leak.** `submit()` now deep-copies the
++submission before storing; `read_submission()` deep-copies on return.
++`EvaluateSubmission.metrics` is a dict (not frozen) so the ``frozen``
++dataclass alone wasn't enough — the deep copy is the fix. New test
++`TestReadIsolation.test_submission_metrics_mutation_does_not_leak`
++verifies both the caller-side mutation and the reader-side mutation
++cannot change the committed submission.
++
++**Bug: malformed submissions still crashed instead of routing to
++`validation_error`.** The store now exposes `validate_terminal(task_id)`
++returning ``(decision, reason)`` where ``decision`` is one of
++``accept`` / ``reject_worker`` / ``reject_validation``. The driver
++consults this before every terminal decision. Additions:
++
++- `_validate_implement_acceptance` now dry-runs
++  `_validated_update(trial, commit_sha=…)`, so an invalid SHA
++  surfaces as ``reject_validation`` instead of raising.
++- `_validate_evaluate_acceptance` now dry-runs the full trial write
++  (status=success, metrics, artifacts_uri, completed_at), catching
++  invalid URIs before the real update.
++- New `_validate_evaluate_error` covers the error path: a
++  `status="error"` evaluate submission with schema-invalid metrics
++  is routed to ``reject_validation`` rather than blowing up inside
++  `_reject_evaluate`.
++- `_reject_evaluate` now skips trial writes whenever
++  `reason=="validation_error"` (treated like `eval_error`: trial
++  stays in ``starting``, task is terminal with no invalid field
++  landing on the trial).
++
++Tests updated: `TestFieldValidationOnUpdate` now asserts end-to-end
++terminalization — invalid `commit_sha` / `artifacts_uri` produce
++`task.failed(validation_error)` and the invalid values never land
++on the trial. `TestMetricsSchemaValidationIndependentOfSuccess` now
++asserts that an error submission with bad metrics also becomes
++`validation_error` with no trial mutation.
++
++**Risk: `events()` still snapshot-only (no `read_range` / replay /
++subscription).** Accepted; Phase 5's scope is the state machine and
++transactional invariant, and the snapshot surface is sufficient for
++the in-process scripted workers and tests. A conforming subscription
++/ replay API is a Phase 6 concern, where the storage backend becomes
++real. Documented explicitly in the module docstring.
++
++### Round 2 — awaiting follow-up review
++
++Pytest: 158 passing (80 contracts + 78 dispatch). ruff + pyright +
++markdownlint + spec-xref-check all clean.

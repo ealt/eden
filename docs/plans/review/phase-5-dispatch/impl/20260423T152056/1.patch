@@ -1,0 +1,81 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/phase-5-dispatch/impl/20260423T152056/0.md	2026-04-23 15:21:37
++++ /Users/ericalt/Documents/eden/docs/plans/review/phase-5-dispatch/impl/20260423T152056/1.md	2026-04-23 15:40:08
+@@ -108,4 +108,77 @@
+ 
+ ## Review Status
+ 
+-Round 0 — awaiting initial review.
++### Round 0 — addressed
++
++All three Round-0 bugs and the tests-overstate-conformance risk were
++addressed. The two risks were accepted with narrower scope.
++
++**Bug: mutable leak.** Every read (`read_task`, `read_proposal`,
++`read_trial`, `list_tasks`, `list_proposals`, `list_trials`,
++`events`) and every creation (`create_proposal`, `create_trial`, and
++the `create_*_task` return value) now goes through `_deep`, which
++deep-copies the Pydantic model. Stored objects and returned objects
++no longer share identity. New `TestReadIsolation` scenarios assert
++that mutating a read or the instance passed to `create_proposal`
++does not corrupt store state.
++
++**Bug: submission not bound to task payload.** Added
++`_validate_submission_ref_binding` at `submit` time and per-kind
++`_validate_*_acceptance` helpers. The store now rejects:
++
++- a plan submission referencing unknown proposals or proposals still
++  in `drafting` (03-roles §2.4),
++- an implement submission whose `trial_id` belongs to a different
++  proposal, lacks a `commit_sha` when `status=success`, or points to
++  a trial that is not `starting`,
++- an evaluate submission whose `trial_id` does not match the task's
++  payload, or whose trial is not `starting`/has no `commit_sha`, or
++  whose `metrics` is absent on `success`.
++
++The driver now calls `store.validate_acceptance` before deciding
++between `accept` and `reject`; malformed success submissions become
++`task.failed(reason=validation_error)` per 04-task-protocol §4.3.
++Negative tests added in `TestSubmissionBinding` and
++`TestValidationErrorRouting`.
++
++**Bug: trial writes bypassed Pydantic validation; no metrics-schema
++enforcement.** Replaced every `model.model_copy(update=...)` with
++`_validated_update`, which dumps + re-validates. Invalid
++`commit_sha` / `artifacts_uri` now fail via Pydantic's pattern and
++RFC-3986 validators. Added a `metrics_schema: MetricsSchema | None`
++constructor parameter and `_validate_metrics`, which enforces
++08-storage §4.3: every key must be in the schema; every value must
++match the declared type (integer / real / text); `bool` is rejected
++for numeric types (spec §1.3 treats the three storage types as
++distinct). Negative tests in `TestMetricsSchemaEnforcement` and
++`TestFieldValidationOnUpdate`.
++
++**Open question: evaluate resubmit includes `artifacts_uri`.**
++Codex flagged this as defensible (03-roles §4.4 mentions it; 04
++§4.2 omits it). I went with the 04 §4.2 reading: equivalence is
++`status + trial_id + metrics`; `artifacts_uri` differences are
++ignored and the first submission is canonical. Scenarios in
++`TestEvaluateResubmitEquivalence` cover both sides of this.
++
++**Risk: `subscribe()` was a misleading name for a snapshot.** I
++removed `subscribe` entirely; `events()` is the only read interface
++and its docstring is explicit that it returns an ordered snapshot.
++A conforming subscription / replay API is a Phase-6 concern (where
++the storage backend becomes real) and out of Phase-5 scope.
++
++**Risk: role negative rules not structurally enforced.** Accepted
++with a docstring note in `store.py` making the scope boundary
++explicit: any caller can call `create_trial`, `integrate_trial`,
++etc. The scripted workers comply by construction; detecting
++non-compliance in an arbitrary deployment is Phase 11's conformance
++suite. An in-process reference could only enforce via role-scoped
++handles, which would be substantial surface for no extra protocol
++guarantee.
++
++**Risk: tests overstated conformance.** 21 new scenarios cover the
++gaps (mutation isolation, submission binding, malformed-success
++routing, metrics-schema enforcement, field validation on update,
++evaluate resubmit equivalence per 04 §4.2). Total: 57 dispatch
++scenarios + 80 contracts scenarios = 137 pytest; still all green.
++
++### Round 1 — awaiting follow-up review

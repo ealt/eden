@@ -11,10 +11,14 @@ package = false
 # Add future reference packages here as they are scaffolded; a glob over
 # `reference/packages/*` would pick up the .gitkeep placeholder directories
 # that Phase 0 created for packages landing in later phases.
-members = ["reference/packages/eden-contracts"]
+members = [
+    "reference/packages/eden-contracts",
+    "reference/packages/eden-dispatch",
+]
 
 [tool.uv.sources]
 eden-contracts = { workspace = true }
+eden-dispatch = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -25,6 +29,7 @@ dev = [
     "referencing>=0.30",
     "pyyaml>=6.0",
     "eden-contracts",
+    "eden-dispatch",
 ]
 
 [tool.ruff]
@@ -42,11 +47,17 @@ convention = "google"
 "reference/packages/*/tests/**" = ["D"]
 
 [tool.pyright]
-include = ["reference/packages/eden-contracts"]
+include = [
+    "reference/packages/eden-contracts",
+    "reference/packages/eden-dispatch",
+]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
 reportUnnecessaryTypeIgnoreComment = "warning"
 reportMissingTypeStubs = "none"
 
 [tool.pytest.ini_options]
-testpaths = ["reference/packages/eden-contracts/tests"]
+testpaths = [
+    "reference/packages/eden-contracts/tests",
+    "reference/packages/eden-dispatch/tests",
+]
