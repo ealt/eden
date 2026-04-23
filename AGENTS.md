@@ -43,6 +43,7 @@ toolchain for the `eden-contracts` reference package are wired up.
 | `uv run pyright` | Type-check the reference Python packages |
 | `uv run pytest -q` | Run the reference-package test suite (includes schema ↔ model parity) |
 | `uv run pytest reference/packages/eden-contracts/tests/test_schema_parity.py` | Run only the schema ↔ Pydantic model parity check |
+| `python3 scripts/spec-xref-check.py` | Validate every `§N.M` reference in `spec/v0/*.md` resolves to a real section heading in its target chapter. Run before committing a normative spec change. |
 
 ### Commands that will exist in later phases
 

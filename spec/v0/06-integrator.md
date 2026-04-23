@@ -239,11 +239,11 @@ submission is extended by this chapter.
 | Field | Type | Source |
 |---|---|---|
 | `trial_id` | string | The trial's `trial_id` ([`02-data-model.md`](02-data-model.md) §7.1). |
-| `proposal_id` | string | The trial's `proposal_id` (§7.1). |
-| `commit_sha` | string | The worker-branch tip the evaluator measured (§7.1). |
-| `parent_commits` | array of string | The trial's `parent_commits`, in order (§7.1). |
+| `proposal_id` | string | The trial's `proposal_id` ([`02-data-model.md`](02-data-model.md) §7.1). |
+| `commit_sha` | string | The worker-branch tip the evaluator measured ([`02-data-model.md`](02-data-model.md) §7.1). |
+| `parent_commits` | array of string | The trial's `parent_commits`, in order ([`02-data-model.md`](02-data-model.md) §7.1). |
 | `metrics` | object | The evaluator's metrics payload ([`03-roles.md`](03-roles.md) §4.4), conforming to the experiment's `metrics_schema`. |
-| `completed_at` | timestamp | The trial's `completed_at` (§7.1). UTC, RFC 3339 profile as elsewhere in the data model. |
+| `completed_at` | timestamp | The trial's `completed_at` ([`02-data-model.md`](02-data-model.md) §7.1). UTC, RFC 3339 profile as elsewhere in the data model. |
 
 Optional fields:
 
