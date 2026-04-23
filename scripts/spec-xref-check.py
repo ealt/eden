@@ -48,6 +48,7 @@ ALL_REF_RE = re.compile(r"§(\d+(?:\.\d+)*)")
 
 
 def build_heading_index(files: list[Path]) -> dict[str, set[str]]:
+    """Return ``{filename: {section_num, …}}`` for every numbered heading."""
     index: dict[str, set[str]] = {}
     for f in files:
         sections: set[str] = set()
@@ -92,6 +93,7 @@ def find_refs(
 
 
 def main() -> int:
+    """Exit 0 if every §-reference resolves; 1 otherwise; 2 on setup error."""
     files = sorted(SPEC_DIR.glob("*.md"))
     if not files:
         print(f"error: no markdown files in {SPEC_DIR}", file=sys.stderr)
