@@ -7,7 +7,6 @@
 
 - Nit — [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:343), §7 says the task protocol interacts with proposal/trial lifecycles “at two points,” but the section now lists three bullets.
 
-**Assessment**
-Most of the previous blockers are fixed. The state-machine contradiction, claim retention through `submitted`, plan idempotency semantics, `eval_error` reachability, reclaim-from-submitted tightening, and the host-model wording all look materially better.
+**Assessment** Most of the previous blockers are fixed. The state-machine contradiction, claim retention through `submitted`, plan idempotency semantics, `eval_error` reachability, reclaim-from-submitted tightening, and the host-model wording all look materially better.
 
 I would still hold merge on the two lifecycle gaps above plus the lingering evaluator self-contradiction. After those are resolved, this pair looks close to ready.

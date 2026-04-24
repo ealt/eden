@@ -23,5 +23,4 @@
 - No project `CLAUDE.md` exists in this repo; I used [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:1) as the governing project instructions.
 - I treated `00`/`01`/`02` and the frozen schemas as authoritative; where `03`/`04` disagree, I treated that as a defect in the new chapters.
 
-**Assessment**
-These chapters are not ready to merge. The blocking issues are the contradictory submit path, the unresolved claim/token model once a task reaches `submitted`, and the lifecycle mismatches against frozen proposal/trial semantics and experiment config. Once those are fixed, a shorter follow-up pass should be enough to clean up the remaining wording-level issues.
+**Assessment** These chapters are not ready to merge. The blocking issues are the contradictory submit path, the unresolved claim/token model once a task reaches `submitted`, and the lifecycle mismatches against frozen proposal/trial semantics and experiment config. Once those are fixed, a shorter follow-up pass should be enough to clean up the remaining wording-level issues.

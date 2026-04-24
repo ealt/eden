@@ -1,96 +1,47 @@
 # Data Model
 
-This chapter defines the shape of the values that flow through the
-EDEN protocol. For each entity it gives the intent, the fields, the
-required/optional split, and the structural invariants that MUST
-hold independent of any behavioral contract.
+This chapter defines the shape of the values that flow through the EDEN protocol. For each entity it gives the intent, the fields, the required/optional split, and the structural invariants that MUST hold independent of any behavioral contract.
 
-Each entity also has a companion JSON Schema under
-[`schemas/`](schemas/). The prose in this chapter and the schema are
-normatively paired: an implementation's data MUST satisfy both. Where
-one is more restrictive than the other, the stricter constraint
-applies.
+Each entity also has a companion JSON Schema under [`schemas/`](schemas/). The prose in this chapter and the schema are normatively paired: an implementation's data MUST satisfy both. Where one is more restrictive than the other, the stricter constraint applies.
 
-Behavioral concerns — when fields may change, which transitions are
-permitted, what guarantees the surrounding store must offer — are
-specified in Chapters [`04-task-protocol.md`](04-task-protocol.md),
-[`05-event-protocol.md`](05-event-protocol.md),
-[`06-integrator.md`](06-integrator.md), and
-[`08-storage.md`](08-storage.md).
+Behavioral concerns — when fields may change, which transitions are permitted, what guarantees the surrounding store must offer — are specified in Chapters [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md), and [`08-storage.md`](08-storage.md).
 
 ## 1. Common types
 
 ### 1.1 Identifiers
 
-Entity identifiers (`task_id`, `trial_id`, `proposal_id`,
-`event_id`) are opaque strings. They MUST be unique within the store
-that issues them. The protocol does not mandate a specific format;
-implementations MAY use integers rendered as strings, UUIDs, or
-other opaque values, so long as equality comparison is
-well-defined.
+Entity identifiers (`task_id`, `trial_id`, `proposal_id`, `event_id`) are opaque strings. They MUST be unique within the store that issues them. The protocol does not mandate a specific format; implementations MAY use integers rendered as strings, UUIDs, or other opaque values, so long as equality comparison is well-defined.
 
 ### 1.2 Timestamps
 
-All timestamps in protocol messages MUST be RFC 3339 strings in
-UTC with second-or-better precision (e.g. `2026-04-23T18:04:01Z`).
-Offset timestamps (e.g. `…-07:00`) MUST NOT be used on the wire:
-every persisted timestamp MUST end with the literal `Z` suffix. A
-consumer MUST NOT assume timestamps are strictly monotonic across
-entities; ordering is established by the event log, not by
-timestamps.
+All timestamps in protocol messages MUST be RFC 3339 strings in UTC with second-or-better precision (e.g. `2026-04-23T18:04:01Z`). Offset timestamps (e.g. `…-07:00`) MUST NOT be used on the wire: every persisted timestamp MUST end with the literal `Z` suffix. A consumer MUST NOT assume timestamps are strictly monotonic across entities; ordering is established by the event log, not by timestamps.
 
 ### 1.3 Metric values
 
-A metric value is one of: a JSON number (for `integer` or `real`
-types), a JSON string (for `text` type), or `null` (when the
-evaluator declined to report). Implementations MUST reject metric
-values whose JSON type does not match the declared metrics-schema
-type.
+A metric value is one of: a JSON number (for `integer` or `real` types), a JSON string (for `text` type), or `null` (when the evaluator declined to report). Implementations MUST reject metric values whose JSON type does not match the declared metrics-schema type.
 
-The `integer` and `real` metric types both travel the wire as JSON
-numbers; they are distinguished by what values each admits:
+The `integer` and `real` metric types both travel the wire as JSON numbers; they are distinguished by what values each admits:
 
-- **`integer`** — a JSON number whose value is an integer (no
-  fractional component). Wire forms such as `3`, `-7`, or `1.0` are
-  accepted; `1.5` MUST be rejected. A conforming orchestrator MUST
-  validate this constraint when persisting a metrics payload.
-- **`real`** — any JSON number, including values with a fractional
-  component.
+- **`integer`** — a JSON number whose value is an integer (no fractional component). Wire forms such as `3`, `-7`, or `1.0` are accepted; `1.5` MUST be rejected. A conforming orchestrator MUST validate this constraint when persisting a metrics payload.
+- **`real`** — any JSON number, including values with a fractional component.
 - **`text`** — a JSON string.
-- **`null`** — allowed for any declared type when the evaluator
-  declined to report that metric.
+- **`null`** — allowed for any declared type when the evaluator declined to report that metric.
 
 ### 1.4 Git references
 
-Commit SHAs are lowercase hexadecimal strings of one of the two
-lengths git supports: **40 characters** (SHA-1) or **64 characters**
-(SHA-256). Every schema that embeds a commit SHA validates against
-this exact pair of lengths; a v0 implementation MUST NOT emit SHAs
-of other lengths on the wire. Branch names follow the namespaces
-defined in [`01-concepts.md`](01-concepts.md) §9.
+Commit SHAs are lowercase hexadecimal strings of one of the two lengths git supports: **40 characters** (SHA-1) or **64 characters** (SHA-256). Every schema that embeds a commit SHA validates against this exact pair of lengths; a v0 implementation MUST NOT emit SHAs of other lengths on the wire. Branch names follow the namespaces defined in [`01-concepts.md`](01-concepts.md) §9.
 
 ### 1.5 URIs
 
-Artifact locations are URIs. The protocol does not mandate a scheme;
-file URLs, S3 URLs, or custom schemes are permitted. A conforming
-artifact store MUST document which schemes it issues.
+Artifact locations are URIs. The protocol does not mandate a scheme; file URLs, S3 URLs, or custom schemes are permitted. A conforming artifact store MUST document which schemes it issues.
 
 ## 2. Experiment config
 
 Schema: [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json).
 
-An experiment config is the declarative input to an experiment. It
-is authored by a user (or generated by tooling) and persisted
-alongside the experiment.
+An experiment config is the declarative input to an experiment. It is authored by a user (or generated by tooling) and persisted alongside the experiment.
 
-The protocol defines only the **host-mechanism-independent core** of
-the config — fields that every conforming implementation needs to
-observe the same semantics. How roles are bound (local subprocess,
-HTTP service, in-process adapter, …) is outside this chapter's
-scope; role binding is specified alongside the role contracts in
-[`03-roles.md`](03-roles.md) (Phase 2). Until then, implementations
-MAY carry role-binding information as additional top-level fields
-without violating this chapter.
+The protocol defines only the **host-mechanism-independent core** of the config — fields that every conforming implementation needs to observe the same semantics. How roles are bound (local subprocess, HTTP service, in-process adapter, …) is outside this chapter's scope; role binding is specified alongside the role contracts in [`03-roles.md`](03-roles.md) (Phase 2). Until then, implementations MAY carry role-binding information as additional top-level fields without violating this chapter.
 
 ### 2.1 Required fields
 
@@ -109,10 +60,7 @@ without violating this chapter.
 | `expr` | string | A scalar expression over fields of `metrics_schema`. |
 | `direction` | string | Either `"maximize"` or `"minimize"`. |
 
-The expression language is implementation-defined but MUST treat
-metric field names as the free variables. A conforming orchestrator
-MUST reject an objective expression that references a name absent
-from `metrics_schema`.
+The expression language is implementation-defined but MUST treat metric field names as the free variables. A conforming orchestrator MUST reject an objective expression that references a name absent from `metrics_schema`.
 
 ### 2.3 Optional fields
 
@@ -123,26 +71,15 @@ from `metrics_schema`.
 
 ### 2.4 Additional top-level fields
 
-Implementations MAY define additional top-level fields for role
-binding and implementation-specific tuning. The experiment-config
-schema does not restrict unknown top-level fields; a conforming
-orchestrator MUST NOT reject a config solely because it carries
-fields this chapter does not define. This forward-compatibility
-rule is intentional: it lets role-binding semantics land in
-[`03-roles.md`](03-roles.md) without breaking previously-valid
-configs.
+Implementations MAY define additional top-level fields for role binding and implementation-specific tuning. The experiment-config schema does not restrict unknown top-level fields; a conforming orchestrator MUST NOT reject a config solely because it carries fields this chapter does not define. This forward-compatibility rule is intentional: it lets role-binding semantics land in [`03-roles.md`](03-roles.md) without breaking previously-valid configs.
 
-An implementation SHOULD document which additional top-level fields
-it consumes.
+An implementation SHOULD document which additional top-level fields it consumes.
 
 ## 3. Task
 
 Schema: [`schemas/task.schema.json`](schemas/task.schema.json).
 
-A task is a work item. It is persisted in the task store and
-advances through a state machine defined in
-[`04-task-protocol.md`](04-task-protocol.md); this section defines
-only its shape.
+A task is a work item. It is persisted in the task store and advances through a state machine defined in [`04-task-protocol.md`](04-task-protocol.md); this section defines only its shape.
 
 ### 3.1 Fields
 
@@ -158,22 +95,15 @@ only its shape.
 
 ### 3.2 State values
 
-The `state` field MUST be one of `"pending"`, `"claimed"`,
-`"submitted"`, `"completed"`, `"failed"`. The legal transitions
-between these states are defined in
-[`04-task-protocol.md`](04-task-protocol.md). The data model
-constrains only that the value be one of the listed strings.
+The `state` field MUST be one of `"pending"`, `"claimed"`, `"submitted"`, `"completed"`, `"failed"`. The legal transitions between these states are defined in [`04-task-protocol.md`](04-task-protocol.md). The data model constrains only that the value be one of the listed strings.
 
 ### 3.3 Payload shape
 
 The `payload` object's shape depends on `kind`.
 
-- `"plan"` — MUST contain `experiment_id` (string). MAY contain
-  planner-specific hints.
-- `"implement"` — MUST contain `proposal_id` (string) referring to
-  a proposal with `state == "ready"` at the time of dispatch.
-- `"evaluate"` — MUST contain `trial_id` (string) referring to a
-  trial with `status == "starting"` and a `commit_sha` set.
+- `"plan"` — MUST contain `experiment_id` (string). MAY contain planner-specific hints.
+- `"implement"` — MUST contain `proposal_id` (string) referring to a proposal with `state == "ready"` at the time of dispatch.
+- `"evaluate"` — MUST contain `trial_id` (string) referring to a trial with `status == "starting"` and a `commit_sha` set.
 
 ### 3.4 Claim object
 
@@ -184,15 +114,7 @@ The `payload` object's shape depends on `kind`.
 | `claimed_at` | yes | timestamp | When the claim was issued. |
 | `expires_at` | no | timestamp | When the task store MAY reclaim. |
 
-The `claim` field MUST be present when `state ∈ {"claimed",
-"submitted"}` and MUST NOT be present for any other state. The
-claim is retained through `"submitted"` so that the task protocol
-can authorize resubmission by token
-([`04-task-protocol.md`](04-task-protocol.md) §4.2); it is cleared
-on reclamation and on the terminal transition to `"completed"` or
-`"failed"`. The schema in
-[`schemas/task.schema.json`](schemas/task.schema.json) enforces this
-presence rule.
+The `claim` field MUST be present when `state ∈ {"claimed", "submitted"}` and MUST NOT be present for any other state. The claim is retained through `"submitted"` so that the task protocol can authorize resubmission by token ([`04-task-protocol.md`](04-task-protocol.md) §4.2); it is cleared on reclamation and on the terminal transition to `"completed"` or `"failed"`. The schema in [`schemas/task.schema.json`](schemas/task.schema.json) enforces this presence rule.
 
 ## 4. Event
 
@@ -214,19 +136,11 @@ Every event MUST provide this envelope:
 
 ### 4.2 Type-specific payload
 
-Each event `type` corresponds to a shape under `data`. The full
-enumeration of types is defined in
-[`05-event-protocol.md`](05-event-protocol.md); at this layer, the
-data model requires only that `data` be a JSON object and that its
-shape match the registered schema for the event's `type`.
+Each event `type` corresponds to a shape under `data`. The full enumeration of types is defined in [`05-event-protocol.md`](05-event-protocol.md); at this layer, the data model requires only that `data` be a JSON object and that its shape match the registered schema for the event's `type`.
 
 ### 4.3 Ordering
 
-Events within a single experiment MUST form a total order consistent
-with causality: if event B describes a state change that depended
-on a state recorded by event A, A MUST precede B in the log. The
-ordering mechanism is a storage concern
-([`08-storage.md`](08-storage.md)).
+Events within a single experiment MUST form a total order consistent with causality: if event B describes a state change that depended on a state recorded by event A, A MUST precede B in the log. The ordering mechanism is a storage concern ([`08-storage.md`](08-storage.md)).
 
 ## 5. Proposal
 
@@ -249,22 +163,17 @@ A proposal is the planner's output.
 
 ### 5.2 Parent commits
 
-`parent_commits` MUST contain at least one SHA. Each SHA MUST name a
-commit reachable from the experiment's starting commit on `main` or
-from an already-completed trial on the canonical trial lineage.
+`parent_commits` MUST contain at least one SHA. Each SHA MUST name a commit reachable from the experiment's starting commit on `main` or from an already-completed trial on the canonical trial lineage.
 
 ## 6. Metrics schema
 
 Schema: [`schemas/metrics-schema.schema.json`](schemas/metrics-schema.schema.json).
 
-A metrics schema is a mapping from metric name to storage type. It
-appears as the `metrics_schema` field of an experiment config and is
-used to validate every metrics payload the evaluator produces.
+A metrics schema is a mapping from metric name to storage type. It appears as the `metrics_schema` field of an experiment config and is used to validate every metrics payload the evaluator produces.
 
 ### 6.1 Shape
 
-The metrics schema is a JSON object whose keys are metric names and
-whose values are type strings.
+The metrics schema is a JSON object whose keys are metric names and whose values are type strings.
 
 - A metric name MUST match `^[A-Za-z_][A-Za-z0-9_]*$`.
 - A type value MUST be one of `"integer"`, `"real"`, `"text"`.
@@ -272,10 +181,7 @@ whose values are type strings.
 
 ### 6.2 Reserved names
 
-The names `trial_id`, `commit_sha`, `parent_commits`, `branch`,
-`status`, `artifacts_uri`, `description`, `timestamp`, `started_at`,
-`completed_at` are reserved by the protocol for use on the trial
-object and MUST NOT appear in a metrics schema.
+The names `trial_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the trial object and MUST NOT appear in a metrics schema.
 
 ## 7. Trial
 
@@ -303,44 +209,18 @@ A trial is one completed attempt.
 
 ### 7.2 Metrics payload
 
-If present, `metrics` MUST be an object whose keys are a subset of
-the declared metrics-schema keys and whose values match the declared
-types (§1.3) or are `null`. Because the metrics-schema is
-per-experiment, [`schemas/trial.schema.json`](schemas/trial.schema.json)
-cannot express this constraint generically and leaves `metrics` as
-an open object; the per-metric type check is a runtime responsibility
-of the orchestrator. A conforming orchestrator MUST reject a metrics
-payload that violates the experiment's metrics-schema, and MUST NOT
-record the trial as `"success"` in that case.
+If present, `metrics` MUST be an object whose keys are a subset of the declared metrics-schema keys and whose values match the declared types (§1.3) or are `null`. Because the metrics-schema is per-experiment, [`schemas/trial.schema.json`](schemas/trial.schema.json) cannot express this constraint generically and leaves `metrics` as an open object; the per-metric type check is a runtime responsibility of the orchestrator. A conforming orchestrator MUST reject a metrics payload that violates the experiment's metrics-schema, and MUST NOT record the trial as `"success"` in that case.
 
 ### 7.3 Status transitions
 
-Trial status transitions are behavioral and are defined alongside
-the task and event protocols in
-[`04-task-protocol.md`](04-task-protocol.md). The data model
-constrains only that the status be one of the listed strings.
+Trial status transitions are behavioral and are defined alongside the task and event protocols in [`04-task-protocol.md`](04-task-protocol.md). The data model constrains only that the status be one of the listed strings.
 
 ## 8. Invariants across entities
 
-This section collects structural invariants that span multiple
-entities. Behavioral invariants (claim semantics, transactional
-event writes) live in the corresponding behavior chapters.
+This section collects structural invariants that span multiple entities. Behavioral invariants (claim semantics, transactional event writes) live in the corresponding behavior chapters.
 
-1. **Identifier scope.** `task_id`, `proposal_id`, `trial_id`, and
-   `event_id` MUST each be unique within a single experiment.
-   Uniqueness across experiments is not required by the protocol
-   but is RECOMMENDED when an implementation shares a store across
-   experiments.
-2. **Reference integrity.** Every `proposal_id` referenced by a
-   task payload or trial MUST name a proposal persisted in the
-   store before the reference is written. Every `trial_id`
-   referenced by an `evaluate` task MUST exist with
-   `status == "starting"` at dispatch time.
-3. **Metrics/schema conformance.** Every metrics payload persisted
-   on a trial MUST validate against the experiment's
-   `metrics_schema` (§6).
-4. **Canonical-lineage single-writer.** Only the integrator MAY
-   write to `trial_commit_sha` on a trial. Workers MUST NOT set or
-   modify this field directly.
-5. **Claim uniqueness.** A task MAY have at most one active
-   `claim` object at any time.
+1. **Identifier scope.** `task_id`, `proposal_id`, `trial_id`, and `event_id` MUST each be unique within a single experiment. Uniqueness across experiments is not required by the protocol but is RECOMMENDED when an implementation shares a store across experiments.
+2. **Reference integrity.** Every `proposal_id` referenced by a task payload or trial MUST name a proposal persisted in the store before the reference is written. Every `trial_id` referenced by an `evaluate` task MUST exist with `status == "starting"` at dispatch time.
+3. **Metrics/schema conformance.** Every metrics payload persisted on a trial MUST validate against the experiment's `metrics_schema` (§6).
+4. **Canonical-lineage single-writer.** Only the integrator MAY write to `trial_commit_sha` on a trial. Workers MUST NOT set or modify this field directly.
+5. **Claim uniqueness.** A task MAY have at most one active `claim` object at any time.

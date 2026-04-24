@@ -1,10 +1,6 @@
 # EDEN Protocol v0
 
-This is the first lineage of the EDEN protocol specification.
-Chapters 00–08 are written as of Phase 8a (07-wire-protocol.md
-lands with the HTTP binding; the originally-slotted control-plane
-content will land as a later chapter in Phase 12). Chapter 09
-(conformance) lands in Phase 11.
+This is the first lineage of the EDEN protocol specification. Chapters 00–08 are written as of Phase 8a (07-wire-protocol.md lands with the HTTP binding; the originally-slotted control-plane content will land as a later chapter in Phase 12). Chapter 09 (conformance) lands in Phase 11.
 
 ## Planned chapters
 
@@ -23,8 +19,7 @@ content will land as a later chapter in Phase 12). Chapter 09
 
 ## Planned schemas
 
-JSON Schema files live under [`schemas/`](schemas/). None exist yet;
-the first six land in Phase 1 alongside the data-model chapter:
+JSON Schema files live under [`schemas/`](schemas/). None exist yet; the first six land in Phase 1 alongside the data-model chapter:
 
 | File | Describes |
 |---|---|
@@ -35,5 +30,4 @@ the first six land in Phase 1 alongside the data-model chapter:
 | `trial.schema.json` | Canonical trial record |
 | `metrics-schema.schema.json` | Meta-schema: how an experiment declares its own metrics schema |
 
-See [`docs/roadmap.md`](../../docs/roadmap.md) for the full build-up
-plan and the unit-level decomposition of each phase.
+See [`docs/roadmap.md`](../../docs/roadmap.md) for the full build-up plan and the unit-level decomposition of each phase.
