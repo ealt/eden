@@ -1,0 +1,188 @@
+# EDEN Phase 8c — Cut-over of in-process dispatch paths
+
+## Goal
+
+Remove every code path that lets components interact in-process. After Phase 8c the only way `eden-dispatch` workers and the orchestrator can drive an experiment is through the Phase 8a HTTP wire binding via the Phase 8b standalone services. Specifically:
+
+- Delete the in-process driver `run_experiment` from `eden_dispatch.driver`. Its job (running workers + orchestrator iterations against a direct `Store` instance until quiescence) was a Phase 5 / 7b convenience and is now a parallel-path liability — every refactor has to keep two end-to-end shapes working, and a regression in the in-process shape can mask a wire-shape regression.
+- Remove `run_experiment` from the `eden_dispatch` public API and `__all__`.
+- Remove or rewrite every test that depends on `run_experiment`. The Phase 5/7b in-process end-to-end tests in `reference/packages/eden-dispatch/tests/test_end_to_end.py` are deleted; the single `test_store_hardening` test that drives `run_experiment` to assert validation-error routing is rewritten as a unit test against `run_orchestrator_iteration` plus the legitimate `Store` API.
+- Promote the `pytest.mark.e2e` real-subprocess test (`reference/services/orchestrator/tests/test_e2e.py`, added in Phase 8b) to be the *only* end-to-end coverage. The wire protocol becomes the single answer to "does the loop actually work end-to-end?"
+- Update docstrings and contributor docs (`AGENTS.md`, `reference/packages/eden-git/README.md`, `docs/roadmap.md`) so no surface left in the repo claims an in-process driver exists.
+
+`run_orchestrator_iteration` stays — it is the orchestrator service's loop body. `ScriptedPlanner`, `ScriptedImplementer`, `ScriptedEvaluator` stay — the worker hosts use them to drive their pollers.
+
+## Non-goals
+
+- **No spec edits.** This phase is pure reference-implementation cleanup. The wire binding (chapter 07) and the §3.4 integrator semantics (chapter 06) are unchanged.
+- **No new tests.** The Phase 8b e2e test already covers the full happy path; the rewritten hardening test re-covers the only failure-routing case `test_end_to_end.py` did not duplicate.
+- **No worker-host refactor.** Workers still consume `ScriptedPlanner` etc. through the in-process `Store` interface that `StoreClient` satisfies. That is the wire boundary already; nothing about it changes.
+- **No `eden-dispatch` package rename or split.** The package keeps its name and continues to export the orchestrator iteration plus the scripted workers — both still belong to dispatch.
+- **No deletion of `eden-dispatch.workers`.** The scripted classes are used by the worker hosts and by `test_orchestrator_iteration._drive_trial_to_success`'s sibling helpers; they stay.
+
+## Backwards-compatibility policy
+
+`eden-dispatch` is at version `0.0.1` and is part of the in-tree reference implementation; it is not published, has no external consumers, and carries no compatibility promise prior to spec v0 stabilization. Removing `run_experiment` from the package's public surface (`__init__.__all__` and `from .driver import …`) is therefore an in-tree refactor, not a breaking-API event. Repository-internal consumers (the eden-dispatch tests, the eden-storage tests, and the eden-git README — enumerated in the "What gets changed" sections) are migrated in this same PR. No deprecation window or shim is provided.
+
+## What gets changed
+
+### A. Package source
+
+#### `reference/packages/eden-dispatch/src/eden_dispatch/driver.py`
+
+Delete the `run_experiment(...)` function in full, including its docstring and the `Sequence` import that was only used for `plan_task_ids`. Keep `run_orchestrator_iteration` and the six `_…` helpers that back it (`_finalize_submitted`, `_dispatch_implement_tasks`, `_dispatch_evaluate_tasks`, `_promote_successful_trials`, `_list_trials_needing_evaluation`, `_trials_with_evaluate_task`).
+
+Update the module docstring: it currently leads with "`run_experiment` connects the scripted workers to the store…". After cutover it leads with `run_orchestrator_iteration`'s job — the orchestrator-side iteration body, used by the standalone orchestrator service against a `StoreClient`. The "Finalization honors §4.3" paragraph stays as-is (it describes `_finalize_submitted`, which stays).
+
+Remove the unused import `from collections.abc import Sequence` (the surviving `Callable` import stays). Verify `from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner` is no longer needed anywhere in `driver.py` (it isn't — only `run_experiment` referenced those types) and remove it.
+
+#### `reference/packages/eden-dispatch/src/eden_dispatch/__init__.py`
+
+- Remove `run_experiment` from the `from .driver import …` line.
+- Remove `"run_experiment"` from `__all__`.
+- Update the module docstring: it currently says "This package now contains the driver (`run_experiment`) and the scripted role workers". Replace `run_experiment` with `run_orchestrator_iteration`.
+
+The store-types re-exports (`AlreadyExists`, `InMemoryStore`, etc. from `eden-storage`) stay — they're load-bearing for several test files and the worker hosts.
+
+### B. Tests
+
+#### Delete `reference/packages/eden-dispatch/tests/test_end_to_end.py`
+
+This file is two Phase 5 in-process tests (`test_three_trial_experiment_end_to_end`, `test_event_log_reconstructs_full_lifecycle`) plus one Phase 7b in-process test (`test_end_to_end_with_real_integrator`). All three call `run_experiment` directly. Their coverage is preserved as follows:
+
+- **3-trial happy-path through plan→implement→evaluate→accept**: `reference/services/orchestrator/tests/test_e2e.py` covers this end-to-end across real subprocesses + real HTTP + real SQLite. That is strictly stronger than the in-process version.
+- **Event-log lifecycle reconstructibility (§3.4)**: the deleted `test_event_log_reconstructs_full_lifecycle` walked the full event log and folded each event type (`task.created`, `task.claimed`, `task.submitted`, `task.completed`, `task.failed`, `task.reclaimed`, `proposal.drafted`, `proposal.ready`, `proposal.dispatched`, `proposal.completed`, `trial.started`, `trial.succeeded`, `trial.errored`, `trial.eval_errored`) back into a final-state map. The current e2e test only counts a handful of event types (`task.completed`, `trial.integrated`, `trial.succeeded`), which is weaker. **Coverage is preserved by extending the e2e test**: after the orchestrator/worker subprocesses are torn down, the test already reopens a local `SqliteStore` against the same on-disk database file to run its assertions; that same `SqliteStore` instance is folded over via `store.read_range()` (the spec-§2.1 cursorless replay). The fold inlines a small `_reconstruct_lifecycle(events) -> {tasks, proposals, trials}` helper (single-use) and asserts every task lands in `completed`, every proposal in `completed`, every trial in `success`. The post-teardown reopened-`SqliteStore` path matches how the existing e2e test already inspects state, so no new fixture or live-process probe is required. This adds ~25 lines to the e2e test and keeps the invariant gated on real-subprocess + real-HTTP execution rather than the deleted in-process path. No standalone unit-level replacement is added — the property under test is "the event log emitted across a full experiment lifecycle replays to consistent final state," which is a system-level claim, not a per-component one.
+- **Real-integrator path through `Integrator.integrate`**: covered by the e2e test, which builds a real bare repo, runs the implementer host (which writes real `work/*` commits), runs the orchestrator service (which calls `Integrator.integrate` per `success` trial), and asserts `trial/*` refs and parent-commit shape. Again strictly stronger than the in-process version.
+
+No equivalent file is recreated in `eden-dispatch/tests/` because the dispatch package no longer drives experiments end-to-end — that role belongs to the orchestrator service, and its tests live there.
+
+#### Rewrite `reference/packages/eden-storage/tests/test_store_hardening.py::test_driver_routes_malformed_success_to_validation_error`
+
+The test currently:
+
+1. Builds scripted workers whose `implement_fn` returns `ImplementOutcome(status="success", commit_sha=None)`.
+2. Calls `run_experiment(...)`.
+3. Asserts the implement task ends `state="failed"` with a `task.failed(reason="validation_error")` event.
+
+The thing under test is `_finalize_submitted`'s routing of a malformed-success submission through `validate_terminal` to `reject(validation_error)`. That logic lives in `run_orchestrator_iteration`, not `run_experiment`. Rewrite to drive the store directly:
+
+```python
+def test_driver_routes_malformed_success_to_validation_error(
+    self, make_store: Callable[..., Store]
+) -> None:
+    store = make_store("exp-vr")
+    _ready_proposal(store, "p-1")
+    store.create_implement_task("t-impl", "p-1")
+    claim = store.claim("t-impl", "impl-w")
+    _starting_trial(store, "tr-1", "p-1")
+    # Malformed: claims success but omits commit_sha.
+    store.submit(
+        "t-impl",
+        claim.token,
+        ImplementSubmission(status="success", trial_id="tr-1", commit_sha=None),
+    )
+
+    progress = run_orchestrator_iteration(
+        store,
+        implement_task_id_factory=lambda: "unused",
+        evaluate_task_id_factory=lambda: "unused",
+    )
+
+    assert progress is True
+    impl_task = store.read_task("t-impl")
+    assert impl_task.state == "failed"
+    failed = [e for e in store.events() if e.type == "task.failed"]
+    assert any(e.data["reason"] == "validation_error" for e in failed)
+```
+
+Replace the imports correspondingly: drop `ScriptedEvaluator`, `ScriptedImplementer`, `ScriptedPlanner`, `run_experiment`, `EvaluateOutcome`, `ImplementOutcome`, `ProposalTemplate`. Add `run_orchestrator_iteration`. Helpers `_ready_proposal` and `_starting_trial` already exist at module scope.
+
+The rewrite is strictly tighter coverage: it exercises the same routing path, but the assertion is now decoupled from the worker scaffolding and runs in milliseconds instead of seconds.
+
+#### Update `reference/packages/eden-storage/tests/test_restart_safety.py` line 400
+
+The comment `# Finalize plan submission manually (normally run_experiment does this)` is misleading after cutover. Replace with `# Finalize plan submission manually (normally the orchestrator service does this).` No code change.
+
+### C. Live-doc and live-source mentions of `run_experiment`
+
+Every live-text mention of the symbol — i.e., every place outside the frozen plan / review artifacts under `docs/plans/eden-phase-{5,7b,8a,8b}-*.md` and `docs/plans/review/**` — is updated. Concrete inventory (verified with `grep -rn "run_experiment" reference/ AGENTS.md docs/roadmap.md` against current `main`):
+
+1. **`reference/packages/eden-dispatch/src/eden_dispatch/driver.py`** — module docstring lead. Rewrite to describe `run_orchestrator_iteration` as the public entry point; the function deletion is covered in §A above.
+2. **`reference/packages/eden-dispatch/src/eden_dispatch/__init__.py`** — module docstring + import + `__all__`. Covered in §A above.
+3. **`reference/packages/eden-dispatch/tests/test_end_to_end.py`** — file deleted (covered in §B).
+4. **`reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`** line 3 — module docstring says "the function is the Phase 8b-extracted half of `run_experiment`". Rewrite as: "The function is the orchestrator-iteration body — finalize + dispatch + integrate without invoking workers — used by the standalone orchestrator service."
+5. **`reference/packages/eden-storage/tests/test_store_hardening.py`** — imports + the rewritten test (covered in §B).
+6. **`reference/packages/eden-storage/tests/test_restart_safety.py`** line 400 — comment update (covered in §B).
+7. **`reference/packages/eden-git/README.md`** — "Integration with `eden-dispatch`" section. Currently:
+
+   > `eden_dispatch.run_experiment` takes an `integrate_trial: Callable[[str], object]` parameter; passing `integrator.integrate` wires the dispatch loop to the real integrator.
+
+   Replace with:
+
+   > The standalone orchestrator service (`reference/services/orchestrator`) calls `eden_dispatch.run_orchestrator_iteration` with `integrate_trial=integrator.integrate`, so successful trials are promoted through the real integrator.
+
+8. **`reference/README.md`** — line 9 currently reads "Through Phase 8b: … Cut-over of the in-process dispatch path remains Phase 8c." Replace with a "Through Phase 8c" lead saying the in-process dispatch path is removed and the wire binding is the only inter-component channel. The services/packages tables stay as-is (they describe the *services*, which are unchanged) except the eden-dispatch row, which is reworded to "Reference scripted workers and the orchestrator-iteration body (`run_orchestrator_iteration`); used by the worker hosts and the orchestrator service."
+9. **`AGENTS.md`** (= `CLAUDE.md` symlink). Two live mentions today:
+   - Line 19, the "Phase 8b complete." status block. The narration "`eden-dispatch.run_experiment` driver was split: `run_orchestrator_iteration` is now publicly exported …" is now stale (the driver is gone, not split). Reword the relevant clause to read "`eden-dispatch` exposes `run_orchestrator_iteration` as its orchestrator-side entry point; the in-process `run_experiment` driver was deleted in Phase 8c."
+   - Line 25, the "Phase 7b complete." status block. The clause "`eden-dispatch.run_experiment` now takes an `integrate_trial: Callable[[str], object]` hook in place of the Phase 5 placeholder `integrator_commit_factory` parameter" is historical narration about a long-gone API. Reword to "`eden-dispatch` accepts `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder `integrator_commit_factory` parameter; the standalone orchestrator service in Phase 8b/8c passes `Integrator.integrate` through this hook."
+
+   Also add a leading "Phase 8c complete." paragraph: cut-over done; in-process `run_experiment` deleted; `test_end_to_end.py` deleted; `test_driver_routes_malformed_success_to_validation_error` rewritten as a `run_orchestrator_iteration` unit test; the wire-protocol e2e test is now the only end-to-end coverage; `run_orchestrator_iteration` and the scripted workers remain the dispatch package's public surface.
+
+   The Commands table needs no changes — every command listed still works (the e2e test remains under the `pytest.mark.e2e` marker; ruff/pyright/pytest run cleanly against the smaller tree; the schema/markdown lint commands are untouched).
+10. **`docs/roadmap.md`** — three live mentions:
+    - Line 109, Phase 5b "complete" bullet. Historical narration: "`run_experiment` orchestrates a full plan → implement → evaluate → integrate cycle." Reword to past tense + cross-reference to 8c: "`run_experiment` orchestrated a full plan → implement → evaluate → integrate cycle in-process; superseded in Phase 8c by the wire-protocol e2e test, which exercises the same flow across real subprocesses."
+    - Line 144, Phase 7b "complete" bullet. The trailing sentence about `run_experiment` taking `integrate_trial` is restated as: "The dispatch driver accepted `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder `integrator_commit_factory`; in Phase 8c that hook moved to `run_orchestrator_iteration`."
+    - Line 161, Phase 8b "complete" bullet. The clause "`eden-dispatch.run_experiment` was split into `run_orchestrator_iteration` (now public) so the standalone orchestrator runs only the orchestrator side" is reworded to "`eden-dispatch` exposes `run_orchestrator_iteration` as its orchestrator-side entry point so the standalone orchestrator drives only that half; the in-process `run_experiment` driver was kept through 8b and removed in 8c."
+    - Phase 8 §8c bullet (currently a placeholder line). Replace with a "complete" bullet matching 8a/8b style: in-process `run_experiment` deleted; `eden-dispatch` keeps `run_orchestrator_iteration` plus the scripted workers; the Phase 8b real-subprocess `pytest.mark.e2e` test is now the only end-to-end coverage; one storage hardening test was rewritten as a direct `run_orchestrator_iteration` unit test rather than relying on the in-process driver.
+
+#### `docs/plans/`
+
+This file (`docs/plans/eden-phase-8c-cutover.md`) is the new artifact for the phase. No earlier plan file is edited; `docs/plans/eden-phase-{0,1-…,7a,7b,8a,8b}-*.md` and `docs/plans/review/**` are frozen historical artifacts and continue to mention `run_experiment` as the in-process driver they were written against. The verification grep in §"Verification" excludes that tree explicitly.
+
+## What does **not** change
+
+- `eden_dispatch.workers` (`ScriptedPlanner`, `ScriptedImplementer`, `ScriptedEvaluator`, `EvaluateOutcome`, `ImplementOutcome`, `ProposalTemplate`) — load-bearing for worker hosts.
+- `eden_dispatch.driver.run_orchestrator_iteration` and its `_…` helpers — load-bearing for the orchestrator service.
+- `eden-storage` package public surface — every existing API stays.
+- `eden-wire` — no changes.
+- `reference/services/_common/` — no changes.
+- The five service packages — no changes.
+- Any spec chapter — no changes.
+- Any JSON Schema — no changes.
+
+## Verification
+
+Run before opening the PR:
+
+1. `uv run ruff check .` — clean.
+2. `uv run pyright` — clean.
+3. `uv run pytest -q` — all tests pass; specifically the `test_end_to_end.py` file is gone, `test_driver_routes_malformed_success_to_validation_error` still passes in its rewritten form, and the e2e test remains green under `-m e2e`.
+4. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` — clean.
+5. `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` and the fixture validation command — clean.
+6. `python3 scripts/spec-xref-check.py` — clean.
+7. `grep -rn "run_experiment" reference/` returns **zero** matches. This is the live-source gate covering both the packages/services source trees and the top-level `reference/README.md` plus the per-package READMEs (notably `reference/packages/eden-git/README.md`, updated in §C #7).
+
+   The narrative status blocks in `AGENTS.md` and the per-phase "complete" bullets in `docs/roadmap.md` are **explicitly out of scope** for this gate. Those documents are changelogs — their job is to explain what changed across phases, which by definition includes naming symbols that have since been deleted ("`run_experiment` was deleted in Phase 8c"). Demanding that historical narration omit the symbol name would make the changelog less useful to a contributor searching for "what happened to `run_experiment`?" The §C edits update those passages so they describe the symbol as removed-in-Phase-8c rather than present-in-the-current-codebase, but they do not remove the name.
+
+   `docs/plans/**` (this plan plus the frozen historical phase plans) and `docs/plans/review/**` (frozen Codex review transcripts) are also out of scope — they are append-only artifacts of past sessions.
+
+After opening the PR, also confirm that CI is green on all six checks (`docs-lint`, `python-lint`, `python-typecheck`, `python-test`, `schema-validity`, `schema-parity`).
+
+## Execution order
+
+1. Read this plan; submit to `/codex-review`; iterate to convergence on the planned shape (no implementation yet).
+2. Make the source edits in order: `driver.py` → `__init__.py` → delete `test_end_to_end.py` → rewrite the hardening test → fix the restart-safety comment → docs.
+3. Run all verification commands above; fix anything red.
+4. Submit the implementation to `/codex-review`; iterate to convergence.
+5. Commit on `phase-8c-cutover` branch; open PR; wait for green CI; squash-merge to `main`; sync local; delete branch.
+
+## Risks / things to watch
+
+- **Stale references in live source.** A grep for `run_experiment` under `reference/` after the change must turn up zero hits — every live-source mention of the deleted symbol (in packages, services, or READMEs) must either be removed or rephrased to reference `run_orchestrator_iteration`. Narrative-changelog mentions in `AGENTS.md` and `docs/roadmap.md` are deliberately preserved and reworded to past tense ("was deleted in Phase 8c") so a contributor searching for the deleted symbol still finds the explanation.
+- **Test-file deletion vs. coverage gap.** The risk is that `test_end_to_end.py` exercised invariants the e2e + orchestrator-iteration tests do not. Two such cases were identified:
+  - **Malformed-success routing to `validation_error`**: rewritten as a direct unit test against `run_orchestrator_iteration` in `test_store_hardening.py` (§B).
+  - **Event-log replay folding every emitted event type back to a final lifecycle state**: covered by extending the e2e test with the `_reconstruct_lifecycle` fold over the reopened post-teardown `SqliteStore` (§B).
+
+  Other invariants from `test_end_to_end.py` (the 3-trial happy path, real-integrator promotion) are strictly subsumed by the existing e2e assertions.
+- **Worker hosts' scripted `plan_fn` profiles.** The plan-task-list generation in `_common/scripted.py` was originally validated by `test_end_to_end.py`'s plan_fn shape. The e2e test exercises the same shape end-to-end (it asserts `parent_commits == [base_sha]` and verifies three trials), so the coverage transfers cleanly.
+- **CI cache.** Removing a test file does not invalidate any cache key; pyright and ruff will rerun against the smaller tree without issue.

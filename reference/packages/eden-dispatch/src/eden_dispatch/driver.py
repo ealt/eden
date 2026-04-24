@@ -1,22 +1,22 @@
-"""Orchestrator-driver loop for the in-memory dispatch reference.
+"""Orchestrator-side iteration body for the EDEN reference dispatch.
 
-``run_experiment`` connects the scripted workers to the store: it
-creates plan tasks, runs workers until the queue quiesces, promotes
-role outputs into downstream tasks (implement per ``ready``
-proposal, evaluate per successful ``implement`` accept), applies
-accept/reject decisions based on submissions, and optionally runs a
-trivial integrator over every successful trial.
+``run_orchestrator_iteration`` runs one finalize + dispatch + integrate
+pass against a ``Store``. The standalone orchestrator service in
+``reference/services/orchestrator/`` calls it in a poll loop against a
+``StoreClient`` (which satisfies the same Protocol). Workers live in
+their own processes and drive the store through the wire binding; this
+module never invokes them.
 
 Every write goes through the store, so the transactional invariant
-(``05-event-protocol.md`` §2) is enforced regardless of driver
-behavior. The driver's own responsibility is scheduling: decide which
-task to move next, and who to give it to.
+(``05-event-protocol.md`` §2) is enforced regardless of caller behavior.
+This module's responsibility is scheduling: decide which task to move
+next.
 
 Finalization honors ``04-task-protocol.md`` §4.3: a submission that
 declared ``success`` but does not satisfy the role's success contract,
 or a `status="error"` evaluate submission whose metrics/artifacts_uri
 would fail validation, turns into ``task.failed`` with
-``reason=validation_error``. The driver asks the store via
+``reason=validation_error``. The orchestrator asks the store via
 ``validate_terminal`` which terminal transition to issue — accept,
 reject(worker_error), or reject(validation_error) — and takes that
 action.
@@ -24,12 +24,10 @@ action.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from eden_contracts import EvaluateTask
 from eden_storage import Store
-
-from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 
 def run_orchestrator_iteration(
@@ -41,13 +39,13 @@ def run_orchestrator_iteration(
 ) -> bool:
     """Run one orchestrator pass: finalize + dispatch + integrate.
 
-    Does everything the driver loop does *except* invoke the worker
-    roles. Used both by the in-process ``run_experiment`` combinator
-    (which also drives the workers) and by the standalone Phase 8b
-    orchestrator service (which drives only this side because
-    workers now live in their own processes).
-
     Returns ``True`` if any transition fired this iteration.
+
+    ``integrate_trial``, if supplied, is called once per ``success``
+    trial that still has no ``trial_commit_sha``. Typically this is
+    ``Integrator.integrate`` from ``eden_git``, which handles the full
+    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    event atomically). The return value is ignored.
     """
     progress = False
     progress |= _finalize_submitted(store, kind="plan")
@@ -58,48 +56,6 @@ def run_orchestrator_iteration(
     if integrate_trial is not None:
         progress |= _promote_successful_trials(store, integrate_trial)
     return progress
-
-
-def run_experiment(
-    store: Store,
-    planner: ScriptedPlanner,
-    implementer: ScriptedImplementer,
-    evaluator: ScriptedEvaluator,
-    *,
-    plan_task_ids: Sequence[str],
-    implement_task_id_factory: Callable[[], str],
-    evaluate_task_id_factory: Callable[[], str],
-    integrate_trial: Callable[[str], object] | None = None,
-) -> None:
-    """Drive an experiment to quiescence through the three workers.
-
-    Creates each ``plan_task_id`` as a plan task, then loops: run
-    workers → orchestrator iteration (finalize + dispatch + integrate).
-    The loop terminates when a full pass over every role and every
-    orchestrator step produces no progress.
-
-    ``integrate_trial``, if supplied, is called once per ``success``
-    trial that still has no ``trial_commit_sha``. Typically this is
-    ``Integrator.integrate`` from ``eden_git``, which handles the full
-    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
-    event atomically). The return value is ignored.
-    """
-    for task_id in plan_task_ids:
-        store.create_plan_task(task_id)
-
-    while True:
-        progress = False
-        progress |= planner.run_pending(store) > 0
-        progress |= implementer.run_pending(store) > 0
-        progress |= evaluator.run_pending(store) > 0
-        progress |= run_orchestrator_iteration(
-            store,
-            implement_task_id_factory=implement_task_id_factory,
-            evaluate_task_id_factory=evaluate_task_id_factory,
-            integrate_trial=integrate_trial,
-        )
-        if not progress:
-            return
 
 
 def _finalize_submitted(store: Store, *, kind: str) -> bool:

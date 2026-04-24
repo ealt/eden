@@ -35,4 +35,4 @@ Atomicity follows the post-promotion reading of §3.4 documented in [`spec/v0/de
 
 ### Integration with `eden-dispatch`
 
-`eden_dispatch.run_experiment` takes an `integrate_trial: Callable[[str], object]` parameter; passing `integrator.integrate` wires the dispatch loop to the real integrator.
+The standalone orchestrator service (`reference/services/orchestrator`) calls `eden_dispatch.run_orchestrator_iteration` with `integrate_trial=integrator.integrate`, so successful trials are promoted through the real integrator.

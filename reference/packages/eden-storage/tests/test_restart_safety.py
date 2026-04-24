@@ -397,7 +397,7 @@ class TestRunExperimentAcrossRestarts:
         # Run planner + implementer only; leave trial awaiting evaluation.
         first.create_plan_task("t-plan-01")
         planner.run_pending(first)
-        # Finalize plan submission manually (normally run_experiment does this)
+        # Finalize plan submission manually (normally the orchestrator service does this).
         decision, _ = first.validate_terminal("t-plan-01")
         assert decision == "accept"
         first.accept("t-plan-01")

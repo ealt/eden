@@ -14,17 +14,7 @@ from collections.abc import Callable
 
 import pytest
 from eden_contracts import MetricsSchema, Proposal, Trial
-from eden_dispatch import (
-    ScriptedEvaluator,
-    ScriptedImplementer,
-    ScriptedPlanner,
-    run_experiment,
-)
-from eden_dispatch.workers import (
-    EvaluateOutcome,
-    ImplementOutcome,
-    ProposalTemplate,
-)
+from eden_dispatch import run_orchestrator_iteration
 from eden_storage import (
     ConflictingResubmission,
     EvaluateSubmission,
@@ -290,52 +280,27 @@ class TestValidationErrorRouting:
     def test_driver_routes_malformed_success_to_validation_error(
         self, make_store: Callable[..., Store]
     ) -> None:
-        """End-to-end: a malformed success submission lands as task.failed(validation_error)."""
+        """A malformed success submission lands as task.failed(validation_error)."""
         store = make_store("exp-vr")
-
-        proposal_ids = iter(["p-001"])
-        trial_ids = iter(["tr-001"])
-        implement_task_ids = iter(["t-impl-001"])
-        evaluate_task_ids = iter(["t-eval-001"])
-
-        def plan_fn(task):
-            return [
-                ProposalTemplate(
-                    slug="feat-1",
-                    priority=1.0,
-                    parent_commits=("a" * 40,),
-                    artifacts_uri="https://artifacts.example/1",
-                )
-            ]
-
-        def implement_fn(task, proposal) -> ImplementOutcome:
-            # Claims success but omits commit_sha — should be routed to validation_error.
-            return ImplementOutcome(status="success", commit_sha=None)
-
-        def evaluate_fn(task, trial) -> EvaluateOutcome:
-            return EvaluateOutcome(status="success", metrics={"score": 1.0})
-
-        planner = ScriptedPlanner(
-            "planner-1", plan_fn, proposal_id_factory=lambda: next(proposal_ids),
-            now=lambda: "2026-04-23T00:00:00.000Z",
+        _ready_proposal(store, "p-1")
+        store.create_implement_task("t-impl", "p-1")
+        claim = store.claim("t-impl", "impl-w")
+        _starting_trial(store, "tr-1", "p-1")
+        # Claims success but omits commit_sha — must be routed to validation_error.
+        store.submit(
+            "t-impl",
+            claim.token,
+            ImplementSubmission(status="success", trial_id="tr-1", commit_sha=None),
         )
-        implementer = ScriptedImplementer(
-            "impl-1", implement_fn, trial_id_factory=lambda: next(trial_ids),
-            now=lambda: "2026-04-23T00:00:01.000Z",
-        )
-        evaluator = ScriptedEvaluator("eval-1", evaluate_fn)
 
-        run_experiment(
+        progress = run_orchestrator_iteration(
             store,
-            planner,
-            implementer,
-            evaluator,
-            plan_task_ids=["t-plan-1"],
-            implement_task_id_factory=lambda: next(implement_task_ids),
-            evaluate_task_id_factory=lambda: next(evaluate_task_ids),
+            implement_task_id_factory=lambda: "unused",
+            evaluate_task_id_factory=lambda: "unused",
         )
 
-        impl_task = store.read_task("t-impl-001")
+        assert progress is True
+        impl_task = store.read_task("t-impl")
         assert impl_task.state == "failed"
         failed_events = [e for e in store.events() if e.type == "task.failed"]
         reasons = {e.data["reason"] for e in failed_events}

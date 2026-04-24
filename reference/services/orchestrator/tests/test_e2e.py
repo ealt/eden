@@ -248,6 +248,12 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
                 assert trial.parent_commits == [base_sha]
                 parents = repo.commit_parents(trial.trial_commit_sha)
                 assert parents == list(trial.parent_commits)
+                # The integrator MUST write a canonical
+                # `refs/heads/trial/<id>-<slug>` ref pointing at
+                # the same commit (chapter 06 §3.2).
+                slug = store.read_proposal(trial.proposal_id).slug
+                ref = f"refs/heads/trial/{trial.trial_id}-{slug}"
+                assert repo.resolve_ref(ref) == trial.trial_commit_sha
 
             # Every plan/implement/evaluate task terminal.
             for kind in ("plan", "implement", "evaluate"):
@@ -277,8 +283,68 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
                 f"expected 3 trial.succeeded events, got "
                 f"{event_types.count('trial.succeeded')}"
             )
+
+            # Replay the full event log to a final-state map and assert
+            # every entity reaches a terminal status. Replaces the
+            # Phase-5 in-process lifecycle-reconstruction test deleted
+            # in Phase 8c.
+            lifecycle = _reconstruct_lifecycle(events)
+            # 3 plan + 3 implement + 3 evaluate = 9 tasks; the
+            # `--plan-tasks` flag above seeds three plan IDs, each of
+            # which becomes one proposal → one trial.
+            assert len(lifecycle["tasks"]) == 9
+            assert set(lifecycle["tasks"].values()) == {"completed"}
+            assert len(lifecycle["proposals"]) == 3
+            assert set(lifecycle["proposals"].values()) == {"completed"}
+            assert len(lifecycle["trials"]) == 3
+            assert set(lifecycle["trials"].values()) == {"success"}
         finally:
             store.close()
     finally:
         for p in procs.values():
             _terminate(p)
+
+
+def _reconstruct_lifecycle(events) -> dict:  # noqa: ANN001 - sequence of EventRecord
+    """Fold the event log into a final-state map per entity.
+
+    Lifecycle-bearing event types map to a status; integration events
+    (`trial.integrated`) are intentionally ignored — the trial's
+    lifecycle status is `success`, with integration recorded as a
+    separate field on the trial entity.
+    """
+    tasks: dict[str, str] = {}
+    proposals: dict[str, str] = {}
+    trials: dict[str, str] = {}
+    for event in events:
+        data = event.data
+        t = event.type
+        if t == "task.created":
+            tasks[data["task_id"]] = "pending"
+        elif t == "task.claimed":
+            tasks[data["task_id"]] = "claimed"
+        elif t == "task.submitted":
+            tasks[data["task_id"]] = "submitted"
+        elif t == "task.completed":
+            tasks[data["task_id"]] = "completed"
+        elif t == "task.failed":
+            tasks[data["task_id"]] = "failed"
+        elif t == "task.reclaimed":
+            tasks[data["task_id"]] = "pending"
+        elif t == "proposal.drafted":
+            proposals[data["proposal_id"]] = "drafting"
+        elif t == "proposal.ready":
+            proposals[data["proposal_id"]] = "ready"
+        elif t == "proposal.dispatched":
+            proposals[data["proposal_id"]] = "dispatched"
+        elif t == "proposal.completed":
+            proposals[data["proposal_id"]] = "completed"
+        elif t == "trial.started":
+            trials[data["trial_id"]] = "starting"
+        elif t == "trial.succeeded":
+            trials[data["trial_id"]] = "success"
+        elif t == "trial.errored":
+            trials[data["trial_id"]] = "error"
+        elif t == "trial.eval_errored":
+            trials[data["trial_id"]] = "eval_error"
+    return {"tasks": tasks, "proposals": proposals, "trials": trials}

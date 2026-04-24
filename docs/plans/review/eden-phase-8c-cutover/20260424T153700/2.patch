@@ -1,0 +1,36 @@
+--- docs/plans/review/eden-phase-8c-cutover/20260424T153700/1.md	2026-04-24 15:41:12
++++ docs/plans/eden-phase-8c-cutover.md	2026-04-24 15:44:13
+@@ -51,7 +51,7 @@
+ This file is two Phase 5 in-process tests (`test_three_trial_experiment_end_to_end`, `test_event_log_reconstructs_full_lifecycle`) plus one Phase 7b in-process test (`test_end_to_end_with_real_integrator`). All three call `run_experiment` directly. Their coverage is preserved as follows:
+ 
+ - **3-trial happy-path through plan→implement→evaluate→accept**: `reference/services/orchestrator/tests/test_e2e.py` covers this end-to-end across real subprocesses + real HTTP + real SQLite. That is strictly stronger than the in-process version.
+-- **Event-log lifecycle reconstructibility**: the e2e test asserts `task.completed`, `trial.integrated`, and `trial.succeeded` event counts, which is the same invariant in observable form. The remaining "every event type maps to a final status" replay table in `_reconstruct_lifecycle` was a Phase 5 sanity check on the in-memory store's event emission; that property is now covered by `test_orchestrator_iteration` (which exercises every transition through legitimate API calls and inspects the resulting events) plus the eden-storage conformance suite.
++- **Event-log lifecycle reconstructibility (§3.4)**: the deleted `test_event_log_reconstructs_full_lifecycle` walked the full event log and folded each event type (`task.created`, `task.claimed`, `task.submitted`, `task.completed`, `task.failed`, `task.reclaimed`, `proposal.drafted`, `proposal.ready`, `proposal.dispatched`, `proposal.completed`, `trial.started`, `trial.succeeded`, `trial.errored`, `trial.eval_errored`) back into a final-state map. The current e2e test only counts a handful of event types (`task.completed`, `trial.integrated`, `trial.succeeded`), which is weaker. **Coverage is preserved by extending the e2e test**: after the experiment quiesces, it reads `client.read_range(None)` (already accessible via the orchestrator's `StoreClient`), runs the same fold, and asserts every task lands in `completed`, every proposal in `completed`, and every trial in `success`. The fold helper is inlined in the e2e test (single-use). This adds ~25 lines to the e2e test and keeps the invariant gated on real-subprocess + real-HTTP execution rather than the deleted in-process path. No standalone unit-level replacement is added — the property under test is "the event log emitted across a full experiment lifecycle replays to consistent final state," which is a system-level claim, not a per-component one.
+ - **Real-integrator path through `Integrator.integrate`**: covered by the e2e test, which builds a real bare repo, runs the implementer host (which writes real `work/*` commits), runs the orchestrator service (which calls `Integrator.integrate` per `success` trial), and asserts `trial/*` refs and parent-commit shape. Again strictly stronger than the in-process version.
+ 
+ No equivalent file is recreated in `eden-dispatch/tests/` because the dispatch package no longer drives experiments end-to-end — that role belongs to the orchestrator service, and its tests live there.
+@@ -160,12 +160,11 @@
+ 4. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` — clean.
+ 5. `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` and the fixture validation command — clean.
+ 6. `python3 scripts/spec-xref-check.py` — clean.
+-7. `grep -rn "run_experiment" reference/ AGENTS.md docs/roadmap.md` returns zero matches in live source and live docs after the edits in §C land. The grep is intentionally narrowed to live-text targets:
++7. `grep -rn "run_experiment" reference/packages/ reference/services/` returns **zero** matches. This is the live-source gate: no source file, test, or package README under `reference/` may document `run_experiment` as a current API after cutover. The eden-git README is the only README in scope and is updated in §C #7.
+ 
+-   - **excluded by scope**: `docs/plans/**` (this plan describes the work being done — it mentions `run_experiment` repeatedly by design — and the older plan files under `docs/plans/eden-phase-{0,1-…,7a,7b,8a,8b}-*.md` are frozen historical artifacts);
+-   - **excluded by scope**: `docs/plans/review/**` (Codex review transcripts, frozen as records of those sessions).
++   The narrative status blocks in `AGENTS.md` and the per-phase "complete" bullets in `docs/roadmap.md` are **explicitly out of scope** for this gate. Those documents are changelogs — their job is to explain what changed across phases, which by definition includes naming symbols that have since been deleted ("`run_experiment` was deleted in Phase 8c"). Demanding that historical narration omit the symbol name would make the changelog less useful to a contributor searching for "what happened to `run_experiment`?" The §C edits update those passages so they describe the symbol as removed-in-Phase-8c rather than present-in-the-current-codebase, but they do not remove the name.
+ 
+-   The check confirms zero hits in `reference/`, `AGENTS.md` (= `CLAUDE.md`), and `docs/roadmap.md` — the three trees a contributor reads when learning what the impl currently does.
++   `docs/plans/**` (this plan plus the frozen historical phase plans) and `docs/plans/review/**` (frozen Codex review transcripts) are also out of scope — they are append-only artifacts of past sessions.
+ 
+ After opening the PR, also confirm that CI is green on all six checks (`docs-lint`, `python-lint`, `python-typecheck`, `python-test`, `schema-validity`, `schema-parity`).
+ 
+@@ -179,7 +178,7 @@
+ 
+ ## Risks / things to watch
+ 
+-- **Stale references in live text.** A grep for `run_experiment` after the change must turn up zero hits in `reference/`, `AGENTS.md`, and `docs/roadmap.md`. Hits in `docs/plans/eden-phase-8c-cutover.md` (this plan, by design) and in `docs/plans/eden-phase-{0,1-…,7a,7b,8a,8b}-*.md` plus `docs/plans/review/**` (frozen historical artifacts) are expected and excluded from the check.
++- **Stale references in live source.** A grep for `run_experiment` in `reference/packages/` and `reference/services/` after the change must turn up zero hits — every live-source mention of the deleted symbol must either be removed or rephrased to reference `run_orchestrator_iteration`. Narrative-changelog mentions in `AGENTS.md` and `docs/roadmap.md` are deliberately preserved and reworded to past tense ("was deleted in Phase 8c") so a contributor searching for the deleted symbol still finds the explanation.
+ - **Test-file deletion vs. coverage gap.** The risk is that `test_end_to_end.py` exercised an invariant the e2e + orchestrator-iteration tests do not. Walked through above; the only such case is the malformed-success routing test, which is rewritten rather than dropped.
+ - **Worker hosts' scripted `plan_fn` profiles.** The plan-task-list generation in `_common/scripted.py` was originally validated by `test_end_to_end.py`'s plan_fn shape. The e2e test exercises the same shape end-to-end (it asserts `parent_commits == [base_sha]` and verifies three trials), so the coverage transfers cleanly.
+ - **CI cache.** Removing a test file does not invalidate any cache key; pyright and ruff will rerun against the smaller tree without issue.
