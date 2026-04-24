@@ -35,22 +35,35 @@ mid-experiment to confirm state, event log, and claim tokens
 survive, and a monkey-patched `_apply_commit` failure verifies
 rollback. The artifact store (§5), `subscribe` streaming (§2.1),
 and Postgres remain non-goals for Phase 6; they land in Phase 10 /
-Phase 8 / later respectively. Phase 7 is next: the reference git
-integrator (`eden-git`). See [`docs/roadmap.md`](docs/roadmap.md)
-for the full 13-phase plan.
+Phase 8 / later respectively.
+
+**Phase 7a complete.** The `eden-git` package ships the subprocess
+wrapper the Phase 7b integrator composes into §3.2 squash commits.
+`GitRepo` covers ref/object inspection (`rev_parse`, `resolve_ref`,
+`list_refs`, `is_ancestor`, `ls_tree`), plumbing (`write_blob`,
+`write_tree_from_entries`, `write_tree_with_file`, `commit_tree`,
+`create_ref`, `update_ref`), worktree management, and branch management.
+Author identity and `commit.gpgsign=false` are pinned per-invocation so
+the user's ambient git config never leaks into integrator commits.
+Tests (36, all green against a real `git` subprocess on `tmp_path`)
+cover every primitive. Phase 7b — the integrator flow — lands next:
+observing `trial.succeeded`, assembling the trial/* commit per §3.2,
+and writing ref + `trial_commit_sha` + `trial.integrated` atomically
+per §3.4. See [`docs/roadmap.md`](docs/roadmap.md) for the full
+13-phase plan.
 
 ## Commands
 
-At Phase 6, markdown linting, JSON Schema validation, and the Python
-toolchain for the `eden-contracts`, `eden-dispatch`, and `eden-storage`
-reference packages are wired up.
+At Phase 7a, markdown linting, JSON Schema validation, and the Python
+toolchain for the `eden-contracts`, `eden-dispatch`, `eden-git`, and
+`eden-storage` reference packages are wired up.
 
 | Command | Purpose |
 |---|---|
 | `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
 | `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
 | `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
-| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts` + `reference/packages/eden-dispatch` + `reference/packages/eden-storage`) |
+| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts` + `reference/packages/eden-dispatch` + `reference/packages/eden-git` + `reference/packages/eden-storage`) |
 | `uv run ruff check .` | Lint Python (config in root `pyproject.toml`) |
 | `uv run pyright` | Type-check the reference Python packages |
 | `uv run pytest -q` | Run the reference-package test suite (includes schema ↔ model parity) |
