@@ -209,3 +209,11 @@ What the binding does **not** leave to implementations:
 - The problem+json error vocabulary (§7).
 - The same-value idempotency on `integrate_trial` (§5).
 - Preservation of the [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md) invariants through the HTTP transport.
+
+## 12. Reference-only extensions — authentication (informative)
+
+§11 restates that authentication is outside the normative binding. The reference implementation in [`reference/packages/eden-wire/`](../../reference/packages/eden-wire/) ships an optional shared-token check: when configured, the server requires `Authorization: Bearer <token>` on every request and rejects others with a problem+json response whose `type` is `eden://reference-error/unauthorized` and `status` is 401.
+
+Conforming servers MAY adopt this scheme, adopt a different scheme, or require no authentication at all. The only constraint §7 imposes on any authentication scheme is that it MUST NOT emit error `type` values inside the normative `eden://error/…` namespace — the v0 vocabulary there is closed, and overloading one of those values with an authentication outcome would force clients to disambiguate auth rejections from store-state rejections on HTTP status alone.
+
+This section is informative; it does not extend the closed error vocabulary in §7.

@@ -6,17 +6,19 @@ This directory contains one complete implementation of the EDEN protocol. It is 
 
 ## Status
 
-Phase 0 scaffolding only. Nothing is runnable. Each component below is a placeholder (`.gitkeep` only) until its phase lands.
+Through Phase 8b: a complete cross-process reference deployment is runnable. Each role lives in its own OS process and communicates only via the Phase 8a wire binding. Cut-over of the in-process dispatch path remains Phase 8c.
 
 ### Services
 
 | Path | Role | Lands in |
 |---|---|---|
+| [`services/_common/`](services/_common/) | Shared scaffolding (logging, signals, readiness, scripted profiles, repo seeding) | Phase 8b |
+| [`services/task-store-server/`](services/task-store-server/) | Hosts the `Store` behind uvicorn over the chapter-07 wire binding | Phase 8b |
+| [`services/orchestrator/`](services/orchestrator/) | Finalize + dispatch + integrate loop against a `StoreClient` | Phase 5 (in-proc) → Phase 8b (standalone) |
+| [`services/planner/`](services/planner/) | Planner worker host (standalone process) | Phase 5 → Phase 8b |
+| [`services/implementer/`](services/implementer/) | Implementer worker host (standalone process; writes real git commits) | Phase 5 → Phase 8b |
+| [`services/evaluator/`](services/evaluator/) | Evaluator worker host (standalone process) | Phase 5 → Phase 8b |
 | [`services/control-plane/`](services/control-plane/) | Experiment registration, lease issuance | Phase 12 |
-| [`services/orchestrator/`](services/orchestrator/) | Per-experiment dispatch + integrator | Phase 5 (in-proc) → Phase 8 (standalone) |
-| [`services/planner/`](services/planner/) | Planner worker host | Phase 5 → Phase 8 |
-| [`services/implementer/`](services/implementer/) | Implementer worker host | Phase 5 → Phase 8 |
-| [`services/evaluator/`](services/evaluator/) | Evaluator worker host | Phase 5 → Phase 8 |
 | [`services/web-ui/`](services/web-ui/) | Browser-based observability + role claim/submit | Phase 9 |
 
 ### Packages
@@ -24,8 +26,10 @@ Phase 0 scaffolding only. Nothing is runnable. Each component below is a placeho
 | Path | Purpose | Lands in |
 |---|---|---|
 | [`packages/eden-contracts/`](packages/eden-contracts/) | Pydantic bindings for the JSON Schemas; convenience for Python components | Phase 3 |
-| [`packages/eden-storage/`](packages/eden-storage/) | Repository interface + one concrete backend (SQLite MVP) | Phase 6 |
+| [`packages/eden-dispatch/`](packages/eden-dispatch/) | Scripted workers + dispatch driver; `run_orchestrator_iteration` for standalone orchestrator service | Phase 5 / Phase 8b |
+| [`packages/eden-storage/`](packages/eden-storage/) | Repository interface + concrete backends (in-memory, SQLite) | Phase 6 |
 | [`packages/eden-git/`](packages/eden-git/) | Worktree + branch ops + integrator flow | Phase 7 |
+| [`packages/eden-wire/`](packages/eden-wire/) | HTTP wire binding (FastAPI server + httpx client) for chapter 07; reference-only shared-token auth | Phase 8a / 8b |
 | [`packages/eden-blob/`](packages/eden-blob/) | Blob storage interface + filesystem backend | Phase 10 |
 
 ### Scripts

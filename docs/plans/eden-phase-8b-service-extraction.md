@@ -1,0 +1,422 @@
+# EDEN Phase 8b — Service Extraction & Standalone Workers
+
+## Goal
+
+Finish the cross-process reference deployment started in Phase 8a by landing four things together:
+
+1. **Worker host services.** Extract planner, implementer, and evaluator into independent subprocesses that claim tasks over the `eden-wire` HTTP surface — the roadmap's literal definition of Phase 8b.
+2. **Task-store-server and orchestrator entrypoints.** The two CLI entrypoints that Phase 8a deferred (decision recorded in the 8a plan's "Services" section: the directories and `__main__.py` modules were scoped for 8b so all three service shapes could share one CLI / logging / signal-handling / config-loading surface rather than landing the task-store server in 8a and re-designing it when workers arrived).
+3. **Shared-token auth scaffolding.** The roadmap's "Each authenticates via a shared token (scaffolding; real auth is Milestone 3 work)" requirement, intentionally framed as reference-only so nothing about authentication enters the normative protocol ahead of Milestone 3.
+4. **First real-subprocess end-to-end test.** A pytest that forks five processes on ephemeral ports, drives a 3-trial experiment to quiescence, asserts the event log and bare-repo state, and tears down cleanly on both success and failure.
+
+At the end of Phase 8b the 3-trial experiment runs with each role in its own OS process, communicating only through the wire binding from [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md). Removing the in-process dispatch path remains Phase 8c.
+
+## Non-goals (deferred)
+
+- **Cut-over (Phase 8c).** `run_experiment` in-process with a direct `Store` and scripted workers is still supported at the end of 8b. Removing that code path and the tests that depend on it is 8c.
+- **Push-based event delivery.** SSE / WebSocket remain a later transport optimization; long-poll over `GET /events/subscribe` from 8a is sufficient for workers. Workers in 8b poll `GET /tasks?kind=X&state=pending` on a configurable interval — this is even simpler than subscribing to events and filtering, and makes worker teardown (kill on SIGTERM with no inflight long-poll) trivial.
+- **Real authentication.** Shared-token is scaffolding only; it has no per-worker identity, no rotation, no expiry, no transport security (loopback only), and lives under `eden://reference-error/...` rather than the normative `eden://error/...` namespace so it does not commit the spec to an auth shape. Milestone 3 supersedes it.
+- **Artifact store transport.** Phase 10.
+- **Web UI.** Phase 9.
+- **Compose packaging.** Phase 10.
+- **`healthz` endpoint.** Orchestrator and workers establish readiness by retrying `GET /v0/experiments/{E}/events` with bounded backoff; a dedicated liveness endpoint is a Phase 10 / 13 deployment concern.
+- **Multi-experiment.** Each service process hosts exactly one experiment; multi-experiment routing is Phase 12 (control plane).
+
+## Protocol-first framing
+
+The normative wire binding was fully defined in Phase 8a. Phase 8b is pure reference-implementation work: service entrypoints, a dispatch-loop refactor, and an auth middleware. The only spec edit is a single **informative** section appended to chapter 07 documenting the reference-only auth extension as a non-normative convention — so that a reader tracing the wire from reference-impl logs to the chapter can find the `Authorization: Bearer …` shape, but a conforming server that implements OAuth2 or mTLS is in no way constrained by it.
+
+## What gets created
+
+### Services
+
+Five new directories under `reference/services/`, each a workspace member with its own `pyproject.toml`, a module package, and a `__main__.py` that parses argv and runs. All five share a small amount of common scaffolding extracted into `reference/services/_common/`:
+
+- **Structured logging**. JSON-line logs to stdout, fields `{ts, level, service, experiment_id, message, **ctx}`. Avoids each service inventing its own format.
+- **Signal handling**. Install SIGTERM and SIGINT handlers that flip a `stopping` flag; the main loop checks it between iterations. Workers and orchestrator exit cleanly; task-store-server calls `uvicorn.Server.should_exit = True` to trigger graceful shutdown.
+- **Readiness probe**. `wait_for_task_store(base_url, experiment_id, token, deadline)` retries `GET /v0/experiments/{E}/events` with capped backoff until 200 or deadline. Used by orchestrator + workers at startup.
+- **Arg parsing helpers**. A thin wrapper around argparse so every service shares `--task-store-url`, `--experiment-id`, `--shared-token`, and `--log-level`. Service-specific args layer on top.
+
+Rationale for extracting `_common`: three nearly-identical CLIs with divergent flag spellings is the cost of not doing this. The same argument applies to logging — every debugging session otherwise starts with "what format is *this* service emitting?"
+
+#### 1. `reference/services/task-store-server/`
+
+Package: `eden_task_store_server/`.
+
+```text
+eden_task_store_server/
+  __init__.py
+  __main__.py        # `python -m eden_task_store_server …`
+  cli.py             # argparse + main()
+  app.py             # build_store(), build_app() helpers (unit-testable)
+```
+
+CLI:
+
+- `--db-path PATH` — SQLite path, or `:memory:` for `InMemoryStore`. Required.
+- `--experiment-id ID` — required.
+- `--experiment-config PATH` — YAML file matching `experiment-config.schema.json`. Used on first open to seed `metrics_schema`. On reopen of an existing DB, mismatch is an error (existing `SqliteStore` behavior).
+- `--host HOST` — default `127.0.0.1`.
+- `--port PORT` — default `0` (ephemeral; printed on startup so the harness can read it from stdout).
+- `--shared-token TOKEN` — optional. When set, the auth middleware requires `Authorization: Bearer TOKEN` on every request. `None` disables auth.
+- `--log-level LEVEL` — default `info`.
+
+Startup:
+
+1. Load `--experiment-config` into a `ExperimentConfig` Pydantic model; extract `experiment_id` (must match `--experiment-id`) and `metrics_schema`.
+2. `SqliteStore.open(db_path, experiment_id=..., metrics_schema=...)` (or `InMemoryStore(...)` for `:memory:`).
+3. `app = make_app(store, shared_token=args.shared_token)`.
+4. `uvicorn.Server(Config(app, host, port, log_config=None))` run via `server.run()` in the main thread.
+5. On SIGTERM/SIGINT set `server.should_exit = True`; uvicorn drains active requests then returns from `run()`. After return, close the store.
+
+Stdout protocol: first line after binding is `EDEN_TASK_STORE_LISTENING host=<host> port=<port>` so a test harness can read the ephemeral port without scraping logs.
+
+#### 2. `reference/services/orchestrator/`
+
+Reuses the existing Phase 0 stub directory (blessed in [`reference/README.md`](../../reference/README.md) as "Per-experiment dispatch + integrator").
+
+Package: `eden_orchestrator/`.
+
+```text
+eden_orchestrator/
+  __init__.py
+  __main__.py
+  cli.py
+  loop.py           # run_orchestrator() — the extracted driver half
+```
+
+CLI:
+
+- `--task-store-url URL` — required.
+- `--experiment-id ID` — required.
+- `--shared-token TOKEN` — optional.
+- `--repo-path PATH` — required; bare git repo the Integrator writes `trial/*` refs into.
+- `--integrator-author NAME <EMAIL>` — default `EDEN Integrator <integrator@eden.invalid>`.
+- `--plan-tasks SPEC` — either an integer N (creates `plan-0001` … `plan-N`) or a comma-separated list of explicit IDs.
+- `--implement-task-prefix PREFIX` — default `implement-`. Concrete task IDs become `<prefix><short-uuid>`.
+- `--evaluate-task-prefix PREFIX` — default `evaluate-`. Same pattern.
+- `--poll-interval SECONDS` — default `0.1`. How long to sleep between orchestrator iterations that made no progress.
+- `--max-quiescent-iterations N` — default `3`. Number of back-to-back zero-progress iterations before exiting 0. >1 so we don't exit immediately if a worker is mid-submit during our read.
+- `--startup-timeout SECONDS` — default `30`. Max wait for the task-store to become ready on boot.
+- `--log-level LEVEL`.
+
+Startup:
+
+1. `wait_for_task_store(...)` until ready.
+2. `client = StoreClient(url, experiment_id, token=...)`.
+3. `repo = GitRepo(repo_path)`; `integrator = Integrator(client, repo, author=...)`.
+4. Seed plan tasks via `client.create_plan_task(...)` for each ID in the expanded `--plan-tasks` spec.
+5. Loop `run_orchestrator_iteration(client, integrator, ...)` with a quiescence counter: each iteration that made progress resets the counter to 0; each that didn't increments it. Sleep `--poll-interval` between iterations. Exit 0 when the counter reaches `--max-quiescent-iterations`.
+6. On SIGTERM/SIGINT, break the loop and exit 0 immediately.
+
+The orchestrator service does **not** run any worker logic. `run_orchestrator_iteration` only performs:
+
+- `_finalize_submitted(client, kind=...)` for each of plan / implement / evaluate — accept, reject(worker_error), or reject(validation_error) based on `validate_terminal`.
+- `_dispatch_implement_tasks(client, factory)` — one implement task per ready proposal.
+- `_dispatch_evaluate_tasks(client, factory)` — one evaluate task per starting trial with commit_sha and no extant evaluate task.
+- `_promote_successful_trials(client, integrator.integrate)` — promote any success trial lacking `trial_commit_sha`.
+
+This is the existing `run_experiment` body minus the three `worker.run_pending(...)` calls.
+
+#### 3. `reference/services/planner/`, `implementer/`, `evaluator/`
+
+Package names: `eden_planner_host`, `eden_implementer_host`, `eden_evaluator_host`.
+
+Each has the same shape:
+
+```text
+eden_<role>_host/
+  __init__.py
+  __main__.py
+  cli.py
+  host.py            # the poll loop + scripted functions
+```
+
+Common CLI across all three:
+
+- `--task-store-url URL`.
+- `--experiment-id ID`.
+- `--shared-token TOKEN`.
+- `--worker-id ID` — required. Distinct per-process identifier.
+- `--poll-interval SECONDS` — default `0.1`.
+- `--startup-timeout SECONDS` — default `30`.
+- `--log-level LEVEL`.
+
+Role-specific args:
+
+- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N` (default `1`). The fixed `plan_fn` emits proposals with `parent_commits=(base_commit_sha,)`.
+- Implementer: `--repo-path PATH` (required) + `--fail-every N` (optional, default never). See "Implementer repo model" above. (The implementer reads parents from the proposal; no `--base-commit-sha` flag.)
+- Evaluator: `--experiment-config PATH` (required, to know the metrics schema and emit matching keys) + `--fail-every N` (optional).
+
+Startup: readiness probe, construct `StoreClient`, construct `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` with the existing scripted `plan_fn` / `implement_fn` / `evaluate_fn` (see "Scripted logic" below). Loop: `run_pending(client)`; if it returned 0, sleep `--poll-interval`; else loop again immediately (drain bursts without sleeping).
+
+Workers never self-terminate on empty work. They exit on SIGTERM only. This matches the Phase 9 UI-driven model too — a worker's lifecycle is owned by its supervisor, not by task availability.
+
+**Scripted logic across the subprocess boundary.** Today `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` take user-supplied Python callables (`plan_fn`, `implement_fn`, `evaluate_fn`) at construction. That arrangement does not survive being put behind a CLI — Python callables don't cross a `python -m eden_planner_host …` boundary.
+
+8b resolves this by **baking one built-in profile into each worker host**. A new module `reference/services/_common/scripted.py` owns the canonical 8b profile: the same deterministic "3 trials, all succeed" shape the Phase 5 / 7b in-process tests use today, with a couple of knobs configurable via CLI rather than by injecting a function:
+
+- Planner host: fixed `plan_fn` that drafts `--proposals-per-plan` proposals per task (default `1`) with deterministic slugs derived from the plan task ID. Each proposal's `parent_commits` is `(base_commit_sha,)`, where `base_commit_sha` is read from the `--base-commit-sha HEX` CLI flag. (Proposals MUST carry ≥1 parent per [`02-data-model.md`](../../spec/v0/02-data-model.md) §5; threading a concrete SHA through boot-time config is the cleanest way to satisfy that without giving the planner repo access.)
+- Implementer host: fixed `implement_fn` that writes a real git commit to the shared bare repo (see "Implementer repo model" below) and returns its SHA. `--fail-every N` (default: never fail) flips occasional trials to `status=error` to exercise rejection paths in tests.
+- Evaluator host: fixed `evaluate_fn` that returns scripted metrics matching the experiment's `metrics_schema` (read from `--experiment-config` so the evaluator knows what keys to emit). `--fail-every N` flips occasional evaluations to `status=error` / `status=eval_error` if a test wants them.
+
+The `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` classes stay callable-injected for Phase 5 / 7b in-process tests — the worker hosts are the only callers that wrap them in the fixed profile. This way nothing about the in-process test surface changes.
+
+Selector: a `--profile NAME` CLI flag is **not** introduced in 8b — the fixed profile is the only option. When real LLM-backed workers land (Phase 10 LLM hosts), they ship as separate worker hosts (`eden_llm_planner_host`, etc.) rather than as a `--profile llm` switch on the scripted host. Keeping the split explicit at the binary level means the scripted and LLM hosts don't share configuration surfaces that each only half-understands.
+
+**Implementer repo model.** The `Integrator` requires that the `commit_sha` an implementer submits be a real, reachable commit on a branch it can read ([integrator.py](../../reference/packages/eden-git/src/eden_git/integrator.py) §2 preconditions). Today's Phase 7b E2E fixture satisfies this by prebuilding real `work/*` branches before running the experiment and returning those real SHAs from the scripted `implement_fn`. Phase 8b needs the equivalent inside a standalone process.
+
+Decision: the implementer host writes real commits directly, via a `GitRepo` opened against the **same bare repo** the orchestrator's `Integrator` reads from.
+
+- Implementer CLI gains `--repo-path PATH` — the bare repo it writes to. Same path the orchestrator passes to `--repo-path`.
+- Implementer's scripted flow per task builds a real commit whose parent is the SHA the proposal named:
+  1. Read `proposal.parent_commits` from the store — guaranteed non-empty by the proposal Pydantic binding's `min_length=1` constraint. The implementer honors the full list whatever its length: a single-parent proposal produces a single-parent commit; a multi-parent proposal produces a merge commit. `GitRepo.commit_tree(parents=Iterable[str], ...)` already accepts any number of parents, so there is no scripted / merge-only split in the implementation.
+  2. Build a tree containing one deterministic blob (filename derived from the proposal slug, content derived from the trial ID) via `GitRepo.write_blob` + `write_tree_from_entries`.
+  3. `commit_tree` with that tree, `parents=list(proposal.parent_commits)`, fixed author / committer identity, deterministic message derived from the proposal slug + trial ID.
+  4. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
+  5. Submit the new SHA on the implement task.
+
+The scripted *planner* in 8b only emits single-parent proposals (see "Scripted logic across the subprocess boundary" above), but the scripted *implementer* accepts any valid proposal — so dropping the scripted planner into a larger mixed deployment (where some other planner produces merge proposals) does not turn the implementer into a silent protocol violator.
+
+Because the proposal's `parent_commits` is populated and the implementer's new commit descends from it, the Integrator's §1.4 reachability check (each `trial.parent_commits[i]` must be reachable from `commit_sha`) and its §2 check (`commit_sha` is reachable from `branch` tip) both hold.
+
+- **Seed commit.** The test harness seeds the bare repo with an empty initial commit before boot and passes its SHA to the planner as `--base-commit-sha`. The implementer picks up that SHA transitively — it reads parents off the proposal, which the planner authored. The orchestrator does not need the SHA either (it only reads what the store already records). Seeding is a tiny helper in `reference/services/_common/` (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+
+This keeps the implementer host's write path identical to how the Phase 7b test prebuilds branches, just inside the service loop rather than in a test fixture. Concurrency is fine: worker hosts only write `work/*` refs; the orchestrator's `Integrator` only writes `trial/*` refs and reads `work/*` refs. Git's packed-refs + loose-refs arrangement is safe under concurrent writers in distinct ref namespaces.
+
+**ID allocation across restarts.** Counter-based prefixes (`proposal-1`, `proposal-2`, …) collide on restart because a fresh worker has no knowledge of persisted state. Decision: worker- generated IDs (`proposal_id`, `trial_id`) are short UUIDv4 hex strings prefixed by a role tag — `proposal-<uuid>`, `trial-<uuid>`. The `--proposal-prefix` / `--trial-prefix` flags are dropped; the orchestrator-allocated task IDs keep `--implement-task-prefix` / `--evaluate-task-prefix` (because those are used for human-readable IDs in logs and E2E assertions), but the per-iteration uniqueness comes from appending a short UUID.
+
+The E2E test asserts on the *count* and *shape* of produced IDs, not specific values — so UUIDs are fine. Plan task IDs remain explicit (`--plan-tasks plan-1,plan-2,plan-3`) because the harness needs to reference them in assertions.
+
+### Shared-token auth scaffolding (reference-only)
+
+**Server-side extension** in `eden_wire.server`:
+
+```python
+def make_app(
+    store: Store,
+    *,
+    subscribe_timeout: float = 30.0,
+    subscribe_poll_interval: float = 0.1,
+    shared_token: str | None = None,
+) -> FastAPI:
+    ...
+    if shared_token is not None:
+        app.add_middleware(_SharedTokenMiddleware, token=shared_token)
+    ...
+```
+
+The middleware runs before endpoint dispatch. It:
+
+- Accepts any request whose `Authorization: Bearer <value>` matches `shared_token` byte-for-byte (constant-time compare via `hmac.compare_digest`).
+- Rejects any other request (missing header, wrong scheme, wrong value) with a problem+json envelope:
+
+  ```json
+  {
+    "type": "eden://reference-error/unauthorized",
+    "title": "Unauthorized",
+    "status": 401,
+    "detail": "missing or invalid Authorization header",
+    "instance": "…request URL…"
+  }
+  ```
+
+Notes:
+
+- The `type` URI namespace `eden://reference-error/…` is **separate** from the normative `eden://error/…` namespace in [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) §7. A conforming server that uses a different auth mechanism is free to emit whatever type it likes (or no auth at all).
+- The middleware does not guard the `/docs` / `/openapi.json` routes any differently; both require the token when auth is enabled.
+- When `shared_token is None`, no middleware is installed; the server behaves exactly as today. Every existing `make_app(store)` call site works unchanged.
+
+**Client-side extension** in `eden_wire.client`:
+
+```python
+class StoreClient:
+    def __init__(
+        self,
+        base_url: str,
+        experiment_id: str,
+        *,
+        token: str | None = None,
+        ...
+    ) -> None:
+        ...
+```
+
+When `token` is set, every request carries `Authorization: Bearer <token>`. The client also recognizes the reference-only error type and raises a new `eden_wire.errors.Unauthorized(ReferenceError)` subclass, so calling code can catch it explicitly. `Unauthorized` is not a `StorageError` subclass — authentication is transport-level, not store-level.
+
+**Spec addendum.** A new informative subsection §12 "Reference-only extensions — authentication" in `spec/v0/07-wire-protocol.md` (appended after the existing §11 "Implementation latitude"), ~10 lines:
+
+> Authentication is outside the normative binding (§7 restates > this). The reference implementation in > [`reference/packages/eden-wire/`](../../reference/packages/eden-wire/) > ships an optional shared-token check: when configured, the server > requires `Authorization: Bearer <token>` on every request and > rejects others with a problem+json response whose `type` is > `eden://reference-error/unauthorized`. Conforming servers MAY > adopt this scheme, adopt a different scheme, or require no > authentication at all. The only constraint §7 imposes on any > auth scheme is that it MUST NOT emit error `type` values inside > the normative `eden://error/…` namespace — the v0 vocabulary > there is closed, and an auth-outcome type overloading one of > those values would force clients to disambiguate auth from > store-state errors on HTTP status alone.
+
+### `eden-dispatch` refactor
+
+Today `run_experiment(store, planner, implementer, evaluator, ...)` interleaves:
+
+1. `planner.run_pending(store)`
+2. `_finalize_submitted(store, kind="plan")`
+3. `_dispatch_implement_tasks(store, ...)`
+4. `implementer.run_pending(store)`
+5. `_finalize_submitted(store, kind="implement")`
+6. `_dispatch_evaluate_tasks(store, ...)`
+7. `evaluator.run_pending(store)`
+8. `_finalize_submitted(store, kind="evaluate")`
+9. `_promote_successful_trials(store, integrate_trial)` (optional)
+
+Steps 2, 3, 5, 6, 8, 9 are orchestrator-only; 1, 4, 7 are worker-only. Factor out `_run_orchestrator_iteration(store, *, integrate_trial, implement_task_factory, evaluate_task_factory)` that does steps 2, 3, 5, 6, 8, 9 and returns `progress: bool`.
+
+`run_experiment` becomes:
+
+```python
+def run_experiment(store, planner, implementer, evaluator, *, ...):
+    for task_id in plan_task_ids:
+        store.create_plan_task(task_id)
+    while True:
+        progress = False
+        progress |= planner.run_pending(store) > 0
+        progress |= implementer.run_pending(store) > 0
+        progress |= evaluator.run_pending(store) > 0
+        progress |= _run_orchestrator_iteration(store, ...)
+        if not progress:
+            return
+```
+
+— identical behavior, but the orchestrator half is now importable from a single function that the new orchestrator can call.
+
+The worker-host processes consume `planner.run_pending(client)` etc. directly and don't touch `run_experiment`.
+
+### Tests
+
+New test files, in rough order of ambition:
+
+1. **Unit — auth middleware** (`reference/packages/eden-wire/tests/test_auth.py`). Requests with correct / missing / wrong-scheme / wrong-value headers hit a `make_app(store, shared_token="T")` via `TestClient`; assert the status + problem+json envelope shape. Also assert that `make_app(store)` without `shared_token` admits anonymous requests (regression guard on the default path).
+
+2. **Unit — StoreClient auth header** (`reference/packages/eden-wire/tests/test_auth.py` same file). A `StoreClient(token="T")` routed through `MockTransport` captures the outgoing `Authorization` header; with no token, no `Authorization` header is sent.
+
+3. **Unit — `run_orchestrator_iteration` against a seeded store** (`reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`). For each of the six transitions the function performs, pre-seed a store so exactly one transition is applicable, call the function, assert the expected state change plus `progress is True`. Then a fully-quiesced store returns `progress is False`.
+
+4. **Unit — each worker host in isolation** (`reference/services/<role>/tests/test_host.py`). Boot the service's `host.run(...)` in a thread with a `StoreClient` backed by an in-process `TestClient`, seed a pending task, wait for the terminal state, assert outcome, `stopping.set()` to tear down. Proves the host's poll loop honors SIGTERM semantics without forking subprocesses. The implementer-host test suite includes a **multi-parent case**: seed two base commits in a temp bare repo, create a proposal carrying `parent_commits=(sha_a, sha_b)`, dispatch an implement task, and assert the implementer writes a merge commit whose `commit_parents(...)` equals `[sha_a, sha_b]`. This locks in the "implementer honors the full parent list" rule at unit scope; the subprocess E2E exercises only the single-parent path the scripted planner emits.
+
+5. **Unit — task-store-server app construction** (`reference/services/task-store-server/tests/test_app.py`). Loads the fixture experiment config, calls `app.build_app(args)`, asserts the returned FastAPI has the middleware installed iff `--shared-token` was passed.
+
+6. **Integration — real-subprocess E2E** (`reference/services/orchestrator/tests/test_e2e.py`). Uses `subprocess.Popen` with `python -m eden_task_store_server`, `python -m eden_planner_host`, etc. The harness creates a tempdir and `git init --bare` inside, then calls `seed_bare_repo(path)` (the `_common` helper) to write an empty initial commit on `refs/heads/main` and capture its `base_sha` for threading into the planner's `--base-commit-sha`. It creates a separate tempdir for the sqlite DB (`--db-path` pointing at a file, not `:memory:` — this exercises the SQLite path end-to-end). It boots task-store-server on `--port 0`, reads `EDEN_TASK_STORE_LISTENING` from stdout to learn the port, then boots 3 workers + orchestrator against `http://127.0.0.1:<port>`; the implementer and orchestrator both point `--repo-path` at the bare repo, the planner and evaluator don't touch it, and all 5 subprocesses share `--shared-token test-token` to exercise auth. It waits up to 60 seconds for the orchestrator to exit 0. On timeout or non-zero exit, it dumps every subprocess's stderr into the pytest failure output (this is non-negotiable — the one thing that makes subprocess tests diagnosable is capturing every process's stderr on failure). It SIGTERMs the workers and task-store-server, awaits each for up to 10 seconds, then SIGKILLs. Finally it opens the DB with a fresh `SqliteStore` and asserts: 3 accepted plan tasks, 3 accepted implement tasks, 3 accepted evaluate tasks; 3 trials with `status="success"` and `trial_commit_sha` set; each `trial.parent_commits == [base_sha]` (lineage threaded correctly from `--base-commit-sha`); and each `trial_commit_sha` is a valid git commit in the bare repo with `repo.commit_parents(trial_commit_sha) == list(trial.parent_commits)` (matches the in-process real-integrator test's parent check at `reference/packages/eden-dispatch/tests/test_end_to_end.py`). It tears down tempdirs on every exit path. The test is decorated `@pytest.mark.e2e` so it can be selected / skipped independently; it runs by default in the test suite, since without it Phase 8b has no integration coverage of the whole stack. Marked platform-skipped on Windows (signal handling is different; not worth supporting in v0).
+
+### Build & CI
+
+- Add 5 service directories + `reference/services/_common/` (not a service; a shared utility package) to the workspace members list in the root `pyproject.toml`.
+- Each service's `pyproject.toml` declares its own dependencies (`eden-wire`, `eden-dispatch`, `eden-storage`, `eden-git`, plus `uvicorn[standard]` for task-store-server).
+- Add `reference/services/*/tests/` to `testpaths` and `pyright.include`.
+- New third-party dependency: `uvicorn[standard]` (already implicit via `fastapi` but now explicit because task-store-server actually runs a server). No other new deps — `httpx`, `pydantic`, `fastapi` all already in the workspace.
+- No new CI jobs; existing `python-lint`, `python-typecheck`, `python-test`, `schema-validity`, `schema-parity` all cover the new code (no new schemas; the error type is reference-only).
+- `spec-xref-check.py` picks up the new §8 automatically.
+- The E2E test takes ~5–10 seconds when healthy; still well inside CI budget.
+
+## Algorithm — what the 3-trial experiment looks like across 5 processes
+
+```text
+harness
+  ├─> task-store-server (uvicorn, SqliteStore, shared_token=T)
+  │       bound to 127.0.0.1:$PORT after printing EDEN_TASK_STORE_LISTENING
+  ├─> planner-host  (StoreClient, ScriptedPlanner, worker-id=planner-1)
+  ├─> implementer-host (StoreClient, ScriptedImplementer, worker-id=implementer-1)
+  ├─> evaluator-host   (StoreClient, ScriptedEvaluator, worker-id=evaluator-1)
+  └─> orchestrator (StoreClient, Integrator, plan-tasks=plan-1,plan-2,plan-3)
+```
+
+1. Harness boots task-store-server, reads its port from stdout.
+2. Harness boots the 3 workers and orchestrator in parallel with the URL and shared token. Each waits on readiness probe.
+3. Orchestrator seeds plan-1, plan-2, plan-3.
+4. Planner's next poll returns the 3 pending plan tasks. It claims each, drafts `--proposals-per-plan` proposals (each carrying `parent_commits=(base_commit_sha,)`), marks each ready, submits.
+5. Orchestrator's next iteration: finalizes plan tasks (accepts each), dispatches an implement task per ready proposal.
+6. Implementer claims each, writes a real commit on `refs/heads/work/<slug>-<trial_id>` in the shared bare repo via `GitRepo`, creates a trial carrying that branch + SHA, and submits `status=success`.
+7. Orchestrator accepts implement tasks, dispatches evaluate tasks.
+8. Evaluator claims each, submits metrics.
+9. Orchestrator accepts evaluate tasks (this also writes metrics on the trial per the §2.2 composite commit). Trials are now `success`.
+10. Orchestrator calls `Integrator.integrate(trial_id)` for each: writes `refs/heads/trial/<id>-<slug>` via zero-oid CAS into the bare repo, then `POST /trials/{id}/integrate` → store writes `trial_commit_sha` + `trial.integrated` event.
+11. Next iteration finds no progress. Counter increments. After `--max-quiescent-iterations` zero-progress iterations in a row, orchestrator exits 0.
+12. Harness observes the exit, asserts DB + repo state, SIGTERMs the workers + task-store-server, waits for them, tears down temp dirs.
+
+## Migration from 8a
+
+- `eden-wire.server.make_app(store)` → `make_app(store, *, shared_token=None)`. Default `None` preserves existing call sites.
+- `eden-wire.client.StoreClient(base_url, experiment_id)` → `StoreClient(base_url, experiment_id, *, token=None)`. Default `None` preserves existing call sites.
+- `eden_dispatch.run_experiment` keeps its signature; internally splits into `_run_orchestrator_iteration` that the new orchestrator also uses. All Phase 5 / 7b end-to-end tests keep running unchanged.
+- Existing `reference/services/orchestrator/` and `reference/services/planner/` etc. stubs: replaced with real service packages (no alias directories; the existing names are the ones the roadmap blessed).
+
+## Files to reference
+
+- `reference/packages/eden-wire/src/eden_wire/{server,client,errors}.py` — extension points for auth + the reference-only error namespace.
+- `reference/packages/eden-dispatch/src/eden_dispatch/{driver,workers}.py` — refactor target; workers are unchanged in shape, driver splits.
+- `reference/packages/eden-git/src/eden_git/integrator.py` — consumed by the orchestrator CLI unchanged.
+- `spec/v0/07-wire-protocol.md` §7 — closed error vocabulary that the reference-only `unauthorized` type is deliberately kept outside of. Add §8 as the only normative edit in this phase.
+- `tests/fixtures/experiment/.eden/config.yaml` — input to the E2E test's `--experiment-config` flag.
+
+## Verification
+
+1. `uv run pytest -q` passes (new unit + integration tests included).
+2. `uv run pytest -m e2e` runs only the subprocess E2E.
+3. `uv run ruff check .` + `uv run pyright` pass.
+4. `python3 scripts/spec-xref-check.py` passes.
+5. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" …` passes on the new plan file, `07-wire-protocol.md` addendum, each service README, and AGENTS.md + CLAUDE.md + roadmap updates.
+6. Manual: start task-store-server on a real port, curl `GET /v0/experiments/exp-1/events` without an `Authorization` header — returns 401 problem+json with `type: eden://reference-error/unauthorized`. Same request with `Authorization: Bearer <token>` returns 200 empty events.
+7. Manual: kill the task-store-server with `kill -TERM` and confirm clean exit (no tracebacks, SQLite file well-formed).
+
+## Out of scope for 8b
+
+(Already listed in Non-goals; restated here as the commit guardrail.)
+
+- Removing in-process dispatch paths (Phase 8c).
+- SSE / WebSocket push.
+- Real auth (per-worker identities, rotation, expiry, transport security). Milestone 3.
+- Artifact store transport (Phase 10).
+- UI (Phase 9).
+- Compose packaging (Phase 10).
+- `healthz` endpoint.
+- Multi-experiment (Phase 12).
+- Worker claim-expiry / health-policy reclaim (spec-supported but not exercised by the E2E harness; it's not 8b's job to harden the reclaim path).
+
+## Known risks
+
+- **Subprocess-based integration tests are easy to write wrong.** The E2E spec above is explicit about: ephemeral ports announced on stdout; stderr capture on failure; bounded timeouts at every wait point; SIGKILL fallback on SIGTERM timeout; tempdir teardown on every exit path. Missing any of these yields a test that hangs CI or produces unrunnable "red for unknown reason" failures. These are codified in the test, not left to diligence.
+- **Auth in the non-normative namespace is a cross-concern edit.** `eden_wire.errors._TYPE_BY_EXC` currently maps only `StorageError` subclasses to `eden://error/…`. The new `Unauthorized` exception lives outside that map because (a) it's not a `StorageError`, and (b) it's reference-only. Keep the two tables clearly separated so no future refactor accidentally leaks a reference-only type into the normative vocabulary.
+- **Workers don't self-terminate.** Anything that boots a worker (test harness, future deployment) is responsible for killing it. SIGTERM triggers a clean exit within one poll interval; SIGKILL is the fallback after 10 seconds. Documented in each service's README.
+- **Shared-token auth has no transport security.** The server is loopback-only in tests and documented as such. A real deployment of shared-token auth over a non-TLS link leaks the token. Auth scaffolding has a big caveat in its README pointing at Milestone 3.
+- **Windows signal handling.** `signal.SIGTERM` on Windows is missing; uvicorn's shutdown path uses `SIGBREAK` / SIGINT. The E2E test is `pytest.mark.skipif(sys.platform == "win32", …)`. Non-test code paths also work on Windows (uvicorn handles it), just not exercised in CI.
+- **Quiescence counter ≥ 2.** If `--max-quiescent-iterations` is 1, the orchestrator can exit while a worker is mid-submit (the orchestrator reads tasks, sees nothing pending, exits; the worker's submit lands a moment later, orphaned). Default of 3 plus a poll interval of 0.1s means we wait ~0.2s of no-progress, which empirically covers scripted-worker latency with a wide margin. Documented as a tunable.
+- **Ephemeral port assignment race.** We bind `--port 0`, read the port from stdout, then launch other processes pointing at it. Between `listen()` and the port being printed there's a flush-timing window where the harness might read an empty line; the harness must `readline()` in a loop until it gets the `EDEN_TASK_STORE_LISTENING` prefix. Harness code handles this.
+- **`--plan-tasks N` (integer) vs explicit list.** The integer form is the common case; the explicit-list form exists so tests can pin deterministic IDs that assertions can reference.
+- **Bad `--base-commit-sha` input.** The planner has no repo access, so a nonexistent or malformed SHA passed on the CLI is not caught there; the failure surfaces later when the implementer's `commit_tree` rejects a missing parent object. For 8b this is acceptable — the harness is responsible for passing a SHA it just wrote — but two pragmatic mitigations are in scope:
+  - Syntax check at planner startup: reject anything that is not a 40-hex or 64-hex string with a clear error message. Catches typos and swapped arguments cheaply; does not catch nonexistent SHAs.
+  - Implementer's first-task handling logs the parent resolution error plainly (via `GitRepo`'s subprocess error surface) so the harness / operator sees "parent `<sha>` does not exist in `<repo>`" rather than a generic git failure. No additional mitigation beyond that: validating the SHA's existence would require giving the planner repo access, which the whole design deliberately avoids.
+- **Scripted `plan_fn` / `implement_fn` / `evaluate_fn` now live in shared code.** Tests that used to inject their own fn still can, by importing and parameterizing — no lock-in. The shared defaults are the deterministic "3 trials, all succeed" shape that the Phase 5 / 7b E2E uses.
+
+## Execution order
+
+This is execution-only; no scope decisions are deferred to here.
+
+1. Spec addendum: append §8 "Reference-only extensions" to [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md). Run `python3 scripts/spec-xref-check.py` to confirm no broken xrefs. Lint with markdownlint.
+2. Refactor `eden-dispatch.driver`: extract `_run_orchestrator_iteration` (private) and keep `run_experiment` calling it. Add `reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`.
+3. Extend `eden-wire.server.make_app` with the `shared_token` kwarg + middleware. Extend `eden-wire.client.StoreClient` with `token` kwarg. Add `Unauthorized` exception + reference-only entry to `eden_wire.errors`. Add `reference/packages/eden-wire/tests/test_auth.py` covering server middleware + client header + error round-trip.
+4. Land `reference/services/_common/` with logging, signal handling, readiness probe, arg parsing, and the scripted `plan_fn`/`implement_fn`/`evaluate_fn` extraction.
+5. Land `reference/services/task-store-server/` with its tests (unit `test_app.py`).
+6. Land `reference/services/orchestrator/` with its unit tests but not the E2E yet.
+7. Land `reference/services/planner/`, `implementer/`, `evaluator/` with their host unit tests.
+8. Land the E2E test `reference/services/orchestrator/tests/test_e2e.py`. Run locally — it is the acceptance gate for 8b. Capture stderr on failure from the beginning; do not add that feature as a "v2" polish.
+9. Update `reference/README.md`: mark the five service directories as Phase 8b-complete.
+10. Update `AGENTS.md` "Current phase" and the Commands table (python module invocation hints for the new services).
+11. Update `docs/roadmap.md` Phase 8 section: mark 8b complete.
+12. Run the full verification list above.
+13. `/codex-review references/implementation.md` on the branch.
+14. Codify findings; commit; PR.
+
+## Review gate
+
+Before handing to `/codex-review`:
+
+- The plan answers, for each of the five design decisions, what the chosen option is and why the alternatives were rejected:
+  - **Quiescence by iteration counter vs by event subscription.** Counter chosen because (a) it matches how `run_experiment` already detects quiescence and (b) doesn't require the worker hosts to distinguish "I'm idle" from "I exited" on the subscriber end.
+  - **Workers poll tasks vs subscribe to events.** Polling chosen for 8b because teardown (kill at any moment) is trivial and because the poll interval is a single tunable. Event-subscribe remains a future optimization.
+  - **Shared-token in normative vocabulary vs reference-only namespace.** Reference-only chosen because the spec chapter 07 explicitly defers auth to Milestone 3 and committing to a shape now would force rework then.
+  - **Common scaffolding extracted vs inlined per service.** Extracted because three divergent CLIs are the predictable failure mode and because the extraction is small (< 200 LOC).
+  - **Service directories — reuse stubs vs new names.** Reuse the four existing Phase 0 stubs (`planner/`, `implementer/`, `evaluator/`, `orchestrator/`) — they are the roadmap's blessed names and [`reference/README.md`](../../reference/README.md) already documents them. Add one new directory (`task-store-server/`) for the process that holds the store; there is no stub because Phase 0 didn't anticipate splitting the store off. The Phase 8a plan's tentative `orchestrator-service/` name was a placeholder while the directory didn't yet exist; now that it's being created for real, the shorter stub name is the better pick.
+
+(The last decision is flagged for codex review to push back if the rename is the wrong tradeoff.)

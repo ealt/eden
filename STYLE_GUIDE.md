@@ -116,6 +116,7 @@ Lives in `pyproject.toml` once the first Python package lands in Phase 3. Baseli
 - Atx-style headings (`#`, `##`, `###`).
 - Reference-style links are fine when a URL repeats; inline otherwise.
 - Code fences specify a language tag when applicable.
-- `markdownlint-cli2` is the authoritative linter; [`.markdownlint.json`](.markdownlint.json) holds the exception list.
+- `markdownlint-cli2` is the authoritative linter; [`.markdownlint.json`](.markdownlint.json) holds the exception list. `MD013` (line length) is disabled on purpose (see next bullet).
+- **No mid-paragraph hard wrapping.** Each paragraph is one line; each list item is one line; line breaks appear only at block boundaries (paragraph, list item, heading, code fence, table row). This makes diffs localized to actual content changes rather than rewrap churn. Use `~/Documents/toolchain/scripts/reflow_markdown.py FILE` to reflow a hard-wrapped file before committing; run `markdownlint-cli2` after to catch any list-structure artifacts the heuristic reflow introduces (MD029 ordered-list prefixes are the common one).
 
 For commands to run linters, see [AGENTS.md](AGENTS.md#commands).

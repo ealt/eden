@@ -73,6 +73,7 @@ class StoreClient:
         base_url: str,
         experiment_id: str,
         *,
+        token: str | None = None,
         client: httpx.Client | None = None,
         timeout: float = 30.0,
         read_back_attempts: int = 3,
@@ -80,7 +81,9 @@ class StoreClient:
         self._experiment_id = experiment_id
         self._base = f"{base_url.rstrip('/')}/v0/experiments/{experiment_id}"
         self._ref_base = f"{base_url.rstrip('/')}/_reference/experiments/{experiment_id}"
-        self._headers = {"X-Eden-Experiment-Id": experiment_id}
+        self._headers: dict[str, str] = {"X-Eden-Experiment-Id": experiment_id}
+        if token is not None:
+            self._headers["Authorization"] = f"Bearer {token}"
         self._owns_client = client is None
         self._client = client if client is not None else httpx.Client(timeout=timeout)
         self._read_back_attempts = read_back_attempts

@@ -30,8 +30,11 @@ __all__ = [
     "BadRequest",
     "ExperimentIdMismatch",
     "ProblemJson",
+    "WireReferenceError",
+    "Unauthorized",
     "WireError",
     "envelope_for_error",
+    "envelope_for_reference_error",
     "raise_for_envelope",
 ]
 
@@ -46,6 +49,20 @@ class BadRequest(WireError):
 
 class ExperimentIdMismatch(WireError):
     """Header ``X-Eden-Experiment-Id`` disagreed with the URL segment."""
+
+
+class WireReferenceError(Exception):
+    """Base class for reference-only errors outside the normative vocabulary.
+
+    Errors under this hierarchy live under ``eden://reference-error/…``
+    and are not part of the ``07-wire-protocol.md`` §7 closed vocabulary
+    (§12 "Reference-only extensions"). A conforming server is free to
+    use a different auth scheme or none at all.
+    """
+
+
+class Unauthorized(WireReferenceError):
+    """Reference shared-token middleware rejected the request."""
 
 
 @dataclass(frozen=True)
@@ -124,13 +141,50 @@ def envelope_for_error(exc: Exception, *, instance: str | None = None) -> Proble
     )
 
 
+_REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
+    Unauthorized: (
+        "eden://reference-error/unauthorized",
+        401,
+        "Unauthorized",
+    ),
+}
+
+_REF_EXC_BY_TYPE: dict[str, type[Exception]] = {
+    wire_type: exc for exc, (wire_type, _, _) in _REF_TYPE_BY_EXC.items()
+}
+
+
+def envelope_for_reference_error(
+    exc: Exception, *, instance: str | None = None
+) -> ProblemJson:
+    """Build a :class:`ProblemJson` envelope for a reference-only error.
+
+    Kept separate from :func:`envelope_for_error` so no refactor can
+    accidentally leak a reference-only type into the normative
+    ``_TYPE_BY_EXC`` vocabulary.
+    """
+    entry = _REF_TYPE_BY_EXC.get(type(exc))
+    if entry is None:
+        msg = f"no reference binding for exception {type(exc).__name__!r}"
+        raise ValueError(msg)
+    wire_type, status, title = entry
+    detail = str(exc) if str(exc) else None
+    return ProblemJson(
+        type=wire_type,
+        title=title,
+        status=status,
+        detail=detail,
+        instance=instance,
+    )
+
+
 def raise_for_envelope(body: dict[str, Any]) -> None:
     """Reconstruct and raise the exception described by a problem+json body."""
     wire_type = body.get("type")
     if not isinstance(wire_type, str):
         msg = f"envelope missing 'type' string: {body!r}"
         raise ValueError(msg)
-    exc_cls = _EXC_BY_TYPE.get(wire_type)
+    exc_cls = _EXC_BY_TYPE.get(wire_type) or _REF_EXC_BY_TYPE.get(wire_type)
     if exc_cls is None:
         msg = f"unknown wire error type {wire_type!r}"
         raise WireError(msg)

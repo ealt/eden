@@ -1,0 +1,73 @@
+--- docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/2.md	2026-04-24 13:29:29
++++ docs/plans/eden-phase-8b-service-extraction.md	2026-04-24 13:31:36
+@@ -325,22 +325,30 @@
+ - Implementer's scripted flow per task builds a real commit whose
+   parent is the SHA the proposal named:
+   1. Read `proposal.parent_commits` from the store — guaranteed
+-     non-empty by the proposal Pydantic binding's
+-     `min_length=1` constraint. The scripted planner's fixed
+-     profile always emits a single parent, so the implementer's
+-     scripted profile uses `proposal.parent_commits[0]` as the
+-     single commit parent. (A non-scripted future implementer
+-     could honor multi-parent proposals as merge commits;
+-     scripted 8b does not.)
++     non-empty by the proposal Pydantic binding's `min_length=1`
++     constraint. The implementer honors the full list whatever
++     its length: a single-parent proposal produces a single-parent
++     commit; a multi-parent proposal produces a merge commit.
++     `GitRepo.commit_tree(parents=Iterable[str], ...)` already
++     accepts any number of parents, so there is no scripted /
++     merge-only split in the implementation.
+   2. Build a tree containing one deterministic blob (filename
+      derived from the proposal slug, content derived from the
+      trial ID) via `GitRepo.write_blob` +
+      `write_tree_from_entries`.
+-  3. `commit_tree` with that tree, `parent=parent_sha` from step
+-     1, fixed author / committer identity, deterministic message
+-     derived from the proposal slug + trial ID.
++  3. `commit_tree` with that tree,
++     `parents=list(proposal.parent_commits)`, fixed author /
++     committer identity, deterministic message derived from the
++     proposal slug + trial ID.
+   4. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
+   5. Submit the new SHA on the implement task.
++
++  The scripted *planner* in 8b only emits single-parent proposals
++  (see "Scripted logic across the subprocess boundary" above), but
++  the scripted *implementer* accepts any valid proposal — so
++  dropping the scripted planner into a larger mixed deployment
++  (where some other planner produces merge proposals) does not
++  turn the implementer into a silent protocol violator.
+ 
+   Because the proposal's `parent_commits` is populated and the
+   implementer's new commit descends from it, the Integrator's §1.4
+@@ -350,9 +358,11 @@
+ 
+ - **Seed commit.** The test harness seeds the bare repo with an
+   empty initial commit before boot and passes its SHA to the
+-  planner and implementer as `--base-commit-sha`. (The orchestrator
+-  does not need the SHA — it only reads what the store already
+-  records.) Seeding is a tiny helper in `reference/services/_common/`
++  planner as `--base-commit-sha`. The implementer picks up that
++  SHA transitively — it reads parents off the proposal, which the
++  planner authored. The orchestrator does not need the SHA either
++  (it only reads what the store already records). Seeding is a
++  tiny helper in `reference/services/_common/`
+   (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+ 
+ This keeps the implementer host's write path identical to how the
+@@ -579,7 +589,13 @@
+      - 3 accepted plan tasks, 3 accepted implement tasks, 3 accepted
+        evaluate tasks.
+      - 3 trials with `status="success"` and `trial_commit_sha` set.
+-     - Each `trial_commit_sha` is a valid git commit in the bare repo.
++     - Each `trial.parent_commits == [base_sha]` (lineage
++       threaded correctly from `--base-commit-sha`).
++     - Each `trial_commit_sha` is a valid git commit in the bare
++       repo and `repo.commit_parents(trial_commit_sha) ==
++       list(trial.parent_commits)` (matches the in-process
++       real-integrator test's parent check at
++       `reference/packages/eden-dispatch/tests/test_end_to_end.py`).
+    - Tears down tempdirs.
+ 
+    Test is decorated `@pytest.mark.e2e` so it can be selected /
