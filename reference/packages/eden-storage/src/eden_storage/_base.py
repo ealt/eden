@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import math
 import secrets
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager
@@ -1241,6 +1242,16 @@ class _StoreBase:
             return f"invalid trial update: {exc.errors()[0]['msg']}"
         return None
 
+    def validate_metrics(self, metrics: dict[str, Any]) -> None:
+        """Validate metrics against the registered schema.
+
+        Public entry point for both submit-time (``08-storage.md`` §4)
+        and integration-time (``06-integrator.md`` §2) validation.
+        Raises ``InvalidPrecondition`` on violation; no-op when the
+        store was constructed without a ``metrics_schema``.
+        """
+        self._validate_metrics(metrics)
+
     def _validate_metrics(self, metrics: dict[str, Any]) -> None:
         """Validate metrics against the registered schema (``08-storage.md`` §4)."""
         if self._metrics_schema is None:
@@ -1263,6 +1274,14 @@ class _StoreBase:
             if not isinstance(value, expected):
                 raise InvalidPrecondition(
                     f"metric {key!r} value {value!r} is not of declared type {mtype!r}"
+                )
+            # Non-finite floats (NaN, +inf, -inf) fail JSON round-trip
+            # and can't be stored in the event log or eval manifest. The
+            # ``real`` type in the metrics schema implies "finite IEEE
+            # 754 double" per the spec's JSON grounding.
+            if mtype == "real" and not math.isfinite(value):
+                raise InvalidPrecondition(
+                    f"metric {key!r} value {value!r} is not finite"
                 )
 
     # ------------------------------------------------------------------

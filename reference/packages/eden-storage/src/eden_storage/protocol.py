@@ -40,7 +40,7 @@ enough. Two reference backends satisfy it — ``InMemoryStore`` and
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from eden_contracts import (
     EvaluateTask,
@@ -259,4 +259,17 @@ class Store(Protocol):
 
     def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
         """Integrator promotion: write ``trial_commit_sha``; emits ``trial.integrated``."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Shared validators
+    # ------------------------------------------------------------------
+
+    def validate_metrics(self, metrics: dict[str, Any]) -> None:
+        """Validate metrics against the experiment's ``metrics_schema``.
+
+        Chapter 8 §4 (submit-time) and chapter 6 §2 (integration-time)
+        both depend on this guard. Raises ``InvalidPrecondition`` on
+        violation; no-op when the store has no registered schema.
+        """
         ...

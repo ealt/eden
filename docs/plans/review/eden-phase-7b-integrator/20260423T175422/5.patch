@@ -1,0 +1,166 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-7b-integrator/20260423T175422/4.md	2026-04-23 18:06:32
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-7b-integrator.md	2026-04-23 18:44:13
+@@ -9,11 +9,9 @@
+ produces a single-commit squash whose tree is the worker-tip tree plus
+ exactly the eval-manifest file at `.eden/trials/<trial_id>/eval.json`,
+ writes the `trial/*` ref, writes `trial_commit_sha` on the trial, and
+-appends `trial.integrated`. Coupling across git and the store is
+-handled by compensating deletes on rollback — the reference
+-implementation reads §3.4's cross-artifact invariant as
+-post-reconciliation, as justified in the "Atomicity design" section
+-below.
++appends `trial.integrated`. Coupling across git and the store uses
++compensating deletes on rollback, as permitted by §3.4 and explained
++in [`spec/v0/design-notes/integrator-atomicity.md`](../../spec/v0/design-notes/integrator-atomicity.md).
+ 
+ See [`docs/roadmap.md`](../roadmap.md) §Phase 7 for context. Phase 7a
+ is shipped (PR #12, merged `0fd58bd`).
+@@ -174,111 +172,53 @@
+     intervention is required (§3.4).
+ 11. **Return** `IntegrationResult(..., already_integrated=False)`.
+ 
+-### Atomicity design (§3.4)
++### Atomicity — implementation summary
+ 
+-Three observable artifacts: the `trial_commit_sha` field on the trial,
+-the `trial.integrated` event, and the `trial/*` git ref. §3.4 pins
+-four rules:
++Full rationale and alternatives live in the design note at
++[`spec/v0/design-notes/integrator-atomicity.md`](../../spec/v0/design-notes/integrator-atomicity.md).
++The implementation choices below follow from that note.
+ 
+-1. "The integrator MUST roll back any already-performed step" on
+-   failure.
+-2. "A dangling `trial/*` ref with no `trial_commit_sha` field and no
+-   `trial.integrated` event is a protocol violation."
+-3. "Implementations MAY use store-level transactions, outbox patterns,
+-   compensating deletes, or any other mechanism."
+-4. "The observable invariant is that a reader of any one of the three
+-   artifacts MUST observe the other two."
++**Order:** `[write commit object, repo.create_ref,
++store.integrate_trial]`.
+ 
+-Rules 3 and 4 have a nontrivial tension: a "compensating delete" is a
+-rollback that necessarily produces a short interval during which the
+-compensated artifact exists before the undo. No permitted mechanism
+-in rule 3 (including compensating deletes) can give *both* a short
+-rollback path *and* a zero-width window for external filesystem
+-readers walking refs directly — the only mechanism that does so is
+-full two-phase commit across sqlite and git, which requires XA/2PC
+-infrastructure the spec does not mention and Phase 7b does not take
+-on.
+-
+-Phase 7b therefore reads rule 4's invariant as the
+-**post-reconciliation** guarantee — after the integrator's `integrate`
+-call returns (successfully or by raising), a reader observes either
+-all three artifacts or none. This is consistent with rule 3 naming
+-compensating deletes as a permitted mechanism; it does not claim to
+-give an instantaneous invariant to concurrent external ref walkers
+-during the ~microseconds the integrator is running. If the spec
+-intends the stricter instantaneous reading, the reference impl needs
+-an outbox or XA/2PC and Phase 7b's scope expands accordingly — this
+-is called out explicitly as a deliberate design bet below rather than
+-buried.
+-
+-**Chosen order: [commit object, create ref, store.integrate_trial].**
+-
+-1. **Write commit object** (`commit_tree`). Orphan, content-addressed;
+-   invisible to ref-walking readers.
+-2. **`repo.create_ref(refs/heads/trial/<id>-<slug>, commit_sha)`.**
+-   CAS with zero-oid: fails if the ref already exists, providing the
+-   §1.2 sole-writer rule a mechanical guard.
++1. **Write commit object** (`commit_tree`). Orphan, content-addressed
++   — invisible to ref-walking readers until step 2.
++2. **`repo.create_ref("refs/heads/trial/<id>-<slug>", commit_sha)`.**
++   CAS with zero-oid: fails if the ref already exists, giving §1.2's
++   sole-writer rule a mechanical guard.
+ 3. **`store.integrate_trial(trial_id, commit_sha)`.** The store's
+    existing atomic operation writes `trial_commit_sha` and appends
+-   `trial.integrated` in a single transaction (see
++   `trial.integrated` in one transaction (see
+    `eden_storage/_base.py::integrate_trial`). `store.integrate_trial`
+-   does **not** own the git ref write — it never touches git. The
+-   integrator couples the git and store writes at the `integrate`
+-   method level via the step ordering above.
+-4. On failure of step 3: compensating
+-   `repo.delete_ref(..., expected_old_sha=commit_sha)`. After
+-   rollback, none of the three artifacts exist.
++   does not touch git; the integrator method couples the two at
++   `integrate`'s call level via this ordering.
+ 
+-**On compensating-delete failure.** If step 3 raises and the
+-compensating `repo.delete_ref` also raises, neither rollback path
+-succeeded. The integrator raises `AtomicityViolation` wrapping both
+-causes. This is the irrecoverable state rule 3 acknowledges as
+-requiring implementation-defined mitigation; the wrapped exception
+-identifies exactly which `trial/*` ref is dangling so an operator can
+-delete it manually.
++**Rollback:** on step 3 failure, compensating
++`repo.delete_ref(..., expected_old_sha=commit_sha)`. After rollback
++none of the three artifacts exist.
+ 
+-**In-process reader convention (informative, not normative).**
+-Protocol-conforming in-repo readers consult artifacts in the order
+-field → event → ref. The dispatch driver's
+-`_promote_successful_trials` already filters by
+-`trial.trial_commit_sha is not None`; the integrator itself does the
+-same idempotency check in step 2 of the algorithm. Because step 3
+-writes field and event *strictly after* step 2 writes the ref, an
+-in-process reader that treats the field as the integration marker
+-never observes field-set-without-ref/event. This is an additional
+-layer that tightens the in-process observation window; it is **not a
+-substitute** for rule 4, and the plan does not claim it satisfies
+-rule 4 for every possible reader — external `git log trial/*` readers
+-are still subject to the post-reconciliation interpretation above.
++**Double failure:** if step 3 raises and the compensating
++`repo.delete_ref` also raises, the integrator raises
++`AtomicityViolation` wrapping both causes. The wrapped exception
++identifies the dangling `trial/*` ref so an operator can delete it.
++This is the irrecoverable state §3.4's rollback rule acknowledges
++as requiring implementation-defined mitigation.
+ 
+-**Alternate orderings and mechanisms considered:**
++**Why not `[commit object, store.integrate_trial, create ref]`.** If
++`create_ref` fails after the store committed, field and event are
++already written and events are append-only per chapter 5 — there is
++no "undo integration" event. The chosen order's compensating
++ref-delete is a reversible one-artifact rollback; the alternate
++order has no corresponding reversal.
+ 
+-- `[commit object, store.integrate_trial, create ref]`. If ref-create
+-  fails after the store committed, field and event are already
+-  written. Events are append-only per chapter 5; there is no "undo
+-  integration" event. The rollback path is strictly worse than the
+-  chosen order's single compensating ref-delete, and it violates rule
+-  2 (field-set, event-written, ref-absent is exactly the "dangling"
+-  state inverted).
+-- **Outbox pattern.** Extend the `Store` protocol with an outbox
+-  table: `begin_integration(trial_id, commit_sha)` records intent,
+-  the integrator writes the ref, `commit_integration(trial_id)` moves
+-  the outbox row into `trial_commit_sha` + `trial.integrated`. This
+-  gives stronger guarantees at the cost of extending the `Store`
+-  protocol (and every backend) with two new operations. Evaluated and
+-  rejected for Phase 7b because (a) the "ref written, outbox
+-  pending" window between the ref write and the commit_integration
+-  call is the same shape as the chosen order's window, (b) rule 3
+-  names outbox as *one* permitted mechanism rather than *the*
+-  required one, and (c) Phase 8's wire-protocol work is a more
+-  natural point to evaluate the outbox against concrete cross-process
+-  reader requirements rather than speculatively.
+-- **Two-phase commit across sqlite and git.** Would satisfy rule 4
+-  under the strict reading. Requires XA-style coordination absent
+-  from both sqlite3's standard library driver and git's plumbing.
+-  Explicitly out of scope for the reference impl; a conforming
+-  third-party impl against a store that supports XA (e.g. Postgres
+-  with prepared transactions) MAY choose this path.
++**In-process reader convention.** The dispatch driver's
++`_promote_successful_trials` filters by
++`trial.trial_commit_sha is not None`; the integrator's idempotency
++check does the same. Because step 3 writes the field *strictly after*
++step 2 writes the ref, an in-process reader that treats the field as
++the integration marker never observes field-set with ref/event
++missing. Informative behavior, not a §3.4 substitute — see the
++design note for how this relates to the post-promotion reading.
+ 
+ ### What the integrator does NOT do
+ 
