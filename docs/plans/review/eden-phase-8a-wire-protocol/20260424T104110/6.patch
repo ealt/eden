@@ -1,0 +1,22 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8a-wire-protocol/20260424T104110/5.md	2026-04-24 10:56:35
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md	2026-04-24 10:57:16
+@@ -183,10 +183,15 @@
+      `trial_commit_sha` is not positive proof the original request
+      failed — it may still be in flight). The Integrator
+      compensates **only** when the server demonstrably rejected
+-     the write via a non-transport store error (e.g. a 409
+-     `invalid-precondition` returned and received). Combined with
+-     server-side same-value idempotency, this preserves the chapter
+-     6 §3.4 atomicity invariant across the process boundary.
++     the write via a non-transport store error that is **not** the
++     different-SHA divergence branch — i.e. a synchronous
++     `invalid-precondition` that the Integrator can act on without
++     implying another integrator already owns the ref target
++     (different-SHA divergence surfaces as `AtomicityViolation`
++     instead; see "Atomicity and composite-commit handling"
++     below). Combined with server-side same-value idempotency,
++     this preserves the chapter 6 §3.4 atomicity invariant across
++     the process boundary.
+    - **Other mutations.** Claim, reject, reclaim, and accept are
+      **not blindly retry-safe** on indeterminate transport
+      failures. The natural temptation is to treat a retry's

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — submit request",
+  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/submit. The `payload` shape depends on the claimed task's kind and follows the role submission schemas in 03-roles.md §§2.4, 3.4, 4.4. See 07-wire-protocol.md §2.4.",
+  "type": "object",
+  "required": ["token", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Current claim token (04-task-protocol.md §3.3)."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Role-specific submission payload. Shape pinned by 03-roles.md and validated server-side."
+    }
+  }
+}

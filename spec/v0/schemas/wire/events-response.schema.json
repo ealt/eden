@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — events response",
+  "description": "Response body for GET /v0/experiments/{E}/events and /events/subscribe. See 07-wire-protocol.md §6.",
+  "type": "object",
+  "required": ["events", "cursor"],
+  "additionalProperties": false,
+  "properties": {
+    "events": {
+      "type": "array",
+      "description": "Delivered events in log order (possibly empty on a non-blocking call or a subscribe timeout).",
+      "items": {
+        "$ref": "../event.schema.json"
+      }
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "New cumulative count to pass on the next call."
+    }
+  }
+}

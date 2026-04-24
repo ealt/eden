@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — claim request",
+  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/claim. See 07-wire-protocol.md §2.3 and 04-task-protocol.md §3.",
+  "type": "object",
+  "required": ["worker_id"],
+  "additionalProperties": false,
+  "properties": {
+    "worker_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier the worker supplies at claim time (04-task-protocol.md §3.2)."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "Optional claim expiry; if present the server MAY reclaim after this time (04-task-protocol.md §3.2, §5.1)."
+    }
+  }
+}

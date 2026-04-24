@@ -16,6 +16,7 @@ members = [
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
     "reference/packages/eden-storage",
+    "reference/packages/eden-wire",
 ]
 
 [tool.uv.sources]
@@ -23,6 +24,7 @@ eden-contracts = { workspace = true }
 eden-dispatch = { workspace = true }
 eden-git = { workspace = true }
 eden-storage = { workspace = true }
+eden-wire = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -36,6 +38,7 @@ dev = [
     "eden-dispatch",
     "eden-git",
     "eden-storage",
+    "eden-wire",
 ]
 
 [tool.ruff]
@@ -51,6 +54,11 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "reference/packages/*/tests/**" = ["D"]
+# Wire adapters are thin facades over the Store Protocol; the
+# protocol method docstrings are authoritative. B008 is the
+# standard FastAPI pattern for Body/Header/Query defaults.
+"reference/packages/eden-wire/src/eden_wire/server.py" = ["D", "B008"]
+"reference/packages/eden-wire/src/eden_wire/client.py" = ["D102"]
 
 [tool.pyright]
 include = [
@@ -58,6 +66,7 @@ include = [
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
     "reference/packages/eden-storage",
+    "reference/packages/eden-wire",
 ]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
@@ -70,4 +79,5 @@ testpaths = [
     "reference/packages/eden-dispatch/tests",
     "reference/packages/eden-git/tests",
     "reference/packages/eden-storage/tests",
+    "reference/packages/eden-wire/tests",
 ]

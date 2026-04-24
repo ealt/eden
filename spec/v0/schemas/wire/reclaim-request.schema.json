@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — reclaim request",
+  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/reclaim. See 07-wire-protocol.md §2.6 and 05-event-protocol.md §3.1.",
+  "type": "object",
+  "required": ["cause"],
+  "additionalProperties": false,
+  "properties": {
+    "cause": {
+      "type": "string",
+      "enum": ["expired", "operator", "health_policy"],
+      "description": "Closed v0 vocabulary (05-event-protocol.md §3.1)."
+    }
+  }
+}

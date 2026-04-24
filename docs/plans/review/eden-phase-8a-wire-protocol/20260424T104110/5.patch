@@ -1,0 +1,71 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8a-wire-protocol/20260424T104110/4.md	2026-04-24 10:54:01
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md	2026-04-24 10:56:21
+@@ -402,12 +402,14 @@
+      non-commit.
+ 
+    A separate test verifies the compensation path is still
+-   exercised by a **non-transport** rejection: the server
+-   returns a structured 409 `invalid-precondition` synchronously
+-   (e.g. the trial's `commit_sha` points to an unreachable
+-   commit so the server rejects at `validate_metrics` time); the
+-   Integrator compensates the ref per the existing Phase 7b
+-   rule. This preserves the only branch where compensating
++   exercised by a **non-transport, non-divergence** rejection.
++   The test injects a mock `Store` (or uses a direct-`Store`
++   subclass) whose `integrate_trial` raises a synthetic
++   `InvalidPrecondition` without the different-SHA branch (for
++   example, a simulated "trial status flipped out of success
++   concurrently" condition). The Integrator MUST compensate-
++   delete the ref it wrote and re-raise, matching the Phase 7b
++   rule. This preserves the one branch where compensating
+    deletion is correct.
+ 7. **Same-value idempotency on `integrate_trial`.** Calling the
+    endpoint twice with the same `trial_commit_sha` emits exactly
+@@ -544,18 +546,36 @@
+ 
+ The Integrator's compensating-delete flow runs **only** on a
+ non-transport store error where the server demonstrably rejected
+-the write (e.g. a 409 `invalid-precondition` returned and received,
+-or a direct-`Store` `InvalidPrecondition` raised synchronously).
+-A transport-level failure never triggers compensation; it resolves
+-to confirmed success, confirmed divergence, or
+-`IndeterminateIntegration`. This asymmetry is what preserves the
+-chapter 6 §3.4 post-promotion invariant across the process
+-boundary: after the call returns — by success, by a non-transport
+-rejection the Integrator definitely compensates, or by a loud
+-`IndeterminateIntegration` / `AtomicityViolation` — the three
+-artifacts are either consistent or the inconsistency is explicitly
+-named and surfaced to operators.
++the write **and** the rejection is not the different-SHA branch of
++same-value idempotency. Concretely:
++
++- A synchronous `InvalidPrecondition` (or any other non-transport
++  rejection) that is **not** "same trial, different already-stored
++  `trial_commit_sha`" → compensate. The ref was written in
++  anticipation of a store-side commit that will not happen; the
++  ref must be removed to keep §3.4's three-artifact invariant
++  intact. Examples: the trial was flipped out of `"success"` by
++  operator action after the Integrator's pre-read, or the store
++  returned a generic validation failure the Integrator cannot
++  otherwise act on.
++- A synchronous `InvalidPrecondition` that **is** "same trial,
++  different already-stored `trial_commit_sha`" → `AtomicityViolation`
++  and do **not** compensate. The already-stored SHA names a
++  different ref that presumably already exists; deleting **this**
++  Integrator's ref could remove a valid artifact the other
++  integrator wrote, or leave the store's SHA pointing at a ref
++  that was never intended to correspond to it. Operator
++  intervention only.
++- Any transport-level failure → three-way reconciliation above;
++  never compensate without positive confirmation.
+ 
++This asymmetry is what preserves the chapter 6 §3.4 post-
++promotion invariant across the process boundary: after the call
++returns — by success, by a compensated non-transport rejection,
++by `AtomicityViolation`, or by `IndeterminateIntegration` — the
++three artifacts are either consistent or the inconsistency is
++explicitly named and surfaced to operators.
++
+ This is the one place where the HTTP binding needs more than a
+ transport-layer translation of the `Store` API. The plan calls it
+ out explicitly so the Integrator changes land with the

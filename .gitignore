@@ -34,3 +34,7 @@ node_modules/
 docs/plans/review/**/*.jsonl
 docs/plans/review/**/*.stderr
 docs/plans/review/**/*.stdout
+docs/plans/review/**/prompt.txt
+
+# Claude Code local runtime state (scheduled-task lock, etc.)
+.claude/

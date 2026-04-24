@@ -1,0 +1,40 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8a-wire-protocol/20260424T104110/2.md	2026-04-24 10:51:43
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md	2026-04-24 10:52:57
+@@ -169,19 +169,24 @@
+      §4.2 submit-idempotency rule).
+    - **Transport-indeterminate handling (integrator-client rule).**
+      The client-side `Integrator.integrate` compensating-delete path
+-     MUST NOT run blindly on any HTTP error. On an
+-     *indeterminate* failure — a transport error raised after the
+-     request was sent but before a 2xx or terminal 4xx/5xx response
+-     was received (connection reset, timeout, proxy-side
+-     disconnect) — the client MUST `GET /trials/{id}` to read back
+-     the trial's `trial_commit_sha`. If the server has already
+-     durably committed the integrator's SHA, the client MUST treat
+-     the call as successful and MUST NOT delete the ref. If the
+-     server has no `trial_commit_sha` or a different one, the
+-     client MAY delete the ref and re-raise. This rule — combined
+-     with server-side same-value idempotency — is what preserves
+-     the chapter 6 §3.4 atomicity invariant across the process
+-     boundary.
++     MUST NOT run blindly on any HTTP error. On an *indeterminate*
++     failure — a transport error raised after the request was sent
++     but before a 2xx or terminal 4xx/5xx response was received
++     (connection reset, timeout, proxy-side disconnect) — the
++     client MUST issue a reconciliation read of `GET /trials/{id}`
++     and resolve the outcome per the three-way rule in
++     "Atomicity and composite-commit handling" below: observed
++     SHA equals expected → success, no compensation; observed SHA
++     differs → `AtomicityViolation`, no compensation; observed
++     SHA absent or read-back itself fails →
++     `IndeterminateIntegration`, no compensation (a `null`
++     `trial_commit_sha` is not positive proof the original request
++     failed — it may still be in flight). The Integrator
++     compensates **only** when the server demonstrably rejected
++     the write via a non-transport store error (e.g. a 409
++     `invalid-precondition` returned and received). Combined with
++     server-side same-value idempotency, this preserves the chapter
++     6 §3.4 atomicity invariant across the process boundary.
+    - **Other mutations.** Claim, reject, reclaim, and accept are
+      **not blindly retry-safe** on indeterminate transport
+      failures. The natural temptation is to treat a retry's

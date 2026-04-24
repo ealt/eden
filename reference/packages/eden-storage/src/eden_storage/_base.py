@@ -888,6 +888,21 @@ class _StoreBase:
         Per ``08-storage.md`` §1.7: ``trial_commit_sha`` is the one
         post-terminal write permitted on a trial; it must be written
         atomically with its event.
+
+        **Same-value idempotency** (``07-wire-protocol.md`` §5): a
+        repeated call whose ``trial_commit_sha`` equals the value
+        already stored on the trial is a no-op and MUST NOT append a
+        second ``trial.integrated`` event. This rule lets an HTTP-
+        mediated caller retry a transport-indeterminate
+        ``integrate_trial`` request without risking double-commit;
+        the same-value branch also keeps direct-``Store`` callers
+        and wire-mediated callers on identical contracts.
+
+        A repeated call with a **different** ``trial_commit_sha``
+        raises ``InvalidPrecondition`` — the chapter 6 §1.2 sole-
+        writer rule has been violated and operator intervention is
+        required. The caller (e.g. ``Integrator``) maps this to an
+        ``AtomicityViolation`` rather than compensating the ref.
         """
         with self._atomic_operation():
             trial = self._require_trial(trial_id)
@@ -897,8 +912,12 @@ class _StoreBase:
                     f"not {trial.status!r}"
                 )
             if trial.trial_commit_sha is not None:
-                raise IllegalTransition(
-                    f"trial {trial_id!r} is already integrated"
+                if trial.trial_commit_sha == trial_commit_sha:
+                    return
+                raise InvalidPrecondition(
+                    f"trial {trial_id!r} is already integrated with a "
+                    f"different trial_commit_sha "
+                    f"({trial.trial_commit_sha!r} != {trial_commit_sha!r})"
                 )
             tx = _Tx()
             tx.trials[trial_id] = _validated_update(
