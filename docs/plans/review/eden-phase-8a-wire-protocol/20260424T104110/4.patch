@@ -1,0 +1,56 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8a-wire-protocol/20260424T104110/3.md	2026-04-24 10:53:08
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md	2026-04-24 10:53:51
+@@ -375,19 +375,40 @@
+ 5. **Schema parity** — each new wire schema has a
+    `tests/test_wire_schema_parity.py` that round-trips Pydantic
+    dumps against the JSON Schema.
+-6. **Integrate-over-HTTP indeterminate-failure reconciliation.**
+-   A focused test that exercises the split-brain scenario the HTTP
+-   boundary introduces: the server's `POST /trials/{id}/integrate`
+-   commits durably, then the test simulates the response being lost
+-   (e.g. by injecting a transport-level disconnect after the
+-   server's transaction but before the response is serialized).
+-   The `StoreClient.integrate_trial` + Integrator path MUST
+-   reconcile via the read-back rule and MUST NOT compensate-delete
+-   the ref. A second test inverts the case: the server returned a
+-   committed 5xx before durable persistence (simulated) or the
+-   transport failed before the request arrived; the read-back shows
+-   `trial_commit_sha is None`; the Integrator compensates as
+-   normal.
++6. **Integrate-over-HTTP reconciliation — three-outcome coverage.**
++   One test per branch of the three-outcome rule:
++   - *Confirmed success.* Server's
++     `POST /trials/{id}/integrate` commits durably; the response
++     is then lost (injected transport disconnect after the
++     transaction but before serialization). The
++     `StoreClient.integrate_trial` read-back observes
++     `trial_commit_sha` equal to the expected value; the
++     Integrator returns success and MUST NOT compensate-delete
++     the ref.
++   - *Confirmed divergence.* Server has already committed a
++     *different* `trial_commit_sha` (simulated by seeding the
++     store with one SHA, then calling integrate with another).
++     The request is rejected inline with
++     `invalid-precondition` (same-value idempotency fails);
++     alternatively, the transport fails and the read-back
++     observes the different SHA. Both paths raise
++     `AtomicityViolation`; neither compensates.
++   - *Indeterminate.* Server has no `trial_commit_sha` at
++     read-back time (request never arrived, or transaction
++     rolled back, or is still in flight) or the read-back
++     itself fails. The client MUST raise
++     `IndeterminateIntegration` and MUST NOT compensate; the
++     `null`-SHA reading is not treated as positive proof of
++     non-commit.
++
++   A separate test verifies the compensation path is still
++   exercised by a **non-transport** rejection: the server
++   returns a structured 409 `invalid-precondition` synchronously
++   (e.g. the trial's `commit_sha` points to an unreachable
++   commit so the server rejects at `validate_metrics` time); the
++   Integrator compensates the ref per the existing Phase 7b
++   rule. This preserves the only branch where compensating
++   deletion is correct.
+ 7. **Same-value idempotency on `integrate_trial`.** Calling the
+    endpoint twice with the same `trial_commit_sha` emits exactly
+    one `trial.integrated` event; calling it with a different SHA

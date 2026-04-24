@@ -1,0 +1,136 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8a-wire-protocol/20260424T104110/1.md	2026-04-24 10:48:25
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md	2026-04-24 10:51:19
+@@ -160,9 +160,13 @@
+      succeed as a no-op and MUST NOT append a second
+      `trial.integrated` event. A repeated call with a **different**
+      `trial_commit_sha` MUST be rejected with
+-     `conflicting-resubmission` (or `invalid-precondition` if the
+-     trial has already been integrated with a different SHA; the
+-     chapter picks one error type and names it).
++     `eden://error/invalid-precondition` (HTTP 409). The chapter
++     binds this error type explicitly: it mirrors the `Store`-side
++     `InvalidPrecondition` already raised by
++     `Integrator._check_idempotent` when a stored SHA mismatches a
++     re-derived one, and avoids overloading
++     `conflicting-resubmission` (which is reserved for the chapter 4
++     §4.2 submit-idempotency rule).
+    - **Transport-indeterminate handling (integrator-client rule).**
+      The client-side `Integrator.integrate` compensating-delete path
+      MUST NOT run blindly on any HTTP error. On an
+@@ -179,13 +183,22 @@
+      the chapter 6 §3.4 atomicity invariant across the process
+      boundary.
+    - **Other mutations.** Claim, reject, reclaim, and accept are
+-     not safe to retry blindly on indeterminate failures; a retry
+-     after the server already committed the transition will return
+-     `illegal-transition`, which the client MUST treat as "the
+-     prior call committed" rather than a real rejection. The
+-     binding chapter documents this convention but does not add an
+-     HTTP-level `Idempotency-Key` mechanism; the state machine
+-     already distinguishes committed vs. pending by state.
++     **not blindly retry-safe** on indeterminate transport
++     failures. The natural temptation is to treat a retry's
++     `illegal-transition` response as "the prior call committed,"
++     but that conflates several distinct situations — a racing
++     actor, a reclaim between attempts, or a genuine state-machine
++     violation — and `claim` additionally loses its token on a
++     lost response with no way to recover it. 8a does **not**
++     standardize an HTTP-level retry convention for these
++     endpoints. The reference `StoreClient` surfaces transport
++     errors as `IndeterminateRequest` exceptions that the caller
++     must handle with operation-specific knowledge: a dispatch
++     driver may choose to read the task state back and decide
++     whether to reclaim, bail, or proceed, but the decision is
++     the driver's, not the binding's. A future phase MAY introduce
++     per-operation idempotency tokens or an `Idempotency-Key`
++     mechanism; 8a does not.
+ 7. **Event delivery — the `subscribe` binding.**
+    - The chapter 8 §2.1 `subscribe` operation has an HTTP binding at
+      `GET /experiments/{E}/events/subscribe?cursor=N`. In the 8a
+@@ -268,9 +281,9 @@
+    `spec/v0/schemas/wire/*.schema.json`. Follows the same
+    `strict=True`, `NotNone`, `UriStr`, `DateTimeStr` discipline as
+    `eden-contracts`.
+-2. **`eden_wire.server`** — A FastAPI (or Starlette; see
+-   "Open questions") application factory: `make_app(store: Store)
+-   -> ASGIApp`. Each endpoint is a thin adapter that:
++2. **`eden_wire.server`** — A FastAPI application factory:
++   `make_app(store: Store) -> ASGIApp`. Each endpoint is a thin
++   adapter that:
+    - Validates the request body against its Pydantic model.
+    - Validates the experiment-ID header against the URL segment.
+    - Invokes the matching `Store` method.
+@@ -410,7 +423,8 @@
+      `POST /tasks/{id}/submit`.
+ 2. `_finalize_submitted(client, kind="plan")`:
+    - `GET /tasks?kind=plan&state=submitted`
+-   - For each: `GET /tasks/{id}/validate-terminal` →
++   - For each: `GET /_reference/tasks/{id}/validate-terminal`
++     (reference-only helper; not in `07-wire-protocol.md`) →
+      `POST /tasks/{id}/accept` or `POST /tasks/{id}/reject`.
+ 3. `_dispatch_implement_tasks`:
+    - `GET /proposals?state=ready`
+@@ -479,28 +493,42 @@
+    `StoreClient.integrate_trial` path MUST NOT raise a bare
+    transport exception back to `Integrator.integrate`. Instead,
+    on `httpx.TransportError` / `httpx.RemoteProtocolError` /
+-   `httpx.ReadTimeout` (and equivalents), it MUST:
+-   a. Re-issue `GET /trials/{id}` through a bounded retry loop
+-      (e.g. 3 attempts with exponential backoff).
+-   b. If the trial now has `trial_commit_sha == expected`, the
+-      server had already committed; return success and do not
+-      compensate.
+-   c. If the trial has no `trial_commit_sha`, re-raise; the
+-      Integrator compensates the ref per its existing §3.4 rule.
+-   d. If the trial has a *different* `trial_commit_sha`, raise
+-      `AtomicityViolation` — someone else integrated concurrently,
+-      which §1.2 forbids; this is operator-intervention territory.
+-   e. If the reconciliation read itself fails repeatedly, raise a
+-      new `IndeterminateIntegration` error that explicitly flags
+-      "unable to determine server state" rather than committing
+-      to either path.
++   `httpx.ReadTimeout` (and equivalents), it MUST attempt a
++   reconciliation read of `GET /trials/{id}` and resolve to
++   exactly one of three outcomes:
++   a. **Confirmed success.** If the trial's `trial_commit_sha`
++      equals the SHA the client sent, the server has durably
++      committed. Return success; Integrator skips the compensating
++      delete.
++   b. **Confirmed divergence.** If the trial's `trial_commit_sha`
++      is set but does **not** equal the SHA the client sent, some
++      other integrator call committed a different SHA. §1.2
++      forbids this — trial-commit promotion is sole-writer. Raise
++      `AtomicityViolation` for operator intervention. The client
++      MUST NOT compensate-delete the ref, because the ref may
++      correspond to the SHA the server did commit.
++   c. **Indeterminate.** In every other case — read-back shows no
++      `trial_commit_sha`, or the reconciliation read itself fails,
++      or only some attempts succeed — raise
++      `IndeterminateIntegration`. Read-back observing a null
++      `trial_commit_sha` is **not** positive proof that the
++      original request failed, because the original can still be
++      in flight and commit moments later; the client must treat
++      this as unresolvable and MUST NOT compensate.
+ 
+-Integrator's existing compensating-delete flow runs only when the
+-client has **positively confirmed** the server did not commit. That
+-preserves the chapter 6 §3.4 post-promotion invariant across the
+-process boundary: after the call returns — by success, confirmed
+-rollback, or `IndeterminateIntegration` — the three artifacts
+-remain consistent, or the inconsistency is loud and named.
++The Integrator's compensating-delete flow runs **only** on a
++non-transport store error where the server demonstrably rejected
++the write (e.g. a 409 `invalid-precondition` returned and received,
++or a direct-`Store` `InvalidPrecondition` raised synchronously).
++A transport-level failure never triggers compensation; it resolves
++to confirmed success, confirmed divergence, or
++`IndeterminateIntegration`. This asymmetry is what preserves the
++chapter 6 §3.4 post-promotion invariant across the process
++boundary: after the call returns — by success, by a non-transport
++rejection the Integrator definitely compensates, or by a loud
++`IndeterminateIntegration` / `AtomicityViolation` — the three
++artifacts are either consistent or the inconsistency is explicitly
++named and surfaced to operators.
+ 
+ This is the one place where the HTTP binding needs more than a
+ transport-layer translation of the `Store` API. The plan calls it

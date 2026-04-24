@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — reject request",
+  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/reject. See 07-wire-protocol.md §2.5 and 05-event-protocol.md §3.1.",
+  "type": "object",
+  "required": ["reason"],
+  "additionalProperties": false,
+  "properties": {
+    "reason": {
+      "type": "string",
+      "enum": ["worker_error", "validation_error", "policy_limit"],
+      "description": "Closed v0 vocabulary (05-event-protocol.md §3.1)."
+    }
+  }
+}

@@ -1,9 +1,10 @@
 # EDEN Protocol v0
 
 This is the first lineage of the EDEN protocol specification.
-Chapters 00–06 and 08 are written as of Phase 4. Chapter 07
-(control plane) lands in Phase 12; Chapter 09 (conformance) lands
-in Phase 11.
+Chapters 00–08 are written as of Phase 8a (07-wire-protocol.md
+lands with the HTTP binding; the originally-slotted control-plane
+content will land as a later chapter in Phase 12). Chapter 09
+(conformance) lands in Phase 11.
 
 ## Planned chapters
 
@@ -16,7 +17,7 @@ in Phase 11.
 | `04-task-protocol.md` | Task state machine, claim tokens, submit idempotency, wire format. | Phase 2 |
 | `05-event-protocol.md` | Event log shape, transactional invariant, delivery guarantees. | Phase 4 |
 | `06-integrator.md` | Git topology: `work/*` / `trial/*` / `main` invariants; squash rule; eval manifest. | Phase 4 |
-| `07-control-plane.md` | Experiment registration, leases, single-writer discipline. | Phase 12 |
+| `07-wire-protocol.md` | HTTP binding for chapters 4, 5, 6 §3.4, and 8 §§1.1/2.1. | Phase 8a |
 | `08-storage.md` | Repository interface, durability, per-experiment metrics schemas. | Phase 4 |
 | `09-conformance.md` | What a conforming implementation must prove. | Phase 11 |
 

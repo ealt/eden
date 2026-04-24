@@ -64,14 +64,29 @@ class CorruptIntegrationState(IntegratorError):
 
 
 class AtomicityViolation(IntegratorError):
-    """§3.4 compensating delete failed after the store-side write also failed."""
+    """§3.4 atomicity broken; operator intervention required.
+
+    Raised in two distinct-but-related cases that both leave the
+    three-artifact invariant in a state the Integrator cannot safely
+    reconcile on its own:
+
+    - The store-side ``integrate_trial`` call failed **and** the
+      compensating ref-delete also failed; ``rollback`` is set to
+      the rollback-side error.
+    - The store-side call raised ``InvalidPrecondition`` for the
+      different-SHA divergence branch of §5 same-value idempotency
+      (the store already has a different ``trial_commit_sha``
+      recorded). The sole-writer rule (§1.2) has been violated
+      upstream; ``rollback`` is ``None`` because there is nothing
+      safe to compensate.
+    """
 
     def __init__(
         self,
         message: str,
         *,
         original: BaseException,
-        rollback: BaseException,
+        rollback: BaseException | None = None,
     ) -> None:
         super().__init__(message)
         self.original = original
@@ -142,6 +157,33 @@ class Integrator:
         try:
             self._store.integrate_trial(trial.trial_id, commit_sha)
         except BaseException as store_error:
+            # Distinguish the different-SHA divergence branch of §5
+            # same-value idempotency (sole-writer §1.2 already
+            # violated; no safe compensation) from other synchronous
+            # failures (compensate the ref per §3.4). Authoritative
+            # test is a post-failure read of the trial: if it now
+            # carries a *different* trial_commit_sha, divergence is
+            # confirmed and the ref we just wrote must not be
+            # deleted — the other integrator's artifacts, whatever
+            # their state, take priority, and the situation requires
+            # operator intervention.
+            try:
+                post_failure = self._store.read_trial(trial.trial_id)
+            except BaseException:
+                post_failure = None
+            if (
+                post_failure is not None
+                and post_failure.trial_commit_sha is not None
+                and post_failure.trial_commit_sha != commit_sha
+            ):
+                raise AtomicityViolation(
+                    f"integrator for trial {trial.trial_id!r} observed a "
+                    f"different trial_commit_sha {post_failure.trial_commit_sha!r} "
+                    f"already recorded; §1.2 sole-writer rule violated upstream. "
+                    f"Ref {branch_ref!r} pointing at {commit_sha} has NOT been "
+                    f"compensated; operator intervention required.",
+                    original=store_error,
+                ) from store_error
             try:
                 self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
             except BaseException as rollback_error:

@@ -1,0 +1,429 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8a-wire-protocol/20260424T104110/0.md	2026-04-24 10:41:10
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md	2026-04-24 10:48:16
+@@ -86,8 +86,6 @@
+    - `POST   tasks/{task_id}/accept`             — `accept`.
+    - `POST   tasks/{task_id}/reject`             — `reject`.
+    - `POST   tasks/{task_id}/reclaim`            — `reclaim`.
+-   - `GET    tasks/{task_id}/validate-terminal`  — `validate_terminal`
+-     (read-only; returns the decision tuple).
+    - `GET    tasks/{task_id}/submission`         — `read_submission`.
+    - `GET    proposals`, `GET proposals/{id}`    — list / read.
+    - `POST   proposals`                          — `create_proposal`.
+@@ -96,14 +94,25 @@
+    - `POST   trials`                             — `create_trial`.
+    - `POST   trials/{id}/declare-eval-error`     — `declare_trial_eval_error`.
+    - `POST   trials/{id}/integrate`              — `integrate_trial`
+-     (server-side write of `trial_commit_sha`; the
+-     `Integrator.integrate` caller already holds the ref/manifest
+-     invariants — the server only persists the CAS'd field and event).
++     (server-side atomic write of `trial_commit_sha` + event;
++     **same-value idempotent** per §3.4-binding below). The
++     `Integrator.integrate` caller has already performed the ref
++     write under its own atomicity rule; the HTTP endpoint persists
++     the store-side half.
+    - `GET    events`                             — `read_range` /
+      `replay` (supports `?cursor=<int>`; omitting = full replay).
+-   - `POST   validate/metrics`                   — `validate_metrics`
+-     (request body: metrics dict; response body: OK or structured
+-     error per §4).
++   - `GET    events/subscribe`                   — the chapter 8 §2.1
++     `subscribe` binding; see §7 below.
++
++   Reference-implementation helpers (`validate_terminal`,
++   `validate_metrics`) are **not** normative wire endpoints and are
++   not listed in `07-wire-protocol.md`. The orchestrator service and
++   the `eden_wire` server expose them at `/_reference/...` as
++   non-normative affordances so the dispatch driver's Phase 5
++   decision helpers keep working against the `StoreClient`; a
++   third-party conforming orchestrator is free to implement the
++   same decisions inline. See the new "Reference-only helper
++   endpoints" section below.
+ 4. **Request and response bodies.**
+    - Every body is a JSON object with a stable field layout defined
+      by a JSON Schema under `spec/v0/schemas/wire/`. At minimum:
+@@ -129,7 +138,7 @@
+    | `eden://error/illegal-transition` | 409 | `IllegalTransition` |
+    | `eden://error/wrong-token` | 403 | `WrongToken` |
+    | `eden://error/conflicting-resubmission` | 409 | `ConflictingResubmission` |
+-   | `eden://error/invalid-precondition` | 422 | `InvalidPrecondition` |
++   | `eden://error/invalid-precondition` | 409 | `InvalidPrecondition` |
+    | `eden://error/bad-request` | 400 | body schema violation |
+    | `eden://error/experiment-id-mismatch` | 400 | header vs. path disagreement |
+ 
+@@ -137,31 +146,109 @@
+    human-readable message; `instance` is the request URL. Clients
+    MUST key retries / error handling on `type`, not on HTTP status
+    alone (several conflict-class errors share 409).
+-6. **Idempotency.** The task-protocol §4.2 idempotency rule binds
+-   the wire binding: a repeated `submit` with the same token and
+-   content-equivalent payload MUST return the same 200 outcome, and
+-   a repeated `submit` with a divergent payload MUST return
+-   `conflicting-resubmission`. The spec MAY note that HTTP-level
+-   retries by a client library (e.g. automatic retry on a transport
+-   timeout) rely on this binding for correctness; no HTTP-level
+-   `Idempotency-Key` header is required because the claim token
+-   already uniquely identifies the attempt.
+-7. **Event delivery.**
+-   - `GET /experiments/{E}/events?cursor=N` returns events after
+-     index `N` in log order; `cursor` is the cumulative count the
+-     caller has seen (same semantics as `Store.read_range`). The
+-     response contains the delivered batch and the new cursor.
+-   - Polling clients re-issue after a caller-chosen interval.
+-   - The binding MAY also offer Server-Sent Events at
+-     `GET /experiments/{E}/events/stream` in a later phase; 8a
+-     does not mandate this.
+-   - At-least-once and full-replay guarantees (chapter 5 §4.3,
+-     §4.4) are preserved by the binding because they are preserved
+-     by the underlying `read_range` semantics.
++6. **Idempotency.**
++   - **Submit (chapter 4 §4.2).** A repeated `submit` with the same
++     token and content-equivalent payload MUST return the same 200
++     outcome; a divergent payload MUST return
++     `conflicting-resubmission`. The claim token uniquely identifies
++     the attempt, so no HTTP-level `Idempotency-Key` header is
++     required.
++   - **Integrate-trial (chapter 6 §3.4 binding).** The wire endpoint
++     `POST /trials/{id}/integrate` MUST be idempotent for **the same
++     `trial_commit_sha`** value: a repeated call against a trial whose
++     `trial_commit_sha` already equals the request's value MUST
++     succeed as a no-op and MUST NOT append a second
++     `trial.integrated` event. A repeated call with a **different**
++     `trial_commit_sha` MUST be rejected with
++     `conflicting-resubmission` (or `invalid-precondition` if the
++     trial has already been integrated with a different SHA; the
++     chapter picks one error type and names it).
++   - **Transport-indeterminate handling (integrator-client rule).**
++     The client-side `Integrator.integrate` compensating-delete path
++     MUST NOT run blindly on any HTTP error. On an
++     *indeterminate* failure — a transport error raised after the
++     request was sent but before a 2xx or terminal 4xx/5xx response
++     was received (connection reset, timeout, proxy-side
++     disconnect) — the client MUST `GET /trials/{id}` to read back
++     the trial's `trial_commit_sha`. If the server has already
++     durably committed the integrator's SHA, the client MUST treat
++     the call as successful and MUST NOT delete the ref. If the
++     server has no `trial_commit_sha` or a different one, the
++     client MAY delete the ref and re-raise. This rule — combined
++     with server-side same-value idempotency — is what preserves
++     the chapter 6 §3.4 atomicity invariant across the process
++     boundary.
++   - **Other mutations.** Claim, reject, reclaim, and accept are
++     not safe to retry blindly on indeterminate failures; a retry
++     after the server already committed the transition will return
++     `illegal-transition`, which the client MUST treat as "the
++     prior call committed" rather than a real rejection. The
++     binding chapter documents this convention but does not add an
++     HTTP-level `Idempotency-Key` mechanism; the state machine
++     already distinguishes committed vs. pending by state.
++7. **Event delivery — the `subscribe` binding.**
++   - The chapter 8 §2.1 `subscribe` operation has an HTTP binding at
++     `GET /experiments/{E}/events/subscribe?cursor=N`. In the 8a
++     binding, this is **long-poll**: the server returns as soon as
++     one or more events are available after index `N`, and returns
++     an empty batch after a server-chosen timeout (default 30s)
++     otherwise. The response body includes the delivered batch and
++     the new cursor. A caller iterating this endpoint in a loop
++     observes the log in order with unbounded retention and
++     at-least-once delivery (chapter 5 §4.3, §4.4).
++   - `GET /experiments/{E}/events?cursor=N` is a non-blocking
++     companion corresponding to `read_range`: it returns whatever
++     is available immediately (possibly zero events). Clients that
++     prefer explicit polling use this endpoint; clients that want
++     near-real-time delivery use `/subscribe`.
++   - Both endpoints accept the same `cursor` semantics: cumulative
++     count of events the caller has already observed. Cursor `0`
++     (or omitted) triggers `replay` — the full stream from the
++     first event.
++   - **Out of scope for 8a: push transports.** Server-Sent Events
++     and WebSocket bindings are additional *transport* layers that
++     a later phase MAY add; they do not change the normative
++     `subscribe` contract. A conforming 8a deployment offers the
++     long-poll binding; richer transports are optimizations.
++   - At-least-once and full-replay guarantees are preserved by the
++     binding because they are preserved by the underlying `events`
++     + `read_range` semantics.
+ 8. **Versioning.** All URLs are under `/v0/` (e.g.
+    `/v0/experiments/{id}/tasks`). Breaking changes go to `/v1/`
+    per the same discipline as spec chapter versioning.
+ 
++### Reference-only helper endpoints (non-normative)
++
++The following endpoints are exposed by the reference `eden_wire`
++server for the convenience of the reference orchestrator, but are
++**not** part of the normative wire protocol and are **not** listed
++in `07-wire-protocol.md`. They live under `/_reference/` (not
++`/v0/`) to make the non-normative status syntactically obvious:
++
++- `GET  /_reference/tasks/{task_id}/validate-terminal` — wraps
++  `Store.validate_terminal`. Returns the `(decision, reason)`
++  tuple the Phase 5 dispatch driver uses to pick
++  accept/reject_worker/reject_validation. A third-party
++  orchestrator is free to implement this decision itself by
++  reading the submission payload and task state via the normative
++  `GET /tasks/{id}` + `GET /tasks/{id}/submission` endpoints.
++- `POST /_reference/validate/metrics` — wraps
++  `Store.validate_metrics`. Returns OK or a problem+json error.
++  A third-party caller can validate locally against the
++  experiment's metrics schema, or skip the pre-check and let the
++  server reject malformed payloads at submit time.
++
++The reference Python `StoreClient` calls these `/_reference/`
++endpoints through `validate_terminal` / `validate_metrics` methods
++that match the `Store` Protocol; this keeps the existing dispatch
++driver working verbatim. The `Store` Protocol stays what it is; the
++wire chapter stays narrower than the Protocol.
++
++If a future phase decides one of these helpers deserves normative
++status (e.g. a conformance test needs it), it gets promoted into the
++chapter — and into `/v0/` — at that time, with a spec version bump
++if it's a breaking change. At 8a, neither is normative.
++
+ ### Schemas: `spec/v0/schemas/wire/`
+ 
+ Request/response JSON Schemas listed in §4 above. Each gets a
+@@ -270,6 +357,29 @@
+ 5. **Schema parity** — each new wire schema has a
+    `tests/test_wire_schema_parity.py` that round-trips Pydantic
+    dumps against the JSON Schema.
++6. **Integrate-over-HTTP indeterminate-failure reconciliation.**
++   A focused test that exercises the split-brain scenario the HTTP
++   boundary introduces: the server's `POST /trials/{id}/integrate`
++   commits durably, then the test simulates the response being lost
++   (e.g. by injecting a transport-level disconnect after the
++   server's transaction but before the response is serialized).
++   The `StoreClient.integrate_trial` + Integrator path MUST
++   reconcile via the read-back rule and MUST NOT compensate-delete
++   the ref. A second test inverts the case: the server returned a
++   committed 5xx before durable persistence (simulated) or the
++   transport failed before the request arrived; the read-back shows
++   `trial_commit_sha is None`; the Integrator compensates as
++   normal.
++7. **Same-value idempotency on `integrate_trial`.** Calling the
++   endpoint twice with the same `trial_commit_sha` emits exactly
++   one `trial.integrated` event; calling it with a different SHA
++   returns `invalid-precondition`. Verified by counting events and
++   by asserting the error type.
++8. **Long-poll `subscribe` semantics.** A subscriber connected at
++   `GET /events/subscribe?cursor=N` receives events appended after
++   cursor `N` within the poll window, receives an empty batch on
++   timeout, and resumes from the returned cursor on the next call.
++   Replay from cursor `0` returns the full experiment stream.
+ 
+ ### Build & CI
+ 
+@@ -320,86 +430,150 @@
+ 
+ ## Atomicity and composite-commit handling
+ 
+-Composite commits (chapter 5 §2.2) stay atomic on the server side:
+-each endpoint that the server handles runs under the existing
+-`Store._commit` transaction. The binding does not distribute
+-transactions. A client invoking `POST /tasks/{id}/accept` on an
+-`implement` task receives a single success response after both the
+-task-completed event and the proposal-completed event have been
+-durably appended.
++### In-process composite commits stay atomic
+ 
+-This is consistent with chapter 8 §6.1 and the single-process
+-atomicity guarantees `SqliteStore` already provides; crossing the
+-process boundary doesn't weaken them because each HTTP call
+-corresponds to exactly one server-side transaction.
++Chapter 5 §2.2 composite commits (task-completed + proposal-completed,
++evaluate-terminal + trial.succeeded, reclaim + trial.errored,
++trial-promotion ref + field + event) still commit atomically on the
++server side: each endpoint runs under the existing `Store._commit`
++transaction. A client invoking `POST /tasks/{id}/accept` on an
++`implement` task receives one response after the task-completed
++event and the proposal-completed event have both been durably
++appended.
+ 
++The binding does not distribute transactions across HTTP calls. No
++endpoint splits a composite commit into two HTTP requests; each
++composite commit maps to exactly one server transaction.
++
++### Chapter 6 §3.4 across the process boundary
++
++The trial-promotion invariant (ref + trial_commit_sha + event all
++consistent post-promotion) is the one composite commit that spans
++the HTTP boundary: the ref write happens client-side in the
++Integrator, and the store-side half (`trial_commit_sha` + event)
++happens server-side through `POST /trials/{id}/integrate`. In-
++process at Phase 7b, a `Store` exception from `integrate_trial`
++caused the Integrator to compensate-delete the ref — the
++"post-promotion reading" from
++[`spec/v0/design-notes/integrator-atomicity.md`](../../spec/v0/design-notes/integrator-atomicity.md).
++
++Over HTTP, a transport failure — connection reset, timeout, proxy
++disconnect — between the request being sent and the response being
++received is **indeterminate**: the server may have durably committed
++the transition before the response was lost. A blind
++compensating-delete in that case would violate §3.4: the ref
++disappears while the `trial_commit_sha` and `trial.integrated`
++event stay, producing exactly the split-brain state §3.4 forbids
++after a promotion returns.
++
++Two mechanisms together close this gap:
++
++1. **Server-side same-value idempotency** on the endpoint (see
++   "Request and response bodies" §6 above): a repeated
++   `POST /trials/{id}/integrate` with the **same** `trial_commit_sha`
++   is a no-op; a repeated call with a **different** value is an
++   error. This is the same rule `Integrator.integrate` already
++   enforces in-process for `_check_idempotent` — now surfaced at
++   the HTTP boundary so retries are safe.
++2. **Client-side reconciliation on indeterminate failure.** The
++   `StoreClient.integrate_trial` path MUST NOT raise a bare
++   transport exception back to `Integrator.integrate`. Instead,
++   on `httpx.TransportError` / `httpx.RemoteProtocolError` /
++   `httpx.ReadTimeout` (and equivalents), it MUST:
++   a. Re-issue `GET /trials/{id}` through a bounded retry loop
++      (e.g. 3 attempts with exponential backoff).
++   b. If the trial now has `trial_commit_sha == expected`, the
++      server had already committed; return success and do not
++      compensate.
++   c. If the trial has no `trial_commit_sha`, re-raise; the
++      Integrator compensates the ref per its existing §3.4 rule.
++   d. If the trial has a *different* `trial_commit_sha`, raise
++      `AtomicityViolation` — someone else integrated concurrently,
++      which §1.2 forbids; this is operator-intervention territory.
++   e. If the reconciliation read itself fails repeatedly, raise a
++      new `IndeterminateIntegration` error that explicitly flags
++      "unable to determine server state" rather than committing
++      to either path.
++
++Integrator's existing compensating-delete flow runs only when the
++client has **positively confirmed** the server did not commit. That
++preserves the chapter 6 §3.4 post-promotion invariant across the
++process boundary: after the call returns — by success, confirmed
++rollback, or `IndeterminateIntegration` — the three artifacts
++remain consistent, or the inconsistency is loud and named.
++
++This is the one place where the HTTP binding needs more than a
++transport-layer translation of the `Store` API. The plan calls it
++out explicitly so the Integrator changes land with the
++`eden-wire` package, not as a later bug fix.
++
+ ## Migration from Phase 7b
+ 
+ - `eden-dispatch.run_experiment` needs no signature change; it
+   already accepts a `Store` and an `integrate_trial` callable. A
+   `StoreClient` *is* a `Store`, so the driver works unchanged.
+-- `eden-git.Integrator` needs no change for the same reason.
++- `eden-git.Integrator` gains one new failure mode —
++  `IndeterminateIntegration` — raised when a wire-mediated
++  `integrate_trial` call's outcome cannot be determined. Direct-
++  `Store` callers never see it (no transport involved); wire-
++  mediated callers treat it as operator-intervention territory,
++  same as `AtomicityViolation`. Existing exception handlers in
++  `eden-dispatch` propagate it without special handling because
++  `run_experiment` currently doesn't catch integrator errors.
++- The `StoreClient.integrate_trial` wrapper owns the
++  transport-indeterminate reconciliation (read-back + retry loop)
++  described in "Atomicity and composite-commit handling" above.
++  The Integrator sees either a successful return, a definite
++  failure it can compensate, or an `IndeterminateIntegration` it
++  must re-raise — the same three-way decision it would have in a
++  direct-`Store` world, with the client absorbing the HTTP
++  complexity.
+ - `Store.integrate_trial` server endpoint must preserve the §3.4
+-  invariant: the HTTP handler must invoke the same atomic
+-  transaction the direct call does. Integrator first writes the
+-  ref locally (it holds the repo), then calls the HTTP endpoint,
+-  then compensates on failure — same order as 7b.
++  invariant: the HTTP handler invokes the same atomic transaction
++  the direct call does, and adds same-value idempotency on top
++  (no-op if `trial_commit_sha` already equals the request value;
++  error if it equals a different value). The same-value
++  idempotency also applies to the direct-`Store` path, so
++  `Store.integrate_trial` gains this behavior uniformly (the
++  `_check_idempotent` helper in `Integrator` already expressed
++  the same rule externally; moving the same-value check down into
++  `Store.integrate_trial` keeps the HTTP binding's contract and
++  the direct-call contract identical).
+ - Existing tests that construct `Store` directly stay. The
+   parametrized fixtures gain an additional `ClientStore` backend;
+   no direct-`Store` test is removed.
+ 
+-## Open questions for review
++## Design decisions settled in round 0
+ 
+-1. **FastAPI vs. Starlette.** FastAPI gives Pydantic-first request
+-   validation, dependency injection, and OpenAPI spec generation
+-   for free. Starlette is lighter, closer to ASGI. FastAPI is the
+-   better default here because:
+-   - Every endpoint's request body is already a Pydantic model.
+-   - Auto-generated OpenAPI is a nice sanity check against the
+-     hand-written spec chapter.
+-   - The overhead is negligible for a reference impl.
++The following were posed as open questions in the draft and resolved
++by codex-review round 0:
+ 
+-   Is anyone opposed?
++- **FastAPI over Starlette** for the reference server (Pydantic-
++  native request validation; auto OpenAPI; the dependency surface
++  is not a concern for a reference impl).
++- **Wire schemas under `spec/v0/schemas/wire/`** — kept inside the
++  single `schemas/` root rather than a sibling `wire-schemas/`.
++- **RFC 7807 problem+json** for error envelopes. `type` URIs close
++  over the error vocabulary and decouple the client's retry logic
++  from HTTP status codes alone.
++- **Helper endpoints (`validate_terminal`, `validate_metrics`) are
++  reference-only**, not part of `07-wire-protocol.md`, and live
++  under `/_reference/` to make the non-normative status
++  syntactically obvious.
++- **InvalidPrecondition → 409**, not 422. These are state conflicts
++  against existing protocol objects, not malformed bodies.
++- **Long-poll is the 8a `subscribe` binding**, not a skip of the
++  subscribe contract. SSE / WebSocket bindings are optional
++  transport upgrades that later phases may add without changing
++  the normative contract.
++- **Path-versioned URLs (`/v0/`)** over header-versioned content
++  types — simpler for logs and grepping; mirrors the spec's
++  `spec/v0/` directory structure.
++- **Integrate-over-HTTP uses server-side same-value idempotency +
++  client-side read-back reconciliation** to preserve chapter 6 §3.4
++  atomicity across the process boundary. See "Atomicity and
++  composite-commit handling" above.
+ 
+-2. **Separate wire schema directory.** Should
+-   `spec/v0/schemas/wire/*.schema.json` live under the same
+-   `schemas/` directory as the entity schemas, or in a sibling
+-   `wire/` directory (e.g. `spec/v0/wire/`)? The draft assumes
+-   a subdirectory `schemas/wire/` — parallel to how the integrator
+-   design note lives under `design-notes/`. An alternative is to
+-   put wire-specific schemas one level up (e.g.
+-   `spec/v0/schemas/wire/*.json` vs `spec/v0/wire-schemas/*.json`).
+-   I'd prefer `schemas/wire/` because it keeps the schema root
+-   singular.
+-
+-3. **Problem+json vs. vanilla JSON errors.** RFC 7807 is the IETF
+-   standard for HTTP API errors and lets clients key on `type` URIs
+-   without parsing human text. A vanilla `{"error": ..., "code":
+-   ...}` is lighter. I'd prefer problem+json because the `type`
+-   field survives future additions without client parsing changes;
+-   the cost is a more formal error envelope.
+-
+-4. **Should `validate_terminal` remain server-side?** The orchestrator
+-   currently relies on `store.validate_terminal(task_id)` to decide
+-   accept vs. reject before issuing the transition. We could move
+-   that decision into the client — the client has enough information
+-   (the submission payload, the task's expected contract) — which
+-   would cut the number of round-trips per submitted task in half.
+-   The cost is duplicating the decision logic in the client.
+-   I'd prefer keeping it server-side for 8a; the extra RTT is
+-   cheap and the logic stays in one place. Revisit in 8c.
+-
+-5. **Subscription shape for 8a.** Polling-only is the proposal.
+-   The cost is higher latency (poll interval) for workers that
+-   want to react to events; the benefit is a shorter critical path
+-   for 8a. Is polling acceptable, or should 8a include SSE?
+-
+-6. **`/v0/` URL prefix.** The spec is versioned at `v0/`; the URL
+-   mirrors it. Cleaner alternative: version in the
+-   `Accept: application/vnd.eden.v0+json` header, keep URLs
+-   unprefixed. Path-versioning is simpler for logs/grepping; I'd
+-   take it.
+-
+ ## Tests to pass before declaring done
+ 
+ - `uv run ruff check .`

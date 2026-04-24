@@ -279,10 +279,18 @@ language could participate.
 
 **Units:**
 
-- **8a** — Wire-protocol definition (HTTP endpoints for claim, submit,
-  release, plus event subscription) documented alongside spec chapters
-  2/4. Orchestrator implemented as a standalone process consuming this
-  protocol.
+- **8a — complete.** [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md)
+  pins the HTTP binding for chapters 4, 5, 6 §3.4, and 8 §§1.1–2.1.
+  The `eden-wire` package ships a FastAPI `make_app(store)` server
+  plus an httpx-backed `StoreClient` that satisfies the same
+  `Store` Protocol. `Store.integrate_trial` is now same-value
+  idempotent so HTTP retries are safe; the `Integrator`
+  distinguishes different-SHA divergence (`AtomicityViolation`)
+  from compensable synchronous rejections; `StoreClient` resolves
+  transport-indeterminate failures via read-back. Long-poll and
+  non-blocking polling both bind the §2.1 `subscribe` operation.
+  Errors round-trip as RFC 7807 problem+json with a closed
+  `eden://error/<name>` vocabulary (chapter §7).
 - **8b** — Planner, implementer, evaluator worker hosts as standalone
   processes. Each authenticates via a shared token (scaffolding; real
   auth is Milestone 3 work).

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire error (RFC 7807 profile)",
+  "description": "Error envelope returned on every non-2xx response by a conforming EDEN HTTP server. The `type` URI is the authoritative machine-readable error code; HTTP status alone is not sufficient to distinguish conflict classes. See 07-wire-protocol.md §7.",
+  "type": "object",
+  "required": ["type", "title", "status"],
+  "additionalProperties": true,
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "eden://error/bad-request",
+        "eden://error/experiment-id-mismatch",
+        "eden://error/wrong-token",
+        "eden://error/not-found",
+        "eden://error/already-exists",
+        "eden://error/illegal-transition",
+        "eden://error/conflicting-resubmission",
+        "eden://error/invalid-precondition"
+      ],
+      "description": "Closed v0 vocabulary of error types."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short human phrase (stable across minor versions)."
+    },
+    "status": {
+      "type": "integer",
+      "minimum": 400,
+      "maximum": 599,
+      "description": "HTTP status code; denormalized into the body for parser convenience."
+    },
+    "detail": {
+      "type": "string",
+      "description": "Longer human-readable explanation, if available."
+    },
+    "instance": {
+      "type": "string",
+      "description": "The request URL (or an opaque instance identifier)."
+    }
+  }
+}

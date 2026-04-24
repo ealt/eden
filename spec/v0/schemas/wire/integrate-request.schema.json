@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — integrate request",
+  "description": "Request body for POST /v0/experiments/{E}/trials/{T}/integrate. Same-value idempotent per 07-wire-protocol.md §5; preserves 06-integrator.md §3.4 atomicity across the process boundary.",
+  "type": "object",
+  "required": ["trial_commit_sha"],
+  "additionalProperties": false,
+  "properties": {
+    "trial_commit_sha": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+      "description": "The canonical-lineage SHA the integrator wrote. 40-hex SHA-1 or 64-hex SHA-256."
+    }
+  }
+}

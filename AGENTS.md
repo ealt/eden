@@ -18,6 +18,28 @@ Non-normative human docs live in [`docs/`](docs/).
 
 ## Current phase
 
+**Phase 8a complete.** `eden-wire` ships an HTTP binding for the
+chapter 4 / 5 / 6 §3.4 / 8 §§1.1–2.1 operations specified in the
+new [`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md)
+chapter. The package exposes a FastAPI ``make_app(store)`` that
+routes every wire endpoint to a ``Store`` instance, and a
+``StoreClient`` that satisfies the same ``Store`` Protocol against
+the HTTP surface — so existing callers (dispatch driver,
+integrator) work across the process boundary unchanged. Errors
+round-trip as RFC 7807 problem+json with a closed vocabulary of
+``eden://error/<name>`` types (§7). ``Store.integrate_trial`` is
+now same-value idempotent (§5 of the chapter); the ``Integrator``
+distinguishes different-SHA divergence (``AtomicityViolation``,
+no ref compensation) from other synchronous rejections (normal
+§3.4 compensating-delete flow). ``StoreClient.integrate_trial``
+reconciles transport-indeterminate failures via read-back: the
+three outcomes are confirmed success, confirmed divergence
+(``InvalidPrecondition``), or ``IndeterminateIntegration`` when
+the server's outcome cannot be determined. Polling +
+long-poll-style subscribe are both bound (§6). Worker-process
+extraction, SSE/WebSocket push, and cut-over of in-process paths
+remain Phase 8b / 8c.
+
 **Phase 6 complete.** The `eden-storage` package ships the `Store`
 structural interface for the task store, event log, and
 proposal/trial persistence sides of chapter 8 — collapsed into a
@@ -74,16 +96,16 @@ the user's ambient git config never leaks into integrator commits. See
 
 ## Commands
 
-At Phase 7a, markdown linting, JSON Schema validation, and the Python
-toolchain for the `eden-contracts`, `eden-dispatch`, `eden-git`, and
-`eden-storage` reference packages are wired up.
+At Phase 8a, markdown linting, JSON Schema validation, and the Python
+toolchain for the `eden-contracts`, `eden-dispatch`, `eden-git`,
+`eden-storage`, and `eden-wire` reference packages are wired up.
 
 | Command | Purpose |
 |---|---|
 | `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
 | `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
 | `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
-| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts` + `reference/packages/eden-dispatch` + `reference/packages/eden-git` + `reference/packages/eden-storage`) |
+| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts` + `reference/packages/eden-dispatch` + `reference/packages/eden-git` + `reference/packages/eden-storage` + `reference/packages/eden-wire`) |
 | `uv run ruff check .` | Lint Python (config in root `pyproject.toml`) |
 | `uv run pyright` | Type-check the reference Python packages |
 | `uv run pytest -q` | Run the reference-package test suite (includes schema ↔ model parity) |

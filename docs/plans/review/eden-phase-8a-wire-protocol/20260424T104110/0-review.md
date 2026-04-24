@@ -1,0 +1,26 @@
+**Findings**
+
+1. The plan overstates that Phase 7b’s integrator atomicity story survives unchanged across HTTP. It doesn’t unless you handle indeterminate transport failures explicitly. Today `Integrator.integrate()` writes the ref, calls `store.integrate_trial()`, and deletes the ref on any raised error. Over HTTP, a timeout or broken connection can happen after the server has already durably committed `trial_commit_sha` + `trial.integrated`; if the client then compensatingly deletes the ref, you create the exact split-brain state 7b was designed to avoid. As written, “[crossing the process boundary doesn’t weaken them]” is not true for this call path. 8a needs a reconciliation rule here: same-value idempotency for `integrate_trial`, or “read-back before delete” on indeterminate failures, or an equivalent confirm/commit pattern. Refs: [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:323), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:342), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:314), [integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:140)
+
+2. The 8a/8b split is mostly clean, but the plan appears to defer a real 8a requirement: exposing `subscribe` over the wire. The roadmap says 8a includes “event subscription,” and Phase 6 explicitly deferred `subscribe` to Phase 8 when a wire transport could stream. Polling `read_range` can preserve ordering/replay semantics, but it is not the same as actually binding the chapter 8 `subscribe` operation. If you want polling-only in 8a, the plan should still define that as the 8a `subscribe` binding, likely as long-poll or equivalent, instead of deferring subscription entirely. Refs: [roadmap](/Users/ericalt/Documents/eden/docs/roadmap.md:282), [protocol.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/src/eden_storage/protocol.py:12), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:24), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:149), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:392)
+
+3. The proposed wire chapter is not staying purely a transport binding; it is standardizing reference-implementation helper semantics. `GET /tasks/{id}/validate-terminal` and `POST /validate/metrics` are not chapter 4/5/8 store operations. Worse, `validate-terminal` would make internal decision labels like `"reject_worker"` and `"reject_validation"` part of the normative HTTP surface. That belongs to the current Python orchestrator implementation, not the protocol. If those helpers are useful, keep them as reference-only library affordances; don’t put them in `07-wire-protocol.md` as conformance requirements. Refs: [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:62), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:89), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:104), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:382), [protocol.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/src/eden_storage/protocol.py:228)
+
+4. The `InvalidPrecondition -> 422` mapping is the one status choice I’d push back on. These failures are state conflicts against existing protocol objects, not malformed bodies; `409` fits better and aligns with the rest of the table. I would not object to `WrongToken -> 403`; I do think `InvalidPrecondition -> 422` is the wrong signal for generic HTTP tooling. Ref: [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:125)
+
+5. The testing strategy is good in shape, but it misses the transport-indeterminate failure that matters most. `ClientStore` over `TestClient` plus a happy-path subprocess e2e will not catch the integrate-after-commit/timeout case above. Add one explicit test that commits `POST /trials/{id}/integrate` server-side, loses the response, and proves the client reconciles instead of blindly deleting the ref. Refs: [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:258), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:433)
+
+**Open Questions**
+
+1. `FastAPI` vs `Starlette`: `FastAPI` is a reasonable default here.
+2. `spec/v0/schemas/wire/`: good location.
+3. `problem+json`: agree.
+4. `validate_terminal` server-side: I’d push back if that means “normative wire endpoint.” Fine as reference-only helper, not fine as binding contract.
+5. Polling-only subscription: acceptable only if you still define an 8a `subscribe` binding, not if `subscribe` disappears from the wire surface.
+6. `/v0/` path prefix: fine.
+
+**Overall Assessment**
+
+Strong plan overall. The process split, `StoreClient` seam, reuse of the existing conformance suite, and dependency choices are all sensible.
+
+I would not approve it as-is until the integrate-over-HTTP failure semantics are fixed, the 8a subscription story is made consistent with the roadmap/spec, and the helper endpoints are pulled out of the normative wire chapter.
