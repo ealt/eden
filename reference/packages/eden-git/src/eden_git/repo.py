@@ -12,14 +12,21 @@ Design points:
   under that directory. Worktrees attached to the same underlying
   repository are addressed by their own ``GitRepo`` instance pointed at
   the worktree path.
-* Identity stamping is explicit. ``commit_tree`` and ``create_commit``
-  take ``author`` / ``committer`` so the caller can pin them; the
-  wrapper does not read ``user.name`` / ``user.email`` from the
-  ambient git config.
-* Plumbing operations (``write_blob``, ``write_tree``, ``commit_tree``,
-  ``create_ref``, ``update_ref``) are the primitives the Phase 7b
-  integrator composes into the §3.2 squash. Worktree and branch ops
-  are for implementer and operator paths in later phases.
+* Identity stamping is explicit. ``commit_tree`` takes
+  ``author`` / ``committer`` so the caller can pin them; the wrapper
+  does not read ``user.name`` / ``user.email`` from the ambient git
+  config.
+* Plumbing operations (``write_blob``, ``empty_tree_sha``,
+  ``write_tree_from_entries``, ``write_tree_with_file``,
+  ``commit_tree``, ``create_ref``, ``update_ref``) are the primitives
+  the Phase 7b integrator composes into the §3.2 squash. Worktree
+  and branch ops are for implementer and operator paths in later
+  phases.
+* Environment sanitized per invocation. Each child process runs
+  with ``GIT_CONFIG_NOSYSTEM=1`` + ``GIT_CONFIG_GLOBAL=/dev/null``
+  and with every repo-redirecting variable (``GIT_DIR``,
+  ``GIT_INDEX_FILE``, ``GIT_OBJECT_DIRECTORY``, etc.) stripped so
+  ambient developer-machine state cannot steer wrapper behavior.
 """
 
 from __future__ import annotations
@@ -33,7 +40,93 @@ from pathlib import Path
 
 from .errors import GitError
 
-_ZERO_SHA = "0" * 40
+# Git environment variables the wrapper strips from every child
+# process. Three groups:
+#
+# 1. Every var ``git rev-parse --local-env-vars`` reports. These are
+#    the canonical set of vars Git itself treats as repo-local — any
+#    of them can redirect, rewrite, or fabricate state. Notably
+#    includes ``GIT_GRAFT_FILE``, which can fabricate commit parents
+#    (and thus fool ``commit_parents`` / ``is_ancestor``), and
+#    ``GIT_REPLACE_REF_BASE`` / ``GIT_NO_REPLACE_OBJECTS``, which can
+#    rewrite arbitrary commits via `git replace` refs.
+# 2. ``GIT_NAMESPACE`` — not in the local-env-vars list on older
+#    git builds but documented as a ref-scoping env var.
+# 3. Identity, date, editor, and pager vars. ``commit_tree`` sets the
+#    identity vars explicitly per invocation; stripping first ensures
+#    no stale ambient value ever survives.
+#
+# The derived set is the union of these three plus the output of
+# ``git rev-parse --local-env-vars`` at import time. We cache the
+# derived set — queried once per process.
+_GIT_LOCAL_ENV_VARS_STATIC: frozenset[str] = frozenset(
+    {
+        # From `git rev-parse --local-env-vars` as of git 2.44:
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+        # Additional vars not in older local-env-vars output but with
+        # equivalent authority:
+        "GIT_NAMESPACE",
+        # Identity / date / editor / pager — commit_tree sets identity
+        # explicitly; stripping first removes any ambient override.
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+        "GIT_EDITOR",
+        "GIT_PAGER",
+    }
+)
+
+
+_GIT_ENV_VARS_TO_STRIP_CACHE: frozenset[str] | None = None
+
+
+def _git_env_vars_to_strip() -> frozenset[str]:
+    """Return the union of static + locally-queried git-local vars.
+
+    Calls ``git rev-parse --local-env-vars`` once and caches the
+    result. Falls back to the static list if the subprocess fails
+    (e.g. git not installed, PATH issue). Either way, the returned
+    set is a strict superset of the static list so callers are never
+    worse off than without the dynamic query.
+    """
+    global _GIT_ENV_VARS_TO_STRIP_CACHE
+    if _GIT_ENV_VARS_TO_STRIP_CACHE is not None:
+        return _GIT_ENV_VARS_TO_STRIP_CACHE
+    dynamic: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            dynamic = {tok.strip() for tok in result.stdout.split() if tok.strip()}
+    except (OSError, FileNotFoundError):
+        pass
+    _GIT_ENV_VARS_TO_STRIP_CACHE = frozenset(_GIT_LOCAL_ENV_VARS_STATIC | dynamic)
+    return _GIT_ENV_VARS_TO_STRIP_CACHE
+
+
+# Back-compat alias: existing tests reference this name.
+_GIT_ENV_VARS_TO_STRIP = _GIT_LOCAL_ENV_VARS_STATIC
 
 
 @dataclass(frozen=True)
@@ -75,23 +168,39 @@ class GitRepo:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path).resolve()
+        self._cached_zero_oid: str | None = None
 
     # --- factories --------------------------------------------------------
 
     @classmethod
     def init_bare(cls, path: Path | str) -> GitRepo:
-        """Initialize a new bare repository at ``path`` and return a repo."""
+        """Initialize a new bare repository at ``path`` and return a repo.
+
+        Runs under a sanitized environment (``GIT_CONFIG_NOSYSTEM=1``,
+        ``GIT_CONFIG_GLOBAL=/dev/null``, ``--template=``) so the repo's
+        initial state is deterministic regardless of the user's
+        ambient git config or template dir.
+        """
         target = Path(path)
         target.mkdir(parents=True, exist_ok=True)
-        _run_git(["init", "--bare", "--initial-branch=main", str(target)], cwd=target.parent)
+        _run_git(
+            ["init", "--bare", "--initial-branch=main", "--template=", str(target)],
+            cwd=target.parent,
+        )
         return cls(target)
 
     @classmethod
     def init(cls, path: Path | str) -> GitRepo:
-        """Initialize a new non-bare repository at ``path`` and return a repo."""
+        """Initialize a new non-bare repository at ``path`` and return a repo.
+
+        Sanitized per :meth:`init_bare`.
+        """
         target = Path(path)
         target.mkdir(parents=True, exist_ok=True)
-        _run_git(["init", "--initial-branch=main", str(target)], cwd=target.parent)
+        _run_git(
+            ["init", "--initial-branch=main", "--template=", str(target)],
+            cwd=target.parent,
+        )
         return cls(target)
 
     # --- introspection ----------------------------------------------------
@@ -361,16 +470,29 @@ class GitRepo:
         result = self._run_with_env(args, env=env)
         return result.stdout.strip()
 
+    def zero_oid(self) -> str:
+        """Return the all-zero OID of the repo's hash algorithm.
+
+        SHA-1 repositories use 40 hex zeros; SHA-256 use 64. The value
+        is cached per instance. `git update-ref <ref> <new> <zero>` uses
+        this to express CAS-against-absent.
+        """
+        if self._cached_zero_oid is None:
+            fmt = self._run(["rev-parse", "--show-object-format"]).stdout.strip()
+            length = 64 if fmt == "sha256" else 40
+            self._cached_zero_oid = "0" * length
+        return self._cached_zero_oid
+
     def create_ref(self, refname: str, new_sha: str) -> None:
         """Create a ref atomically; raise if it already exists.
 
-        Uses ``update-ref --create-reflog <ref> <new> <zero>`` which
-        requires the ref to currently point at the zero OID (i.e. be
-        absent). This is the primitive the integrator uses when
-        publishing a `trial/*` branch — the §1.2 invariant forbids
-        overwriting an existing `trial/*` ref.
+        Uses ``update-ref <ref> <new> <zero>`` which requires the ref
+        to currently point at the zero OID (i.e. be absent). This is
+        the primitive the integrator uses when publishing a `trial/*`
+        branch — the §1.2 invariant forbids overwriting an existing
+        `trial/*` ref.
         """
-        self._run(["update-ref", refname, new_sha, _ZERO_SHA])
+        self._run(["update-ref", refname, new_sha, self.zero_oid()])
 
     def update_ref(
         self, refname: str, new_sha: str, *, expected_old_sha: str | None = None
@@ -487,12 +609,7 @@ class GitRepo:
         ]
 
     def _env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        # Prevent the user's global git config from influencing commit
-        # identity or other behavior in tests and scripted integrator
-        # runs. The caller stamps identity explicitly via `commit_tree`.
-        env.setdefault("GIT_TERMINAL_PROMPT", "0")
-        return env
+        return _sanitized_git_env()
 
     def _run(
         self, args: list[str], *, check: bool = True
@@ -527,10 +644,31 @@ class GitRepo:
         return result
 
 
+def _sanitized_git_env() -> dict[str, str]:
+    """Build a child environment stripped of repo-redirecting git vars.
+
+    Also pins ``GIT_CONFIG_NOSYSTEM=1`` and
+    ``GIT_CONFIG_GLOBAL=/dev/null`` so the host's system- and user-
+    level git config never leaks into wrapper operations. Integrator
+    runs must be deterministic regardless of developer-machine state.
+    """
+    strip = _git_env_vars_to_strip()
+    env = {k: v for k, v in os.environ.items() if k not in strip}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    # Remove GIT_CONFIG_KEY_* / GIT_CONFIG_VALUE_* injections — there
+    # can be arbitrarily many of these, paired with GIT_CONFIG_COUNT
+    # (already stripped above, which makes any remaining KEY/VALUE
+    # entries inert, but strip them too for hygiene).
+    for k in list(env):
+        if k.startswith("GIT_CONFIG_KEY_") or k.startswith("GIT_CONFIG_VALUE_"):
+            del env[k]
+    return env
+
+
 def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     """Run git outside of any GitRepo scope (for ``init`` / ``init --bare``)."""
-    env = os.environ.copy()
-    env.setdefault("GIT_TERMINAL_PROMPT", "0")
     argv = ["git", *args]
     result = subprocess.run(
         argv,
@@ -538,7 +676,7 @@ def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
-        env=env,
+        env=_sanitized_git_env(),
     )
     if result.returncode != 0:
         raise GitError(argv, result.returncode, result.stdout, result.stderr)
