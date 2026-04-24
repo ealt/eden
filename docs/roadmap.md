@@ -237,14 +237,21 @@ canonical records, squashed trial commits with eval manifests.
 
 **Units:**
 
-- **7a** — Port `git_manager.py` from direvo into
-  `reference/packages/eden-git/` (worktree + branch ops). Adapt to the
-  new repo's naming conventions.
-- **7b** — Integrator flow: create `work/<trial-id>-impl` at parent;
-  after implementer submits, squash into `trial/<id>-<slug>`; attach
-  eval manifest under `.eden/trials/<id>/eval.json`.
+- **7a — complete.** `eden-git` package with `GitRepo` subprocess
+  wrapper: ref/object inspection (`rev_parse`, `resolve_ref`,
+  `list_refs`, `is_ancestor`, `ls_tree`, `tree_entry_exists`,
+  `commit_parents`), plumbing (`write_blob`,
+  `write_tree_from_entries`, `write_tree_with_file`, `commit_tree`,
+  `create_ref`, `update_ref`, `delete_ref`) and worktree/branch
+  management. `commit.gpgsign=false` and explicit
+  `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars per invocation isolate
+  integrator runs from the user's ambient git config.
+- **7b** — Integrator flow: observe `trial.succeeded`; assemble the
+  single-commit squash per §3.2 (worker-tip tree plus
+  `.eden/trials/<id>/eval.json`); write `refs/heads/trial/<id>-<slug>`,
+  `trial_commit_sha`, and `trial.integrated` atomically per §3.4.
 
-**Chunks:** 7a one chunk; 7b one chunk.
+**Chunks:** 7a one chunk (complete); 7b one chunk.
 
 **Non-goals:** Gitea / remote hosts (Phase 10); multi-parent proposals
 (deferred beyond v0).

@@ -7,6 +7,7 @@ members = [
     "eden",
     "eden-contracts",
     "eden-dispatch",
+    "eden-git",
     "eden-storage",
 ]
 
@@ -46,6 +47,7 @@ source = { virtual = "." }
 dev = [
     { name = "eden-contracts" },
     { name = "eden-dispatch" },
+    { name = "eden-git" },
     { name = "eden-storage" },
     { name = "jsonschema" },
     { name = "pyright" },
@@ -61,6 +63,7 @@ dev = [
 dev = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
+    { name = "eden-git", editable = "reference/packages/eden-git" },
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "jsonschema", specifier = ">=4.21" },
     { name = "pyright", specifier = ">=1.1.380" },
@@ -101,6 +104,11 @@ requires-dist = [
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "pydantic", specifier = ">=2.9,<3" },
 ]
+
+[[package]]
+name = "eden-git"
+version = "0.0.1"
+source = { editable = "reference/packages/eden-git" }
 
 [[package]]
 name = "eden-storage"

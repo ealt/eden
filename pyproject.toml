@@ -14,12 +14,14 @@ package = false
 members = [
     "reference/packages/eden-contracts",
     "reference/packages/eden-dispatch",
+    "reference/packages/eden-git",
     "reference/packages/eden-storage",
 ]
 
 [tool.uv.sources]
 eden-contracts = { workspace = true }
 eden-dispatch = { workspace = true }
+eden-git = { workspace = true }
 eden-storage = { workspace = true }
 
 [dependency-groups]
@@ -32,6 +34,7 @@ dev = [
     "pyyaml>=6.0",
     "eden-contracts",
     "eden-dispatch",
+    "eden-git",
     "eden-storage",
 ]
 
@@ -53,6 +56,7 @@ convention = "google"
 include = [
     "reference/packages/eden-contracts",
     "reference/packages/eden-dispatch",
+    "reference/packages/eden-git",
     "reference/packages/eden-storage",
 ]
 typeCheckingMode = "standard"
@@ -64,5 +68,6 @@ reportMissingTypeStubs = "none"
 testpaths = [
     "reference/packages/eden-contracts/tests",
     "reference/packages/eden-dispatch/tests",
+    "reference/packages/eden-git/tests",
     "reference/packages/eden-storage/tests",
 ]
