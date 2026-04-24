@@ -6,7 +6,7 @@ This directory contains one complete implementation of the EDEN protocol. It is 
 
 ## Status
 
-Through Phase 8b: a complete cross-process reference deployment is runnable. Each role lives in its own OS process and communicates only via the Phase 8a wire binding. Cut-over of the in-process dispatch path remains Phase 8c.
+Through Phase 8c: the in-process dispatch path is removed. Components communicate only via the Phase 8a wire binding; each role runs in its own OS process; the orchestrator service drives `eden_dispatch.run_orchestrator_iteration` against a `StoreClient`.
 
 ### Services
 
@@ -26,7 +26,7 @@ Through Phase 8b: a complete cross-process reference deployment is runnable. Eac
 | Path | Purpose | Lands in |
 |---|---|---|
 | [`packages/eden-contracts/`](packages/eden-contracts/) | Pydantic bindings for the JSON Schemas; convenience for Python components | Phase 3 |
-| [`packages/eden-dispatch/`](packages/eden-dispatch/) | Scripted workers + dispatch driver; `run_orchestrator_iteration` for standalone orchestrator service | Phase 5 / Phase 8b |
+| [`packages/eden-dispatch/`](packages/eden-dispatch/) | Reference scripted workers and the orchestrator-iteration body (`run_orchestrator_iteration`); used by the worker hosts and the orchestrator service | Phase 5 / Phase 8b / Phase 8c |
 | [`packages/eden-storage/`](packages/eden-storage/) | Repository interface + concrete backends (in-memory, SQLite) | Phase 6 |
 | [`packages/eden-git/`](packages/eden-git/) | Worktree + branch ops + integrator flow | Phase 7 |
 | [`packages/eden-wire/`](packages/eden-wire/) | HTTP wire binding (FastAPI server + httpx client) for chapter 07; reference-only shared-token auth | Phase 8a / 8b |

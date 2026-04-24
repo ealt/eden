@@ -1,0 +1,109 @@
+--- docs/plans/review/eden-phase-8c-cutover/20260424T153700/0.md	2026-04-24 15:37:00
++++ docs/plans/eden-phase-8c-cutover.md	2026-04-24 15:41:01
+@@ -20,13 +20,17 @@
+ - **No `eden-dispatch` package rename or split.** The package keeps its name and continues to export the orchestrator iteration plus the scripted workers — both still belong to dispatch.
+ - **No deletion of `eden-dispatch.workers`.** The scripted classes are used by the worker hosts and by `test_orchestrator_iteration._drive_trial_to_success`'s sibling helpers; they stay.
+ 
++## Backwards-compatibility policy
++
++`eden-dispatch` is at version `0.0.1` and is part of the in-tree reference implementation; it is not published, has no external consumers, and carries no compatibility promise prior to spec v0 stabilization. Removing `run_experiment` from the package's public surface (`__init__.__all__` and `from .driver import …`) is therefore an in-tree refactor, not a breaking-API event. Repository-internal consumers (the eden-dispatch tests, the eden-storage tests, and the eden-git README — enumerated in the "What gets changed" sections) are migrated in this same PR. No deprecation window or shim is provided.
++
+ ## What gets changed
+ 
+ ### A. Package source
+ 
+ #### `reference/packages/eden-dispatch/src/eden_dispatch/driver.py`
+ 
+-Delete the `run_experiment(...)` function in full, including its docstring and the `Sequence` import that was only used for `plan_task_ids`. Keep `run_orchestrator_iteration` and the four `_…` helpers that back it (`_finalize_submitted`, `_dispatch_implement_tasks`, `_dispatch_evaluate_tasks`, `_promote_successful_trials`, `_list_trials_needing_evaluation`, `_trials_with_evaluate_task`).
++Delete the `run_experiment(...)` function in full, including its docstring and the `Sequence` import that was only used for `plan_task_ids`. Keep `run_orchestrator_iteration` and the six `_…` helpers that back it (`_finalize_submitted`, `_dispatch_implement_tasks`, `_dispatch_evaluate_tasks`, `_promote_successful_trials`, `_list_trials_needing_evaluation`, `_trials_with_evaluate_task`).
+ 
+ Update the module docstring: it currently leads with "`run_experiment` connects the scripted workers to the store…". After cutover it leads with `run_orchestrator_iteration`'s job — the orchestrator-side iteration body, used by the standalone orchestrator service against a `StoreClient`. The "Finalization honors §4.3" paragraph stays as-is (it describes `_finalize_submitted`, which stays).
+ 
+@@ -99,39 +103,41 @@
+ 
+ The comment `# Finalize plan submission manually (normally run_experiment does this)` is misleading after cutover. Replace with `# Finalize plan submission manually (normally the orchestrator service does this).` No code change.
+ 
+-### C. Documentation
++### C. Live-doc and live-source mentions of `run_experiment`
+ 
+-#### `reference/packages/eden-git/README.md`
++Every live-text mention of the symbol — i.e., every place outside the frozen plan / review artifacts under `docs/plans/eden-phase-{5,7b,8a,8b}-*.md` and `docs/plans/review/**` — is updated. Concrete inventory (verified with `grep -rn "run_experiment" reference/ AGENTS.md docs/roadmap.md` against current `main`):
+ 
+-Section "Integration with `eden-dispatch`" currently says:
++1. **`reference/packages/eden-dispatch/src/eden_dispatch/driver.py`** — module docstring lead. Rewrite to describe `run_orchestrator_iteration` as the public entry point; the function deletion is covered in §A above.
++2. **`reference/packages/eden-dispatch/src/eden_dispatch/__init__.py`** — module docstring + import + `__all__`. Covered in §A above.
++3. **`reference/packages/eden-dispatch/tests/test_end_to_end.py`** — file deleted (covered in §B).
++4. **`reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`** line 3 — module docstring says "the function is the Phase 8b-extracted half of `run_experiment`". Rewrite as: "The function is the orchestrator-iteration body — finalize + dispatch + integrate without invoking workers — used by the standalone orchestrator service."
++5. **`reference/packages/eden-storage/tests/test_store_hardening.py`** — imports + the rewritten test (covered in §B).
++6. **`reference/packages/eden-storage/tests/test_restart_safety.py`** line 400 — comment update (covered in §B).
++7. **`reference/packages/eden-git/README.md`** — "Integration with `eden-dispatch`" section. Currently:
+ 
+-> `eden_dispatch.run_experiment` takes an `integrate_trial: Callable[[str], object]` parameter; passing `integrator.integrate` wires the dispatch loop to the real integrator.
++   > `eden_dispatch.run_experiment` takes an `integrate_trial: Callable[[str], object]` parameter; passing `integrator.integrate` wires the dispatch loop to the real integrator.
+ 
+-Replace with:
++   Replace with:
+ 
+-> The standalone orchestrator service (`reference/services/orchestrator`) calls `eden_dispatch.run_orchestrator_iteration` with `integrate_trial=integrator.integrate`, so successful trials are promoted through the real integrator.
++   > The standalone orchestrator service (`reference/services/orchestrator`) calls `eden_dispatch.run_orchestrator_iteration` with `integrate_trial=integrator.integrate`, so successful trials are promoted through the real integrator.
+ 
+-#### `AGENTS.md` (= `CLAUDE.md` symlink)
++8. **`reference/README.md`** — line 9 currently reads "Through Phase 8b: … Cut-over of the in-process dispatch path remains Phase 8c." Replace with a "Through Phase 8c" lead saying the in-process dispatch path is removed and the wire binding is the only inter-component channel. The services/packages tables stay as-is (they describe the *services*, which are unchanged) except the eden-dispatch row, which is reworded to "Reference scripted workers and the orchestrator-iteration body (`run_orchestrator_iteration`); used by the worker hosts and the orchestrator service."
++9. **`AGENTS.md`** (= `CLAUDE.md` symlink). Two live mentions today:
++   - Line 19, the "Phase 8b complete." status block. The narration "`eden-dispatch.run_experiment` driver was split: `run_orchestrator_iteration` is now publicly exported …" is now stale (the driver is gone, not split). Reword the relevant clause to read "`eden-dispatch` exposes `run_orchestrator_iteration` as its orchestrator-side entry point; the in-process `run_experiment` driver was deleted in Phase 8c."
++   - Line 25, the "Phase 7b complete." status block. The clause "`eden-dispatch.run_experiment` now takes an `integrate_trial: Callable[[str], object]` hook in place of the Phase 5 placeholder `integrator_commit_factory` parameter" is historical narration about a long-gone API. Reword to "`eden-dispatch` accepts `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder `integrator_commit_factory` parameter; the standalone orchestrator service in Phase 8b/8c passes `Integrator.integrate` through this hook."
+ 
+-Replace the "Phase 8b complete." status block's lead with a "Phase 8c complete." block. Specifically: keep the Phase 8b summary as historical context (or fold its key facts into the 8c summary, given the 8a/8b paragraphs are the load-bearing context). Add a leading paragraph for 8c stating: cut-over done; in-process `run_experiment` deleted; `test_end_to_end.py` deleted; `test_driver_routes_malformed_success_to_validation_error` rewritten as a `run_orchestrator_iteration` unit test; the wire-protocol e2e test is now the only end-to-end coverage; `run_orchestrator_iteration` and the scripted workers remain the dispatch package's public surface.
++   Also add a leading "Phase 8c complete." paragraph: cut-over done; in-process `run_experiment` deleted; `test_end_to_end.py` deleted; `test_driver_routes_malformed_success_to_validation_error` rewritten as a `run_orchestrator_iteration` unit test; the wire-protocol e2e test is now the only end-to-end coverage; `run_orchestrator_iteration` and the scripted workers remain the dispatch package's public surface.
+ 
+-The Commands table needs no changes — every command listed there still works (the e2e test remains under the same `pytest.mark.e2e` marker; ruff/pyright/pytest still run cleanly; the schema/markdown lint commands are untouched). Verify by re-running the table after implementation.
++   The Commands table needs no changes — every command listed still works (the e2e test remains under the `pytest.mark.e2e` marker; ruff/pyright/pytest run cleanly against the smaller tree; the schema/markdown lint commands are untouched).
++10. **`docs/roadmap.md`** — three live mentions:
++    - Line 109, Phase 5b "complete" bullet. Historical narration: "`run_experiment` orchestrates a full plan → implement → evaluate → integrate cycle." Reword to past tense + cross-reference to 8c: "`run_experiment` orchestrated a full plan → implement → evaluate → integrate cycle in-process; superseded in Phase 8c by the wire-protocol e2e test, which exercises the same flow across real subprocesses."
++    - Line 144, Phase 7b "complete" bullet. The trailing sentence about `run_experiment` taking `integrate_trial` is restated as: "The dispatch driver accepted `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder `integrator_commit_factory`; in Phase 8c that hook moved to `run_orchestrator_iteration`."
++    - Line 161, Phase 8b "complete" bullet. The clause "`eden-dispatch.run_experiment` was split into `run_orchestrator_iteration` (now public) so the standalone orchestrator runs only the orchestrator side" is reworded to "`eden-dispatch` exposes `run_orchestrator_iteration` as its orchestrator-side entry point so the standalone orchestrator drives only that half; the in-process `run_experiment` driver was kept through 8b and removed in 8c."
++    - Phase 8 §8c bullet (currently a placeholder line). Replace with a "complete" bullet matching 8a/8b style: in-process `run_experiment` deleted; `eden-dispatch` keeps `run_orchestrator_iteration` plus the scripted workers; the Phase 8b real-subprocess `pytest.mark.e2e` test is now the only end-to-end coverage; one storage hardening test was rewritten as a direct `run_orchestrator_iteration` unit test rather than relying on the in-process driver.
+ 
+-#### `reference/README.md`
+-
+-The package summary table cites `eden-dispatch` as containing the driver. Update the relevant cell to describe `eden-dispatch` as "Reference scripted workers and the orchestrator-iteration body (`run_orchestrator_iteration`); used by the worker hosts and the orchestrator service."
+-
+-#### `docs/roadmap.md` Phase 8 §8c bullet
+-
+-Replace the placeholder line:
+-
+-> 8c — Cut-over: remove all in-process code paths; the only way components talk is the wire protocol.
+-
+-with a "complete" bullet matching the 8a/8b style: in-process `run_experiment` deleted; `eden-dispatch` keeps `run_orchestrator_iteration` plus the scripted workers; the Phase 8b real-subprocess `pytest.mark.e2e` test is now the only end-to-end coverage; one storage hardening test was rewritten as a direct `run_orchestrator_iteration` unit test rather than relying on the in-process driver.
+-
+ #### `docs/plans/`
+ 
+-This file (`docs/plans/eden-phase-8c-cutover.md`) is the new artifact for the phase. No other plan files are edited; the 8a / 8b plans stay as historical record.
++This file (`docs/plans/eden-phase-8c-cutover.md`) is the new artifact for the phase. No earlier plan file is edited; `docs/plans/eden-phase-{0,1-…,7a,7b,8a,8b}-*.md` and `docs/plans/review/**` are frozen historical artifacts and continue to mention `run_experiment` as the in-process driver they were written against. The verification grep in §"Verification" excludes that tree explicitly.
+ 
+ ## What does **not** change
+ 
+@@ -154,8 +160,13 @@
+ 4. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` — clean.
+ 5. `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` and the fixture validation command — clean.
+ 6. `python3 scripts/spec-xref-check.py` — clean.
+-7. `grep -rn "run_experiment" reference/ docs/ AGENTS.md` returns nothing in current code paths — only the historical plan files under `docs/plans/eden-phase-{5,7b,8a,8b}-*.md` and `docs/plans/review/...` may reference the symbol (those are frozen artifacts and are not edited).
++7. `grep -rn "run_experiment" reference/ AGENTS.md docs/roadmap.md` returns zero matches in live source and live docs after the edits in §C land. The grep is intentionally narrowed to live-text targets:
+ 
++   - **excluded by scope**: `docs/plans/**` (this plan describes the work being done — it mentions `run_experiment` repeatedly by design — and the older plan files under `docs/plans/eden-phase-{0,1-…,7a,7b,8a,8b}-*.md` are frozen historical artifacts);
++   - **excluded by scope**: `docs/plans/review/**` (Codex review transcripts, frozen as records of those sessions).
++
++   The check confirms zero hits in `reference/`, `AGENTS.md` (= `CLAUDE.md`), and `docs/roadmap.md` — the three trees a contributor reads when learning what the impl currently does.
++
+ After opening the PR, also confirm that CI is green on all six checks (`docs-lint`, `python-lint`, `python-typecheck`, `python-test`, `schema-validity`, `schema-parity`).
+ 
+ ## Execution order
+@@ -168,7 +179,7 @@
+ 
+ ## Risks / things to watch
+ 
+-- **Stale reference in docstrings.** A grep for `run_experiment` after the change must turn up zero hits in `reference/`, `AGENTS.md`, `docs/roadmap.md`, and `docs/plans/eden-phase-8c-cutover.md` (this plan). Hits in `docs/plans/eden-phase-{5,7b,8a,8b}-*.md` and `docs/plans/review/**` are frozen historical artifacts and should be left alone.
++- **Stale references in live text.** A grep for `run_experiment` after the change must turn up zero hits in `reference/`, `AGENTS.md`, and `docs/roadmap.md`. Hits in `docs/plans/eden-phase-8c-cutover.md` (this plan, by design) and in `docs/plans/eden-phase-{0,1-…,7a,7b,8a,8b}-*.md` plus `docs/plans/review/**` (frozen historical artifacts) are expected and excluded from the check.
+ - **Test-file deletion vs. coverage gap.** The risk is that `test_end_to_end.py` exercised an invariant the e2e + orchestrator-iteration tests do not. Walked through above; the only such case is the malformed-success routing test, which is rewritten rather than dropped.
+ - **Worker hosts' scripted `plan_fn` profiles.** The plan-task-list generation in `_common/scripted.py` was originally validated by `test_end_to_end.py`'s plan_fn shape. The e2e test exercises the same shape end-to-end (it asserts `parent_commits == [base_sha]` and verifies three trials), so the coverage transfers cleanly.
+ - **CI cache.** Removing a test file does not invalidate any cache key; pyright and ruff will rerun against the smaller tree without issue.

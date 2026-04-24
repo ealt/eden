@@ -1,10 +1,10 @@
 """Reference dispatch loop for EDEN v0.
 
 The store interface and backends moved to ``eden-storage`` in
-Phase 6. This package now contains the driver (``run_experiment``)
-and the scripted role workers; the store types are re-exported
-from ``eden-storage`` for backward compatibility with pre-Phase-6
-import paths.
+Phase 6. This package now contains the orchestrator-iteration body
+(``run_orchestrator_iteration``) and the scripted role workers; the
+store types are re-exported from ``eden-storage`` for backward
+compatibility with pre-Phase-6 import paths.
 """
 
 from eden_storage import (
@@ -23,7 +23,7 @@ from eden_storage import (
     WrongToken,
 )
 
-from .driver import run_experiment, run_orchestrator_iteration
+from .driver import run_orchestrator_iteration
 from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 __all__ = [
@@ -43,6 +43,5 @@ __all__ = [
     "SqliteStore",
     "Store",
     "WrongToken",
-    "run_experiment",
     "run_orchestrator_iteration",
 ]

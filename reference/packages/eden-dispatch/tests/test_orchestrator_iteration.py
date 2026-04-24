@@ -1,10 +1,11 @@
 """Unit tests for ``run_orchestrator_iteration``.
 
-The function is the Phase 8b-extracted half of ``run_experiment``: it
-runs only the orchestrator-side work (finalize + dispatch + integrate)
-against a seeded store, without invoking any workers. Each test
-pre-seeds the store so exactly one transition is applicable, then
-asserts that transition fired and ``progress`` is ``True``.
+The function is the orchestrator-iteration body — it finalizes
+submitted tasks, dispatches downstream work, and promotes successful
+trials, without invoking any workers. The standalone orchestrator
+service drives it in a poll loop. Each test pre-seeds the store so
+exactly one transition is applicable, then asserts that transition
+fired and ``progress`` is ``True``.
 
 A final test against a fully-quiesced store asserts ``progress`` is
 ``False``.
