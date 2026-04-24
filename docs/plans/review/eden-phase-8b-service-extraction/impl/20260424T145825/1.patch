@@ -1,0 +1,17 @@
+--- docs/plans/review/eden-phase-8b-service-extraction/impl/20260424T145825/0.md	2026-04-24 14:59:05
++++ docs/plans/review/eden-phase-8b-service-extraction/impl/20260424T145825/1.md	2026-04-24 15:07:44
+@@ -62,3 +62,14 @@
+ ## Review status
+ 
+ Round 0 — awaiting initial review.
++
++## Round 1 — addressed feedback
++
++- **Bug (loop.py:50)** Fixed. `run_orchestrator_loop` now imports `AlreadyExists` and catches it specifically; transport, auth, and other store errors propagate.
++- **Bug (test_e2e.py:208)** Fixed. The E2E now wraps `orchestrator.wait(timeout=60)` in a `try/except subprocess.TimeoutExpired`; on timeout it tears workers + server down (so any buffered stderr flushes) before failing with the full `_dump_stderr(procs)`. The same diagnostic dump is used on non-zero exit.
++- **Risk (workers.py:97)** Fixed. `ScriptedPlanner`/`Implementer`/`Evaluator`.`run_pending` now accept an optional `stop: Callable[[], bool]` keyword; the loop checks it before each task, so a SIGTERM mid-drain breaks out. Each host loop passes `stop=stop.is_set`.
++- **Risk (test_e2e.py:220)** Fixed. The E2E now opens the event log and asserts `task.completed == 9` (3 per role × 3 trials), `trial.integrated == 3`, and `trial.succeeded == 3`. Counts pin must-have terminals without freezing intermediate event order.
++- **Risk (cli.py:29)** Fixed. `--integrator-author "Name <email>"` now parses via a regex; an `Identity(name=…, email=…)` is threaded into the `Integrator`. Default is the previous hard-coded `EDEN Integrator <integrator@eden.invalid>` via `integrator_identity()`.
++- **Risk (cli.py:58)** Fixed. `--max-quiescent-iterations` uses an argparse `type=` callable that rejects values <2 with a clear `argparse.ArgumentTypeError`.
++
++All 412 tests still pass; ruff and pyright clean.

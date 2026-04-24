@@ -22,6 +22,7 @@ serializes the result.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import time
 from typing import Any
 
@@ -42,7 +43,9 @@ from pydantic import ValidationError
 from .errors import (
     BadRequest,
     ExperimentIdMismatch,
+    Unauthorized,
     envelope_for_error,
+    envelope_for_reference_error,
 )
 from .models import (
     ClaimRequest,
@@ -63,6 +66,7 @@ def make_app(
     *,
     subscribe_timeout: float = 30.0,
     subscribe_poll_interval: float = 0.1,
+    shared_token: str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
 
@@ -75,11 +79,20 @@ def make_app(
     a short value. ``subscribe_poll_interval`` is how often the
     server re-checks the event log for new entries; finer values
     reduce latency at the cost of CPU.
+
+    ``shared_token``, when non-``None``, installs the reference-only
+    bearer-token middleware from ``07-wire-protocol.md`` §12. Requests
+    missing or carrying a wrong ``Authorization: Bearer <token>``
+    header are rejected with ``eden://reference-error/unauthorized``
+    (HTTP 401). ``None`` (default) disables auth.
     """
     app = FastAPI(
         title=f"EDEN task store — {store.experiment_id}",
         version="0",
     )
+
+    if shared_token is not None:
+        _install_shared_token_middleware(app, shared_token)
 
     def _problem(status: int, type_: str, title: str, detail: str, instance: str) -> JSONResponse:
         return JSONResponse(
@@ -592,3 +605,34 @@ def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
             artifacts_uri=payload.get("artifacts_uri"),
         )
     raise HTTPException(status_code=400, detail=f"unknown task kind {kind!r}")
+
+
+def _install_shared_token_middleware(app: FastAPI, expected: str) -> None:
+    """Install the reference-only shared-token auth middleware.
+
+    Checks ``Authorization: Bearer <token>`` on every request against
+    ``expected`` with a constant-time compare. Mismatches emit a
+    problem+json body under the reference-only
+    ``eden://reference-error/unauthorized`` type (HTTP 401).
+    """
+    expected_bytes = expected.encode("utf-8")
+
+    @app.middleware("http")
+    async def _shared_token_middleware(request: Request, call_next: Any) -> Any:
+        header = request.headers.get("authorization")
+        presented: str | None = None
+        if header is not None:
+            parts = header.split(" ", 1)
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                presented = parts[1]
+        if presented is None or not hmac.compare_digest(
+            presented.encode("utf-8"), expected_bytes
+        ):
+            exc = Unauthorized("missing or invalid Authorization header")
+            envelope = envelope_for_reference_error(exc, instance=str(request.url))
+            return JSONResponse(
+                status_code=envelope.status,
+                media_type=PROBLEM_JSON,
+                content=envelope.to_dict(),
+            )
+        return await call_next(request)

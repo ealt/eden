@@ -1,0 +1,217 @@
+--- docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/0.md	2026-04-24 13:20:55
++++ docs/plans/eden-phase-8b-service-extraction.md	2026-04-24 13:26:19
+@@ -168,10 +168,10 @@
+   `EDEN Integrator <integrator@eden.invalid>`.
+ - `--plan-tasks SPEC` — either an integer N (creates
+   `plan-0001` … `plan-N`) or a comma-separated list of explicit IDs.
+-- `--implement-task-prefix PREFIX` — default `implement-`.
+-- `--evaluate-task-prefix PREFIX` — default `evaluate-`.
+-- `--proposal-prefix PREFIX` — default `proposal-`.
+-- `--trial-prefix PREFIX` — default `trial-`.
++- `--implement-task-prefix PREFIX` — default `implement-`. Concrete
++  task IDs become `<prefix><short-uuid>`.
++- `--evaluate-task-prefix PREFIX` — default `evaluate-`. Same
++  pattern.
+ - `--poll-interval SECONDS` — default `0.1`. How long to sleep
+   between orchestrator iterations that made no progress.
+ - `--max-quiescent-iterations N` — default `3`. Number of
+@@ -239,10 +239,13 @@
+ 
+ Role-specific args:
+ 
+-- Planner: `--proposal-prefix` (default `proposal-`).
+-- Implementer: `--trial-prefix` (default `trial-`).
+-- Evaluator: no extras (metrics come from a deterministic script hook,
+-  same as the existing `ScriptedEvaluator` tests).
++- Planner: `--proposals-per-plan N` (default `1`). Controls the
++  fixed `plan_fn`'s drafted-proposal count per plan task.
++- Implementer: `--repo-path PATH` (required) + `--fail-every N`
++  (optional, default never). See "Implementer repo model" above.
++- Evaluator: `--experiment-config PATH` (required, to know the
++  metrics schema and emit matching keys) + `--fail-every N`
++  (optional).
+ 
+ Startup: readiness probe, construct `StoreClient`, construct
+ `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` with
+@@ -255,14 +258,106 @@
+ only. This matches the Phase 9 UI-driven model too — a worker's
+ lifecycle is owned by its supervisor, not by task availability.
+ 
+-**Scripted logic.** The existing `plan_fn` / `implement_fn` /
+-`evaluate_fn` that Phase 5 uses as test inputs move into a small
+-shared module: `reference/services/_common/scripted.py`. They're
+-parameterized the same way (count of proposals per plan, whether to
+-fail, metrics values) but now importable. The E2E test passes a
+-deterministic instance of each; a future phase can replace them with
+-LLM-backed implementations without touching the worker host.
++**Scripted logic across the subprocess boundary.** Today
++`ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` take
++user-supplied Python callables (`plan_fn`, `implement_fn`,
++`evaluate_fn`) at construction. That arrangement does not survive
++being put behind a CLI — Python callables don't cross a
++`python -m eden_planner_host …` boundary.
++
++8b resolves this by **baking one built-in profile into each worker
++host**. A new module `reference/services/_common/scripted.py` owns
++the canonical 8b profile: the same deterministic "3 trials, all
++succeed" shape the Phase 5 / 7b in-process tests use today, with a
++couple of knobs configurable via CLI rather than by injecting a
++function:
++
++- Planner host: fixed `plan_fn` that drafts `--proposals-per-plan`
++  proposals per task (default `1`) with deterministic slugs derived
++  from the plan task ID.
++- Implementer host: fixed `implement_fn` that writes a real git
++  commit to the shared bare repo (see "Implementer repo model"
++  below) and returns its SHA. `--fail-every N` (default: never
++  fail) flips occasional trials to `status=error` to exercise
++  rejection paths in tests.
++- Evaluator host: fixed `evaluate_fn` that returns scripted metrics
++  matching the experiment's `metrics_schema` (read from
++  `--experiment-config` so the evaluator knows what keys to emit).
++  `--fail-every N` flips occasional evaluations to
++  `status=error` / `status=eval_error` if a test wants them.
+ 
++The `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator`
++classes stay callable-injected for Phase 5 / 7b in-process tests —
++the worker hosts are the only callers that wrap them in the fixed
++profile. This way nothing about the in-process test surface changes.
++
++Selector: a `--profile NAME` CLI flag is **not** introduced in 8b —
++the fixed profile is the only option. When real LLM-backed workers
++land (Phase 10 LLM hosts), they ship as separate worker hosts
++(`eden_llm_planner_host`, etc.) rather than as a `--profile llm`
++switch on the scripted host. Keeping the split explicit at the
++binary level means the scripted and LLM hosts don't share
++configuration surfaces that each only half-understands.
++
++**Implementer repo model.** The `Integrator` requires that the
++`commit_sha` an implementer submits be a real, reachable commit on
++a branch it can read
++([integrator.py](../../reference/packages/eden-git/src/eden_git/integrator.py) §2
++preconditions). Today's Phase 7b E2E fixture satisfies this by
++prebuilding real `work/*` branches before running the experiment
++and returning those real SHAs from the scripted `implement_fn`.
++Phase 8b needs the equivalent inside a standalone process.
++
++Decision: the implementer host writes real commits directly, via a
++`GitRepo` opened against the **same bare repo** the orchestrator's
++`Integrator` reads from.
++
++- Implementer CLI gains `--repo-path PATH` — the bare repo it
++  writes to. Same path the orchestrator passes to `--repo-path`.
++- Implementer's scripted flow per task writes an **orphan commit**
++  (no parents) on a fresh `work/*` branch. This matches the
++  scripted planner's proposals, which emit empty
++  `parent_commits=()`, and keeps planner and implementer decoupled
++  from any shared base-ref convention:
++  1. Build a tree containing one deterministic blob (filename
++     derived from the proposal slug, content derived from the
++     trial ID) via `GitRepo.write_blob` + `write_tree_from_entries`.
++  2. `commit_tree` with that tree, **no parents**, fixed author /
++     committer identity, deterministic message derived from the
++     proposal slug + trial ID.
++  3. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
++  4. Submit the new SHA on the implement task.
++
++  Because proposals carry `parent_commits=()`, the Integrator's
++  §1.4 reachability check over `trial.parent_commits` iterates an
++  empty sequence and trivially passes; the §2 check that
++  `commit_sha` is reachable from `branch` is satisfied by the
++  branch ref the implementer just wrote pointing at that SHA.
++
++This keeps the implementer host's write path identical to how the
++Phase 7b test prebuilds branches, just inside the service loop
++rather than in a test fixture. Concurrency is fine: worker hosts
++only write `work/*` refs; the orchestrator's `Integrator` only
++writes `trial/*` refs and reads `work/*` refs. Git's packed-refs +
++loose-refs arrangement is safe under concurrent writers in
++distinct ref namespaces.
++
++**ID allocation across restarts.** Counter-based prefixes
++(`proposal-1`, `proposal-2`, …) collide on restart because a fresh
++worker has no knowledge of persisted state. Decision: worker-
++generated IDs (`proposal_id`, `trial_id`) are short UUIDv4 hex
++strings prefixed by a role tag — `proposal-<uuid>`, `trial-<uuid>`.
++The `--proposal-prefix` / `--trial-prefix` flags are dropped; the
++orchestrator-allocated task IDs keep `--implement-task-prefix` /
++`--evaluate-task-prefix` (because those are used for human-readable
++IDs in logs and E2E assertions), but the per-iteration uniqueness
++comes from appending a short UUID.
++
++The E2E test asserts on the *count* and *shape* of produced IDs,
++not specific values — so UUIDs are fine. Plan task IDs remain
++explicit (`--plan-tasks plan-1,plan-2,plan-3`) because the harness
++needs to reference them in assertions.
++
+ ### Shared-token auth scaffolding (reference-only)
+ 
+ **Server-side extension** in `eden_wire.server`:
+@@ -337,21 +432,20 @@
+ **Spec addendum.** A new informative subsection §8 "Reference-only
+ extensions" in `spec/v0/07-wire-protocol.md`, ~10 lines:
+ 
+-> The normative binding does not specify authentication (§7 restates
++> Authentication is outside the normative binding (§7 restates
+ > this). The reference implementation in
+ > [`reference/packages/eden-wire/`](../../reference/packages/eden-wire/)
+-> ships an optional shared-token check using the HTTP `Authorization:
+-> Bearer …` scheme and a problem+json envelope under the
+-> non-normative `eden://reference-error/…` namespace. Conforming
+-> servers MAY, but MUST NOT, adopt this shape; any authentication
+-> scheme compatible with §7's closed error vocabulary (i.e., one that
+-> does not overload the `eden://error/…` types for auth outcomes)
+-> satisfies the binding.
+-
+-The contradiction inside the MAY/MUST NOT phrasing is intentional:
+-servers may use it; they are not required to. The spec-xref check
+-should be satisfied because the addendum only references chapter
+-numbers that already exist.
++> ships an optional shared-token check: when configured, the server
++> requires `Authorization: Bearer <token>` on every request and
++> rejects others with a problem+json response whose `type` is
++> `eden://reference-error/unauthorized`. Conforming servers MAY
++> adopt this scheme, adopt a different scheme, or require no
++> authentication at all. The only constraint §7 imposes on any
++> auth scheme is that it MUST NOT emit error `type` values inside
++> the normative `eden://error/…` namespace — the v0 vocabulary
++> there is closed, and an auth-outcome type overloading one of
++> those values would force clients to disambiguate auth from
++> store-state errors on HTTP status alone.
+ 
+ ### `eden-dispatch` refactor
+ 
+@@ -439,13 +533,17 @@
+    Uses `subprocess.Popen` with `python -m eden_task_store_server`,
+    `python -m eden_planner_host`, etc. The harness:
+ 
+-   - Creates a tempdir; `git init --bare` inside.
++   - Creates a tempdir; `git init --bare` inside. The implementer
++     writes orphan commits on `work/*` branches, so no seed commit
++     is required.
+    - Creates a tempdir for the sqlite DB (`--db-path` pointing at a
+      file, not `:memory:` — this exercises the SQLite path end-to-end).
+    - Boots task-store-server on `--port 0`, reads
+      `EDEN_TASK_STORE_LISTENING` from stdout to learn the port, then
+      boots 3 workers + orchestrator against
+-     `http://127.0.0.1:<port>`. All 5 subprocesses share
++     `http://127.0.0.1:<port>`. The implementer and orchestrator
++     both point `--repo-path` at the bare repo; the planner and
++     evaluator don't touch it. All 5 subprocesses share
+      `--shared-token test-token` to exercise auth.
+    - Waits up to 60 seconds for the orchestrator to exit 0.
+    - On timeout or non-zero exit, dumps every subprocess's stderr
+@@ -508,9 +606,10 @@
+    each, drafts `N` proposals (scripted), marks each ready, submits.
+ 5. Orchestrator's next iteration: finalizes plan tasks (accepts
+    each), dispatches an implement task per ready proposal.
+-6. Implementer claims each, creates a trial on `work/<slug>-<trial>`
+-   (the scripted `implement_fn` returns a deterministic fake
+-   `commit_sha`), submits `status=success`.
++6. Implementer claims each, writes a real commit on
++   `refs/heads/work/<slug>-<trial_id>` in the shared bare repo via
++   `GitRepo`, creates a trial carrying that branch + SHA, and
++   submits `status=success`.
+ 7. Orchestrator accepts implement tasks, dispatches evaluate tasks.
+ 8. Evaluator claims each, submits metrics.
+ 9. Orchestrator accepts evaluate tasks (this also writes metrics on

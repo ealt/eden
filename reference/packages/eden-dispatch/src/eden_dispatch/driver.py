@@ -32,6 +32,34 @@ from eden_storage import Store
 from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 
+def run_orchestrator_iteration(
+    store: Store,
+    *,
+    implement_task_id_factory: Callable[[], str],
+    evaluate_task_id_factory: Callable[[], str],
+    integrate_trial: Callable[[str], object] | None = None,
+) -> bool:
+    """Run one orchestrator pass: finalize + dispatch + integrate.
+
+    Does everything the driver loop does *except* invoke the worker
+    roles. Used both by the in-process ``run_experiment`` combinator
+    (which also drives the workers) and by the standalone Phase 8b
+    orchestrator service (which drives only this side because
+    workers now live in their own processes).
+
+    Returns ``True`` if any transition fired this iteration.
+    """
+    progress = False
+    progress |= _finalize_submitted(store, kind="plan")
+    progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
+    progress |= _finalize_submitted(store, kind="implement")
+    progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
+    progress |= _finalize_submitted(store, kind="evaluate")
+    if integrate_trial is not None:
+        progress |= _promote_successful_trials(store, integrate_trial)
+    return progress
+
+
 def run_experiment(
     store: Store,
     planner: ScriptedPlanner,
@@ -46,11 +74,9 @@ def run_experiment(
     """Drive an experiment to quiescence through the three workers.
 
     Creates each ``plan_task_id`` as a plan task, then loops: run
-    planner → orchestrator finalizes plan submissions → dispatch
-    implement tasks → run implementer → finalize → dispatch evaluate
-    tasks → run evaluator → finalize. The loop terminates when a full
-    pass over every role and every orchestrator step produces no
-    progress.
+    workers → orchestrator iteration (finalize + dispatch + integrate).
+    The loop terminates when a full pass over every role and every
+    orchestrator step produces no progress.
 
     ``integrate_trial``, if supplied, is called once per ``success``
     trial that still has no ``trial_commit_sha``. Typically this is
@@ -64,15 +90,14 @@ def run_experiment(
     while True:
         progress = False
         progress |= planner.run_pending(store) > 0
-        progress |= _finalize_submitted(store, kind="plan")
-        progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
         progress |= implementer.run_pending(store) > 0
-        progress |= _finalize_submitted(store, kind="implement")
-        progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
         progress |= evaluator.run_pending(store) > 0
-        progress |= _finalize_submitted(store, kind="evaluate")
-        if integrate_trial is not None:
-            progress |= _promote_successful_trials(store, integrate_trial)
+        progress |= run_orchestrator_iteration(
+            store,
+            implement_task_id_factory=implement_task_id_factory,
+            evaluate_task_id_factory=evaluate_task_id_factory,
+            integrate_trial=integrate_trial,
+        )
         if not progress:
             return
 

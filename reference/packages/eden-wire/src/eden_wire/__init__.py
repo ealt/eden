@@ -13,12 +13,14 @@ Exports:
 from __future__ import annotations
 
 from .client import IndeterminateIntegration, StoreClient
-from .errors import WireError
+from .errors import Unauthorized, WireError, WireReferenceError
 from .server import make_app
 
 __all__ = [
     "IndeterminateIntegration",
+    "WireReferenceError",
     "StoreClient",
+    "Unauthorized",
     "WireError",
     "make_app",
 ]

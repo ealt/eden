@@ -94,10 +94,23 @@ class ScriptedPlanner:
         """Opaque worker identifier this planner claims tasks under."""
         return self._worker_id
 
-    def run_pending(self, store: Store) -> int:
-        """Claim and process every pending plan task. Returns count processed."""
+    def run_pending(
+        self,
+        store: Store,
+        *,
+        stop: Callable[[], bool] | None = None,
+    ) -> int:
+        """Claim and process every pending plan task. Returns count processed.
+
+        If ``stop`` is provided, it is consulted before each task; the loop
+        returns early when it returns ``True``. This lets a host running
+        in a SIGTERM-aware loop break mid-drain instead of finishing the
+        whole queue first.
+        """
         count = 0
         while True:
+            if stop is not None and stop():
+                return count
             pending = store.list_tasks(kind="plan", state="pending")
             if not pending:
                 return count
@@ -160,10 +173,21 @@ class ScriptedImplementer:
         """Opaque worker identifier this implementer claims tasks under."""
         return self._worker_id
 
-    def run_pending(self, store: Store) -> int:
-        """Claim and process every pending implement task. Returns count processed."""
+    def run_pending(
+        self,
+        store: Store,
+        *,
+        stop: Callable[[], bool] | None = None,
+    ) -> int:
+        """Claim and process every pending implement task. Returns count processed.
+
+        ``stop`` lets a host break mid-drain on SIGTERM. See
+        :meth:`ScriptedPlanner.run_pending`.
+        """
         count = 0
         while True:
+            if stop is not None and stop():
+                return count
             pending = store.list_tasks(kind="implement", state="pending")
             if not pending:
                 return count
@@ -226,10 +250,21 @@ class ScriptedEvaluator:
         """Opaque worker identifier this evaluator claims tasks under."""
         return self._worker_id
 
-    def run_pending(self, store: Store) -> int:
-        """Claim and process every pending evaluate task. Returns count processed."""
+    def run_pending(
+        self,
+        store: Store,
+        *,
+        stop: Callable[[], bool] | None = None,
+    ) -> int:
+        """Claim and process every pending evaluate task. Returns count processed.
+
+        ``stop`` lets a host break mid-drain on SIGTERM. See
+        :meth:`ScriptedPlanner.run_pending`.
+        """
         count = 0
         while True:
+            if stop is not None and stop():
+                return count
             pending = store.list_tasks(kind="evaluate", state="pending")
             if not pending:
                 return count

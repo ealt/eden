@@ -23,7 +23,7 @@ from eden_storage import (
     WrongToken,
 )
 
-from .driver import run_experiment
+from .driver import run_experiment, run_orchestrator_iteration
 from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 __all__ = [
@@ -44,4 +44,5 @@ __all__ = [
     "Store",
     "WrongToken",
     "run_experiment",
+    "run_orchestrator_iteration",
 ]

@@ -8,22 +8,31 @@ requires-python = ">=3.12"
 package = false
 
 [tool.uv.workspace]
-# Add future reference packages here as they are scaffolded; a glob over
-# `reference/packages/*` would pick up the .gitkeep placeholder directories
-# that Phase 0 created for packages landing in later phases.
 members = [
     "reference/packages/eden-contracts",
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
     "reference/packages/eden-storage",
     "reference/packages/eden-wire",
+    "reference/services/_common",
+    "reference/services/evaluator",
+    "reference/services/implementer",
+    "reference/services/orchestrator",
+    "reference/services/planner",
+    "reference/services/task-store-server",
 ]
 
 [tool.uv.sources]
 eden-contracts = { workspace = true }
 eden-dispatch = { workspace = true }
+eden-evaluator-host = { workspace = true }
 eden-git = { workspace = true }
+eden-implementer-host = { workspace = true }
+eden-orchestrator = { workspace = true }
+eden-planner-host = { workspace = true }
+eden-service-common = { workspace = true }
 eden-storage = { workspace = true }
+eden-task-store-server = { workspace = true }
 eden-wire = { workspace = true }
 
 [dependency-groups]
@@ -36,8 +45,14 @@ dev = [
     "pyyaml>=6.0",
     "eden-contracts",
     "eden-dispatch",
+    "eden-evaluator-host",
     "eden-git",
+    "eden-implementer-host",
+    "eden-orchestrator",
+    "eden-planner-host",
+    "eden-service-common",
     "eden-storage",
+    "eden-task-store-server",
     "eden-wire",
 ]
 
@@ -54,6 +69,7 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "reference/packages/*/tests/**" = ["D"]
+"reference/services/*/tests/**" = ["D"]
 # Wire adapters are thin facades over the Store Protocol; the
 # protocol method docstrings are authoritative. B008 is the
 # standard FastAPI pattern for Body/Header/Query defaults.
@@ -67,6 +83,12 @@ include = [
     "reference/packages/eden-git",
     "reference/packages/eden-storage",
     "reference/packages/eden-wire",
+    "reference/services/_common",
+    "reference/services/evaluator",
+    "reference/services/implementer",
+    "reference/services/orchestrator",
+    "reference/services/planner",
+    "reference/services/task-store-server",
 ]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
@@ -80,4 +102,13 @@ testpaths = [
     "reference/packages/eden-git/tests",
     "reference/packages/eden-storage/tests",
     "reference/packages/eden-wire/tests",
+    "reference/services/_common/tests",
+    "reference/services/evaluator/tests",
+    "reference/services/implementer/tests",
+    "reference/services/orchestrator/tests",
+    "reference/services/planner/tests",
+    "reference/services/task-store-server/tests",
+]
+markers = [
+    "e2e: real-subprocess end-to-end tests (forks multiple OS processes)",
 ]

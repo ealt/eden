@@ -1,0 +1,114 @@
+--- docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/1.md	2026-04-24 13:26:34
++++ docs/plans/eden-phase-8b-service-extraction.md	2026-04-24 13:29:06
+@@ -239,10 +239,13 @@
+ 
+ Role-specific args:
+ 
+-- Planner: `--proposals-per-plan N` (default `1`). Controls the
+-  fixed `plan_fn`'s drafted-proposal count per plan task.
++- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N`
++  (default `1`). The fixed `plan_fn` emits proposals with
++  `parent_commits=(base_commit_sha,)`.
+ - Implementer: `--repo-path PATH` (required) + `--fail-every N`
+   (optional, default never). See "Implementer repo model" above.
++  (The implementer reads parents from the proposal; no
++  `--base-commit-sha` flag.)
+ - Evaluator: `--experiment-config PATH` (required, to know the
+   metrics schema and emit matching keys) + `--fail-every N`
+   (optional).
+@@ -274,7 +277,12 @@
+ 
+ - Planner host: fixed `plan_fn` that drafts `--proposals-per-plan`
+   proposals per task (default `1`) with deterministic slugs derived
+-  from the plan task ID.
++  from the plan task ID. Each proposal's `parent_commits` is
++  `(base_commit_sha,)`, where `base_commit_sha` is read from the
++  `--base-commit-sha HEX` CLI flag. (Proposals MUST carry ≥1 parent
++  per [`02-data-model.md`](../../spec/v0/02-data-model.md) §5;
++  threading a concrete SHA through boot-time config is the cleanest
++  way to satisfy that without giving the planner repo access.)
+ - Implementer host: fixed `implement_fn` that writes a real git
+   commit to the shared bare repo (see "Implementer repo model"
+   below) and returns its SHA. `--fail-every N` (default: never
+@@ -314,25 +322,38 @@
+ 
+ - Implementer CLI gains `--repo-path PATH` — the bare repo it
+   writes to. Same path the orchestrator passes to `--repo-path`.
+-- Implementer's scripted flow per task writes an **orphan commit**
+-  (no parents) on a fresh `work/*` branch. This matches the
+-  scripted planner's proposals, which emit empty
+-  `parent_commits=()`, and keeps planner and implementer decoupled
+-  from any shared base-ref convention:
+-  1. Build a tree containing one deterministic blob (filename
+-     derived from the proposal slug, content derived from the
+-     trial ID) via `GitRepo.write_blob` + `write_tree_from_entries`.
+-  2. `commit_tree` with that tree, **no parents**, fixed author /
+-     committer identity, deterministic message derived from the
+-     proposal slug + trial ID.
+-  3. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
+-  4. Submit the new SHA on the implement task.
++- Implementer's scripted flow per task builds a real commit whose
++  parent is the SHA the proposal named:
++  1. Read `proposal.parent_commits` from the store — guaranteed
++     non-empty by the proposal Pydantic binding's
++     `min_length=1` constraint. The scripted planner's fixed
++     profile always emits a single parent, so the implementer's
++     scripted profile uses `proposal.parent_commits[0]` as the
++     single commit parent. (A non-scripted future implementer
++     could honor multi-parent proposals as merge commits;
++     scripted 8b does not.)
++  2. Build a tree containing one deterministic blob (filename
++     derived from the proposal slug, content derived from the
++     trial ID) via `GitRepo.write_blob` +
++     `write_tree_from_entries`.
++  3. `commit_tree` with that tree, `parent=parent_sha` from step
++     1, fixed author / committer identity, deterministic message
++     derived from the proposal slug + trial ID.
++  4. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
++  5. Submit the new SHA on the implement task.
+ 
+-  Because proposals carry `parent_commits=()`, the Integrator's
+-  §1.4 reachability check over `trial.parent_commits` iterates an
+-  empty sequence and trivially passes; the §2 check that
+-  `commit_sha` is reachable from `branch` is satisfied by the
+-  branch ref the implementer just wrote pointing at that SHA.
++  Because the proposal's `parent_commits` is populated and the
++  implementer's new commit descends from it, the Integrator's §1.4
++  reachability check (each `trial.parent_commits[i]` must be
++  reachable from `commit_sha`) and its §2 check (`commit_sha` is
++  reachable from `branch` tip) both hold.
++
++- **Seed commit.** The test harness seeds the bare repo with an
++  empty initial commit before boot and passes its SHA to the
++  planner and implementer as `--base-commit-sha`. (The orchestrator
++  does not need the SHA — it only reads what the store already
++  records.) Seeding is a tiny helper in `reference/services/_common/`
++  (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+ 
+ This keeps the implementer host's write path identical to how the
+ Phase 7b test prebuilds branches, just inside the service loop
+@@ -533,9 +554,11 @@
+    Uses `subprocess.Popen` with `python -m eden_task_store_server`,
+    `python -m eden_planner_host`, etc. The harness:
+ 
+-   - Creates a tempdir; `git init --bare` inside. The implementer
+-     writes orphan commits on `work/*` branches, so no seed commit
+-     is required.
++   - Creates a tempdir; `git init --bare` inside; calls
++     `seed_bare_repo(path)` (the `_common` helper) to write an
++     empty initial commit on `refs/heads/main` and capture its
++     `base_sha` for threading into the planner's
++     `--base-commit-sha`.
+    - Creates a tempdir for the sqlite DB (`--db-path` pointing at a
+      file, not `:memory:` — this exercises the SQLite path end-to-end).
+    - Boots task-store-server on `--port 0`, reads
+@@ -603,7 +626,8 @@
+    URL and shared token. Each waits on readiness probe.
+ 3. Orchestrator seeds plan-1, plan-2, plan-3.
+ 4. Planner's next poll returns the 3 pending plan tasks. It claims
+-   each, drafts `N` proposals (scripted), marks each ready, submits.
++   each, drafts `--proposals-per-plan` proposals (each carrying
++   `parent_commits=(base_commit_sha,)`), marks each ready, submits.
+ 5. Orchestrator's next iteration: finalizes plan tasks (accepts
+    each), dispatches an implement task per ready proposal.
+ 6. Implementer claims each, writes a real commit on

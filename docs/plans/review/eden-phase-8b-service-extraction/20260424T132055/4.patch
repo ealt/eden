@@ -1,0 +1,43 @@
+--- docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/3.md	2026-04-24 13:31:54
++++ docs/plans/eden-phase-8b-service-extraction.md	2026-04-24 13:33:09
+@@ -553,6 +553,15 @@
+    Proves the host's poll loop honors SIGTERM semantics without
+    forking subprocesses.
+ 
++   The implementer-host test suite includes a **multi-parent
++   case**: seed two base commits in a temp bare repo, create a
++   proposal carrying `parent_commits=(sha_a, sha_b)`, dispatch an
++   implement task, and assert the implementer writes a merge
++   commit whose `commit_parents(...)` equals `[sha_a, sha_b]`.
++   This locks in the "implementer honors the full parent list"
++   rule at unit scope; the subprocess E2E exercises only the
++   single-parent path the scripted planner emits.
++
+ 5. **Unit — task-store-server app construction**
+    (`reference/services/task-store-server/tests/test_app.py`). Loads
+    the fixture experiment config, calls
+@@ -778,6 +787,24 @@
+ - **`--plan-tasks N` (integer) vs explicit list.** The integer form
+   is the common case; the explicit-list form exists so tests can
+   pin deterministic IDs that assertions can reference.
++- **Bad `--base-commit-sha` input.** The planner has no repo
++  access, so a nonexistent or malformed SHA passed on the CLI is
++  not caught there; the failure surfaces later when the
++  implementer's `commit_tree` rejects a missing parent object.
++  For 8b this is acceptable — the harness is responsible for
++  passing a SHA it just wrote — but two pragmatic mitigations
++  are in scope:
++  - Syntax check at planner startup: reject anything that is not
++    a 40-hex or 64-hex string with a clear error message.
++    Catches typos and swapped arguments cheaply; does not catch
++    nonexistent SHAs.
++  - Implementer's first-task handling logs the parent resolution
++    error plainly (via `GitRepo`'s subprocess error surface) so
++    the harness / operator sees "parent `<sha>` does not exist in
++    `<repo>`" rather than a generic git failure. No additional
++    mitigation beyond that: validating the SHA's existence would
++    require giving the planner repo access, which the whole
++    design deliberately avoids.
+ - **Scripted `plan_fn` / `implement_fn` / `evaluate_fn` now live in
+   shared code.** Tests that used to inject their own fn still can,
+   by importing and parameterizing — no lock-in. The shared
