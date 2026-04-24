@@ -208,6 +208,23 @@ transactions, outbox patterns, compensating deletes, or any other
 mechanism; the observable invariant is that a reader of any one of
 the three artifacts (ref, field, event) MUST observe the other two.
 
+This invariant applies to completed promotions: once a promotion has
+returned — whether by success or by rollback — the three artifacts
+MUST reconcile, with all three present on success and none present on
+rollback. A promotion that is still running MAY transiently expose
+intermediate states to an external reader (for example, a `trial/*`
+ref written before its compensating delete, or a store-side field
+written before the git ref). The compensating-delete mechanism named
+above creates such states by construction; zero-width multi-artifact
+consistency during a running promotion is not required, and conforming
+implementations MAY rely on compensating deletes rather than two-phase
+commit or outbox patterns.
+
+See [`design-notes/integrator-atomicity.md`](design-notes/integrator-atomicity.md)
+for the rationale behind this reading, the alternatives considered,
+and the conditions under which a future revision of this chapter
+might tighten the invariant.
+
 ## 4. Eval manifest
 
 Each `trial/*` commit MUST carry an **eval manifest** at a fixed path

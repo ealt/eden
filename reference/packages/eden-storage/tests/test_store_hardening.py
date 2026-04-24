@@ -30,6 +30,7 @@ from eden_storage import (
     EvaluateSubmission,
     IllegalTransition,
     ImplementSubmission,
+    InvalidPrecondition,
     PlanSubmission,
     Store,
 )
@@ -668,3 +669,42 @@ class TestMetricsSchemaValidationIndependentOfSuccess:
         errored = [e for e in store.events() if e.type == "trial.errored"]
         assert len(errored) == 1
         assert errored[0].data["trial_id"] == "tr-1"
+
+
+class TestPublicValidateMetrics:
+    """``Store.validate_metrics`` public entry point for submit-time and integration-time checks."""
+
+    def test_passes_for_conforming_metrics(
+        self, make_store: Callable[..., Store]
+    ) -> None:
+        store = make_store(
+            "exp-vm",
+            metrics_schema=MetricsSchema({"score": "integer", "latency": "real"}),
+        )
+        store.validate_metrics({"score": 42, "latency": 1.5})
+
+    def test_rejects_unknown_key(
+        self, make_store: Callable[..., Store]
+    ) -> None:
+        store = make_store(
+            "exp-vm",
+            metrics_schema=MetricsSchema({"score": "integer"}),
+        )
+        with pytest.raises(InvalidPrecondition):
+            store.validate_metrics({"score": 1, "extra": 2})
+
+    def test_rejects_wrong_type(
+        self, make_store: Callable[..., Store]
+    ) -> None:
+        store = make_store(
+            "exp-vm",
+            metrics_schema=MetricsSchema({"score": "integer"}),
+        )
+        with pytest.raises(InvalidPrecondition):
+            store.validate_metrics({"score": "not-an-int"})
+
+    def test_no_op_without_schema(
+        self, make_store: Callable[..., Store]
+    ) -> None:
+        store = make_store("exp-vm")  # no metrics_schema
+        store.validate_metrics({"anything": "goes", "nested": {"ok": True}})

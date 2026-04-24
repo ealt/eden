@@ -1,0 +1,16 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-7b-integrator/20260423T175422/3.md	2026-04-23 18:05:18
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-7b-integrator.md	2026-04-23 18:06:26
+@@ -9,8 +9,11 @@
+ produces a single-commit squash whose tree is the worker-tip tree plus
+ exactly the eval-manifest file at `.eden/trials/<trial_id>/eval.json`,
+ writes the `trial/*` ref, writes `trial_commit_sha` on the trial, and
+-appends `trial.integrated` — atomically with respect to in-process
+-observers.
++appends `trial.integrated`. Coupling across git and the store is
++handled by compensating deletes on rollback — the reference
++implementation reads §3.4's cross-artifact invariant as
++post-reconciliation, as justified in the "Atomicity design" section
++below.
+ 
+ See [`docs/roadmap.md`](../roadmap.md) §Phase 7 for context. Phase 7a
+ is shipped (PR #12, merged `0fd58bd`).

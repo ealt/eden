@@ -1,0 +1,236 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-7b-integrator/20260423T175422/0.md	2026-04-23 17:54:22
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-7b-integrator.md	2026-04-23 17:59:26
+@@ -33,6 +33,9 @@
+ | `reference/packages/eden-git/pyproject.toml` | Add `eden-contracts` + `eden-storage` workspace dependencies |
+ | `reference/packages/eden-git/src/eden_git/__init__.py` | Re-export `Integrator`, `IntegratorError`, subclasses |
+ | `reference/packages/eden-git/README.md` | Integrator surface + §3.2 / §3.4 contract notes |
++| `reference/packages/eden-storage/src/eden_storage/protocol.py` | Add `validate_metrics(metrics)` to `Store` — public entry point to the existing `_validate_metrics`, consumed by the integrator for §2 MUST-NOT-promote enforcement |
++| `reference/packages/eden-storage/src/eden_storage/_base.py` | Add public `validate_metrics` method; thin wrapper over existing `_validate_metrics` |
++| `reference/packages/eden-storage/tests/test_store_metrics_validation.py` | Tests for the new public entry point (parity with submit-time behavior across both backends) |
+ | `CLAUDE.md` (and symlink `AGENTS.md`) | Phase-7b completion paragraph |
+ | `docs/roadmap.md` | Mark 7b complete |
+ 
+@@ -103,10 +106,25 @@
+ 3. **Promotion preconditions (§2).** Verify:
+    - `trial.status == "success"` — else `NotReadyForIntegration`.
+    - `trial.commit_sha is not None` — else `NotReadyForIntegration`.
+-   - `trial.branch is not None` and the branch resolves to
+-     `trial.commit_sha` (§2 second bullet). Raise
+-     `NotReadyForIntegration` if the branch does not exist or resolves
+-     to a different SHA.
++   - `trial.branch is not None`, the branch exists, and
++     `trial.commit_sha` is reachable from the branch tip:
++     `repo.is_ancestor(trial.commit_sha, repo.resolve_ref(trial.branch))`
++     OR `repo.resolve_ref(trial.branch) == trial.commit_sha`. This
++     matches §2 bullet 2 literally ("`commit_sha` resolves to a commit
++     on the trial's `branch`") — the branch tip need not equal
++     `commit_sha`; additional commits pushed to `work/*` after
++     evaluation are tolerated, they simply are not part of the squash
++     tree. Raise `NotReadyForIntegration` if the branch does not exist
++     or `commit_sha` is not reachable from it.
++   - **Metrics validate against `metrics_schema` (§2 last paragraph).**
++     Call `store.validate_metrics(trial.metrics)`. Raises
++     `InvalidPrecondition` on violation; the integrator surfaces this
++     as `NotReadyForIntegration` and produces no `trial/*` commit, no
++     `trial_commit_sha` write, no `trial.integrated` event (§5.1).
++     This is defense-in-depth: the orchestrator already validates at
++     the evaluate terminal, but §2 is normative ("MUST NOT promote a
++     trial whose `metrics` do not validate"), so the integrator
++     enforces it directly rather than relying on the upstream guard.
+ 4. **Proposal lookup.** `proposal = store.read_proposal(trial.proposal_id)`.
+    The branch name uses `proposal.slug` per §3.1.
+ 5. **Reachability check (§1.4).** For each parent in
+@@ -149,44 +167,71 @@
+ ### Why this ordering for atomicity (§3.4)
+ 
+ Three observable artifacts: the git ref, the `trial_commit_sha` field,
+-and the `trial.integrated` event. The spec requires a reader of any
+-one to observe the other two.
++and the `trial.integrated` event. §3.4 states the invariant as
++"a reader of any one of the three artifacts MUST observe the other
++two" and explicitly permits "store-level transactions, outbox
++patterns, compensating deletes, or any other mechanism." The chosen
++order uses compensating deletes, which the spec calls out by name.
+ 
+-- **[write commit object, create ref, store.integrate_trial]** with
+-  compensating ref-delete is the chosen order. Rationale:
+-  - Writing the commit object (step 8) is content-addressed; the
+-    object exists but nothing points at it. No reader can observe it
+-    via a ref. It is GC-safe (`git gc` cleans unreachable objects).
+-  - `create_ref` with zero-oid is itself a CAS; if concurrent writers
+-    attempt the same branch, only one wins. This provides the Phase
+-    7b single-writer discipline mechanically on top of the §1.2
+-    sole-integrator rule.
+-  - The store write (`integrate_trial`) is the atomic step that lands
+-    the field + event together.
+-  - If the store write fails, `delete_ref` with expected-old-sha
+-    rolls back the ref without touching the committed object.
+-- **Alternate orderings rejected:**
+-  - `[store.integrate_trial, create_ref]`: if ref-create fails, the
+-    store already committed both field and event. The store has no
+-    "undo event" path — events are append-only per chapter 5. The
+-    spec-violating state (field set, event written, ref absent) would
+-    require operator intervention, strictly worse than the chosen
+-    order's "ref set, field absent, event absent" intermediate state.
+-  - Outbox pattern: deferred to Phase 8 when cross-process atomicity
+-    matters. In-process, the synchronous execution of the three steps
+-    within a single Python call means no intermediate state is
+-    observable by other callers of the same `Store` / `GitRepo`
+-    instance.
++**Chosen order: [write commit object, create ref, store.integrate_trial]**
++with compensating ref-delete on store failure.
+ 
++Rationale for each step:
++
++1. **Write commit object** (step 8 of the algorithm). Content-addressed;
++   the object exists but nothing points at it. Unreachable git objects
++   are invisible to every reader who traverses refs — the normal reader
++   path. `git gc` prunes them on its own schedule. Writing the object
++   first has no observable effect.
++2. **Create ref** (step 9). `create_ref` with zero-oid is a CAS: if the
++   ref already exists, `GitError` propagates. This gives the sole-writer
++   discipline (§1.2) a mechanical guard on top of the protocol rule.
++3. **`store.integrate_trial`** (step 10). The store commits
++   `trial_commit_sha` and the `trial.integrated` event atomically. On
++   success, all three artifacts are observable. On failure, the ref
++   exists but the other two do not — the compensating delete restores
++   the pre-integration state.
++
++**On compensating-delete failure** — if step 10 raises and
++`repo.delete_ref(...)` also raises, neither rollback path succeeded.
++The integrator raises `AtomicityViolation` wrapping both causes. This
++is the one state §3.4 explicitly acknowledges as requiring
++implementation-defined mitigation; the wrapped exception documents
++exactly which ref is dangling so an operator can delete it manually.
++
++**Transient-window note.** Between steps 9 and 10 the ref exists but
++the trial field/event do not. The §1.2 sole-integrator rule means no
++*protocol-conforming* concurrent reader of `trial/*` within the in-
++process reference implementation observes this window under the
++dispatch loop's sequential driver (`_promote_successful_trials`).
++External readers (e.g. `git log trial/*` from a shell) MAY transiently
++observe the ref before the field/event land; per §3.4's permission for
++compensating deletes, such a reader would see the ref disappear on
++rollback. The post-stabilization invariant (§3.4 closing sentence) is
++what every subsequent reader observes. The reference implementation
++does not attempt stronger instantaneous consistency, because no
++mechanism permitted by §3.4 (outbox, compensating delete, store-level
++transaction against a separate git process) can give a zero-width
++window against external filesystem readers without coordination that
++the spec does not require.
++
++**Alternate orderings rejected:**
++
++- `[store.integrate_trial, create_ref]`. If ref-create fails after the
++  store committed, both the field and the event are already written
++  and events are append-only per chapter 5. The rollback path would
++  need an "undo integration" event, which chapter 5 does not define.
++  Worse than the chosen order's single compensating ref-delete.
++- Outbox pattern with a dedicated outbox table in the store. Would
++  give stronger cross-process guarantees but requires extending the
++  `Store` protocol and all backends with outbox read/claim/ack
++  operations. Disproportionate scope increase for Phase 7b; revisit
++  in Phase 8 when the wire-protocol introduces cross-process
++  readers that actually benefit from it. §3.4 explicitly lists outbox
++  as *one* permitted mechanism, not *the* required mechanism.
++
+ ### What the integrator does NOT do
+ 
+-- **Does not re-validate metrics** against the experiment's
+-  `metrics_schema` (§2, §5.1 permit but do not require this). The
+-  orchestrator's `evaluate` terminal already enforces schema
+-  conformance via `_validate_metrics` in `eden-storage/_base.py`;
+-  re-validating at integration time would be defense-in-depth against
+-  store corruption that is out of scope for the reference impl.
+-  Documented as a deliberate non-goal.
+ - **Does not observe events or poll.** The integrator is a passive
+   function: callers drive `integrate(trial_id)` when they decide.
+   The dispatch loop (`eden_dispatch.driver`) already has the
+@@ -205,6 +250,48 @@
+   shape minimal now avoids inventing a submission field ahead of
+   spec demand.
+ 
++## New `Store.validate_metrics` method
++
++The integrator needs access to the experiment's `metrics_schema` to
++enforce §2's "MUST NOT promote a trial whose `metrics` do not
++validate." The schema is a `Store` construction parameter (private
++`self._metrics_schema`) and `_validate_metrics` already implements
++the check for submit-time validation. Phase 7b promotes it to a
++public `Store` method:
++
++```python
++# In Store Protocol (reference/packages/eden-storage/src/eden_storage/protocol.py)
++def validate_metrics(self, metrics: dict[str, Any]) -> None:
++    """Validate metrics against the experiment's metrics_schema.
++
++    Raises ``InvalidPrecondition`` on violation; returns None on pass.
++    No-op when the store was constructed without a ``metrics_schema``.
++    Chapter 8 §4 (storage) and chapter 6 §2 (integrator) both
++    reference this guard; this is the public entry point for both.
++    """
++    ...
++```
++
++`_base.py` exposes the public method as a thin wrapper:
++
++```python
++def validate_metrics(self, metrics: dict[str, Any]) -> None:
++    self._validate_metrics(metrics)
++```
++
++**Why on Store, not on the integrator or a separate validator
++object.** The schema lives in the store; exposing a standalone
++validator would require duplicating the construction path that wires
++the schema in, for no gain. Both submit-time and integration-time
++validation pass through the same code, which is the invariant §2
++actually wants (the two validators agree by construction).
++
++**Parameter choice.** `metrics: dict[str, Any]` rather than
++`trial_id: str`. The integrator already has the `Trial` object loaded
++in step 1; passing its `metrics` dict through avoids a redundant
++store round-trip and keeps the validator unit-testable without a
++trial fixture.
++
+ ## Eval-manifest builder (`_manifest.py`)
+ 
+ Separate module so manifest shape has its own test target. Signature:
+@@ -329,8 +416,28 @@
+ - `status=starting`, `status=error`, `status=eval_error` each raise
+   `NotReadyForIntegration`. No ref, no field, no event.
+ - `commit_sha=None` → `NotReadyForIntegration`.
+-- `branch` resolves to a different SHA → `NotReadyForIntegration`.
++- `branch` does not exist → `NotReadyForIntegration`.
++- `branch` resolves to a SHA unrelated to `trial.commit_sha` (not an
++  ancestor either direction) → `NotReadyForIntegration`.
++- **`branch` tip is equal to `commit_sha`** → promotion succeeds
++  (edge of §2 bullet 2 where the branch hasn't advanced).
++- **`branch` tip is a descendant of `commit_sha`** → promotion
++  succeeds (§2 "commit_sha resolves to a commit on the branch" is
++  satisfied when commit_sha is reachable from branch tip, per plan
++  step 3). Asserts the squash tree derives from `commit_sha`, not
++  from the branch tip — extra commits on the branch are excluded
++  from the squash.
+ 
++**Metrics re-validation (§2, §5.1):**
++
++- A trial with metrics containing a key absent from the experiment's
++  `metrics_schema` — seeded directly via store internals (bypassing
++  submit-time validation) — raises `NotReadyForIntegration` when
++  passed to `integrate`. Assert no ref, no field, no event.
++- A trial with metrics of the wrong declared type raises similarly.
++- A store constructed without a `metrics_schema` integrates trials
++  with arbitrary metrics (no-op validator path).
++
+ **Atomic rollback (§3.4):**
+ 
+ - Monkey-patch `store.integrate_trial` to raise. Run
+@@ -371,8 +478,6 @@
+ 
+ - Cross-process atomicity / outbox (Phase 8).
+ - Remote push to Gitea / GitHub (Phase 10).
+-- Metrics re-validation at integration time (§5.1 — MAY, not MUST;
+-  orchestrator already enforces).
+ - Evaluator identity + artifact-inventory optional fields (§4.3,
+   §4.4).
+ - Work-branch retention policy (§1.3 — deployment concern).

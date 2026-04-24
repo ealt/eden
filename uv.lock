@@ -109,6 +109,16 @@ requires-dist = [
 name = "eden-git"
 version = "0.0.1"
 source = { editable = "reference/packages/eden-git" }
+dependencies = [
+    { name = "eden-contracts" },
+    { name = "eden-storage" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-storage", editable = "reference/packages/eden-storage" },
+]
 
 [[package]]
 name = "eden-storage"

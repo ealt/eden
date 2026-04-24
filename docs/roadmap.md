@@ -246,12 +246,22 @@ canonical records, squashed trial commits with eval manifests.
   management. `commit.gpgsign=false` and explicit
   `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars per invocation isolate
   integrator runs from the user's ambient git config.
-- **7b** — Integrator flow: observe `trial.succeeded`; assemble the
-  single-commit squash per §3.2 (worker-tip tree plus
-  `.eden/trials/<id>/eval.json`); write `refs/heads/trial/<id>-<slug>`,
-  `trial_commit_sha`, and `trial.integrated` atomically per §3.4.
+- **7b — complete.** `eden_git.Integrator` composes `GitRepo` with a
+  `Store` to promote `success` trials: builds the §3.2 single-commit
+  squash, writes the `refs/heads/trial/<id>-<slug>` ref via zero-oid
+  CAS, routes the store's atomic `integrate_trial` write for
+  `trial_commit_sha` + `trial.integrated`, and compensating-deletes
+  the ref on store-side failure per §3.4. Re-invocation on a promoted
+  trial is a verified no-op (§5.3). §2 preconditions, §1.4
+  reachability, and metrics validity are all enforced via the new
+  public `Store.validate_metrics`. Spec §3.4 was tightened to make
+  the post-promotion atomicity reading explicit; rationale in
+  [`spec/v0/design-notes/integrator-atomicity.md`](../spec/v0/design-notes/integrator-atomicity.md).
+  `eden-dispatch.run_experiment` now takes
+  `integrate_trial: Callable[[str], object]` in place of the Phase 5
+  placeholder factory.
 
-**Chunks:** 7a one chunk (complete); 7b one chunk.
+**Chunks:** 7a one chunk (complete); 7b one chunk (complete).
 
 **Non-goals:** Gitea / remote hosts (Phase 10); multi-parent proposals
 (deferred beyond v0).

@@ -1,0 +1,5 @@
+No further findings.
+
+The updated replay path in [integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:259) now takes the safe route: once the worker commit is pruned, `_check_idempotent()` raises `CorruptIntegrationState` instead of silently accepting the replay, and the new tests in [test_integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/tests/test_integrator.py:853) cover both the pruned-worker case and the corrupt-tree-with-extra-path case. I reran those focused tests and repeated the earlier corruption probe; it now rejects as expected.
+
+Across the five review levels, this round looks good: the change is coherent with the stricter §5.3 reading, integrates cleanly with the existing error model, and closes the correctness hole from the prior round. The main residual tradeoff is now explicit rather than hidden: deployments that want replay to remain idempotent after eager `work/*` cleanup will need to retain the worker commit/tree somehow.

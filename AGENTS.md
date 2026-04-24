@@ -37,20 +37,40 @@ rollback. The artifact store (§5), `subscribe` streaming (§2.1),
 and Postgres remain non-goals for Phase 6; they land in Phase 10 /
 Phase 8 / later respectively.
 
-**Phase 7a complete.** The `eden-git` package ships the subprocess
-wrapper the Phase 7b integrator composes into §3.2 squash commits.
-`GitRepo` covers ref/object inspection (`rev_parse`, `resolve_ref`,
+**Phase 7b complete.** `eden-git` now also ships the `Integrator`
+that composes `GitRepo` with a `Store` to promote `success` trials
+per chapter 6. Given a trial with a recorded `commit_sha`,
+`Integrator.integrate` builds the §3.2 single-commit squash
+(worker-tip tree plus the eval manifest at
+`.eden/trials/<trial_id>/eval.json`), writes the
+`refs/heads/trial/<id>-<slug>` ref via zero-oid CAS, and routes the
+store's atomic `integrate_trial` write for `trial_commit_sha` and
+the `trial.integrated` event. On store failure the ref is
+compensatingly deleted per §3.4, matching the post-promotion
+reading recorded in
+[`spec/v0/design-notes/integrator-atomicity.md`](spec/v0/design-notes/integrator-atomicity.md).
+Re-invocation on an already-promoted trial is a verified no-op
+(§5.3): ref SHA, squash tree shape, and manifest bytes are
+re-derived and compared. §2 preconditions (`status == success`,
+`commit_sha` reachable from `branch` tip), §1.4 reachability, and
+§2 metrics validity are all enforced up front; the new public
+`Store.validate_metrics` closes the §2 MUST-NOT-promote clause even
+if upstream orchestrator validation were bypassed. The spec itself
+was tightened at §3.4 to make the post-promotion reading explicit.
+`eden-dispatch.run_experiment` now takes an `integrate_trial:
+Callable[[str], object]` hook in place of the Phase 5
+placeholder `integrator_commit_factory` parameter. Eval-manifest
+bytes are deterministic (sorted keys, `indent=2`, trailing newline)
+to make §5.3 idempotency re-derivation stable.
+
+**Phase 7a complete.** `eden-git`'s subprocess wrapper ships
+`GitRepo` covering ref/object inspection (`rev_parse`, `resolve_ref`,
 `list_refs`, `is_ancestor`, `ls_tree`), plumbing (`write_blob`,
 `write_tree_from_entries`, `write_tree_with_file`, `commit_tree`,
 `create_ref`, `update_ref`), worktree management, and branch management.
 Author identity and `commit.gpgsign=false` are pinned per-invocation so
-the user's ambient git config never leaks into integrator commits.
-Tests (36, all green against a real `git` subprocess on `tmp_path`)
-cover every primitive. Phase 7b — the integrator flow — lands next:
-observing `trial.succeeded`, assembling the trial/* commit per §3.2,
-and writing ref + `trial_commit_sha` + `trial.integrated` atomically
-per §3.4. See [`docs/roadmap.md`](docs/roadmap.md) for the full
-13-phase plan.
+the user's ambient git config never leaks into integrator commits. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
 
 ## Commands
 

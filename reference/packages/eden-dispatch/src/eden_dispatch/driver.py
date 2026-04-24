@@ -41,7 +41,7 @@ def run_experiment(
     plan_task_ids: Sequence[str],
     implement_task_id_factory: Callable[[], str],
     evaluate_task_id_factory: Callable[[], str],
-    integrator_commit_factory: Callable[[str], str] | None = None,
+    integrate_trial: Callable[[str], object] | None = None,
 ) -> None:
     """Drive an experiment to quiescence through the three workers.
 
@@ -50,9 +50,13 @@ def run_experiment(
     implement tasks → run implementer → finalize → dispatch evaluate
     tasks → run evaluator → finalize. The loop terminates when a full
     pass over every role and every orchestrator step produces no
-    progress. If ``integrator_commit_factory`` is supplied, any trial
-    that reaches ``success`` with no ``trial_commit_sha`` yet is
-    promoted at the end of each pass.
+    progress.
+
+    ``integrate_trial``, if supplied, is called once per ``success``
+    trial that still has no ``trial_commit_sha``. Typically this is
+    ``Integrator.integrate`` from ``eden_git``, which handles the full
+    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    event atomically). The return value is ignored.
     """
     for task_id in plan_task_ids:
         store.create_plan_task(task_id)
@@ -67,8 +71,8 @@ def run_experiment(
         progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
         progress |= evaluator.run_pending(store) > 0
         progress |= _finalize_submitted(store, kind="evaluate")
-        if integrator_commit_factory is not None:
-            progress |= _promote_successful_trials(store, integrator_commit_factory)
+        if integrate_trial is not None:
+            progress |= _promote_successful_trials(store, integrate_trial)
         if not progress:
             return
 
@@ -119,13 +123,13 @@ def _dispatch_evaluate_tasks(
 
 
 def _promote_successful_trials(
-    store: Store, factory: Callable[[str], str]
+    store: Store, integrate_trial: Callable[[str], object]
 ) -> bool:
     progress = False
     for trial in store.list_trials(status="success"):
         if trial.trial_commit_sha is not None:
             continue
-        store.integrate_trial(trial.trial_id, factory(trial.trial_id))
+        integrate_trial(trial.trial_id)
         progress = True
     return progress
 

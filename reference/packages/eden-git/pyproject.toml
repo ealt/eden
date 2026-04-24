@@ -5,7 +5,10 @@ description = "Reference git primitives for the EDEN integrator (spec/v0 chapter
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "eden-contracts",
+    "eden-storage",
+]
 
 [build-system]
 requires = ["hatchling"]
