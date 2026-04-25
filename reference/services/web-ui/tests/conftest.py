@@ -208,6 +208,99 @@ def seed_implement_task(
     return task_id, proposal_id
 
 
+def seed_evaluate_task(
+    store: InMemoryStore,
+    *,
+    slug: str = "demo",
+    trial_id: str = "trial-eval",
+    artifacts_dir: Path | None = None,
+    artifact_text: str = "rationale",
+    trial_artifact_path: Path | None = None,
+    trial_description: str | None = None,
+    commit_sha: str = "b" * 40,
+) -> tuple[str, str, str]:
+    """Seed a starting trial (with commit_sha) + a pending evaluate task.
+
+    Drives the implementer-accept flow so the trial is in
+    ``starting`` with ``commit_sha`` set, the prerequisite for
+    ``create_evaluate_task`` per chapter 04 §3.1. The fixture
+    returns ``(eval_task_id, trial_id, proposal_id)``.
+
+    Trial-side context (``description`` / ``artifacts_uri``) is
+    optional — they're set by the implementer per
+    ``spec/v0/03-roles.md`` §3.2 step 3 and the evaluator module
+    surfaces them on the draft page.
+    """
+    from eden_contracts import Proposal, Trial
+    from eden_storage import ImplementSubmission
+
+    proposal_id = f"proposal-{slug}"
+    if artifacts_dir is not None:
+        path = artifacts_dir / f"{proposal_id}.md"
+        path.write_text(artifact_text)
+        artifacts_uri = f"file://{path.resolve()}"
+    else:
+        artifacts_uri = f"https://example.invalid/{proposal_id}.md"
+    proposal = Proposal(
+        proposal_id=proposal_id,
+        experiment_id=store.experiment_id,
+        slug=slug,
+        priority=1.0,
+        parent_commits=["a" * 40],
+        artifacts_uri=artifacts_uri,
+        state="drafting",
+        created_at="2026-04-24T11:00:00Z",
+    )
+    store.create_proposal(proposal)
+    store.mark_proposal_ready(proposal_id)
+    impl_task_id = f"implement-{slug}"
+    store.create_implement_task(impl_task_id, proposal_id)
+    impl_claim = store.claim(impl_task_id, "impl-w")
+
+    from typing import Any
+
+    trial_kwargs: dict[str, Any] = {
+        "trial_id": trial_id,
+        "experiment_id": store.experiment_id,
+        "proposal_id": proposal_id,
+        "status": "starting",
+        "parent_commits": ["a" * 40],
+        "branch": f"work/{slug}-{trial_id}",
+        "started_at": "2026-04-24T12:00:00Z",
+    }
+    if trial_description is not None:
+        trial_kwargs["description"] = trial_description
+    if trial_artifact_path is not None:
+        trial_kwargs["artifacts_uri"] = f"file://{trial_artifact_path.resolve()}"
+    store.create_trial(Trial(**trial_kwargs))
+
+    store.submit(
+        impl_task_id,
+        impl_claim.token,
+        ImplementSubmission(status="success", trial_id=trial_id, commit_sha=commit_sha),
+    )
+    store.accept(impl_task_id)
+
+    eval_task_id = f"evaluate-{slug}"
+    store.create_evaluate_task(eval_task_id, trial_id)
+    return eval_task_id, trial_id, proposal_id
+
+
+def get_evaluate_submission(store: InMemoryStore, task_id: str):
+    """Read and type-narrow an evaluate submission for evaluator-module tests.
+
+    Pyright treats ``Store.read_submission`` as returning the
+    ``Submission`` union; tests that need to access
+    ``EvaluateSubmission``-specific fields use this helper to
+    narrow.
+    """
+    from eden_storage import EvaluateSubmission
+
+    sub = store.read_submission(task_id)
+    assert isinstance(sub, EvaluateSubmission)
+    return sub
+
+
 def get_csrf(client: TestClient) -> str:
     """Decode the active session cookie and return its CSRF token.
 

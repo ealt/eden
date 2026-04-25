@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import auth as auth_routes
+from .routes import evaluator as evaluator_routes
 from .routes import implementer as implementer_routes
 from .routes import index as index_routes
 from .routes import planner as planner_routes
@@ -82,6 +83,7 @@ def make_app(
     app.include_router(index_routes.router)
     app.include_router(auth_routes.router)
     app.include_router(planner_routes.router)
+    app.include_router(evaluator_routes.router)
     if repo is not None:
         app.include_router(implementer_routes.router)
 

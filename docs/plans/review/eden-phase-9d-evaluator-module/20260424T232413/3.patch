@@ -1,0 +1,43 @@
+--- docs/plans/review/eden-phase-9d-evaluator-module/20260424T232413/2.md	2026-04-24 23:37:45
++++ docs/plans/eden-phase-9d-evaluator-module.md	2026-04-24 23:39:29
+@@ -132,9 +132,14 @@
+ `routes/_helpers.read_proposal_rationale(proposal, artifacts_dir)`
+ takes a `Proposal` argument; chunk 9d wants the **same security
+ envelope** (file://, contained in `--artifacts-dir`, ≤ 1 MiB) for
+-**three** sources: the proposal rationale, the trial's
+-`description` (when set), and the trial's `artifacts_uri` (when
+-set). The cleanest path is to generalize the existing helper:
++**two URI-backed sources**: the proposal's rationale (via
++`proposal.artifacts_uri`) and the trial's `artifacts_uri` (when
++set by the implementer per §3.2 step 3). The trial's
++`description` is **not** URI-backed — it's free-form text stored
++directly on the trial — and is rendered through Jinja2's default
++autoescape; it does not go through this helper.
++
++The cleanest path is to generalize the existing helper:
+ 
+ - Add a new internal helper
+   `_read_inline_artifact(uri: str | None, artifacts_dir: Path) -> str | None`
+@@ -153,10 +158,10 @@
+ chunk 9d, identical envelope. The Phase 0 "no new helper"
+ language was incorrect; chunk 9d ships the
+ `_read_inline_artifact` extraction. Tests in
+-`test_evaluator_security.py` cover trial-side `file://`
+-confinement, the > 1 MiB cap, and unreadable / non-text inputs
+-explicitly (so we don't trust the symmetric proposal-side
+-coverage from chunk 9c).
++`test_evaluator_security.py` (§I.4) cover trial-side `file://`
++confinement, traversal escape, non-`file://` schemes, the > 1 MiB
++cap, and directory inputs explicitly — we don't trust the
++symmetric proposal-side coverage from chunk 9c to flow through.
+ 
+ The **trial's own** `artifacts_uri` and `description` MAY be set by
+ the implementer on a successful `starting` trial (per
+@@ -432,7 +437,6 @@
+ | IllegalTransition, read-back finds state==pending | sweeper reclaimed our claim before our submit committed | orphan, `recovery_kind="auto"` | none |
+ | IllegalTransition, read-back finds equivalent prior submission | our prior attempt committed; orchestrator already terminalized | success page (treated as `ok`) | none |
+ | IllegalTransition, read-back finds non-equivalent submission | a different submission won the race; we lost | orphan, `recovery_kind="conflict"` | operator triage |
+-| IllegalTransition, read-back finds state==claimed by us | impossible per spec (state would be `claimed` only if our token still on it, which would have made the submit succeed); rendered as transport for safety | orphan, `recovery_kind="transport"` | operator investigation |
+ | ConflictingResubmission | a different submission won the race for this task | orphan, `recovery_kind="conflict"` | operator triage; the system's record stands |
+ | transport, retry exhausted, claim still ours | network glitch persisted; claim TTL will eventually reclaim | orphan, `recovery_kind="auto"` | wait for TTL, or operator-side reclaim |
+ | transport, retry exhausted, server committed equivalent | "submitted, response lost" sub-case A | success page (treated as `ok`) | none |

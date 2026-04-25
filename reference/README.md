@@ -6,7 +6,7 @@ This directory contains one complete implementation of the EDEN protocol. It is 
 
 ## Status
 
-Through Phase 9 chunk 9c: the reference Web UI service hosts the planner module **and** the implementer module — a human can sign in, claim either a plan or an implement task, drive it through a browser, and submit. Implementer-side, the user does git work in their own checkout, pushes their tip commit to the bare repo (the `--repo-path` the UI service is configured against), then enters the resulting `commit_sha`; the UI verifies §3.3 reachability via `eden_git.GitRepo.commit_exists` + `is_ancestor`, creates the trial in `starting`, writes the canonical `work/<slug>-<trial_id>` ref, and submits with retry-before-orphan + committed-state read-back. Submissions round-trip through `eden_wire.StoreClient`. The implementer module is gated on `--repo-path`; planner-only deployments stay supported by omitting the flag.
+Through Phase 9 chunk 9d: the reference Web UI service hosts the planner module, the implementer module, **and** the evaluator module — a human can sign in, claim a plan, implement, or evaluate task, drive it through a browser, and submit. Implementer-side, the user does git work in their own checkout, pushes their tip commit to the bare repo, then enters the resulting `commit_sha`; the UI verifies §3.3 reachability, creates the trial in `starting`, writes the canonical `work/<slug>-<trial_id>` ref, and submits with retry-before-orphan + committed-state read-back. Evaluator-side, the user inspects the trial out-of-band (cloning the bare repo and checking out `commit_sha`), then types metrics into a form generated from the experiment's `metrics_schema`; the UI parses each metric per its declared `MetricType` (with the spec-§1.3 wire-legal `1.0` accepted for `integer` and non-finite floats rejected for `real`), then submits with retry-before-orphan + read-back where `IllegalTransition` falls through to read-back so a "we won, response lost" sequence classifies as success rather than orphan. Submissions round-trip through `eden_wire.StoreClient`. The implementer module is gated on `--repo-path`; planner- and evaluator-only deployments stay supported by omitting it.
 
 ### Services
 
@@ -19,7 +19,7 @@ Through Phase 9 chunk 9c: the reference Web UI service hosts the planner module 
 | [`services/implementer/`](services/implementer/) | Implementer worker host (standalone process; writes real git commits) | Phase 5 → Phase 8b |
 | [`services/evaluator/`](services/evaluator/) | Evaluator worker host (standalone process) | Phase 5 → Phase 8b |
 | [`services/control-plane/`](services/control-plane/) | Experiment registration, lease issuance | Phase 12 |
-| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner + implementer modules (BFF over `StoreClient`; implementer is opt-in via `--repo-path`); evaluator/observability arrive in 9d–9e | Phase 9 chunks 1 + 9c |
+| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner + implementer + evaluator modules (BFF over `StoreClient`; implementer is opt-in via `--repo-path`); observability/admin views arrive in 9e | Phase 9 chunks 1 + 9c + 9d |
 
 ### Packages
 

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}EDEN — evaluator submitted{% endblock %}
+{% block main %}
+<h1>submitted</h1>
+<p>Task <code>{{ task_id }}</code> submitted with status <code>{{ status }}</code>.</p>
+<dl>
+    <dt>trial_id</dt><dd><code>{{ trial_id }}</code></dd>
+    {% if metrics %}
+    <dt>metrics</dt>
+    <dd>
+        <ul>
+        {% for name, value in metrics.items() %}
+            <li><code>{{ name }}</code> = <code>{{ value }}</code></li>
+        {% endfor %}
+        </ul>
+    </dd>
+    {% endif %}
+    {% if artifacts_uri %}
+    <dt>artifacts_uri</dt><dd><code>{{ artifacts_uri }}</code></dd>
+    {% endif %}
+</dl>
+<p><a href="/evaluator/">back to evaluator list</a></p>
+{% endblock %}

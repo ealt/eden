@@ -66,25 +66,26 @@ def csrf_ok(session: Session, presented: str | None) -> bool:
     return verify_csrf(session, presented)
 
 
-def read_proposal_rationale(
-    proposal: Proposal, artifacts_dir: Path
+def _read_inline_artifact(
+    uri: str | None, artifacts_dir: Path
 ) -> str | None:
-    """Return the rationale text iff the artifact is safely confined.
+    """Return the artifact text iff ``uri`` resolves inside ``artifacts_dir``.
 
-    Per the §A.1 trust boundary in
-    ``docs/plans/eden-phase-9c-implementer-module.md``: a proposal's
-    ``artifacts_uri`` may point anywhere; the UI must not render
-    arbitrary local files. The rule is:
+    Trust-boundary helper used by both the proposal rationale
+    rendering (chunk 9c §A.1) and the trial-side artifact rendering
+    (chunk 9d §A.1):
 
     - Only ``file://`` URIs are eligible. Any other scheme returns
       ``None`` so the template renders the URI as a plain link.
     - The resolved path MUST be contained within
       ``artifacts_dir.resolve()``. ``..``-traversal and absolute
       escapes are rejected via ``Path.is_relative_to``.
-    - Files larger than 1 MiB return ``None`` (the template renders
-      a "rationale too large" note + link).
+    - Non-file inodes (directories, sockets) return ``None``.
+    - Files larger than 1 MiB return ``None``.
     """
-    parsed = urlparse(proposal.artifacts_uri)
+    if uri is None:
+        return None
+    parsed = urlparse(uri)
     if parsed.scheme != "file":
         return None
     raw_path = unquote(parsed.path)
@@ -110,3 +111,22 @@ def read_proposal_rationale(
         return resolved.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+
+
+def read_proposal_rationale(
+    proposal: Proposal, artifacts_dir: Path
+) -> str | None:
+    """Return the rationale text iff the artifact is safely confined."""
+    return _read_inline_artifact(proposal.artifacts_uri, artifacts_dir)
+
+
+def read_trial_artifact(
+    artifacts_uri: str | None, artifacts_dir: Path
+) -> str | None:
+    """Return the trial's inline artifact text iff safely confined.
+
+    Sibling to :func:`read_proposal_rationale` for the
+    chunk-9d evaluator draft view; ``trial.artifacts_uri`` is
+    optional and may be ``None``, which short-circuits to ``None``.
+    """
+    return _read_inline_artifact(artifacts_uri, artifacts_dir)
