@@ -157,9 +157,14 @@ This is the closest neighbor to the chosen stack.
     requires hand-rolled `fetch` + `outerHTML` swaps. HTMX
     automates exactly that with `hx-target` / `hx-swap`.
 - **Verdict:** Live alternative, not a strawman. We pick HTMX for
-  the partial-update ergonomics it gives the planner-list →
-  claim-form transition; if HTMX adds friction during impl, the
-  fallback is this option, not a heavier framework.
+  the partial-update ergonomics it gives the multi-row
+  proposal-authoring flow ("add another row" without losing
+  in-progress input); if HTMX adds friction during impl, the
+  fallback is this option, not a heavier framework. (Originally
+  this verdict named the planner-list → claim-form transition;
+  during implementation that transition turned out to be a
+  natural full-page navigation, so the load-bearing chunk-1 use
+  case is the row-append flow instead.)
 
 #### C. Plain HTML + vanilla `fetch` + manual DOM replacement
 

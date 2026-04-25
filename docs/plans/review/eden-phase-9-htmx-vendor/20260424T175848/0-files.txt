@@ -1,0 +1,48 @@
+commit 4cc3cd3fec80d3585aedba041c8e1cbe23acdb53
+Author: ealt <ealt@users.noreply.github.com>
+Date:   Fri Apr 24 17:55:53 2026 -0700
+
+    Vendor HTMX as progressive-enhancement layer for the web UI (#18)
+    
+    HTMX 1.9.12 (SHA-256
+    449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452) is
+    vendored at `reference/services/web-ui/src/eden_web_ui/static/htmx-1.9.12.min.js`
+    so the UI works offline and in CI without external network. Loaded
+    in the base template so every page picks it up.
+    
+    The chunk-1 use case is the "add another proposal row" interaction.
+    HTMX intercepts the button (`hx-post` / `hx-target="#proposal-rows"` /
+    `hx-swap="beforeend"`), the route detects `HX-Request: true` and
+    returns just the new `_proposal_row.html` partial, and HTMX appends
+    it without disturbing the user's existing input. Without JS, the
+    same button (`formaction` / `formmethod`) does a full-page form
+    POST and the route re-renders the whole `planner_claim.html` with
+    one more row appended — same end state, two transports.
+    
+    Two new tests pin the contract:
+    - `test_add_row_full_page_returns_form_with_one_more_empty_row`
+      verifies the no-JS path includes the base layout and grows from
+      1 to 2 rows.
+    - `test_add_row_htmx_returns_partial_only` verifies the HTMX path
+      returns just the row partial (no `<header>`, no `<html>`, exactly
+      one new textarea, `data-row-index="1"`).
+    
+    Plan + service README + AGENTS.md status block updated to reflect
+    that HTMX is back as a progressive-enhancement layer (not the
+    plain-Jinja-only fallback the previous chunk-1 commit shipped under).
+    9c, 9d, and 9e (richer UIs) inherit this layer instead of having to
+    retrofit it.
+    
+    Co-authored-by: Eric Alt <13019253+ealt@users.noreply.github.com>
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+ AGENTS.md                                          |  2 +-
+ docs/plans/eden-phase-9-web-ui.md                  | 49 ++++++++++++++--------
+ reference/services/web-ui/README.md                | 11 +++++
+ .../web-ui/src/eden_web_ui/routes/planner.py       | 32 ++++++++++++--
+ .../src/eden_web_ui/static/htmx-1.9.12.min.js      |  1 +
+ .../src/eden_web_ui/templates/_proposal_row.html   | 22 ++++++++++
+ .../web-ui/src/eden_web_ui/templates/base.html     |  1 +
+ .../src/eden_web_ui/templates/planner_claim.html   | 43 +++++++++----------
+ .../services/web-ui/tests/test_planner_flow.py     | 38 ++++++++++++++++-
+ 9 files changed, 152 insertions(+), 47 deletions(-)

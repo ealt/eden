@@ -33,7 +33,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..artifacts import write_proposal_artifact
 from ..forms import ProposalDraft, parse_proposal_rows
-from ._helpers import csrf_ok, get_session
+from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
 
 router = APIRouter(prefix="/planner")
 
@@ -94,7 +94,7 @@ async def claim(
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
-        return _csrf_failure_response()
+        return _csrf_failure_response(request)
     store = request.app.state.store
     now: Callable[[], Any] = request.app.state.now
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
@@ -138,7 +138,7 @@ async def draft_form(
 
 
 @router.post("/{task_id}/add_row", response_model=None)
-async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+async def add_row(task_id: str, request: Request):
     """Append one empty proposal row to the draft form.
 
     Two transports, same end state:
@@ -146,25 +146,27 @@ async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResp
     - With JS, htmx posts here with ``HX-Request: true``. We respond
       with the rendered ``_proposal_row.html`` fragment for the new
       row only; htmx swaps it as ``beforeend`` of ``#proposal-rows``
-      so the user's existing input is untouched.
+      so the user's existing input is untouched. Redirect/error
+      branches send ``HX-Redirect`` on a 204 so htmx does a full
+      client-side navigation rather than swapping a redirected page
+      into the rows container.
     - Without JS, the same button submits the form normally and we
       re-render the whole ``planner_claim.html`` with the
-      collected state plus one more empty row.
+      collected state plus one more empty row, or 303 to the
+      sign-in / planner list on auth/claim failures.
     """
     session = get_session(request)
     if session is None:
-        return RedirectResponse(url="/signin", status_code=303)
+        return htmx_aware_redirect(request, "/signin")
     form = await request.form()
     if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
-        return _csrf_failure_response()
+        return _csrf_failure_response(request)
     if _CLAIMS.get(_claim_key(session.csrf, task_id)) is None:
-        return RedirectResponse(
-            url="/planner/?banner=claim+missing+from+session",
-            status_code=303,
+        return htmx_aware_redirect(
+            request, "/planner/?banner=claim+missing+from+session"
         )
-    is_htmx = request.headers.get("hx-request", "").lower() == "true"
 
-    if is_htmx:
+    if is_htmx_request(request):
         # The htmx-enhanced path: figure out where the new row goes
         # by counting existing rows in the form, then render only
         # the partial. The user's existing rows are already on the
@@ -210,7 +212,7 @@ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | Redirect
         return RedirectResponse(url="/signin", status_code=303)
     form = await request.form()
     if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
-        return _csrf_failure_response()
+        return _csrf_failure_response(request)
     status = form.get("status")
     if status not in ("success", "error"):
         return _bad_request("invalid submit status")
@@ -454,8 +456,23 @@ def _render_error(request: Request, message: str) -> HTMLResponse:
     )
 
 
-def _csrf_failure_response() -> HTMLResponse:
-    return HTMLResponse(content="CSRF token missing or invalid", status_code=403)
+def _csrf_failure_response(request: Request | None = None) -> HTMLResponse:
+    """Reject the request with 403.
+
+    For htmx requests we additionally set ``HX-Reswap: none`` so htmx
+    does not swap the error body into the configured target (e.g.
+    ``#proposal-rows``). Adding the same ``HX-Trigger`` header is
+    intentionally skipped — chunk 1 has no client-side error toast
+    yet; 9e revisits live error UX.
+    """
+    headers: dict[str, str] = {}
+    if request is not None and is_htmx_request(request):
+        headers["hx-reswap"] = "none"
+    return HTMLResponse(
+        content="CSRF token missing or invalid",
+        status_code=403,
+        headers=headers,
+    )
 
 
 def _bad_request(message: str) -> HTMLResponse:

@@ -145,6 +145,85 @@ class TestMultiRow:
         # Full page: includes the base layout (topbar nav).
         assert "<header" in resp.text
 
+    def test_add_row_htmx_no_session_returns_hx_redirect_to_signin(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """HTMX request with no session must use HX-Redirect, not 303 to a full page.
+
+        HTMX follows 3xx transparently and swaps the redirected
+        response into the configured target — for the add_row
+        button (``hx-target="#proposal-rows"``) that would dump
+        ``<html>...</html>`` of the sign-in page into the rows
+        container. Returning ``HX-Redirect`` instead makes htmx
+        do a real navigation.
+        """
+        store.create_plan_task("t-noses")
+        resp = client.post(
+            "/planner/t-noses/add_row",
+            data={"slug": "x"},
+            headers={"hx-request": "true"},
+        )
+        assert resp.status_code == 204
+        assert resp.headers.get("hx-redirect") == "/signin"
+        # Empty body is what htmx wants for HX-Redirect — it must NOT
+        # contain a <header> or anything else that could end up
+        # swapped into #proposal-rows.
+        assert resp.text == ""
+
+    def test_add_row_htmx_missing_claim_returns_hx_redirect(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        """HTMX request without an active claim must HX-Redirect to /planner/."""
+        store.create_plan_task("t-noclaim")
+        token = get_csrf(signed_in_client)
+        # Note: we never call /planner/{id}/claim, so the in-memory
+        # _CLAIMS dict has no entry for this (csrf, task) pair.
+        resp = signed_in_client.post(
+            "/planner/t-noclaim/add_row",
+            data={"csrf_token": token, "slug": "x"},
+            headers={"hx-request": "true"},
+        )
+        assert resp.status_code == 204
+        loc = resp.headers.get("hx-redirect", "")
+        assert loc.startswith("/planner/?banner=claim+missing")
+        assert resp.text == ""
+
+    def test_add_row_htmx_csrf_failure_sets_hx_reswap_none(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        """HTMX add_row with bad CSRF must NOT have its body swapped into the page."""
+        store.create_plan_task("t-csrf")
+        token = get_csrf(signed_in_client)
+        # Claim first so the missing-claim branch isn't what fires.
+        signed_in_client.post(
+            "/planner/t-csrf/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        resp = signed_in_client.post(
+            "/planner/t-csrf/add_row",
+            data={"csrf_token": "wrong"},
+            headers={"hx-request": "true"},
+        )
+        assert resp.status_code == 403
+        # `HX-Reswap: none` tells htmx to not swap the response body
+        # into the configured target. Without this, the "CSRF token
+        # missing or invalid" string would land in #proposal-rows.
+        assert resp.headers.get("hx-reswap") == "none"
+
+    def test_add_row_no_js_no_session_303_to_signin(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """The no-JS path keeps the conventional 303-to-/signin behavior."""
+        store.create_plan_task("t-nojs")
+        resp = client.post(
+            "/planner/t-nojs/add_row",
+            data={"slug": "x"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/signin"
+
     def test_add_row_htmx_returns_partial_only(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
