@@ -51,27 +51,34 @@ effect of UI work.
 
 ## Tech stack — decision and alternatives considered
 
-**Chosen stack:** FastAPI + Jinja2 with full-page form-POST navigation
-(no JS framework, no HTMX), plus a single hand-written CSS file. The
-UI service is a separate process under `reference/services/web-ui/`
-that acts as a **backend-for-frontend (BFF)**: it holds the
-`--shared-token` (the same reference-bearer the orchestrator and
-worker hosts already use), runs `eden_wire.StoreClient` in-process
-to talk to the task-store-server, and exposes only server-rendered
-HTML routes to the browser. The browser never sees the shared
-token; it gets a session cookie signed with a server-side secret.
+**Chosen stack:** FastAPI + Jinja2 + vendored HTMX 1.9.12, plus a
+single hand-written CSS file. The UI service is a separate process
+under `reference/services/web-ui/` that acts as a
+**backend-for-frontend (BFF)**: it holds the `--shared-token` (the
+same reference-bearer the orchestrator and worker hosts already
+use), runs `eden_wire.StoreClient` in-process to talk to the
+task-store-server, and exposes only server-rendered HTML routes to
+the browser. The browser never sees the shared token; it gets a
+session cookie signed with a server-side secret.
 
 This BFF split is a property of the architecture, not the rendering
 choice — the same split could host an SPA, a Phoenix-LiveView-style
-push UI, or HTMX-augmented partial swaps. We pick plain
-form-POST + 303 redirect for chunk 1 because (a) every interaction
-in the planner flow is a navigation event (claim → form, submit →
-list), so partial swaps don't earn their cost, (b) avoiding a
-client-side library keeps the dependency graph entirely Python, and
-(c) the templates degrade gracefully — HTMX or another progressive
-layer can be sprinkled on later without restructuring. This was
-explicitly the "Option B" fallback in the alternatives section
-below; we promote it to chosen on grounds of simplicity.
+push UI, or plain form-POST navigation. HTMX is included as a
+**progressive-enhancement layer**: every mutating route works
+without JS via plain form-POST + 303-redirect / re-render, and
+HTMX-aware routes additionally serve a smaller fragment when the
+browser sends `HX-Request: true`. The decisive use case in chunk 1
+is the "add another proposal row" interaction, where HTMX swaps in
+a fresh row inline (`hx-target="#proposal-rows" hx-swap="beforeend"`)
+instead of full-page-reloading a form the user is partway through.
+9c (implementer), 9d (evaluator), and especially 9e (observability
+views) earn HTMX's cost much more clearly; landing it now means
+those chunks don't have to retrofit it.
+
+HTMX is **vendored** at
+`src/eden_web_ui/static/htmx-1.9.12.min.js` (SHA-256
+`449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452`)
+so the UI works offline and in CI without external network.
 
 ### Why this stack
 
@@ -304,6 +311,12 @@ This is the closest neighbor to the chosen stack.
 - `src/eden_web_ui/templates/_error.html` — generic error fragment.
 - `src/eden_web_ui/static/style.css` — single hand-written stylesheet,
   served by FastAPI's `StaticFiles`.
+- `src/eden_web_ui/static/htmx-1.9.12.min.js` — vendored HTMX
+  (SHA-256 pinned in the README) so the UI works offline / in CI
+  without external network.
+- `src/eden_web_ui/templates/_proposal_row.html` — single proposal
+  row; rendered standalone for HTMX `beforeend` swaps and inline
+  by `planner_claim.html` for the no-JS fallback.
 - `tests/__init__.py`
 - `tests/test_app.py` — `TestClient`-driven unit tests against
   `make_app(store=InMemoryStore(...), …)`. Covers each route's

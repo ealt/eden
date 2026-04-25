@@ -115,10 +115,10 @@ class TestValidationRecovery:
 
 
 class TestMultiRow:
-    def test_add_row_returns_form_with_one_more_empty_row(
+    def test_add_row_full_page_returns_form_with_one_more_empty_row(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        """The add_row route preserves input and appends an empty row."""
+        """No-JS path: add_row returns the full draft page with one more row."""
         store.create_plan_task("t-add")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
@@ -142,6 +142,40 @@ class TestMultiRow:
         assert "first proposal rationale" in resp.text
         # The form now has 2 rows — count textareas as a per-row marker.
         assert resp.text.count('name="rationale"') == 2
+        # Full page: includes the base layout (topbar nav).
+        assert "<header" in resp.text
+
+    def test_add_row_htmx_returns_partial_only(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        """JS path: add_row with HX-Request: true returns only the row partial."""
+        store.create_plan_task("t-htmx")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/planner/t-htmx/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        resp = signed_in_client.post(
+            "/planner/t-htmx/add_row",
+            data={
+                "csrf_token": token,
+                "slug": "feat-1",
+                "priority": "1.0",
+                "parent_commits": "a" * 40,
+                "rationale": "first",
+            },
+            headers={"hx-request": "true"},
+        )
+        assert resp.status_code == 200
+        # Just the new (empty) row partial — no <header>, no <html>.
+        assert "<header" not in resp.text
+        assert "<html" not in resp.text
+        # Contains exactly one textarea (the new row's rationale field).
+        assert resp.text.count('name="rationale"') == 1
+        # The new row's index is 1 (zero-based; row 1 is the second row,
+        # since the user already had 1 row before adding).
+        assert 'data-row-index="1"' in resp.text
 
     def test_skip_fully_blank_row_on_submit(
         self,
