@@ -24,6 +24,7 @@ from eden_storage import (
 )
 
 from .driver import run_orchestrator_iteration
+from .sweep import sweep_expired_claims
 from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
 
 __all__ = [
@@ -44,4 +45,5 @@ __all__ = [
     "Store",
     "WrongToken",
     "run_orchestrator_iteration",
+    "sweep_expired_claims",
 ]

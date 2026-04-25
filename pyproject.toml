@@ -20,6 +20,7 @@ members = [
     "reference/services/orchestrator",
     "reference/services/planner",
     "reference/services/task-store-server",
+    "reference/services/web-ui",
 ]
 
 [tool.uv.sources]
@@ -33,6 +34,7 @@ eden-planner-host = { workspace = true }
 eden-service-common = { workspace = true }
 eden-storage = { workspace = true }
 eden-task-store-server = { workspace = true }
+eden-web-ui = { workspace = true }
 eden-wire = { workspace = true }
 
 [dependency-groups]
@@ -53,6 +55,7 @@ dev = [
     "eden-service-common",
     "eden-storage",
     "eden-task-store-server",
+    "eden-web-ui",
     "eden-wire",
 ]
 
@@ -75,6 +78,10 @@ convention = "google"
 # standard FastAPI pattern for Body/Header/Query defaults.
 "reference/packages/eden-wire/src/eden_wire/server.py" = ["D", "B008"]
 "reference/packages/eden-wire/src/eden_wire/client.py" = ["D102"]
+# Web-UI routes/CLI/helpers are thin FastAPI handlers; route docstrings
+# would just restate the URL. B008 is the standard FastAPI Form/Body default.
+"reference/services/web-ui/src/eden_web_ui/routes/*.py" = ["D", "B008"]
+"reference/services/web-ui/src/eden_web_ui/cli.py" = ["D"]
 
 [tool.pyright]
 include = [
@@ -89,6 +96,7 @@ include = [
     "reference/services/orchestrator",
     "reference/services/planner",
     "reference/services/task-store-server",
+    "reference/services/web-ui",
 ]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
@@ -108,6 +116,7 @@ testpaths = [
     "reference/services/orchestrator/tests",
     "reference/services/planner/tests",
     "reference/services/task-store-server/tests",
+    "reference/services/web-ui/tests",
 ]
 markers = [
     "e2e: real-subprocess end-to-end tests (forks multiple OS processes)",

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}EDEN — draft proposals{% endblock %}
+{% block main %}
+<h1>draft proposals — task <code>{{ task_id }}</code></h1>
+{% if errors and errors.overall %}
+<div class="banner banner-error">
+    <ul>
+    {% for msg in errors.overall %}<li>{{ msg }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+<section class="objective">
+    <h2>objective</h2>
+    <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
+</section>
+<section class="metrics-schema">
+    <h2>metrics schema (read-only)</h2>
+    <table>
+        <thead><tr><th>metric</th><th>type</th></tr></thead>
+        <tbody>
+        {% for name, kind in metrics_schema.items() %}
+            <tr><td><code>{{ name }}</code></td><td>{{ kind }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+<form action="/planner/{{ task_id }}/submit" method="post" class="proposal-form">
+    <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+    <fieldset>
+        <legend>proposals</legend>
+        {% for i in row_indices %}
+        {% set row = form_state[i] if i < (form_state|length) else {"slug":"","priority":"1.0","parent_commits":"","rationale":""} %}
+        {% set row_errs = (errors.by_row[i] if errors and i in errors.by_row else {}) %}
+        <div class="proposal-row">
+            <h3>row {{ i + 1 }}</h3>
+            <label>slug
+                <input type="text" name="slug" value="{{ row.slug }}">
+                {% if row_errs.get("slug") %}<span class="field-error">{{ row_errs["slug"] }}</span>{% endif %}
+            </label>
+            <label>priority
+                <input type="text" name="priority" value="{{ row.priority }}">
+                {% if row_errs.get("priority") %}<span class="field-error">{{ row_errs["priority"] }}</span>{% endif %}
+            </label>
+            <label>parent commit SHAs (comma-separated)
+                <input type="text" name="parent_commits" value="{{ row.parent_commits }}">
+                {% if row_errs.get("parent_commits") %}<span class="field-error">{{ row_errs["parent_commits"] }}</span>{% endif %}
+            </label>
+            <label>rationale (markdown)
+                <textarea name="rationale" rows="6">{{ row.rationale }}</textarea>
+                {% if row_errs.get("rationale") %}<span class="field-error">{{ row_errs["rationale"] }}</span>{% endif %}
+            </label>
+        </div>
+        {% endfor %}
+    </fieldset>
+    <div class="actions">
+        <button type="submit" name="status" value="success">submit (success)</button>
+        <button type="submit" name="status" value="error" class="danger">submit (error)</button>
+        <button type="submit" formaction="/planner/{{ task_id }}/add_row" formmethod="post">add another row</button>
+    </div>
+</form>
+{% endblock %}

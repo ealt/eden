@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}EDEN — orphaned proposals{% endblock %}
+{% block main %}
+<h1>plan submission failed</h1>
+<div class="banner banner-error">
+    <p>
+        Plan task <code>{{ task_id }}</code> could not be submitted after retries.
+        The proposals below were created and marked <code>ready</code> but are
+        not referenced by any submitted plan task.
+    </p>
+    {% if banner %}<p>error: <code>{{ banner }}</code></p>{% endif %}
+</div>
+<p>orphaned proposal ids:</p>
+<ul>
+{% for pid in proposal_ids %}<li><code>{{ pid }}</code></li>{% endfor %}
+</ul>
+<p>
+    Operator action: reclaim the plan task (force the orchestrator to re-dispatch),
+    and decide whether to garbage-collect the orphaned proposals or let the
+    orchestrator dispatch implement tasks for them on the next iteration.
+</p>
+<p><a href="/planner/">back to planner</a></p>
+{% endblock %}
