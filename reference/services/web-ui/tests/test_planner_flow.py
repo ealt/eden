@@ -578,6 +578,87 @@ class TestIllegalTransitionReadback:
         assert resp.status_code == 502
         assert "conflicting-resubmission" in resp.text
 
+    def test_terminal_state_with_no_submission_renders_transport_invariant(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        monkeypatch,
+    ) -> None:
+        """`read_submission() is None` on a terminal task is invariant violation, not conflict."""
+        from eden_contracts import PlanPayload, PlanTask
+        from eden_storage import IllegalTransition
+
+        csrf = self._setup_claim(signed_in_client, store, "t-inv")
+        synthetic_task = PlanTask(
+            task_id="t-inv",
+            kind="plan",
+            state="completed",
+            payload=PlanPayload(experiment_id=store.experiment_id),
+            created_at="2026-04-24T11:00:00.000Z",
+            updated_at="2026-04-24T13:00:00.000Z",
+        )
+
+        def fake_submit(*a, **k):
+            raise IllegalTransition("task already terminal")
+
+        monkeypatch.setattr(store, "submit", fake_submit)
+        monkeypatch.setattr(store, "read_task", lambda tid: synthetic_task)
+        monkeypatch.setattr(store, "read_submission", lambda tid: None)
+
+        resp = self._submit(signed_in_client, "t-inv", csrf)
+        assert resp.status_code == 502
+        assert "store invariant violation" in resp.text
+        # Must NOT be classified as conflict.
+        assert "conflicting-resubmission" not in resp.text
+
+    def test_pending_after_illegal_transition_distinct_from_claimed(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        monkeypatch,
+    ) -> None:
+        """state==pending after IllegalTransition mentions reclaim, not generic transport."""
+        from eden_storage import IllegalTransition
+
+        csrf = self._setup_claim(signed_in_client, store, "t-pen")
+        # Reclaim the task ourselves so its state is pending; the
+        # patched submit will raise IllegalTransition and read-back
+        # observes state==pending.
+        store.reclaim("t-pen", "operator")
+
+        def fake_submit(*a, **k):
+            raise IllegalTransition("task no longer claimed")
+
+        monkeypatch.setattr(store, "submit", fake_submit)
+        resp = self._submit(signed_in_client, "t-pen", csrf)
+        assert resp.status_code == 502
+        # New banner explicitly mentions reclaim, distinguishing it
+        # from a transport failure where the claim is still ours.
+        assert "task reclaimed" in resp.text
+
+    def test_claimed_with_other_token_renders_wrong_token(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        monkeypatch,
+    ) -> None:
+        """state==claimed but a different worker now holds the claim."""
+        from eden_storage import IllegalTransition
+
+        csrf = self._setup_claim(signed_in_client, store, "t-wt2")
+        # Reclaim then re-claim under a different worker so the
+        # task is in state==claimed with a non-matching token.
+        store.reclaim("t-wt2", "operator")
+        store.claim("t-wt2", "another-worker")
+
+        def fake_submit(*a, **k):
+            raise IllegalTransition("token does not match")
+
+        monkeypatch.setattr(store, "submit", fake_submit)
+        resp = self._submit(signed_in_client, "t-wt2", csrf)
+        assert resp.status_code == 502
+        assert "eden://error/wrong-token" in resp.text
+
 
 class TestRetryBeforeOrphan:
     def test_transport_exception_retries_then_orphan(
