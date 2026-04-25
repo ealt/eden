@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+from eden_git import GitRepo
 from eden_service_common import add_common_arguments, get_logger, parse_log_level
 from eden_service_common.logging import configure_logging
 from eden_task_store_server import load_experiment_config
@@ -70,6 +71,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Set Secure on the session cookie (use behind TLS in deployment).",
     )
+    parser.add_argument(
+        "--repo-path",
+        type=Path,
+        default=None,
+        help=(
+            "Bare git repo the implementer host writes work/* refs into. "
+            "Optional: when set, the implementer module is registered "
+            "and the user can claim implement tasks via the UI; when "
+            "omitted, the implementer module is not available and the "
+            "/implementer/* routes return 404."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -108,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = get_logger(__name__)
     config = load_experiment_config(args.experiment_config)
+    repo: GitRepo | None = None
+    if args.repo_path is not None:
+        repo = GitRepo(str(args.repo_path))
+        repo.rev_parse("HEAD")
     store = StoreClient(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
@@ -122,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         claim_ttl_seconds=args.claim_ttl_seconds,
         artifacts_dir=args.artifacts_dir,
         secure_cookies=args.secure_cookies,
+        repo=repo,
     )
     uv_config = uvicorn.Config(
         app,

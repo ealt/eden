@@ -1,0 +1,23 @@
+**1. Missing Context**
+
+Assessment: the plan is mostly well-scoped, but two assumptions need to be made explicit before implementation.
+
+- The artifact trust boundary is underspecified. The draft page proposes rendering the contents of any readable `file://` `artifacts_uri` from the proposal ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:170), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:252)). That is only safe if proposals are guaranteed to point inside a trusted artifact directory. If that guarantee exists, the plan should say so and require path confinement under `artifacts_dir`; otherwise the UI becomes a local-file disclosure surface.
+
+- The compatibility story around `--repo-path` is contradictory. The plan says the CLI surface is only extended and “nothing is removed or renamed” ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:42)), but later makes `--repo-path` required at startup ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:387)). That is an invocation-breaking change for existing planner-only use. Either call that out as an intentional breaking change, or make the flag optional unless implementer routes are enabled.
+
+**2. Feasibility**
+
+Assessment: this is where the main problems are. I would stop here for this round; the failure model is not yet implementable as written.
+
+- The orphan-recovery story does not match the task protocol. The plan says several Phase 3 failures should land on an orphan page that explains the trial will auto-recover when the claim TTL expires ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:306), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:314), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:577)). But the sweeper only reclaims tasks still in `claimed` state ([sweep.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:32)), and the spec explicitly forbids automatic reclaim of `submitted` tasks ([04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:137)). So if `submit` actually committed and the response was lost, TTL expiry will not fix anything; if the token was already invalidated before submit, there may be no future reclaim left to error the new trial. The plan needs outcome-specific handling here, not a blanket “auto-recovery” claim.
+
+- `trial_id` ownership is internally inconsistent. The flow stores `{token, trial_id}` server-side in `_CLAIMS` at claim time ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:240)), but the template section also says the form carries `trial_id` as a hidden field so POST does not need to look it up server-side ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:346)). Those are materially different designs. If the POST trusts the hidden field, the client can tamper with a server-owned identifier. This should stay server-side only.
+
+- The Phase 2 failure path is not actually planned through. The main flow creates the trial first, then writes the `work/*` ref ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:275)), but recovery and tests only spell out Phase 3 submit failures ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:314), [plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:475)). The risk section mentions a `ref_exists` guard ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md:642)), but the plan never says whether that guard runs before `create_trial`, nor what happens if `create_ref` itself fails after the trial is persisted. That partial-write case needs a concrete recovery/test story.
+
+I did not assess alternatives, completeness, or lower-level edge cases in depth because the feasibility issues above should be resolved first.
+
+**Overall Assessment**
+
+The happy-path shape is strong: it fits the existing web-ui architecture, uses the right store boundary, and the spec mapping is generally careful. But I would not treat this plan as implementation-ready yet. The submit/orphan semantics, server-side ownership of `trial_id`, and the `create_ref` failure path need to be corrected first; after that, a fuller review of alternatives and completeness will be much more useful.

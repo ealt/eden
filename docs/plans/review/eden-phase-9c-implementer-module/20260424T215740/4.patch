@@ -1,0 +1,48 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9c-implementer-module/20260424T215740/3.md	2026-04-24 22:11:08
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md	2026-04-24 22:12:32
+@@ -428,15 +428,16 @@
+           succeeded. If `prior` is not equivalent, render the
+           orphan page with banner
+           `eden://error/conflicting-resubmission` (a different
+-          submission won the race; our work is orphaned). If
+-          `read_submission` returns `None` for a `submitted`
+-          task, the store is in an implementation-illegal state;
+-          render the orphan page with a generic transport-failure
+-          banner. (`read_submission` returning `None` for
+-          `completed`/`failed` is normal if validation rejected
+-          the submission and the store cleared it — treat as
+-          "not our submission" and render the orphan page with
+-          the conflicting-resubmission banner.)
++          submission won the race; our work is orphaned).
++          `read_submission` returning `None` for any of
++          `submitted` / `completed` / `failed` is an
++          implementation-illegal state in the reference store
++          (submissions are persisted on `submit` and retained
++          through `accept`/`reject`; they are deleted only on
++          `reclaim`, never on terminalization — see
++          `_base.submit` and `_base.reclaim`). Render the orphan
++          page with a generic transport-failure banner so the
++          operator can investigate.
+        3. If `task.state == "pending"` (or `"claimed"` with a
+           *different* claim token), our claim was reclaimed and
+           the prior attempt did not commit; render the orphan
+@@ -500,11 +501,16 @@
+   (TTL → reclaim → trial → error). UI renders the orphan page.
+ 
+ If `task.state in {"submitted", "completed", "failed"}` but
+-`read_submission` returns a payload **not** equivalent to ours
+-(or returns `None` for a `submitted` task, which is an
+-implementation-illegal state), the orphan page renders with a
++`read_submission` returns a payload **not** equivalent to ours,
++the orphan page renders with a
+ `eden://error/conflicting-resubmission` banner — a different
+ submission won the race; our work is orphaned.
++`read_submission` returning `None` for any of those three
++states is implementation-illegal in the reference store (per
++`_base.submit` / `_base.reclaim`: submissions are persisted on
++`submit` and only deleted on `reclaim`, never on terminalization);
++the orphan page renders with a generic transport-failure banner
++so the operator can investigate.
+ 
+ If `task.state == "pending"` (or `"claimed"` with a *different*
+ claim token than ours), our claim was reclaimed and our submit

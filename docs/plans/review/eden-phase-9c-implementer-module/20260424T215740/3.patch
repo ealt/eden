@@ -1,0 +1,148 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9c-implementer-module/20260424T215740/2.md	2026-04-24 22:08:39
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md	2026-04-24 22:10:55
+@@ -413,24 +413,35 @@
+           page with the wire-error name `eden://error/wrong-token`
+           (because that's exactly what the next non-retry
+           submit would have returned).
+-       2. If `task.state in {"submitted", "completed"}`, call
+-          `prior = store.read_submission(task_id)`. Compare
++       2. If `task.state in {"submitted", "completed", "failed"}`,
++          call `prior = store.read_submission(task_id)`. Compare
+           `prior` to *our* `submission` via
+           `submissions_equivalent(prior, submission)` from
+           `eden_storage.submissions`. If equivalent, our prior
+           attempt committed (the lost response is what put us
+           here); drop `_CLAIMS`, render
+-          `implementer_submitted.html`. If not equivalent,
+-          render the orphan page with banner
++          `implementer_submitted.html`. The committed submission
++          may already have been terminalized to `failed` by the
++          orchestrator (validation or worker-error path); that
++          terminalization is the orchestrator's contract, not
++          the implementer's, so from our perspective the submit
++          succeeded. If `prior` is not equivalent, render the
++          orphan page with banner
+           `eden://error/conflicting-resubmission` (a different
+           submission won the race; our work is orphaned). If
+-          `read_submission` returns `None`, the store is in an
+-          implementation-illegal state (`submitted` without a
+-          recorded submission); render the orphan page with a
+-          generic transport-failure banner.
+-       3. If `task.state in {"failed", "pending"}`, our claim
+-          was reclaimed and the prior attempt did not commit;
+-          render the orphan page.
++          `read_submission` returns `None` for a `submitted`
++          task, the store is in an implementation-illegal state;
++          render the orphan page with a generic transport-failure
++          banner. (`read_submission` returning `None` for
++          `completed`/`failed` is normal if validation rejected
++          the submission and the store cleared it — treat as
++          "not our submission" and render the orphan page with
++          the conflicting-resubmission banner.)
++       3. If `task.state == "pending"` (or `"claimed"` with a
++          *different* claim token), our claim was reclaimed and
++          the prior attempt did not commit; render the orphan
++          page. The reclaim that took us out already errored our
++          `starting` trial.
+ 
+        This mirrors `StoreClient.integrate_trial`'s read-back
+        reconciliation (chapter 07 Phase 8a) but uses the
+@@ -466,21 +477,42 @@
+ Operator action: none required.
+ 
+ **Phase 3 failure: all retries hit transport-shaped exceptions.**
+-Two sub-cases, distinguished by the read-back:
++Two sub-cases, distinguished by the read-back (per the
++strengthened logic in §C step 4: `read_task` + `read_submission`
+++ `submissions_equivalent`, never `worker_id`):
+ 
+ - *Sub-case A — server actually committed our submit, response
+-  was lost.* Read-back returns task in `state in
+-  {"submitted", "completed"}` with our worker_id. Trial residue:
+-  no (the trial is now bound to a successful submit). UI
+-  renders the success page. The orchestrator's accept will
+-  later promote the task to `completed` and write `commit_sha`
+-  onto the trial.
++  was lost.* Read-back returns task in
++  `state in {"submitted", "completed", "failed"}` **and**
++  `read_submission` returns a payload equivalent to ours via
++  `submissions_equivalent`. Trial residue: no (the committed
++  submission is the system's record of our work). UI renders
++  the success page. Whether the orchestrator's later accept
++  promotes the task to `completed` (success path) or `failed`
++  (validation or worker-error path) is independent of whether
++  the submit itself committed; from the implementer's
++  perspective, the submit succeeded and any subsequent
++  terminalization is the orchestrator's contract, not ours.
+ - *Sub-case B — server never received our submit (network
+   outage between client and server).* Read-back returns task
+-  still `claimed` by us. Trial residue: yes. Recovery: same as
+-  Phase-2 failure (TTL → reclaim → trial → error). UI renders
+-  the orphan page.
++  still `claimed` by us (live claim token equals the one we
++  hold). Trial residue: yes. Recovery: same as Phase-2 failure
++  (TTL → reclaim → trial → error). UI renders the orphan page.
+ 
++If `task.state in {"submitted", "completed", "failed"}` but
++`read_submission` returns a payload **not** equivalent to ours
++(or returns `None` for a `submitted` task, which is an
++implementation-illegal state), the orphan page renders with a
++`eden://error/conflicting-resubmission` banner — a different
++submission won the race; our work is orphaned.
++
++If `task.state == "pending"` (or `"claimed"` with a *different*
++claim token than ours), our claim was reclaimed and our submit
++never committed. UI renders the orphan page with prose
++"auto-recovers via reclaim" — the reclaim that took us out
++already errored our `starting` trial, so there is no further
++operator action needed.
++
+ **Phase 3 failure: `WrongToken`.** Means the token was
+ invalidated, which can only happen via a prior reclaim of our
+ claim (TTL expired earlier than expected, or operator
+@@ -690,12 +722,19 @@
+      orphan page rendered with banner `repo error: …`. Then
+      `sweep_expired_claims(store, now=expires_at + 1s)` and
+      assert trial → `error`, task → `pending`.
+-   - **Phase 3 transport-only, sub-case A (server committed).**
+-     Monkeypatch `store.submit` to commit on first call
+-     (delegate to underlying store) and raise on second/third.
+-     Without read-back this would render the orphan page; with
+-     the spec'd read-back it renders the success page because
+-     `read_task` shows `state == "submitted"`.
++   - **Phase 3 transport-only, sub-case A (server committed,
++     still `submitted`).** Monkeypatch `store.submit` to commit
++     on first call (delegate to underlying store) and raise on
++     second/third. Read-back: `state == "submitted"`,
++     `read_submission` equivalent to ours → success page.
++   - **Phase 3 transport-only, sub-case A' (server committed,
++     terminalized to `failed`).** Same monkeypatch as sub-case
++     A, but additionally drive `store.reject(task_id,
++     "validation_error")` between attempts so the read-back
++     observes `state == "failed"` with our equivalent submission
++     still readable. Asserts the success page still renders
++     (the implementer's submit committed; subsequent
++     terminalization is the orchestrator's contract).
+    - **Phase 3 transport-only, sub-case B (never committed).**
+      Monkeypatch `store.submit` to always raise a
+      transport-shaped exception (e.g. `httpx.ConnectError`-like).
+@@ -884,12 +923,13 @@
+   suboptimal but not incorrect.
+ - **`work/*` ref already exists.** The branch name is derived
+   from `slug + trial_id`, where `trial_id` is `uuid.uuid4().hex[:12]`.
+-  Statistically unique, but a defensive guard is cheap: before
+-  Phase 2, `repo.ref_exists("refs/heads/<branch>")` →
+-  `IllegalTransition`-shaped error rendering. The plan
+-  requires this guard; the corresponding test is in
+-  `test_implementer_flow.py` (drive a manual collision via a
+-  pre-existing ref).
++  Statistically unique, but a defensive guard is cheap: the
++  Pre-Phase-1 `repo.ref_exists("refs/heads/<branch>")` check in
++  §C re-renders the form with a `commit_sha` field error and
++  does not call `create_trial`, so a collision leaves no orphan
++  trial residue. Test coverage lives in
++  `test_implementer_partial_write.py` ("Pre-Phase-1
++  ref-collision guard" case in §I-3).
+ - **Scripted-impl ref-ordering bug becomes a CI failure.** It
+   doesn't, because the existing tests for the scripted
+   implementer pre-date the strict-ordering reading and don't

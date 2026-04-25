@@ -13,6 +13,9 @@
         <nav>
             <a href="/">home</a>
             <a href="/planner/">planner</a>
+            {% if implementer_enabled %}
+            <a href="/implementer/">implementer</a>
+            {% endif %}
         </nav>
         {% if session %}
         <form action="/signout" method="post" class="signout-form">

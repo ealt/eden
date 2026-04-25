@@ -1,0 +1,252 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9c-implementer-module/20260424T215740/1.md	2026-04-24 22:05:11
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-9c-implementer-module.md	2026-04-24 22:08:24
+@@ -170,29 +170,30 @@
+   §3.1 (read access to the proposal at claim time, plus implicit
+   context for "what's already been tried").
+ - `POST /implementer/{task_id}/claim` — CSRF-checked claim. On
+-  success, store a `(session.csrf, task_id) -> token` mapping in
+-  the same in-process `_CLAIMS` dict pattern the planner uses
+-  (kept module-local in `implementer.py`; not shared with
+-  `planner.py`'s dict because the keying namespace is per-module
+-  to keep cross-module mistakes impossible). Redirect to the
+-  draft form on success; 303 to `/implementer/?banner=<name>` on
+-  store-domain wire errors.
++  success, store a `(session.csrf, task_id) -> (token, trial_id)`
++  tuple in the implementer module's own `_CLAIMS` dict
++  (per §A.2; kept module-local in `implementer.py`, not shared
++  with `planner.py`'s dict because the keying namespace is
++  per-module to keep cross-module mistakes impossible). Redirect
++  to the draft form on success; 303 to
++  `/implementer/?banner=<name>` on store-domain wire errors.
+ - `GET /implementer/{task_id}/draft` — render the draft form.
+   The form surfaces:
+   - The proposal's `slug`, `priority`, `parent_commits`,
+     `artifacts_uri` (with the rationale-markdown contents
+-    rendered if the URI is `file://` and reads cleanly; otherwise
+-    the URI alone).
+-  - The bare repo's absolute path (so the user knows where to push
+-    to before clicking submit).
+-  - The server-derived branch name `work/<slug>-<trial_id>` (the
+-    trial_id is generated at draft-time and embedded in a
+-    hidden form field so the same id flows into the eventual
+-    `create_trial` call). This makes the branch name visible
+-    *before* the user pushes, so they can push directly to that
+-    ref name if they prefer; the §A-1 reachability check accepts
+-    any commit that is reachable + exists in the repo, regardless
+-    of what ref points to it on the user's side.
++    rendered inline only when the §A.1 trust-boundary helper
++    accepts the URI; otherwise the URI alone).
++  - The bare repo's absolute path (so the user knows where to
++    push to before clicking submit).
++  - The server-derived branch name
++    `work/<slug>-<trial_id>` rendered as plain text. The
++    `trial_id` is taken from `_CLAIMS` at draft-render time and
++    is **never** carried in the form (no hidden input). This
++    makes the branch name visible *before* the user pushes, so
++    they can push directly to that ref name if they prefer; the
++    §C reachability check accepts any commit that is reachable
++    + exists in the repo, regardless of what ref points to it
++    on the user's side.
+   - Form fields: `commit_sha` (40-hex required for status=success),
+     `description` (optional, free-form), and a status radio
+     (`success` | `error`). On status=error, `commit_sha` is not
+@@ -344,6 +345,18 @@
+        `repo.is_ancestor(parent, commit_sha)` — if false on any,
+        re-render with `commit_sha` field error: "commit `<sha>`
+        does not descend from declared parent `<parent>`."
++   - **Pre-Phase-1 ref-collision guard.** Status=success only:
++     if `repo.ref_exists(f"refs/heads/{branch}")`, re-render the
++     form with a `commit_sha` field error ("branch `<branch>`
++     already exists; please reclaim or pick a different proposal
++     slug") and **do not** call `create_trial`. The branch name
++     is fully derivable from `proposal.slug` and the
++     server-owned `trial_id` at this point, so the guard runs
++     before any state-mutating call. The chance of collision is
++     negligible (12-hex `trial_id` keyed branch name), but
++     pre-empting it turns a §3.3 ("worker branch MUST be unique
++     to this trial") spec violation into a clean form error
++     with no orphan trial residue.
+    - **Phase 1 of the write — create_trial as `starting`.**
+      `store.create_trial(Trial(trial_id=trial_id,
+      experiment_id=app.state.experiment_id,
+@@ -353,20 +366,12 @@
+      started_at=_iso(now())))`. (No `commit_sha` field — that
+      gets written onto the trial by the orchestrator's accept
+      handler, per `eden_storage._base._accept_implement`.)
+-     - On status=error: skip the reachability check; still call
+-       `create_trial` with the same shape (no `commit_sha`,
+-       optional `description`). The trial-side terminalization
+-       to `error` happens via `_reject_implement` when the
+-       orchestrator rejects the errored submission per
+-       `04-task-protocol.md` §4.3.
+-   - **Pre-Phase-2 ref-collision guard.** Before Phase 2 runs,
+-     status=success only: if `repo.ref_exists(f"refs/heads/{branch}")`,
+-     re-render the form with a `commit_sha` field error
+-     ("branch `<branch>` already exists; please reclaim or pick
+-     a different proposal slug"). The chance of collision is
+-     negligible (12-hex `trial_id` keyed branch name), but the
+-     guard turns a §3.3 ("worker branch MUST be unique to this
+-     trial") spec violation into a clean form error.
++     - On status=error: skip the reachability check and the
++       ref-collision guard; still call `create_trial` with the
++       same shape (no `commit_sha`, optional `description`). The
++       trial-side terminalization to `error` happens via
++       `_reject_implement` when the orchestrator rejects the
++       errored submission per `04-task-protocol.md` §4.3.
+    - **Phase 2 of the write — create_ref.** Status=success only:
+      `repo.create_ref(f"refs/heads/{branch}", commit_sha)`. The
+      ref-write happens *after* `create_trial` so the §3.2 step-1
+@@ -393,18 +398,44 @@
+        which raise `IllegalTransition` for ref-binding
+        failures), so it is not in the short-circuit set.
+      - On retry exhaustion with only transport-shaped
+-       failures, perform a **committed-state read-back**
+-       before declaring orphan: `read_task(task_id)`. If the
+-       returned `state in {"submitted", "completed"}` and the
+-       task's claim is `None` *or* matches our token's
+-       worker_id, the prior attempt actually committed
+-       (chapter 07 §8.1 idempotent resubmit semantics applied
+-       server-side; our retry's response was lost in
+-       transport). Treat as success: drop the `_CLAIMS` entry,
+-       render `implementer_submitted.html`. Otherwise render
+-       the orphan page. This mirrors
+-       `StoreClient.integrate_trial`'s read-back reconciliation
+-       (chapter 07 Phase 8a).
++       failures, perform a **committed-state read-back** that
++       keys off exact submission identity, not `worker_id`
++       (`worker_id` is shared across UI sessions by default per
++       §F, so it cannot uniquely identify *our* claim). The
++       read-back path:
++       1. `task = store.read_task(task_id)`. If
++          `task.state == "claimed"` and `task.claim` is still
++          ours (claim token equals the one we hold), no submit
++          committed; render the orphan page (sub-case B in
++          §C-recovery). If `task.state == "claimed"` but the
++          claim is a different token, our claim was reclaimed
++          and re-claimed by another session; render the orphan
++          page with the wire-error name `eden://error/wrong-token`
++          (because that's exactly what the next non-retry
++          submit would have returned).
++       2. If `task.state in {"submitted", "completed"}`, call
++          `prior = store.read_submission(task_id)`. Compare
++          `prior` to *our* `submission` via
++          `submissions_equivalent(prior, submission)` from
++          `eden_storage.submissions`. If equivalent, our prior
++          attempt committed (the lost response is what put us
++          here); drop `_CLAIMS`, render
++          `implementer_submitted.html`. If not equivalent,
++          render the orphan page with banner
++          `eden://error/conflicting-resubmission` (a different
++          submission won the race; our work is orphaned). If
++          `read_submission` returns `None`, the store is in an
++          implementation-illegal state (`submitted` without a
++          recorded submission); render the orphan page with a
++          generic transport-failure banner.
++       3. If `task.state in {"failed", "pending"}`, our claim
++          was reclaimed and the prior attempt did not commit;
++          render the orphan page.
++
++       This mirrors `StoreClient.integrate_trial`'s read-back
++       reconciliation (chapter 07 Phase 8a) but uses the
++       exact-payload comparison the protocol semantics actually
++       require for "did *my* submit win the idempotent path."
+    - On §C step-4 success, drop the `_CLAIMS` entry, render
+      `implementer_submitted.html` with the trial_id and the
+      work/* branch ref so the operator can link out.
+@@ -506,14 +537,25 @@
+ 
+ - `implementer_list.html` — pending implement tasks + a small
+   recent-trials panel.
+-- `implementer_claim.html` — the draft form. Includes the
+-  proposal's rationale (rendered) plus a hidden form field for
+-  `trial_id` (the server-generated id from claim-time) so the
+-  POST handler does not need to look it up by claim-token.
++- `implementer_claim.html` — the draft form. Renders the
++  proposal's rationale via the §A.1 trust-boundary helper.
++  Carries no `trial_id` field (hidden or visible); the POST
++  handler reads `trial_id` from `_CLAIMS` (§A.2).
+ - `implementer_submitted.html` — success confirmation; shows
+   `trial_id`, `commit_sha`, and the `work/*` ref name.
+-- `implementer_orphaned.html` — Phase-3 failure landing page.
+-  Documents the auto-recovery path.
++- `implementer_orphaned.html` — Phase-2 / Phase-3 failure
++  landing page. Renders one of three case-specific prose
++  blocks selected by the banner:
++  - "auto-recovers via reclaim" — for Phase-2 failure and
++    Phase-3 transport-only read-back-confirmed-uncommitted
++    cases.
++  - "your submit committed; the system has it" — for the
++    rare Phase-3 transport-only read-back-confirmed-committed
++    case (rendered as the success page in practice; only
++    appears here if a downstream renderer choice goes wrong,
++    which the tests forbid).
++  - "operator intervention may be needed" — for
++    `ConflictingResubmission`.
+ 
+ The shared `_error.html`, `base.html`, `_proposal_row.html`
+ (planner-only), and the existing CSS file are unchanged. Any
+@@ -568,9 +610,10 @@
+ ### G. Documentation updates
+ 
+ - `reference/services/web-ui/README.md` — add an "Implementer
+-  module" section: required CLI flags (`--repo-path`), the
+-  manual-git-push assumption, the spec-to-code map for §C
+-  above, and the auto-recovery semantics for orphaned trials.
++  module" section: optional `--repo-path` flag (gates the
++  whole module), the manual-git-push assumption, the
++  spec-to-code map for §C above, and the per-error recovery
++  semantics for orphaned trials per §C-recovery.
+ - `reference/README.md` — flip the `web-ui` row's status to
+   reflect chunk 9c.
+ - `AGENTS.md` — add a "Phase 9 chunk 9c complete" status block
+@@ -665,7 +708,7 @@
+    - **Phase 3 `ConflictingResubmission`.** Banner = canonical
+      name; orphan page prose mentions operator intervention may
+      be needed.
+-   - **Pre-Phase-2 ref-collision guard.** Pre-create the
++   - **Pre-Phase-1 ref-collision guard.** Pre-create the
+      `refs/heads/work/<slug>-<trial_id>` ref before submit.
+      Drive submit; assert form re-renders with `commit_sha`
+      field error and `_CLAIMS` entry retained, no
+@@ -749,7 +792,7 @@
+ Before declaring the chunk done, all of the following hold:
+ 
+ 1. `uv sync && uv run pytest -q` — full suite green, including
+-   the four new web-ui test files.
++   the five new web-ui test files (per §I).
+ 2. `uv run pytest -m e2e -q` — chunk-1 e2e + chunk-9c e2e both
+    green.
+ 3. `uv run ruff check .` — clean.
+@@ -825,18 +868,20 @@
+ - **Local-bare-repo assumption.** Multi-machine deployments will
+   fail because the UI's local `GitRepo` cannot reach a remote
+   bare repo. Documented in §H Non-goals; revisit at Milestone 3.
+-- **Trial-id leakage between draft pages.** The draft template
+-  carries `trial_id` as a hidden form field. A user who opens
+-  two draft pages for the same task in two tabs (somehow — the
+-  `_CLAIMS` mapping prevents a second claim while the first is
+-  outstanding, but a single claim could feed two draft fetches
+-  in two tabs) would see the same `trial_id` in both. The
+-  submit handler resolves to whichever tab posts first; the
+-  second submit either succeeds idempotently (same trial_id +
+-  same commit_sha is content-equivalent per chapter 07 §8.1) or
+-  fails with `ConflictingResubmission` (different commit_sha)
+-  and routes to the orphan page. Both behaviors are correct;
+-  the UX is suboptimal but not incorrect.
++- **Two-tab draft race.** Two draft pages for the same task in
++  the same session render the same `branch` (because both pull
++  the same `trial_id` from `_CLAIMS`; per §A.2 it is server-only
++  and not influenced by the request). Whichever tab submits
++  first wins via the normal `claim → submit` path; the second
++  tab's submit reads `_CLAIMS`, observes that the entry has been
++  popped (success path drops it), and is treated as
++  "claim missing from session" — the user sees the planner-style
++  "claim missing" banner. If both tabs reach `submit` before
++  either pop runs, the second hits `IllegalTransition` (task is
++  already `submitted`) or `ConflictingResubmission` (same
++  task+token, different commit_sha) and lands on the orphan
++  page with the per-error prose from §C-recovery. The UX is
++  suboptimal but not incorrect.
+ - **`work/*` ref already exists.** The branch name is derived
+   from `slug + trial_id`, where `trial_id` is `uuid.uuid4().hex[:12]`.
+   Statistically unique, but a defensive guard is cheap: before

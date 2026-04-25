@@ -6,7 +6,7 @@ This directory contains one complete implementation of the EDEN protocol. It is 
 
 ## Status
 
-Through Phase 9 chunk 1: a reference Web UI service hosts the planner module — a human can sign in, claim a plan task, draft proposals through a browser, and submit, with submissions round-tripping through the wire `StoreClient` against a real task-store-server. An expired-claim sweeper runs once per orchestrator iteration so abandoned UI claims don't strand tasks. Phase 8c remains: in-process dispatch removed; each role runs in its own OS process; the orchestrator service drives `eden_dispatch.run_orchestrator_iteration` against a `StoreClient`.
+Through Phase 9 chunk 9c: the reference Web UI service hosts the planner module **and** the implementer module — a human can sign in, claim either a plan or an implement task, drive it through a browser, and submit. Implementer-side, the user does git work in their own checkout, pushes their tip commit to the bare repo (the `--repo-path` the UI service is configured against), then enters the resulting `commit_sha`; the UI verifies §3.3 reachability via `eden_git.GitRepo.commit_exists` + `is_ancestor`, creates the trial in `starting`, writes the canonical `work/<slug>-<trial_id>` ref, and submits with retry-before-orphan + committed-state read-back. Submissions round-trip through `eden_wire.StoreClient`. The implementer module is gated on `--repo-path`; planner-only deployments stay supported by omitting the flag.
 
 ### Services
 
@@ -19,7 +19,7 @@ Through Phase 9 chunk 1: a reference Web UI service hosts the planner module —
 | [`services/implementer/`](services/implementer/) | Implementer worker host (standalone process; writes real git commits) | Phase 5 → Phase 8b |
 | [`services/evaluator/`](services/evaluator/) | Evaluator worker host (standalone process) | Phase 5 → Phase 8b |
 | [`services/control-plane/`](services/control-plane/) | Experiment registration, lease issuance | Phase 12 |
-| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner module (BFF over `StoreClient`); implementer/evaluator/observability arrive in 9c–9e | Phase 9 chunk 1 |
+| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner + implementer modules (BFF over `StoreClient`; implementer is opt-in via `--repo-path`); evaluator/observability arrive in 9d–9e | Phase 9 chunks 1 + 9c |
 
 ### Packages
 
