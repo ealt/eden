@@ -414,12 +414,20 @@ class TestDefinitiveSubmitErrors:
         assert "eden://error/wrong-token" in resp.text
         assert len(store.list_proposals(state="ready")) == 1
 
-    def test_illegal_transition_lands_on_orphan_with_banner(
+    def test_illegal_transition_feeds_readback(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
         monkeypatch,
     ) -> None:
+        """``IllegalTransition`` no longer short-circuits to orphan.
+
+        It now falls through to read-back. With the underlying task
+        still claimed by us, read-back surfaces a transport-flavored
+        banner naming ``IllegalTransition`` rather than the raw
+        wire-error string. The "we won" sub-case is covered in the
+        IllegalTransitionReadback class below.
+        """
         from eden_storage import IllegalTransition
 
         token = self._setup_claim(signed_in_client, store, "t-it")
@@ -430,7 +438,11 @@ class TestDefinitiveSubmitErrors:
         monkeypatch.setattr(store, "submit", fail)
         resp = self._submit(signed_in_client, "t-it", token)
         assert resp.status_code == 502
-        assert "eden://error/illegal-transition" in resp.text
+        # Old behavior asserted "eden://error/illegal-transition" but
+        # the new read-back-fed contract surfaces the exception class
+        # name in the transport banner.
+        assert "IllegalTransition" in resp.text
+        assert "eden://error/illegal-transition" not in resp.text
 
     def test_conflicting_resubmission_lands_on_orphan_with_banner(
         self,
@@ -467,6 +479,104 @@ class TestDefinitiveSubmitErrors:
         resp = self._submit(signed_in_client, "t-ip", token)
         assert resp.status_code == 502
         assert "eden://error/invalid-precondition" in resp.text
+
+
+class TestIllegalTransitionReadback:
+    """``IllegalTransition`` feeds read-back, not a definitive orphan.
+
+    Distinguishes "we won; orchestrator already terminalized" from
+    "we lost; different submission won." The chunk-9c implementer
+    module shipped this lens via §K-2 of the chunk-9d plan; the
+    planner gets the same fix here.
+    """
+
+    def _setup_claim(
+        self, client: TestClient, store: InMemoryStore, task_id: str
+    ) -> str:
+        store.create_plan_task(task_id)
+        token = get_csrf(client)
+        resp = client.post(
+            f"/planner/{task_id}/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        return token
+
+    def _submit(
+        self, client: TestClient, task_id: str, csrf: str
+    ):
+        return client.post(
+            f"/planner/{task_id}/submit",
+            data={
+                "csrf_token": csrf,
+                "status": "success",
+                "slug": "feat-rb",
+                "priority": "1.0",
+                "parent_commits": "a" * 40,
+                "rationale": "rationale",
+            },
+        )
+
+    def test_completed_with_equivalent_prior_renders_success(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        monkeypatch,
+    ) -> None:
+        """We won: submit committed, orchestrator terminalized, retry hit IllegalTransition."""
+        from eden_storage import IllegalTransition
+
+        csrf = self._setup_claim(signed_in_client, store, "t-itb")
+        original_submit = store.submit
+
+        def fake_submit(task_id_, token, submission):
+            # Commit, accept (state -> completed), then raise
+            # IllegalTransition simulating "response was lost; we
+            # retried and saw a state the store rejects."
+            original_submit(task_id_, token, submission)
+            store.accept(task_id_)
+            raise IllegalTransition("simulated post-terminalization retry")
+
+        monkeypatch.setattr(store, "submit", fake_submit)
+        resp = self._submit(signed_in_client, "t-itb", csrf)
+        # SUCCESS, not orphan — this is the planner-side §K-2 fix.
+        assert resp.status_code == 200
+        assert "feat-rb" in resp.text or "submitted" in resp.text.lower()
+
+    def test_completed_with_non_equivalent_prior_renders_orphan(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        monkeypatch,
+    ) -> None:
+        """Different submission won the race; read-back finds non-equivalent."""
+        from eden_contracts import PlanPayload, PlanTask
+        from eden_storage import IllegalTransition, PlanSubmission
+
+        csrf = self._setup_claim(signed_in_client, store, "t-itc")
+        synthetic_task = PlanTask(
+            task_id="t-itc",
+            kind="plan",
+            state="completed",
+            payload=PlanPayload(experiment_id=store.experiment_id),
+            created_at="2026-04-24T11:00:00.000Z",
+            updated_at="2026-04-24T13:00:00.000Z",
+        )
+        non_equiv_prior = PlanSubmission(
+            status="success", proposal_ids=("proposal-other-worker",)
+        )
+
+        def fake_submit(*a, **k):
+            raise IllegalTransition("task already terminal")
+
+        monkeypatch.setattr(store, "submit", fake_submit)
+        monkeypatch.setattr(store, "read_task", lambda tid: synthetic_task)
+        monkeypatch.setattr(store, "read_submission", lambda tid: non_equiv_prior)
+
+        resp = self._submit(signed_in_client, "t-itc", csrf)
+        assert resp.status_code == 502
+        assert "conflicting-resubmission" in resp.text
 
 
 class TestRetryBeforeOrphan:
