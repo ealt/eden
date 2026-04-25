@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin work refs{% endblock %}
+{% block main %}
+<h1>work-ref garbage collection</h1>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+{% if not repo_enabled %}
+<p>
+    work-ref GC requires <code>--repo-path</code>; restart the
+    web-ui with the flag if you want to manage refs from this UI.
+</p>
+{% else %}
+
+<section>
+    <h2>eligible for deletion ({{ groups.eligible | length }})</h2>
+    {% if groups.eligible %}
+    <table>
+        <thead><tr><th>ref</th><th>SHA</th><th>trial</th><th>reason</th><th>action</th></tr></thead>
+        <tbody>
+        {% for entry in groups.eligible %}
+            <tr>
+                <td><code>{{ entry.ref_name }}</code></td>
+                <td><code>{{ entry.current_sha[:12] }}</code></td>
+                <td><a href="/admin/trials/{{ entry.trial.trial_id }}/"><code>{{ entry.trial.trial_id }}</code></a></td>
+                <td>{{ entry.reason }}</td>
+                <td>
+                    <form action="/admin/work-refs/delete" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="ref_name" value="{{ entry.ref_name }}">
+                        <input type="hidden" name="expected_old_sha" value="{{ entry.current_sha }}">
+                        <button type="submit">delete</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>none.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>not eligible ({{ groups.not_eligible | length }})</h2>
+    {% if groups.not_eligible %}
+    <table>
+        <thead><tr><th>ref</th><th>SHA</th><th>trial</th><th>reason</th></tr></thead>
+        <tbody>
+        {% for entry in groups.not_eligible %}
+            <tr>
+                <td><code>{{ entry.ref_name }}</code></td>
+                <td><code>{{ entry.current_sha[:12] }}</code></td>
+                <td>{% if entry.trial %}<a href="/admin/trials/{{ entry.trial.trial_id }}/"><code>{{ entry.trial.trial_id }}</code></a>{% else %}—{% endif %}</td>
+                <td>{{ entry.reason }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>none.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>orphan refs ({{ groups.orphan | length }})</h2>
+    {% if groups.orphan %}
+    <p><em>no trial owns these refs — likely a Pre-Phase-1 ref-collision retry leftover or a manual <code>git update-ref</code> outside the system.</em></p>
+    <table>
+        <thead><tr><th>ref</th><th>SHA</th><th>action</th></tr></thead>
+        <tbody>
+        {% for entry in groups.orphan %}
+            <tr>
+                <td><code>{{ entry.ref_name }}</code></td>
+                <td><code>{{ entry.current_sha[:12] }}</code></td>
+                <td>
+                    <form action="/admin/work-refs/delete" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="ref_name" value="{{ entry.ref_name }}">
+                        <input type="hidden" name="expected_old_sha" value="{{ entry.current_sha }}">
+                        <button type="submit">delete</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>none.</p>
+    {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}

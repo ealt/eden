@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin trials{% endblock %}
+{% block main %}
+<h1>trials</h1>
+
+<form method="get" action="/admin/trials/" class="filters">
+    <label>status
+        <select name="status">
+            <option value="*" {% if selected_status == "*" %}selected{% endif %}>all</option>
+            {% for s in trial_statuses %}
+                <option value="{{ s }}" {% if selected_status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <button type="submit">filter</button>
+</form>
+
+{% if rows %}
+<table>
+    <thead>
+        <tr>
+            <th>trial id</th>
+            <th>proposal</th>
+            <th>status</th>
+            <th>branch</th>
+            <th>commit_sha</th>
+            <th>trial_commit_sha</th>
+            <th>started_at</th>
+            <th>completed_at</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+        <tr>
+            <td><a href="/admin/trials/{{ r.trial_id }}/"><code>{{ r.trial_id }}</code></a></td>
+            <td><code>{{ r.proposal_id }}</code></td>
+            <td>{{ r.status }}{% if r.orphaned %} <span class="badge badge-warn">&#9888; orphaned starting</span>{% endif %}</td>
+            <td>{% if r.branch %}<code>{{ r.branch }}</code>{% else %}—{% endif %}</td>
+            <td>{% if r.commit_sha %}<code title="{{ r.commit_sha }}">{{ r.commit_sha[:12] }}</code>{% else %}—{% endif %}</td>
+            <td>{% if r.trial_commit_sha %}<code title="{{ r.trial_commit_sha }}">{{ r.trial_commit_sha[:12] }}</code>{% else %}—{% endif %}</td>
+            <td>{{ r.started_at }}</td>
+            <td>{% if r.completed_at %}{{ r.completed_at }}{% else %}—{% endif %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>no trials match this filter.</p>
+{% endif %}
+{% endblock %}

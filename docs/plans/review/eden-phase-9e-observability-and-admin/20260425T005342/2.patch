@@ -1,0 +1,120 @@
+--- docs/plans/review/eden-phase-9e-observability-and-admin/20260425T005342/1.md	2026-04-25 01:21:31
++++ docs/plans/eden-phase-9e-observability-and-admin.md	2026-04-25 03:29:01
+@@ -313,10 +313,15 @@
+      filtered by `payload.trial_id == trial_id`. There may be
+      more than one (a fresh evaluate task can be created after
+      `eval_error`); include task events for all of them.
+-  4. Union the three sets, sort by `event.event_id` (or by index
+-     position in the full replay — both are monotonic), cap at
+-     50, render with newest first. "showing N of M" footer when
+-     `M > 50`.
++  4. Union the three sets, sort by **replay-index position in the
++     full `store.replay()` list** (computed before slicing — see
++     §A.6's natural-index-before-slice discipline). Replay order
++     is the only authoritative monotonic ordering; `event.event_id`
++     comes from a pluggable factory
++     (`reference/packages/eden-storage/src/eden_storage/_base.py`'s
++     `event_id_factory`) and is **not** a reliable ordering
++     contract. Cap at 50, render with newest first. "showing N of M"
++     footer when `M > 50`.
+ 
+   This is implementable without any new fold helper in
+   `eden-dispatch`; it composes already-public Store methods.
+@@ -370,21 +375,47 @@
+ - When `app.state.repo is None`: render an explanatory placeholder
+   ("work-ref GC requires `--repo-path`; restart the web-ui with
+   the flag if you want to manage refs from this UI").
+-- When `repo` is set: call `repo.list_refs("refs/heads/work/*")`,
+-  cross-reference each ref against the trial set:
+-  - **GC-eligible**: trial is terminal (`error`, `eval_error`,
+-    or `success` with `trial_commit_sha` set), and the work ref
+-    `commit_sha` matches the trial's `commit_sha`. Show a
+-    "delete" button per row.
+-  - **Not eligible**: trial is `starting` (live work in progress)
+-    or trial is `success` without `trial_commit_sha` (integrator
+-    has not yet promoted). Listed with a reason, no delete button.
+-  - **Orphan**: ref points at a SHA that **no trial** records as its
+-    `commit_sha`. Most likely a leftover from a Pre-Phase-1 ref-
+-    collision retry that succeeded on a different name, or a
+-    manual `git update-ref` outside the system. Show a delete
+-    button + "no trial owns this ref" warning.
++- When `repo` is set: call `repo.list_refs("refs/heads/work/*")`
++  and classify each ref **by its name**, not by its current SHA.
++  The canonical ref naming pinned by the implementer module is
++  `refs/heads/work/<slug>-<trial_id>` (see
++  `reference/services/web-ui/src/eden_web_ui/routes/implementer.py:69`
++  and the `slug` regex `^[a-z0-9][a-z0-9-]*$` in
++  `spec/v0/02-data-model.md` §5.1). Classification rule:
++
++  1. Strip the `refs/heads/work/` prefix; split on the **last**
++     `-` to get `(slug, trial_id)` candidates. (`trial_id` is
++     opaque per `02-data-model.md` §7.1; the slug is already
++     constrained to a-z/0-9/`-`, so the rightmost `-` is the only
++     reliable boundary.)
++  2. Look up `trial = store.read_trial(trial_id)`. Three outcomes:
++     - **Trial exists** and `trial.status` is terminal-and-handled
++       (`error`, `eval_error`, or `success` with `trial_commit_sha`
++       set) **and** the ref's current SHA equals
++       `trial.commit_sha` → **GC-eligible**. Show a delete button.
++     - **Trial exists** but is `starting`, or is `success` without
++       `trial_commit_sha` (integrator hasn't promoted yet), or the
++       ref's SHA does **not** match `trial.commit_sha` →
++       **Not eligible**. List the reason; no delete button. The
++       SHA-mismatch case is the dangerous one — it means a third
++       party rewrote the work branch and the operator should
++       investigate before deleting.
++     - **Trial does not exist** (the parsed `trial_id` resolves
++       to no trial) → **Orphan**. Most likely a leftover from a
++       Pre-Phase-1 ref-collision retry that succeeded on a different
++       name, or a manual `git update-ref` outside the system.
++       Show a delete button + "no trial owns this ref" warning.
++     - **Ref name does not parse** (no `-`, or empty slug or
++       trial_id segment) → list as **Unparseable**. No delete
++       button. The operator can clean these up via `git` directly
++       if they know what they are.
+ 
++  This trial-id-from-name discipline is the trust boundary: a SHA
++  collision between two trials, or a manual ref rewrite, cannot
++  cause us to associate a ref with the wrong trial. The SHA check
++  remains as the eligibility predicate for the parsed-and-known
++  case.
++
+ `POST /admin/work-refs/delete`:
+ 
+ - Form body has `ref_name` (e.g. `refs/heads/work/slug-T-7`) +
+@@ -525,7 +556,34 @@
+ `/admin/*` routes catch:
+ 
+ - `IllegalTransition` (storage-domain) on reclaim → banner.
+-- `NotFound` on read paths → 404 via the existing exception handler.
++- `NotFound` (from `eden_storage.errors` and re-raised by the
++  `eden_wire` `StoreClient` for HTTP 404 problem+json responses) on
++  every detail-route read (`store.read_task`, `read_trial`,
++  `read_proposal`). The existing `@app.exception_handler(404)` in
++  `reference/services/web-ui/src/eden_web_ui/app.py:90` only catches
++  HTTP 404 *responses* — it does not catch raised
++  `eden_storage.NotFound` / `eden_wire.NotFound` exceptions. Chunk
++  9e adds an explicit handler in `make_app`:
++
++  ```python
++  from eden_storage.errors import NotFound as StorageNotFound
++
++  @app.exception_handler(StorageNotFound)
++  async def _storage_not_found(request, exc):
++      return templates.TemplateResponse(
++          request, "_error.html",
++          {"title": "Not found", "message": str(exc)},
++          status_code=404,
++      )
++  ```
++
++  Routes raise it implicitly via the `Store` calls; one app-wide
++  handler covers every `/admin/*/<id>/` detail route plus any
++  similar use elsewhere in the UI. The wire-side `NotFound` and
++  the storage-side `NotFound` are the same exception class
++  (`eden_storage.errors.NotFound`, re-raised by `StoreClient`),
++  so a single handler suffices.
++
+ - `GitError` on `list_refs` / `delete_ref` → re-raise as a 5xx
+   via FastAPI's default; the operator sees the standard error
+   page. Logging captures the git stderr.

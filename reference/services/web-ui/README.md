@@ -1,11 +1,14 @@
 # eden-web-ui
 
 Reference Web UI service for the EDEN protocol. Phase 9 chunks 1
-(UI shell + planner module), 9c (implementer module), and 9d
-(evaluator module) ship — a human can play any of the three
-worker roles end-to-end through a browser. The implementer module
-is gated on the optional `--repo-path` flag; if omitted, the UI
-runs as a planner+evaluator deployment.
+(UI shell + planner module), 9c (implementer module), 9d
+(evaluator module), and 9e (admin / observability) ship — a human
+can play any of the three worker roles end-to-end through a
+browser, observe the experiment's task / trial / event state from
+`/admin/*`, and operator-reclaim a stranded claim. The implementer
+module and the work-ref GC sub-page of `/admin/*` are gated on the
+optional `--repo-path` flag; if omitted, the UI runs as a
+planner + evaluator + (read-only) admin deployment.
 
 The UI service is a **backend-for-frontend (BFF)**: it holds the
 `--shared-token` (the chapter 07 §12 reference bearer the

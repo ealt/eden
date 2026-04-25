@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin task {{ task.task_id }}{% endblock %}
+{% block main %}
+<h1>task <code>{{ task.task_id }}</code></h1>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+<dl>
+    <dt>kind</dt><dd>{{ task.kind }}</dd>
+    <dt>state</dt><dd>{{ task.state }}{% if claim_expired %} <span class="badge badge-warn">&#9888; claim expired</span>{% endif %}</dd>
+    <dt>created_at</dt><dd>{{ task.created_at }}</dd>
+    <dt>updated_at</dt><dd>{{ task.updated_at }}</dd>
+    {% if task.claim %}
+    <dt>worker</dt><dd><code>{{ task.claim.worker_id }}</code></dd>
+    <dt>claimed_at</dt><dd>{{ task.claim.claimed_at }}</dd>
+    <dt>expires_at</dt><dd>{% if task.claim.expires_at %}{{ task.claim.expires_at }}{% else %}—{% endif %}</dd>
+    <dt>claim age (s)</dt><dd>{% if claim_age is not none %}{{ "%.1f"|format(claim_age) }}{% else %}—{% endif %}</dd>
+    {% endif %}
+</dl>
+
+<section>
+    <h2>payload</h2>
+    <pre>{{ payload_json | tojson(indent=2) }}</pre>
+</section>
+
+{% if can_reclaim %}
+<section>
+    <h2>operator reclaim</h2>
+    {% if is_force %}
+    <p class="warn">
+        <strong>this task is in <code>submitted</code> state.</strong>
+        reclaiming will replay the work and may produce a different trial.
+    </p>
+    {% endif %}
+    <form action="/admin/tasks/{{ task.task_id }}/reclaim" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{% if is_force %}force-reclaim (replays work){% else %}reclaim{% endif %}</button>
+    </form>
+</section>
+{% endif %}
+
+<section>
+    <h2>related events (latest {{ related_events | length }})</h2>
+    {% if related_events %}
+    <table>
+        <thead><tr><th>type</th><th>occurred_at</th><th>event_id</th></tr></thead>
+        <tbody>
+        {% for ev in related_events %}
+            <tr>
+                <td><code>{{ ev.type }}</code></td>
+                <td>{{ ev.occurred_at }}</td>
+                <td><code>{{ ev.event_id }}</code></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no related events.</p>
+    {% endif %}
+</section>
+{% endblock %}

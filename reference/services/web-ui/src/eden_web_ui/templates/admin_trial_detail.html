@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin trial {{ trial.trial_id }}{% endblock %}
+{% block main %}
+<h1>trial <code>{{ trial.trial_id }}</code></h1>
+
+<dl>
+    <dt>status</dt><dd>{{ trial.status }}</dd>
+    <dt>proposal_id</dt><dd><code>{{ trial.proposal_id }}</code></dd>
+    <dt>branch</dt><dd>{% if trial.branch %}<code>{{ trial.branch }}</code>{% else %}—{% endif %}</dd>
+    <dt>commit_sha</dt><dd>{% if trial.commit_sha %}<code>{{ trial.commit_sha }}</code>{% else %}—{% endif %}</dd>
+    <dt>trial_commit_sha</dt><dd>{% if trial.trial_commit_sha %}<code>{{ trial.trial_commit_sha }}</code>{% else %}—{% endif %}</dd>
+    <dt>parent_commits</dt><dd>
+        {% for sha in trial.parent_commits %}<code>{{ sha }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+    </dd>
+    <dt>started_at</dt><dd>{{ trial.started_at }}</dd>
+    <dt>completed_at</dt><dd>{% if trial.completed_at %}{{ trial.completed_at }}{% else %}—{% endif %}</dd>
+</dl>
+
+{% if trial.description %}
+<section>
+    <h2>description</h2>
+    <pre>{{ trial.description }}</pre>
+</section>
+{% endif %}
+
+{% if trial.artifacts_uri %}
+<section>
+    <h2>artifacts</h2>
+    <p><code>{{ trial.artifacts_uri }}</code></p>
+    {% if trial_artifact_inline %}
+    <pre>{{ trial_artifact_inline }}</pre>
+    {% else %}
+    <p><em>(not inlined: scheme not file://, outside artifacts-dir, or &gt; 1 MiB)</em></p>
+    {% endif %}
+</section>
+{% endif %}
+
+{% if trial.metrics %}
+<section>
+    <h2>metrics</h2>
+    <pre>{{ trial.metrics | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+
+<section>
+    <h2>parent proposal</h2>
+    <dl>
+        <dt>slug</dt><dd>{{ proposal.slug }}</dd>
+        <dt>state</dt><dd>{{ proposal.state }}</dd>
+        <dt>priority</dt><dd>{{ proposal.priority }}</dd>
+    </dl>
+</section>
+
+<section>
+    <h2>related events
+        {% if related_total > related_events|length %}
+            (showing {{ related_events|length }} of {{ related_total }})
+        {% else %}
+            ({{ related_events|length }})
+        {% endif %}
+    </h2>
+    {% if related_events %}
+    <table>
+        <thead><tr><th>type</th><th>occurred_at</th><th>event_id</th><th>data</th></tr></thead>
+        <tbody>
+        {% for ev in related_events %}
+            <tr>
+                <td><code>{{ ev.type }}</code></td>
+                <td>{{ ev.occurred_at }}</td>
+                <td><code>{{ ev.event_id }}</code></td>
+                <td><details><summary>view</summary><pre>{{ ev.data | tojson(indent=2) }}</pre></details></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no related events.</p>
+    {% endif %}
+</section>
+{% endblock %}
