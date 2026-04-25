@@ -1,0 +1,22 @@
+{# Single proposal row, rendered standalone for HTMX swaps and inline by planner_claim.html. #}
+{% set row = row_state if row_state is defined else {"slug":"","priority":"1.0","parent_commits":"","rationale":""} %}
+{% set row_errs = row_errs if row_errs is defined else {} %}
+<div class="proposal-row" data-row-index="{{ i }}">
+    <h3>row {{ i + 1 }}</h3>
+    <label>slug
+        <input type="text" name="slug" value="{{ row.slug }}">
+        {% if row_errs.get("slug") %}<span class="field-error">{{ row_errs["slug"] }}</span>{% endif %}
+    </label>
+    <label>priority
+        <input type="text" name="priority" value="{{ row.priority }}">
+        {% if row_errs.get("priority") %}<span class="field-error">{{ row_errs["priority"] }}</span>{% endif %}
+    </label>
+    <label>parent commit SHAs (comma-separated)
+        <input type="text" name="parent_commits" value="{{ row.parent_commits }}">
+        {% if row_errs.get("parent_commits") %}<span class="field-error">{{ row_errs["parent_commits"] }}</span>{% endif %}
+    </label>
+    <label>rationale (markdown)
+        <textarea name="rationale" rows="6">{{ row.rationale }}</textarea>
+        {% if row_errs.get("rationale") %}<span class="field-error">{{ row_errs["rationale"] }}</span>{% endif %}
+    </label>
+</div>

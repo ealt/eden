@@ -28,34 +28,31 @@
     <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
     <fieldset>
         <legend>proposals</legend>
-        {% for i in row_indices %}
-        {% set row = form_state[i] if i < (form_state|length) else {"slug":"","priority":"1.0","parent_commits":"","rationale":""} %}
-        {% set row_errs = (errors.by_row[i] if errors and i in errors.by_row else {}) %}
-        <div class="proposal-row">
-            <h3>row {{ i + 1 }}</h3>
-            <label>slug
-                <input type="text" name="slug" value="{{ row.slug }}">
-                {% if row_errs.get("slug") %}<span class="field-error">{{ row_errs["slug"] }}</span>{% endif %}
-            </label>
-            <label>priority
-                <input type="text" name="priority" value="{{ row.priority }}">
-                {% if row_errs.get("priority") %}<span class="field-error">{{ row_errs["priority"] }}</span>{% endif %}
-            </label>
-            <label>parent commit SHAs (comma-separated)
-                <input type="text" name="parent_commits" value="{{ row.parent_commits }}">
-                {% if row_errs.get("parent_commits") %}<span class="field-error">{{ row_errs["parent_commits"] }}</span>{% endif %}
-            </label>
-            <label>rationale (markdown)
-                <textarea name="rationale" rows="6">{{ row.rationale }}</textarea>
-                {% if row_errs.get("rationale") %}<span class="field-error">{{ row_errs["rationale"] }}</span>{% endif %}
-            </label>
+        <div id="proposal-rows">
+            {% for i in row_indices %}
+                {% with row_state=(form_state[i] if i < (form_state|length) else None),
+                        row_errs=(errors.by_row[i] if errors and i in errors.by_row else {}) %}
+                    {% include "_proposal_row.html" %}
+                {% endwith %}
+            {% endfor %}
         </div>
-        {% endfor %}
     </fieldset>
     <div class="actions">
         <button type="submit" name="status" value="success">submit (success)</button>
         <button type="submit" name="status" value="error" class="danger">submit (error)</button>
-        <button type="submit" formaction="/planner/{{ task_id }}/add_row" formmethod="post">add another row</button>
+        {# HTMX-enhanced add-row: when JS is enabled, htmx intercepts and swaps in
+           a new row in place; without JS, the button falls back to a full-page
+           form-POST (formaction/formmethod) that re-renders the whole page with
+           one more row appended. Same end state, two transports. #}
+        <button type="submit"
+                formaction="/planner/{{ task_id }}/add_row"
+                formmethod="post"
+                hx-post="/planner/{{ task_id }}/add_row"
+                hx-target="#proposal-rows"
+                hx-swap="beforeend"
+                hx-include="closest form">
+            add another row
+        </button>
     </div>
 </form>
 {% endblock %}

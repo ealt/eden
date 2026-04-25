@@ -139,10 +139,17 @@ async def draft_form(
 
 @router.post("/{task_id}/add_row", response_model=None)
 async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
-    """Re-render the draft form with one more empty proposal row.
+    """Append one empty proposal row to the draft form.
 
-    This is the server-rendered fallback for "add another proposal".
-    Form input is preserved; the user keeps drafting.
+    Two transports, same end state:
+
+    - With JS, htmx posts here with ``HX-Request: true``. We respond
+      with the rendered ``_proposal_row.html`` fragment for the new
+      row only; htmx swaps it as ``beforeend`` of ``#proposal-rows``
+      so the user's existing input is untouched.
+    - Without JS, the same button submits the form normally and we
+      re-render the whole ``planner_claim.html`` with the
+      collected state plus one more empty row.
     """
     session = get_session(request)
     if session is None:
@@ -155,6 +162,25 @@ async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResp
             url="/planner/?banner=claim+missing+from+session",
             status_code=303,
         )
+    is_htmx = request.headers.get("hx-request", "").lower() == "true"
+
+    if is_htmx:
+        # The htmx-enhanced path: figure out where the new row goes
+        # by counting existing rows in the form, then render only
+        # the partial. The user's existing rows are already on the
+        # page; htmx appends ours to ``#proposal-rows``.
+        existing = max(
+            len(form.getlist("slug")),
+            len(form.getlist("priority")),
+            len(form.getlist("parent_commits")),
+            len(form.getlist("rationale")),
+        )
+        return request.app.state.templates.TemplateResponse(
+            request,
+            "_proposal_row.html",
+            {"i": existing, "row_state": _empty_row(), "row_errs": {}},
+        )
+
     config = request.app.state.experiment_config
     slugs = [str(v) for v in form.getlist("slug")]
     priorities = [str(v) for v in form.getlist("priority")]

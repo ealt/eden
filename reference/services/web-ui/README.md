@@ -11,6 +11,17 @@ in-process to talk to the task-store-server, and exposes only
 server-rendered HTML to the browser. The browser never sees the
 shared token; it gets a signed session cookie.
 
+Rendering uses Jinja2 templates with [HTMX](https://htmx.org/) as a
+progressive-enhancement layer. Every mutating route works without
+JS (plain form-POST + 303-redirect / re-render); HTMX-aware routes
+additionally return a fragment when the browser sends
+`HX-Request: true`. The chunk-1 example is "add another proposal
+row" — HTMX appends one new row inline; without JS the same
+button does a full-page re-render. HTMX is vendored at
+`src/eden_web_ui/static/htmx-1.9.12.min.js`
+(SHA-256 `449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452`)
+so the UI works offline and in CI without external network.
+
 ## Run locally
 
 ```bash
