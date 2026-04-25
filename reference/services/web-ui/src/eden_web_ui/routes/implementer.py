@@ -362,7 +362,7 @@ def _retry_submit_with_readback(
     token: str,
     submission: ImplementSubmission,
 ) -> tuple[str, str | None]:
-    """Submit with retry, then reconcile transport-shape failures via read-back.
+    """Submit with retry, then reconcile via committed-state read-back.
 
     Returns one of:
 
@@ -371,9 +371,9 @@ def _retry_submit_with_readback(
       confirmed a prior committed equivalent submission).
     - ``("auto", banner)`` — orphan page; auto-recovers via reclaim.
       Used for retry exhaustion where the read-back showed the
-      claim is still ours (sub-case B), where it shows a different
-      claim or pending state, where ``WrongToken`` /
-      ``IllegalTransition`` short-circuited (the prior reclaim
+      claim is still ours, where it shows a different claim, or
+      where the task has been reclaimed back to ``pending``;
+      and for the ``WrongToken`` short-circuit (the prior reclaim
       already errored our trial).
     - ``("conflict", banner)`` — orphan page; a different
       submission won the race (``ConflictingResubmission`` short-
@@ -382,24 +382,66 @@ def _retry_submit_with_readback(
     - ``("transport", banner)`` — orphan page; an
       implementation-illegal store state was observed during
       read-back (``read_submission`` returned ``None`` for a
-      ``submitted`` / ``completed`` / ``failed`` task).
+      ``submitted`` / ``completed`` / ``failed`` task) or the
+      read-back probe itself failed.
+
+    Exception classification (per
+    ``feedback_retry_readback_test_mocks.md`` rule 1):
+
+    - ``WrongToken`` and ``ConflictingResubmission`` are definitive
+      short-circuits. ``WrongToken`` only fires when
+      ``task.state == "claimed"`` with a non-matching token, which
+      a successful prior submit never produces (submit preserves
+      our token). ``ConflictingResubmission`` is the spec-defined
+      "different payload won" signal.
+    - ``IllegalTransition`` is **not** a definitive short-circuit:
+      it falls through to read-back. The store raises it when
+      ``task.state ∉ {"claimed", "submitted"}`` at call time,
+      which after a transport-indeterminate first attempt may
+      mean ``pending`` (we lost), ``completed``/``failed`` (we
+      won and the orchestrator already terminalized), or
+      ``submitted`` by another worker (conflict). Read-back
+      disambiguates.
+    - Other exceptions are retried with backoff; on exhaustion,
+      read-back resolves.
     """
     last_exc: BaseException | None = None
+    needs_readback = False
     for delay in _RETRY_DELAYS_S:
         try:
             store.submit(task_id, token, submission)
             return "ok", None
         except WrongToken as exc:
             return "auto", _wire_error_banner(exc)
-        except IllegalTransition as exc:
-            return "auto", _wire_error_banner(exc)
         except ConflictingResubmission as exc:
             return "conflict", _wire_error_banner(exc)
+        except IllegalTransition as exc:
+            last_exc = exc
+            needs_readback = True
+            break
         except Exception as exc:  # noqa: BLE001 — transport-shaped
             last_exc = exc
             time.sleep(delay)
 
-    # Retries exhausted with transport-shaped failures only. Reconcile.
+    if not needs_readback and last_exc is None:
+        # All retries returned cleanly is impossible (we'd return
+        # "ok" inside the loop). Defensive.
+        return "transport", "submit returned without exception or commit"
+
+    return _readback(
+        store=store, task_id=task_id, token=token, submission=submission, last_exc=last_exc
+    )
+
+
+def _readback(
+    *,
+    store: Any,
+    task_id: str,
+    token: str,
+    submission: ImplementSubmission,
+    last_exc: BaseException | None,
+) -> tuple[str, str | None]:
+    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
     try:
         task = store.read_task(task_id)
     except Exception as exc:  # noqa: BLE001
@@ -408,13 +450,9 @@ def _retry_submit_with_readback(
             f"transport failure after retries; read-back failed: {exc.__class__.__name__}",
         )
     state = task.state
-    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
     if state == "claimed":
         if task.claim is not None and task.claim.token == token:
-            return (
-                "auto",
-                f"transport failure after retries: {last_name}",
-            )
+            return ("auto", f"transport failure after retries: {last_name}")
         return "auto", "eden://error/wrong-token"
     if state in {"submitted", "completed", "failed"}:
         try:
@@ -436,10 +474,7 @@ def _retry_submit_with_readback(
             return "ok", None
         return "conflict", "eden://error/conflicting-resubmission"
     # state == "pending"
-    return (
-        "auto",
-        f"transport failure after retries; task reclaimed: {last_name}",
-    )
+    return ("auto", f"transport failure after retries; task reclaimed: {last_name}")
 
 
 def _render_draft(

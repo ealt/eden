@@ -28,6 +28,7 @@ from eden_storage import (
     PlanSubmission,
     WrongToken,
 )
+from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -322,15 +323,20 @@ def _retry_submit(
       ``eden://error/<name>`` (or a transport summary) suitable for
       surfacing to the user.
 
-    Definitive store-domain errors (``WrongToken``,
-    ``ConflictingResubmission``, ``InvalidPrecondition``,
-    ``IllegalTransition``) are not retried — retrying any of them
-    cannot change the outcome and any further attempt would just
-    return the same error or hide an actually-committed prior
-    attempt. Anything else (``DispatchError`` without a known
-    subclass, or a raw transport exception from the wire client
-    such as ``httpx.HTTPError``) is treated as transport-shaped
-    and retried.
+    Exception classification (per
+    ``feedback_retry_readback_test_mocks.md`` rule 1):
+
+    - ``WrongToken``, ``ConflictingResubmission``, and
+      ``InvalidPrecondition`` are definitive short-circuits;
+      retrying them cannot change the outcome.
+    - ``IllegalTransition`` is **not** definitive: it falls
+      through to a read-back that distinguishes "we won; the
+      orchestrator already terminalized" (success) from "we
+      lost; task reclaimed or different submission won"
+      (orphan). Treating it as a definitive orphan would
+      mis-classify a successful submit whose response was lost.
+    - Other exceptions (transport-shaped) are retried with
+      backoff; on exhaustion, the read-back resolves.
 
     On any definitive failure, the caller renders the orphan page
     rather than a "preserve input + claim again" form. Reasoning:
@@ -342,23 +348,56 @@ def _retry_submit(
     errors, where no store mutation has happened yet.
     """
     last_exc: BaseException | None = None
+    needs_readback = False
     for delay in _RETRY_DELAYS_S:
         try:
             store.submit(task_id, token, submission)
             return True, None
-        except (
-            WrongToken,
-            ConflictingResubmission,
-            InvalidPrecondition,
-            IllegalTransition,
-        ) as exc:
+        except (WrongToken, ConflictingResubmission, InvalidPrecondition) as exc:
             return False, _wire_error_banner(exc)
+        except IllegalTransition as exc:
+            last_exc = exc
+            needs_readback = True
+            break
         except Exception as exc:  # noqa: BLE001 — transport-shaped or unknown
             last_exc = exc
             time.sleep(delay)
-    if last_exc is None:
-        return True, None
-    return False, f"transport failure after retries: {last_exc.__class__.__name__}"
+
+    # Either retries exhausted with transport-shape failures, or
+    # IllegalTransition broke us out of the loop. Either way,
+    # read-back disambiguates: an equivalent prior submission means
+    # we won and the response was lost in transit; anything else is
+    # orphan.
+    if needs_readback or last_exc is not None:
+        try:
+            task = store.read_task(task_id)
+        except Exception as exc:  # noqa: BLE001
+            return (
+                False,
+                "transport failure after retries; "
+                f"read-back failed: {exc.__class__.__name__}",
+            )
+        if task.state in {"submitted", "completed", "failed"}:
+            try:
+                prior = store.read_submission(task_id)
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    False,
+                    "transport failure after retries; "
+                    f"read-submission failed: {exc.__class__.__name__}",
+                )
+            if prior is not None and submissions_equivalent(prior, submission):
+                # We won — the orchestrator already accepted (or
+                # rejected) our equivalent prior submission and the
+                # transport just lost the response.
+                return True, None
+            # state moved past submitted with a different submission
+            # → orphan conflict.
+            return False, "eden://error/conflicting-resubmission"
+        last_name = last_exc.__class__.__name__ if last_exc else "unknown"
+        return False, f"transport failure after retries: {last_name}"
+
+    return True, None
 
 
 def _make_proposal(

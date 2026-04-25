@@ -30,6 +30,7 @@ from eden_dispatch import sweep_expired_claims
 from eden_git import GitRepo
 from eden_storage import (
     ConflictingResubmission,
+    IllegalTransition,
     ImplementSubmission,
     InMemoryStore,
     WrongToken,
@@ -480,3 +481,158 @@ def _build_submission(child_sha: str) -> ImplementSubmission:
     return ImplementSubmission(
         status="success", trial_id="trial-x", commit_sha=child_sha
     )
+
+
+class TestPhase3IllegalTransitionReadback:
+    """`IllegalTransition` feeds read-back, not a definitive short-circuit.
+
+    These three sub-cases cover the §K-2 fix to chunk 9c: the
+    chunk-9c implementer module originally treated
+    ``IllegalTransition`` as a definitive auto-orphan, which
+    mis-classifies the "we won, response lost, orchestrator
+    already terminalized" sequence. The fix routes
+    ``IllegalTransition`` to read-back; the read-back's three
+    branches (state==pending, state==completed with equivalent
+    prior, state==completed with non-equivalent prior) cover the
+    actual outcomes.
+    """
+
+    def test_pending_after_illegal_transition_renders_auto_orphan(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        bare_repo: GitRepo,
+        base_sha: str,
+    ) -> None:
+        task_id, child_sha = _claim_and_prep(
+            signed_in_impl_client, store, bare_repo, base_sha, slug="ita"
+        )
+        # Reclaim the task ourselves so its state is pending; the
+        # route's submit will then raise IllegalTransition. Read-back
+        # finds state==pending → orphan auto.
+        store.reclaim(task_id, "operator")
+        csrf = get_csrf(signed_in_impl_client)
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/implementer/{task_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("commit_sha", child_sha),
+            ],
+        )
+        assert resp.status_code == 502
+        assert "auto-recovers" in resp.text
+        # Banner mentions reclaim, distinguishing this from "we won"
+        # (sub-case b below) which renders the success page.
+        assert "task reclaimed" in resp.text
+
+    def test_completed_with_equivalent_prior_renders_success(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        bare_repo: GitRepo,
+        base_sha: str,
+        monkeypatch,
+    ) -> None:
+        """The lens that flips the chunk-9c short-circuit bug to correct.
+
+        Models "our first submit attempt committed, transport lost
+        the response, the orchestrator already terminalized to
+        completed; our retry observes IllegalTransition." The fix
+        routes IllegalTransition to read-back; read-back finds an
+        equivalent prior submission → success page.
+        """
+        task_id, child_sha = _claim_and_prep(
+            signed_in_impl_client, store, bare_repo, base_sha, slug="itb"
+        )
+        original_submit = store.submit
+
+        def fake_submit(task_id_, token, submission):
+            # Commit our submission, accept it (state -> completed),
+            # then raise IllegalTransition to simulate "response was
+            # lost; we re-tried and saw a state the store now
+            # rejects." Read-back must find our equivalent committed
+            # submission and render success.
+            original_submit(task_id_, token, submission)
+            store.accept(task_id_)
+            raise IllegalTransition("simulated post-terminalization retry")
+
+        monkeypatch.setattr(store, "submit", fake_submit)
+        csrf = get_csrf(signed_in_impl_client)
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/implementer/{task_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("commit_sha", child_sha),
+            ],
+        )
+        # SUCCESS — this is the chunk-9c §K-2 bug, fixed.
+        assert resp.status_code == 200
+        assert child_sha in resp.text
+
+    def test_completed_with_non_equivalent_prior_renders_conflict(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        bare_repo: GitRepo,
+        base_sha: str,
+        monkeypatch,
+    ) -> None:
+        """IllegalTransition + read-back finds a different submission → conflict."""
+        from eden_contracts import ImplementPayload, ImplementTask
+
+        task_id, child_sha = _claim_and_prep(
+            signed_in_impl_client, store, bare_repo, base_sha, slug="itc"
+        )
+        synthetic_task = ImplementTask(
+            task_id=task_id,
+            kind="implement",
+            state="completed",
+            payload=ImplementPayload(proposal_id="proposal-itc"),
+            created_at="2026-04-24T11:00:00.000Z",
+            updated_at="2026-04-24T13:00:00.000Z",
+        )
+        # A different worker's submission would have a different
+        # trial_id; equivalence keys off (status, trial_id, commit_sha).
+        non_equiv_prior = ImplementSubmission(
+            status="success",
+            trial_id="trial-other-worker",
+            commit_sha=child_sha,
+        )
+
+        def fake_submit(*a, **k):
+            raise IllegalTransition("task already terminal")
+
+        # Patch read_task to return synthetic AFTER the route's
+        # pre-submit reads run. Easiest: use a one-shot wrapper that
+        # arms the patch on the first store.submit call.
+        original_read_task = store.read_task
+        original_read_submission = store.read_submission
+
+        def arm_then_raise(*a, **k):
+            monkeypatch.setattr(store, "read_task", lambda tid: synthetic_task)
+            monkeypatch.setattr(
+                store, "read_submission", lambda tid: non_equiv_prior
+            )
+            raise IllegalTransition("task already terminal")
+
+        monkeypatch.setattr(store, "submit", arm_then_raise)
+        csrf = get_csrf(signed_in_impl_client)
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/implementer/{task_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("commit_sha", child_sha),
+            ],
+        )
+        # Restore so subsequent fixture cleanup works.
+        monkeypatch.setattr(store, "read_task", original_read_task)
+        monkeypatch.setattr(store, "read_submission", original_read_submission)
+        assert resp.status_code == 502
+        assert "conflicting-resubmission" in resp.text
+        assert "operator intervention" in resp.text
