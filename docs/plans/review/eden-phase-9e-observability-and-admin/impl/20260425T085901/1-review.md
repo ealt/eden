@@ -1,0 +1,6 @@
+**Findings**
+1. Risk — [reference/services/web-ui/src/eden_web_ui/routes/admin.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/admin.py:615). `work_refs_delete()` now treats any `GitError` with `returncode == 1` as `?error=ref-changed`. That is still too broad: I verified `git update-ref -d` returns exit code `1` both for a true CAS mismatch and for “ref disappeared after the POST-time read” (`unable to resolve reference ...`). Under the current code, that second case is mislabeled as `ref-changed` instead of `not-found`, which still deviates from plan §I. Fix by classifying on stderr more precisely: map `expected ... but is ...` to `ref-changed`, map `unable to resolve reference` to `not-found`, and re-raise anything else.
+
+**Overall assessment**
+
+The prior four findings are effectively fixed. The read-path failure handling is now present, invalid task filters no longer fall back to the full list, and the dashboard no longer conflates “no `--repo-path`” with “git failed”. I reran the admin test set plus the admin e2e test, and all 68 tests passed. Aside from the remaining `GitError` classification edge case above, the implementation is now in good shape.

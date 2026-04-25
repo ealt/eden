@@ -1,0 +1,124 @@
+--- docs/plans/review/eden-phase-9e-observability-and-admin/20260425T005342/2.md	2026-04-25 03:29:08
++++ docs/plans/eden-phase-9e-observability-and-admin.md	2026-04-25 04:30:49
+@@ -350,7 +350,9 @@
+   configurable via `?limit=` capped at 1000). Reverse for display
+   so newest renders first.
+ - Each row carries the natural index recorded in the previous
+-  step (1-based), `event.type`, `event.event_id`, `event.timestamp`,
++  step (1-based), `event.type`, `event.event_id`, `event.occurred_at`
++  (the spec-canonical timestamp field on the `Event` envelope —
++  `reference/packages/eden-contracts/src/eden_contracts/event.py:34`),
+   and `event.data` rendered as a `<details>` toggle.
+ - Footer: when the filtered list's length exceeds N, show
+   "showing 200 of M filtered events (full log: total entries);
+@@ -375,46 +377,46 @@
+ - When `app.state.repo is None`: render an explanatory placeholder
+   ("work-ref GC requires `--repo-path`; restart the web-ui with
+   the flag if you want to manage refs from this UI").
+-- When `repo` is set: call `repo.list_refs("refs/heads/work/*")`
+-  and classify each ref **by its name**, not by its current SHA.
+-  The canonical ref naming pinned by the implementer module is
+-  `refs/heads/work/<slug>-<trial_id>` (see
+-  `reference/services/web-ui/src/eden_web_ui/routes/implementer.py:69`
+-  and the `slug` regex `^[a-z0-9][a-z0-9-]*$` in
+-  `spec/v0/02-data-model.md` §5.1). Classification rule:
++- When `repo` is set: build a `branch → trial` map by walking
++  `store.list_trials()` and indexing each trial that has a non-null
++  `trial.branch` (the `Trial` model exposes `branch` as a stored
++  field — see
++  `reference/packages/eden-contracts/src/eden_contracts/trial.py:33`).
++  Then call `repo.list_refs("refs/heads/work/*")` and classify each
++  `(refname, current_sha)` pair by **exact branch equality**, not
++  by parsing the ref name:
+ 
+-  1. Strip the `refs/heads/work/` prefix; split on the **last**
+-     `-` to get `(slug, trial_id)` candidates. (`trial_id` is
+-     opaque per `02-data-model.md` §7.1; the slug is already
+-     constrained to a-z/0-9/`-`, so the rightmost `-` is the only
+-     reliable boundary.)
+-  2. Look up `trial = store.read_trial(trial_id)`. Three outcomes:
+-     - **Trial exists** and `trial.status` is terminal-and-handled
+-       (`error`, `eval_error`, or `success` with `trial_commit_sha`
+-       set) **and** the ref's current SHA equals
+-       `trial.commit_sha` → **GC-eligible**. Show a delete button.
+-     - **Trial exists** but is `starting`, or is `success` without
+-       `trial_commit_sha` (integrator hasn't promoted yet), or the
+-       ref's SHA does **not** match `trial.commit_sha` →
+-       **Not eligible**. List the reason; no delete button. The
+-       SHA-mismatch case is the dangerous one — it means a third
+-       party rewrote the work branch and the operator should
+-       investigate before deleting.
+-     - **Trial does not exist** (the parsed `trial_id` resolves
+-       to no trial) → **Orphan**. Most likely a leftover from a
+-       Pre-Phase-1 ref-collision retry that succeeded on a different
+-       name, or a manual `git update-ref` outside the system.
+-       Show a delete button + "no trial owns this ref" warning.
+-     - **Ref name does not parse** (no `-`, or empty slug or
+-       trial_id segment) → list as **Unparseable**. No delete
+-       button. The operator can clean these up via `git` directly
+-       if they know what they are.
++  - Compute `branch_name = refname.removeprefix("refs/heads/")`.
++  - Look up `trial = branch_index.get(branch_name)`. Three
++    outcomes:
++    - **Trial found** and `trial.status` is terminal-and-handled
++      (`error`, `eval_error`, or `success` with `trial_commit_sha`
++      set) **and** `current_sha == trial.commit_sha` →
++      **GC-eligible**. Show a delete button.
++    - **Trial found** but is `starting`, or is `success` without
++      `trial_commit_sha` (integrator hasn't promoted yet), or
++      `current_sha != trial.commit_sha` → **Not eligible**. List
++      the reason; no delete button. The SHA-mismatch case is the
++      dangerous one — it means a third party rewrote the work
++      branch and the operator should investigate before deleting.
++    - **No trial owns this branch** (`branch_index.get(branch_name)`
++      is `None`) → **Orphan**. Most likely a leftover from a
++      Pre-Phase-1 ref-collision retry that succeeded on a
++      different name, or a manual `git update-ref` outside the
++      system. Show a delete button + "no trial owns this ref"
++      warning.
+ 
+-  This trial-id-from-name discipline is the trust boundary: a SHA
+-  collision between two trials, or a manual ref rewrite, cannot
+-  cause us to associate a ref with the wrong trial. The SHA check
+-  remains as the eligibility predicate for the parsed-and-known
+-  case.
++  This exact-branch-equality discipline is the trust boundary:
++  it does not depend on a ref-name parser (ruling out edge cases
++  where `trial_id` itself contains `-`, e.g. `trial-<hex>` —
++  splitting on the rightmost `-` would have parsed
++  `work/foo-trial-abc123` as `(slug=foo-trial, trial_id=abc123)`,
++  which is wrong). A SHA collision between two trials cannot
++  cause us to associate a ref with the wrong trial; a manual ref
++  rewrite either lands on a known branch (caught by the SHA
++  mismatch) or on an unknown branch (caught by the orphan case).
++  The SHA check remains as the eligibility predicate for the
++  found-trial-and-terminal case.
+ 
+ `POST /admin/work-refs/delete`:
+ 
+@@ -608,7 +610,9 @@
+ - `GET /admin/trials/` for each status filter.
+ - `GET /admin/trials/<id>/` for `starting`, `success`-non-integrated,
+   `success`-integrated, `error`, `eval_error`. Asserts the events
+-  filter only includes events whose payload mentions this trial_id.
++  filter only includes events whose `event.data` mentions this
++  trial_id (or that belong to the related implement / evaluate
++  task by `task_id`, per §A.5's correlation algorithm).
+ - `GET /admin/events/` default + `?limit=` clamped at the cap.
+ - `GET /admin/work-refs/` with `repo=None`, with no refs, with
+   eligible refs, with not-eligible refs, with orphan refs.
+@@ -650,10 +654,10 @@
+   test both that the regex rejects them and that no subprocess
+   invocation occurs (monkeypatched `subprocess.run` is asserted
+   uncalled).
+-- The `expected_sha` used for `delete_ref` comes from the route's
+-  fresh `list_refs` lookup, not the form's hidden field. Verified
+-  by setting the hidden field to a different SHA and confirming
+-  the deletion still uses the live SHA.
++- The `expected_old_sha` passed to `delete_ref` comes from the
++  route's fresh `list_refs` lookup, not the form's hidden field.
++  Verified by setting the hidden field to a different SHA and
++  confirming the deletion still uses the live SHA.
+ - CSRF token mismatch on every mutating route returns 403.
+ - Trial / proposal artifacts_uri scheme allowlist applies to admin
+   rendering too (no scheme injection via a `javascript:` href on

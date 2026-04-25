@@ -15,11 +15,13 @@ from pathlib import Path
 from eden_contracts import ExperimentConfig
 from eden_git import GitRepo
 from eden_storage import Store
+from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .routes import admin as admin_routes
 from .routes import auth as auth_routes
 from .routes import evaluator as evaluator_routes
 from .routes import implementer as implementer_routes
@@ -84,6 +86,7 @@ def make_app(
     app.include_router(auth_routes.router)
     app.include_router(planner_routes.router)
     app.include_router(evaluator_routes.router)
+    app.include_router(admin_routes.router)
     if repo is not None:
         app.include_router(implementer_routes.router)
 
@@ -93,6 +96,15 @@ def make_app(
             request,
             "_error.html",
             {"title": "Not found", "message": "The page you requested does not exist."},
+            status_code=404,
+        )
+
+    @app.exception_handler(StorageNotFound)
+    async def _storage_not_found(request: Request, exc: StorageNotFound) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request,
+            "_error.html",
+            {"title": "Not found", "message": str(exc)},
             status_code=404,
         )
 

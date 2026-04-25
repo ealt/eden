@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin{% endblock %}
+{% block main %}
+<h1>admin dashboard</h1>
+
+{% if expired_count %}
+<div class="banner banner-warn">
+    {{ expired_count }} claim(s) past <code>expires_at</code> — the next sweeper iteration will reclaim them automatically.
+</div>
+{% endif %}
+
+<section>
+    <h2>tasks by kind &times; state</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>kind</th>
+                {% for state in states %}<th>{{ state }}</th>{% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for kind in kinds %}
+            <tr>
+                <td><code>{{ kind }}</code></td>
+                {% for state in states %}
+                <td>
+                    {% if cross_tab[kind][state] %}
+                        <a href="/admin/tasks/?kind={{ kind }}&state={{ state }}">{{ cross_tab[kind][state] }}</a>
+                    {% else %}
+                        0
+                    {% endif %}
+                </td>
+                {% endfor %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p><a href="/admin/tasks/">all tasks &raquo;</a></p>
+</section>
+
+<section>
+    <h2>trials by status</h2>
+    <table>
+        <thead><tr>{% for s in trial_statuses %}<th>{{ s }}</th>{% endfor %}</tr></thead>
+        <tbody>
+            <tr>
+            {% for s in trial_statuses %}
+                <td>
+                {% if trial_counts[s] %}
+                    <a href="/admin/trials/?status={{ s }}">{{ trial_counts[s] }}</a>
+                {% else %}
+                    0
+                {% endif %}
+                </td>
+            {% endfor %}
+            </tr>
+        </tbody>
+    </table>
+    <p><a href="/admin/trials/">all trials &raquo;</a></p>
+</section>
+
+<section>
+    <h2>events</h2>
+    <p>total events: {{ event_total }} <a href="/admin/events/">(view recent &raquo;)</a></p>
+</section>
+
+<section>
+    <h2>work refs</h2>
+    {% if not repo_enabled %}
+        <p>(<code>--repo-path</code> not configured; ref GC unavailable)</p>
+    {% elif work_ref_error %}
+        <p class="banner banner-error">git failure listing <code>refs/heads/work/*</code>; check the server logs.</p>
+    {% else %}
+        <p>{{ work_ref_count }} <code>refs/heads/work/*</code> ref(s) <a href="/admin/work-refs/">(view &raquo;)</a></p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>last 10 events</h2>
+    {% if recent_events %}
+    <table>
+        <thead><tr><th>type</th><th>occurred_at</th><th>event_id</th></tr></thead>
+        <tbody>
+        {% for ev in recent_events %}
+            <tr>
+                <td><code>{{ ev.type }}</code></td>
+                <td>{{ ev.occurred_at }}</td>
+                <td><code>{{ ev.event_id }}</code></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no events yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

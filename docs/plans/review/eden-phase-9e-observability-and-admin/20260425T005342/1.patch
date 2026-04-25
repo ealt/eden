@@ -1,0 +1,333 @@
+--- docs/plans/review/eden-phase-9e-observability-and-admin/20260425T005342/0.md	2026-04-25 00:53:42
++++ docs/plans/eden-phase-9e-observability-and-admin.md	2026-04-25 01:21:22
+@@ -2,8 +2,12 @@
+ 
+ ## Goal
+ 
+-Close out Phase 9 by adding the cross-experiment **observability**
+-surface and the **operator-side actions** to the reference Web UI.
++Close out Phase 9 by adding the cross-role **observability** surface
++and the **operator-side actions** to the reference Web UI. The
++web-ui process is pinned to one `--experiment-id` (Phase 12 brings
++the multi-experiment switcher), so "observability" here means
++"see all task kinds, trials, and events for *this* experiment in one
++place" — not cross-experiment.
+ After 9a–9d a human can play any single role for one trial; chunk 9e
+ makes it possible for the same human to *see* what the system is
+ doing and *unstick* it when something goes wrong:
+@@ -82,8 +86,10 @@
+ 
+ - A new routes module (`routes/admin.py`) and a new template family
+   (`admin_*.html`).
+-- One new dependency on `eden_git.GitRepo.delete_ref` (added in
+-  this chunk; see §B).
++- One new consumer of an **already-shipped** primitive,
++  `eden_git.GitRepo.delete_ref(refname, *, expected_old_sha=None)`
++  (lives at `reference/packages/eden-git/src/eden_git/repo.py:511`).
++  No new code in `eden-git`; see §B.
+ - The `--repo-path` CLI flag, previously **optional and only used
+   by the implementer module**, is now **also consumed by the
+   work-ref GC page** when present. When the flag is omitted the
+@@ -148,14 +154,27 @@
+ 
+ ### §A.1 Auth gate
+ 
+-Every `/admin/*` route — including read-only `GET`s — calls
+-`get_session(request)`. A missing session redirects to `/signin`.
+-This matches the planner / implementer / evaluator pattern and
+-keeps the admin surface from leaking task IDs / trial IDs / payload
+-contents to an unauthenticated visitor. The redirect destination is
+-the original URL (so a deep-link to `/admin/trials/T-7` round-trips
+-through sign-in cleanly).
++Every `/admin/*` route — `GET` and `POST` alike — calls
++`get_session(request)` **first**, before any CSRF check. A missing
++session returns `303 → /signin`. This matches the existing
++planner / implementer / evaluator route pattern (see e.g.
++`reference/services/web-ui/src/eden_web_ui/routes/planner.py:94-96`
++where the unauthenticated POST also redirects to /signin), and keeps
++the admin surface from leaking task IDs / trial IDs / payload
++contents to an unauthenticated visitor.
+ 
++Order in every mutating handler is therefore:
++
++1. `session = get_session(request)`; if `None` → `303 /signin`.
++2. `if not csrf_ok(session, csrf_token)` → 403 (or HTMX-aware
++   equivalent via `_csrf_failure_response`).
++3. The action proper.
++
++The redirect destination on the `/signin` redirect is `/signin`
++itself (not the original URL); the existing modules do not preserve
++the deep-link target either, and we keep parity rather than
++introducing a different convention.
++
+ ### §A.2 Listing snapshot semantics
+ 
+ Every list view calls `store.list_tasks(...)` / `list_trials(...)` /
+@@ -271,12 +290,40 @@
+ 
+ - Trial fields (read-only).
+ - The proposal that produced it (`store.read_proposal(proposal_id)`).
+-- All events in `replay()` whose payload mentions this trial_id —
+-  filtered server-side via the same logic the `eden_dispatch`
+-  reconstruction fold uses (search `event.payload.trial_id` and
+-  `event.payload.task_id` if the task is the implement task that
+-  produced this trial). Capped at 50 events; "showing N of M"
+-  footer if exceeded.
++- A filtered slice of `store.replay()` correlating to this trial.
++  Correlation algorithm (concrete; the `Event` envelope has
++  `data: dict[str, Any]`, not `payload` — see
++  `reference/packages/eden-contracts/src/eden_contracts/event.py:36`):
++
++  1. Build the trial-id match set: every event whose
++     `event.data.get("trial_id") == trial_id`. This catches
++     `trial.started`, `trial.errored`, `trial.eval_errored`,
++     `trial.succeeded`, `trial.integrated`, plus any task event
++     whose `data` already carries `trial_id`.
++  2. Build the task-id match set for **the implement task that
++     produced this trial**: query
++     `store.list_tasks(kind="implement")`, find the one whose
++     `payload.proposal_id == trial.proposal_id`. If found,
++     include events whose `event.data.get("task_id")` equals
++     that implement task's id (this surfaces `task.created`,
++     `task.claimed`, `task.submitted`, `task.completed`,
++     `task.failed`, `task.reclaimed` for the implement leg).
++  3. Build the task-id match set for **the evaluate task(s) for
++     this trial** the same way: `store.list_tasks(kind="evaluate")`
++     filtered by `payload.trial_id == trial_id`. There may be
++     more than one (a fresh evaluate task can be created after
++     `eval_error`); include task events for all of them.
++  4. Union the three sets, sort by `event.event_id` (or by index
++     position in the full replay — both are monotonic), cap at
++     50, render with newest first. "showing N of M" footer when
++     `M > 50`.
++
++  This is implementable without any new fold helper in
++  `eden-dispatch`; it composes already-public Store methods.
++  An optional `_helpers.events_for_trial(store, trial_id)` helper
++  may be extracted from the route handler if the test surface
++  benefits, but it is not load-bearing.
++
+ - Inline trial.description (autoescape) when set, identical to the
+   evaluator-page rendering.
+ - `trial.artifacts_uri`: same scheme allowlist + `_read_inline_artifact`
+@@ -286,19 +333,35 @@
+ 
+ `GET /admin/events/`:
+ 
+-- `store.replay()`; reverse, take last N (default 200, `?limit=`
+-  capped at 1000).
+-- Each row: cumulative_index (the natural index into the full log,
+-  monotonic; we render `len(events) - i` so newest gets the highest
+-  number), `event.type`, timestamp, abbreviated payload (the
+-  full payload as a `<details>` toggle).
+-- Optional `?type=task.claimed` etc. exact-match filter. Unknown
+-  type → empty result + "no events match".
++- `events_full = store.replay()`; capture `total = len(events_full)`
++  *before* slicing.
++- Apply optional `?type=` exact-match filter against `events_full`,
++  preserving each event's natural index in the full log
++  (`for idx, ev in enumerate(events_full, start=1): …`). The natural
++  index is what makes the rendered position stable across
++  filter / limit / reverse operations — we compute it before any
++  of those.
++- Take the last N entries of the filtered list (default N=200,
++  configurable via `?limit=` capped at 1000). Reverse for display
++  so newest renders first.
++- Each row carries the natural index recorded in the previous
++  step (1-based), `event.type`, `event.event_id`, `event.timestamp`,
++  and `event.data` rendered as a `<details>` toggle.
++- Footer: when the filtered list's length exceeds N, show
++  "showing 200 of M filtered events (full log: total entries);
++  pass `?limit=N` to see more."
+ 
+-The full event log can grow into the thousands; the cap exists so
+-a runaway experiment doesn't exhaust the operator's browser. Once
+-N events have rendered, the footer prints
+-"showing 200 of 4,711; pass `?limit=N` to see more".
++The cap exists so a runaway experiment doesn't exhaust the
++operator's browser. Two distinct totals matter:
++
++- The full-log size (`total`) — observability into "how big is
++  this experiment's history?".
++- The filtered-list size (after `?type=`) — observability into
++  "how many of these events match my filter?".
++
++Both render. The natural index is stable per event regardless of
++filter, so an operator copy-pasting "event #4711" can reproduce
++the position deterministically across reloads.
+ 
+ ### §A.7 Work-ref GC
+ 
+@@ -341,10 +404,12 @@
+   The eligibility check at the **POST** site is what makes the
+   GET-time eligibility filter a UX hint rather than a security
+   boundary.
+-- Call `repo.delete_ref(ref_name, expected_sha=<the SHA we just
+-  read>)`. The `expected_sha` argument turns the deletion into a
+-  CAS — if a third party rewrote the ref between the GET and the
+-  POST, the deletion fails with `?error=ref-changed` and the operator
++- Call `repo.delete_ref(ref_name, expected_old_sha=<the SHA we just
++  read>)` (the existing primitive's kwarg is `expected_old_sha`,
++  not `expected_sha`). The `expected_old_sha` argument turns the
++  deletion into a CAS via `git update-ref -d <ref> <oldvalue>` —
++  if a third party rewrote the ref between the GET and the POST,
++  the deletion fails with `?error=ref-changed` and the operator
+   has to re-confirm.
+ 
+ ### §A.8 Landing page
+@@ -364,36 +429,34 @@
+ 
+ ## §B `eden-git` additions
+ 
+-`GitRepo.delete_ref(ref_name, *, expected_sha)` is the only new
+-git-side primitive chunk 9e needs. Implementation:
++**None.** The required primitive already exists at
++`reference/packages/eden-git/src/eden_git/repo.py:511`:
+ 
+ ```python
+-def delete_ref(self, ref_name: str, *, expected_sha: str) -> None:
+-    """Compare-and-swap delete a ref. Raises GitError if expected_sha
+-    does not match the ref's current value or the ref does not exist.
+-    """
+-    self._run([
+-        "update-ref",
+-        "-d", ref_name, expected_sha,
+-    ])
++def delete_ref(self, refname: str, *, expected_old_sha: str | None = None) -> None:
++    """Delete a ref, optionally guarded by ``expected_old_sha``."""
++    args = ["update-ref", "-d", refname]
++    if expected_old_sha is not None:
++        args.append(expected_old_sha)
++    self._run(args)
+ ```
+ 
+ `git update-ref -d <ref> <oldvalue>` deletes the ref *only if* its
+ current value equals `<oldvalue>`. If the ref does not exist or has
+-a different SHA, git exits non-zero and the wrapper raises
+-`GitError`, which the route classifies and turns into the
+-`?error=ref-changed` / `?error=not-found` redirect.
++a different SHA, git exits non-zero and `_run` (with `check=True`
++by default) raises `GitError`. Chunk 9e classifies the error in
++the route layer and turns it into the `?error=ref-changed` /
++`?error=not-found` redirect.
+ 
+-This primitive is intentionally narrow: no recursion, no glob, no
+-"force" mode. The route layer is what decides eligibility; the
+-primitive just executes the CAS.
++The route layer **always** passes `expected_old_sha` from a
++fresh server-side `list_refs` lookup (never `None`, never trusting
++the form-hidden field) — the optional-kwarg form is fine to call
++because the route's responsibility is to decide whether to provide
++it. See §F (Security boundaries).
+ 
+-`Integrator` does **not** call `delete_ref`. Per §3.4 of the
+-integrator spec it does its own compensating ref delete via
+-`update_ref` to zero, which is structurally identical but uses a
+-different code path; we keep them separate so a future change to
+-the GC trust model doesn't accidentally widen the integrator's
+-surface.
++`Integrator` already calls `delete_ref` for §3.4 compensating
++deletes; chunk 9e is the second consumer in the codebase. No
++change to integrator code; no change to delete_ref's surface.
+ 
+ ## §C Templates
+ 
+@@ -443,18 +506,18 @@
+ | `?limit=` / `?kind=` / `?state=` | Coerced + clamped at parse time; no echo into HTML |
+ | `?error=…` banner | Looked up in a closed dict; no arbitrary text echo |
+ | `ref_name` POST | Regex-validated to `^refs/heads/work/...$` + path-traversal check |
+-| `delete_ref` | CAS via `expected_sha` from the **request-time** read, not the POST body |
++| `delete_ref` | CAS via `expected_old_sha` from the **request-time** read, not the POST body |
+ | Trial / proposal description | Jinja autoescape (same as evaluator page) |
+ | Trial / proposal artifacts_uri | Same `_read_inline_artifact` envelope as chunks 9c/9d |
+ | Trial / proposal artifacts_uri href | Same scheme allowlist (`http`/`https`/`file` only) |
+ 
+-The `expected_sha` source matters: we read the ref SHA at the
++The `expected_old_sha` source matters: we read the ref SHA at the
+ GET-time render and stash it in a hidden form field, but the POST
+ handler **does not trust the form's hidden field** — it does its
+ own fresh `list_refs("refs/heads/work/<name>")` lookup, uses *that*
+-SHA as `expected_sha`, and only then calls `delete_ref`. The hidden
+-field is an optimization that lets us show a stale-state banner
+-("the ref changed since you loaded the page") earlier; the
++SHA as `expected_old_sha`, and only then calls `delete_ref`. The
++hidden field is an optimization that lets us show a stale-state
++banner ("the ref changed since you loaded the page") earlier; the
+ authoritative read is server-side.
+ 
+ ## §G Errors
+@@ -493,7 +556,8 @@
+   eligible refs, with not-eligible refs, with orphan refs.
+ - `POST /admin/tasks/<id>/reclaim` — happy path (claimed → pending
+   via redirect), submitted → pending (operator-reclaim of submitted),
+-  terminal → `?error=illegal-transition`, no CSRF → 403.
++  terminal → `?error=illegal-transition`, no session → 303 to
++  `/signin`, with-session-but-no-CSRF → 403.
+ - `POST /admin/work-refs/delete` — happy path, regex rejection
+   (`refs/heads/trial/...`, `..` in path, empty), missing-CSRF, ref
+   not eligible at POST time, ref vanished between GET and POST,
+@@ -513,9 +577,12 @@
+ 
+ - Unauthenticated `GET /admin/*` redirects to `/signin` (every
+   route).
+-- Unauthenticated `POST /admin/*` returns 403 (CSRF check fires
+-  *before* the auth check returns 303 — order matters; we test it
+-  explicitly).
++- Unauthenticated `POST /admin/*` redirects to `/signin` with
++  status 303 (auth check fires *before* the CSRF check — the same
++  order the planner / implementer / evaluator routes use; tests
++  exercise this order explicitly).
++- Authenticated `POST /admin/*` with a missing or wrong CSRF token
++  returns 403 (after the auth check passes).
+ - `?error=<arbitrary-string>` does not echo into the HTML; only
+   the closed-allowlist values render banners.
+ - `ref_name` regex: hand-crafted POSTs with each of
+@@ -648,20 +715,26 @@
+ 
+ ## §L Implementation order
+ 
+-1. **§B**: add `GitRepo.delete_ref` + its unit test in `eden-git`.
+-2. **§A.1–§A.2**: scaffold `routes/admin.py` with the auth gate and
+-   stateless snapshot pattern; one trivial `GET /admin/` route that
+-   renders pending counts.
+-3. **§A.3 + §A.4**: tasks table + detail + reclaim. Land the
++1. **§A.1–§A.2**: scaffold `routes/admin.py` with the auth-first
++   gate and stateless snapshot pattern; wire it into `make_app`;
++   add a permanent "admin" nav link in `base.html`. Land a
++   trivial `GET /admin/` that returns counts.
++2. **§A.3 + §A.4**: tasks table + detail + reclaim. Land the
+    chunk's most-load-bearing action first.
+-4. **§A.5**: trials table + detail.
+-5. **§A.6**: event log view.
+-6. **§A.7**: work-refs page (GET + POST).
+-7. **§A.8**: dashboard summary.
+-8. Templates land alongside their routes; nothing is rendered
++3. **§A.5**: trials table + detail (including the §A.5 trial-event
++   correlation algorithm).
++4. **§A.6**: event log view (with the natural-index-before-slice
++   discipline from §A.6).
++5. **§A.7**: work-refs page (GET + POST), consuming the existing
++   `GitRepo.delete_ref` primitive.
++6. **§A.8**: dashboard summary refinements (cross-tab + stranded-
++   claim callout).
++7. Templates land alongside their routes; nothing is rendered
+    before its route exists.
+-9. Tests file-by-file, in the same order as the routes.
+-10. CLAUDE.md / reference README / roadmap status update.
++8. Tests file-by-file, in the same order as the routes.
++9. AGENTS.md (canonical) / reference README / roadmap status
++   update. (`CLAUDE.md` is a symlink to `AGENTS.md` so editing the
++   canonical file is sufficient.)
+ 
+ ## §M Acceptance criteria
+ 
+@@ -674,7 +747,8 @@
+   `task.reclaimed` event with `cause=operator` is in
+   `/admin/events/`.
+ - `docs/roadmap.md` updated: Phase 9 marked complete.
+-- `CLAUDE.md` "Current phase" section gains the 9e paragraph
++- `AGENTS.md` (the canonical root guidance file; `CLAUDE.md` is
++  the symlink) "Current phase" section gains the 9e paragraph
+   with the same level of detail as the existing 9d paragraph.
+ 
+ ## §N Out of scope
