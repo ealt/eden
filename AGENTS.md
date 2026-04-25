@@ -72,6 +72,18 @@ These are listed for orientation; the tooling is not wired up yet.
 + Normative behavior is tested against the conformance suite (once it exists in Phase 11).
 + The reference impl is explicitly not a monopoly on correctness. A third-party implementation that passes conformance is equally valid.
 
+### Adding a new service or package with its own `tests/` directory
+
+Pytest's default `prepend` import mode names test modules by file basename, so two `tests/test_app.py` files in different packages collide on collection (`import file mismatch`). The repo's tests-dir layout is mixed — some packages (e.g. [`eden-contracts/tests/`](reference/packages/eden-contracts/tests/)) have `__init__.py` and use `from .conftest import …`; most service test dirs (e.g. [`web-ui/tests/`](reference/services/web-ui/tests/)) have no `__init__.py` and use `from conftest import …`.
+
+When adding a new tests directory:
+
++ Use a basename that is unique across the whole `testpaths` set in [`pyproject.toml`](pyproject.toml). Grep `find reference -name 'test_*.py' -exec basename {} \;` to verify before merging.
++ Do **not** add `__init__.py` to a service tests dir while another tests dir already has one — both directories become the `tests` package and the second conftest collides on `tests.conftest` import/registration. Under default `prepend` mode this surfaces as `ImportPathMismatchError`; under `importlib` mode it surfaces as `Plugin already registered under a different name`.
++ Switching the whole repo to `--import-mode=importlib` looks tempting but is **not** a clean fix today: the existing eden-contracts tests use relative `.conftest` imports that depend on the `__init__.py` package layout, and importlib mode keeps that collision while removing the sys.path hack the rest of the suite relies on.
+
+If the constraint becomes load-bearing later (Phase 10 will add several more service test dirs), the cleanest fix is a three-step lockstep: rename each tests dir to a unique package name (e.g. `web_ui_tests/` instead of `tests/`), switch every bare `from conftest import …` to a package-relative `from .conftest import …`, and add `--import-mode=importlib` to pytest's `addopts`. A mechanical basename-uniqueness check in CI is also a sensible follow-up — AGENTS-only guidance is weaker than a guardrail.
+
 ### Adding or extending a JSON Schema + Pydantic binding
 
 The `schema-parity` CI job is only as strong as what both sides of the test actually enforce. Several Pydantic and `jsonschema` defaults let drift through silently. When adding a new schema — or a new field type to an existing one — evaluate each of the following; reusable implementations live in [`reference/packages/eden-contracts/src/eden_contracts/_common.py`](reference/packages/eden-contracts/src/eden_contracts/_common.py).
