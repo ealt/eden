@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}EDEN — implementer draft {{ task_id }}{% endblock %}
+{% block main %}
+<h1>implementer draft</h1>
+<p>task: <code>{{ task_id }}</code></p>
+
+<section class="proposal">
+    <h2>proposal</h2>
+    <table>
+        <tbody>
+            <tr><th>id</th><td><code>{{ proposal.proposal_id }}</code></td></tr>
+            <tr><th>slug</th><td><code>{{ proposal.slug }}</code></td></tr>
+            <tr><th>priority</th><td>{{ proposal.priority }}</td></tr>
+            <tr>
+                <th>parent_commits</th>
+                <td>
+                    {% for parent in proposal.parent_commits %}
+                        <code>{{ parent }}</code>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            <tr>
+                <th>artifacts_uri</th>
+                <td>
+                    {% set scheme = proposal.artifacts_uri.split(":", 1)[0] | lower %}
+                    {% if scheme in ("http", "https", "file") %}
+                    <a href="{{ proposal.artifacts_uri }}"><code>{{ proposal.artifacts_uri }}</code></a>
+                    {% else %}
+                    <code>{{ proposal.artifacts_uri }}</code>
+                    <span class="field-error">(unrenderable scheme)</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    {% if rationale %}
+    <h3>rationale</h3>
+    <pre class="rationale">{{ rationale }}</pre>
+    {% else %}
+    <p class="rationale-note">rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+    {% endif %}
+</section>
+
+<section class="instructions">
+    <h2>instructions</h2>
+    <ol>
+        <li>Do your work in your own checkout, with parents matching <code>parent_commits</code> above.</li>
+        <li>Push your tip commit (any branch name works) to the bare repo at
+            {% if repo_path %}<code>{{ repo_path }}</code>{% else %}the configured bare repo{% endif %}.
+            The UI will create a canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit when you submit.</li>
+        <li>Paste the resulting commit SHA below and submit.</li>
+    </ol>
+</section>
+
+<section class="draft">
+    <h2>submission</h2>
+    {% if errors and errors.overall %}
+    {% for msg in errors.overall %}
+        <div class="banner banner-error">{{ msg }}</div>
+    {% endfor %}
+    {% endif %}
+    <form action="/implementer/{{ task_id }}/submit" method="post">
+        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+        <fieldset>
+            <legend>status</legend>
+            <label>
+                <input type="radio" name="status" value="success"
+                    {% if form_state.status == "success" %}checked{% endif %}>
+                success
+            </label>
+            <label>
+                <input type="radio" name="status" value="error"
+                    {% if form_state.status == "error" %}checked{% endif %}>
+                error (could not realize the proposal)
+            </label>
+        </fieldset>
+        <p>
+            <label for="commit_sha">commit_sha (40 hex; required when status=success)</label><br>
+            <input type="text" id="commit_sha" name="commit_sha" size="44"
+                value="{{ form_state.commit_sha }}">
+            {% if errors and errors.by_row.get(0, {}).get("commit_sha") %}
+            <span class="field-error">{{ errors.by_row[0]["commit_sha"] }}</span>
+            {% endif %}
+        </p>
+        <p>
+            <label for="description">description (optional)</label><br>
+            <textarea id="description" name="description" rows="3" cols="60">{{ form_state.description }}</textarea>
+        </p>
+        <p>worker branch (server-derived): <code>{{ branch }}</code></p>
+        <button type="submit">submit</button>
+    </form>
+</section>
+{% endblock %}

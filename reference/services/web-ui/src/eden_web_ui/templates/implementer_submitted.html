@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}EDEN — implementer submitted{% endblock %}
+{% block main %}
+<h1>submitted</h1>
+<p>Task <code>{{ task_id }}</code> submitted with status <code>{{ status }}</code>.</p>
+<dl>
+    <dt>trial_id</dt><dd><code>{{ trial_id }}</code></dd>
+    {% if commit_sha %}
+    <dt>commit_sha</dt><dd><code>{{ commit_sha }}</code></dd>
+    {% endif %}
+    {% if branch %}
+    <dt>worker branch</dt><dd><code>refs/heads/{{ branch }}</code></dd>
+    {% endif %}
+</dl>
+<p><a href="/implementer/">back to implementer list</a></p>
+{% endblock %}

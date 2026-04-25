@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}EDEN — implementer orphan{% endblock %}
+{% block main %}
+<h1>submission did not commit cleanly</h1>
+<div class="banner banner-error">{{ banner }}</div>
+
+<dl>
+    <dt>task_id</dt><dd><code>{{ task_id }}</code></dd>
+    <dt>trial_id</dt><dd><code>{{ trial_id }}</code></dd>
+    {% if commit_sha %}
+    <dt>commit_sha</dt><dd><code>{{ commit_sha }}</code></dd>
+    {% endif %}
+    {% if branch %}
+    <dt>worker branch</dt><dd><code>refs/heads/{{ branch }}</code></dd>
+    {% endif %}
+</dl>
+
+<section class="recovery">
+    {% if recovery_kind == "auto" %}
+    <h2>auto-recovers via reclaim</h2>
+    <p>
+        The trial is in <code>starting</code> state. The task may
+        still be claimed by this session until the claim TTL expires
+        (or an operator reclaims it). On reclaim, the orchestrator
+        atomically transitions the starting trial to
+        <code>error</code> and the task back to <code>pending</code>;
+        if the prior reclaim already invalidated this claim
+        (<code>eden://error/wrong-token</code> /
+        <code>illegal-transition</code>), that reclaim already
+        errored the trial. Either way, no operator action is
+        required.
+    </p>
+    {% elif recovery_kind == "conflict" %}
+    <h2>operator intervention may be needed</h2>
+    <p>
+        A different submission was already committed for this task,
+        and your work is orphaned. The IDs above identify the
+        orphaned trial and (if any) the work-branch ref. The
+        committed submission is the system's record. If your work is
+        the one that should be kept, an operator-side replay through
+        an admin reclaim is needed (Phase 9e adds that view).
+    </p>
+    {% elif recovery_kind == "transport" %}
+    <h2>indeterminate — operator investigation needed</h2>
+    <p>
+        A transport-shape failure left the outcome unknown. Possible
+        causes include: the read-back probe itself failed; an
+        implementation-illegal store state (a terminal/submitted
+        task with no recorded submission); or a transport failure
+        during <code>create_trial</code> where it is not knowable
+        whether the server committed the trial.
+    </p>
+    <p>
+        An operator should check the task-store-server logs and the
+        current state of <code>{{ task_id }}</code> /
+        <code>{{ trial_id }}</code>. If the trial committed and is
+        in <code>starting</code>, the claim TTL will eventually
+        expire and reclaim it; if not, the next claim of this task
+        will create a fresh trial.
+    </p>
+    {% endif %}
+</section>
+
+<p><a href="/implementer/">back to implementer list</a></p>
+{% endblock %}

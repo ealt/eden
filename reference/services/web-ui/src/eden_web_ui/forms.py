@@ -1,14 +1,17 @@
-"""Typed form parsers for the planner module.
+"""Typed form parsers for the planner and implementer modules.
 
-Form input arrives as a list of repeated field rows (one per
-proposal). We parse it into a list of ``ProposalDraft`` objects
-plus the planner-level status. Validation errors are accumulated
-field-by-field so the form re-renders with the user's input intact.
+Planner form input arrives as a list of repeated field rows (one per
+proposal); we parse it into ``ProposalDraft`` objects plus the
+planner-level status. Implementer form input is single-row (one
+trial per task); we parse it into a single ``ImplementDraft``.
+Validation errors are accumulated field-by-field so forms re-render
+with the user's input intact.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -117,3 +120,66 @@ def parse_proposal_rows(
         errors.add_overall("at least one proposal row must be filled in")
 
     return drafts, errors
+
+
+@dataclass(frozen=True)
+class ImplementDraft:
+    """Validated implementer-form input for one trial.
+
+    The route handler combines this with the server-owned
+    ``trial_id`` (from ``_CLAIMS``) and the proposal's
+    ``parent_commits`` to construct the ``Trial`` and
+    ``ImplementSubmission`` objects.
+    """
+
+    status: Literal["success", "error"]
+    commit_sha: str | None
+    description: str | None
+
+
+def parse_implement_form(
+    *,
+    status_raw: str,
+    commit_sha_raw: str,
+    description_raw: str,
+) -> tuple[ImplementDraft | None, FormErrors]:
+    """Parse the implementer draft form into a validated draft.
+
+    Returns ``(None, errors)`` if validation fails, otherwise
+    ``(draft, FormErrors())``. ``commit_sha`` is required when
+    ``status == "success"`` and must be 40 lowercase hex; on
+    ``status == "error"`` it is ignored. ``description`` is
+    optional free-form text; the route handler trims and
+    converts the empty string to ``None``.
+    """
+    errors = FormErrors()
+    status = status_raw.strip().lower()
+    if status not in ("success", "error"):
+        errors.add(0, "status", "status must be one of: success, error")
+        return None, errors
+
+    commit_sha_input = commit_sha_raw.strip().lower()
+    description = description_raw.strip()
+
+    commit_sha: str | None = None
+    if status == "success":
+        if not commit_sha_input:
+            errors.add(0, "commit_sha", "commit_sha is required for status=success")
+        elif len(commit_sha_input) != 40 or not all(
+            c in "0123456789abcdef" for c in commit_sha_input
+        ):
+            errors.add(0, "commit_sha", "commit_sha must be 40 lowercase hex characters")
+        else:
+            commit_sha = commit_sha_input
+
+    if errors:
+        return None, errors
+
+    return (
+        ImplementDraft(
+            status=status,
+            commit_sha=commit_sha,
+            description=description or None,
+        ),
+        errors,
+    )

@@ -177,11 +177,11 @@ Browser-based claim/submit flows for each role, plus observability.
 
 - **9a — complete.** UI shell shipped: FastAPI + Jinja2 BFF over `eden_wire.StoreClient`, routing, sign-in stub, navigation, experiment-overview index. Server-side rendered, no JS framework. Session cookie is `itsdangerous`-signed with HttpOnly + SameSite=Lax + Path=/, plus per-session CSRF token validated on every mutating route.
 - **9b — complete.** Planner module shipped: claim-with-TTL, markdown rationale form, 3-phase write (`drafting` → `ready` → `submit`), retry-before-orphan on transport failures via chapter 07 §2.4 / §8.1 idempotent resubmit. Cross-cutting prerequisite: `eden_dispatch.sweep_expired_claims` runs once per orchestrator iteration so abandoned UI claims are recovered automatically.
-- **9c** — Implementer module: claim / manifest / submit SHA.
+- **9c — complete.** Implementer module shipped, gated on the new optional `--repo-path` CLI flag: claim with TTL, draft form rendering proposal context (slug / priority / parent_commits / `artifacts_uri` plus inline rationale when the file resolves inside `--artifacts-dir` and is ≤ 1 MiB per the §A.1 trust boundary), §3.3 reachability checks via `GitRepo.commit_exists` + `is_ancestor` against every `parent_commits` entry, Pre-Phase-1 ref-collision guard, then Phase-1 (`create_trial(starting)`) → Phase-2 (`create_ref work/<slug>-<trial_id>`) → Phase-3 (`submit` with retry-before-orphan plus committed-state read-back via `read_task` + `read_submission` + `submissions_equivalent`). `trial_id` is server-only (in-process `_CLAIMS` dict; never round-trips). Orphaned `starting` trials auto-recover through the chunk-1 expired-claim sweeper's `_base.reclaim` composite-commit.
 - **9d** — Evaluator module: claim / metrics form / artifact upload.
 - **9e** — Observability views (trial timeline, task queue filtered by kind + claim status) + admin-reclaim action on stranded claims.
 
-**Chunks:** 9a + 9b one chunk (complete); 9c one; 9d one; 9e one.
+**Chunks:** 9a + 9b one chunk (complete); 9c one chunk (complete); 9d one; 9e one.
 
 **Non-goals:** full auth / multi-tenancy (Milestone 3); in-UI code editing (implementers work in their own environment).
 

@@ -1,0 +1,953 @@
+# EDEN Phase 9 chunk 9c — Web UI implementer module
+
+## Goal
+
+Add the implementer role to the reference Web UI service
+(`reference/services/web-ui/`) so a human, given the URL of a running
+task-store-server and the bare git repo the implementer host writes
+into, can sign in, see pending `implement` tasks, claim one, supply a
+`commit_sha` for a worker branch they have already pushed to the bare
+repo, and submit. The submission must round-trip through
+`eden_wire.StoreClient` against the task-store-server (no in-process
+shortcut) and produce a `starting` trial that the existing scripted
+evaluator host can then pick up unchanged.
+
+This chunk delivers roadmap unit **9c (implementer module)**.
+Evaluator (9d) and observability (9e) remain deferred.
+
+## Non-goals
+
+- **9d / 9e.** Evaluator module, observability views, and
+  admin-reclaim are out of scope. The shell already accommodates new
+  modules; no placeholder routes are added.
+- **In-browser code editing or diff views.** A human implementer does
+  the actual git work in their own checkout; the UI is purely a
+  protocol binding (claim → create_trial → submit).
+- **Pushing on the user's behalf.** The user is responsible for
+  pushing their commit to the bare repo (an out-of-band step). The
+  UI verifies the commit is reachable in the bare repo before
+  submitting; it never accepts credentials, never runs `git push`,
+  never proxies a remote.
+- **Reading proposal artifacts at arbitrary `file://` paths.**
+  The draft form renders the proposal's rationale **only** if
+  `proposal.artifacts_uri` is a `file://` URI **and** the
+  resolved path is contained within the UI service's
+  `--artifacts-dir`. Any other `file://` URI is rendered as a
+  link only; any non-`file://` URI is rendered as a link only.
+  This is a hard guard against a malicious proposal pointing
+  the UI at `/etc/passwd` or another sensitive local file. See
+  §A "Artifact-rendering trust boundary" below.
+- **Multi-machine deployments.** The UI process and the bare repo
+  must be on the same filesystem (`--repo-path` is a local path).
+  Phase 10's Compose stack lifts the UI and the bare repo into the
+  same volume; remote-repo support is a later concern.
+- **Wire-protocol changes.** Chapter 07 stays as-is. No new error
+  names, no new endpoints. The implementer module consumes only the
+  existing `Store` surface (`list_tasks`, `read_proposal`, `claim`,
+  `create_trial`, `submit`).
+- **Spec changes.** `spec/v0/03-roles.md` §3 and `04-task-protocol.md`
+  are the contract this module consumes; both are unchanged.
+
+## Backwards-compatibility policy
+
+Pre-1.0, version `0.0.1`, no external consumers. The
+`eden-web-ui` service version stays `0.0.1`. The new
+`--repo-path` CLI flag is **optional**, not required: a
+planner-only deployment that does not pass it keeps working,
+the implementer routes are simply not registered, and the
+top-level navigation hides the "Implementer" link. This
+preserves the pre-9c invocation surface verbatim.
+
+## Tech-stack decision
+
+**Inherit chunk 1's stack unchanged.** FastAPI + Jinja2 + vendored
+HTMX + signed session cookies + per-session CSRF token + the
+expired-claim sweeper are all reused as-is. The chunk-1 plan's
+"Tech stack — decision and alternatives considered" §A through §H
+all apply to this chunk and are not re-litigated here. The codex
+review of the chunk-1 plan converged on this stack after 4 rounds
+and the implementation review converged on the implementation; the
+review scope here is the chunk-9c diff, not the framework.
+
+The one new external dependency the implementer module needs is
+**read-only access to the bare git repo** (the same one the
+implementer host uses). Adding a `--repo-path` CLI flag and
+constructing an `eden_git.GitRepo` against it inside `make_app` is
+the smallest change that supports the §3.3 reachability check. No
+new package, no new service, no new wire surface.
+
+### Alternatives considered for the human-implementer interaction
+
+The decision that **is** specific to chunk 9c is *what the human
+actually does in the form*. Three options were considered:
+
+#### A. UI accepts a pre-pushed commit_sha; verifies reachability via local `GitRepo` (chosen)
+
+- The user does git work in their own checkout, pushes loose
+  commits (or any branch) to the bare repo (out-of-band), and
+  returns to the UI to type the resulting `commit_sha`.
+- The UI:
+  1. Verifies the commit object exists in the bare repo
+     (`GitRepo.commit_exists`).
+  2. Verifies `is_ancestor(parent, commit_sha)` for **every**
+     parent in `proposal.parent_commits` (§3.3).
+  3. `create_trial(status="starting", branch, parent_commits, ...)`.
+  4. `create_ref("refs/heads/<branch>", commit_sha)` so the
+     `work/*` ref the spec requires (§3.3, §3.2 step 2) is in
+     place. The UI derives `branch = "work/<slug>-<trial_id>"`
+     from the proposal slug and a server-generated trial_id; the
+     user does not pick the ref name.
+  5. `submit(task_id, token, ImplementSubmission(success,
+     trial_id, commit_sha))`.
+- **Pros:** No remote-protocol surface; the UI never holds git
+  credentials; `commit_exists` + `is_ancestor` are cheap local
+  invocations of the already-pinned `eden-git` wrapper; the user
+  does git in their own tooling without learning a UI-specific
+  workflow; failure modes are crisp (ref doesn't exist locally,
+  commit isn't reachable, etc.).
+- **Cons:** Requires the user to have `git push` access to the
+  bare repo out-of-band. For Phase 9, this is fine — the
+  reference deployment is single-machine; Phase 10's Compose
+  stack puts the bare repo on a shared volume. Real multi-machine
+  deployments are a Milestone-3 concern.
+
+#### B. UI proxies a `git push`
+
+- User uploads a bundle file or supplies remote-URL credentials;
+  the UI runs `git fetch` / `git push` on their behalf.
+- **Cons:** Pulls credential management into the UI scope (the
+  user's git identity, not just the shared bearer); doubles the
+  failure modes (UI process couldn't push vs. bare repo rejected
+  push); leaks remote-repo concepts into a service whose only
+  current `--repo-path` is a local bare repo. Not warranted at
+  this phase.
+- **Verdict:** No. Add when remote-repo support is a real
+  requirement.
+
+#### C. UI ships an in-browser editor / sandbox runner
+
+- **Cons:** Unbounded scope; recapitulates "build us a browser
+  IDE." The reference impl's job is to demonstrate the
+  protocol, not to be a full IDE.
+- **Verdict:** No.
+
+### Trial-create / ref-create / submit ordering (a tightening over the scripted implementer)
+
+`spec/v0/03-roles.md` §3.2 step 1 says the implementer **MUST**
+"persist a trial with `status == 'starting'` ... before making any
+repository write observable to other roles." A `work/*` ref is a
+repository write observable to other roles; a loose object whose only
+reachability is from a yet-unwritten ref is not.
+
+The scripted implementer in `eden_service_common.scripted.make_implement_fn`
+currently calls `repo.create_ref` **inside** the implement_fn
+**before** `store.create_trial` runs. That's a literal-§3.2
+violation; in practice it's invisible because the orchestrator's
+evaluate-dispatch gate is `trial.status == "success"` and the only
+ref-list consumer is the integrator at `trial/*`.
+
+The chunk-9c UI module follows the spec-strict order:
+
+1. `store.create_trial(status="starting", branch, parent_commits=...)`.
+2. `repo.create_ref("refs/heads/<branch>", commit_sha)`.
+3. `store.submit(...)`.
+
+The pre-existing scripted-implementer ordering bug is **not** fixed
+in this chunk. It is captured as a known follow-up in §K; doing it
+here would couple the UI work to a refactor of the scripted host
+and tests, expanding diff scope without UI benefit.
+
+## What gets built
+
+### A. New routes module: `routes/implementer.py`
+
+Mirrors `routes/planner.py` in style and structure. Routes:
+
+- `GET /implementer/` — list pending implement tasks. Renders
+  `implementer_list.html` with the recent-trials context panel
+  (most recent 20 via `store.list_trials(status=None)`) and the
+  experiment's `objective` (read-only banner) per `03-roles.md`
+  §3.1 (read access to the proposal at claim time, plus implicit
+  context for "what's already been tried").
+- `POST /implementer/{task_id}/claim` — CSRF-checked claim. On
+  success, store a `(session.csrf, task_id) -> (token, trial_id)`
+  tuple in the implementer module's own `_CLAIMS` dict
+  (per §A.2; kept module-local in `implementer.py`, not shared
+  with `planner.py`'s dict because the keying namespace is
+  per-module to keep cross-module mistakes impossible). Redirect
+  to the draft form on success; 303 to
+  `/implementer/?banner=<name>` on store-domain wire errors.
+- `GET /implementer/{task_id}/draft` — render the draft form.
+  The form surfaces:
+  - The proposal's `slug`, `priority`, `parent_commits`,
+    `artifacts_uri` (with the rationale-markdown contents
+    rendered inline only when the §A.1 trust-boundary helper
+    accepts the URI; otherwise the URI alone).
+  - The bare repo's absolute path (so the user knows where to
+    push to before clicking submit).
+  - The server-derived branch name
+    `work/<slug>-<trial_id>` rendered as plain text. The
+    `trial_id` is taken from `_CLAIMS` at draft-render time and
+    is **never** carried in the form (no hidden input). This
+    makes the branch name visible *before* the user pushes, so
+    they can push directly to that ref name if they prefer; the
+    §C reachability check accepts any commit that is reachable
+    *and* exists in the repo, regardless of what ref points to
+    it on the user's side.
+  - Form fields: `commit_sha` (40-hex required for status=success),
+    `description` (optional, free-form), and a status radio
+    (`success` | `error`). On status=error, `commit_sha` is not
+    required; UI hides the field client-side and ignores it
+    server-side.
+- `POST /implementer/{task_id}/submit` — CSRF-checked submit.
+  The full Phase-1 / Phase-2 / Phase-3 ordering is in §C below.
+
+The `implementer.py` router is included from `make_app` alongside
+the existing `planner.py` router. No changes to `planner.py`,
+`auth.py`, `index.py`, `_helpers.py`, `sessions.py`, `forms.py`,
+`artifacts.py`, or `app.py` other than:
+
+- `app.py` gains an **optional** `repo: GitRepo | None`
+  parameter on `make_app`, stored as `app.state.repo`. The
+  planner module never reads it. The implementer router is
+  included only if `repo is not None`; otherwise
+  `/implementer/*` returns 404 (consistent with "this module
+  is not configured"). Tests pass a real `GitRepo` against a
+  temp bare repo.
+- `cli.py` gains `--repo-path <path>` (**optional**). If
+  present, constructs the `GitRepo` and passes it through
+  `make_app`. If absent, `make_app(repo=None)` runs and
+  planner-only deployments behave exactly as before.
+
+### A.1 Artifact-rendering trust boundary
+
+The draft form may render the proposal's rationale markdown
+inline so the human implementer can see it without leaving the
+UI. The plan must guard against a malicious / careless
+`proposal.artifacts_uri` pointing the UI at an arbitrary local
+file (`/etc/passwd`, the UI's own session-secret file, the bare
+repo's git objects, …).
+
+The rendering rule is single-source-of-truth in a helper
+`_helpers.read_proposal_rationale(proposal, artifacts_dir) -> str | None`:
+
+- If `proposal.artifacts_uri` does not start with `file://`,
+  return `None` (template renders the URI as a plain link).
+- Otherwise parse the path, **resolve** it (`Path.resolve()`),
+  then verify `resolved.is_relative_to(artifacts_dir.resolve())`.
+  If not, return `None` (link only). This rejects both
+  absolute paths outside `artifacts_dir` and `..`-traversal
+  attempts after resolution.
+- Otherwise read the file with a hard size cap (≤ 1 MiB)
+  and return the text. Files that exceed the cap render as a
+  link only with a "rationale too large to inline" note.
+
+A unit test in `test_implementer_security.py` covers the
+boundary: a proposal with `artifacts_uri == "file:///etc/passwd"`,
+with `artifacts_uri == "file://" + str(artifacts_dir / "../escape")`,
+and with `artifacts_uri == "https://example.com/x"` all render
+as link-only. A proposal with `artifacts_uri ==
+f"file://{artifacts_dir}/<id>.md"` renders inline.
+
+### A.2 `trial_id` ownership
+
+`trial_id` is **server-owned end-to-end**:
+
+- Generated in the `claim` route after `store.claim` succeeds
+  (`f"trial-{uuid.uuid4().hex[:12]}"`).
+- Stored in the in-process `_CLAIMS` dict alongside the
+  claim token: `_CLAIMS[(session.csrf, task_id)] = (token, trial_id)`.
+- The draft form **does not** carry `trial_id` in any field
+  (hidden or visible). The submit handler reads it from
+  `_CLAIMS`, the same place it reads the claim token.
+- The branch name shown in the form is rendered server-side
+  from the `_CLAIMS` lookup at draft-render time; the user
+  cannot influence it.
+
+This pins one of the codex round-0 corrections: the prior
+revision of this plan considered carrying `trial_id` in a
+hidden form field. That would let a tampered POST point the
+trial at an arbitrary id; not acceptable for a server-owned
+identifier.
+
+### B. New forms helper: `forms.implementer`
+
+Either a new module `forms_implementer.py` or a new
+`parse_implement_form()` function alongside the existing
+`parse_proposal_rows()` in `forms.py`. The plan picks the latter
+to keep all form parsing in one file (following the style of
+`routes/_helpers.py`'s consolidation).
+
+The parser produces:
+
+- A typed `ImplementDraft` dataclass with fields:
+  `commit_sha: str | None`, `description: str | None`,
+  `status: Literal["success", "error"]`.
+- Field-level errors (`FormErrors` accumulator, reusing the
+  existing structure):
+  - `commit_sha` missing or not 40-hex when `status == "success"`.
+  - `status` not in `{"success", "error"}`.
+
+§3.3 reachability is **not** checked in this parser — that's a
+git-side validation done in the route after the form is parsed,
+because rendering an inline error like "commit not reachable
+from parent X" requires the proposal object and the GitRepo,
+which the form parser doesn't have.
+
+### C. Implementer request flow (the spec-to-code map)
+
+Pinned here so codex review can check the implementation against
+this spec rather than rederiving it from the templates.
+
+1. **List pending implement tasks** (`GET /implementer/`):
+   - `store.list_tasks(kind="implement", state="pending")`.
+   - Render rows with `task_id`, `payload.proposal_id`,
+     `created_at`, plus a "claim" button.
+2. **Claim** (`POST /implementer/{task_id}/claim`):
+   - CSRF check.
+   - `claim = store.claim(task_id, worker_id=session.worker_id,
+     expires_at=now() + timedelta(seconds=claim_ttl_seconds))`.
+   - Generate a server-side `trial_id = "trial-" + uuid.uuid4().hex[:12]`
+     (mirroring `eden_implementer_host.host._trial_id`).
+   - Save `_CLAIMS[(session.csrf, task_id)] = (token, trial_id)`.
+     `trial_id` is pinned at claim-time so the branch name
+     shown in the draft form is the same name used in
+     `create_trial`. Per §A.2 the client never sees or carries
+     `trial_id`.
+   - Redirect 303 to `/implementer/{task_id}/draft`.
+3. **Render draft form** (`GET /implementer/{task_id}/draft`):
+   - Read claim entry from `_CLAIMS`; if missing, redirect to
+     `/implementer/?banner=claim+missing+from+session`.
+   - `task = store.read_task(task_id)` and
+     `proposal = store.read_proposal(task.payload.proposal_id)`.
+   - Resolve the rationale markdown via the §A.1 helper
+     (`read_proposal_rationale`); this hard-bounds inline
+     rendering to files inside `artifacts_dir`.
+   - Render the form with
+     `branch = f"work/{proposal.slug}-{trial_id}"`. The
+     `trial_id` comes from `_CLAIMS`, never from the request.
+4. **Submit** (`POST /implementer/{task_id}/submit`):
+   - CSRF check.
+   - Parse form via `parse_implement_form` → `(ImplementDraft,
+     FormErrors)`. If errors, re-render the draft form with the
+     errors and the user's input preserved (the only state that
+     needs preserving is `commit_sha` and `description`; trial_id
+     and slug are server-side, not user input).
+   - Read claim entry from `_CLAIMS`; missing → redirect to
+     planner-style "claim missing from session" banner.
+   - Re-read `proposal = store.read_proposal(task.payload.proposal_id)`
+     so reachability is checked against the current `parent_commits`.
+   - **§3.3 reachability check** (status=success path only):
+     - `repo.commit_exists(commit_sha)` — if false, re-render the
+       form with `commit_sha` field error: "commit `<sha>` not
+       found in the bare repo at `<repo-path>`; did you push it?"
+     - For each `parent in proposal.parent_commits`,
+       `repo.is_ancestor(parent, commit_sha)` — if false on any,
+       re-render with `commit_sha` field error: "commit `<sha>`
+       does not descend from declared parent `<parent>`."
+   - **Pre-Phase-1 ref-collision guard.** Status=success only:
+     if `repo.ref_exists(f"refs/heads/{branch}")`, re-render the
+     form with a `commit_sha` field error ("branch `<branch>`
+     already exists; please reclaim or pick a different proposal
+     slug") and **do not** call `create_trial`. The branch name
+     is fully derivable from `proposal.slug` and the
+     server-owned `trial_id` at this point, so the guard runs
+     before any state-mutating call. The chance of collision is
+     negligible (12-hex `trial_id` keyed branch name), but
+     pre-empting it turns a §3.3 ("worker branch MUST be unique
+     to this trial") spec violation into a clean form error
+     with no orphan trial residue.
+   - **Phase 1 of the write — create_trial as `starting`.**
+     `store.create_trial(Trial(trial_id=trial_id,
+     experiment_id=app.state.experiment_id,
+     proposal_id=proposal.proposal_id, status="starting",
+     parent_commits=list(proposal.parent_commits),
+     branch=branch, description=draft.description,
+     started_at=_iso(now())))`. (No `commit_sha` field — that
+     gets written onto the trial by the orchestrator's accept
+     handler, per `eden_storage._base._accept_implement`.)
+     - On status=error: skip the reachability check and the
+       ref-collision guard; still call `create_trial` with the
+       same shape (no `commit_sha`, optional `description`). The
+       trial-side terminalization to `error` happens via
+       `_reject_implement` when the orchestrator rejects the
+       errored submission per `04-task-protocol.md` §4.3.
+   - **Phase 2 of the write — create_ref.** Status=success only:
+     `repo.create_ref(f"refs/heads/{branch}", commit_sha)`. The
+     ref-write happens *after* `create_trial` so the §3.2 step-1
+     ordering ("trial persisted before observable repo writes")
+     is honored. If `create_ref` raises, render
+     `implementer_orphaned.html` (HTTP 502) with banner
+     `repo error: <exc class>`. The trial is left in `starting`
+     and recovers through the same path as a Phase-3 failure
+     (§C-recovery, "Phase-2 failure" branch). Status=error:
+     skipped entirely (no work-branch produced).
+   - **Phase 3 of the write — submit, with retry-before-orphan
+     and committed-state read-back.**
+     `submission = ImplementSubmission(status=draft.status,
+     trial_id=trial_id,
+     commit_sha=commit_sha if draft.status == "success" else None)`.
+     Retry policy mirrors the planner's `_retry_submit` (3
+     attempts, backoff `(0.05, 0.2, 0.5)`, definitive
+     store-domain errors short-circuit). Two adjustments
+     specific to the implementer module:
+     - The catch list is `(WrongToken, IllegalTransition,
+       ConflictingResubmission)`. `InvalidPrecondition` is
+       **not** raised by `Store.submit` (verified against
+       `_base.submit` and `_validate_submission_ref_binding`,
+       which raise `IllegalTransition` for ref-binding
+       failures), so it is not in the short-circuit set.
+     - On retry exhaustion with only transport-shaped
+       failures, perform a **committed-state read-back** that
+       keys off exact submission identity, not `worker_id`
+       (`worker_id` is shared across UI sessions by default per
+       §F, so it cannot uniquely identify *our* claim). The
+       read-back path:
+       1. `task = store.read_task(task_id)`. If
+          `task.state == "claimed"` and `task.claim` is still
+          ours (claim token equals the one we hold), no submit
+          committed; render the orphan page (sub-case B in
+          §C-recovery). If `task.state == "claimed"` but the
+          claim is a different token, our claim was reclaimed
+          and re-claimed by another session; render the orphan
+          page with the wire-error name `eden://error/wrong-token`
+          (because that's exactly what the next non-retry
+          submit would have returned).
+       2. If `task.state in {"submitted", "completed", "failed"}`,
+          call `prior = store.read_submission(task_id)`. Compare
+          `prior` to *our* `submission` via
+          `submissions_equivalent(prior, submission)` from
+          `eden_storage.submissions`. If equivalent, our prior
+          attempt committed (the lost response is what put us
+          here); drop `_CLAIMS`, render
+          `implementer_submitted.html`. The committed submission
+          may already have been terminalized to `failed` by the
+          orchestrator (validation or worker-error path); that
+          terminalization is the orchestrator's contract, not
+          the implementer's, so from our perspective the submit
+          succeeded. If `prior` is not equivalent, render the
+          orphan page with banner
+          `eden://error/conflicting-resubmission` (a different
+          submission won the race; our work is orphaned).
+          `read_submission` returning `None` for any of
+          `submitted` / `completed` / `failed` is an
+          implementation-illegal state in the reference store
+          (submissions are persisted on `submit` and retained
+          through `accept`/`reject`; they are deleted only on
+          `reclaim`, never on terminalization — see
+          `_base.submit` and `_base.reclaim`). Render the orphan
+          page with a generic transport-failure banner so the
+          operator can investigate.
+       3. If `task.state == "pending"` (or `"claimed"` with a
+          *different* claim token), our claim was reclaimed and
+          the prior attempt did not commit; render the orphan
+          page. The reclaim that took us out already errored our
+          `starting` trial.
+
+       This mirrors `StoreClient.integrate_trial`'s read-back
+       reconciliation (chapter 07 Phase 8a) but uses the
+       exact-payload comparison the protocol semantics actually
+       require for "did *my* submit win the idempotent path."
+   - On §C step-4 success, drop the `_CLAIMS` entry, render
+     `implementer_submitted.html` with the trial_id and the
+     work/* branch ref so the operator can link out.
+   - On any of `WrongToken`, `IllegalTransition`,
+     `ConflictingResubmission` — render
+     `implementer_orphaned.html` (HTTP 502) with the stranded
+     `trial_id` and `commit_sha`, an `eden://error/<name>`
+     banner, and a description of how the trial recovers (per
+     the per-error analysis in §C-recovery).
+
+### C-recovery. Per-error recovery analysis
+
+Codex round 0 correctly flagged that "blanket auto-recovery
+via the sweeper" is too simplistic: the sweeper only reclaims
+`claimed` tasks (`sweep_expired_claims` filters
+`state="claimed"`), and `04-task-protocol.md` §5.1 forbids
+automatic reclaim of `submitted` tasks. The actual recovery
+varies by which failure happened. Below, "trial residue" means
+"trial we created in Phase 1 that's still in `starting`."
+
+**Phase 2 failure (`create_ref` raises after `create_trial` succeeded).**
+Trial residue: yes. Task state: still `claimed` by us. Recovery
+path: claim TTL expires → sweeper calls `reclaim(expired)` →
+`_base.reclaim` composite-commits the `starting` trial to
+`error` atomically (`_find_starting_trial_for_implement_task`).
+Until then, the trial is invisible to evaluate-dispatch
+(orchestrator gates on `trial.commit_sha`, which we never set).
+Operator action: none required.
+
+**Phase 3 failure: all retries hit transport-shaped exceptions.**
+Two sub-cases, distinguished by the read-back (per the
+strengthened logic in §C step 4: `read_task` plus
+`read_submission` plus `submissions_equivalent`, never
+`worker_id`):
+
+- *Sub-case A — server actually committed our submit, response
+  was lost.* Read-back returns task in
+  `state in {"submitted", "completed", "failed"}` **and**
+  `read_submission` returns a payload equivalent to ours via
+  `submissions_equivalent`. Trial residue: no (the committed
+  submission is the system's record of our work). UI renders
+  the success page. Whether the orchestrator's later accept
+  promotes the task to `completed` (success path) or `failed`
+  (validation or worker-error path) is independent of whether
+  the submit itself committed; from the implementer's
+  perspective, the submit succeeded and any subsequent
+  terminalization is the orchestrator's contract, not ours.
+- *Sub-case B — server never received our submit (network
+  outage between client and server).* Read-back returns task
+  still `claimed` by us (live claim token equals the one we
+  hold). Trial residue: yes. Recovery: same as Phase-2 failure
+  (TTL → reclaim → trial → error). UI renders the orphan page.
+
+If `task.state in {"submitted", "completed", "failed"}` but
+`read_submission` returns a payload **not** equivalent to ours,
+the orphan page renders with a
+`eden://error/conflicting-resubmission` banner — a different
+submission won the race; our work is orphaned.
+`read_submission` returning `None` for any of those three
+states is implementation-illegal in the reference store (per
+`_base.submit` / `_base.reclaim`: submissions are persisted on
+`submit` and only deleted on `reclaim`, never on terminalization);
+the orphan page renders with a generic transport-failure banner
+so the operator can investigate.
+
+If `task.state == "pending"` (or `"claimed"` with a *different*
+claim token than ours), our claim was reclaimed and our submit
+never committed. UI renders the orphan page with prose
+"auto-recovers via reclaim" — the reclaim that took us out
+already errored our `starting` trial, so there is no further
+operator action needed.
+
+**Phase 3 failure: `WrongToken`.** Means the token was
+invalidated, which can only happen via a prior reclaim of our
+claim (TTL expired earlier than expected, or operator
+reclaimed). At that earlier reclaim, `_base.reclaim`'s
+implement-task branch already errored our `starting` trial
+(see lines 787-795 in `_base.py`). Trial residue: no — already
+`error`. The `work/*` ref we may have created in Phase 2 is
+dangling (points at a real commit, not referenced by any live
+trial); harmless because no orchestrator path lists `work/*`.
+Operator action: none required for the trial. Phase 9e may
+add a "garbage-collect orphaned work/* refs" admin view.
+
+**Phase 3 failure: `IllegalTransition`.** Means the task is
+no longer in `{"claimed", "submitted"}` from the
+store's perspective. The most common cause is the same as
+`WrongToken` (a prior reclaim moved it to `pending`); the
+trial residue analysis is identical. A second cause is
+`_validate_submission_ref_binding` failing (e.g. our
+`trial_id` does not refer to a trial under the task's
+proposal). This shouldn't happen in our flow because we
+created the trial with `proposal_id == task.payload.proposal_id`
+in Phase 1, but if it does, the trial sits in `starting` until
+reclaim catches it. Operator action: none.
+
+**Phase 3 failure: `ConflictingResubmission`.** Per
+`_base.submit`, raised only when the task is already
+`submitted` with a *different* prior submission. In the
+implementer flow, our retries send the same `submission`
+object, so this can only fire if some other path submitted a
+different payload using our token — operationally implausible
+because the token is per-claim and held only in our process.
+If it happens, the prior submit (whoever made it) is the
+authoritative one; our trial may or may not be bound to it.
+Operator action: read the orphan page's `trial_id` /
+`commit_sha`, decide whether to manually error the trial via
+a future admin view or accept the existing prior submission's
+trial. For chunk 9c the orphan page surfaces these IDs; the
+admin view is 9e.
+
+The orphan page renders the `eden://error/<name>` banner, the
+`trial_id`, the `commit_sha` (if status was success), and a
+short prose summary keyed off the banner explaining what state
+the system is in and what (if anything) the operator should
+do. Specifically, the page is **not** misleading: it says
+"this work is recoverable automatically" only for cases where
+that's true (Phase 2 failure and Phase 3 transport-only
+read-back-confirmed-uncommitted), and says "operator
+intervention may be needed" for the
+ConflictingResubmission case.
+
+### D. Templates
+
+New under `templates/`:
+
+- `implementer_list.html` — pending implement tasks + a small
+  recent-trials panel.
+- `implementer_claim.html` — the draft form. Renders the
+  proposal's rationale via the §A.1 trust-boundary helper.
+  Carries no `trial_id` field (hidden or visible); the POST
+  handler reads `trial_id` from `_CLAIMS` (§A.2).
+- `implementer_submitted.html` — success confirmation; shows
+  `trial_id`, `commit_sha`, and the `work/*` ref name.
+- `implementer_orphaned.html` — Phase-2 / Phase-3 failure
+  landing page. Renders one of three case-specific prose
+  blocks selected by the banner:
+  - "auto-recovers via reclaim" — for Phase-2 failure and
+    Phase-3 transport-only read-back-confirmed-uncommitted
+    cases.
+  - "your submit committed; the system has it" — for the
+    rare Phase-3 transport-only read-back-confirmed-committed
+    case (rendered as the success page in practice; only
+    appears here if a downstream renderer choice goes wrong,
+    which the tests forbid).
+  - "operator intervention may be needed" — for
+    `ConflictingResubmission`.
+
+The shared `_error.html`, `base.html`, `_proposal_row.html`
+(planner-only), and the existing CSS file are unchanged. Any
+new visual rules go into the same `static/style.css`.
+
+The chunk-1 HTMX-aware "add a row" pattern does **not** apply to
+the implementer form (single-trial-per-task, no row repetition).
+The form is plain server-rendered; no `hx-*` attributes needed.
+
+### E. Reused chunk-1 surface (no changes)
+
+- Vendored HTMX 1.9.12 (only used by the planner module today;
+  the implementer module includes the same script tag for
+  consistency but doesn't depend on it).
+- Session signing (`SessionCodec`), `Session` dataclass, CSRF
+  token, `csrf_ok`, `get_session`, `htmx_aware_redirect`,
+  `is_htmx_request` from `routes/_helpers.py`.
+- Cookie attributes (`HttpOnly`, `SameSite=Lax`,
+  `Path=/`, opt-in `Secure` via `--secure-cookies`).
+- Bearer-leak invariants and the `tests/test_security_invariants.py`
+  patterns. The implementer module is added to the bearer-leak
+  test surface (one new request driven through the implementer
+  flow asserting the bearer never appears in the rendered HTML
+  or cookie value).
+- Expired-claim sweeper (`eden_dispatch.sweep_expired_claims`)
+  invoked once per orchestrator iteration.
+- Auth model (signed worker_id + per-session CSRF token; threat
+  model unchanged).
+
+### F. CLI
+
+`cli.py` gains:
+
+- `--repo-path <path>` — **optional**. Local filesystem path
+  to the bare git repo the implementer host already writes
+  into. If present, the UI service constructs
+  `GitRepo(repo_path)` once at startup and passes it through
+  `make_app`; a startup-time sanity check runs
+  `repo.rev_parse("HEAD")` and exits with a clear error if the
+  path is not a valid git repo (mirroring the
+  task-store-server's `--db-path` behavior). If absent,
+  `make_app(repo=None)` runs and the implementer routes return
+  404. The top-level navigation shows the "Implementer" link
+  only when `repo is not None`.
+
+No other CLI changes. The `--worker-id` default stays
+`web-ui-1`; users running both the planner and implementer
+modules from the same UI process inherit the same worker_id,
+which is fine because the worker_id is per-claim metadata, not a
+session lock.
+
+### G. Documentation updates
+
+- `reference/services/web-ui/README.md` — add an "Implementer
+  module" section: optional `--repo-path` flag (gates the
+  whole module), the manual-git-push assumption, the
+  spec-to-code map for §C above, and the per-error recovery
+  semantics for orphaned trials per §C-recovery.
+- `reference/README.md` — flip the `web-ui` row's status to
+  reflect chunk 9c.
+- `AGENTS.md` — add a "Phase 9 chunk 9c complete" status block
+  at the top of the Phase-9 chain; document `--repo-path` in
+  the Commands table for the web-ui module.
+- `docs/roadmap.md` — flip 9c to complete; 9d / 9e remain
+  pending.
+
+### H. CI
+
+No new CI job. The `python-test`, `python-lint`,
+`python-typecheck` jobs cover the new routes / templates / tests
+via `uv sync`. The new `pytest.mark.e2e` test (§I-5 below) runs
+under the existing `e2e` matrix entry alongside the chunk-1
+tests.
+
+### I. Tests
+
+Five files; all under `reference/services/web-ui/tests/`. Per
+`AGENTS.md` "Adding a new service or package with its own
+`tests/` directory" — basenames must be unique across the
+workspace's `testpaths`. None of the new basenames collide
+(checked: `find reference -name 'test_*.py' -exec basename {} \;`).
+
+1. `tests/test_implementer_routes.py` — `TestClient`-driven
+   per-route unit tests:
+   - `GET /implementer/` lists pending implement tasks.
+   - `POST /implementer/{id}/claim` requires CSRF; redirects on
+     success.
+   - `GET /implementer/{id}/draft` shows the proposal,
+     parent_commits, and derived branch name.
+   - Form validation: missing `commit_sha` on success →
+     re-render with field error; non-hex `commit_sha` →
+     re-render; `status=error` accepted without `commit_sha`.
+
+2. `tests/test_implementer_flow.py` — cross-request flow:
+   - Happy path: seed a `ready` proposal + `pending` implement
+     task + a fresh commit reachable from the proposal's parent
+     in a tmp bare repo. Drive claim → draft → submit. Assert
+     final task state is `submitted`, the trial is `starting`
+     with `branch == "work/<slug>-<trial_id>"` and no
+     `commit_sha` (commit_sha is written on accept), the
+     `work/*` ref points at the expected sha, and `_CLAIMS` is
+     empty. Then call `store.accept(task_id)` and assert
+     `trial.commit_sha == <sha>` per `_accept_implement`.
+   - Reachability rejection: submit with a commit that exists
+     in the repo but isn't an ancestor of the proposal's
+     parent. Assert form re-render + field error and **no**
+     `create_trial` / `create_ref` / `submit` happened
+     (verified via `store.list_trials()` empty,
+     `repo.list_refs("refs/heads/work/*")` empty,
+     `store.read_task(task_id).state == "claimed"`).
+   - Missing-commit rejection: submit with a 40-hex sha that
+     does not exist as an object. Same no-side-effects
+     assertion.
+   - Error submission: drive claim → draft → submit with
+     `status=error`. Assert the trial is created in `starting`
+     (per §3.4 implementer-error path) with no `commit_sha`,
+     no `work/*` ref, and the task is `submitted`. Then call
+     `store.reject(task_id, "worker_error")` and assert the
+     trial transitions to `error` per `_reject_implement` /
+     §4.3.
+   - Per-session claim isolation: two `signed_in_client`
+     sessions; one claims, the other tries to draft; the
+     second should hit "claim missing from session" because
+     `_CLAIMS` is keyed by `session.csrf`.
+   - CSRF rejection on each mutating route.
+
+3. `tests/test_implementer_partial_write.py` — pin the §C-recovery
+   semantics with monkeypatched failures, one test per branch
+   of §C-recovery:
+   - **Phase 2 failure.** Monkeypatch `repo.create_ref` to
+     raise. Drive submit. Assert trial is `starting`, no ref,
+     orphan page rendered with banner `repo error: …`. Then
+     `sweep_expired_claims(store, now=expires_at + 1s)` and
+     assert trial → `error`, task → `pending`.
+   - **Phase 3 transport-only, sub-case A (server committed,
+     still `submitted`).** Monkeypatch `store.submit` to commit
+     on first call (delegate to underlying store) and raise on
+     second/third. Read-back: `state == "submitted"`,
+     `read_submission` equivalent to ours → success page.
+   - **Phase 3 transport-only, sub-case A' (server committed,
+     terminalized to `failed`).** Same monkeypatch as sub-case
+     A, but additionally drive `store.reject(task_id,
+     "validation_error")` between attempts so the read-back
+     observes `state == "failed"` with our equivalent submission
+     still readable. Asserts the success page still renders
+     (the implementer's submit committed; subsequent
+     terminalization is the orchestrator's contract).
+   - **Phase 3 transport-only, sub-case B (never committed).**
+     Monkeypatch `store.submit` to always raise a
+     transport-shaped exception (e.g. `httpx.ConnectError`-like).
+     Read-back shows `state == "claimed"`. Orphan page renders
+     with prose "auto-recovers via reclaim."
+   - **Phase 3 `WrongToken`.** Monkeypatch `store.submit` to
+     raise `WrongToken`. Orphan page renders immediately (no
+     retries); banner = `eden://error/wrong-token`. Assert no
+     additional `submit` calls were attempted.
+   - **Phase 3 `ConflictingResubmission`.** Banner = canonical
+     name; orphan page prose mentions operator intervention may
+     be needed.
+   - **Pre-Phase-1 ref-collision guard.** Pre-create the
+     `refs/heads/work/<slug>-<trial_id>` ref before submit.
+     Drive submit; assert form re-renders with `commit_sha`
+     field error and `_CLAIMS` entry retained, no
+     `create_trial` happened.
+
+4. `tests/test_implementer_security.py` — focused
+   security invariants for the new routes:
+   - The shared bearer never appears in any rendered HTML on
+     `/implementer/*` paths or any `Set-Cookie` value.
+   - CSRF token mismatch on each mutating route returns 403.
+   - Cookie attributes hold for sessions established via the
+     auth flow then exercised through implementer routes.
+   - **Artifact-rendering trust boundary** (per §A.1): a
+     proposal whose `artifacts_uri` resolves outside
+     `artifacts_dir` (absolute `file:///etc/passwd`,
+     `file://<artifacts_dir>/../escape`, or a non-`file://`
+     URI) renders link-only. A proposal whose `artifacts_uri`
+     resolves inside `artifacts_dir` renders inline. A
+     proposal whose file exceeds the 1 MiB cap renders
+     link-only with a "rationale too large" note.
+   - **`trial_id` is not in the request surface.** Inspect
+     the rendered draft form for any input named `trial_id`;
+     assert there is none. POSTing `submit` with a forged
+     `trial_id` form field has no effect (the route ignores
+     the field; the value comes from `_CLAIMS`).
+
+5. `tests/test_implementer_e2e.py` — `pytest.mark.e2e`
+   real-subprocess test. Reuses the chunk-1 subprocess scaffold:
+   - Forks a task-store-server + the web-ui service on
+     ephemeral ports. Seeds a bare repo with one base commit, a
+     ready proposal pointing at that base, and a pending
+     implement task. Pushes a separate child commit to the
+     bare repo as a loose object (via `repo.commit_tree`), so
+     the e2e flow exercises a "user pushed, then visits the UI"
+     scenario.
+   - Drives the full claim → draft → submit flow over real
+     HTTP, then asserts task / trial / ref state via a
+     `StoreClient` and `GitRepo` against the same bare repo.
+   - Tears down both processes via SIGTERM → SIGKILL fallback.
+
+The chunk-1 e2e tests stay green unmodified. No `pytest.ini`
+changes; the new files extend the existing `web-ui/tests`
+testpath.
+
+### J. What does **not** change
+
+- `spec/v0/**` — no normative changes.
+- `eden-wire`, `eden-contracts`, `eden-storage`, `eden-git`,
+  `eden-dispatch` — no API changes.
+- `reference/services/_common/`,
+  `reference/services/task-store-server/`,
+  `reference/services/orchestrator/`,
+  `reference/services/planner/`,
+  `reference/services/implementer/`,
+  `reference/services/evaluator/` — untouched.
+- `reference/services/web-ui/src/eden_web_ui/routes/planner.py`,
+  `auth.py`, `index.py`, `_helpers.py` — untouched. The
+  implementer module is purely additive.
+
+### K. Known follow-ups (not done in this chunk)
+
+- **Scripted-implementer ref-ordering bug.** As noted under "Tech-stack
+  decision," `eden_service_common.scripted.make_implement_fn` writes
+  `refs/heads/work/...` *before* `Store.create_trial` runs. This
+  violates `03-roles.md` §3.2 step 1's "trial persisted before
+  observable repo writes" ordering. Fixing it requires moving the
+  `repo.create_ref` out of the scripted `implement_fn` and into the
+  worker host (or into a post-create_trial hook on
+  `ScriptedImplementer._handle`). The fix touches
+  `reference/services/_common/`, `reference/packages/eden-dispatch/`,
+  and the existing scripted tests; bundling it with chunk-9c would
+  triple the diff for no UI benefit. Tracked as a follow-up.
+- **Orphaned `work/*` ref garbage-collection view.** Phase 9e.
+- **`StoreClient`-side reachability check helper.** The §C
+  reachability lookup is duplicated logic the integrator
+  (`eden_git.Integrator`) also performs. Consolidation into a
+  shared helper is a Phase-10 cleanup, not in scope here.
+
+## Verification
+
+Before declaring the chunk done, all of the following hold:
+
+1. `uv sync && uv run pytest -q` — full suite green, including
+   the five new web-ui test files (per §I).
+2. `uv run pytest -m e2e -q` — chunk-1 e2e + chunk-9c e2e both
+   green.
+3. `uv run ruff check .` — clean.
+4. `uv run pyright` — clean.
+5. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules"
+   "#.venv" "#docs/archive/**" "#docs/plans/review/**"` — clean.
+6. `python3 scripts/spec-xref-check.py` — clean (no spec changes
+   expected).
+7. **Bearer-leak grep.** `grep -r "$EDEN_SHARED_TOKEN"
+   reference/services/web-ui/` returns nothing in any rendered
+   template, default value, README, or test fixture.
+8. **Manual smoke** (documented in the updated `web-ui/README.md`):
+   - Spawn task-store-server, the orchestrator service (so plan
+     tasks become implement tasks), and the UI service against
+     the same bare repo.
+   - Use the UI to plan two proposals, wait for the orchestrator
+     to dispatch them as implement tasks, then claim each
+     implement task in the UI, push a real commit to the bare
+     repo, supply the sha, and submit.
+   - `curl` `/trials` and confirm two `starting` trials with the
+     expected branch + parent_commits; after the orchestrator's
+     `accept` runs, confirm `commit_sha` is set.
+9. **Stranded-implementer-claim sanity check.** A
+   `pytest.mark.e2e` case (or a focused subprocess test in
+   `test_implementer_e2e.py`) claims an implement task with
+   `expires_at = now - 1s`, then runs one orchestrator iteration
+   and asserts the task returns to `pending` via
+   `task.reclaimed (cause=expired)` **and** any orphaned
+   `starting` trial transitioned to `error` (per
+   `_base.reclaim`'s composite-commit). This pins the
+   §C-recovery contract.
+10. The `reference/README.md` web-ui row reflects 9c-complete
+    status; no stale "9c pending" text.
+
+## Execution order
+
+1. Add `--repo-path` to `cli.py`; thread `GitRepo` through
+   `make_app`; existing tests stay green (the planner module
+   does not read `app.state.repo`).
+2. Add the implementer router + a no-op `GET /implementer/` so
+   the routes wire up without templates yet; assert via a
+   smoke test.
+3. Build the templates (`implementer_list.html`,
+   `implementer_claim.html`, `implementer_submitted.html`,
+   `implementer_orphaned.html`); add `test_implementer_routes.py`
+   to lock down rendering and per-route validation.
+4. Build the form-parsing helper and the route bodies for
+   claim / draft / submit, including the §C reachability
+   check, in that order. Add `test_implementer_flow.py`
+   alongside.
+5. Add `test_implementer_partial_write.py` to pin the
+   orphan-recovery contract via monkeypatched failures and the
+   sweeper.
+6. Add `test_implementer_security.py` (extends the chunk-1
+   security pattern to the new routes).
+7. Add `test_implementer_e2e.py` (`pytest.mark.e2e`).
+8. Documentation pass: `web-ui/README.md`, `reference/README.md`,
+   `AGENTS.md`, `docs/roadmap.md`.
+9. Local verification (every step in the Verification section).
+10. `/codex-review` on the implementation; iterate to convergence.
+11. PR, CI green, squash-merge.
+
+## Risks
+
+- **§3.3 reachability false-positive / false-negative.** The
+  reachability check rejects unreachable commits but **accepts**
+  any commit reachable from the declared parents, including
+  arbitrary commits the user pushed but didn't intend as the
+  trial tip. Mitigation: the user's `commit_sha` is what they
+  paste in; if they paste the wrong one, it's their error. The
+  check exists to catch the spec violation, not to second-guess
+  the user.
+- **Local-bare-repo assumption.** Multi-machine deployments will
+  fail because the UI's local `GitRepo` cannot reach a remote
+  bare repo. Documented in §H Non-goals; revisit at Milestone 3.
+- **Two-tab draft race.** Two draft pages for the same task in
+  the same session render the same `branch` (because both pull
+  the same `trial_id` from `_CLAIMS`; per §A.2 it is server-only
+  and not influenced by the request). Whichever tab submits
+  first wins via the normal `claim → submit` path; the second
+  tab's submit reads `_CLAIMS`, observes that the entry has been
+  popped (success path drops it), and is treated as
+  "claim missing from session" — the user sees the planner-style
+  "claim missing" banner. If both tabs reach `submit` before
+  either pop runs, the second hits `IllegalTransition` (task is
+  already `submitted`) or `ConflictingResubmission` (same
+  task+token, different commit_sha) and lands on the orphan
+  page with the per-error prose from §C-recovery. The UX is
+  suboptimal but not incorrect.
+- **`work/*` ref already exists.** The branch name is derived
+  from `slug + trial_id`, where `trial_id` is `uuid.uuid4().hex[:12]`.
+  Statistically unique, but a defensive guard is cheap: the
+  Pre-Phase-1 `repo.ref_exists("refs/heads/<branch>")` check in
+  §C re-renders the form with a `commit_sha` field error and
+  does not call `create_trial`, so a collision leaves no orphan
+  trial residue. Test coverage lives in
+  `test_implementer_partial_write.py` ("Pre-Phase-1
+  ref-collision guard" case in §I-3).
+- **Scripted-impl ref-ordering bug becomes a CI failure.** It
+  doesn't, because the existing tests for the scripted
+  implementer pre-date the strict-ordering reading and don't
+  assert order. Chunk 9c does not introduce a new test that
+  would fail; the follow-up §K-1 is what eventually exercises
+  the strict order.
+- **Bearer-leak via the new templates.** Mitigated by
+  `test_implementer_security.py`. Reviewers should still
+  spot-check any new template that receives the configuration
+  object.
+- **Plan creep into chunk 9d / 9e.** The implementer-list page
+  shows recent trials, which is a sliver of what 9e will
+  surface. Keep this minimal; do not add filters, sorting,
+  pagination, or live updates.
