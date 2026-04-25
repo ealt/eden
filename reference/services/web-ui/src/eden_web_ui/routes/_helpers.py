@@ -3,8 +3,30 @@
 from __future__ import annotations
 
 from fastapi import Request, Response
+from fastapi.responses import RedirectResponse
 
 from ..sessions import SESSION_COOKIE_NAME, Session, SessionCodec, verify_csrf
+
+
+def is_htmx_request(request: Request) -> bool:
+    """True iff the request was made by htmx (carries ``HX-Request: true``)."""
+    return request.headers.get("hx-request", "").lower() == "true"
+
+
+def htmx_aware_redirect(request: Request, url: str) -> Response:
+    """Redirect appropriately for both htmx and no-JS clients.
+
+    HTMX does not process 3xx responses — it follows the redirect
+    transparently and swaps the redirected target's HTML into the
+    configured target. For an ``add_row`` button targeted at
+    ``#proposal-rows`` that produces a full ``<html>`` document
+    inside the rows container. The fix is to send back ``HX-Redirect``
+    on a 200/204 instead; htmx intercepts that header and does a
+    full client-side navigation.
+    """
+    if is_htmx_request(request):
+        return Response(status_code=204, headers={"hx-redirect": url})
+    return RedirectResponse(url=url, status_code=303)
 
 
 def get_session(request: Request) -> Session | None:
