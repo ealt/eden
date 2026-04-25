@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}EDEN — evaluator{% endblock %}
+{% block main %}
+<h1>evaluator</h1>
+{% if banner %}<div class="banner banner-error">{{ banner }}</div>{% endif %}
+<section class="objective">
+    <h2>objective</h2>
+    <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
+</section>
+<section class="pending">
+    <h2>pending evaluate tasks</h2>
+    {% if pending %}
+    <table>
+        <thead><tr><th>task id</th><th>trial id</th><th>created</th><th>action</th></tr></thead>
+        <tbody>
+        {% for task in pending %}
+            <tr>
+                <td><code>{{ task.task_id }}</code></td>
+                <td><code>{{ task.payload.trial_id }}</code></td>
+                <td>{{ task.created_at }}</td>
+                <td>
+                    <form action="/evaluator/{{ task.task_id }}/claim" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+                        <button type="submit">claim</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no pending evaluate tasks.</p>
+    {% endif %}
+</section>
+<section class="recent">
+    <h2>recent trials (most recent {{ recent_trials | length }})</h2>
+    {% if recent_trials %}
+    <table>
+        <thead><tr><th>id</th><th>status</th><th>branch</th></tr></thead>
+        <tbody>
+        {% for t in recent_trials %}
+            <tr>
+                <td><code>{{ t.trial_id }}</code></td>
+                <td>{{ t.status }}</td>
+                <td>{% if t.branch %}<code>{{ t.branch }}</code>{% else %}—{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>none yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

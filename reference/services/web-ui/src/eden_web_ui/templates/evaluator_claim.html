@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}EDEN — evaluator draft {{ task_id }}{% endblock %}
+{% block main %}
+<h1>evaluator draft</h1>
+<p>task: <code>{{ task_id }}</code></p>
+
+<section class="trial">
+    <h2>trial under evaluation</h2>
+    <table>
+        <tbody>
+            <tr><th>trial_id</th><td><code>{{ trial.trial_id }}</code></td></tr>
+            <tr><th>status</th><td>{{ trial.status }}</td></tr>
+            <tr><th>branch</th><td>{% if trial.branch %}<code>{{ trial.branch }}</code>{% else %}—{% endif %}</td></tr>
+            <tr><th>commit_sha</th><td>{% if trial.commit_sha %}<code>{{ trial.commit_sha }}</code>{% else %}—{% endif %}</td></tr>
+            <tr>
+                <th>parent_commits</th>
+                <td>
+                    {% for parent in trial.parent_commits %}
+                        <code>{{ parent }}</code>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            <tr><th>started_at</th><td>{{ trial.started_at }}</td></tr>
+        </tbody>
+    </table>
+    {% if trial.description %}
+    <h3>trial description (set by implementer)</h3>
+    <pre class="rationale">{{ trial.description }}</pre>
+    {% endif %}
+    {% if trial.artifacts_uri %}
+    <h3>trial artifact</h3>
+    <p>
+        {% set trial_scheme = trial.artifacts_uri.split(":", 1)[0] | lower %}
+        {% if trial_scheme in ("http", "https", "file") %}
+        <a href="{{ trial.artifacts_uri }}"><code>{{ trial.artifacts_uri }}</code></a>
+        {% else %}
+        <code>{{ trial.artifacts_uri }}</code>
+        <span class="field-error">(unrenderable scheme)</span>
+        {% endif %}
+    </p>
+    {% if trial_artifact_inline %}
+    <pre class="rationale">{{ trial_artifact_inline }}</pre>
+    {% endif %}
+    {% endif %}
+</section>
+
+<section class="proposal">
+    <h2>proposal</h2>
+    <table>
+        <tbody>
+            <tr><th>id</th><td><code>{{ proposal.proposal_id }}</code></td></tr>
+            <tr><th>slug</th><td><code>{{ proposal.slug }}</code></td></tr>
+            <tr><th>priority</th><td>{{ proposal.priority }}</td></tr>
+            <tr>
+                <th>artifacts_uri</th>
+                <td>
+                    {% set scheme = proposal.artifacts_uri.split(":", 1)[0] | lower %}
+                    {% if scheme in ("http", "https", "file") %}
+                    <a href="{{ proposal.artifacts_uri }}"><code>{{ proposal.artifacts_uri }}</code></a>
+                    {% else %}
+                    <code>{{ proposal.artifacts_uri }}</code>
+                    <span class="field-error">(unrenderable scheme)</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    {% if proposal_rationale %}
+    <h3>proposal rationale</h3>
+    <pre class="rationale">{{ proposal_rationale }}</pre>
+    {% else %}
+    <p class="rationale-note">proposal rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+    {% endif %}
+</section>
+
+<section class="instructions">
+    <h2>how to evaluate</h2>
+    <ol>
+        <li>Fetch the bare repo and check out
+            {% if trial.commit_sha %}<code>{{ trial.commit_sha }}</code>{% else %}the trial's <code>commit_sha</code>{% endif %}
+            on a worktree of your own.</li>
+        <li>Run your evaluation procedure (build / test / measure).</li>
+        <li>Fill in the metrics below and submit.</li>
+    </ol>
+</section>
+
+<section class="draft">
+    <h2>submission</h2>
+    {% if errors and errors.overall %}
+    {% for msg in errors.overall %}
+        <div class="banner banner-error">{{ msg }}</div>
+    {% endfor %}
+    {% endif %}
+    <form action="/evaluator/{{ task_id }}/submit" method="post">
+        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+        <fieldset>
+            <legend>status</legend>
+            <label>
+                <input type="radio" name="status" value="success"
+                    {% if form_state.status == "success" %}checked{% endif %}>
+                success
+            </label>
+            <label>
+                <input type="radio" name="status" value="error"
+                    {% if form_state.status == "error" %}checked{% endif %}>
+                error (trial code failure)
+            </label>
+            <label>
+                <input type="radio" name="status" value="eval_error"
+                    {% if form_state.status == "eval_error" %}checked{% endif %}>
+                eval_error (evaluator-side failure; trial may be retried)
+            </label>
+            {% if errors and errors.by_row.get(0, {}).get("status") %}
+            <span class="field-error">{{ errors.by_row[0]["status"] }}</span>
+            {% endif %}
+        </fieldset>
+        <fieldset>
+            <legend>metrics</legend>
+            {% for name, mtype in metric_schema_items %}
+            <p>
+                <label for="metric.{{ name }}">
+                    <code>{{ name }}</code> ({{ mtype }})
+                </label><br>
+                {% if mtype == "integer" %}
+                <input type="number" step="1" id="metric.{{ name }}" name="metric.{{ name }}"
+                    value="{{ form_state.metric_values.get(name, '') }}">
+                {% elif mtype == "real" %}
+                <input type="number" step="any" id="metric.{{ name }}" name="metric.{{ name }}"
+                    value="{{ form_state.metric_values.get(name, '') }}">
+                {% else %}
+                <input type="text" id="metric.{{ name }}" name="metric.{{ name }}"
+                    value="{{ form_state.metric_values.get(name, '') }}">
+                {% endif %}
+                {% if errors and errors.by_row.get(0, {}).get(name) %}
+                <span class="field-error">{{ errors.by_row[0][name] }}</span>
+                {% endif %}
+            </p>
+            {% endfor %}
+        </fieldset>
+        <p>
+            <label for="artifacts_uri">artifacts_uri (optional; URI to your eval logs / output)</label><br>
+            <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
+                value="{{ form_state.artifacts_uri }}">
+        </p>
+        <button type="submit">submit</button>
+    </form>
+</section>
+{% endblock %}

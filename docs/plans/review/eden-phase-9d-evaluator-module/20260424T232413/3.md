@@ -1,0 +1,930 @@
+# Phase 9 chunk 9d — Web UI evaluator module
+
+## Goal
+
+Add the evaluator role to the reference Web UI so a human can claim a
+pending `evaluate` task, inspect the trial-under-evaluation, fill in
+metrics by hand, and submit the result. Mirrors the structural
+contract pinned in chunk 9c (signed session cookies, per-session CSRF,
+HTMX progressive enhancement, retry-before-orphan + committed-state
+read-back keyed off `submissions_equivalent`) and the per-claim
+isolation pattern (`_CLAIMS` keyed on `(session.csrf, task_id)`),
+adapted for the evaluator's distinct shape.
+
+The evaluator differs from the implementer in three load-bearing
+ways:
+
+1. **No git work.** Per `spec/v0/03-roles.md` §4.3 the evaluator MUST
+   NOT mutate the worker branch or the canonical lineage; it reads
+   the trial at `trial.commit_sha` out-of-band (`git clone …` /
+   `git fetch && git checkout`) and types metrics back into the
+   form. The UI does not accept a `commit_sha` from the operator
+   and never calls `repo.create_ref` / any plumbing — the evaluator
+   module mounts unconditionally (no `--repo-path` requirement).
+2. **Trial already exists.** No `Phase 1 create_trial` step. The
+   evaluator's `EvaluateTask` carries `payload.trial_id` and the
+   trial is in `status="starting"` with `commit_sha` set (per
+   §4.1 + chapter 04 §3.1). Submit becomes the single Phase, with
+   form validation up front and `store.submit` as the only mutation.
+3. **`status` has three values.** `success` / `error` / `eval_error`
+   per §4.4. Each maps to a different orchestrator-side trial
+   transition; `eval_error` keeps the trial in `starting` and may
+   be retried by a fresh evaluate task.
+
+## Non-goals
+
+- **Operator-side git operations.** Cloning the bare repo, checking
+  out the trial, running tests — all out-of-band. The UI surfaces
+  `trial.commit_sha` + `trial.branch` so the operator knows what to
+  check out, but the UI never proxies git.
+- **Metric autocomputation.** No "run the evaluator script for me"
+  button; chunk 9d is hand-typed metrics only. A scripted-evaluator
+  trigger button is a Phase 9e or later concern.
+- **Artifact upload by the UI.** The submission's `artifacts_uri` is
+  a free-text URI the operator types after uploading their
+  diagnostic logs / artifacts somewhere themselves. UI-driven
+  artifact upload is Phase 10 (compose stack ships an artifact
+  store) at the earliest.
+- **A submission-side `description` field.** The evaluator's submission
+  shape per `spec/v0/03-roles.md` §4.4 is `status` / `trial_id` /
+  `metrics` / `artifacts_uri` only — there is no submission-carried
+  `description`. The chunk-9d form deliberately omits a description
+  textarea so the UI does not silently drop operator input. The
+  implementer-set `trial.description` (per §3.2 step 3) is read-only
+  context surfaced on the draft page.
+- **Per-metric optional/required policy at the UI level.** The spec
+  (§4.4) says metric keys are a subset of `metrics_schema`; we
+  honor the spec exactly (every metric is optional from the UI's
+  perspective, validated as a typed value when present), with one
+  pragmatic guardrail: **`status=success` requires at least one
+  metric value** so the trial isn't a "successful no-signal" black
+  hole. `error` and `eval_error` may carry zero metrics.
+- **Mutating `trial.metrics` directly from the UI.** That's the
+  orchestrator's exclusive write per §4.2 / §4.4 / chapter 04 §4.3.
+  The UI calls `store.submit` and the orchestrator's terminal
+  transition does the trial write atomically with the event.
+
+## Backwards-compatibility policy
+
+Chunk 9d adds new routes (`/evaluator/*`), one new template family,
+and one new `parse_evaluate_form` helper. It changes nothing in the
+planner or implementer modules, the wire binding, or the storage
+backend. The CLI gains no new flag.
+
+## Tech-stack decision
+
+Reuse everything chunk 9c established:
+
+- HTMX 1.9.12 vendored under `static/` for progressive enhancement
+  (chunk 9d does not introduce any HTMX-specific behavior — every
+  route works as a plain form-POST + 303 redirect — but the
+  evaluator templates extend `base.html` and inherit the
+  enhancement layer).
+- `itsdangerous`-signed session cookies (`HttpOnly`, `SameSite=Lax`,
+  `Path=/`; opt-in `Secure` via `--secure-cookies`).
+- Per-session CSRF token validated in constant time on every
+  mutating route.
+- Closed wire-error vocabulary: `eden://error/wrong-token`,
+  `eden://error/illegal-transition`,
+  `eden://error/conflicting-resubmission`,
+  `eden://error/invalid-precondition`.
+
+No new dependencies. No new vendored assets.
+
+## §A New routes module
+
+`reference/services/web-ui/src/eden_web_ui/routes/evaluator.py`,
+prefix `/evaluator`. Routes:
+
+- `GET /evaluator/` — list pending `evaluate` tasks (kind=evaluate,
+  state=pending) plus a recent-trials context panel and the
+  experiment objective.
+- `POST /evaluator/{task_id}/claim` — claim with TTL (`expires_at =
+  now + claim_ttl_seconds`). Stash `(claim_token, trial_id)` keyed
+  on `(session.csrf, task_id)` in an in-process `_CLAIMS` dict.
+  `trial_id` is read from the *task payload*, not generated; see
+  §A.2.
+- `GET /evaluator/{task_id}/draft` — render the draft form (read-
+  only trial context + per-metric inputs + status radio + optional
+  artifacts_uri).
+- `POST /evaluator/{task_id}/submit` — validate, then submit with
+  retry-before-orphan + read-back. See §C.
+
+Module-level state:
+
+```python
+# (session.csrf, task_id) -> (claim token, trial_id)
+_CLAIMS: dict[tuple[str, str], tuple[str, str]] = {}
+```
+
+Fixture-clearing: tests add an autouse fixture that clears `_CLAIMS`
+between tests, mirroring the implementer module.
+
+The router is included **unconditionally** in `make_app` (no repo
+gate). Navigation in `base.html` gains a permanent "evaluator" link
+(no `evaluator_enabled` guard), reflecting that the evaluator
+module needs no service-level prerequisite beyond what the planner
+already requires.
+
+### §A.1 Artifact trust boundary
+
+The chunk-9c helper
+`routes/_helpers.read_proposal_rationale(proposal, artifacts_dir)`
+takes a `Proposal` argument; chunk 9d wants the **same security
+envelope** (file://, contained in `--artifacts-dir`, ≤ 1 MiB) for
+**two URI-backed sources**: the proposal's rationale (via
+`proposal.artifacts_uri`) and the trial's `artifacts_uri` (when
+set by the implementer per §3.2 step 3). The trial's
+`description` is **not** URI-backed — it's free-form text stored
+directly on the trial — and is rendered through Jinja2's default
+autoescape; it does not go through this helper.
+
+The cleanest path is to generalize the existing helper:
+
+- Add a new internal helper
+  `_read_inline_artifact(uri: str | None, artifacts_dir: Path) -> str | None`
+  that takes a raw URI string and applies the same trust-boundary
+  rules.
+- Reimplement `read_proposal_rationale(proposal, artifacts_dir)`
+  as a thin wrapper that calls
+  `_read_inline_artifact(proposal.artifacts_uri, artifacts_dir)`,
+  preserving the existing call site signature so the chunk-9c
+  implementer module's import does not break.
+- The evaluator route uses `_read_inline_artifact` directly for
+  `trial.artifacts_uri` (and re-uses `read_proposal_rationale`
+  for the proposal rationale).
+
+Result: one trust-boundary implementation, two call sites in
+chunk 9d, identical envelope. The Phase 0 "no new helper"
+language was incorrect; chunk 9d ships the
+`_read_inline_artifact` extraction. Tests in
+`test_evaluator_security.py` (§I.4) cover trial-side `file://`
+confinement, traversal escape, non-`file://` schemes, the > 1 MiB
+cap, and directory inputs explicitly — we don't trust the
+symmetric proposal-side coverage from chunk 9c to flow through.
+
+The **trial's own** `artifacts_uri` and `description` MAY be set by
+the implementer on a successful `starting` trial (per
+`spec/v0/03-roles.md` §3.2 step 3). The chunk-9c implementer module
+already wires `description` into `Trial(...)` from its form input;
+`trial.artifacts_uri` is reserved for a future implementer-side
+artifact-upload feature. The evaluator's draft page therefore
+renders both `trial.description` (when set, as a read-only block,
+escaped via Jinja2 autoescape) and `trial.artifacts_uri` (when
+set, with the chunk-9c scheme allowlist applied: only `http`,
+`https`, and `file` schemes are hyperlinked; any other scheme
+renders as `<code>` plus "(unrenderable scheme)"). When
+`trial.artifacts_uri` is a `file://` URI inside `--artifacts-dir`
+and ≤ 1 MiB, the helper inlines the content — same envelope as
+the proposal rationale.
+
+The submission's `artifacts_uri` text input is **not** hyperlinked
+on the confirmation page — it renders as a plain `<code>` block.
+Hyperlinking a URL the operator just typed risks the same
+scheme-injection class lens 10 in
+`feedback_impl_review_lenses.md` flagged for the proposal's
+`artifacts_uri`. We avoid the question entirely by not rendering it
+as `<a href>`. (If the operator wants to follow it, they can copy
+it.)
+
+### §A.2 `trial_id` ownership
+
+The evaluator's `trial_id` is **server-pinned via the task
+payload**, not generated by the UI:
+
+- `EvaluateTask.payload.trial_id` is the trial under evaluation;
+  the orchestrator put it there at task-creation time.
+- At claim, `routes/evaluator.claim` reads
+  `task.payload.trial_id` and stashes it in `_CLAIMS` alongside
+  the claim token.
+- `routes/evaluator.draft_form` and `routes/evaluator.submit` look
+  up `trial_id` from `_CLAIMS` (keyed on
+  `(session.csrf, task_id)`). The rendered form has no
+  `name="trial_id"` input.
+- `routes/evaluator.submit` builds
+  `EvaluateSubmission(trial_id=trial_id, …)` from the `_CLAIMS`
+  entry. A forged `trial_id` form value is ignored.
+
+This mirrors chunk 9c's lens — the request surface never carries
+the canonical `trial_id`. The chunk-9c memory
+`feedback_impl_review_lenses.md` (lens-10 sibling: "trial_id
+non-leak") applies unchanged.
+
+### §A.3 Metrics validation parity
+
+The evaluator submission's `metrics` dict must satisfy:
+
+1. Keys are a subset of `experiment_config.metrics_schema.root`.
+   The form's per-metric inputs are *generated* from
+   `metrics_schema` so a well-behaved browser cannot submit a key
+   outside the schema — but the form parser still rejects unknown
+   names (a hand-crafted POST is the only way they appear).
+2. Each present value matches its declared `MetricType`:
+   - `integer` — accepts a JSON-numeric form whose value is an
+     integer per `02-data-model.md` §1.3: `3`, `-7`, and `1.0`
+     are all accepted; `1.5` MUST be rejected. Implementation:
+     parse with `float(s)`, then reject if not `float.is_integer()`,
+     then coerce to `int`. Rejects `nan`/`inf`/`-inf` and any
+     leading/trailing whitespace beyond `s.strip()`. Rejects
+     `s.lower() in ("true", "false")` to guard against a
+     hand-crafted POST that puts a boolean string in an integer
+     field. The recorded `EvaluateSubmission.metrics[name]` is
+     always a Python `int` for `integer`-typed metrics
+     (`Store._validate_metrics` rejects bools-as-int and
+     floats-as-int per `_base.py`).
+   - `real`    — parse with `float(s)`, reject `nan`/`inf`/`-inf`
+     via `math.isfinite` (mirroring `Store._validate_metrics`).
+     Stored as Python `float`.
+   - `text`    — keep as `s.strip()`; non-empty after strip
+     required (an all-whitespace input is treated as omitted).
+     Stored as Python `str`.
+3. Empty form-input fields are treated as **omitted** (the metric
+   is left out of the dict, not stored as `None`).
+4. `status="success"` requires `len(metrics) >= 1` (UI-side
+   guardrail; spec allows empty).
+
+The wire (per `spec/v0/02-data-model.md` §1.3) also permits
+explicit `null` values for any declared metric ("when the
+evaluator declined to report"). The chunk-9d UI is **deliberately
+narrower** than the wire on this dimension: a blank form input
+omits the metric from the dict entirely instead of transmitting an
+explicit null. This is wire-legal (a subset of declared keys is
+allowed), keeps the form-and-payload parity simple, and matches
+how the scripted evaluator host already behaves. If a future use
+case needs to distinguish "I have no value" from "I declare null",
+the form gains a third option per metric (`<value> | omit |
+null`) and `EvaluateDraft.metrics` widens to
+`dict[str, int | float | str | None]`. Out of scope for 9d.
+
+The Pydantic-bound `EvaluateSubmission.metrics: dict[str, Any]
+| None = None` accepts whatever Python types we put in. The
+authoritative validation is `Store._validate_metrics`, which
+`store.submit` calls before transitioning the task. The form
+parser duplicates the spec's rules so the operator gets clean
+field-level errors instead of a wire-error banner; on the
+*server* side, `store.submit` is the trust boundary and will
+raise `InvalidPrecondition` on any drift.
+
+This is symmetric with how chunk 9c did §3.3 reachability twice
+(form-time + storage-time): cleaner UX, server still authoritative.
+
+## §B Forms helper
+
+`reference/services/web-ui/src/eden_web_ui/forms.py` gains:
+
+```python
+@dataclass(frozen=True)
+class EvaluateDraft:
+    """Validated evaluator-form input.
+
+    The route handler combines this with the server-owned
+    ``trial_id`` (from ``_CLAIMS``) to construct the
+    ``EvaluateSubmission`` object. There is no ``description``
+    field — the evaluator's submission shape per
+    ``spec/v0/03-roles.md`` §4.4 does not carry one.
+    """
+
+    status: Literal["success", "error", "eval_error"]
+    metrics: dict[str, int | float | str]   # only present-and-valid keys
+    artifacts_uri: str | None
+
+
+def parse_evaluate_form(
+    *,
+    metrics_schema: MetricsSchema,
+    status_raw: str,
+    metric_inputs: Mapping[str, str],   # key -> raw form value, one per schema entry
+    artifacts_uri_raw: str,
+) -> tuple[EvaluateDraft | None, FormErrors]:
+    ...
+```
+
+Validation rules:
+
+- `status` must be one of `{"success", "error", "eval_error"}`;
+  anything else → `errors.add(0, "status", …)` and `(None, errors)`.
+- Each `metric_inputs[name]`:
+  - empty/whitespace → omitted from the result dict (no error).
+  - present + non-empty: same per-type rules as §A.3 (integer
+    accepts wire-legal `1.0`, real rejects non-finite, text
+    must be non-empty after strip).
+  - any unknown key in `metric_inputs` outside `metrics_schema.root`
+    → `errors.add(0, name, "metric not in schema")`. (Note: the
+    template only emits inputs for schema keys, so this only
+    triggers on a hand-crafted POST.)
+- `status == "success"` requires `len(metrics) >= 1`; otherwise
+  `errors.add_overall("status=success requires at least one
+  metric value")`.
+- `artifacts_uri_raw.strip()` → `None` if empty. No URI shape check
+  at form time (the spec doesn't constrain it); the operator is
+  responsible for typing a sensible URI.
+
+If any error accumulated, return `(None, errors)`; otherwise
+`(EvaluateDraft(...), FormErrors())`.
+
+## §C Request flow
+
+Phases (numbering kept for parity with 9c, even though we have
+fewer):
+
+1. **Validate** the form.
+   - `parse_evaluate_form` returns `(None, errors)` → re-render
+     the draft template with 400, errors, and `form_state` so
+     the operator's input is preserved.
+2. **Phase 1 — `store.submit`** with retry-before-orphan +
+   committed-state read-back. The exception classification differs
+   from chunk 9c's by design (see §C-rationale):
+   - 3 attempts total, backoff `(0.05, 0.2, 0.5)`.
+   - **Definitive short-circuits** (no retry, no read-back):
+     - `ConflictingResubmission` → orphan
+       `recovery_kind="conflict"`. By spec §4.2 this means a
+       different non-equivalent payload is already on file; no
+       transport ambiguity.
+     - `WrongToken` → orphan `recovery_kind="auto"`. The store
+       only raises `WrongToken` when `task.state == "claimed"`
+       but our token doesn't match, which means the claim was
+       reclaimed under us. A successful prior submit would have
+       moved the task to `submitted` *with our token preserved*
+       (`Store.submit` never clears the claim on success), so
+       `WrongToken` rules out "we won and the response was lost."
+     - `InvalidPrecondition` → form re-render (400) with the
+       wire-error banner, NOT an orphan. The operator can fix
+       the metrics and resubmit; orphaning a fixable form
+       failure would be hostile UX.
+   - **Read-back-required failures** (skip remaining retries,
+     jump to the read-back block below):
+     - `IllegalTransition` — the store raises this when
+       `task.state` is not in `{"claimed", "submitted"}` at
+       call time. After a transport-indeterminate first attempt,
+       the task may be `pending` (sweeper reclaimed → we lost),
+       `completed` / `failed` (orchestrator already terminalized
+       → we won), or `submitted` by another claimant
+       (conflict). The read-back distinguishes these. **This is
+       a deliberate departure from the chunk-9c implementer
+       module's short-circuit pattern**, which mis-classifies a
+       lost-response-then-orchestrator-terminalization as an
+       orphan; see §K-2 for the parallel fix needed in 9c.
+   - **Transport-shaped exceptions** (any `Exception` not in the
+     four above) are retried with backoff; on exhaustion, jump
+     to the read-back block.
+3. **Read-back block.** `store.read_task(task_id)` +
+   `store.read_submission(task_id)` + `submissions_equivalent`.
+   Decisions:
+   - `task.state == "claimed"` and `task.claim.token == our token`
+     → orphan `recovery_kind="auto"` ("transport failure;
+     retry safe — claim still ours, sweeper will reclaim eventually").
+   - `task.state == "claimed"` but our token is gone → orphan
+     `recovery_kind="auto"` (`eden://error/wrong-token`) — same
+     prose; the prior reclaim already invalidated us.
+   - `task.state in {"submitted", "completed", "failed"}`:
+     - `read_submission` returns `None` → orphan
+       `recovery_kind="transport"` ("store invariant violation").
+       Implementation-illegal but defensively handled.
+     - `submissions_equivalent(prior, our)` → success page (200).
+       (Note: `EvaluateSubmission` equivalence keys off
+       `status + trial_id + metrics`; `artifacts_uri` is **not**
+       part of equivalence per chapter 04 §4.2 + the
+       `submissions_equivalent` impl. The first submission's
+       `artifacts_uri` wins.)
+     - non-equivalent → orphan `recovery_kind="conflict"`
+       (`eden://error/conflicting-resubmission`).
+   - `task.state == "pending"` → orphan `recovery_kind="auto"`
+     ("task reclaimed before our submit committed; retry safe by
+     re-claiming the task").
+   - `read_task` itself raises → orphan
+     `recovery_kind="transport"` (read-back probe failure).
+
+### §C-rationale — why `IllegalTransition` is not a definitive short-circuit
+
+`Store.submit` raises `IllegalTransition` when
+`task.state ∉ {"claimed", "submitted"}` at the moment of the call
+(`reference/packages/eden-storage/src/eden_storage/_base.py` ~L593).
+After the route's first transport-indeterminate `submit` call, the
+task may have moved to:
+
+- `completed` / `failed` — our prior call committed and the
+  orchestrator's terminal transition fired. Read-back finds an
+  equivalent recorded submission → success.
+- `pending` — the sweeper reclaimed our claim before our prior
+  call committed. Read-back finds no submission → orphan auto.
+- `submitted` by *another* worker (vanishing race) — read-back
+  finds a non-equivalent submission → conflict.
+
+Treating `IllegalTransition` as a definitive orphan would
+mis-classify the first case (we won) as an orphan. The simplest
+correct fix is to route `IllegalTransition` into the read-back
+arm where the actual outcome is determined.
+
+`WrongToken` and `ConflictingResubmission` *are* definitive:
+`WrongToken` requires `task.state == "claimed"` with a
+non-matching token (which never happens after a successful prior
+submit, because successful submit preserves our token), and
+`ConflictingResubmission` is the spec-specified definitive
+"different payload won" signal.
+
+The single-step structure means there's no Phase-1-failed /
+Phase-2-failed split. The submit either succeeds, definitively
+fails (rendered as a form error or orphan), or transport-fails
+into the read-back arm.
+
+### §C-recovery (per-error)
+
+| Outcome | Definition | UI rendering | Operator action |
+|---|---|---|---|
+| ok | submit returned cleanly OR retry returned cleanly OR read-back found equivalent prior submission | `evaluator_submitted.html`, 200 | none |
+| InvalidPrecondition (form-time, e.g. metric type drift only the server caught) | server rejected the metrics shape | re-render draft with the wire-error banner attached | fix the metrics and resubmit |
+| WrongToken | the prior reclaim invalidated our claim (sweeper or operator) | orphan, `recovery_kind="auto"` | none — prior reclaim already restored task to `pending` |
+| IllegalTransition, read-back finds state==pending | sweeper reclaimed our claim before our submit committed | orphan, `recovery_kind="auto"` | none |
+| IllegalTransition, read-back finds equivalent prior submission | our prior attempt committed; orchestrator already terminalized | success page (treated as `ok`) | none |
+| IllegalTransition, read-back finds non-equivalent submission | a different submission won the race; we lost | orphan, `recovery_kind="conflict"` | operator triage |
+| ConflictingResubmission | a different submission won the race for this task | orphan, `recovery_kind="conflict"` | operator triage; the system's record stands |
+| transport, retry exhausted, claim still ours | network glitch persisted; claim TTL will eventually reclaim | orphan, `recovery_kind="auto"` | wait for TTL, or operator-side reclaim |
+| transport, retry exhausted, server committed equivalent | "submitted, response lost" sub-case A | success page (treated as `ok`) | none |
+| transport, retry exhausted, server committed non-equivalent | "different submission won" sub-case A' | orphan, `recovery_kind="conflict"` | operator triage |
+| transport, retry exhausted, store invariant violated | implementation-illegal: terminal task with no recorded submission | orphan, `recovery_kind="transport"` | operator investigation |
+| transport, retry exhausted, read-back probe itself failed | indeterminate | orphan, `recovery_kind="transport"` | operator investigation |
+
+Key contrast with chunk 9c: there is **no orphaned `starting`
+trial** to worry about. The evaluator never creates a trial; the
+trial already existed when the evaluate task was created. So the
+"sweeper composite-commits the trial to error on reclaim" recovery
+branch from 9c does not apply here. On reclaim of an evaluate task
+with an orphaned submit, `_base.reclaim` reverts the task from
+`claimed → pending`; the trial stays `starting` and a fresh
+evaluate task can be created (per §4.4 retry semantics). No trial-
+level recovery is needed.
+
+## §D Templates
+
+Four new templates under
+`reference/services/web-ui/src/eden_web_ui/templates/`:
+
+- `evaluator_list.html` — pending evaluate tasks (table of
+  task_id + trial_id), recent trials panel, link-back to
+  `/evaluator/<task_id>/claim`. Banner from
+  `?banner=…` query param.
+- `evaluator_claim.html` — read-only trial context:
+  - **Trial fields**: trial_id, branch, commit_sha,
+    parent_commits, status, started_at. The commit_sha and branch
+    are the load-bearing fields — they tell the operator what to
+    check out from the bare repo.
+  - **Trial-side optional fields set by the implementer per
+    `spec/v0/03-roles.md` §3.2 step 3**: `trial.description`
+    (rendered as a read-only `<pre>` block when set);
+    `trial.artifacts_uri` rendered with the chunk-9c scheme
+    allowlist + read-only inline rendering when it's a `file://`
+    inside `--artifacts-dir`.
+  - **Proposal context**: proposal slug + priority +
+    artifacts_uri (chunk-9c scheme allowlist) + rationale block
+    (inline via `read_proposal_rationale`, or a rationale-not-
+    rendered note).
+  - **Operator instructions** (informational): a short
+    "to evaluate this trial, fetch the bare repo and check out
+    `{{ commit_sha }}` on a worktree of your own; run your eval
+    procedure; come back here and fill in the metrics" preamble.
+    No git command prefilled — the bare-repo location is a
+    deployment concern (Phase 10 compose stack pins it; in dev,
+    the operator knows the path).
+
+  Then the form:
+  - status radio (success / error / eval_error)
+  - one input per metric in `metrics_schema.root`, labeled with
+    metric name + declared type (`integer` / `real` / `text`).
+    `<input type="number" step="1">` for integer, `<input
+    type="number" step="any">` for real, `<input type="text">` for
+    text. (`type="number"` is browser-side UX; the server still
+    parses string form values.)
+  - optional `artifacts_uri` text input (no scheme allowlist —
+    plain text, `<input type="text">`)
+  - `csrf_token` hidden field
+  - submit button
+- `evaluator_submitted.html` — confirmation: task_id, trial_id,
+  status, metrics dict (rendered as a small definition list),
+  submission's `artifacts_uri` as plain `<code>` (NOT hyperlinked,
+  per §A.1).
+- `evaluator_orphaned.html` — three case-specific blocks
+  matching `recovery_kind`:
+  - `auto` — "the orchestrator's reclaim sweeper will return the
+    task to `pending` once the claim TTL expires; the trial
+    itself remains in `starting` and a fresh evaluate task can
+    be created." (No mention of trial-level reclaim — distinct
+    from the implementer orphan template, which spoke of trial
+    composite-commit-to-error. The evaluator never creates a
+    trial.)
+  - `conflict` — "a different submission was already committed for
+    this task; the system's record stands. If your submission
+    should be the one kept, an operator-side replay through
+    admin reclaim is needed (Phase 9e)."
+  - `transport` — "transport failure left the outcome unknown;
+    operator investigation needed. Possible causes: read-back
+    probe failed; store invariant violated (terminal task with
+    no recorded submission)."
+- `base.html` — add a permanent `<a href="/evaluator/">evaluator</a>`
+  navigation link alongside `planner` and the conditional
+  `implementer`. No conditional gate.
+
+## §E Reused chunk-1 / 9c surface
+
+- `_helpers.csrf_ok`, `_helpers.get_session`,
+  `_helpers.is_htmx_request`, `_helpers.read_proposal_rationale`.
+- `forms.FormErrors` (no changes; mode is now also single-row).
+- `_CLAIMS`-pattern dict (per-route, not shared across routes;
+  the implementer's `_CLAIMS` and the evaluator's `_CLAIMS` are
+  separate module-level dicts to avoid cross-module key collision
+  on `task_id` if the same operator's session is mid-claim on
+  both kinds simultaneously).
+- The wire-error banner mapping (`_ERROR_NAMES`) is duplicated in
+  `evaluator.py` (private to the module) rather than extracted —
+  it's 4 entries; an extraction now would be premature. (Marked
+  in §K-1 as a lukewarm follow-up, not a blocker.)
+- The retry policy constants (`_RETRY_DELAYS_S = (0.05, 0.2, 0.5)`)
+  are duplicated for the same reason.
+- `_iso(dt)` (Zulu suffix) is duplicated.
+
+(All three duplications are identical bytes between
+`routes/planner.py`, `routes/implementer.py`, and the new
+`routes/evaluator.py`. An extraction into `_helpers.py` is a
+natural follow-up but not in scope here — the value of routes
+being self-contained for `/codex-review` discipline outweighs the
+DRY win at this volume.)
+
+## §F CLI
+
+No new flag. The `routes/evaluator.router` is included
+unconditionally inside `make_app`. The web-ui CLI's only existing
+gate (`--repo-path → repo`) continues to apply only to the
+implementer module.
+
+## §G Docs
+
+- `reference/services/web-ui/README.md` gains an "Evaluator module
+  (chunk 9d)" section after the implementer-module section.
+  Documents the spec-to-code map for `POST /evaluator/{task_id}/submit`,
+  the trial_id ownership note, the metrics-validation parity, the
+  `artifacts_uri` non-hyperlinking note, and the per-error recovery
+  table from §C-recovery.
+- `AGENTS.md` (root): a new "Phase 9 chunk 9d complete" status block
+  prepended to the phase chain, mirroring the 9c one.
+- `reference/README.md`: bump status to reflect 9d.
+- `docs/roadmap.md`: mark 9d complete in the Phase 9 chunk list.
+
+## §H CI
+
+No new gates. The existing `markdownlint` / `schema-parity` /
+`ruff` / `pyright` / `pytest` jobs all cover chunk 9d
+automatically. The new `pytest.mark.e2e` test under
+`reference/services/web-ui/tests/test_evaluator_e2e.py` runs in the
+same `uv run pytest -m e2e` job.
+
+## §I Tests
+
+Five new test files under
+`reference/services/web-ui/tests/`, paralleling 9c:
+
+1. **`test_evaluator_routes.py`** — per-route validation in
+   isolation (TestClient with the in-memory store fixture).
+   - GET `/evaluator/` lists pending tasks, hides claimed ones,
+     surfaces the banner from `?banner=…`.
+   - POST `/evaluator/<task_id>/claim` rejects missing/wrong CSRF,
+     200 on success, redirects to `/evaluator/<task_id>/draft`,
+     stashes `(token, trial_id)` in `_CLAIMS`.
+   - POST `/evaluator/<task_id>/claim` on an already-terminalized
+     task surfaces a wire-error banner.
+   - GET `/evaluator/<task_id>/draft` without a stashed claim
+     redirects with `claim+missing+from+session` banner.
+   - GET `/evaluator/<task_id>/draft` renders one input per
+     `metrics_schema` entry with the correct `type` attribute
+     (`number step=1` for integer, `number step=any` for real,
+     `text` for text).
+   - POST `/evaluator/<task_id>/submit` rejects status outside the
+     three allowed values.
+   - POST submit with `status=success` and zero metric values →
+     400 + form re-render with overall error.
+   - POST submit with `status=error` and zero metrics → 200 +
+     submitted page (zero-metric error allowed).
+   - POST submit with `status=eval_error` and zero metrics → 200.
+   - POST submit with a metric value of wrong type (e.g. `1.5`
+     for an integer key) → 400 + field-level error on that key.
+   - POST submit with the wire-legal integer form `1.0` for an
+     integer key → 200 + recorded value is the Python `int` `1`
+     (per spec §1.3 acceptance, parser-side normalization).
+   - POST submit with a metric key outside the schema (hand-
+     crafted body) → 400 + field-level error.
+   - POST submit with a `nan` for a real metric → 400.
+   - POST submit with a forged `trial_id` form field → ignored
+     (the recorded submission carries the server-pinned trial_id).
+   - POST submit on a `success` with one valid metric →
+     `submitted` page; recorded `EvaluateSubmission` matches
+     `(status="success", trial_id=<server-pinned>, metrics={...},
+     artifacts_uri=None)`.
+
+2. **`test_evaluator_flow.py`** — multi-request sequences.
+   - Full happy path: claim → draft (form rendered) → submit
+     (200 confirmation page). Verify `_CLAIMS` cleared, task
+     state is `submitted` (the orchestrator-side terminal
+     transition is out of the UI's scope).
+   - Validation-recovery: claim → submit with a missing required
+     metric for `status=success` → re-render with form_state
+     preserving the operator's other inputs → fix the metric →
+     submit → 200.
+   - Stranded-claim recovery via the chunk-1 sweeper: claim with a
+     1-second TTL → wait → call `eden_dispatch.sweep_expired_claims`
+     directly → original session's submit gets `WrongToken` →
+     orphan page (`recovery_kind="auto"`).
+   - `eval_error` path: claim → submit with `status=eval_error`
+     and partial metrics → 200; recorded submission's metrics is
+     present (orchestrator discards it on terminal transition,
+     but that's the orchestrator's behavior — at the store the
+     submission is recorded as-typed).
+   - Conflict path: claim from session A; manually call
+     `store.submit` directly with a *different* metrics value
+     under a *different* claim token (simulating an operator-
+     side replay or a different role-binding); session A's
+     submit raises `WrongToken` → orphan page `recovery_kind="auto"`.
+
+3. **`test_evaluator_partial_write.py`** — recovery branches via
+   monkeypatched `store.submit` failures, mirroring 9c's
+   partial-write tests.
+   - **Sub-case A** (server committed, response lost): mock
+     `store.submit` as commit-AND-raise on every call (per the
+     codified
+     `feedback_retry_readback_test_mocks.md` pattern). The
+     route exhausts retries, the read-back finds task in
+     `submitted` and submission equivalent → success page (200).
+   - **Sub-case A'** (server committed, then terminalized): mock
+     `store.submit` as commit-AND-raise; on the first call also
+     drive `store.accept(task, EvaluateSubmission(...))` with a
+     *different* `metrics` to push the task to `completed` with
+     a non-equivalent submission. Read-back finds non-
+     equivalent → orphan `recovery_kind="conflict"`.
+   - **Sub-case B** (claim still ours): mock `store.submit` to
+     raise without committing; retries exhaust; read-back finds
+     `task.state == "claimed"`, claim still ours → orphan
+     `recovery_kind="auto"`. Assert the rendered prose mentions
+     "claim TTL".
+   - **Sub-case C** (read-back probe fails): mock `store.submit`
+     to raise; mock `store.read_task` to raise → orphan
+     `recovery_kind="transport"` with the "read-back failed"
+     banner.
+   - **Sub-case D** (read_submission returns None on a terminal
+     task): mock `store.submit` to raise on every call; mock
+     `store.read_task` to return a `submitted` task; mock
+     `store.read_submission` to return `None` → orphan
+     `recovery_kind="transport"` with the "store invariant
+     violation" banner.
+   - **Sub-case E** (`WrongToken` short-circuits): mock
+     `store.submit` to raise `WrongToken` on the first call →
+     orphan `recovery_kind="auto"`, no retries attempted.
+   - **Sub-case F** (`ConflictingResubmission` short-circuits):
+     mock to raise `ConflictingResubmission` on the first call →
+     orphan `recovery_kind="conflict"`.
+   - **Sub-case G** (task reclaimed mid-flight): mock submit to
+     raise; mock read_task to return `task.state == "pending"`
+     → orphan `recovery_kind="auto"` "task reclaimed".
+   - **Sub-case H** (`InvalidPrecondition` from server-side
+     metrics validation drift): mock submit to raise
+     `InvalidPrecondition` on the first call → 400 form re-
+     render with the wire-error banner (NOT an orphan — the form
+     validation is fixable).
+   - **Sub-case I-a** (`IllegalTransition` from state==pending):
+     mock submit to raise `IllegalTransition` on the first call;
+     mock read_task to return `task.state == "pending"`. The
+     route falls through to read-back → orphan
+     `recovery_kind="auto"` "task reclaimed".
+   - **Sub-case I-b** (`IllegalTransition` from state==completed
+     with our submission committed): drive the store to
+     `completed` with our equivalent submission via
+     `store.accept(...)` *before* the route's submit call; mock
+     `store.submit` to raise `IllegalTransition`. The route
+     falls through to read-back → success page. **This is the
+     case the chunk-9c implementer module mis-classifies; it's
+     the new lens the §K-2 follow-up exists to fix.**
+   - **Sub-case I-c** (`IllegalTransition` from state==completed
+     with a different submission committed): drive a different
+     evaluate submission to `completed` first; route's submit
+     raises `IllegalTransition`; read-back finds non-equivalent
+     → orphan `recovery_kind="conflict"`.
+
+4. **`test_evaluator_security.py`** — invariants.
+   - Bearer token never appears in any rendered HTML or
+     `Set-Cookie` header on `/evaluator/*` routes.
+   - CSRF mismatch returns 403 on each mutating route (claim,
+     submit).
+   - Cookie attributes (HttpOnly, SameSite=Lax, Path=/, Secure
+     opt-in) hold for the evaluator client.
+   - `trial_id` is server-only:
+     - `name="trial_id"` and `id="trial_id"` are absent from the
+       rendered draft form.
+     - A forged `trial_id` form value is ignored: the recorded
+       submission's `trial_id` matches the task payload's
+       `trial_id`, not the form value.
+   - The submission's `artifacts_uri` is rendered as plain
+     `<code>` on the confirmation page (NOT inside an `<a href>`),
+     even when the operator typed a `javascript:` URI.
+   - The proposal's `artifacts_uri` rendering on the draft page
+     reuses the chunk-9c scheme allowlist (only http/https/file
+     hyperlinked); a `javascript:` URI on the proposal renders
+     as `<code>` + "(unrenderable scheme)".
+   - The trial's `artifacts_uri` rendering on the draft page
+     also applies the scheme allowlist; a `javascript:` URI on
+     the trial renders as `<code>` + "(unrenderable scheme)".
+   - The trial's `description` is rendered escaped (default
+     Jinja2 autoescape); a `<script>` payload in
+     `trial.description` shows as text, not executed.
+   - **Trial-side `_read_inline_artifact` trust boundary**
+     (separate from the proposal-side coverage in chunk-9c
+     `test_implementer_security.py`):
+     - `trial.artifacts_uri` resolving to a path *outside*
+       `--artifacts-dir` returns `None` (no inline render).
+     - `trial.artifacts_uri` resolving to a `..` traversal that
+       escapes `--artifacts-dir` returns `None`.
+     - `trial.artifacts_uri` is a non-`file://` scheme (e.g.
+       `https://`) returns `None` (no inline render; link only
+       per scheme allowlist).
+     - `trial.artifacts_uri` points at a file > 1 MiB returns
+       `None`.
+     - `trial.artifacts_uri` points at a directory returns
+       `None`.
+
+5. **`test_evaluator_e2e.py`** — `pytest.mark.e2e` two-process
+   test against a real `eden_task_store_server` subprocess.
+   - Forks the task-store-server on an ephemeral port.
+   - Constructs the web-ui app pointing at that server's
+     `StoreClient`.
+   - Seeds: a ready proposal → an implement task →
+     `_accept_implement` (or direct test helper) to push the trial
+     to `starting` with a `commit_sha` set → an evaluate task.
+     (Or: simulate the orchestrator's pieces via direct store
+     calls; we don't need a real implementer host running.)
+   - Drives a TestClient through claim → submit (status=success
+     with a valid metric).
+   - Asserts that `read_range` on the wire shows the
+     `task.submitted` event with the evaluator submission's
+     metrics. Tears down with SIGTERM → SIGKILL fallback.
+
+### Test-fixture additions to `conftest.py`
+
+- `seed_evaluate_task(store, *, base_sha, metrics_schema, slug="demo",
+  artifacts_dir=None) -> tuple[task_id, trial_id, proposal_id]`:
+  builds a ready proposal + an implement task + drives the trial
+  to `status="starting"` with a `commit_sha` set + creates an
+  evaluate task. Used by all five evaluator tests.
+
+The existing chunk-9c fixtures (`bare_repo`, `base_sha`,
+`make_child_commit`, `_TEST_IDENTITY`) are reused as-is; the
+evaluator does NOT depend on `bare_repo` for its own routes (the
+trial's commit just needs to exist for the implement-task
+acceptance step that puts the trial into `starting` with a
+`commit_sha`).
+
+The evaluator tests use the existing `signed_in_client` fixture
+(no `repo` requirement) — they do not need `signed_in_impl_client`.
+
+## §J What doesn't change
+
+- `eden-storage`: nothing.
+- `eden-wire`: nothing.
+- `eden-dispatch`: nothing.
+- `eden-git`: nothing.
+- `eden_evaluator_host` (the scripted host): nothing.
+- The orchestrator service: nothing — the evaluator's
+  submit-then-orchestrator-terminalizes path is identical to what
+  the existing scripted evaluator already drives.
+- The reference task-store-server: nothing.
+
+## §K Known follow-ups
+
+- **§K-1.** The duplicated `_RETRY_DELAYS_S`, `_iso`,
+  `_ERROR_NAMES`, `_wire_error_banner`, `_render_orphaned`-style
+  helpers across `routes/planner.py`, `routes/implementer.py`,
+  and `routes/evaluator.py` are now three copies of the same
+  bytes. Phase 9e is the natural extraction point; doing it now
+  would diff against three modules at once and obscure 9d's
+  surface in code review.
+- **§K-2.** Apply the §C-rationale `IllegalTransition`-feeds-
+  read-back fix to the chunk-9c implementer module (and the
+  chunk-1 planner module if it has the same shape). The
+  implementer's `_retry_submit_with_readback` currently
+  short-circuits `IllegalTransition` to `recovery_kind="auto"`,
+  which mis-classifies "we won and the orchestrator
+  terminalized before our retry got a clean response" as an
+  orphan. The fix is mechanical (move the `except
+  IllegalTransition` arm to fall through to read-back instead
+  of returning early); the test changes are a new sub-case in
+  `test_implementer_partial_write.py` that drives the task to
+  `completed` between attempts and asserts the success page
+  renders. Doing this in 9d's PR would conflate scopes; doing
+  it in a follow-up PR right after 9d merges is cleanest. Same
+  treatment for the planner if the planner has the equivalent
+  short-circuit.
+- **§K-3.** Per-metric required/optional signaling: the
+  metrics_schema today is `dict[str, MetricType]` (no
+  required/optional bit per metric). If experiments later want
+  to mark a metric as required for `status=success`, that's a
+  spec-level change to `metrics-schema.schema.json` + meta-schema
+  plus the form generator. Out of scope for 9d.
+- **§K-4.** No "rerun the scripted evaluator on this trial"
+  trigger button. The Phase 9e observability story is the
+  natural place: an admin can re-create an evaluate task for a
+  trial, and the scripted evaluator host will pick it up.
+- **§K-5.** Explicit-null metric submission. The chunk-9d UI
+  treats blank inputs as "metric omitted from the submission";
+  the wire (per `spec/v0/02-data-model.md` §1.3) also permits
+  explicit `null`. If a future use case needs the distinction,
+  see §A.3 for the upgrade path.
+
+## Verification
+
+Before declaring done:
+
+1. `uv run ruff check .` clean.
+2. `uv run pyright` clean.
+3. `uv run pytest -q` runs the full suite; all five new evaluator
+   test files green.
+4. `uv run pytest -m e2e` includes the new evaluator e2e and
+   continues to pass the existing implementer + planner e2e tests.
+5. `npx --yes markdownlint-cli2@0.14.0 …` clean for the new
+   README sections.
+6. Manual smoke test: bring up
+   `eden_task_store_server` + `eden_orchestrator` (so the
+   implementer host's `_accept_implement` path is wired) +
+   `eden_implementer_host` + `eden_web_ui` (the web-ui is the
+   process under test). Seed an evaluate task; open
+   `/evaluator/` in a browser, claim the task, fill in metrics,
+   submit; observe a 200 confirmation page and confirm the
+   trial transitions to `success` after the orchestrator
+   terminalization.
+
+## Execution order
+
+1. Add `parse_evaluate_form` + `EvaluateDraft` to `forms.py`.
+2. Create `routes/evaluator.py` with the four routes and the
+   shared `_retry_submit_with_readback` helper.
+3. Wire `routes.evaluator.router` into `make_app` unconditionally;
+   remove the no-op gate (the evaluator does not need `repo`).
+4. Add the four templates + the navigation link in `base.html`.
+5. Add `seed_evaluate_task` to `conftest.py`.
+6. Write the five test files.
+7. Run the full local verification suite (§Verification).
+8. Update `reference/services/web-ui/README.md`, `AGENTS.md`,
+   `reference/README.md`, `docs/roadmap.md`.
+9. Run `/codex-review` on the implementation; iterate to
+   convergence.
+10. `/codify` lessons learned.
+11. Commit + PR + merge.
+
+## Risks / things to watch
+
+- **Metrics-form parser drift from `Store._validate_metrics`.**
+  The form's per-type parsing (integer rejects floats, real
+  rejects non-finite, no bools) must stay in sync with what the
+  store would reject. The mitigation is a parametrized test in
+  `test_evaluator_routes.py` that walks every reject branch the
+  store has and confirms the form rejects it identically. If a
+  future spec change adds a new metric type, both the form
+  parser and the store validator must update; a parity test
+  similar to `test_schema_parity.py` would be ideal but is out of
+  scope here (the metrics-schema is small and the symmetry is
+  hand-maintained).
+- **Sub-case A' test mock symmetry.** The 9c codified pattern
+  (`feedback_retry_readback_test_mocks.md`) requires
+  commit-AND-raise on every call. For sub-case A' the call must
+  also drive a *different* terminal state in between, which the
+  test does via direct `store.accept(...)` calls. Easy to mis-
+  write; the codified memory's "How to apply" section covers it.
+- **`status=success` zero-metric guardrail.** The spec allows
+  empty metrics as a "subset"; we tighten that at the UI layer.
+  If a future spec chapter explicitly says zero-metric success
+  is wire-legal, the UI guard should remain (it's still bad UX)
+  but the e2e test should cover the wire-legal-but-UI-rejected
+  case to ensure our policy is intentional, not a bug.
+- **Conflict-page prose vs. claim-still-ours prose.** Sub-cases B
+  and the read-back-pending-state branch both render
+  `recovery_kind="auto"`, but the underlying state is different
+  (claim still ours vs. claim already invalidated vs. task
+  already reclaimed). All three render the same template arm;
+  the banner is the differentiator. Lens-10 of
+  `feedback_impl_review_lenses.md` (state-prose
+  synchronization) calls this exact pattern out — assertions in
+  `test_evaluator_partial_write.py` check the *banner string*,
+  not just `recovery_kind`, so we don't paper over the
+  distinction.
+- **Trial-existence assumption at draft time.** If the trial that
+  the evaluate task references is somehow gone (deleted by an
+  operator, store corruption), the draft form crashes on
+  `read_trial`. The implementation catches `DispatchError` and
+  renders the wire-error page (502), mirroring 9c. Probably fine;
+  the operator's recovery is to investigate the orchestrator log.
+
+## Spec references
+
+- `spec/v0/03-roles.md` §4 (the evaluator role contract).
+- `spec/v0/04-task-protocol.md` §3.1 (evaluate-task dispatch
+  preconditions), §4.2 (submission idempotency keyed off content
+  equivalence; for evaluate that's `status + trial_id + metrics`,
+  with `artifacts_uri` deliberately excluded), §4.3 (terminal
+  transitions and the eval_error special case).
+- `spec/v0/02-data-model.md` §1.3 (metric storage types) + §7.2
+  (per-metric type rules).
+- `spec/v0/07-wire-protocol.md` §7 (closed `eden://error/…`
+  vocabulary used in the orphan banners).

@@ -1,17 +1,23 @@
-"""Typed form parsers for the planner and implementer modules.
+"""Typed form parsers for the planner, implementer, and evaluator modules.
 
 Planner form input arrives as a list of repeated field rows (one per
 proposal); we parse it into ``ProposalDraft`` objects plus the
 planner-level status. Implementer form input is single-row (one
 trial per task); we parse it into a single ``ImplementDraft``.
-Validation errors are accumulated field-by-field so forms re-render
-with the user's input intact.
+Evaluator form input is single-row (one evaluate task → one
+submission) with one input per declared metric; we parse it into a
+single ``EvaluateDraft``. Validation errors are accumulated
+field-by-field so forms re-render with the user's input intact.
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
+
+from eden_contracts import MetricsSchema
 
 
 @dataclass(frozen=True)
@@ -180,6 +186,146 @@ def parse_implement_form(
             status=status,
             commit_sha=commit_sha,
             description=description or None,
+        ),
+        errors,
+    )
+
+
+@dataclass(frozen=True)
+class EvaluateDraft:
+    """Validated evaluator-form input for one trial.
+
+    The route handler combines this with the server-pinned
+    ``trial_id`` (read from ``task.payload.trial_id`` at claim time
+    and stashed in ``_CLAIMS``) to construct the
+    ``EvaluateSubmission`` object. There is no ``description``
+    field — the evaluator's submission shape per
+    ``spec/v0/03-roles.md`` §4.4 does not carry one; the operator's
+    free-form notes belong with their own diagnostic artifacts.
+    """
+
+    status: Literal["success", "error", "eval_error"]
+    metrics: dict[str, int | float | str]
+    artifacts_uri: str | None
+
+
+_BOOL_LITERALS = ("true", "false")
+
+
+def _parse_metric_value(
+    raw: str, mtype: str
+) -> tuple[int | float | str | None, str | None]:
+    """Parse a single metric value per ``02-data-model.md`` §1.3.
+
+    Returns ``(value, error_message)``. ``value is None`` with a
+    non-None error means a parse failure. ``value is None`` with no
+    error means the field was effectively empty (and should be
+    omitted from the metrics dict). The integer parser accepts the
+    wire-legal form ``1.0`` per spec §1.3 (parses as float, then
+    rejects non-integer values).
+    """
+    s = raw.strip()
+    if mtype == "text":
+        if not s:
+            return None, None
+        return s, None
+
+    if not s:
+        return None, None
+
+    if mtype == "integer":
+        if s.lower() in _BOOL_LITERALS:
+            return None, "boolean is not an integer"
+        try:
+            f = float(s)
+        except ValueError:
+            return None, "value is not a number"
+        if not math.isfinite(f):
+            return None, "value is not finite"
+        if not f.is_integer():
+            return None, "value is not an integer"
+        return int(f), None
+
+    if mtype == "real":
+        if s.lower() in _BOOL_LITERALS:
+            return None, "boolean is not a real"
+        try:
+            f = float(s)
+        except ValueError:
+            return None, "value is not a number"
+        if not math.isfinite(f):
+            return None, "value is not finite"
+        return f, None
+
+    return None, f"unknown metric type {mtype!r}"
+
+
+def parse_evaluate_form(
+    *,
+    metrics_schema: MetricsSchema,
+    status_raw: str,
+    metric_inputs: Mapping[str, str],
+    artifacts_uri_raw: str,
+) -> tuple[EvaluateDraft | None, FormErrors]:
+    """Parse the evaluator draft form into a validated draft.
+
+    Returns ``(None, errors)`` if validation fails, otherwise
+    ``(draft, FormErrors())``.
+
+    - ``status`` must be one of ``success``, ``error``, ``eval_error``.
+    - For each metric in ``metrics_schema.root``: the raw form value
+      is parsed per :func:`_parse_metric_value`; an empty/whitespace
+      input is treated as "metric omitted" (not an error). Per-metric
+      type errors are accumulated under that metric's name.
+    - ``status="success"`` requires at least one metric value
+      (UI-side guardrail; the wire allows empty).
+    - Any key in ``metric_inputs`` outside ``metrics_schema.root``
+      is rejected (only reachable from a hand-crafted POST; the
+      template generates inputs only for declared metrics).
+    - ``artifacts_uri_raw.strip()`` → ``None`` if empty.
+    """
+    errors = FormErrors()
+    status = status_raw.strip().lower()
+    if status not in ("success", "error", "eval_error"):
+        errors.add(0, "status", "status must be one of: success, error, eval_error")
+        return None, errors
+
+    schema = metrics_schema.root
+    metrics: dict[str, int | float | str] = {}
+
+    for name, raw in metric_inputs.items():
+        if name not in schema:
+            # Unknown metric keys can only arrive via a hand-crafted
+            # POST (the template emits inputs only for declared
+            # metrics). Surface the rejection as an overall banner
+            # so the user — already on the form for some other
+            # reason — sees it; the field doesn't exist on the page
+            # to render an inline error against.
+            errors.add_overall(f"metric {name!r} not in schema")
+            continue
+        value, err = _parse_metric_value(raw, schema[name])
+        if err is not None:
+            errors.add(0, name, err)
+            continue
+        if value is None:
+            continue
+        metrics[name] = value
+
+    if status == "success" and not metrics:
+        errors.add_overall(
+            "status=success requires at least one metric value"
+        )
+
+    if errors:
+        return None, errors
+
+    artifacts_uri = artifacts_uri_raw.strip() or None
+
+    return (
+        EvaluateDraft(
+            status=status,
+            metrics=metrics,
+            artifacts_uri=artifacts_uri,
         ),
         errors,
     )

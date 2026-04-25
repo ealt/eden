@@ -1,0 +1,177 @@
+--- docs/plans/review/eden-phase-9d-evaluator-module/20260424T232413/1.md	2026-04-24 23:34:02
++++ docs/plans/eden-phase-9d-evaluator-module.md	2026-04-24 23:37:38
+@@ -106,7 +106,7 @@
+   §A.2.
+ - `GET /evaluator/{task_id}/draft` — render the draft form (read-
+   only trial context + per-metric inputs + status radio + optional
+-  artifacts_uri + optional description).
++  artifacts_uri).
+ - `POST /evaluator/{task_id}/submit` — validate, then submit with
+   retry-before-orphan + read-back. See §C.
+ 
+@@ -128,27 +128,50 @@
+ 
+ ### §A.1 Artifact trust boundary
+ 
+-The evaluator's draft view reuses
++The chunk-9c helper
+ `routes/_helpers.read_proposal_rationale(proposal, artifacts_dir)`
+-to surface the proposal's rationale inline when (a) `artifacts_uri`
+-is `file://`, (b) the resolved path is contained within the UI
+-service's `--artifacts-dir`, (c) the file is ≤ 1 MiB. Any other
+-shape renders link-only. The helper was added in chunk 9c; chunk 9d
+-adds **no new helper** — the same security envelope applies.
++takes a `Proposal` argument; chunk 9d wants the **same security
++envelope** (file://, contained in `--artifacts-dir`, ≤ 1 MiB) for
++**three** sources: the proposal rationale, the trial's
++`description` (when set), and the trial's `artifacts_uri` (when
++set). The cleanest path is to generalize the existing helper:
+ 
++- Add a new internal helper
++  `_read_inline_artifact(uri: str | None, artifacts_dir: Path) -> str | None`
++  that takes a raw URI string and applies the same trust-boundary
++  rules.
++- Reimplement `read_proposal_rationale(proposal, artifacts_dir)`
++  as a thin wrapper that calls
++  `_read_inline_artifact(proposal.artifacts_uri, artifacts_dir)`,
++  preserving the existing call site signature so the chunk-9c
++  implementer module's import does not break.
++- The evaluator route uses `_read_inline_artifact` directly for
++  `trial.artifacts_uri` (and re-uses `read_proposal_rationale`
++  for the proposal rationale).
++
++Result: one trust-boundary implementation, two call sites in
++chunk 9d, identical envelope. The Phase 0 "no new helper"
++language was incorrect; chunk 9d ships the
++`_read_inline_artifact` extraction. Tests in
++`test_evaluator_security.py` cover trial-side `file://`
++confinement, the > 1 MiB cap, and unreadable / non-text inputs
++explicitly (so we don't trust the symmetric proposal-side
++coverage from chunk 9c).
++
+ The **trial's own** `artifacts_uri` and `description` MAY be set by
+ the implementer on a successful `starting` trial (per
+ `spec/v0/03-roles.md` §3.2 step 3). The chunk-9c implementer module
+ already wires `description` into `Trial(...)` from its form input;
+ `trial.artifacts_uri` is reserved for a future implementer-side
+ artifact-upload feature. The evaluator's draft page therefore
+-renders both `trial.description` (when set, as a read-only block)
+-and `trial.artifacts_uri` (when set, with the chunk-9c scheme
+-allowlist applied: only `http`, `https`, and `file` schemes are
+-hyperlinked; any other scheme renders as `<code>` plus
+-"(unrenderable scheme)"). When `trial.artifacts_uri` is a `file://`
+-URI inside `--artifacts-dir` and ≤ 1 MiB, the helper inlines the
+-content — same envelope as the proposal rationale.
++renders both `trial.description` (when set, as a read-only block,
++escaped via Jinja2 autoescape) and `trial.artifacts_uri` (when
++set, with the chunk-9c scheme allowlist applied: only `http`,
++`https`, and `file` schemes are hyperlinked; any other scheme
++renders as `<code>` plus "(unrenderable scheme)"). When
++`trial.artifacts_uri` is a `file://` URI inside `--artifacts-dir`
++and ≤ 1 MiB, the helper inlines the content — same envelope as
++the proposal rationale.
+ 
+ The submission's `artifacts_uri` text input is **not** hyperlinked
+ on the confirmation page — it renders as a plain `<code>` block.
+@@ -192,10 +215,24 @@
+    outside the schema — but the form parser still rejects unknown
+    names (a hand-crafted POST is the only way they appear).
+ 2. Each present value matches its declared `MetricType`:
+-   - `integer` — Python `int` (rejects `bool`, rejects `1.5`).
+-   - `real`    — Python `float`, finite (rejects `bool`, rejects
+-                 `NaN` / `±inf`).
+-   - `text`    — Python `str`.
++   - `integer` — accepts a JSON-numeric form whose value is an
++     integer per `02-data-model.md` §1.3: `3`, `-7`, and `1.0`
++     are all accepted; `1.5` MUST be rejected. Implementation:
++     parse with `float(s)`, then reject if not `float.is_integer()`,
++     then coerce to `int`. Rejects `nan`/`inf`/`-inf` and any
++     leading/trailing whitespace beyond `s.strip()`. Rejects
++     `s.lower() in ("true", "false")` to guard against a
++     hand-crafted POST that puts a boolean string in an integer
++     field. The recorded `EvaluateSubmission.metrics[name]` is
++     always a Python `int` for `integer`-typed metrics
++     (`Store._validate_metrics` rejects bools-as-int and
++     floats-as-int per `_base.py`).
++   - `real`    — parse with `float(s)`, reject `nan`/`inf`/`-inf`
++     via `math.isfinite` (mirroring `Store._validate_metrics`).
++     Stored as Python `float`.
++   - `text`    — keep as `s.strip()`; non-empty after strip
++     required (an all-whitespace input is treated as omitted).
++     Stored as Python `str`.
+ 3. Empty form-input fields are treated as **omitted** (the metric
+    is left out of the dict, not stored as `None`).
+ 4. `status="success"` requires `len(metrics) >= 1` (UI-side
+@@ -263,16 +300,9 @@
+   anything else → `errors.add(0, "status", …)` and `(None, errors)`.
+ - Each `metric_inputs[name]`:
+   - empty/whitespace → omitted from the result dict (no error).
+-  - present + non-empty:
+-    - `metrics_schema.root[name] == "integer"`: parse with `int(s)`,
+-      reject explicit `bool` (Python `bool` is `int`; the form-side
+-      input is always a string so this isn't reachable, but the
+-      parser checks `s.lower() not in ("true", "false")` to reject
+-      a hand-crafted POST that puts `True` in an integer field).
+-    - `"real"`: parse with `float(s)`, reject `nan`/`inf`/`-inf`
+-      via `math.isfinite` (mirroring `Store._validate_metrics`).
+-    - `"text"`: keep as `s.strip()` (non-empty after strip required;
+-      an all-whitespace input is treated as omitted).
++  - present + non-empty: same per-type rules as §A.3 (integer
++    accepts wire-legal `1.0`, real rejects non-finite, text
++    must be non-empty after strip).
+   - any unknown key in `metric_inputs` outside `metrics_schema.root`
+     → `errors.add(0, name, "metric not in schema")`. (Note: the
+     template only emits inputs for schema keys, so this only
+@@ -399,7 +429,10 @@
+ | ok | submit returned cleanly OR retry returned cleanly OR read-back found equivalent prior submission | `evaluator_submitted.html`, 200 | none |
+ | InvalidPrecondition (form-time, e.g. metric type drift only the server caught) | server rejected the metrics shape | re-render draft with the wire-error banner attached | fix the metrics and resubmit |
+ | WrongToken | the prior reclaim invalidated our claim (sweeper or operator) | orphan, `recovery_kind="auto"` | none — prior reclaim already restored task to `pending` |
+-| IllegalTransition | task was reclaimed/terminalized before our submit landed | orphan, `recovery_kind="auto"` | none |
++| IllegalTransition, read-back finds state==pending | sweeper reclaimed our claim before our submit committed | orphan, `recovery_kind="auto"` | none |
++| IllegalTransition, read-back finds equivalent prior submission | our prior attempt committed; orchestrator already terminalized | success page (treated as `ok`) | none |
++| IllegalTransition, read-back finds non-equivalent submission | a different submission won the race; we lost | orphan, `recovery_kind="conflict"` | operator triage |
++| IllegalTransition, read-back finds state==claimed by us | impossible per spec (state would be `claimed` only if our token still on it, which would have made the submit succeed); rendered as transport for safety | orphan, `recovery_kind="transport"` | operator investigation |
+ | ConflictingResubmission | a different submission won the race for this task | orphan, `recovery_kind="conflict"` | operator triage; the system's record stands |
+ | transport, retry exhausted, claim still ours | network glitch persisted; claim TTL will eventually reclaim | orphan, `recovery_kind="auto"` | wait for TTL, or operator-side reclaim |
+ | transport, retry exhausted, server committed equivalent | "submitted, response lost" sub-case A | success page (treated as `ok`) | none |
+@@ -568,6 +601,9 @@
+    - POST submit with `status=eval_error` and zero metrics → 200.
+    - POST submit with a metric value of wrong type (e.g. `1.5`
+      for an integer key) → 400 + field-level error on that key.
++   - POST submit with the wire-legal integer form `1.0` for an
++     integer key → 200 + recorded value is the Python `int` `1`
++     (per spec §1.3 acceptance, parser-side normalization).
+    - POST submit with a metric key outside the schema (hand-
+      crafted body) → 400 + field-level error.
+    - POST submit with a `nan` for a real metric → 400.
+@@ -691,6 +727,20 @@
+    - The trial's `description` is rendered escaped (default
+      Jinja2 autoescape); a `<script>` payload in
+      `trial.description` shows as text, not executed.
++   - **Trial-side `_read_inline_artifact` trust boundary**
++     (separate from the proposal-side coverage in chunk-9c
++     `test_implementer_security.py`):
++     - `trial.artifacts_uri` resolving to a path *outside*
++       `--artifacts-dir` returns `None` (no inline render).
++     - `trial.artifacts_uri` resolving to a `..` traversal that
++       escapes `--artifacts-dir` returns `None`.
++     - `trial.artifacts_uri` is a non-`file://` scheme (e.g.
++       `https://`) returns `None` (no inline render; link only
++       per scheme allowlist).
++     - `trial.artifacts_uri` points at a file > 1 MiB returns
++       `None`.
++     - `trial.artifacts_uri` points at a directory returns
++       `None`.
+ 
+ 5. **`test_evaluator_e2e.py`** — `pytest.mark.e2e` two-process
+    test against a real `eden_task_store_server` subprocess.
+@@ -794,7 +844,8 @@
+ 6. Manual smoke test: bring up
+    `eden_task_store_server` + `eden_orchestrator` (so the
+    implementer host's `_accept_implement` path is wired) +
+-   `eden_implementer_host` and seed an evaluate task; open
++   `eden_implementer_host` + `eden_web_ui` (the web-ui is the
++   process under test). Seed an evaluate task; open
+    `/evaluator/` in a browser, claim the task, fill in metrics,
+    submit; observe a 200 confirmation page and confirm the
+    trial transitions to `success` after the orchestrator

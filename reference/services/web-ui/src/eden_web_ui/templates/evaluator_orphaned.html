@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}EDEN — evaluator orphan{% endblock %}
+{% block main %}
+<h1>submission did not commit cleanly</h1>
+<div class="banner banner-error">{{ banner }}</div>
+
+<dl>
+    <dt>task_id</dt><dd><code>{{ task_id }}</code></dd>
+    <dt>trial_id</dt><dd><code>{{ trial_id }}</code></dd>
+    <dt>declared status</dt><dd><code>{{ status }}</code></dd>
+</dl>
+
+<section class="recovery">
+    {% if recovery_kind == "auto" %}
+    <h2>auto-recovers via reclaim</h2>
+    <p>
+        The trial itself is unaffected — the evaluator never
+        creates or mutates trials, so there is no orphaned
+        <code>starting</code> trial here. The task may still be
+        claimed by this session until the claim TTL expires (or an
+        operator reclaims it). On reclaim the orchestrator
+        transitions the task back to <code>pending</code>; a fresh
+        evaluate task can pick it up. No operator action required.
+    </p>
+    {% elif recovery_kind == "conflict" %}
+    <h2>operator intervention may be needed</h2>
+    <p>
+        A different submission was already committed for this
+        task, and your work is orphaned. The system's record
+        stands. If your submission is the one that should be
+        kept, an operator-side replay through admin reclaim is
+        needed (Phase 9e adds that view).
+    </p>
+    {% elif recovery_kind == "transport" %}
+    <h2>indeterminate — operator investigation needed</h2>
+    <p>
+        A transport-shape failure left the outcome unknown.
+        Possible causes include: the read-back probe itself
+        failed, or an implementation-illegal store state (a
+        terminal/submitted task with no recorded submission) was
+        observed.
+    </p>
+    <p>
+        An operator should check the task-store-server logs and
+        the current state of <code>{{ task_id }}</code>. If the
+        task is back to <code>pending</code>, the next claim
+        will start a fresh evaluation.
+    </p>
+    {% endif %}
+</section>
+
+<p><a href="/evaluator/">back to evaluator list</a></p>
+{% endblock %}
