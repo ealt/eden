@@ -367,37 +367,93 @@ def _retry_submit(
     # IllegalTransition broke us out of the loop. Either way,
     # read-back disambiguates: an equivalent prior submission means
     # we won and the response was lost in transit; anything else is
-    # orphan.
+    # orphan with a state-specific banner.
     if needs_readback or last_exc is not None:
+        return _readback(
+            store=store,
+            task_id=task_id,
+            token=token,
+            submission=submission,
+            last_exc=last_exc,
+        )
+
+    return True, None
+
+
+def _readback(
+    *,
+    store: Any,
+    task_id: str,
+    token: str,
+    submission: PlanSubmission,
+    last_exc: BaseException | None,
+) -> tuple[bool, str | None]:
+    """Read-back disambiguation for the planner's retry-exhaustion arm.
+
+    Mirrors ``routes/implementer._readback`` (and the chunk-9d
+    evaluator's ``_readback``) so the planner classifies every
+    state branch the spec describes:
+
+    - ``submitted`` / ``completed`` / ``failed`` with an equivalent
+      prior submission → ``(True, None)`` (we won).
+    - same states with a non-equivalent prior submission →
+      ``conflicting-resubmission`` (orphan, different won).
+    - same states with ``read_submission() is None`` → transport
+      banner naming the store-invariant violation. This is
+      implementation-illegal in the reference store but defensively
+      handled.
+    - ``claimed`` with our token still on the task → transport
+      banner naming the underlying exception class.
+    - ``claimed`` with our token gone (someone else holds the
+      claim now) → ``eden://error/wrong-token``.
+    - ``pending`` (sweeper / operator already reclaimed) →
+      transport banner mentioning the reclaim, distinct from the
+      claim-still-ours case.
+    - ``read_task`` itself raises → transport banner naming the
+      probe failure.
+    """
+    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
+    try:
+        task = store.read_task(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            False,
+            "transport failure after retries; "
+            f"read-back failed: {exc.__class__.__name__}",
+        )
+    if task.state in {"submitted", "completed", "failed"}:
         try:
-            task = store.read_task(task_id)
+            prior = store.read_submission(task_id)
         except Exception as exc:  # noqa: BLE001
             return (
                 False,
                 "transport failure after retries; "
-                f"read-back failed: {exc.__class__.__name__}",
+                f"read-submission failed: {exc.__class__.__name__}",
             )
-        if task.state in {"submitted", "completed", "failed"}:
-            try:
-                prior = store.read_submission(task_id)
-            except Exception as exc:  # noqa: BLE001
-                return (
-                    False,
-                    "transport failure after retries; "
-                    f"read-submission failed: {exc.__class__.__name__}",
-                )
-            if prior is not None and submissions_equivalent(prior, submission):
-                # We won — the orchestrator already accepted (or
-                # rejected) our equivalent prior submission and the
-                # transport just lost the response.
-                return True, None
-            # state moved past submitted with a different submission
-            # → orphan conflict.
-            return False, "eden://error/conflicting-resubmission"
-        last_name = last_exc.__class__.__name__ if last_exc else "unknown"
-        return False, f"transport failure after retries: {last_name}"
-
-    return True, None
+        if prior is None:
+            # Implementation-illegal: terminal/submitted task with
+            # no recorded submission. Defensively classify as a
+            # transport-flavored invariant violation rather than as
+            # a conflict — the reference store would never produce
+            # this state, and conflating it with conflict would
+            # mis-route the operator.
+            return (
+                False,
+                "store invariant violation: submission missing for "
+                "terminal/submitted task",
+            )
+        if submissions_equivalent(prior, submission):
+            return True, None
+        return False, "eden://error/conflicting-resubmission"
+    if task.state == "claimed":
+        if task.claim is not None and task.claim.token == token:
+            return False, f"transport failure after retries: {last_name}"
+        return False, "eden://error/wrong-token"
+    # state == "pending"
+    return (
+        False,
+        f"transport failure after retries; task reclaimed: {last_name}",
+    )
 
 
 def _make_proposal(

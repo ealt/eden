@@ -1,0 +1,13 @@
+**Findings**
+
+- **Bug** — [reference/services/web-ui/src/eden_web_ui/routes/planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:380)  
+  In the planner read-back arm, `task.state in {"submitted", "completed", "failed"}` falls straight to `eden://error/conflicting-resubmission` whenever the prior submission is not equivalent. That also catches `read_submission(task_id) is None`, which is not a conflict; it is the same store-invariant violation that the implementer and evaluator correctly classify as indeterminate/transport. I reproduced this path: a committed submit followed by `read_submission = lambda _: None` renders the planner conflict banner.  
+  **Fix:** handle `prior is None` explicitly before `submissions_equivalent(...)` and return a transport-style banner, matching implementer/evaluator.
+
+- **Risk** — [reference/services/web-ui/src/eden_web_ui/routes/planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:371), [reference/services/web-ui/tests/test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:417)  
+  The planner side only partially adopts the §K-2 state split. After `IllegalTransition`, any non-terminal read-back state collapses to `transport failure after retries: ...`, so a reclaimed task (`pending`) is not surfaced as the plan’s auto-recovery branch, and a claimed task with a different token is not surfaced as `wrong-token`. The updated test now locks in that weaker contract by asserting the generic `IllegalTransition` transport banner. That means planner equivalent/non-equivalent terminal cases are fixed, but the pending/claimed read-back semantics are still coarser than §K-2 called for.  
+  **Fix:** extract a planner `_readback(...)` helper parallel to implementer/evaluator and branch `claimed`/`pending` explicitly. Even if you keep the `(bool, banner)` return type, the banner should distinguish reclaimed/`wrong-token` from true transport failure. Add planner tests for `pending` after `IllegalTransition` and for `read_submission() is None`.
+
+**Overall Assessment**
+
+The implementer fix matches §K-2 cleanly: `IllegalTransition` now feeds read-back, the new branches are reachable, and the three new sub-cases do exercise the new path. The planner fix only gets the terminal equivalent/non-equivalent cases right. I would treat the merged change as **not fully adherent on the planner side** until the non-terminal read-back branches are classified properly and the missing-submission invariant case is corrected.
