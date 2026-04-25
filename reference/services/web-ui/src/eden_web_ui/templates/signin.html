@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}EDEN — sign in{% endblock %}
+{% block main %}
+<h1>sign in</h1>
+<p>
+    Phase 9 chunk 1 has no per-user accounts. The session cookie
+    lets the UI claim and submit on behalf of the configured
+    <code>worker_id</code>.
+</p>
+<form action="/signin" method="post">
+    <button type="submit">continue as <code>{{ worker_id }}</code></button>
+</form>
+{% endblock %}

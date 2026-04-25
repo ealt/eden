@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}EDEN — submitted{% endblock %}
+{% block main %}
+<h1>plan task submitted</h1>
+<p>task <code>{{ task_id }}</code> submitted with status <strong>{{ status }}</strong>.</p>
+{% if proposal_ids %}
+<p>proposals created:</p>
+<ul>
+{% for pid in proposal_ids %}<li><code>{{ pid }}</code></li>{% endfor %}
+</ul>
+{% endif %}
+<p><a href="/planner/">back to planner</a></p>
+{% endblock %}

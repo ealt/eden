@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}EDEN web ui{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">EDEN reference UI</div>
+        <div class="experiment">experiment: <code>{{ experiment_id }}</code></div>
+        <nav>
+            <a href="/">home</a>
+            <a href="/planner/">planner</a>
+        </nav>
+        {% if session %}
+        <form action="/signout" method="post" class="signout-form">
+            <button type="submit">sign out ({{ session.worker_id }})</button>
+        </form>
+        {% endif %}
+    </header>
+    <main>
+        {% block main %}{% endblock %}
+    </main>
+</body>
+</html>

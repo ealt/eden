@@ -1,0 +1,70 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9-web-ui/20260424T161659/2.md	2026-04-24 16:57:23
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md	2026-04-24 17:00:00
+@@ -223,8 +223,11 @@
+ ### A. New service: `reference/services/web-ui/`
+ 
+ - `pyproject.toml` — `eden-web-ui`, depends on `eden-contracts`,
+-  `eden-storage`, `eden-wire`, `eden-service-common`, plus `fastapi`,
+-  `uvicorn`, `jinja2`, `itsdangerous` (for signed session cookies).
++  `eden-storage`, `eden-wire`, `eden-service-common`,
++  `eden-task-store-server` (for `load_experiment_config` —
++  matching the evaluator host's dependency list), plus `fastapi`,
++  `uvicorn`, `jinja2`, `itsdangerous` (for signed session
++  cookies).
+ - `README.md` — what the service is, how to run it, the auth model,
+   the request flow for a planner submission.
+ - `src/eden_web_ui/__init__.py`
+@@ -252,7 +255,7 @@
+   - `--claim-ttl-seconds` — default `3600` (1 hour). Every UI
+     claim is issued with `expires_at = now + claim_ttl`. By
+     itself this is metadata; the actual recovery requires a
+-    sweeper (see §F below) that the orchestrator service runs
++    sweeper (see §D below) that the orchestrator service runs
+     once per iteration. Together, the TTL + sweeper close the
+     stranded-claim gap codex flagged: the task-store's `expired`
+     reclaim cause picks abandoned claims back up automatically.
+@@ -367,7 +370,8 @@
+   - The session cookie does not contain it.
+   - JSON-line logs (via `eden_service_common.logging`) elide
+     `Authorization` headers.
+-  - The bearer-leak test (see §F) asserts no log line, no rendered
++  - The bearer-leak test in `tests/test_security_invariants.py`
++    (file inventory in §A) asserts no log line, no rendered
+     response body, and no `Set-Cookie` value contains the token's
+     string.
+ - **Session cookie does not bypass the wire boundary.** A leaked
+@@ -455,9 +459,9 @@
+    - No proposals are written.
+    - Drop the token. Render `planner_submitted.html`.
+ 5. **Phase-3 retry-before-orphan.** Per
+-   `spec/v0/07-wire-protocol.md` §6 the resubmit semantics are
+-   defined: a content-equivalent resubmit returns 200, a
+-   divergent resubmit returns 409
++   `spec/v0/07-wire-protocol.md` §2.4 (and §8.1 on idempotency) the
++   resubmit semantics are defined: a content-equivalent resubmit
++   returns 200, a divergent resubmit returns 409
+    `eden://error/conflicting-resubmission`. Before declaring
+    proposals orphaned, the UI retries the same `submit` call up
+    to 3 times with exponential backoff on transport failures,
+@@ -653,7 +657,7 @@
+ - **Partial proposal writes.** The Phase 1 → Phase 2 → Phase 3
+   ordering in §C narrows the unsafe window to "ready proposals
+   not yet referenced by a submitted plan task." The Phase-3
+-  retry-before-orphan policy (per §07 §6 idempotent resubmit)
++  retry-before-orphan policy (per chapter 07 §8.1 idempotent resubmit)
+   collapses transport-only failures into successes; only a
+   definitive divergent-payload server response or 3 indeterminate
+   retries in a row falls through to the operator-recovery error
+@@ -664,8 +668,10 @@
+   `experiment-config.yaml`; if it diverges from the
+   task-store-server's copy, planner-side validation could pass on
+   inputs the evaluator's metrics_schema would later reject. Phase
+-  12's control plane is the right fix; for now the start-up
+-  `experiment_id` mismatch check catches the loud cases.
++  12's control plane is the right fix. Until then there is no
++  operational cross-check (`ExperimentConfig` carries no
++  `experiment_id` field, so a content-equivalence comparison is
++  not implementable today — §A documents this explicitly).
+ - **CSRF / cookie attribute regressions.** The cookie/CSRF policy
+   is enforced by `tests/test_security_invariants.py`. Any change
+   that loosens an attribute or skips the CSRF check breaks the

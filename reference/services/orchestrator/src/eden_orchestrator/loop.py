@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 
-from eden_dispatch import run_orchestrator_iteration
+from eden_dispatch import run_orchestrator_iteration, sweep_expired_claims
 from eden_git import Identity, Integrator
 from eden_service_common import StopFlag, get_logger
 from eden_storage import Store
@@ -65,13 +66,14 @@ def run_orchestrator_loop(
 
     quiescent = 0
     while not stop.is_set():
+        reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
         progress = run_orchestrator_iteration(
             store,
             implement_task_id_factory=implement_factory,
             evaluate_task_id_factory=evaluate_factory,
             integrate_trial=integrate,
         )
-        if progress:
+        if reclaimed or progress:
             quiescent = 0
         else:
             quiescent += 1

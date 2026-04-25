@@ -1,0 +1,9 @@
+ AGENTS.md                                          |   6 +-
+ docs/roadmap.md                                    |   6 +-
+ pyproject.toml                                     |   9 ++
+ reference/README.md                                |   6 +-
+ .../eden-dispatch/src/eden_dispatch/__init__.py    |   2 +
+ .../orchestrator/src/eden_orchestrator/loop.py     |   6 +-
+ reference/services/web-ui/.gitkeep                 |   0
+ uv.lock                                            | 129 +++++++++++++++++++++
+ 8 files changed, 154 insertions(+), 10 deletions(-)

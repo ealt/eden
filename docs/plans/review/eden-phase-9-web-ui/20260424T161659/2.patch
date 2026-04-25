@@ -1,0 +1,312 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9-web-ui/20260424T161659/1.md	2026-04-24 16:51:19
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md	2026-04-24 16:57:07
+@@ -87,9 +87,12 @@
+    behind JSON-over-fetch plumbing; server-rendered forms keep the
+    spec-to-code mapping legible.
+ 5. **Auth surface stays small.** The browser holds a session cookie
+-   only; it never gets the shared bearer. Even if the cookie leaks,
+-   it can't bypass the UI service's own authorization (such as it is
+-   for now — there isn't a per-user check yet, but the seam exists).
++   only; it never gets the shared bearer. The threat model is
++   deliberately spelled out in §B (a leaked cookie can act as the
++   named worker_id through the UI but cannot bypass the UI service
++   to talk to the task-store directly); the goal here is to keep
++   the wire-protocol auth surface unchanged, not to claim the
++   cookie is unforgeable.
+ 
+ ### Alternatives considered
+ 
+@@ -237,18 +240,22 @@
+     for `E`, including the `metrics_schema` and `objective`").
+     Drift between this file and the task-store-server's copy is a
+     known reference-impl limitation; Phase 12's control plane is
+-    the proper fix. The CLI rejects start-up if the loaded
+-    `experiment_id` doesn't match the `--experiment-id` flag,
+-    catching obvious mismatches.
++    the proper fix. `ExperimentConfig` does not currently carry
++    its own `experiment_id` field, so a content-equivalence check
++    against `--experiment-id` is not implementable in this chunk;
++    the drift risk is documented and the cross-check waits for the
++    Phase-12 control plane.
+   - `--host` / `--port` — UI listener.
+   - `--session-secret` — required, signs session cookies.
+   - `--worker-id` — value passed to `Store.claim(worker_id=…)` for
+     every UI-initiated claim. Defaults to `web-ui-1`.
+   - `--claim-ttl-seconds` — default `3600` (1 hour). Every UI
+-    claim is issued with `expires_at = now + claim_ttl` so an
+-    abandoned tab cannot strand a task. Closes the "stranded
+-    claim" gap codex flagged: the task-store's `expired` reclaim
+-    cause picks abandoned claims back up automatically.
++    claim is issued with `expires_at = now + claim_ttl`. By
++    itself this is metadata; the actual recovery requires a
++    sweeper (see §F below) that the orchestrator service runs
++    once per iteration. Together, the TTL + sweeper close the
++    stranded-claim gap codex flagged: the task-store's `expired`
++    reclaim cause picks abandoned claims back up automatically.
+   - `--artifacts-dir <path>` — required. Local directory the UI
+     writes planner rationale markdown to before submitting; each
+     proposal's `artifacts_uri` is `file://<absolute path>` of the
+@@ -379,13 +386,24 @@
+ the templates.
+ 
+ The planner module is informed by the `experiment_config` loaded at
+-start-up. The proposal form surfaces the experiment's `objective`
+-(read-only) and offers the planner a guided rationale-markdown
+-field plus per-proposal slug/priority/parent-commits inputs. The
+-metrics_schema is not exposed to the planner directly (it's the
+-evaluator's input, not the planner's), but is loaded so a future
+-Phase-9 unit can validate.
++start-up. The planner page surfaces:
+ 
++- The experiment's `objective` (read-only banner).
++- The experiment's `metrics_schema` (read-only side panel showing
++  metric names and types). The planner contract per
++  `spec/v0/03-roles.md` §2 explicitly grants the planner read
++  access to `metrics_schema` and `objective`; surfacing both is
++  required to satisfy that contract.
++- A "context" panel listing the most recent proposals
++  (`store.list_proposals(state=None)` capped at the 20 most
++  recent) and trials (`store.list_trials(status=None)` capped at
++  the 20 most recent). This satisfies the implicit "what has
++  already been tried" read access the planner needs to draft
++  meaningfully.
++
++The proposal form itself collects per-proposal slug, priority,
++parent-commits, and rationale-markdown.
++
+ 1. **List pending plan tasks** (`GET /planner`):
+    - `store.list_tasks(kind="plan", state="pending")` — render rows.
+ 2. **Claim** (`POST /planner/{task_id}/claim`):
+@@ -436,22 +454,78 @@
+    - `store.submit(task_id, token, PlanSubmission(status="error"))`.
+    - No proposals are written.
+    - Drop the token. Render `planner_submitted.html`.
+-5. **Reclaim path on expired/invalid claim token.** If any
+-   `store.claim` / `store.submit` raises
+-   `eden://error/invalid-claim-token` or
+-   `eden://error/conflict` (e.g. another worker already claimed
+-   after expiry), the form re-renders the planner list with a
+-   banner naming the canonical error type and offering "claim
+-   again." Field input is preserved across the re-render so the
+-   user does not lose work-in-progress.
+-6. **Errors** at any other point: re-render the form with
++5. **Phase-3 retry-before-orphan.** Per
++   `spec/v0/07-wire-protocol.md` §6 the resubmit semantics are
++   defined: a content-equivalent resubmit returns 200, a
++   divergent resubmit returns 409
++   `eden://error/conflicting-resubmission`. Before declaring
++   proposals orphaned, the UI retries the same `submit` call up
++   to 3 times with exponential backoff on transport failures,
++   and on a clean response treats the submission as committed.
++   The orphaned-proposals error page is reached only after the
++   retries are exhausted with an indeterminate result, or the
++   server returns a definitive error.
++6. **Reclaim path on expired/invalid claim token.** If any
++   `store.claim` / `store.submit` returns one of the closed
++   wire-protocol errors —
++   - `eden://error/wrong-token` (presented token != stored
++     token; chapter 07 §7),
++   - `eden://error/illegal-transition` (state-machine
++     violation, e.g. another worker reclaimed after expiry),
++   - `eden://error/conflicting-resubmission` (resubmit
++     disagreed with committed payload),
++   - `eden://error/invalid-precondition` (e.g. trial state
++     differs from required) —
++   the form re-renders the planner list with a banner naming
++   the canonical error type and offering "claim again." Field
++   input is preserved across the re-render so the user does not
++   lose work-in-progress.
++7. **Errors** at any other point: re-render the form with
+    field-level messages; do not lose user input.
+ 
+ `proposal_id` is generated server-side using `uuid.uuid4().hex`, the
+ same pattern the orchestrator service uses for task IDs.
+ 
+-### D. Documentation updates
++### D. Expired-claim sweeper (cross-package, makes TTL operational)
+ 
++Setting `expires_at` on every claim is just metadata; recovery requires
++something that actually calls `reclaim(task_id, "expired")` on
++expired claims. The reference stack has no such sweeper today; this
++chunk adds one. Without it, the `--claim-ttl-seconds` flag would be
++load-bearing on paper only.
++
++- New module `eden_dispatch.sweep` exposing
++  `sweep_expired_claims(store, *, now) -> int` (returns count
++  reclaimed): iterates `store.list_tasks(state="claimed")`, parses
++  each `expires_at` (skipping rows where it is `None`), and for
++  each one strictly less than `now` calls `store.reclaim(task_id,
++  "expired")`. Per-task errors are logged but do not abort the
++  sweep — sweeping is best-effort; the next iteration retries.
++- `reference/services/orchestrator/src/eden_orchestrator/loop.py`
++  calls `sweep_expired_claims(store, now=datetime.now(UTC))` once
++  per iteration before `run_orchestrator_iteration`. This couples
++  expired-claim recovery to the same poll cadence as the rest of
++  the dispatch loop, with no new background thread or wire-level
++  notification. Adding the call here (vs. inside
++  `run_orchestrator_iteration`) keeps the latter semantically
++  pure: it stays the dispatch-and-finalize body, sweeping is a
++  separate cross-cutting maintenance pass.
++- New test
++  `reference/packages/eden-dispatch/tests/test_sweep.py` covering:
++  expired claim is reclaimed and emits `task.reclaimed`; non-expired
++  claim is left alone; absent `expires_at` is left alone; per-task
++  reclaim failure does not abort the sweep.
++- The Phase 8b real-subprocess e2e test remains green: it
++  doesn't exercise expired claims, but the sweeper is a no-op on
++  fresh claims.
++
++This is the smallest cross-package change that makes the UI's
++TTL claim real today, and it's reusable by every future role
++that issues claims (implementer / evaluator UI modules in 9c /
++9d / 9e).
++
++### E. Documentation updates
++
+ - `reference/services/web-ui/README.md` — full surface, the auth
+   model, how to run locally, the planner flow described above.
+ - `reference/README.md` — flip the `web-ui` row from "(Phase 9; not
+@@ -460,9 +534,11 @@
+   the existing chain; document the new service in the Commands
+   table.
+ - `docs/roadmap.md` — flip the Phase 9 unit list to "9a + 9b
+-  complete; 9c–9e pending" with a one-line summary of what shipped.
++  complete; 9c–9e pending" with a one-line summary of what shipped;
++  call out that the expired-claim sweeper landed alongside as a
++  cross-cutting prerequisite.
+ 
+-### E. CI
++### F. CI
+ 
+ The `python-test`, `python-lint`, and `python-typecheck` jobs already
+ include the workspace; they pick up the new package with `uv sync`.
+@@ -475,10 +551,14 @@
+ - `spec/v0/**` — no normative changes. The UI is non-normative
+   reference material; chapter 07 (wire protocol) is the only
+   cross-component contract this UI consumes, and it stays as-is.
+-- `eden-wire`, `eden-contracts`, `eden-storage`, `eden-dispatch`,
+-  `eden-git` — no API changes. If a need surfaces during
+-  implementation, it gets called out in the impl-review and either
+-  done as a separate spec-aware change or deferred.
++- `eden-wire`, `eden-contracts`, `eden-storage`, `eden-git` — no
++  API changes. If a need surfaces during implementation, it gets
++  called out in the impl-review and either done as a separate
++  spec-aware change or deferred.
++- `eden-dispatch` — gains a new module
++  `eden_dispatch.sweep.sweep_expired_claims` (additive; documented
++  in §D). `run_orchestrator_iteration` and the scripted workers
++  are not modified.
+ - All other reference services — their CLIs, behavior, and tests are
+   untouched.
+ 
+@@ -509,10 +589,14 @@
+    - Reload an old session cookie after restarting the UI with a
+      fresh `--session-secret`; the UI redirects to sign-in
+      (cookie invalidation).
+-8. **Stranded-claim sanity check.** Manually claim a plan task,
+-   close the tab, advance system clock past `--claim-ttl-seconds`,
+-   trigger one orchestrator iteration; the task transitions back to
+-   `pending` via the `expired` reclaim cause.
++8. **Stranded-claim sanity check (operational).** A
++   `pytest.mark.e2e` test (`test_e2e_real_subprocess.py::
++   test_stranded_claim_recovers`) claims a plan task with
++   `expires_at = now - 1s` (i.e. already expired), runs one
++   orchestrator iteration, and asserts the task returns to
++   `pending` via a `task.reclaimed` event with `cause ==
++   "expired"`. This proves the §D sweeper runs in the real
++   subprocess loop.
+ 9. **Bearer-leak grep.** A shell-script verification step:
+    `grep -r "$EDEN_SHARED_TOKEN" reference/services/web-ui/` returns
+    nothing in any rendered template, default value, README, or test
+@@ -522,47 +606,60 @@
+ 
+ ## Execution order
+ 
+-1. Scaffold `reference/services/web-ui/` (pyproject, package skeleton,
+-   README stub, empty test files).
+-2. Wire it into `uv sync`; confirm `uv run pyright` and
++1. **§D sweeper first.** Add `eden_dispatch.sweep.sweep_expired_claims`
++   plus `tests/test_sweep.py`. Wire the call into
++   `eden_orchestrator.loop`. Confirm the existing Phase 8b e2e
++   test stays green.
++2. Scaffold `reference/services/web-ui/` (pyproject, package
++   skeleton, README stub, empty test files).
++3. Wire it into `uv sync`; confirm `uv run pyright` and
+    `uv run pytest -q` still green with the empty package.
+-3. Build `make_app` and the index route; commit-equivalent
++4. Build `make_app` and the index route; commit-equivalent
+    checkpoint.
+-4. Build the planner routes against `InMemoryStore` with `TestClient`
+-   covering each route in isolation.
+-5. Build the templates and CSS; verify the unit tests still green
++5. Build the planner routes against `InMemoryStore` with
++   `TestClient` covering each route in isolation, including
++   CSRF rejection and bearer-leak invariants.
++6. Build the templates and CSS; verify the unit tests still green
+    (templates render).
+-6. Add `tests/test_planner_flow.py` covering the full claim →
+-   submit happy path against `make_app`.
+-7. Add the subprocess `pytest.mark.e2e` test, reusing
++7. Add `tests/test_planner_flow.py` covering the full claim →
++   draft → submit happy path, expired-token recovery, mid-flow
++   failure paths, and the Phase-3 retry-before-orphan policy.
++8. Add `tests/test_partial_write_recovery.py` and
++   `tests/test_security_invariants.py`.
++9. Add the subprocess `pytest.mark.e2e` tests, reusing
+    `_read_port_announcement` and the SIGTERM teardown helpers from
+    `reference/services/orchestrator/tests/test_e2e.py`. The UI
+-   service announces `EDEN_WEB_UI_LISTENING host=… port=…` on stdout
+-   on bind, mirroring the task-store-server convention.
+-8. Documentation pass: `web-ui/README.md`, `reference/README.md`,
+-   `AGENTS.md`, `docs/roadmap.md`.
+-9. Local verification (every step in the Verification section).
+-10. `/codex-review` on the implementation; iterate to convergence.
+-11. PR, CI green, squash-merge.
++   service announces `EDEN_WEB_UI_LISTENING host=… port=…` on
++   stdout on bind, mirroring the task-store-server convention. The
++   stranded-claim recovery test
++   (`test_stranded_claim_recovers`) is in this file.
++10. Documentation pass: `web-ui/README.md`, `reference/README.md`,
++    `AGENTS.md`, `docs/roadmap.md`.
++11. Local verification (every step in the Verification section).
++12. `/codex-review` on the implementation; iterate to
++    convergence.
++13. PR, CI green, squash-merge.
+ 
+ ## Risks
+ 
+-- **Stranded human claims.** A user who claims a plan task and
+-  closes the tab leaves the claim token only in their session
+-  cookie. Mitigation: the UI sets an explicit
+-  `expires_at = now + --claim-ttl-seconds` on every claim, so the
+-  task-store's `expired` reclaim cause picks abandoned claims back
+-  up automatically (spec/v0/04-task-protocol.md §5). Phase 9e adds
+-  an explicit operator-reclaim button as a faster recovery path.
+-  The UI must not retry claims server-side for a user who doesn't
+-  return — that would mask the issue.
++- **Stranded human claims.** Mitigated end-to-end: the UI sets
++  `expires_at = now + --claim-ttl-seconds` on every claim, and the
++  new §D sweeper (`eden_dispatch.sweep.sweep_expired_claims`,
++  invoked from the orchestrator service's loop) actually issues
++  the `expired` reclaim. Phase 9e adds an explicit
++  operator-reclaim button as a faster recovery path. The UI must
++  not retry claims server-side for a user who doesn't return —
++  that would mask the issue.
+ - **Partial proposal writes.** The Phase 1 → Phase 2 → Phase 3
+   ordering in §C narrows the unsafe window to "ready proposals
+-  not yet referenced by a submitted plan task," but does not
+-  eliminate it. A spec-level fix (atomic `mark_ready_and_submit`)
+-  is out of scope for Phase 9 chunk 1; the implementation
+-  surfaces orphaned proposal IDs to the operator on Phase-3
+-  failure so they can reclaim and retry.
++  not yet referenced by a submitted plan task." The Phase-3
++  retry-before-orphan policy (per §07 §6 idempotent resubmit)
++  collapses transport-only failures into successes; only a
++  definitive divergent-payload server response or 3 indeterminate
++  retries in a row falls through to the operator-recovery error
++  page. A spec-level fix (atomic `mark_ready_and_submit`) is out
++  of scope for Phase 9 chunk 1; the residual gap applies equally
++  to the existing scripted planner host.
+ - **Experiment-config drift.** The UI loads its own copy of
+   `experiment-config.yaml`; if it diverges from the
+   task-store-server's copy, planner-side validation could pass on

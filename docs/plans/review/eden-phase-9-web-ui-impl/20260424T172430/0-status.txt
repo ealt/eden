@@ -1,0 +1,17 @@
+ M AGENTS.md
+ M docs/roadmap.md
+ M pyproject.toml
+ M reference/README.md
+ M reference/packages/eden-dispatch/src/eden_dispatch/__init__.py
+ M reference/services/orchestrator/src/eden_orchestrator/loop.py
+ D reference/services/web-ui/.gitkeep
+ M uv.lock
+?? docs/plans/eden-phase-9-web-ui.md
+?? docs/plans/review/eden-phase-9-web-ui-impl/
+?? docs/plans/review/eden-phase-9-web-ui/
+?? reference/packages/eden-dispatch/src/eden_dispatch/sweep.py
+?? reference/packages/eden-dispatch/tests/test_sweep.py
+?? reference/services/web-ui/README.md
+?? reference/services/web-ui/pyproject.toml
+?? reference/services/web-ui/src/
+?? reference/services/web-ui/tests/

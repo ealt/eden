@@ -6,7 +6,7 @@ This directory contains one complete implementation of the EDEN protocol. It is 
 
 ## Status
 
-Through Phase 8c: the in-process dispatch path is removed. Components communicate only via the Phase 8a wire binding; each role runs in its own OS process; the orchestrator service drives `eden_dispatch.run_orchestrator_iteration` against a `StoreClient`.
+Through Phase 9 chunk 1: a reference Web UI service hosts the planner module — a human can sign in, claim a plan task, draft proposals through a browser, and submit, with submissions round-tripping through the wire `StoreClient` against a real task-store-server. An expired-claim sweeper runs once per orchestrator iteration so abandoned UI claims don't strand tasks. Phase 8c remains: in-process dispatch removed; each role runs in its own OS process; the orchestrator service drives `eden_dispatch.run_orchestrator_iteration` against a `StoreClient`.
 
 ### Services
 
@@ -19,14 +19,14 @@ Through Phase 8c: the in-process dispatch path is removed. Components communicat
 | [`services/implementer/`](services/implementer/) | Implementer worker host (standalone process; writes real git commits) | Phase 5 → Phase 8b |
 | [`services/evaluator/`](services/evaluator/) | Evaluator worker host (standalone process) | Phase 5 → Phase 8b |
 | [`services/control-plane/`](services/control-plane/) | Experiment registration, lease issuance | Phase 12 |
-| [`services/web-ui/`](services/web-ui/) | Browser-based observability + role claim/submit | Phase 9 |
+| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner module (BFF over `StoreClient`); implementer/evaluator/observability arrive in 9c–9e | Phase 9 chunk 1 |
 
 ### Packages
 
 | Path | Purpose | Lands in |
 |---|---|---|
 | [`packages/eden-contracts/`](packages/eden-contracts/) | Pydantic bindings for the JSON Schemas; convenience for Python components | Phase 3 |
-| [`packages/eden-dispatch/`](packages/eden-dispatch/) | Reference scripted workers and the orchestrator-iteration body (`run_orchestrator_iteration`); used by the worker hosts and the orchestrator service | Phase 5 / Phase 8b / Phase 8c |
+| [`packages/eden-dispatch/`](packages/eden-dispatch/) | Reference scripted workers, the orchestrator-iteration body (`run_orchestrator_iteration`), and the expired-claim sweeper (`sweep_expired_claims`); used by the worker hosts and the orchestrator service | Phase 5 / Phase 8b / Phase 8c / Phase 9 |
 | [`packages/eden-storage/`](packages/eden-storage/) | Repository interface + concrete backends (in-memory, SQLite) | Phase 6 |
 | [`packages/eden-git/`](packages/eden-git/) | Worktree + branch ops + integrator flow | Phase 7 |
 | [`packages/eden-wire/`](packages/eden-wire/) | HTTP wire binding (FastAPI server + httpx client) for chapter 07; reference-only shared-token auth | Phase 8a / 8b |

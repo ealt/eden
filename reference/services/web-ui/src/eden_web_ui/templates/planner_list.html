@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}EDEN — planner{% endblock %}
+{% block main %}
+<h1>planner</h1>
+{% if banner %}<div class="banner banner-error">{{ banner }}</div>{% endif %}
+<section class="objective">
+    <h2>objective</h2>
+    <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
+</section>
+<section class="metrics-schema">
+    <h2>metrics schema</h2>
+    <table>
+        <thead><tr><th>metric</th><th>type</th></tr></thead>
+        <tbody>
+        {% for name, kind in metrics_schema.items() %}
+            <tr><td><code>{{ name }}</code></td><td>{{ kind }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+<section class="pending">
+    <h2>pending plan tasks</h2>
+    {% if pending %}
+    <table>
+        <thead><tr><th>task id</th><th>created</th><th>action</th></tr></thead>
+        <tbody>
+        {% for task in pending %}
+            <tr>
+                <td><code>{{ task.task_id }}</code></td>
+                <td>{{ task.created_at }}</td>
+                <td>
+                    <form action="/planner/{{ task.task_id }}/claim" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+                        <button type="submit">claim</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no pending plan tasks.</p>
+    {% endif %}
+</section>
+<section class="recent">
+    <h2>recent proposals (most recent {{ recent_proposals | length }})</h2>
+    {% if recent_proposals %}
+    <table>
+        <thead><tr><th>id</th><th>slug</th><th>state</th></tr></thead>
+        <tbody>
+        {% for p in recent_proposals %}
+            <tr>
+                <td><code>{{ p.proposal_id }}</code></td>
+                <td>{{ p.slug }}</td>
+                <td>{{ p.state }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>none yet.</p>
+    {% endif %}
+</section>
+<section class="recent">
+    <h2>recent trials (most recent {{ recent_trials | length }})</h2>
+    {% if recent_trials %}
+    <table>
+        <thead><tr><th>id</th><th>status</th></tr></thead>
+        <tbody>
+        {% for t in recent_trials %}
+            <tr>
+                <td><code>{{ t.trial_id }}</code></td>
+                <td>{{ t.status }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>none yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

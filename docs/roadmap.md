@@ -175,13 +175,13 @@ Browser-based claim/submit flows for each role, plus observability.
 
 **Units:**
 
-- **9a** — UI shell: routing, auth stub, navigation, experiment list.
-- **9b** — Planner module: claim / markdown form / submit.
+- **9a — complete.** UI shell shipped: FastAPI + Jinja2 BFF over `eden_wire.StoreClient`, routing, sign-in stub, navigation, experiment-overview index. Server-side rendered, no JS framework. Session cookie is `itsdangerous`-signed with HttpOnly + SameSite=Lax + Path=/, plus per-session CSRF token validated on every mutating route.
+- **9b — complete.** Planner module shipped: claim-with-TTL, markdown rationale form, 3-phase write (`drafting` → `ready` → `submit`), retry-before-orphan on transport failures via chapter 07 §2.4 / §8.1 idempotent resubmit. Cross-cutting prerequisite: `eden_dispatch.sweep_expired_claims` runs once per orchestrator iteration so abandoned UI claims are recovered automatically.
 - **9c** — Implementer module: claim / manifest / submit SHA.
 - **9d** — Evaluator module: claim / metrics form / artifact upload.
 - **9e** — Observability views (trial timeline, task queue filtered by kind + claim status) + admin-reclaim action on stranded claims.
 
-**Chunks:** 9a + 9b one chunk (shell + first role module together — the first role establishes the component pattern); 9c one; 9d one; 9e one.
+**Chunks:** 9a + 9b one chunk (complete); 9c one; 9d one; 9e one.
 
 **Non-goals:** full auth / multi-tenancy (Milestone 3); in-UI code editing (implementers work in their own environment).
 

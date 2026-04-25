@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}EDEN — index{% endblock %}
+{% block main %}
+<h1>experiment overview</h1>
+<table class="counts">
+    <thead><tr><th>kind</th><th>pending</th></tr></thead>
+    <tbody>
+    {% for kind, count in pending.items() %}
+        <tr><td>{{ kind }}</td><td>{{ count }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+<p><a href="/planner/">go to planner</a></p>
+{% endblock %}
