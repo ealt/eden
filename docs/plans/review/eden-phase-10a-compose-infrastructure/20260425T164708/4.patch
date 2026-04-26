@@ -1,0 +1,35 @@
+--- docs/plans/review/eden-phase-10a-compose-infrastructure/20260425T164708/3.md	2026-04-25 16:57:03
++++ docs/plans/eden-phase-10a-compose-infrastructure.md	2026-04-25 16:58:31
+@@ -247,11 +247,12 @@
+       start_period: 30s
+ 
+   blob-init:
+-    # One-shot service whose only job is to ensure eden-blob-data is
+-    # created and writable at compose-up time. Compose does NOT create
+-    # an unmounted top-level volume — that was verified during
+-    # planning by a quick spike — so without this service the volume
+-    # would not exist until 10b/10d's first real mounter ran.
++    # One-shot service whose only job is to ensure eden-blob-data
++    # exists at compose-up time. Compose does NOT create an unmounted
++    # top-level volume — that was verified during planning by a quick
++    # spike — so without this service the volume would not exist
++    # until 10b/10d's first real mounter ran. 10a's contract is
++    # "volume exists" only; ownership/perms are 10d's responsibility.
+     image: busybox:1.36.1
+     container_name: eden-blob-init
+     restart: "no"
+@@ -382,9 +383,11 @@
+ done
+ 
+ # Confirm blob-init actually exited 0 (--wait would have failed
+-# otherwise, but re-checking gives a useful CI log line).
+-test "$(docker compose -f compose.yaml --env-file "$TMPENV" \
+-        ps -a --format json blob-init | jq -r '.ExitCode')" = "0"
++# otherwise, but re-checking gives a useful CI log line). Using
++# `docker inspect` against the explicit container_name avoids
++# `docker compose ps --format json` shape variations across Compose
++# versions (some emit NDJSON, some emit a JSON array).
++test "$(docker inspect --format '{{.State.ExitCode}}' eden-blob-init)" = "0"
+ 
+ # Assert Postgres is accepting connections (independent of healthcheck).
+ docker compose -f compose.yaml --env-file "$TMPENV" exec -T postgres \

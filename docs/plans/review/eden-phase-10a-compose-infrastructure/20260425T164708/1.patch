@@ -1,0 +1,138 @@
+--- docs/plans/review/eden-phase-10a-compose-infrastructure/20260425T164708/0.md	2026-04-25 16:47:08
++++ docs/plans/eden-phase-10a-compose-infrastructure.md	2026-04-25 16:51:17
+@@ -31,6 +31,18 @@
+ The blob package (`reference/packages/eden-blob/`) stays a `.gitkeep`
+ until 10d when the implementer host needs to publish artifacts.
+ 
++**Postgres is for the EDEN task store, not for Gitea.** The roadmap
++phrases 10a's deliverables as "Postgres for durable backend, Gitea
++for git host," which scoped together can read as "Postgres backs
++Gitea." It does not. Gitea ships with its own embedded SQLite and
++that's what the 10a Compose file uses (`GITEA__database__DB_TYPE:
++sqlite3`). Pointing Gitea at our Postgres would couple the git
++host's recovery story to EDEN's task store schema — something a
++reference deployment of EDEN should explicitly not do, since
++production deployments should be free to swap either component
++independently. The Postgres container in 10a is reserved for
++`PostgresStore` consumption in 10b.
++
+ Why ship infra without consumers? Three reasons:
+ 
+ 1. **Image-pin & config-shape stability lands first.** Pinning
+@@ -107,10 +119,18 @@
+   an admin in 10a means we'd have to choose a token-issuing scheme
+   before we have anything to issue tokens for.)
+ - **Blob volume = bare named volume.** No init container, no service
+-  process. The volume is created by the Compose file declaring
+-  `volumes: { eden-blob-data: {} }`; downstream services in 10d
+-  mount it at `/var/lib/eden/blobs`. 10a's smoke test asserts the
+-  volume exists after `compose up`.
++  process. Compose creates every volume declared in the top-level
++  `volumes:` block at `compose up` time even if no service mounts
++  it (Compose v2 docs: "Volumes are created if they do not exist
++  yet" — applies to all volumes in the project, not just mounted
++  ones). Downstream services in 10b/10d mount it at
++  `/var/lib/eden/blobs`. 10a's smoke test asserts the named volume
++  exists in `docker volume ls` after `compose up`. (Earlier drafts
++  added a one-shot `blob-init` busybox container to "guarantee"
++  the volume existed, but that doubled up on Compose's own
++  guarantee, and `docker compose up --wait` semantics for
++  one-shot/exited services are not as crisp as for healthy
++  long-running ones — the bare-volume path avoids both confusions.)
+ - **Compose file format = `compose.yaml` (no `version:` field).**
+   Modern Docker Compose deprecated the top-level `version:` key and
+   Docker recommends using just `compose.yaml`. We name the file
+@@ -186,7 +206,13 @@
+       GITEA__server__DOMAIN: localhost
+       GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
+       GITEA__server__HTTP_PORT: "3000"
++      # SSH_PORT is the *advertised* port (shown in clone URLs); it must
++      # match the host-side mapping so SSH clones work. SSH_LISTEN_PORT
++      # is what Gitea binds inside the container, kept fixed at 2222
++      # so the published mapping below stays valid even when a user
++      # overrides GITEA_SSH_HOST_PORT to dodge a host collision.
+       GITEA__server__SSH_PORT: "${GITEA_SSH_HOST_PORT:-2222}"
++      GITEA__server__SSH_LISTEN_PORT: "2222"
+       GITEA__database__DB_TYPE: sqlite3
+       GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+       GITEA__security__INSTALL_LOCK: "true"
+@@ -206,16 +232,6 @@
+       timeout: 3s
+       retries: 20
+       start_period: 30s
+-
+-  blob-init:
+-    # One-shot service that ensures the blob volume exists and is writable.
+-    # Exits 0 on success; Compose's `service_completed_successfully` lets
+-    # downstream services depend on completion in 10b.
+-    image: busybox:1.36.1
+-    container_name: eden-blob-init
+-    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && touch /var/lib/eden/blobs/.eden-blob-volume && echo 'blob volume initialized' && exit 0"]
+-    volumes:
+-      - eden-blob-data:/var/lib/eden/blobs
+ 
+ volumes:
+   eden-postgres-data:
+@@ -239,11 +255,12 @@
+   installer wizard. With `INSTALL_LOCK=true` plus
+   `DISABLE_REGISTRATION=true`, Gitea boots straight into headless
+   mode. Admin user creation happens in 10c.
+-- `blob-init` is a one-shot busybox container so the named volume
+-  is *guaranteed* to exist after `compose up` even before any real
+-  consumer mounts it. Without it, the volume is lazy-created at
+-  first mount, which means 10a's smoke test can't simply assert
+-  "volume exists after up."
++- The blob volume is declared at the top level but mounted by no
++  10a service. Compose still creates it at `compose up` time
++  because every volume in the top-level `volumes:` block is
++  created up front; 10a's smoke test verifies via
++  `docker volume ls`. Downstream services in 10b/10d mount it at
++  `/var/lib/eden/blobs`.
+ - No `networks:` block: services land on Compose's default
+   bridge network. Service discovery via container name
+   (`postgres:5432`, `gitea:3000`) just works; explicit network
+@@ -316,16 +333,16 @@
+ 
+ docker compose -f compose.yaml --env-file "$TMPENV" up -d --wait --wait-timeout 120
+ 
+-# Assert all three services are healthy / completed.
++# Assert both long-running services are healthy.
+ # `--wait` already enforces this, but we re-check for clarity in CI logs.
+ docker compose -f compose.yaml --env-file "$TMPENV" ps
+ 
+-# Assert the blob volume is populated.
+-docker run --rm \
+-    -v "$(docker compose -f compose.yaml --env-file "$TMPENV" \
+-            config --format json | jq -r '.volumes."eden-blob-data".name // "eden-reference_eden-blob-data"'):/data:ro" \
+-    busybox:1.36.1 \
+-    test -f /data/.eden-blob-volume
++# Assert all three named volumes were created at compose-up time.
++# Compose creates every top-level volume even when no service in the
++# project mounts it (the blob volume is mounted by services in 10b/10d).
++for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
++    docker volume inspect "eden-reference_${vol}" >/dev/null
++done
+ 
+ # Assert Postgres is accepting connections (independent of healthcheck).
+ docker compose -f compose.yaml --env-file "$TMPENV" exec -T postgres \
+@@ -411,9 +428,18 @@
+    docker compose ps
+    ```
+ 
+-   Expected: three services, all `running (healthy)` or
+-   `exited (0)` for `blob-init`.
++   Expected: two services (`postgres`, `gitea`), both
++   `running (healthy)`. Then:
+ 
++   ```bash
++   docker volume ls --filter name=eden-reference_
++   ```
++
++   Expected: three volumes listed
++   (`eden-reference_eden-postgres-data`,
++   `eden-reference_eden-gitea-data`,
++   `eden-reference_eden-blob-data`).
++
+ 2. **Local smoke script.**
+ 
+    ```bash

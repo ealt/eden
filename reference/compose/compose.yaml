@@ -1,0 +1,89 @@
+name: eden-reference
+
+services:
+  postgres:
+    image: postgres:16.6-alpine
+    container_name: eden-postgres
+    restart: unless-stopped
+    # Depending on blob-init lets `compose up --wait` interpret
+    # blob-init's exit-0 as success rather than failure. Without
+    # this dependency, `--wait` returns non-zero for any service
+    # that exits during the wait window. Postgres does not actually
+    # consume the blob volume; the dependency is a stack-level
+    # invariant ("all infra is ready") rather than a data-flow one.
+    depends_on:
+      blob-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-eden}
+      POSTGRES_USER: ${POSTGRES_USER:-eden}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - eden-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eden} -d ${POSTGRES_DB:-eden}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  gitea:
+    image: gitea/gitea:1.22.6-rootless
+    container_name: eden-gitea
+    restart: unless-stopped
+    # See postgres above — depending on blob-init's successful
+    # completion makes `compose up --wait` happy.
+    depends_on:
+      blob-init:
+        condition: service_completed_successfully
+    environment:
+      GITEA__server__DOMAIN: localhost
+      GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
+      GITEA__server__HTTP_PORT: "3000"
+      # SSH_PORT is the *advertised* port (shown in clone URLs); it must
+      # match the host-side mapping so SSH clones work. SSH_LISTEN_PORT
+      # is what Gitea binds inside the container, kept fixed at 2222
+      # so the published mapping below stays valid even when a user
+      # overrides GITEA_SSH_HOST_PORT to dodge a host collision.
+      GITEA__server__SSH_PORT: "${GITEA_SSH_HOST_PORT:-2222}"
+      GITEA__server__SSH_LISTEN_PORT: "2222"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
+      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__metrics__ENABLED: "false"
+      GITEA__log__LEVEL: Warn
+    ports:
+      - "${GITEA_HOST_PORT:-3001}:3000"
+      - "${GITEA_SSH_HOST_PORT:-2222}:2222"
+    volumes:
+      - eden-gitea-data:/var/lib/gitea
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  blob-init:
+    # One-shot service whose only job is to ensure eden-blob-data
+    # exists at compose-up time. Compose does NOT create an unmounted
+    # top-level volume — verified empirically — so without this service
+    # the volume would not exist until 10b/10d's first real mounter
+    # ran. 10a's contract is "volume exists" only; ownership and
+    # permissions are 10d's responsibility.
+    image: busybox:1.36.1
+    container_name: eden-blob-init
+    restart: "no"
+    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && echo blob-volume ready"]
+    volumes:
+      - eden-blob-data:/var/lib/eden/blobs
+
+volumes:
+  eden-postgres-data:
+  eden-gitea-data:
+  eden-blob-data:

@@ -2,11 +2,13 @@
 
 This directory contains one complete implementation of the EDEN protocol. It is explicitly labeled **reference** — *one* valid implementation, **not** *the* implementation. A third-party impl that passes the conformance suite is equally valid.
 
-**Targets:** `eden-protocol/v0` (draft — spec chapters not yet written).
+**Targets:** `eden-protocol/v0` (chapters 1, 2, 3, 4, 5, 6, 7, 8 written; conformance chapter and control-plane chapter pending).
 
 ## Status
 
-Through Phase 9 chunk 9d: the reference Web UI service hosts the planner module, the implementer module, **and** the evaluator module — a human can sign in, claim a plan, implement, or evaluate task, drive it through a browser, and submit. Implementer-side, the user does git work in their own checkout, pushes their tip commit to the bare repo, then enters the resulting `commit_sha`; the UI verifies §3.3 reachability, creates the trial in `starting`, writes the canonical `work/<slug>-<trial_id>` ref, and submits with retry-before-orphan + committed-state read-back. Evaluator-side, the user inspects the trial out-of-band (cloning the bare repo and checking out `commit_sha`), then types metrics into a form generated from the experiment's `metrics_schema`; the UI parses each metric per its declared `MetricType` (with the spec-§1.3 wire-legal `1.0` accepted for `integer` and non-finite floats rejected for `real`), then submits with retry-before-orphan + read-back where `IllegalTransition` falls through to read-back so a "we won, response lost" sequence classifies as success rather than orphan. Submissions round-trip through `eden_wire.StoreClient`. The implementer module is gated on `--repo-path`; planner- and evaluator-only deployments stay supported by omitting it.
+Through **Phase 10 chunk 10a**: the [`compose/`](compose/) directory ships a Docker Compose stack that stands up the third-party infrastructure the reference services will consume — Postgres (`postgres:16.6-alpine`, reserved for `PostgresStore` in 10b), Gitea (`gitea/gitea:1.22.6-rootless`, headless via `INSTALL_LOCK=true` + `DISABLE_REGISTRATION=true`), and a one-shot `blob-init` busybox that mounts `eden-blob-data` so Compose actually creates the volume. EDEN services themselves are not yet dockerized; that lands in 10b alongside the `PostgresStore` binding.
+
+Through **Phase 9** (chunks 9a–9e shipped): the reference Web UI hosts the planner / implementer / evaluator modules end-to-end plus an `/admin/*` observability + operator-reclaim surface. A human can sign in, claim a plan / implement / evaluate task, drive it through a browser, submit, and reclaim a stranded claim. Implementer-side, the user does git work in their own checkout, pushes their tip commit to the bare repo, then enters the resulting `commit_sha`; the UI verifies §3.3 reachability, creates the trial in `starting`, writes the canonical `work/<slug>-<trial_id>` ref, and submits with retry-before-orphan + committed-state read-back. Evaluator-side, the user inspects the trial out-of-band, then types metrics into a form generated from the experiment's `metrics_schema`; the UI parses each metric per its declared `MetricType` and submits with retry-before-orphan + read-back where `IllegalTransition` falls through to read-back so a "we won, response lost" sequence classifies as success rather than orphan. Admin-side, the operator browses tasks / trials / events, drives a `Store.reclaim(task_id, "operator")` per [`spec/v0/04-task-protocol.md`](../spec/v0/04-task-protocol.md) §5.1, and (when `--repo-path` is set) garbage-collects orphaned `work/*` refs via CAS-guarded `repo.delete_ref(expected_old_sha=…)`. Submissions round-trip through `eden_wire.StoreClient`. The implementer module is gated on `--repo-path`; planner- and evaluator-only deployments stay supported by omitting it.
 
 ### Services
 
@@ -19,7 +21,7 @@ Through Phase 9 chunk 9d: the reference Web UI service hosts the planner module,
 | [`services/implementer/`](services/implementer/) | Implementer worker host (standalone process; writes real git commits) | Phase 5 → Phase 8b |
 | [`services/evaluator/`](services/evaluator/) | Evaluator worker host (standalone process) | Phase 5 → Phase 8b |
 | [`services/control-plane/`](services/control-plane/) | Experiment registration, lease issuance | Phase 12 |
-| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner + implementer + evaluator modules (BFF over `StoreClient`; implementer is opt-in via `--repo-path`); observability/admin views arrive in 9e | Phase 9 chunks 1 + 9c + 9d |
+| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner + implementer + evaluator + admin modules (BFF over `StoreClient`; implementer is opt-in via `--repo-path`; admin is unconditional, with the work-refs sub-page also opt-in via `--repo-path`) | Phase 9 chunks 9a + 9b + 9c + 9d + 9e |
 
 ### Packages
 
@@ -42,7 +44,7 @@ Through Phase 9 chunk 9d: the reference Web UI service hosts the planner module,
 
 | Path | Purpose | Lands in |
 |---|---|---|
-| [`compose/`](compose/) | Docker Compose stack for running the full reference system locally | Phase 10 |
+| [`compose/`](compose/) | Docker Compose stack — Phase 10a stands up the third-party infrastructure (Postgres, Gitea, blob volume); EDEN services dockerized in 10b | Phase 10 chunk 10a |
 
 ## Relationship to the protocol spec
 
