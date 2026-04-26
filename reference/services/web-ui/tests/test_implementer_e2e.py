@@ -147,7 +147,7 @@ def test_implementer_full_flow_through_ui(tmp_path: Path) -> None:
     server = _spawn(
         [
             "eden_task_store_server",
-            "--db-path",
+            "--store-url",
             str(db_path),
             "--experiment-id",
             experiment_id,

@@ -109,7 +109,7 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
     server = _spawn(
         [
             "eden_task_store_server",
-            "--db-path",
+            "--store-url",
             str(db_path),
             "--experiment-id",
             experiment_id,
@@ -279,7 +279,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     server = _spawn(
         [
             "eden_task_store_server",
-            "--db-path",
+            "--store-url",
             str(db_path),
             "--experiment-id",
             experiment_id,

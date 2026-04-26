@@ -90,6 +90,13 @@ def make_app(
     if repo is not None:
         app.include_router(implementer_routes.router)
 
+    @app.get("/healthz", include_in_schema=False)
+    async def _healthz() -> dict[str, str]:
+        # Unauthenticated by design — Compose's healthcheck must
+        # work before any user signs in. Reveals only "the process
+        # is up"; carries no secrets.
+        return {"status": "ok"}
+
     @app.exception_handler(404)
     async def _not_found(request: Request, _exc: object) -> HTMLResponse:
         return templates.TemplateResponse(

@@ -1,0 +1,41 @@
+--- docs/plans/review/eden-phase-10bc-dockerize-and-setup/20260425T175042/3.md	2026-04-25 18:01:49
++++ docs/plans/eden-phase-10bc-dockerize-and-setup.md	2026-04-25 18:02:40
+@@ -48,7 +48,7 @@
+ 
+ | 10c sub-job | Disposition |
+ |---|---|
+-| Initialize the bare git repo + seed it | **In scope.** Repo lives in a Compose-shared volume `eden-bare-repo`; setup-experiment runs a one-shot `docker compose run --rm eden-repo-init` that seeds the volume and prints the seed SHA. |
++| Initialize the bare git repo + seed it | **In scope.** Repo lives in a Compose-shared volume `eden-bare-repo`; setup-experiment runs a one-shot `docker compose run --rm --no-deps eden-repo-init` that seeds the volume and prints the seed SHA. |
+ | Write per-service sub-configs | **In scope.** The script emits a generated `.env` Compose reads; service `command:` entries thread the right flags. |
+ | Build experiment-specific image | **Deferred to 10d** (see Roadmap delta above). |
+ | Register with the control plane | **Deferred to Phase 12** (see Roadmap delta above). |
+@@ -254,7 +254,7 @@
+ | `implementer-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id implementer-1`, `--repo-path /var/lib/eden/repo`, `--log-level info` | env | `eden-bare-repo` at `/var/lib/eden/repo` | `task-store-server` | none | none |
+ | `evaluator-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id evaluator-1`, `--experiment-config /etc/eden/experiment-config.yaml`, `--log-level info` | env + configs | `eden-experiment-config` (configs) | `task-store-server` | none | none |
+ | `web-ui` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--experiment-config /etc/eden/experiment-config.yaml`, `--session-secret $EDEN_SESSION_SECRET`, `--artifacts-dir /var/lib/eden/artifacts`, `--repo-path /var/lib/eden/repo`, `--worker-id web-ui-1`, `--host 0.0.0.0`, `--port 8090`, `--log-level info` | env + configs | `eden-experiment-config` (configs); `eden-artifacts-data` at `/var/lib/eden/artifacts`; `eden-bare-repo` at `/var/lib/eden/repo` (**read-write** — see note below) | `task-store-server` | `curl -fsS http://localhost:8090/healthz` (new endpoint added in this chunk) | `${WEB_UI_HOST_PORT:-8090}:8090` |
+-| `eden-repo-init` (profile: setup) | `python -m eden_service_common.repo_init --repo-path /var/lib/eden/repo` | n/a — invoked by setup-experiment via `compose run --rm` | `eden-bare-repo` at `/var/lib/eden/repo` | none | n/a (one-shot) | n/a |
++| `eden-repo-init` (profile: setup) | `python -m eden_service_common.repo_init --repo-path /var/lib/eden/repo` | n/a — invoked by setup-experiment via `compose run --rm --no-deps` | `eden-bare-repo` at `/var/lib/eden/repo` | none | n/a (one-shot) | n/a |
+ 
+ **New named volumes**: `eden-bare-repo` (replaces the host-path repo
+ the existing CLIs assume) and `eden-artifacts-data` (web-ui's
+@@ -352,8 +352,9 @@
+   ...
+ ```
+ 
+-`compose run --rm <name>` runs services regardless of profile, so
+-setup-experiment invokes it normally; plain `compose up` skips it.
++`compose run --rm --no-deps <name>` runs services regardless of
++profile, so setup-experiment invokes it normally; plain `compose
++up` skips it.
+ 
+ **Re-runnability:** `setup-experiment.sh` is idempotent. Running it
+ a second time:
+@@ -442,7 +443,7 @@
+ ```
+ 
+ `eden-repo-init` is invoked once by setup-experiment via
+-`compose run --rm` *before* `compose up`; the bare-repo volume is
++`compose run --rm --no-deps` *before* `compose up`; the bare-repo volume is
+ already seeded by the time `compose up` starts the long-running
+ services, so no `compose up`-time dependency on `eden-repo-init` is
+ needed.

@@ -1,0 +1,15 @@
+**Findings**
+
+1. Bug — [reference/packages/eden-storage/src/eden_storage/_postgres_schema.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/src/eden_storage/_postgres_schema.py:82). `current_version()` is hard-coded to probe `public.schema_version`, but the new Postgres test fixture intentionally moves each store onto its own schema via `search_path`. Reopening the same non-public schema will still report version `0`, rerun migration `v1`, and fail on duplicate table creation. Fix by resolving `schema_version` on the active `search_path` instead of `public`, then add the planned Postgres reopen coverage so this path is exercised.
+
+2. Bug — [reference/scripts/setup-experiment/setup-experiment.sh](/Users/ericalt/Documents/eden/reference/scripts/setup-experiment/setup-experiment.sh:165). The generated `EDEN_STORE_URL` interpolates `POSTGRES_PASSWORD` directly into `postgresql://eden:${POSTGRES_PASSWORD}@postgres:5432/eden`. Because `--postgres-password` is user-supplied, reserved URI characters like `@`, `:`, `/`, `?`, or `#` will break or alter the DSN. Fix by percent-encoding the password before composing the URL, or by constructing the DSN with a helper that handles credentials safely.
+
+3. Risk — [reference/scripts/setup-experiment/setup-experiment.sh](/Users/ericalt/Documents/eden/reference/scripts/setup-experiment/setup-experiment.sh:63). The option parser blindly reads `$2` for `--experiment-id`, `--shared-token`, `--postgres-password`, and `--env-file`. With `set -u`, a missing value crashes the script with an unhelpful shell error instead of usage output. Fix by validating `[[ $# -ge 2 ]]` before each `shift 2`, or by switching to a parser pattern that centralizes “missing argument” handling.
+
+4. Risk — [reference/compose/healthcheck/smoke.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/smoke.sh:129). This no longer matches plan section G step 6. The plan called for asserting the final task-store state via `task.terminated` events for each seeded plan task; the implementation only counts `trial.integrated` events. That is a weaker invariant and can miss planner/orchestrator lifecycle regressions. Fix by asserting the expected `task.terminated` events, or update the plan if the weaker check is intentional.
+
+**Overall Assessment**
+
+The chunk is mostly coherent: the compose wiring, shared image strategy, repo-init flow, and `--store-url` integration all line up reasonably well. The main functional concern is the Postgres migration-version bug, and the setup script still has a couple of real shell/URL robustness holes.
+
+There is also some lower-severity plan drift I would clean up: `setup-experiment.sh` still requires an explicit config path despite the plan’s default-fixture design, the planned dedicated `test_postgres_store.py` is absent, the Web UI README does not document `/healthz`, and the Postgres schema chose `text` instead of the plan’s `jsonb`. If those were intentional design changes, the plan should be updated to match.

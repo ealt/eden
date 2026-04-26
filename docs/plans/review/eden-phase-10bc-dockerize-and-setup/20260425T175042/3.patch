@@ -1,0 +1,70 @@
+--- docs/plans/review/eden-phase-10bc-dockerize-and-setup/20260425T175042/2.md	2026-04-25 18:00:16
++++ docs/plans/eden-phase-10bc-dockerize-and-setup.md	2026-04-25 18:01:36
+@@ -285,9 +285,9 @@
+ worker. They race for the same tasks via `Store.claim` (which has
+ its own atomicity guarantees per chapter 04 §3); whoever wins the
+ claim does the work. Document this concurrency posture in
+-`reference/compose/README.md`. (Operators who want only the
+-unattended path can override `EDEN_WEB_UI_DISABLE_IMPLEMENTER=1`
+-to a yet-to-be-added flag — out of scope for this chunk.)
++`reference/compose/README.md`. (A future opt-out — runtime flag to
++disable the implementer module from the web-ui — is out of scope
++for this chunk.)
+ 
+ **`postgres` healthcheck** already exists (10a). The healthcheck is
+ what `service_healthy` keys off; downstream services don't need
+@@ -307,10 +307,13 @@
+ `docker compose up` runs, so the seed SHA is known synchronously and
+ can be written into `.env` for downstream service flags.
+ 
+-**Mechanism:** setup-experiment runs a one-shot
++**Mechanism:** setup-experiment builds the shared image and then
++runs the one-shot init service (canonical command shape, matched
++in section E):
+ 
+ ```bash
+-docker compose --env-file <generated-env> run --rm eden-repo-init
++docker compose --env-file <generated-env> build eden-repo-init
++docker compose --env-file <generated-env> run --rm --no-deps eden-repo-init
+ ```
+ 
+ against a new `eden-repo-init` service in `compose.yaml`. That
+@@ -334,9 +337,10 @@
+ 
+ **Crucially:** `eden-repo-init` is **NOT** in any other service's
+ `depends_on`. It is a setup-time tool, invoked by setup-experiment
+-via `compose run --rm`, not a `compose up`-time dependency. This
+-collapses the dual-owner contradiction codex flagged in plan-review
+-round 0: setup-experiment is the sole owner of repo seeding, and
++via `compose run --rm --no-deps`, not a `compose up`-time
++dependency. This collapses the dual-owner contradiction codex
++flagged in plan-review round 0: setup-experiment is the sole owner
++of repo seeding, and
+ the seed SHA is known *before* any service starts.
+ 
+ The compose `profiles:` keyword keeps `eden-repo-init` out of plain
+@@ -483,13 +487,17 @@
+    tests/fixtures/experiment/.eden/config.yaml --experiment-id
+    smoke-exp` to generate `.env`. (This step also builds the image
+    and seeds the repo per section E.)
+-2. **Assert seeded ref before starting the stack.** Run a
+-   one-shot probe that mounts the volume:
+-   `docker run --rm -v eden-reference_eden-bare-repo:/repo
+-   alpine/git:latest -C /repo show-ref refs/heads/main`
+-   returns a SHA matching `EDEN_BASE_COMMIT_SHA` from `.env`.
+-   This avoids races on long-running services that may not yet
+-   exist or may have already exited.
++2. **Assert seeded ref before starting the stack.** Reuse the
++   already-built `eden-reference:dev` image (it has git
++   installed) for a one-shot probe that mounts the volume:
++   `docker compose --env-file .env run --rm --no-deps
++   --entrypoint sh eden-repo-init -c "git -C /var/lib/eden/repo
++   show-ref refs/heads/main"` returns a SHA matching
++   `EDEN_BASE_COMMIT_SHA` from `.env`. Reusing the image
++   avoids depending on a floating `latest` tag of an external
++   image and matches the rest of the stack's pinning discipline.
++   This step also avoids races on long-running services that may
++   not yet exist or may have already exited.
+ 3. `docker compose --env-file .env up -d --wait --wait-timeout
+    180`.
+ 4. Existing volume + Postgres + Gitea assertions (10a).

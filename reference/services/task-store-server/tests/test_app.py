@@ -27,18 +27,30 @@ def test_load_experiment_config_parses_fixture() -> None:
 def test_build_store_memory_backend() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
     store = build_store(
-        db_path=":memory:",
+        store_url=":memory:",
         experiment_id="exp-1",
         config=config,
     )
     assert isinstance(store, InMemoryStore)
 
 
-def test_build_store_sqlite_backend(tmp_path: Path) -> None:
+def test_build_store_sqlite_backend_bare_path(tmp_path: Path) -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
     db_path = str(tmp_path / "eden.sqlite")
     store = build_store(
-        db_path=db_path,
+        store_url=db_path,
+        experiment_id="exp-1",
+        config=config,
+    )
+    assert isinstance(store, SqliteStore)
+    store.close()
+
+
+def test_build_store_sqlite_backend_url_scheme(tmp_path: Path) -> None:
+    config = load_experiment_config(FIXTURE_CONFIG)
+    db_path = tmp_path / "eden.sqlite"
+    store = build_store(
+        store_url=f"sqlite:///{db_path}",
         experiment_id="exp-1",
         config=config,
     )
@@ -48,7 +60,7 @@ def test_build_store_sqlite_backend(tmp_path: Path) -> None:
 
 def test_build_app_no_shared_token_admits_anonymous() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    store = build_store(db_path=":memory:", experiment_id="exp-1", config=config)
+    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
     app = build_app(store=store)
     client = TestClient(app)
     resp = client.get(
@@ -60,7 +72,7 @@ def test_build_app_no_shared_token_admits_anonymous() -> None:
 
 def test_build_app_with_shared_token_rejects_unauthenticated() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    store = build_store(db_path=":memory:", experiment_id="exp-1", config=config)
+    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
     app = build_app(store=store, shared_token="secret")
     client = TestClient(app)
     resp = client.get(
@@ -73,7 +85,7 @@ def test_build_app_with_shared_token_rejects_unauthenticated() -> None:
 
 def test_build_app_with_shared_token_admits_authenticated() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    store = build_store(db_path=":memory:", experiment_id="exp-1", config=config)
+    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
     app = build_app(store=store, shared_token="secret")
     client = TestClient(app)
     resp = client.get(

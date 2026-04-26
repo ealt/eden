@@ -101,7 +101,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
     server = _spawn(
         [
             "eden_task_store_server",
-            "--db-path",
+            "--store-url",
             str(db_path),
             "--experiment-id",
             experiment_id,

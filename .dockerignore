@@ -1,0 +1,15 @@
+# Cache + build artifacts that bloat the build context and make
+# `uv sync --frozen` re-download deps every build.
+.git
+.venv
+node_modules
+__pycache__
+*.egg-info
+.pytest_cache
+.ruff_cache
+dist
+build
+htmlcov
+.coverage
+coverage.xml
+docs/plans/review

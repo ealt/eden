@@ -127,14 +127,50 @@ jobs:
   compose-smoke:
     name: compose-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify docker compose + jq are available
+      - name: Verify docker compose + jq + python3 are available
         run: |
           docker compose version
           jq --version
+          python3 --version
 
       - name: Run compose smoke
         working-directory: reference/compose
         run: bash healthcheck/smoke.sh
+
+  python-test-postgres:
+    name: python-test-postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.6-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Run parametrized backend tests against Postgres
+        env:
+          EDEN_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+        run: uv run pytest -q reference/packages/eden-storage/tests
