@@ -1,0 +1,109 @@
+--- docs/plans/review/eden-phase-10a-compose-infrastructure/20260425T164708/2.md	2026-04-25 16:54:48
++++ docs/plans/eden-phase-10a-compose-infrastructure.md	2026-04-25 16:56:59
+@@ -126,15 +126,23 @@
+   `docker volume ls` empty after `compose up`. To make 10a's
+   deliverable real, we ship a one-shot `blob-init` busybox
+   container that mounts `eden-blob-data` at `/var/lib/eden/blobs`,
+-  runs `mkdir -p` + a permission-set, and exits 0. `restart: "no"`
+-  prevents the exited container from looping; `docker compose up
+-  --wait` semantics for one-shot services were also verified
+-  during planning — `--wait` returns exit 0 when a one-shot
+-  container exits 0, so the smoke test gets a clean signal.
+-  Downstream services in 10b/10d mount the same volume.
+-  10a's smoke test asserts via `docker volume inspect
+-  eden-reference_eden-blob-data` *and* re-runs a busybox container
+-  against the volume to confirm it's writable.
++  runs `mkdir -p`, and exits 0. `restart: "no"` prevents the
++  exited container from looping; `docker compose up --wait`
++  semantics for one-shot services were also verified during
++  planning — `--wait` returns exit 0 when a one-shot container
++  exits 0, so the smoke test gets a clean signal. Downstream
++  services in 10b/10d mount the same volume.
++- **10a's blob-volume guarantee is "volume exists," not
++  "writable by the eventual 10d producer."** `blob-init` runs as
++  BusyBox root, and any in-container writability check 10a runs
++  is also from a root container — that proves "root can write,"
++  which is uninformative for the eventual non-root LLM-worker
++  containers in 10d. We deliberately do **not** make a
++  uid/gid/perm contract in 10a. 10d picks the user model when
++  the first real producer lands and is responsible for any
++  ownership/`chmod`/`chown` step it needs. 10a's smoke test
++  asserts existence (`docker volume inspect`) and that the
++  `blob-init` container exited 0 — nothing more about the volume.
+ - **Compose file format = `compose.yaml` (no `version:` field).**
+   Modern Docker Compose deprecated the top-level `version:` key and
+   Docker recommends using just `compose.yaml`. We name the file
+@@ -176,8 +184,9 @@
+ 
+ ### `reference/compose/compose.yaml`
+ 
+-Three services. Two named volumes are tied to services; one
+-(`eden-blob-data`) is declared but unmounted by any 10a service.
++Three services and three named volumes. `postgres` and `gitea`
++mount their own data volumes; `blob-init` is a one-shot service
++whose only purpose is to ensure `eden-blob-data` is created.
+ 
+ ```yaml
+ name: eden-reference
+@@ -246,7 +255,10 @@
+     image: busybox:1.36.1
+     container_name: eden-blob-init
+     restart: "no"
+-    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && chmod 0775 /var/lib/eden/blobs && echo blob-volume ready"]
++    # Deliberately no chmod/chown: 10a's contract is "volume exists,"
++    # not "writable by the eventual 10d producer." Ownership belongs
++    # to whichever uid/gid 10d picks for its blob-writing service.
++    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && echo blob-volume ready"]
+     volumes:
+       - eden-blob-data:/var/lib/eden/blobs
+ 
+@@ -357,17 +369,22 @@
+ 
+ # Assert all three named volumes were created at compose-up time.
+ # blob-init mounts eden-blob-data so Compose creates it; postgres and
+-# gitea mount their own data volumes the usual way.
++# gitea mount their own data volumes the usual way. Project-prefixed
++# volume names follow the "<project>_<volume>" convention; the project
++# name is fixed by `name: eden-reference` in compose.yaml and is also
++# echoed below for traceability.
++PROJECT="$(docker compose -f compose.yaml --env-file "$TMPENV" \
++            config --format json | jq -r '.name')"
++test "$PROJECT" = "eden-reference" \
++    || { echo "unexpected project name: $PROJECT"; exit 1; }
+ for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
+-    docker volume inspect "eden-reference_${vol}" >/dev/null
++    docker volume inspect "${PROJECT}_${vol}" >/dev/null
+ done
+ 
+-# Re-verify the blob volume is writable from a fresh container — guards
+-# against a permissions regression from the blob-init container's mkdir.
+-docker run --rm \
+-    -v "eden-reference_eden-blob-data:/data" \
+-    busybox:1.36.1 \
+-    sh -c 'touch /data/.smoke-write && rm /data/.smoke-write'
++# Confirm blob-init actually exited 0 (--wait would have failed
++# otherwise, but re-checking gives a useful CI log line).
++test "$(docker compose -f compose.yaml --env-file "$TMPENV" \
++        ps -a --format json blob-init | jq -r '.ExitCode')" = "0"
+ 
+ # Assert Postgres is accepting connections (independent of healthcheck).
+ docker compose -f compose.yaml --env-file "$TMPENV" exec -T postgres \
+@@ -388,11 +405,13 @@
+   block until every service is healthy or 2min elapses, exiting
+   non-zero if any service fails. This is the cleanest way to
+   encode "everything came up healthy" in a script.
+-- The blob volume assertion uses `docker volume inspect` rather
+-  than parsing Compose's project-prefixed volume name by hand —
+-  a fragile string concat (`eden-reference_eden-blob-data`) is
+-  what `docker compose config` emits, but resolving it via
+-  `compose config` is robust to project-name overrides.
++- The volume name is the standard `<project>_<volume>` Compose
++  convention. The script reads the project name from
++  `docker compose config` and asserts it equals
++  `eden-reference` (matching the `name:` field in `compose.yaml`)
++  before applying the prefix, so a future rename of `name:`
++  fails the smoke test loudly rather than silently checking
++  the wrong volumes.
+ 
+ ### `.github/workflows/ci.yml` — new `compose-smoke` job
+ 

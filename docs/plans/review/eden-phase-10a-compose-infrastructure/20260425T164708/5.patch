@@ -1,0 +1,91 @@
+--- docs/plans/review/eden-phase-10a-compose-infrastructure/20260425T164708/4.md	2026-04-25 16:58:35
++++ docs/plans/eden-phase-10a-compose-infrastructure.md	2026-04-25 17:00:15
+@@ -86,13 +86,15 @@
+   `.env.example` ships canned dev defaults; the real `.env` is
+   gitignored. CI uses `.env.example` as-is — these are throwaway
+   values, not real credentials.
+-- **Healthchecks on every infra service.** Compose `depends_on`
+-  semantics with `condition: service_healthy` are the only safe way
+-  to chain bring-up; without healthchecks, "up" means "container
+-  process started," not "Postgres is accepting connections." Each
+-  service in 10a defines a `healthcheck:` block and downstream
+-  services in 10b will gate on `service_healthy` instead of bare
+-  `service_started`.
++- **Healthchecks on every long-running infra service.** Compose
++  `depends_on` semantics with `condition: service_healthy` are the
++  only safe way to chain bring-up; without healthchecks, "up" means
++  "container process started," not "Postgres is accepting
++  connections." `postgres` and `gitea` define a `healthcheck:`
++  block; `blob-init` is a one-shot whose contract is "exit 0" (no
++  long-running process to health-check). Downstream services in
++  10b/10d gate on `service_healthy` for postgres/gitea and on
++  `service_completed_successfully` for blob-init.
+ - **Volume strategy — named volumes, not bind mounts.** Named volumes
+   (`eden-postgres-data`, `eden-gitea-data`, `eden-blob-data`) are
+   Compose-managed, survive `compose down` (use `compose down -v` to
+@@ -330,7 +332,8 @@
+ 1. **What this stack provides** — three infra services that EDEN
+    services in later chunks consume.
+ 2. **Quickstart** — `cp .env.example .env && docker compose up -d`
+-   plus `docker compose ps` showing all three healthy.
++   plus `docker compose ps` showing `postgres` and `gitea` as
++   `running (healthy)` and `blob-init` as `exited (0)`.
+ 3. **What each service does** — Postgres (durable task store
+    backend, lands in 10b), Gitea (git remote for `work/*` and
+    `trial/*` branches, lands in 10b/10c), blob volume (artifact
+@@ -355,6 +358,16 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ 
++# Tooling preflight — fail fast with a clear message if a required
++# binary is missing. `docker compose` is also expected; the CI job
++# preflights it separately, but local users get the diagnostic here.
++for tool in docker jq; do
++    command -v "$tool" >/dev/null || {
++        echo "smoke.sh requires '$tool' on PATH" >&2
++        exit 2
++    }
++done
++
+ # Bring the stack up using .env.example as the source of truth.
+ # (Copy to a temp .env if invoked from CI to avoid mutating the
+ # checked-in file.)
+@@ -405,9 +418,11 @@
+ - The `trap` ensures teardown runs even on assertion failure, so
+   CI runs don't leave dangling volumes.
+ - `--wait --wait-timeout 120` (Compose v2 feature) makes `up`
+-  block until every service is healthy or 2min elapses, exiting
+-  non-zero if any service fails. This is the cleanest way to
+-  encode "everything came up healthy" in a script.
++  block until every long-running service is healthy and every
++  one-shot has exited 0, or 2min elapses, exiting non-zero if any
++  service fails. This is the cleanest way to encode "everything
++  came up cleanly" in a script. Verified during planning that
++  one-shot services are handled correctly by `--wait`.
+ - The volume name is the standard `<project>_<volume>` Compose
+   convention. The script reads the project name from
+   `docker compose config` and asserts it equals
+@@ -424,15 +439,19 @@
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+-      - name: Verify docker compose is available
+-        run: docker compose version
++      - name: Verify docker compose + jq are available
++        run: |
++          docker compose version
++          jq --version
+       - name: Run compose smoke
+         working-directory: reference/compose
+         run: bash healthcheck/smoke.sh
+ ```
+ 
+-GitHub Actions' `ubuntu-latest` runners ship with Docker and the
+-Compose v2 plugin pre-installed; no extra setup needed.
++GitHub Actions' `ubuntu-latest` runners ship with Docker, the
++Compose v2 plugin, and `jq` pre-installed; no extra setup needed.
++The README's prerequisites section also lists `jq` so local users
++who need to run `smoke.sh` outside CI know to install it.
+ 
+ We do **not** add `compose-smoke` to branch protection in this PR.
+ Reasoning: the existing required checks (`docs-lint`,

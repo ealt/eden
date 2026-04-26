@@ -38,3 +38,6 @@ docs/plans/review/**/prompt.txt
 
 # Claude Code local runtime state (scheduled-task lock, etc.)
 .claude/
+
+# Compose secrets — example template is committed; real .env is not.
+reference/compose/.env

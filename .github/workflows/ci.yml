@@ -123,3 +123,18 @@ jobs:
           uv run pytest -q \
             reference/packages/eden-contracts/tests/test_schema_parity.py \
             reference/packages/eden-contracts/tests/test_roundtrip.py
+
+  compose-smoke:
+    name: compose-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq are available
+        run: |
+          docker compose version
+          jq --version
+
+      - name: Run compose smoke
+        working-directory: reference/compose
+        run: bash healthcheck/smoke.sh

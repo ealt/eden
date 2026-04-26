@@ -1,0 +1,19 @@
+**Missing Context**
+
+Brief assessment: mostly sufficient. The scope boundaries are clear, the deliverables are concrete, and the plan tracks the repo’s current phase structure well.
+
+- One clarification is still needed around the database story. The chunk is introduced as “Postgres for durable backend, Gitea for git host” at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:15), but the sample Compose config keeps Gitea on SQLite at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:190). If that is intentional, say explicitly that Postgres is only being stood up for future EDEN services in 10b, not for Gitea itself.
+
+**Feasibility**
+
+Brief assessment: there are material feasibility issues here, so I would stop at this level before reviewing alternatives or completeness.
+
+- The proposed Gitea SSH port wiring breaks when `GITEA_SSH_HOST_PORT` is overridden. In the sample config, `GITEA__server__SSH_PORT` is set from the host port at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:189), but Docker still maps host port to container port `2222` at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:200). Gitea’s docs distinguish the displayed SSH port from the listen port, and `SSH_LISTEN_PORT` defaults from `SSH_PORT`; the rootless Docker docs also show changing only the host-side mapping, not the container port. If a user sets `GITEA_SSH_HOST_PORT=2022`, this plan likely makes Gitea listen on `2022` inside the container while Docker still forwards to `2222`, breaking SSH clones/pushes. Fix this by pinning the internal listen port separately, or by not driving `SSH_PORT` from the host override. Sources: [Gitea rootless Docker docs](https://docs.gitea.com/1.24/installation/install-with-docker-rootless), [Gitea config cheat sheet](https://docs.gitea.com/administration/config-cheat-sheet).
+
+- The blob-volume design is internally inconsistent, and the later version may not work with the proposed verification flow. Early on, the plan says “no init container, no service process” for the blob volume at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:109), but the file-by-file design later adds a one-shot `blob-init` service at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:210). On top of that, the verification path depends on `docker compose up --wait` at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:317) and expects `blob-init` to end in `exited (0)` at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:414). Docker’s `--wait` docs only promise waiting for services to be `running|healthy`, so this one-shot-container assumption needs to be proven or redesigned before it becomes the basis for CI. Sources: [docker compose up](https://docs.docker.com/reference/cli/docker/compose/up/), [Compose dependency conditions](https://docs.docker.com/compose/how-tos/startup-order/).
+
+I would not evaluate alternatives, completeness, or edge cases yet, because these feasibility issues change the shape of the plan materially.
+
+**Overall Assessment**
+
+The plan is well-scoped and generally well-structured, but it is not implementation-ready yet. Resolve the Gitea SSH port contract and choose one coherent blob-volume strategy first; after that, a deeper review of alternatives and completeness will be more useful.
