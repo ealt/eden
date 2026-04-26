@@ -406,7 +406,7 @@ since CI's runner has Python — that single dependency stays minor.
   --wait`. (**`up -d`, not `restart`** — `restart` does not pick
   up changes to `command:`, env files, or `configs:`. `up -d`
   detects config drift and recreates affected services. See
-  https://docs.docker.com/reference/cli/docker/compose/up/.)
+  the [docker compose up reference](https://docs.docker.com/reference/cli/docker/compose/up/).)
 
 **Step ordering** (one-shot, synchronous, no chicken-and-egg):
 
@@ -433,7 +433,7 @@ build failure is unambiguous and a seed failure is too.)
 
 Final shape (post-setup-experiment):
 
-```
+```text
 postgres          → healthy (10a)
 gitea             → healthy (10a, idle this chunk)
 blob-init         → exited 0 (10a)
@@ -552,7 +552,7 @@ the postgres flakiness if any surfaces.
 ## Files to reference
 
 - [`reference/packages/eden-storage/src/eden_storage/sqlite.py`](../../reference/packages/eden-storage/src/eden_storage/sqlite.py)
-  + [`_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py)
+  and [`_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py)
   — SqliteStore is the structural template for PostgresStore.
 - [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
   — shared transition logic; PostgresStore extends `_StoreBase`.
