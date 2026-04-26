@@ -14,7 +14,7 @@ from typing import Any
 
 import uvicorn
 from eden_service_common import configure_logging, get_logger, parse_log_level
-from eden_storage import SqliteStore
+from eden_storage import PostgresStore, SqliteStore
 
 from .app import build_app, build_store, load_experiment_config
 
@@ -26,9 +26,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="EDEN reference task-store server (uvicorn + eden-wire).",
     )
     parser.add_argument(
+        "--store-url",
+        default=None,
+        help=(
+            "Store URL: ':memory:' (in-memory), 'sqlite:///<path>' "
+            "(SQLite), 'postgresql://…' (Postgres), or a bare "
+            "filesystem path (treated as SQLite for compatibility)."
+        ),
+    )
+    parser.add_argument(
         "--db-path",
-        required=True,
-        help="SQLite database path, or ':memory:' for an InMemoryStore.",
+        default=None,
+        help=(
+            "Deprecated alias for --store-url, kept for one phase. "
+            "If set, treated as a SQLite path (or ':memory:' for "
+            "in-memory)."
+        ),
     )
     parser.add_argument(
         "--experiment-id",
@@ -118,8 +131,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = get_logger(__name__)
     config = load_experiment_config(args.experiment_config)
+    if args.store_url is None and args.db_path is None:
+        raise SystemExit("--store-url is required (or pass --db-path).")
+    if args.store_url is not None and args.db_path is not None:
+        raise SystemExit(
+            "Pass either --store-url or --db-path, not both."
+        )
+    store_url: str
+    if args.store_url is None:
+        log.warning(
+            "--db-path is deprecated; use --store-url instead",
+        )
+        assert args.db_path is not None  # guarded by the SystemExit checks above
+        store_url = args.db_path
+    else:
+        store_url = args.store_url
     store = build_store(
-        db_path=args.db_path,
+        store_url=store_url,
         experiment_id=args.experiment_id,
         config=config,
     )
@@ -154,12 +182,12 @@ def main(argv: list[str] | None = None) -> int:
             "starting uvicorn",
             host=args.host,
             port=args.port,
-            db_path=args.db_path,
+            store_url=store_url,
         )
         server.run()
         log.info("uvicorn exited")
     finally:
-        if isinstance(store, SqliteStore):
+        if isinstance(store, (SqliteStore, PostgresStore)):
             store.close()
     return 0
 

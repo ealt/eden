@@ -32,7 +32,7 @@ so the UI works offline and in CI without external network.
 
 ```bash
 python3 -m eden_task_store_server \
-    --db-path /tmp/eden.sqlite \
+    --store-url /tmp/eden.sqlite \
     --experiment-id exp-1 \
     --experiment-config tests/fixtures/experiment/.eden/config.yaml \
     --port 0 \
@@ -66,6 +66,13 @@ port without scraping logs.
   sufficient on its own.
 - The shared bearer never reaches the browser, the rendered HTML,
   any session cookie, or any structured log line.
+
+## Healthcheck
+
+`GET /healthz` returns `{"status": "ok"}` and is **unauthenticated
+by design** — Compose's healthcheck must work before any user
+signs in. The endpoint reveals only "the process is up"; it
+carries no secrets and exposes no experiment state.
 
 ## Stranded-claim recovery
 

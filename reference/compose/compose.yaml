@@ -83,7 +83,277 @@ services:
     volumes:
       - eden-blob-data:/var/lib/eden/blobs
 
+  # ---------------------------------------------------------------
+  # 10b/10c: EDEN reference services
+  # ---------------------------------------------------------------
+
+  eden-repo-init:
+    # Setup-time tool, NOT in any other service's depends_on. Invoked
+    # by setup-experiment via `compose run --rm --no-deps`. The
+    # `setup` profile keeps it out of plain `compose up`.
+    profiles: ["setup"]
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-repo-init
+    restart: "no"
+    command:
+      - python
+      - -m
+      - eden_service_common.repo_init
+      - --repo-path
+      - /var/lib/eden/repo
+    volumes:
+      - eden-bare-repo:/var/lib/eden/repo
+
+  task-store-server:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-task-store-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_task_store_server
+      - --store-url
+      - ${EDEN_STORE_URL:?EDEN_STORE_URL must be set (run setup-experiment)}
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?EDEN_EXPERIMENT_ID must be set (run setup-experiment)}
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?EDEN_SHARED_TOKEN must be set (run setup-experiment)}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --log-level
+      - info
+    configs:
+      - source: eden-experiment-config
+        target: /etc/eden/experiment-config.yaml
+    healthcheck:
+      # Authenticated GET against an experiment-scoped endpoint
+      # confirms both that the process is up and that auth wiring
+      # works. CMD argv form (NOT CMD-SHELL) so Compose interpolates
+      # `.env` values exactly once; no shell re-parses them, so
+      # quotes / spaces / shell metacharacters in the token or
+      # experiment id can't break or alter the command.
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - -H
+        - "Authorization: Bearer ${EDEN_SHARED_TOKEN}"
+        - -H
+        - "X-Eden-Experiment-Id: ${EDEN_EXPERIMENT_ID}"
+        - http://localhost:8080/v0/experiments/${EDEN_EXPERIMENT_ID}/events
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  orchestrator:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-orchestrator
+    # `on-failure` (not `unless-stopped`) — the orchestrator exits 0
+    # on quiescence, and `unless-stopped` would treat that as
+    # something to recover from and re-run the loop in a tight
+    # restart cycle. `on-failure` lets a clean exit stick.
+    restart: "on-failure"
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_orchestrator
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --repo-path
+      - /var/lib/eden/repo
+      - --plan-tasks
+      - ${EDEN_PLAN_TASKS:-3}
+      # Compose-friendly quiescence: 30 iterations × 1s = 30s of
+      # zero progress before the orchestrator declares the
+      # experiment done. The default (3 × 0.1s = 0.3s) is tuned
+      # for the in-process e2e tests where workers start
+      # immediately; in Compose the worker hosts take longer to
+      # bind and start polling.
+      - --poll-interval
+      - "1.0"
+      - --max-quiescent-iterations
+      - "30"
+      - --log-level
+      - info
+    volumes:
+      - eden-bare-repo:/var/lib/eden/repo
+
+  planner-host:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-planner-host
+    restart: unless-stopped
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_planner_host
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --worker-id
+      - planner-1
+      - --base-commit-sha
+      - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
+      - --log-level
+      - info
+
+  implementer-host:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-implementer-host
+    restart: unless-stopped
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_implementer_host
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --worker-id
+      - implementer-1
+      - --repo-path
+      - /var/lib/eden/repo
+      - --log-level
+      - info
+    volumes:
+      - eden-bare-repo:/var/lib/eden/repo
+
+  evaluator-host:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-evaluator-host
+    restart: unless-stopped
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_evaluator_host
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --worker-id
+      - evaluator-1
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --log-level
+      - info
+    configs:
+      - source: eden-experiment-config
+        target: /etc/eden/experiment-config.yaml
+
+  web-ui:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-web-ui
+    restart: unless-stopped
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_web_ui
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --session-secret
+      - ${EDEN_SESSION_SECRET:?EDEN_SESSION_SECRET must be set (run setup-experiment)}
+      - --artifacts-dir
+      - /var/lib/eden/artifacts
+      - --repo-path
+      - /var/lib/eden/repo
+      - --worker-id
+      - web-ui-1
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+      - --log-level
+      - info
+    configs:
+      - source: eden-experiment-config
+        target: /etc/eden/experiment-config.yaml
+    volumes:
+      - eden-bare-repo:/var/lib/eden/repo
+      - eden-artifacts-data:/var/lib/eden/artifacts
+    ports:
+      - "${WEB_UI_HOST_PORT:-8090}:8090"
+    healthcheck:
+      # CMD argv form (no shell). The literal URL has no
+      # interpolated user-controlled pieces, but staying consistent
+      # with the task-store-server healthcheck above is cheaper than
+      # leaving one shell-interpreted check around.
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:8090/healthz
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+configs:
+  eden-experiment-config:
+    file: ./experiment-config.yaml
+
 volumes:
   eden-postgres-data:
   eden-gitea-data:
   eden-blob-data:
+  eden-bare-repo:
+  eden-artifacts-data:

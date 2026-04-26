@@ -1,33 +1,74 @@
 # EDEN reference Compose stack
 
-A Docker Compose stack that stands up the third-party infrastructure
-the EDEN reference implementation runs against locally.
+A Docker Compose stack that runs the EDEN reference implementation
+end-to-end locally: third-party infrastructure (Postgres, Gitea, blob
+volume) plus the six EDEN services (`task-store-server`,
+`orchestrator`, `planner-host`, `implementer-host`,
+`evaluator-host`, `web-ui`), plus a one-shot `eden-repo-init` setup
+service.
 
-**Phase 10 chunk 10a delivers infrastructure only.** The EDEN services
-(`task-store-server`, `orchestrator`, `planner-host`,
-`implementer-host`, `evaluator-host`, `web-ui`) are dockerized in
-chunk 10b. The `setup-experiment` script lands in 10c. LLM-driven
-worker hosts arrive in 10d. An end-to-end Compose integration test
-ships in 10e.
+**Phase 10 chunks 10a + 10b + 10c are complete.** LLM-driven worker
+hosts (10d) and the comprehensive end-to-end Compose integration
+test (10e) are still ahead.
 
 ## What this stack provides
 
+### Infrastructure
+
 | Service     | Image                                | Purpose                                             |
 | ----------- | ------------------------------------ | --------------------------------------------------- |
-| `postgres`  | `postgres:16.6-alpine`               | Durable backend for the EDEN task store (10b)       |
-| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `trial/*` branches (10b/10c) |
+| `postgres`  | `postgres:16.6-alpine`               | Durable backend for the EDEN task store (`PostgresStore`) |
+| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `trial/*` branches (idle this chunk; see "Gitea is idle" below) |
 | `blob-init` | `busybox:1.36.1`                     | One-shot — ensures the blob volume exists           |
 
-| Volume                | Mounted by      | Future consumer                       |
-| --------------------- | --------------- | ------------------------------------- |
-| `eden-postgres-data`  | `postgres`      | task-store-server backend (10b)       |
-| `eden-gitea-data`     | `gitea`         | git host data (10b/10c)               |
-| `eden-blob-data`      | `blob-init`     | implementer-host artifact storage (10d) |
+### EDEN reference services (10b)
+
+| Service             | Module                              | Purpose                                                |
+| ------------------- | ----------------------------------- | ------------------------------------------------------ |
+| `task-store-server` | `eden_task_store_server`            | Hosts the `Store` over the wire protocol               |
+| `orchestrator`      | `eden_orchestrator`                 | Runs finalize → dispatch → integrate to quiescence     |
+| `planner-host`      | `eden_planner_host`                 | Scripted planner worker                                |
+| `implementer-host`  | `eden_implementer_host`             | Scripted implementer worker; writes work commits       |
+| `evaluator-host`    | `eden_evaluator_host`               | Scripted evaluator worker                              |
+| `web-ui`            | `eden_web_ui`                       | Backend-for-frontend Web UI on `localhost:${WEB_UI_HOST_PORT}` |
+
+### Setup-time services (10c)
+
+| Service          | Image                | Purpose                                                |
+| ---------------- | -------------------- | ------------------------------------------------------ |
+| `eden-repo-init` | `eden-reference:dev` | Profile `setup`. Idempotent bare-repo seed; invoked by setup-experiment |
+
+### Volumes
+
+| Volume                | Mounted by                                                | Purpose                                          |
+| --------------------- | --------------------------------------------------------- | ------------------------------------------------ |
+| `eden-postgres-data`  | `postgres`                                                | task-store-server's `PostgresStore` backend      |
+| `eden-gitea-data`     | `gitea`                                                   | git host data (idle this chunk)                  |
+| `eden-blob-data`      | `blob-init`                                               | implementer-host artifact storage (10d)          |
+| `eden-bare-repo`      | `orchestrator`, `implementer-host`, `web-ui`, `eden-repo-init` | Shared bare git repo                            |
+| `eden-artifacts-data` | `web-ui`                                                  | Web UI's `--artifacts-dir` for proposal markdown |
 
 **Postgres backs the EDEN task store, not Gitea.** Gitea uses its
 own embedded SQLite. Pointing Gitea at our Postgres would couple the
 git host's recovery story to the task store schema; production
 deployments must be free to swap either component independently.
+
+**Gitea is idle this chunk.** The roadmap reserves Gitea-as-the-
+workers'-actual-git-remote for a follow-up sub-chunk after 10d:
+workers currently use the local bare repo via `eden_git.GitRepo`
+(subprocess `git`), and refactoring to HTTPS push/pull against
+Gitea is a meaningful body of work. Gitea is in the stack so 10c's
+setup-experiment can adopt it incrementally; for now it sits
+healthy but unconsumed.
+
+**The web-ui implementer module overlaps with `implementer-host`.**
+Passing `--repo-path` to web-ui activates the full implementer
+module (chunk 9c). Both can claim implement tasks; whoever wins the
+claim does the work via `Store.claim`'s atomicity guarantee. The
+`implementer-host` is the unattended scripted worker; web-ui's
+implementer module is for human override / debugging. Operators
+who want only one or the other can use compose `profiles:` (a
+future enhancement).
 
 ## Prerequisites
 
@@ -38,26 +79,37 @@ deployments must be free to swap either component independently.
 ## Quickstart
 
 ```bash
-cd reference/compose
-cp .env.example .env
-docker compose up -d --wait
+cd reference
+bash scripts/setup-experiment/setup-experiment.sh \
+    ../tests/fixtures/experiment/.eden/config.yaml \
+    --experiment-id smoke-exp
+cd compose
+docker compose --env-file .env up -d --wait
 docker compose ps
 ```
 
-Expected output:
+Expected output: every service `Up (healthy)` (or `Exited (0)` for
+`blob-init`). The orchestrator runs the experiment to quiescence
+(~10–30s for the fixture experiment) and then exits 0.
 
-- `eden-postgres` — `Up (healthy)`
-- `eden-gitea` — `Up (healthy)`
-- `eden-blob-init` — `Exited (0)`
+**Re-running setup-experiment is safe.** Existing secrets
+(`POSTGRES_PASSWORD`, `EDEN_SHARED_TOKEN`, `EDEN_SESSION_SECRET`,
+`GITEA_*`) are preserved across re-runs. To pick up a config
+change, re-run setup-experiment and then `docker compose
+--env-file .env up -d` (which detects config drift and recreates
+affected services). `restart` is **not** sufficient — it doesn't
+pick up changes to `command:`, env files, or `configs:`.
 
-## Connection details (with `.env.example` defaults)
+## Connection details (with default ports)
 
-| Service    | Host endpoint              | Default credentials                       |
-| ---------- | -------------------------- | ----------------------------------------- |
-| Postgres   | `localhost:5433`           | user `eden` / db `eden` / password from `.env` |
-| Gitea HTTP | `http://localhost:3001/`   | no admin user yet (created in 10c)        |
-| Gitea SSH  | `ssh://git@localhost:2222` | (admin user not provisioned until 10c)    |
+| Service    | Host endpoint                  | Default credentials                            |
+| ---------- | ------------------------------ | ---------------------------------------------- |
+| Postgres   | `localhost:5433`               | user `eden` / db `eden` / password from `.env` |
+| Gitea HTTP | `http://localhost:3001/`       | no admin user (idle this chunk; provisioning lands in a follow-up) |
+| Gitea SSH  | `ssh://git@localhost:2222`     | (idem)                                         |
+| Web UI     | `http://localhost:8090/`       | sign in with any worker_id                     |
 | Blob volume | `eden-reference_eden-blob-data` (Docker named volume) | mounted at `/var/lib/eden/blobs` by future consumers |
+| Bare repo  | `eden-reference_eden-bare-repo` (Docker named volume) | mounted at `/var/lib/eden/repo` by orchestrator/implementer/web-ui |
 
 Defaults intentionally avoid the well-known ports (5432, 3000, 22)
 to sidestep collisions with locally-running Postgres or Gitea
@@ -106,11 +158,10 @@ for any deployment that handles real data.
 
 ## What's not here yet
 
-- Dockerfiles for the EDEN services themselves — added in 10b.
-- A `PostgresStore` backend in `eden-storage` — added in 10b
-  alongside the dockerized `task-store-server`.
-- The `setup-experiment` script — added in 10c.
-- An admin user / API token for Gitea — created by the
-  `setup-experiment` script in 10c.
+- Workers integrate with Gitea as their actual git remote (deferred
+  to a follow-up sub-chunk after 10d; see "Gitea is idle" above).
+- An admin user / API token for Gitea — created when Gitea actually
+  starts being consumed.
 - LLM-backed worker hosts — added in 10d.
-- An end-to-end Compose integration test — added in 10e.
+- A comprehensive end-to-end Compose integration test (with Web UI
+  walkthroughs and admin actions) — added in 10e.

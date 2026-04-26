@@ -1,0 +1,1 @@
+No remaining findings. The AGENTS command-table row is now aligned with the actual `smoke.sh` behavior, so this review is converged.

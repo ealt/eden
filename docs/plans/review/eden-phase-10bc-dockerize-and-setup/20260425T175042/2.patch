@@ -1,0 +1,98 @@
+--- docs/plans/review/eden-phase-10bc-dockerize-and-setup/20260425T175042/1.md	2026-04-25 17:57:21
++++ docs/plans/eden-phase-10bc-dockerize-and-setup.md	2026-04-25 18:00:01
+@@ -253,7 +253,7 @@
+ | `planner-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id planner-1`, `--base-commit-sha $EDEN_BASE_COMMIT_SHA`, `--log-level info` | env (worker-id is a static literal in compose.yaml; override via env if multiple replicas needed later) | none | `task-store-server` | none | none |
+ | `implementer-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id implementer-1`, `--repo-path /var/lib/eden/repo`, `--log-level info` | env | `eden-bare-repo` at `/var/lib/eden/repo` | `task-store-server` | none | none |
+ | `evaluator-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id evaluator-1`, `--experiment-config /etc/eden/experiment-config.yaml`, `--log-level info` | env + configs | `eden-experiment-config` (configs) | `task-store-server` | none | none |
+-| `web-ui` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--experiment-config /etc/eden/experiment-config.yaml`, `--session-secret $EDEN_SESSION_SECRET`, `--artifacts-dir /var/lib/eden/artifacts`, `--repo-path /var/lib/eden/repo`, `--worker-id web-ui-1`, `--host 0.0.0.0`, `--port 8090`, `--log-level info` | env + configs | `eden-experiment-config` (configs); `eden-artifacts-data` at `/var/lib/eden/artifacts`; `eden-bare-repo` at `/var/lib/eden/repo` (read-only is enough for the admin work-refs page) | `task-store-server` | `curl -fsS http://localhost:8090/healthz` (new endpoint added in this chunk) | `${WEB_UI_HOST_PORT:-8090}:8090` |
++| `web-ui` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--experiment-config /etc/eden/experiment-config.yaml`, `--session-secret $EDEN_SESSION_SECRET`, `--artifacts-dir /var/lib/eden/artifacts`, `--repo-path /var/lib/eden/repo`, `--worker-id web-ui-1`, `--host 0.0.0.0`, `--port 8090`, `--log-level info` | env + configs | `eden-experiment-config` (configs); `eden-artifacts-data` at `/var/lib/eden/artifacts`; `eden-bare-repo` at `/var/lib/eden/repo` (**read-write** — see note below) | `task-store-server` | `curl -fsS http://localhost:8090/healthz` (new endpoint added in this chunk) | `${WEB_UI_HOST_PORT:-8090}:8090` |
+ | `eden-repo-init` (profile: setup) | `python -m eden_service_common.repo_init --repo-path /var/lib/eden/repo` | n/a — invoked by setup-experiment via `compose run --rm` | `eden-bare-repo` at `/var/lib/eden/repo` | none | n/a (one-shot) | n/a |
+ 
+ **New named volumes**: `eden-bare-repo` (replaces the host-path repo
+@@ -271,7 +271,24 @@
+ `GET /healthz`. The route is unauthenticated by design — it carries
+ no secrets and reveals only "the process is up." Document this in
+ the web-ui README.
++
++**Web-ui repo mount: read-write, not read-only.** Passing
++`--repo-path` to web-ui activates the entire implementer module
++(see [`web-ui app factory`](../../reference/services/web-ui/src/eden_web_ui/app.py)),
++which writes refs on submit. A read-only mount would 500 on
++implementer submit. So we mount read-write.
+ 
++The redundancy with the standalone `implementer-host` service is
++intentional: both can claim implement tasks, the user picks which
++they prefer. The chunk-9c implementer module is for human
++override / debugging; `implementer-host` is the unattended scripted
++worker. They race for the same tasks via `Store.claim` (which has
++its own atomicity guarantees per chapter 04 §3); whoever wins the
++claim does the work. Document this concurrency posture in
++`reference/compose/README.md`. (Operators who want only the
++unattended path can override `EDEN_WEB_UI_DISABLE_IMPLEMENTER=1`
++to a yet-to-be-added flag — out of scope for this chunk.)
++
+ **`postgres` healthcheck** already exists (10a). The healthcheck is
+ what `service_healthy` keys off; downstream services don't need
+ their own dependency on `blob-init` (they don't touch
+@@ -387,14 +404,21 @@
+ 1. Generate / preserve secrets. Write a partial `.env` with
+    everything except `EDEN_BASE_COMMIT_SHA`.
+ 2. Copy the input config to `reference/compose/experiment-config.yaml`.
+-3. `docker compose --env-file .env run --rm eden-repo-init`,
++3. `docker compose --env-file .env build eden-repo-init` so the
++   shared image is available before the next step runs. Build
++   output streams to stdout so the operator sees progress.
++4. `docker compose --env-file .env run --rm --no-deps eden-repo-init`,
+    capture stdout, parse the seed SHA.
+-4. Append `EDEN_BASE_COMMIT_SHA=<sha>` to `.env`.
+-5. Print next-steps message.
++   - `--no-deps` keeps future dependency edits from accidentally
++     starting Postgres/Gitea/etc. just to seed a repo.
++   - The build in step 3 means this never fails on a missing image.
++5. Append `EDEN_BASE_COMMIT_SHA=<sha>` to `.env`.
++6. Print next-steps message.
+ 
+-If step 3 fails (e.g., the image isn't built yet), the script
+-errors clearly with the suggestion to run `docker compose
+---env-file .env build eden-repo-init` first.
++(`docker compose run --build --rm` would collapse 3+4 into one
++call, but the explicit two-step keeps build output and seed
++output cleanly separated in the operator's terminal — so a
++build failure is unambiguous and a seed failure is too.)
+ 
+ ### F. Compose dependency graph
+ 
+@@ -457,16 +481,25 @@
+ 
+ 1. Run `bash reference/scripts/setup-experiment/setup-experiment.sh
+    tests/fixtures/experiment/.eden/config.yaml --experiment-id
+-   smoke-exp` to generate `.env`.
+-2. `docker compose --env-file .env up -d --wait --wait-timeout
++   smoke-exp` to generate `.env`. (This step also builds the image
++   and seeds the repo per section E.)
++2. **Assert seeded ref before starting the stack.** Run a
++   one-shot probe that mounts the volume:
++   `docker run --rm -v eden-reference_eden-bare-repo:/repo
++   alpine/git:latest -C /repo show-ref refs/heads/main`
++   returns a SHA matching `EDEN_BASE_COMMIT_SHA` from `.env`.
++   This avoids races on long-running services that may not yet
++   exist or may have already exited.
++3. `docker compose --env-file .env up -d --wait --wait-timeout
+    180`.
+-3. Existing volume + Postgres + Gitea assertions.
+-4. **New:** assert `eden-repo-init` exited 0 + a seed commit exists
+-   (`docker compose exec orchestrator git -C /var/lib/eden/repo
+-   show-ref refs/heads/main` returns a SHA).
++4. Existing volume + Postgres + Gitea assertions (10a).
+ 5. **New:** wait up to 60s for the orchestrator to exit 0 (the
+-   scripted workers run a 3-trial experiment and the orchestrator's
+-   `--max-quiescent-iterations` flag triggers exit).
++   scripted workers run a 3-trial experiment and the
++   orchestrator's `--max-quiescent-iterations` flag triggers
++   exit). The poll uses `docker compose ps -a --format json
++   orchestrator` and reads the exit code via `docker inspect
++   --format '{{.State.ExitCode}}' eden-orchestrator` (10a's
++   shape-stable pattern).
+ 6. **New:** assert the final task-store state — read `/v0/.../events`
+    over HTTP via `curl` + `jq` and confirm presence of a
+    `task.terminated` event for each plan task.

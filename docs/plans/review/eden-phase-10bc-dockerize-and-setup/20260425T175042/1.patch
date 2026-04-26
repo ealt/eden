@@ -1,0 +1,409 @@
+--- docs/plans/review/eden-phase-10bc-dockerize-and-setup/20260425T175042/0.md	2026-04-25 17:50:42
++++ docs/plans/eden-phase-10bc-dockerize-and-setup.md	2026-04-25 17:57:14
+@@ -24,42 +24,38 @@
+ integration test that *asserts* this in CI is 10e (deferred per the
+ roadmap); 10b+10c just makes it possible.
+ 
++## Roadmap delta
++
++The roadmap's wording for 10b/10c was written ahead of detail; this
++chunk amends it explicitly. The amendments below should be reflected
++in `docs/roadmap.md` as part of the chunk's diff so the source of
++truth doesn't drift.
++
++| Roadmap text (current) | This chunk does | Why the change |
++|---|---|---|
++| "10b — Each reference service dockerized with its own image." | One shared `eden-reference:dev` image, services selected by Compose `command:`. | The seven services share most deps (FastAPI, uvicorn, eden-contracts, eden-storage, eden-wire, eden-service-common). N images means either replicating the workspace into each (greater total image bytes than one) or a multi-stage tower whose complexity outweighs the benefit. Phase 13 (k8s, Helm) is when "one image per service with its own minimal closure" becomes valuable; not now. |
++| "10c — builds experiment-specific image" | **Deferred to 10d.** | The scripted workers don't need an experiment-specific image. The LLM implementer (10d) does, since its sandbox runs the experiment's `implement_command`. Pinning the work to the chunk that *uses* it. |
++| "10c — registers with the control plane" | **Deferred to Phase 12.** | No control plane exists yet. "Registration" reduces to "generate the right env file," which is what setup-experiment does. |
++| (Implicit) workers integrate with Gitea as the bare-repo remote | **Deferred to a follow-up sub-chunk after 10d.** | Workers currently use local bare repos via `eden_git.GitRepo` (subprocess `git`). HTTPS push/pull against Gitea requires either remote-aware refactoring of `GitRepo` or per-worker local-clone+sync logic — a substantial body of work, not what 10b/10c is asking for. Same posture 10a took toward the blob volume (infrastructure exists; consumer arrives later). |
++
++The roadmap update commits alongside this chunk's code so future
++readers see the amendment.
++
+ ## Critical scope clarifications
+ 
+-The roadmap's 10c bullet mentions four sub-jobs. Three of them
+-**defer**:
++Re-stating, with the deltas above accounted for, the four 10c
++sub-jobs:
+ 
+ | 10c sub-job | Disposition |
+ |---|---|
+-| Initialize the bare git repo + seed it | **In scope.** Repo lives in a Compose-shared volume `eden-bare-repo`; setup-experiment runs `git init --bare` + the existing `seed_bare_repo` helper. |
++| Initialize the bare git repo + seed it | **In scope.** Repo lives in a Compose-shared volume `eden-bare-repo`; setup-experiment runs a one-shot `docker compose run --rm eden-repo-init` that seeds the volume and prints the seed SHA. |
+ | Write per-service sub-configs | **In scope.** The script emits a generated `.env` Compose reads; service `command:` entries thread the right flags. |
+-| Build experiment-specific image | **Deferred to 10d.** The scripted workers don't need it; the LLM-driven implementer host (10d) does, since it has to spawn a sandbox running the experiment's `implement_command`. |
+-| Register with the control plane | **Deferred to Phase 12.** No control plane exists yet; "registration" is just generating the right env file. |
++| Build experiment-specific image | **Deferred to 10d** (see Roadmap delta above). |
++| Register with the control plane | **Deferred to Phase 12** (see Roadmap delta above). |
+ 
+-**Gitea stays idle this chunk.** The roadmap's 10b/10c don't specify
+-Gitea-as-the-bare-repo-remote; they specify dockerization + setup. The
+-existing implementer + integrator code paths read/write a local bare
+-repo via `eden_git.GitRepo`, which talks to `.git` on disk via
+-subprocess `git`. Cutting that over to HTTPS push/pull against Gitea
+-would require either remote-aware refactoring of `GitRepo` or every
+-worker maintaining a local clone with sync logic on every operation —
+-both a substantial body of work and **not what 10b/10c is asking for**.
+-
+-The cleanest split:
+-
+-- 10b/10c (this chunk): bare repo lives in a Compose-shared named
+-  volume; orchestrator + implementer + web-ui mount it directly.
+-- 10d (or follow-up sub-chunk after 10d): wire workers to push/pull
+-  from Gitea over HTTPS once `eden_git.GitRepo` grows a remote-aware
+-  mode (which is itself a meaningful refactor).
+-
+-This is **the same posture 10a took toward the blob volume**:
+-"infrastructure exists; consumer arrives later." Codex's 10a review
+-specifically pinned that posture as legitimate ("volume exists" is a
+-defensible contract). Re-using it for Gitea is consistent: "service
+-exists; integration arrives later." Document the smell explicitly in
+-`reference/compose/README.md` so a reader doesn't wonder why Gitea is
+-running.
++**Gitea stays idle this chunk** (see Roadmap delta). Document the
++smell explicitly in `reference/compose/README.md` so a reader doesn't
++wonder why Gitea is running.
+ 
+ **`PostgresStore` is in scope.** 10a's chunk note explicitly reserved
+ Postgres for "`PostgresStore` consumption in 10b". A new
+@@ -204,7 +200,13 @@
+ # README files referenced from per-member pyproject (hatchling needs them).
+ COPY reference/packages reference/packages
+ COPY reference/services reference/services
+-RUN uv sync --frozen --no-dev
++# `--all-packages` installs every workspace member; without it the
++# eden-* packages would be skipped because the root `pyproject.toml`
++# is non-installable (`tool.uv.package = false`) and the workspace
++# members are pulled in only via the `dev` group, which `--no-dev`
++# excludes. Verified empirically: `uv sync --frozen --no-dev` against
++# this workspace removes every eden-* package from the venv.
++RUN uv sync --frozen --no-dev --all-packages
+ 
+ FROM base AS runtime
+ WORKDIR /app
+@@ -240,33 +242,36 @@
+    is the one source of dynamic config.
+ 4. Bare-repo-touching services mount the named volume `eden-bare-repo`.
+ 
+-The full entries (abbreviated; see actual diff at impl time):
++**Service config matrix.** Each row spells out every required flag,
++where the flag's value comes from, and what mounts the service
++needs.
+ 
+-- `task-store-server` — `command: ["python", "-m",
+-  "eden_task_store_server", "--store-url", "${EDEN_STORE_URL}",
+-  "--experiment-id", "${EDEN_EXPERIMENT_ID}", "--experiment-config",
+-  "/etc/eden/experiment-config.yaml", "--shared-token",
+-  "${EDEN_SHARED_TOKEN}", "--host", "0.0.0.0", "--port", "8080"]`.
+-  Depends on `postgres: service_healthy`. Mounts the
+-  experiment-config file at `/etc/eden/experiment-config.yaml`
+-  (passed in via Compose `configs:` — generated by
+-  setup-experiment). Healthcheck: `curl -fsS
+-  http://localhost:8080/v0/experiments/${EDEN_EXPERIMENT_ID}/events`.
+-- `orchestrator` — `command: ["python", "-m",
+-  "eden_orchestrator", …, "--repo-path", "/var/lib/eden/repo",
+-  "--plan-tasks", "${EDEN_PLAN_TASKS}"]`. Depends on
+-  `task-store-server: service_healthy`. Mounts `eden-bare-repo`.
+-- `planner-host`, `implementer-host`, `evaluator-host` — analogous.
+-  Implementer mounts `eden-bare-repo`; evaluator does not.
+-- `web-ui` — `command: ["python", "-m", "eden_web_ui", …,
+-  "--repo-path", "/var/lib/eden/repo", …]`. Mounts
+-  `eden-bare-repo` (for the work-refs admin page). Depends on
+-  `task-store-server: service_healthy`. Publishes port 8090 to the
+-  host. Healthcheck: `curl -fsS http://localhost:8090/healthz` (a
+-  trivial healthcheck endpoint added to the web-ui in this chunk —
+-  it has admin GETs already, but a dedicated `/healthz` is cleaner
+-  for compose).
++| Service | `command:` flags | Source of each value | Mounts | `depends_on` (healthy) | Healthcheck | Host port |
++|---|---|---|---|---|---|---|
++| `task-store-server` | `--store-url $EDEN_STORE_URL`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--experiment-config /etc/eden/experiment-config.yaml`, `--shared-token $EDEN_SHARED_TOKEN`, `--host 0.0.0.0`, `--port 8080`, `--log-level info` | env from `.env` (setup-experiment); experiment-config from Compose `configs:` (setup-experiment) | `eden-experiment-config` (configs), no volumes | `postgres` | `curl -fsS http://localhost:8080/v0/experiments/$EDEN_EXPERIMENT_ID/events -H "Authorization: Bearer $EDEN_SHARED_TOKEN" -H "X-Eden-Experiment-Id: $EDEN_EXPERIMENT_ID"` | none (internal) |
++| `orchestrator` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--repo-path /var/lib/eden/repo`, `--plan-tasks $EDEN_PLAN_TASKS`, `--log-level info` | env + Compose service DNS | `eden-bare-repo` at `/var/lib/eden/repo` | `task-store-server` | none (long-running client) | none |
++| `planner-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id planner-1`, `--base-commit-sha $EDEN_BASE_COMMIT_SHA`, `--log-level info` | env (worker-id is a static literal in compose.yaml; override via env if multiple replicas needed later) | none | `task-store-server` | none | none |
++| `implementer-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id implementer-1`, `--repo-path /var/lib/eden/repo`, `--log-level info` | env | `eden-bare-repo` at `/var/lib/eden/repo` | `task-store-server` | none | none |
++| `evaluator-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id evaluator-1`, `--experiment-config /etc/eden/experiment-config.yaml`, `--log-level info` | env + configs | `eden-experiment-config` (configs) | `task-store-server` | none | none |
++| `web-ui` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--experiment-config /etc/eden/experiment-config.yaml`, `--session-secret $EDEN_SESSION_SECRET`, `--artifacts-dir /var/lib/eden/artifacts`, `--repo-path /var/lib/eden/repo`, `--worker-id web-ui-1`, `--host 0.0.0.0`, `--port 8090`, `--log-level info` | env + configs | `eden-experiment-config` (configs); `eden-artifacts-data` at `/var/lib/eden/artifacts`; `eden-bare-repo` at `/var/lib/eden/repo` (read-only is enough for the admin work-refs page) | `task-store-server` | `curl -fsS http://localhost:8090/healthz` (new endpoint added in this chunk) | `${WEB_UI_HOST_PORT:-8090}:8090` |
++| `eden-repo-init` (profile: setup) | `python -m eden_service_common.repo_init --repo-path /var/lib/eden/repo` | n/a — invoked by setup-experiment via `compose run --rm` | `eden-bare-repo` at `/var/lib/eden/repo` | none | n/a (one-shot) | n/a |
+ 
++**New named volumes**: `eden-bare-repo` (replaces the host-path repo
++the existing CLIs assume) and `eden-artifacts-data` (web-ui's
++`--artifacts-dir`; isolates UI artifact writes from any host path).
++
++**`EDEN_SESSION_SECRET`** is a new env var setup-experiment
++generates (32 bytes hex). Preserved across re-runs like the other
++secrets.
++
++**The web-ui `/healthz` endpoint.** Currently the web-ui has only
++auth-gated routes; Compose's healthcheck must be unauthenticated so
++it can run before any user signs in. Add `routes/_healthz.py` (or
++inline in `make_app`) returning HTTP 200 `{"status":"ok"}` from
++`GET /healthz`. The route is unauthenticated by design — it carries
++no secrets and reveals only "the process is up." Document this in
++the web-ui README.
++
+ **`postgres` healthcheck** already exists (10a). The healthcheck is
+ what `service_healthy` keys off; downstream services don't need
+ their own dependency on `blob-init` (they don't touch
+@@ -279,43 +284,65 @@
+ **The `name: eden-reference` project name stays load-bearing.** All
+ volumes resolve as `eden-reference_<volume>`.
+ 
+-### D. `eden-bare-repo` volume
++### D. Bare-repo bootstrap — one authoritative owner
+ 
+-New named volume in `compose.yaml`. Mounted by orchestrator,
+-implementer, and web-ui at `/var/lib/eden/repo`.
++**Owner:** `setup-experiment.sh`. The repo is seeded **before**
++`docker compose up` runs, so the seed SHA is known synchronously and
++can be written into `.env` for downstream service flags.
+ 
+-**Initialization:** the volume is *empty* on first `up`. The
+-implementer + integrator + web-ui tolerate empty (they `git init
+---bare` opportunistically? — no, they don't; they assume the repo
+-exists). So setup-experiment must initialize it before the
+-services boot.
++**Mechanism:** setup-experiment runs a one-shot
+ 
+-**Mechanism:** a one-shot init service `eden-repo-init` (busybox or
+-the eden image — either works) that:
++```bash
++docker compose --env-file <generated-env> run --rm eden-repo-init
++```
+ 
+-1. Runs before the dependent services via the same
+-   `depends_on: { eden-repo-init: { condition:
+-   service_completed_successfully }}` pattern 10a established.
+-2. If `/var/lib/eden/repo/HEAD` already exists, exits 0
+-   (idempotent reboot).
+-3. Otherwise: runs `git init --bare --initial-branch=main` and
+-   then a Python invocation of `eden_service_common.seed_bare_repo`
+-   to write the seed commit + ref.
+-4. Prints the seed SHA to stdout (`EDEN_REPO_SEEDED sha=<hex>`)
+-   for human inspection.
++against a new `eden-repo-init` service in `compose.yaml`. That
++service:
+ 
+-**Why a separate init service rather than the orchestrator
+-opportunistically initializing:** the orchestrator's
+-`run_orchestrator_loop` already assumes the bare repo exists (it
+-constructs `GitRepo(args.repo_path)` and uses it). Bolting init into
+-the orchestrator would mix lifecycle concerns. A separate init
+-service mirrors blob-init's pattern from 10a; that pattern survived
+-codex review.
++1. `image:` references the same shared `eden-reference:dev` image
++   (so it has Python + the workspace + git available).
++2. Mounts only the `eden-bare-repo` named volume at
++   `/var/lib/eden/repo`.
++3. `command: ["python", "-m", "eden_service_common.repo_init",
++   "--repo-path", "/var/lib/eden/repo"]` — a new module that:
++   a. If `/var/lib/eden/repo/HEAD` already exists, prints
++      `EDEN_REPO_ALREADY_SEEDED sha=<existing-sha>` and exits 0.
++   b. Otherwise: runs `git init --bare
++      --initial-branch=main`, calls `seed_bare_repo`, prints
++      `EDEN_REPO_SEEDED sha=<hex>` to stdout, exits 0.
+ 
+-**Setup-experiment writes the seed SHA into the `.env`** as
+-`EDEN_BASE_COMMIT_SHA`, which the planner-host CLI threads through
+-to `--base-commit-sha`.
++The script captures stdout, parses the SHA, and writes it to `.env`
++as `EDEN_BASE_COMMIT_SHA=<hex>`. Then the operator runs `docker
++compose up`.
+ 
++**Crucially:** `eden-repo-init` is **NOT** in any other service's
++`depends_on`. It is a setup-time tool, invoked by setup-experiment
++via `compose run --rm`, not a `compose up`-time dependency. This
++collapses the dual-owner contradiction codex flagged in plan-review
++round 0: setup-experiment is the sole owner of repo seeding, and
++the seed SHA is known *before* any service starts.
++
++The compose `profiles:` keyword keeps `eden-repo-init` out of plain
++`docker compose up`'s service set:
++
++```yaml
++eden-repo-init:
++  profiles: ["setup"]
++  ...
++```
++
++`compose run --rm <name>` runs services regardless of profile, so
++setup-experiment invokes it normally; plain `compose up` skips it.
++
++**Re-runnability:** `setup-experiment.sh` is idempotent. Running it
++a second time:
++
++- Re-runs `eden-repo-init`, which short-circuits on the existing
++  `HEAD` and re-prints the existing SHA.
++- Preserves existing secrets (postgres password, shared token) so
++  re-running doesn't rotate them by accident.
++- Overwrites `EDEN_PLAN_TASKS` and `experiment-config.yaml`.
++
+ ### E. setup-experiment script
+ 
+ **File:** [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)
+@@ -346,76 +373,82 @@
+ **Outputs:**
+ 
+ - `reference/compose/.env` (or `--env-file <path>`) — generated
+-  Compose env with: `EDEN_EXPERIMENT_ID`, `EDEN_SHARED_TOKEN`,
+-  `EDEN_STORE_URL=postgresql://eden:${POSTGRES_PASSWORD}@postgres:5432/eden`,
+-  `EDEN_PLAN_TASKS=3`, `EDEN_BASE_COMMIT_SHA=<seed-sha>` (filled
+-  in by the repo-init service at first `compose up`, NOT by
+-  setup-experiment), Postgres + Gitea variables (preserved if
+-  already set, generated otherwise).
++  Compose env. See section F for the full variable list.
+ - `reference/compose/experiment-config.yaml` — copy of the input
+   config the task-store-server reads at boot via Compose `configs:`.
+-- Stdout: a short "next steps" message (`docker compose up
+-  --wait`).
++- Stdout: a short "next steps" message — `docker compose up -d
++  --wait`. (**`up -d`, not `restart`** — `restart` does not pick
++  up changes to `command:`, env files, or `configs:`. `up -d`
++  detects config drift and recreates affected services. See
++  https://docs.docker.com/reference/cli/docker/compose/up/.)
+ 
+-**The seed-SHA chicken-and-egg.** The seed SHA isn't known until
+-the repo-init service runs, but the planner needs it threaded
+-into its `--base-commit-sha`. Resolution:
++**Step ordering** (one-shot, synchronous, no chicken-and-egg):
+ 
+-- The repo-init service writes the seed SHA into a file inside the
+-  bare-repo volume itself: `/var/lib/eden/repo/SEED_SHA`.
+-- The orchestrator entrypoint reads `${EDEN_BASE_COMMIT_SHA:-$(cat
+-  /var/lib/eden/repo/SEED_SHA)}` so unset env var falls back to
+-  the on-volume file.
+-- The planner-host does the same.
+-- This is the **simplest concretely-reasoning-about-actually-works
+-  pattern**; see "Risks / things to watch" below.
++1. Generate / preserve secrets. Write a partial `.env` with
++   everything except `EDEN_BASE_COMMIT_SHA`.
++2. Copy the input config to `reference/compose/experiment-config.yaml`.
++3. `docker compose --env-file .env run --rm eden-repo-init`,
++   capture stdout, parse the seed SHA.
++4. Append `EDEN_BASE_COMMIT_SHA=<sha>` to `.env`.
++5. Print next-steps message.
+ 
+-(An alternative: have setup-experiment run `git init --bare` on
+-the host and write the seed commit, then bind-mount the host
+-directory into the volume. That has the upside of putting the
+-seed SHA in the env synchronously — but bind-mounts on macOS are
+-slow, and named volumes are the consistent storage primitive
+-across platforms.)
++If step 3 fails (e.g., the image isn't built yet), the script
++errors clearly with the suggestion to run `docker compose
++--env-file .env build eden-repo-init` first.
+ 
+-**Idempotency:** re-running `setup-experiment.sh` against an
+-already-configured stack:
+-
+-- Preserves existing `${POSTGRES_PASSWORD}` /
+-  `${EDEN_SHARED_TOKEN}` so secrets don't rotate by accident
+-  (re-running is a common operator move).
+-- Overwrites `experiment-config.yaml`.
+-- Prints "next: `docker compose up --wait`" or, if the stack is
+-  already up, "next: `docker compose restart` to pick up config
+-  changes".
+-
+ ### F. Compose dependency graph
+ 
+-Final shape:
++Final shape (post-setup-experiment):
+ 
+ ```
+-postgres        → healthy (10a)
+-gitea           → healthy (10a, idle)
+-blob-init       → exited 0 (10a)
+-eden-repo-init  → exited 0 (new)
+-task-store-server → healthy [depends_on: postgres]
+-orchestrator      → running [depends_on: task-store-server, eden-repo-init]
++postgres          → healthy (10a)
++gitea             → healthy (10a, idle this chunk)
++blob-init         → exited 0 (10a)
++eden-repo-init    → exited 0 (new; profile=setup, NOT in `compose up`)
++task-store-server → healthy [depends_on: postgres]
++orchestrator      → running [depends_on: task-store-server]
+ planner-host      → running [depends_on: task-store-server]
+-implementer-host  → running [depends_on: task-store-server, eden-repo-init]
++implementer-host  → running [depends_on: task-store-server]
+ evaluator-host    → running [depends_on: task-store-server]
+-web-ui            → healthy [depends_on: task-store-server, eden-repo-init]
++web-ui            → healthy [depends_on: task-store-server]
+ ```
+ 
+-Worker hosts and orchestrator are long-running; they don't have a
+-`healthy` state in the same sense, but they can advertise via
+-`/healthz` over HTTP… except they're not HTTP servers, just
+-clients. So Compose's service-state model degrades to "started" for
+-them, and `compose up --wait` accepts that.
++`eden-repo-init` is invoked once by setup-experiment via
++`compose run --rm` *before* `compose up`; the bare-repo volume is
++already seeded by the time `compose up` starts the long-running
++services, so no `compose up`-time dependency on `eden-repo-init` is
++needed.
+ 
+-(Technically `--wait` waits for `service_healthy` on services that
+-declare a healthcheck, and `service_started` on those that don't.
+-The worker hosts won't declare a healthcheck this chunk; they're
+-stateless polling clients.)
++Worker hosts and orchestrator are long-running clients without HTTP
++healthchecks; `compose up --wait` waits on `service_healthy` for
++healthcheck-declaring services and `service_started` for the
++others. Acceptable for this chunk.
+ 
++### F.1 Generated `.env` shape
++
++`reference/compose/.env` after a successful setup-experiment run:
++
++```dotenv
++# 10a (preserved or generated)
++POSTGRES_DB=eden
++POSTGRES_USER=eden
++POSTGRES_PASSWORD=<32-hex>
++POSTGRES_HOST_PORT=5433
++GITEA_SECRET_KEY=<64-hex>
++GITEA_INTERNAL_TOKEN=<64-hex>
++GITEA_HOST_PORT=3001
++GITEA_SSH_HOST_PORT=2222
++
++# 10b/c (new)
++EDEN_EXPERIMENT_ID=<from --experiment-id>
++EDEN_SHARED_TOKEN=<32-hex>
++EDEN_SESSION_SECRET=<32-hex>
++EDEN_STORE_URL=postgresql://eden:<password>@postgres:5432/eden
++EDEN_PLAN_TASKS=3
++EDEN_BASE_COMMIT_SHA=<seed-sha>
++WEB_UI_HOST_PORT=8090
++```
++
+ ### G. `compose-smoke` CI job extension
+ 
+ The existing `compose-smoke` job (10a) already brings the stack up
+@@ -560,28 +593,6 @@
+ 
+ ## Risks / things to watch
+ 
+-- **The seed-SHA chicken-and-egg.** The chosen pattern (write the
+-  seed SHA to a file inside the volume; service entrypoint falls
+-  back to reading it) is the simplest. It does mean the
+-  orchestrator/planner needs a small env-var-or-file-fallback shim
+-  in their CLIs. An alternative — thread the seed SHA in via a
+-  generated env file — requires a *second* `compose up` (one to
+-  initialize the repo, one to start the rest) since the seed SHA
+-  isn't known on the first up. The chosen pattern keeps it to one
+-  `compose up`.
+-
+-  Codex will likely push back on adding a CLI fallback path. If so:
+-  the alternative is to update setup-experiment to run the seed
+-  commit on the host before `compose up`, writing the SHA into the
+-  generated `.env` synchronously. That requires the host to have
+-  `git` installed (CI does; macOS has it via Xcode CLI tools) and
+-  the bare repo to live somewhere accessible from inside the
+-  container. Mounting a host directory into the named volume is
+-  fragile across platforms; mounting the host directory directly
+-  (`bind:` mount) trades the named-volume pattern for host-coupling.
+-  My current call: keep the in-volume `SEED_SHA` file; document the
+-  alternative; let codex decide.
+-
+ - **`uv sync --frozen` in Docker requires `uv.lock`.** If the lock
+   file ever becomes stale relative to `pyproject.toml`, `--frozen`
+   fails the build. We commit `uv.lock`; the existing `python-lint`

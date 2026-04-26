@@ -2,9 +2,9 @@
 
 See [`protocol.py`](protocol.py) for the ``Store`` structural
 interface every backend satisfies, and [`memory.py`](memory.py) /
-[`sqlite.py`](sqlite.py) for the two reference backends. Error
-types and submission dataclasses live in
-[`errors.py`](errors.py) and [`submissions.py`](submissions.py).
+[`sqlite.py`](sqlite.py) / [`postgres.py`](postgres.py) for the
+three reference backends. Error types and submission dataclasses
+live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 """
 
 from ._base import iter_events_by_type
@@ -19,6 +19,7 @@ from .errors import (
     WrongToken,
 )
 from .memory import InMemoryStore
+from .postgres import PostgresStore
 from .protocol import Store
 from .sqlite import SqliteStore
 from .submissions import (
@@ -40,6 +41,7 @@ __all__ = [
     "InvalidPrecondition",
     "NotFound",
     "PlanSubmission",
+    "PostgresStore",
     "SqliteStore",
     "StorageError",
     "Store",

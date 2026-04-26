@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 from eden_contracts import ExperimentConfig
-from eden_storage import InMemoryStore, SqliteStore, Store
+from eden_storage import InMemoryStore, PostgresStore, SqliteStore, Store
 from eden_wire import make_app
 from fastapi import FastAPI
 
@@ -24,23 +24,39 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
 
 def build_store(
     *,
-    db_path: str,
+    store_url: str,
     experiment_id: str,
     config: ExperimentConfig,
 ) -> Store:
-    """Open a ``Store`` backend selected by ``db_path``.
+    """Open a ``Store`` backend selected by URL scheme.
 
-    ``db_path == ':memory:'`` yields an :class:`InMemoryStore`; any
-    other value is interpreted as a SQLite file path.
+    ``store_url`` dispatch:
+
+    * ``:memory:`` → :class:`InMemoryStore` (non-durable).
+    * ``sqlite:///<path>`` → :class:`SqliteStore` at ``<path>``.
+    * ``postgresql://…`` (or ``postgres://…``) → :class:`PostgresStore`.
+    * Bare path (no scheme) → :class:`SqliteStore` for compatibility
+      with pre-Phase-10 callers.
     """
-    if db_path == ":memory:":
+    if store_url == ":memory:":
         return InMemoryStore(
             experiment_id=experiment_id,
             metrics_schema=config.metrics_schema,
         )
+    if store_url.startswith("postgresql://") or store_url.startswith("postgres://"):
+        return PostgresStore(
+            experiment_id=experiment_id,
+            dsn=store_url,
+            metrics_schema=config.metrics_schema,
+        )
+    if store_url.startswith("sqlite:///"):
+        path = store_url[len("sqlite:///") :]
+    else:
+        # Bare-path compatibility — interpret as SQLite filesystem path.
+        path = store_url
     return SqliteStore(
         experiment_id=experiment_id,
-        path=db_path,
+        path=path,
         metrics_schema=config.metrics_schema,
     )
 

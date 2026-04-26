@@ -1,21 +1,26 @@
 """Shared fixtures for the ``Store`` conformance suite.
 
-Every test that takes ``make_store`` runs against **both** backends —
-``InMemoryStore`` and ``SqliteStore`` — via pytest parametrization.
-This is what makes "passes the conformance suite" mean something:
-adding a future backend (Postgres, a remote driver) requires it to
-pass every scenario here before being considered conforming.
+Every test that takes ``make_store`` runs against the full set of
+reference backends via pytest parametrization. ``memory`` and
+``sqlite`` always run; ``postgres`` runs when the
+``EDEN_TEST_POSTGRES_DSN`` environment variable points at a live
+database (CI sets it). Adding a future backend means: implement the
+``Store`` Protocol, add a factory here, and let the existing
+scenarios surface drift in tests rather than in production.
 """
 
 from __future__ import annotations
 
+import contextlib
 import itertools
+import os
+import secrets
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from eden_storage import InMemoryStore, SqliteStore, Store
+from eden_storage import InMemoryStore, PostgresStore, SqliteStore, Store
 
 
 @pytest.fixture
@@ -60,28 +65,105 @@ def _sqlite_factory(
     return _make
 
 
-_BACKENDS: list[tuple[str, Callable[..., Callable[..., Store]]]] = [
-    ("memory", _memory_factory),
-    ("sqlite", _sqlite_factory),
-]
+def _postgres_factory(
+    token_factory: Callable[[], str],
+    tmp_path: Path,  # noqa: ARG001 - uniform factory signature
+    dsn: str,
+    cleanup: list[Callable[[], None]],
+) -> Callable[..., Store]:
+    """Build a factory that issues PostgresStores on a per-test schema.
+
+    Each call creates a fresh ``test_<rand>`` schema, sets it as the
+    sole entry on ``search_path``, runs the schema migration there,
+    and registers a teardown that drops the schema. Two factory
+    calls in the same test (e.g. AlreadyExists collision tests) get
+    distinct schemas, mirroring SqliteStore's per-call distinct
+    db-file behavior.
+    """
+    import psycopg
+    from psycopg import sql
+
+    counter = itertools.count(1)
+
+    def _make(experiment_id: str = "exp-test", **kwargs: Any) -> Store:
+        schema = f"test_{secrets.token_hex(8)}_{next(counter):04d}"
+        # Pre-create the schema. PostgresStore opens its own
+        # connection with `search_path` overridden so all DDL +
+        # DML lands inside it.
+        with psycopg.connect(dsn, autocommit=True) as setup:
+            setup.execute(
+                sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
+            )
+
+        store_dsn = dsn
+        # psycopg honors `options=-csearch_path=...` in the libpq
+        # URL; appending it as a query keyword is ergonomic.
+        sep = "&" if "?" in store_dsn else "?"
+        store_dsn = (
+            f"{store_dsn}{sep}options="
+            f"-c%20search_path%3D{schema}"
+        )
+        store = PostgresStore(
+            experiment_id,
+            store_dsn,
+            token_factory=token_factory,
+            **kwargs,
+        )
+
+        def _drop() -> None:
+            store.close()
+            with psycopg.connect(dsn, autocommit=True) as drop:
+                drop.execute(
+                    sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                        sql.Identifier(schema)
+                    )
+                )
+
+        cleanup.append(_drop)
+        return store
+
+    return _make
 
 
-@pytest.fixture(params=[name for name, _ in _BACKENDS], ids=[name for name, _ in _BACKENDS])
+def _postgres_dsn() -> str | None:
+    return os.environ.get("EDEN_TEST_POSTGRES_DSN") or None
+
+
+_BACKEND_NAMES: list[str] = ["memory", "sqlite", "postgres"]
+
+
+@pytest.fixture(params=_BACKEND_NAMES, ids=_BACKEND_NAMES)
 def make_store(
     request: pytest.FixtureRequest,
     token_sequence: Callable[[], str],
     tmp_path: Path,
-) -> Callable[..., Store]:
+) -> Iterator[Callable[..., Store]]:
     """Factory fixture parametrized across every backend.
 
-    Tests that take ``make_store`` run once per backend. Backend
-    implementations that drift silently from the Protocol surface
-    here rather than in production.
+    Tests that take ``make_store`` run once per backend. The
+    ``postgres`` parametrization skips when ``EDEN_TEST_POSTGRES_DSN``
+    is unset; CI sets it and runs the parametrized rows.
     """
-    for name, builder in _BACKENDS:
-        if name == request.param:
-            return builder(token_sequence, tmp_path)
-    raise AssertionError(f"unknown backend {request.param!r}")
+    name = request.param
+    if name == "memory":
+        yield _memory_factory(token_sequence, tmp_path)
+        return
+    if name == "sqlite":
+        yield _sqlite_factory(token_sequence, tmp_path)
+        return
+    if name == "postgres":
+        dsn = _postgres_dsn()
+        if dsn is None:
+            pytest.skip("EDEN_TEST_POSTGRES_DSN not set")
+        cleanup: list[Callable[[], None]] = []
+        try:
+            yield _postgres_factory(token_sequence, tmp_path, dsn, cleanup)
+        finally:
+            for fn in reversed(cleanup):
+                with contextlib.suppress(Exception):
+                    fn()
+        return
+    raise AssertionError(f"unknown backend {name!r}")
 
 
 @pytest.fixture
