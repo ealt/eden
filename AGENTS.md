@@ -116,6 +116,13 @@ The `schema-parity` CI job is only as strong as what both sides of the test actu
 + **Round-trip emission.** `model.model_dump(mode="json", exclude_none=True)` must re-validate against the schema. Add any new model to `tests/test_roundtrip.py` so this is checked.
 + **Corpus coverage.** Parity is asserted over the fixture corpus in `tests/cases.py`. A new field type deserves at least one accept fixture and one reject fixture per constraint the schema imposes (required, pattern, enum, min/max, format, cross-field).
 
+## Plan-writing pitfalls
+
+These are the recurring traps that have shown up across chunks 9c / 9d / 10d during `/codex-review`. Check each before submitting a plan that touches the orchestrator loop, the wire surface, or any role's submission flow.
+
++ **Verify wire-touching shapes against the actual dataclasses, not the spec prose alone.** The submission types in [`reference/packages/eden-storage/src/eden_storage/submissions.py`](reference/packages/eden-storage/src/eden_storage/submissions.py) carry only `status` + role-specific id/payload fields — there is no free-form `description`. If your plan threads a `description` through the wire, you'll have to either drop it (route to host log only) or amend the spec + bindings + contracts together. Same discipline applies to event payloads: check [`reference/packages/eden-contracts/src/eden_contracts/event.py`](reference/packages/eden-contracts/src/eden_contracts/event.py) before assuming a field exists.
++ **Any code path that produces a trial must run `Store.create_trial(status="starting")` before any observable repo write.** This is [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §3.2 step 1, and the chunk-9c web-ui implementer at [`reference/services/web-ui/src/eden_web_ui/routes/implementer.py`](reference/services/web-ui/src/eden_web_ui/routes/implementer.py) is the canonical reference flow. Both the chunk-9c and 10d plans skipped the starting-trial step in their first revision until `/codex-review` caught it. The recovery path (chunk-1 expired-claim sweeper composite-commits the orphan trial to `error`) only works if the trial actually exists in `starting` state when the host crashes.
+
 ## Commit guidelines
 
 + Short imperative subjects (e.g., "Add event protocol chapter", "Pin task state machine").
