@@ -1,0 +1,49 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10e-compose-e2e/20260428T145946/2.md	2026-04-28 15:11:23
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md	2026-04-28 15:12:55
+@@ -153,8 +153,12 @@
+ 
+ # orchestrator seeded plan-0001..plan-0004 at startup. None claimed.
+ # Run python driver — claims plan-0001 (submit) and plan-0002
+-# (admin-reclaim drill). The claim events count as "progress" and
+-# reset the orchestrator's quiescence counter, so it stays running.
++# (admin-reclaim drill). The submit-then-finalize edge produces
++# orchestrator dispatch work (the implement task for plan-0001's
++# proposal becomes claimable), which counts as orchestrator-side
++# progress and resets the quiescence counter. (The driver's claim
++# events alone don't reset quiescence — orchestrator "progress" is
++# its own finalize/dispatch/integrate work, not external claims.)
+ 
+ python3 healthcheck/e2e_drive.py
+ 
+@@ -463,13 +467,28 @@
+ into the task store. The python driver MUST therefore poll the task
+ list at startup rather than assume tasks are present.
+ 
+-The driver's first action is:
++The driver's first action is `POST /signin` (anonymous), then it
++polls `/planner/` for the four seeded IDs. `/planner/` is auth-gated
++just like `/admin/tasks/` — admin redirects to `/signin` when no
++session is present (see
++[`admin.py:204`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py))
++— so polling MUST come after sign-in, not before:
+ 
+ ```python
++# Step 1 of the driver: sign in (anonymous stub).
++resp = ui.post("/signin", follow_redirects=False)
++assert resp.status_code == 303
++
++# Step 2: poll for all 4 seeded plan tasks. Use /planner/, which is
++# the role-specific list view; it's also auth-gated, hence step 1
++# must come first.
+ deadline = time.monotonic() + 30.0
+ while time.monotonic() < deadline:
+-    resp = ui.get("/admin/tasks/?kind=plan")
+-    if all(f"plan-{i:04d}" in resp.text for i in (1, 2, 3, 4)):
++    resp = ui.get("/planner/")
++    if (
++        resp.status_code == 200
++        and all(f"plan-{i:04d}" in resp.text for i in (1, 2, 3, 4))
++    ):
+         break
+     time.sleep(0.5)
+ else:

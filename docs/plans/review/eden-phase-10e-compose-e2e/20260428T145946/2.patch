@@ -1,0 +1,127 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10e-compose-e2e/20260428T145946/1.md	2026-04-28 15:08:11
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md	2026-04-28 15:11:09
+@@ -117,23 +117,50 @@
+ planner-host is competing, then bring planner-host online:
+ 
+ ```bash
+-# Stage 1: full stack minus planner-host. Compose's --wait + named
+-# service-list interprets healthchecks for the listed services only;
+-# none of them depend_on planner-host so this succeeds cleanly.
++# Stage 1: bring up everything we actually USE in the drill, minus
++# planner-host. We deliberately omit gitea: it has a 30s healthcheck
++# start_period and is not consumed by 10e (Gitea-as-remote is the
++# 10d follow-up sub-chunk, deferred). The orchestrator has no
++# healthcheck and exits after 30 × 1s of no progress, so we must NOT
++# wait on a 30s+ healthcheck during stage-1 --wait, or the
++# orchestrator can quiesce and exit 0 mid-wait — `compose up --wait`
++# treats an exited service during the wait window as failure
++# (codex round-1 finding).
++#
++# Also omit planner-host (the whole reason for staging).
++#
++# What we DO wait on: postgres (5s start_period), task-store-server
++# (10s), web-ui (15s). Plus blob-init completes successfully in ~2s.
++# Worst-case wait is ~40s — well under 30s of orchestrator quiescence
++# from when it actually starts polling, because the orchestrator only
++# starts after task-store-server is healthy.
+ docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \
+-    --wait-timeout 240 \
+-    postgres gitea blob-init \
++    --wait-timeout 120 \
++    postgres blob-init \
+     task-store-server orchestrator \
+     implementer-host evaluator-host web-ui
+ 
++# Sanity: the orchestrator must still be running by the time --wait
++# returns. If it exited early (quiesced because we took too long,
++# or crashed), the drill cannot proceed.
++status="$(docker inspect --format '{{.State.Status}}' eden-orchestrator)"
++test "$status" = "running" || {
++    echo "orchestrator already exited at end of stage 1 (status=$status)" >&2
++    docker compose -f compose.yaml --env-file "$ENV_FILE" \
++        logs --tail 60 orchestrator >&2
++    exit 1
++}
++
+ # orchestrator seeded plan-0001..plan-0004 at startup. None claimed.
+ # Run python driver — claims plan-0001 (submit) and plan-0002
+-# (admin-reclaim drill).
++# (admin-reclaim drill). The claim events count as "progress" and
++# reset the orchestrator's quiescence counter, so it stays running.
+ 
+ python3 healthcheck/e2e_drive.py
+ 
+ # Stage 2: bring planner-host online. It now picks up plan-0002
+ # (returned to pending by admin-reclaim), plan-0003, and plan-0004.
++# Gitea is still down — not started, not used.
+ docker compose -f compose.yaml --env-file "$ENV_FILE" up -d \
+     --wait --wait-timeout 60 planner-host
+ ```
+@@ -421,34 +448,42 @@
+ 
+ ### L. Deterministic bring-up choreography
+ 
+-With the staged `compose up -d` (stage 1 omits planner-host, stage 2
+-adds it), the only competitor for plan-task claims during the UI
+-walkthrough is the chunk-1 expired-claim sweeper running inside the
+-orchestrator. The sweeper only reclaims claims that have aged past
+-their TTL; with the web-ui claim aged ~1s and the TTL set to 3600s,
+-the sweeper is a no-op for the drill's window. So the choreography is
+-deterministic.
++The staged `compose up -d` (stage 1 omits planner-host and gitea;
++stage 2 adds planner-host) makes the UI's claims uncontested. The only
++component that could touch plan tasks during the drill window is the
++expired-claim sweeper that runs inside the orchestrator's poll loop;
++it only reclaims claims older than their TTL. The web-ui's
++`--claim-ttl-seconds` defaults to 3600 and the drill holds claims for
++<5s, so the sweeper is a no-op here.
+ 
+-**One subtle point:** the orchestrator seeds plan tasks before
+-returning from its startup phase. By the time `compose up --wait` for
+-stage 1 succeeds (orchestrator container `running`), the seed has
+-already completed. The python driver's `GET /admin/tasks/?kind=plan`
+-will see all 4 in `pending`. There is no startup-time race between
+-"orchestrator finished seeding" and "driver reads tasks" because the
+-healthcheck-based `--wait` for orchestrator (it doesn't have a
+-healthcheck) is satisfied as soon as the container is `running`,
+-which is after seeding completes. Verify this empirically during impl
+-review; if it's racy, add a small `sleep 2` before invoking the python
+-driver.
++**Startup race against task seeding:** the orchestrator has no
++compose-level healthcheck, so `compose up --wait` for orchestrator is
++satisfied as soon as the container is in `running` state — which can
++happen *before* the orchestrator has finished seeding the 4 plan tasks
++into the task store. The python driver MUST therefore poll the task
++list at startup rather than assume tasks are present.
+ 
+-Actually — let me check: orchestrator has no healthcheck (looking at
+-the compose.yaml). So `compose up --wait` for orchestrator just means
+-"container is running." If the orchestrator process is slow to seed,
+-the driver could read an empty list. **Mitigation in the python
+-driver:** poll `GET /admin/tasks/?kind=plan` for up to 30s waiting
+-for all 4 IDs to appear, before starting the walkthrough. This avoids
+-the small-but-real startup race without requiring an arbitrary sleep.
++The driver's first action is:
+ 
++```python
++deadline = time.monotonic() + 30.0
++while time.monotonic() < deadline:
++    resp = ui.get("/admin/tasks/?kind=plan")
++    if all(f"plan-{i:04d}" in resp.text for i in (1, 2, 3, 4)):
++        break
++    time.sleep(0.5)
++else:
++    sys.exit("orchestrator did not seed all 4 plan tasks within 30s")
++```
++
++This polls (rather than sleeping a fixed interval) so the drill is
++both robust against slow orchestrator startup AND fast on the happy
++path. Once the four IDs are visible, the walkthrough proceeds.
++
++**Why not poll task-store-server directly:** that service is
++internal-only (no published host port). The web-ui's `/admin/tasks/`
++list reads through `StoreClient` and is the public-facing equivalent.
++
+ ## Tests / verification
+ 
+ This chunk's deliverable IS a test (compose-e2e). There are no new

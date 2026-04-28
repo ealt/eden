@@ -158,6 +158,35 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-subprocess.sh
 
+  compose-e2e:
+    name: compose-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest is now 24.04 with a system Python that
+      # rejects bare `pip install` per PEP 668. setup-python provides
+      # an isolated interpreter whose pip is unrestricted, and adds it
+      # to PATH so the bash wrapper's `python3` resolves to it.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Install httpx for the python driver
+        run: python3 -m pip install 'httpx>=0.27,<1'
+
+      - name: Run compose e2e
+        working-directory: reference/compose
+        run: bash healthcheck/e2e.sh
+
   python-test-postgres:
     name: python-test-postgres
     runs-on: ubuntu-latest

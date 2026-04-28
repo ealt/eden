@@ -1,0 +1,603 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10e-compose-e2e/20260428T145946/0.md	2026-04-28 14:59:46
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md	2026-04-28 15:08:02
+@@ -18,13 +18,14 @@
+ 
+ The value of `compose-e2e` is the **stack shape**, not duplicate role
+ coverage. The chunk-9b / 9c / 9d real-subprocess pytest tests in
+-`reference/services/web-ui/tests/test_*_e2e.py` already exercise each
+-role's UI flow against a forked task-store-server + web-ui pair on an
+-ephemeral port. What those tests can NOT prove is that the same flows
+-work when the web-ui is talking to a `task-store-server` running in
+-*another container*, sharing volumes with the *real* orchestrator and
+-*real* worker hosts, behind compose's healthcheck and restart-policy
+-machinery, on the published `${WEB_UI_HOST_PORT}` host port.
++[`reference/services/web-ui/tests/test_*_e2e.py`](../../reference/services/web-ui/tests/)
++already exercise each role's UI flow against a forked task-store-server
+++ web-ui pair on an ephemeral port. What those tests can NOT prove is
++that the same flows work when the web-ui is talking to a
++`task-store-server` running in *another container*, sharing volumes
++with the *real* orchestrator and *real* worker hosts, behind compose's
++healthcheck and restart-policy machinery, on the published
++`${WEB_UI_HOST_PORT}` host port.
+ 
+ So this chunk picks **one** representative role flow (planner — the
+ simplest, no repo writes, no metrics-schema validation) and drives it
+@@ -56,16 +57,17 @@
+ 2. **Admin-reclaim drill.** Claim a *separate* plan task via the web
+    UI without submitting (so it sits in `claimed` state with a live
+    token), POST `/admin/tasks/<id>/reclaim`, verify the redirect to
+-   `?reclaimed=ok`, and verify the event log shows a `task.reclaimed`
+-   event with `cause=operator`.
++   `/admin/tasks/<id>/?reclaimed=ok`, and verify the event log shows a
++   `task.reclaimed` event with `cause=operator`.
+ 3. **Termination drill.** `docker compose stop --timeout 10` against
+-   the still-up stack, then verify every container exited cleanly:
+-   status=`exited`, exit code != 137 (the SIGKILL marker — anything
+-   else is acceptable, including 0 from a graceful handler and 143
+-   from a default-handler SIGTERM).
++   the still-up stack, then verify every container in `compose ps -a`
++   exited cleanly: status=`exited`, exit code != 137 (the SIGKILL
++   marker — anything else, including 0 from a graceful handler and
++   143 from a default-handler SIGTERM, is acceptable).
+ 4. **End-state assertions.** Same final-state shape as compose-smoke,
+    adjusted for `EDEN_PLAN_TASKS=4`: `>= 4 trial.integrated`,
+-   `>= 12 task.completed`, `>= 4` plan-task `task.completed`.
++   `>= 12 task.completed`, `>= 4` plan-task `task.completed`, plus
++   `>= 1 task.reclaimed` with `cause=operator`.
+ 5. **CI wiring.** New `compose-e2e` job mirroring the existing
+    `compose-smoke` and `compose-smoke-subprocess` jobs.
+ 
+@@ -88,199 +90,281 @@
+ Two new files under `reference/compose/healthcheck/`:
+ 
+ - **`e2e.sh`** — bash wrapper. Owns: tooling preflight, setup-experiment
+-  invocation, `compose up -d --wait`, dispatch to the python driver,
++  invocation, staged `compose up -d`, dispatch to the python driver,
+   post-run event-log assertions via `jq`, termination drill, teardown.
+ - **`e2e_drive.py`** — python driver. Owns: web UI sign-in, CSRF
+   extraction, planner-walkthrough claim/submit, admin-reclaim POST,
+-  authenticated event-log read-back, exit non-zero on assertion
+-  failure with a clear message.
++  exit non-zero with diagnostic on assertion failure.
+ 
+ The split is deliberate: bash is the natural shape for `compose` /
+ `docker inspect` / `jq` plumbing; python is the natural shape for
+-cookie-aware HTTP, form-CSRF round-tripping, and structured JSON
+-assertions. Mirroring the existing smoke shells keeps the CI job
+-shape uniform.
++cookie-aware HTTP and form-CSRF round-tripping. Mirroring the existing
++smoke shells keeps the CI job shape uniform.
+ 
+-### B. Bring-up sequence
++### B. Bring-up sequence — the race-against-planner-host fix
+ 
+-`e2e.sh` runs the same shape as `smoke.sh` for the bring-up phase, with
+-two changes:
++**Codex round-0 finding (blocker, addressed):** the scripted planner-host
++drains pending plan tasks in a tight loop on startup
++([`workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)).
++If the stack starts with planner-host running and the orchestrator
++seeds 4 plan tasks via `--plan-tasks 4`, the planner-host can claim
++all 4 before the python driver finishes signing in. So a "stop
++planner-host after up" pattern is fundamentally racy — the bad race
++is during initial startup, not steady state.
+ 
+-1. After setup-experiment writes `.env`, override `EDEN_PLAN_TASKS=4`
+-   (default is 3). The extra plan task is what the web UI walkthrough
+-   consumes; the other 3 still go through the headless planner-host
+-   for end-state arithmetic that matches the existing smoke shape.
++**Fix:** start the stack *without* planner-host, run the UI
++walkthroughs against the seeded-but-unclaimed plan tasks while no
++planner-host is competing, then bring planner-host online:
+ 
+-   Implementation: setup-experiment.sh writes `EDEN_PLAN_TASKS=3` into
+-   the .env file by default. After it returns, `e2e.sh` runs:
++```bash
++# Stage 1: full stack minus planner-host. Compose's --wait + named
++# service-list interprets healthchecks for the listed services only;
++# none of them depend_on planner-host so this succeeds cleanly.
++docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \
++    --wait-timeout 240 \
++    postgres gitea blob-init \
++    task-store-server orchestrator \
++    implementer-host evaluator-host web-ui
+ 
+-   ```bash
+-   sed -i.bak 's/^EDEN_PLAN_TASKS=.*/EDEN_PLAN_TASKS=4/' "$ENV_FILE"
+-   rm -f "${ENV_FILE}.bak"
+-   ```
++# orchestrator seeded plan-0001..plan-0004 at startup. None claimed.
++# Run python driver — claims plan-0001 (submit) and plan-0002
++# (admin-reclaim drill).
+ 
+-   The `sed -i.bak` form is GNU/BSD-portable (BSD `sed -i ''` rejects
+-   the bare `-i`; GNU `sed -i.bak` accepts it identically).
++python3 healthcheck/e2e_drive.py
+ 
+-2. Bring up the stack with `compose up -d --wait --wait-timeout 240`
+-   exactly as smoke does. The orchestrator will start dispatching as
+-   soon as task-store-server is healthy.
++# Stage 2: bring planner-host online. It now picks up plan-0002
++# (returned to pending by admin-reclaim), plan-0003, and plan-0004.
++docker compose -f compose.yaml --env-file "$ENV_FILE" up -d \
++    --wait --wait-timeout 60 planner-host
++```
+ 
+-### C. Web UI planner walkthrough
++**Note on `EDEN_PLAN_TASKS=4`:** the orchestrator's `--plan-tasks` flag
++defaults to 3 in the fixture. We override to 4 in `.env` so the four
++deterministic IDs `plan-0001..plan-0004` are seeded. The python driver
++uses two specific IDs (`plan-0001` for the submit walkthrough,
++`plan-0002` for the admin-reclaim drill); the other two go through the
++headless planner-host on the success path.
+ 
+-The race against the headless planner-host is the central correctness
+-question for this drill. The planner-host polls every ~1.0s and claims
+-any pending plan task. If the test loses the race, its claim either
+-returns no eligible task or hits `WrongToken` on submit. Two viable
+-mitigations:
++```bash
++# After setup-experiment.sh writes .env, override:
++sed -i.bak 's/^EDEN_PLAN_TASKS=.*/EDEN_PLAN_TASKS=4/' "$ENV_FILE"
++rm -f "${ENV_FILE}.bak"
++```
+ 
+-- (a) **Stop the planner-host** before the UI walkthrough, restart it
+-  after. Deterministic; cost is one `compose stop / start` round-trip.
+-- (b) **Use a separately-seeded plan task** with a prefix the
+-  planner-host doesn't claim. Planner-host doesn't filter by prefix;
+-  this would require code changes in the host to honor a prefix.
++The `sed -i.bak` form is GNU/BSD-portable (BSD `sed -i ''` rejects
++the bare `-i`; GNU `sed -i.bak` accepts it identically).
+ 
+-**Pick (a).** It costs one `compose stop planner-host` + one `compose
+-start planner-host` and works against the existing host code unchanged.
+-The drill is:
++**Confirmed plan-task ID shape** ([`orchestrator/cli.py:116`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)):
++numeric `--plan-tasks N` expands to `plan-0001..plan-{N:04d}`. So
++with `N=4` we have exactly `plan-0001`, `plan-0002`, `plan-0003`,
++`plan-0004`.
+ 
+-```bash
+-# Drill: stop planner-host so web UI wins the claim race
+-docker compose stop planner-host
++### C. Web UI planner walkthrough — actual route shapes
+ 
+-# Run the python driver, which performs:
+-#  - GET  /signin (no body needed; the auth stub is a no-questions form)
+-#  - POST /signin -> 303 -> session cookie set
+-#  - GET  /planner/ -> 200, scrape the CSRF token from the rendered form
+-#  - POST /planner/<plan_task_id>/claim -> 303 to /planner/<id>/draft
+-#  - GET  /planner/<plan_task_id>/draft -> 200, scrape CSRF (claim form
+-#        and draft form are independent renders so re-scraping is the
+-#        chunk-9b pattern)
+-#  - POST /planner/<plan_task_id>/submit with one proposal row
+-#  - assert 303 to /planner/?submitted=ok
++The python driver against `localhost:${WEB_UI_HOST_PORT:-8090}`:
+ 
+-# Drill: claim a *second* plan task and abandon it for admin-reclaim
+-#  - POST /planner/<other_plan_task_id>/claim -> 303
+-#  - GET  /admin/tasks/?state=claimed -> 200, assert <other> visible
+-#  - POST /admin/tasks/<other>/reclaim -> 303 to ?reclaimed=ok
++```python
++# 1. Sign in (no body needed; chunk-9b auth stub is a no-questions form)
++resp = ui.post("/signin", follow_redirects=False)
++assert resp.status_code == 303
+ 
+-# Verify task.reclaimed cause=operator via authenticated event read
+-#  (the python driver uses StoreClient against the host-published port
+-#   on task-store-server is NOT host-published — task-store-server is
+-#   internal-only. Use `compose exec task-store-server curl …` in
+-#   e2e.sh for the post-run event check, NOT the python driver.)
++# 2. GET /planner/ — list pending plan tasks, scrape CSRF token
++resp = ui.get("/planner/")
++assert resp.status_code == 200
++assert "plan-0001" in resp.text  # the seeded task is visible
++csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+ 
+-# Restart planner-host so the reclaimed plan task gets re-claimed and
+-# the experiment proceeds to quiescence
+-docker compose start planner-host
+-```
++# 3. Claim plan-0001
++resp = ui.post(
++    "/planner/plan-0001/claim",
++    content=urlencode({"csrf_token": csrf}),
++    headers={"content-type": "application/x-www-form-urlencoded"},
++    follow_redirects=False,
++)
++assert resp.status_code == 303
+ 
+-**Important detail:** `task-store-server` does NOT publish a host port
+-(see compose.yaml line ~145; only `web-ui` publishes one). So the
+-python driver can talk to web-ui directly via `http://localhost:${WEB_UI_HOST_PORT}`,
+-but the post-walkthrough event-log assertion ("task.reclaimed event
+-with cause=operator was logged") is done from `e2e.sh` via
+-`compose exec task-store-server curl …` exactly the way `smoke.sh`
+-already reads the event log.
++# 4. GET /planner/plan-0001/draft — re-scrape CSRF (form re-rendered)
++resp = ui.get("/planner/plan-0001/draft")
++assert resp.status_code == 200
++csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+ 
+-### D. Discovering plan-task IDs
++# 5. POST /planner/plan-0001/submit — note: returns 200 with rendered
++#    success template, NOT 303 (codex round-0 fix).
++body = urlencode([
++    ("csrf_token", csrf),
++    ("status", "success"),
++    ("slug", "e2e-feat"),
++    ("priority", "1.0"),
++    ("parent_commits", base_sha),  # from $EDEN_BASE_COMMIT_SHA in env
++    ("rationale", "## why\n\nbecause."),
++])
++resp = ui.post(
++    "/planner/plan-0001/submit",
++    content=body,
++    headers={"content-type": "application/x-www-form-urlencoded"},
++)
++assert resp.status_code == 200
++assert "submitted" in resp.text.lower()
++```
+ 
+-The orchestrator seeds plan tasks with deterministic IDs derived from
+-the experiment ID and a sequence: typically `plan-1`, `plan-2`, etc.
+-(See `reference/services/orchestrator/` for the exact format.) The
+-test does NOT hard-code IDs; it queries `GET /admin/tasks/?kind=plan`
+-once after bring-up and picks two pending IDs:
++The submit form fields match
++[`reference/services/web-ui/src/eden_web_ui/forms.py`](../../reference/services/web-ui/src/eden_web_ui/forms.py):
++slug regex `[a-zA-Z0-9_-]+`, priority parsed via `float()`,
++`parent_commits` comma-split with each entry validated as a 40-hex SHA.
++`base_sha` comes from `$EDEN_BASE_COMMIT_SHA` (read from `.env` and
++passed through to the python driver via env).
+ 
+-- One for the success-path walkthrough (claim → submit)
+-- One for the admin-reclaim drill (claim → admin-reclaim, no submit)
++### D. Admin-reclaim drill — actual redirect URL
+ 
+-This is robust against future changes to the orchestrator's task-id
+-naming convention.
++The python driver, in the same httpx session:
+ 
+-### E. Submit-form payload
++```python
++# Claim plan-0002 — same shape as plan-0001 above, but no submit
++csrf = ...  # re-scrape from /planner/
++resp = ui.post(
++    "/planner/plan-0002/claim",
++    content=urlencode({"csrf_token": csrf}),
++    headers={"content-type": "application/x-www-form-urlencoded"},
++    follow_redirects=False,
++)
++assert resp.status_code == 303
+ 
+-The chunk-9b planner draft form is one CSRF token plus a list of
+-proposal rows. Each row needs:
++# Verify it's listed under claimed
++resp = ui.get("/admin/tasks/?state=claimed")
++assert resp.status_code == 200
++assert "plan-0002" in resp.text
+ 
+-- `slug` — non-empty, ASCII-safe (the chunk-9b regex permits
+-  `[a-zA-Z0-9_-]+`)
+-- `priority` — float; the form parses `float()` directly
+-- `parent_commits` — comma-separated list; for this drill, single
+-  entry `EDEN_BASE_COMMIT_SHA` (read from the .env file passed via env
+-  to the python driver)
+-- `rationale` — markdown text; one line is fine
++# Re-scrape CSRF from the admin task-detail page (the reclaim form is
++# rendered on /admin/tasks/<id>/, not the list page)
++resp = ui.get("/admin/tasks/plan-0002/")
++csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+ 
+-The driver submits ONE proposal row, mirroring the
+-`tests/fixtures/experiment/plan.py` long-running planner's default
+-`EDEN_PROPOSALS_PER_PLAN=1` shape so downstream arithmetic matches.
++# POST reclaim — codex-confirmed redirect URL has the trailing slash:
++# /admin/tasks/<id>/?reclaimed=ok (NOT /admin/tasks/<id>?reclaimed=ok)
++resp = ui.post(
++    "/admin/tasks/plan-0002/reclaim",
++    content=urlencode({"csrf_token": csrf}),
++    headers={"content-type": "application/x-www-form-urlencoded"},
++    follow_redirects=False,
++)
++assert resp.status_code == 303
++assert resp.headers["location"] == "/admin/tasks/plan-0002/?reclaimed=ok"
++```
+ 
+-### F. Quiescence wait
++[`admin.py:331`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py)
++confirms the trailing-slash form.
+ 
+-After the python driver returns success, `e2e.sh` waits up to 240s for
+-the orchestrator container to enter `exited` status with code 0,
+-exactly the way `smoke.sh` does. The wait timeout is bumped from
++### E. Event-log read-back
++
++`task-store-server` is internal-only — no published host port. The
++python driver cannot read events directly; the post-walkthrough
++`task.reclaimed` assertion runs from `e2e.sh` via `compose exec`,
++exactly the way `smoke.sh` already does:
++
++```bash
++EVENTS_JSON="$(
++    docker compose -f compose.yaml --env-file "$ENV_FILE" \
++        exec -T task-store-server \
++        curl -fsS \
++            -H "Authorization: Bearer ${EDEN_SHARED_TOKEN}" \
++            -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
++            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
++)"
++
++RECLAIMED_OPERATOR="$(
++    echo "$EVENTS_JSON" \
++        | jq '(.events // .) | [.[] | select(
++              .type == "task.reclaimed"
++              and .data.cause == "operator"
++            )] | length'
++)"
++test "$RECLAIMED_OPERATOR" -ge 1
++```
++
++### F. Quiescence wait — same as smoke
++
++After the python driver returns success and `e2e.sh` brings
++planner-host online, wait up to 240s for `eden-orchestrator` to enter
++`exited` status with code 0, exactly as `smoke.sh` does. Bumped from
+ smoke's 180s because:
+ 
+ - 4 plan tasks (vs 3 in smoke) → ~33% more work
+-- The brief planner-host stop+start window adds startup-latency budget
++- The admin-reclaimed task is dispatched twice (once → claimed → back
++  to pending → dispatched again), adding small extra work
+ 
+-### G. End-state assertions
++### G. End-state assertions (complete set)
+ 
+-Same shape as smoke.sh, adjusted for `EDEN_PLAN_TASKS=4`:
+-
+ ```bash
+-# >= 4 trial.integrated  (every plan task -> 1 trial via fixture's
+-#                         EDEN_PROPOSALS_PER_PLAN=1)
+-# >= 12 task.completed   (4 plan + 4 implement + 4 evaluate)
+-# >= 4 task.completed where task_id starts with "plan-"
++# Same shape as smoke.sh, adjusted arithmetic:
++test "$TRIAL_INTEGRATED" -ge 4         # 4 plan -> 4 trials (1 proposal each)
++test "$TASK_COMPLETED"   -ge 12        # 4 plan + 4 implement + 4 evaluate
++test "$PLAN_COMPLETED"   -ge 4         # all 4 plan tasks reach terminal
+ 
+-# Additional 10e-specific assertions:
+-# >= 1 task.reclaimed with cause=operator
+-#                        (the admin-reclaim drill produced exactly one)
++# Phase-10e additional invariant:
++test "$RECLAIMED_OPERATOR" -ge 1       # the admin-reclaim drill produced one
+ ```
+ 
+-The drill's success-path proposal becomes one of the 4 trials; the
+-admin-reclaimed plan task is re-dispatched after planner-host
+-restarts and produces its own trial. So the arithmetic still works.
++### H. Termination drill — full container set
+ 
+-### H. Termination drill
++**Codex round-0 finding (medium, addressed):** the original drill
++narrowed to `eden-*` containers, missing `eden-postgres`, `eden-gitea`,
++and `eden-blob-init`. Also: `eden-repo-init` ran via
++`compose run --rm --no-deps` and is gone by termination time
++([`setup-experiment.sh:251`](../../reference/scripts/setup-experiment/setup-experiment.sh)).
+ 
+-After the end-state assertions pass, `e2e.sh` runs:
++The drill operates over the actual `compose ps -a` output:
+ 
+ ```bash
++echo "--- termination drill: stop with 10s budget ---"
+ docker compose -f compose.yaml --env-file "$ENV_FILE" stop --timeout 10
++
++# Iterate every container compose still knows about, regardless of
++# name pattern. This naturally covers postgres, gitea, blob-init,
++# task-store-server, orchestrator, planner-host, implementer-host,
++# evaluator-host, and web-ui. eden-repo-init is gone (--rm) so it
++# does not appear.
++for name in $(
++    docker compose -f compose.yaml --env-file "$ENV_FILE" ps -a \
++        --format '{{.Name}}'
++); do
++    status="$(docker inspect --format '{{.State.Status}}' "$name")"
++    code="$(docker inspect --format '{{.State.ExitCode}}' "$name")"
++    test "$status" = "exited" || {
++        echo "$name still in status $status after stop --timeout 10" >&2
++        exit 1
++    }
++    test "$code" != "137" || {
++        echo "$name was SIGKILLed (exit code 137)" >&2
++        docker compose -f compose.yaml --env-file "$ENV_FILE" \
++            logs --tail 30 "$name" >&2
++        exit 1
++    }
++    # blob-init is a one-shot that already exited 0 during bring-up;
++    # this is just a paranoia check, not a status-change.
++done
+ ```
+ 
+-Then asserts, for every `eden-*` container in `compose ps -a`:
++**Why `!= 137` instead of `== 0`:**
++[`reference/services/_common/`](../../reference/services/_common/)'s
++SIGTERM handler exits the EDEN python services cleanly with code 0
++(verified by codex against
++[`web-ui cli.py:155`](../../reference/services/web-ui/src/eden_web_ui/cli.py),
++[`task-store cli.py:171`](../../reference/services/task-store-server/src/eden_task_store_server/cli.py),
++[`planner cli.py:109`](../../reference/services/planner/src/eden_planner_host/cli.py),
++[`implementer cli.py:85`](../../reference/services/implementer/src/eden_implementer_host/cli.py),
++[`evaluator cli.py:90`](../../reference/services/evaluator/src/eden_evaluator_host/cli.py)).
++But postgres / gitea use external images we don't control; if a future
++upstream tweak changes their default SIGTERM handler to default-handler
++(producing 143), `== 0` would falsely fail. `!= 137` captures the only
++thing we actually care about: **the container did NOT need SIGKILL**.
+ 
+-- `State.Status == "exited"`
+-- `State.ExitCode != 137` (137 = 128 + 9 = SIGKILLed)
+-
+-The non-137 form (rather than == 0) is deliberate: services that don't
+-install a SIGTERM handler exit with 143 (128 + 15 = signaled by SIGTERM
+-with the default handler), which is *also* a clean termination — the
+-container received SIGTERM and exited promptly, just without
+-graceful-shutdown bookkeeping. Treating 143 as a failure would make
+-the drill fragile against benign upstream changes (e.g. a future
+-busybox version or postgres-image internal change). What we actually
+-care about is "the container did NOT need to be killed."
+-
+-A subtle case: `eden-blob-init` and (potentially) `eden-repo-init`
+-have already exited before `compose stop` runs. Their exit codes
+-should be 0 (they're one-shots that completed successfully during
+-bring-up). The drill checks them all; success there is `ExitCode == 0`,
+-not the != 137 rule (which would let a misbehaving one-shot pass).
+-To keep the assertion uniform, the drill checks `ExitCode != 137`
+-universally and additionally checks `ExitCode == 0` for the
+-one-shots by container name.
+-
+ ### I. Teardown
+ 
+ `e2e.sh`'s `cleanup()` trap runs `docker compose down -v` on EXIT,
+ exactly as smoke.sh does. The termination drill's `compose stop` does
+ NOT call `down -v` itself — that would lose the volumes before the
+-teardown drill verifies anything. `down -v` is the trap's
+-responsibility; `stop` is the drill's.
++drill verifies anything. `down -v` is the trap's responsibility;
++`stop` is the drill's.
+ 
+ ### J. CI wiring
+ 
+@@ -300,50 +384,71 @@
+         jq --version
+         python3 --version
+     - name: Install python driver deps
+-      run: pip install 'httpx>=0.27,<0.30'
++      run: pip install 'httpx>=0.27,<1'
+     - name: Run compose e2e
+       working-directory: reference/compose
+       run: bash healthcheck/e2e.sh
+ ```
+ 
+-The `httpx` install is the only new dependency — version-pinned to a
+-narrow range matching the rest of the workspace. `jq` and python are
+-already present on `ubuntu-latest`.
++**httpx pin** is `>=0.27,<1` (codex round-0 fix), matching the
++workspace's existing pin in
++[`eden-wire/pyproject.toml:8`](../../reference/packages/eden-wire/pyproject.toml)
++and
++[`_common/pyproject.toml:8`](../../reference/services/_common/pyproject.toml).
++A bare `pip install` is lighter than wiring up the full `uv sync` —
++the CI job only needs the python driver to talk HTTP, no workspace
++imports.
+ 
+-### K. Failure-mode handling
++### K. Failure-mode handling (revised)
+ 
+ | Failure | Surface | Recovery |
+ |---|---|---|
+-| planner-host doesn't stop in time | python driver claim returns no eligible task → driver exits non-zero with diagnostic | shell trap dumps `compose logs planner-host`, then teardown |
+-| Web UI sign-in 5xx | driver exits non-zero | shell trap dumps `compose logs web-ui` |
+-| Submit fails reachability check | `/planner/<id>/submit` returns 200 with form re-rendered showing error | driver scrapes the form for an error banner and exits non-zero with the banner text |
+-| Admin-reclaim 403 (CSRF) | redirect to `?error=csrf` | driver exits non-zero |
+-| Admin-reclaim 404 | task disappeared (reclaimed by sweeper before drill) | driver exits non-zero with diagnostic; raise the claim TTL via `EDEN_WEB_UI_CLAIM_TTL_SECONDS` (NOT a current flag — would need to be added) |
+-| Orchestrator doesn't quiesce in 240s | bash assertion fails | shell trap dumps `compose logs --tail 60 orchestrator planner-host implementer-host evaluator-host` |
+-| Container SIGKILLed during stop | bash assertion fails on != 137 | shell trap dumps `compose logs --tail 30` for the offending container |
++| `compose up --wait` (stage 1) times out on a service | bash exits non-zero | trap dumps `compose ps -a` + `compose logs --tail 30` for unhealthy services; teardown |
++| Python driver: claim returns no eligible task | driver exits non-zero with diagnostic naming the task IDs it tried | trap dumps `compose logs task-store-server`; teardown |
++| Python driver: planner submit returns non-200 | driver exits non-zero with the response status + body excerpt | trap dumps `compose logs web-ui`; teardown |
++| Python driver: admin-reclaim CSRF rejected | response is bare 403 (per [`admin.py:317`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py)); driver exits with diagnostic — indicates a CSRF-extraction bug in the driver | shell trap dumps body; teardown |
++| Python driver: admin-reclaim 303 to `?error=…` instead of `?reclaimed=ok` | driver exits with the error-banner code | trap dumps `compose logs web-ui`; teardown |
++| `compose up planner-host` (stage 2) fails healthcheck | planner-host has no healthcheck so this is just `compose up -d` succeeding when the container is started; no race | not applicable |
++| Orchestrator doesn't quiesce in 240s | bash exits non-zero | trap dumps `compose logs --tail 60 orchestrator planner-host implementer-host evaluator-host`; teardown |
++| End-state assertion fails (counts low) | bash exits non-zero with the failed comparison | trap dumps `compose logs --tail 60 orchestrator`; teardown |
++| Container SIGKILLed during stop (exit code 137) | bash exits non-zero in the termination loop | trap dumps `compose logs --tail 30 <name>` for the offending container; teardown |
+ 
+-Re the claim-TTL row above: the chunk-9b web-ui defaults to a 60s TTL.
+-For the admin-reclaim drill, the claim is held for ~1s before the
+-admin-reclaim POST runs, so TTL expiry is not a concern. We do NOT
+-add a new TTL flag; if the drill grows in scope later such that the
+-claim might age past 60s before reclaim, revisit then.
++The **TTL-expiry concern** flagged in round-0 is moot: the web-ui's
++`--claim-ttl-seconds` default is **3600** (1 hour) per
++[`reference/services/web-ui/src/eden_web_ui/cli.py:53`](../../reference/services/web-ui/src/eden_web_ui/cli.py),
++and the admin-reclaim drill runs in <5s after the claim. No new flag
++is needed.
+ 
+-### L. Deterministic plan-task seeding
++### L. Deterministic bring-up choreography
+ 
+-The orchestrator's `--plan-tasks N` flag seeds tasks at startup. With
+-`EDEN_PLAN_TASKS=4` they're all created promptly, before the python
+-driver runs. The driver's `GET /admin/tasks/?kind=plan` will see all 4
+-in `pending` state during the brief planner-host-stopped window.
++With the staged `compose up -d` (stage 1 omits planner-host, stage 2
++adds it), the only competitor for plan-task claims during the UI
++walkthrough is the chunk-1 expired-claim sweeper running inside the
++orchestrator. The sweeper only reclaims claims that have aged past
++their TTL; with the web-ui claim aged ~1s and the TTL set to 3600s,
++the sweeper is a no-op for the drill's window. So the choreography is
++deterministic.
+ 
+-There's a remaining race: between `compose stop planner-host`
+-returning and the python driver reading the admin task list, some
+-implementer-host or other component shouldn't be touching plan tasks.
+-Implementer-host filters by `kind=implement` so it can't claim plan
+-tasks. Web-ui doesn't auto-claim. The only relevant actor is the
+-sweeper — but the sweeper runs in `run_orchestrator_loop` and only
+-reclaims expired claims; with the planner-host gone, no claims exist
+-to expire. So the window is safe.
++**One subtle point:** the orchestrator seeds plan tasks before
++returning from its startup phase. By the time `compose up --wait` for
++stage 1 succeeds (orchestrator container `running`), the seed has
++already completed. The python driver's `GET /admin/tasks/?kind=plan`
++will see all 4 in `pending`. There is no startup-time race between
++"orchestrator finished seeding" and "driver reads tasks" because the
++healthcheck-based `--wait` for orchestrator (it doesn't have a
++healthcheck) is satisfied as soon as the container is `running`,
++which is after seeding completes. Verify this empirically during impl
++review; if it's racy, add a small `sleep 2` before invoking the python
++driver.
+ 
++Actually — let me check: orchestrator has no healthcheck (looking at
++the compose.yaml). So `compose up --wait` for orchestrator just means
++"container is running." If the orchestrator process is slow to seed,
++the driver could read an empty list. **Mitigation in the python
++driver:** poll `GET /admin/tasks/?kind=plan` for up to 30s waiting
++for all 4 IDs to appear, before starting the walkthrough. This avoids
++the small-but-real startup race without requiring an arbitrary sleep.
++
+ ## Tests / verification
+ 
+ This chunk's deliverable IS a test (compose-e2e). There are no new
+@@ -358,8 +463,8 @@
+ 
+ ## Files to write
+ 
+-- `reference/compose/healthcheck/e2e.sh` — bash wrapper (~150 lines)
+-- `reference/compose/healthcheck/e2e_drive.py` — python driver (~200 lines)
++- `reference/compose/healthcheck/e2e.sh` — bash wrapper (~180 lines)
++- `reference/compose/healthcheck/e2e_drive.py` — python driver (~220 lines)
+ - `.github/workflows/ci.yml` — new `compose-e2e` job (delta only)
+ - `AGENTS.md` — Phase-10e current-status update
+ - `docs/roadmap.md` — mark 10e complete with the chunk delta
+@@ -370,11 +475,15 @@
+ 
+ ## Lessons-learned hooks (preview for /codify after impl review)
+ 
+-- Race-against-headless-host pattern (compose stop / drill / start)
+-  may recur in future compose-bound tests; consider a shared helper
+-  if a third instance shows up.
+-- 137-vs-not-137 termination check is more robust than == 0; codify
+-  if it survives codex-review.
++- The "stop after up" pattern doesn't work against tight-loop drainers;
++  the right shape is staged-up where the competing service is added
++  *after* the test claims its targets. Worth codifying if it survives
++  impl review.
++- `!= 137` is more robust than `== 0` for SIGKILL guards because
++  external images don't always install graceful handlers; codify if it
++  survives codex-review on the impl.
++- Plan-task IDs are zero-padded 4-digit (`plan-0001`), not bare-int —
++  doc-rot risk if not codified somewhere search-able.
+ 
+ ## Out of scope (explicit)
+ 
