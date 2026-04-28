@@ -18,6 +18,8 @@ set -euo pipefail
 #                                     [--shared-token <T>]
 #                                     [--postgres-password <P>]
 #                                     [--env-file <path>]
+#                                     [--experiment-dir <path>]
+#                                     [--proposals-per-plan <N>]
 
 usage() {
     cat <<'EOF' >&2
@@ -27,6 +29,8 @@ Usage:
                       [--shared-token <T>]
                       [--postgres-password <P>]
                       [--env-file <path>]
+                      [--experiment-dir <path>]
+                      [--proposals-per-plan <N>]
 
 Generates `reference/compose/.env` and copies <config.yaml> to
 `reference/compose/experiment-config.yaml`, then seeds the bare
@@ -53,6 +57,8 @@ ENV_FILE=""
 EXPERIMENT_ID=""
 ARG_SHARED_TOKEN=""
 ARG_POSTGRES_PASSWORD=""
+ARG_EXPERIMENT_DIR=""
+ARG_PROPOSALS_PER_PLAN=""
 
 require_value() {
     # Validate that a flag's value is present, since `set -u` would
@@ -72,6 +78,8 @@ while [[ $# -gt 0 ]]; do
         --shared-token)         require_value "$1" "$#"; ARG_SHARED_TOKEN="$2";      shift 2 ;;
         --postgres-password)    require_value "$1" "$#"; ARG_POSTGRES_PASSWORD="$2"; shift 2 ;;
         --env-file)             require_value "$1" "$#"; ENV_FILE="$2";              shift 2 ;;
+        --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
+        --proposals-per-plan)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         --*)                    echo "unknown flag: $1" >&2; usage; exit 2 ;;
         *)
@@ -168,6 +176,23 @@ WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
 EXISTING_PLAN_TASKS="$(read_env_key EDEN_PLAN_TASKS "$ENV_FILE")"
 EDEN_PLAN_TASKS="${EXISTING_PLAN_TASKS:-3}"
 
+# 10d subprocess overlay: experiment-dir bind-mount source. Default
+# is the directory containing the experiment config's `.eden`
+# parent (so passing `tests/fixtures/experiment/.eden/config.yaml`
+# yields `tests/fixtures/experiment`). Operator can override.
+if [[ -n "$ARG_EXPERIMENT_DIR" ]]; then
+    EDEN_EXPERIMENT_DIR_HOST="$(cd "$ARG_EXPERIMENT_DIR" && pwd)"
+else
+    parent="$(dirname "$CONFIG_PATH")"
+    if [[ "$(basename "$parent")" == ".eden" ]]; then
+        EDEN_EXPERIMENT_DIR_HOST="$(cd "$(dirname "$parent")" && pwd)"
+    else
+        EDEN_EXPERIMENT_DIR_HOST="$(cd "$parent" && pwd)"
+    fi
+fi
+EXISTING_PROPOSALS_PER_PLAN="$(read_env_key EDEN_PROPOSALS_PER_PLAN "$ENV_FILE")"
+EDEN_PROPOSALS_PER_PLAN="${ARG_PROPOSALS_PER_PLAN:-${EXISTING_PROPOSALS_PER_PLAN:-1}}"
+
 # --- Copy experiment config into compose dir ---
 cp "$CONFIG_PATH" "${COMPOSE_DIR}/experiment-config.yaml"
 
@@ -205,10 +230,14 @@ EDEN_STORE_URL=${EDEN_STORE_URL}
 EDEN_PLAN_TASKS=${EDEN_PLAN_TASKS}
 WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 
+# --- 10d subprocess overlay (only used by compose.subprocess.yaml) ---
+EDEN_EXPERIMENT_DIR_HOST=${EDEN_EXPERIMENT_DIR_HOST}
+EDEN_PROPOSALS_PER_PLAN=${EDEN_PROPOSALS_PER_PLAN}
+
 # Placeholder; replaced at the end of setup-experiment with the
-# real seed SHA. compose v2 validates ALL services' interpolation
-# on every operation, so we need *some* value here for `compose
-# build eden-repo-init` to succeed.
+# real seed SHA. docker compose v2 validates ALL services'
+# interpolation on every operation, so we need *some* value here for
+# "docker compose build eden-repo-init" to succeed.
 EDEN_BASE_COMMIT_SHA=0000000000000000000000000000000000000000
 EOF
 
@@ -257,6 +286,10 @@ Next steps:
   cd ${COMPOSE_DIR}
   docker compose --env-file ${ENV_FILE} up -d --wait
   open http://localhost:${WEB_UI_HOST_PORT}/
+
+  # Or, to run the workers in subprocess mode (Phase 10d):
+  docker compose --env-file ${ENV_FILE} \\
+    -f compose.yaml -f compose.subprocess.yaml up -d --wait
 
 Re-running setup-experiment is safe; existing secrets are preserved.
 To pick up config changes, re-run setup-experiment + 'docker compose

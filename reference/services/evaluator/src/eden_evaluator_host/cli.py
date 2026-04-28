@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from eden_service_common import (
     StopFlag,
@@ -10,13 +11,19 @@ from eden_service_common import (
     configure_logging,
     get_logger,
     install_stop_handlers,
+    parse_env_file,
     parse_log_level,
+    require_command,
     wait_for_task_store,
 )
 from eden_task_store_server import load_experiment_config
 from eden_wire import StoreClient
 
 from .host import run_evaluator_loop
+from .subprocess_mode import (
+    EvaluatorSubprocessConfig,
+    run_evaluator_subprocess_loop,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -27,6 +34,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_common_arguments(parser)
     parser.add_argument("--worker-id", required=True)
+    parser.add_argument(
+        "--mode",
+        choices=["scripted", "subprocess"],
+        default="scripted",
+    )
     parser.add_argument(
         "--experiment-config",
         required=True,
@@ -40,9 +52,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
     )
+    # Subprocess-mode flags.
+    parser.add_argument("--experiment-dir", default=None)
+    parser.add_argument(
+        "--repo-path",
+        default=None,
+        help="Bare git repo (required in --mode subprocess).",
+    )
+    parser.add_argument(
+        "--worktrees-dir",
+        default="/var/lib/eden/worktrees",
+    )
+    parser.add_argument("--evaluate-task-deadline", type=float, default=300.0)
+    parser.add_argument("--evaluate-shutdown-deadline", type=float, default=10.0)
+    parser.add_argument("--evaluate-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.mode == "subprocess":
+        for attr in ("experiment_dir", "repo_path"):
+            if getattr(args, attr) is None:
+                parser.error(
+                    f"--{attr.replace('_', '-')} is required in --mode subprocess"
+                )
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,20 +97,43 @@ def main(argv: list[str] | None = None) -> int:
         deadline_seconds=args.startup_timeout,
     )
     config = load_experiment_config(args.experiment_config)
-    log.info("starting", worker_id=args.worker_id)
+    log.info("starting", worker_id=args.worker_id, mode=args.mode)
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
         token=args.shared_token,
     ) as client:
-        run_evaluator_loop(
-            store=client,
-            worker_id=args.worker_id,
-            metrics_schema=config.metrics_schema,
-            fail_every=args.fail_every,
-            poll_interval=args.poll_interval,
-            stop=stop,
-        )
+        if args.mode == "scripted":
+            run_evaluator_loop(
+                store=client,
+                worker_id=args.worker_id,
+                metrics_schema=config.metrics_schema,
+                fail_every=args.fail_every,
+                poll_interval=args.poll_interval,
+                stop=stop,
+            )
+        else:
+            command = require_command(config, "evaluate_command")
+            env = {}
+            if args.evaluate_env_file:
+                env.update(parse_env_file(args.evaluate_env_file))
+            sub_config = EvaluatorSubprocessConfig(
+                command=command,
+                experiment_dir=Path(args.experiment_dir).resolve(),
+                env=env,
+                repo_path=Path(args.repo_path).resolve(),
+                worktrees_root=Path(args.worktrees_dir),
+                task_deadline=args.evaluate_task_deadline,
+                shutdown_deadline=args.evaluate_shutdown_deadline,
+            )
+            run_evaluator_subprocess_loop(
+                store=client,
+                worker_id=args.worker_id,
+                experiment_config=config,
+                config=sub_config,
+                poll_interval=args.poll_interval,
+                stop=stop,
+            )
     log.info("evaluator host exited")
     return 0
 

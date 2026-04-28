@@ -1,0 +1,7 @@
+**Findings**
+
+- **Risk** — [subprocess_runner.py](/Users/ericalt/Documents/eden/reference/services/_common/src/eden_service_common/subprocess_runner.py:181), [subprocess_mode.py](/Users/ericalt/Documents/eden/reference/services/planner/src/eden_planner_host/subprocess_mode.py:161): planner stderr tagging is still only best-effort, not actually task-safe. The current task id is a mutable shared cell that is flipped before each dispatch, but stdout and stderr are independent pipes. If task A’s stderr drains late, those lines can be stamped with task B’s id after `set_current_task()` advances. The code also never clears the task id after a dispatch completes, so idle post-task stderr remains attributed to the last task. Fix by either documenting planner stderr tagging as best-effort only, or moving task-scoped planner diagnostics into a framed channel that carries task ids explicitly rather than inferring them from host-side timing.
+
+**Overall Assessment**
+
+The previous findings appear to be fixed, including the implementer success-description logging and the planner stderr/task-id plumbing. I don’t see remaining correctness or Compose-integration issues at the earlier severity. The remaining concern is the planner stderr attribution model itself: the new implementation improves observability, but it still cannot guarantee correct per-task labeling across task boundaries.
