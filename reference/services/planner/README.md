@@ -15,3 +15,23 @@ python -m eden_planner_host \
 ```
 
 Runs until SIGTERM.
+
+## Subprocess mode
+
+Pass `--mode subprocess` plus `--experiment-config <path>`,
+`--experiment-dir <path>`, and `--artifacts-dir <path>` to invoke a
+user-supplied long-running planner command instead of the scripted
+profile. The command string is read from the experiment-config
+YAML's `plan_command` key. The subprocess exchanges JSON-line
+messages with the host per the
+[reference binding](../../../spec/v0/reference-bindings/worker-host-subprocess.md):
+
+1. Subprocess emits `{"event": "ready"}` once on startup.
+2. For each plan task, host writes a `{"event": "plan", ...}` line
+   on stdin; subprocess emits any number of `proposal` lines and
+   then `{"event": "plan-done", "task_id": …}` (or `plan-error`).
+3. cwd = the experiment directory; env carries
+   `EDEN_EXPERIMENT_DIR`.
+
+Use `--plan-env-file path/to/env` to inject `ANTHROPIC_API_KEY` and
+similar.

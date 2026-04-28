@@ -1,0 +1,170 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-llm-worker-hosts/20260425T192048/1.md	2026-04-25 19:41:14
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-llm-worker-hosts.md	2026-04-25 19:44:58
+@@ -111,6 +111,19 @@
+   - Evaluator subprocess: `cwd = <task worktree>`. The trial's
+     commit is checked out at cwd; the user's script reads the tree
+     and writes metrics.
++- **No free-form failure surface on the wire.** The submission
++  dataclasses ([`reference/packages/eden-storage/src/eden_storage/submissions.py`](../../reference/packages/eden-storage/src/eden_storage/submissions.py))
++  carry only `status` + role-specific id/payload fields; there is no
++  `description` field. Worker-side failure context (subprocess exit
++  reason, malformed outcome JSON, deadline-exceeded, etc.) is
++  surfaced **only via the host's structured logger** (info/warning
++  with `task_id`, `subprocess_role`, `reason`). The worker's own
++  `outcome.json` may include a `description` string for operator
++  diagnostics, but the host does **not** propagate it onto the wire.
++  Expanding the wire failure vocabulary (a normative
++  `Submission.diagnostic` field, or a dedicated `task.diagnostic`
++  event) is out of scope for this chunk and would require a spec
++  amendment + schema change + binding update.
+ - **Environment.** Every subprocess receives, in addition to the
+   host's environment:
+   - `EDEN_EXPERIMENT_DIR` — absolute path to the experiment
+@@ -242,7 +255,7 @@
+ 
+ **Errors.** A `{"event": "plan-error", "task_id": "plan-…",
+ "reason": "..."}` line causes the host to submit
+-`PlanSubmission(status="error", description=reason)` and continue.
++`PlanSubmission(status="error")` and continue.
+ A protocol violation (missing required field, wrong `task_id`,
+ deadline exceeded) causes the host to: (a) treat the current task
+ as `plan-error`; (b) tear down and respawn the subprocess if the
+@@ -268,10 +281,12 @@
+    through the request surface or the subprocess; matches chunk-9c).
+ 2. **Pre-Phase-1 ref-collision guard.** Computes the canonical work
+    branch name `work/<slug>-<trial_id>`. If
+-   `repo.ref_exists(f"refs/heads/{branch}")`, short-circuits with an
+-   `ImplementSubmission(status="error", description="branch-collision")`
+-   without creating a trial — same posture as the chunk-9c
+-   implementer route.
++   `repo.ref_exists(f"refs/heads/{branch}")`, short-circuits with
++   an `ImplementSubmission(status="error", trial_id=…)` (the
++   trial_id is host-generated; no `create_trial` is called, so the
++   id is unbound — the `_reject_implement` path tolerates this per
++   the chunk-9c pattern). The collision context is logged but does
++   not appear on the wire (Submission has no free-form fields).
+ 3. **Phase 1: Persist the starting trial.** Calls
+    `store.create_trial(trial_id=…, proposal_id=…, status="starting")`.
+    No `commit_sha` yet (it's set later by `_accept_implement` once
+@@ -333,14 +348,15 @@
+    - `is_ancestor(parent, commit_sha)` for **every** parent in
+      `proposal.parent_commits` per spec §3.3 reachability.
+    - Validation failures → submit
+-     `ImplementSubmission(status="error", description=…)` (Phase 3
++     `ImplementSubmission(status="error", trial_id=…)` (Phase 3
+      below). The trial ends up `error` via the store's
+      `_reject_implement` path, which atomically composite-commits
+      the `starting` trial to `error`.
+ 9. **Phase 2f: Create the work-branch ref.** `repo.create_ref(
+    f"refs/heads/{branch}", commit_sha)`. The pre-Phase-1 collision
+    guard makes this safe; an unexpected EEXIST here (race against
+-   another host) → submit error with `description="branch-collision"`.
++   another host) → submit `ImplementSubmission(status="error",
++   trial_id=…)`; the collision context goes to the host log only.
+ 10. **Phase 3: Submit.** Calls `store.submit(...)` with retry-before-
+     orphan (3 attempts, exponential backoff) per the existing
+     Phase-8a path. On retry exhaustion, runs the same committed-state
+@@ -349,10 +365,11 @@
+     success / orphan / conflict.
+ 11. **Cleanup.** Removes the worktree (`git worktree remove --force
+     <path>`). Cleanup failure logs a warning; the next host startup
+-    runs `git worktree prune` against the bare repo as a maintenance
+-    step (see §D.5).
++    runs `sweep_host_worktrees` against this host's own subdir as a
++    maintenance step (see §D.5; path-scoped, not the repo-global
++    `git worktree prune`).
+ 12. **Failure paths:** exit-nonzero → submit
+-    `ImplementSubmission(status="error", description=…)`; timeout →
++    `ImplementSubmission(status="error", trial_id=…)`; timeout →
+     same; missing `outcome.json` → same; outcome `status="error"`
+     → same. All four routes go through Phase 3 with the same
+     retry-before-orphan + read-back classification.
+@@ -360,8 +377,11 @@
+ **Failure modes covered:**
+ 
+ - Subprocess writes a `commit_sha` that's not a valid object →
+-  classified as `status=error` with description; trial-creation
+-  ordering ensures no orphan trial.
++  submitted as `ImplementSubmission(status="error",
++  trial_id=…)`; the rejection reason goes to the host log;
++  trial-creation ordering ensures the `starting` trial is
++  composite-committed to `error` atomically with the task
++  transition (`_reject_implement`).
+ - Subprocess produces a commit whose parents don't satisfy spec
+   §3.3 → same.
+ - Subprocess succeeds but exits non-zero → host trusts exit code
+@@ -370,8 +390,9 @@
+ - Worktree cleanup failure → logged warning; the next task uses a
+   new task-scoped path so leakage doesn't cascade.
+ - Crash mid-flow (host killed): the worktree leaks. The next host
+-  startup runs `git worktree prune --expire=1.day` against the bare
+-  repo as a maintenance step.
++  startup runs `sweep_host_worktrees` against the host's own
++  subdir, removing leftover dirs via path-scoped
++  `git worktree remove --force` (see §D.5).
+ 
+ ### D.4 Evaluator subprocess protocol
+ 
+@@ -423,7 +444,19 @@
+     def head_sha(self) -> str: ...
+     def remove(self) -> None: ...
+ 
+-def prune_worktrees(repo_path: Path) -> None: ...
++def sweep_host_worktrees(repo_path: Path, host_subdir: Path) -> None:
++    """Remove every leftover worktree directory under host_subdir.
++
++    Walks host_subdir's immediate children; for each directory that
++    looks like a worktree (presence of a `.git` text file pointing
++    at the bare repo's worktrees/ admin dir), runs
++    `git worktree remove --force <path>` against the bare repo to
++    deregister and delete it.
++
++    Path-scoped: never touches admin entries outside host_subdir,
++    so a sweep in one host can't race a `git worktree add` in
++    another host whose host_subdir is different.
++    """
+ ```
+ 
+ Internally it shells out to `git worktree add --detach`, `git -C
+@@ -451,11 +484,26 @@
+ - Volume `eden-worktrees` mounted at `/var/lib/eden/worktrees`
+   (worktree checkouts, ephemeral, host-private subtrees).
+ 
+-Each host writes worktrees under
+-`<worktrees_dir>/<container_hostname>/<task_id>/` so
+-worktree-pruning in one host can't race a worktree-add in another.
+-`prune_worktrees` only prunes that host's subtree.
++**Cross-host isolation.** Each host writes worktrees under a
++host-private subdir
++`<worktrees_dir>/<container_hostname>/<task_id>/`. The host's
++startup-time cleanup walks **only its own subdir** and runs
++`git worktree remove --force <path>` for each leftover (path-scoped,
++not the repo-global `git worktree prune`). Because every targeted
++remove is restricted to the host's own subdir, two hosts running
++sweeps concurrently never touch each other's worktree paths or
++their admin entries. The bare-repo's `worktrees/<name>/` admin
++entry is named after the **path basename** (`<task_id>`), so as
++long as `task_id` values are globally unique (UUID-suffixed, per
++the existing `_trial_id` factory) two hosts cannot collide on an
++admin entry either.
+ 
++The host's own `task_id` paths are tracked in an in-process
++registry; per-task cleanup at submit-time uses
++`TaskWorktree.remove()`, which calls `git worktree remove --force`
++on that exact path. Crash-recovery cleanup runs only at startup
++via `sweep_host_worktrees`. There is no periodic cross-host prune.
++
+ ### D.6 Subprocess execution and signal handling
+ 
+ Implemented in a new `eden_service_common.subprocess` module so the
+@@ -556,7 +604,9 @@
+ defeats the point):
+ 
+ - `eden-service-common/tests/test_worktrees.py` — create/HEAD/remove
+-  + `prune_worktrees` against a real bare repo.
++  + `sweep_host_worktrees` against a real bare repo (asserts that a
++  sweep on host-A's subdir doesn't disturb a worktree under
++  host-B's subdir).
+ - `eden-service-common/tests/test_subprocess.py` — startup deadline,
+   per-task deadline, SIGTERM ladder, stderr forwarding, stdout JSON
+   parser robustness.

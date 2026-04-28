@@ -1,0 +1,414 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-llm-worker-hosts/20260425T192048/0.md	2026-04-25 19:20:48
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-llm-worker-hosts.md	2026-04-25 19:41:06
+@@ -56,7 +56,9 @@
+ (`plan.py`, `implement.py`, `eval.py`) that exercise the protocol
+ without any LLM dependency, so the existing `compose-smoke` job can
+ run a subprocess-mode end-to-end smoke without external services or
+-secrets.
++secrets. The fixture's `*_command` config keys are amended to use
++`${EDEN_EXPERIMENT_DIR}/<script>.py` so the commands resolve from
++any cwd (see §D.0 for the command/cwd/env contract).
+ 
+ ## Roadmap delta
+ 
+@@ -73,6 +75,69 @@
+ 
+ ## Design
+ 
++### D.0 Command source, cwd, and environment contract
++
++This section pins the single source of truth for "where does the
++host get the command, how is it invoked, and what does it see?" so
++that subsequent sections don't drift.
++
++- **Single source of truth: experiment-config.** The host reads
++  `plan_command` / `implement_command` / `evaluate_command` from the
++  same `experiment-config.yaml` the task-store-server already
++  consumes (the schema accepts these as additional properties; no
++  schema change). There is no CLI flag to override the command
++  string — that would split the source of truth between two places.
++- **Experiment directory.** Each host gains `--experiment-dir
++  <path>` (required in subprocess mode). The directory is the
++  user's experiment checkout — for the fixture, it's
++  `tests/fixtures/experiment/`. Compose mounts this into each
++  subprocess-mode host via a new bind-mount (setup-experiment grows
++  an `--experiment-dir` flag and writes the host-side path into
++  `.env` as `EDEN_EXPERIMENT_DIR`).
++- **Command invocation: shell mode.** The host invokes the command
++  with `subprocess.Popen(cmd_str, shell=True, …)` so user
++  expressions like `python3 ${EDEN_EXPERIMENT_DIR}/plan.py` expand
++  correctly without the host having to parse and rewrite paths.
++  This is acceptable because the command string comes from the
++  trusted experiment-config (operator-supplied at setup time), not
++  from any per-task / per-trial source. Documented in the protocol
++  README.
++- **cwd.**
++  - Planner subprocess: `cwd = experiment-dir`. One process, lives
++    across all plan tasks; doesn't touch git.
++  - Implementer subprocess: `cwd = <task worktree>`. The user's
++    script runs inside the per-task git worktree and can `git
++    commit` directly from cwd.
++  - Evaluator subprocess: `cwd = <task worktree>`. The trial's
++    commit is checked out at cwd; the user's script reads the tree
++    and writes metrics.
++- **Environment.** Every subprocess receives, in addition to the
++  host's environment:
++  - `EDEN_EXPERIMENT_DIR` — absolute path to the experiment
++    directory.
++  - `EDEN_TASK_JSON` — relative path (under cwd) to the task brief
++    JSON file the host wrote.
++  - `EDEN_OUTPUT` — relative path (under cwd) to the file the
++    subprocess must write its outcome JSON to.
++  - For implementer/evaluator: `EDEN_WORKTREE` — absolute path to
++    the worktree (also equals cwd; redundant for convenience).
++  - User-supplied env from `--*-env-file` (intended for LLM API
++    keys etc.).
++- **Fixture-config change.** The fixture's
++  [`tests/fixtures/experiment/.eden/config.yaml`](../../tests/fixtures/experiment/.eden/config.yaml)
++  is amended in this chunk:
++
++  ```yaml
++  plan_command: "python3 ${EDEN_EXPERIMENT_DIR}/plan.py"
++  implement_command: "python3 ${EDEN_EXPERIMENT_DIR}/implement.py"
++  evaluate_command: "python3 ${EDEN_EXPERIMENT_DIR}/eval.py"
++  ```
++
++  Old bare values (`python3 plan.py`) wouldn't have resolved from
++  the implementer/evaluator's worktree cwd; the explicit
++  `${EDEN_EXPERIMENT_DIR}/` makes the intent explicit and uniform
++  across the three roles.
++
+ ### D.1 Mode selection and CLI shape
+ 
+ Each of the three host services gains a `--mode` flag:
+@@ -87,45 +152,55 @@
+ `compose-smoke` keep working unchanged. New flags appear only in
+ subprocess mode.
+ 
++All three hosts gain in subprocess mode:
++
++- `--experiment-config PATH` — already present on evaluator + web-ui
++  for chunk-9d/9e parity; added to planner + implementer hosts
++  (required in subprocess mode). The host loads the YAML and reads
++  the relevant `*_command`.
++- `--experiment-dir PATH` — host-side absolute path to the
++  experiment directory (required).
++- `--*-env-file PATH` — additional env vars to inject (KEY=VALUE
++  per line); intended for `ANTHROPIC_API_KEY` and similar.
++
+ **Planner-host subprocess flags (added):**
+ 
+-- `--plan-command STR` — the command to launch (split via `shlex`).
+-- `--plan-cwd PATH` — working directory for the subprocess (default:
+-  `--repo-path` if set, else process cwd).
+ - `--plan-startup-deadline FLOAT` — seconds to wait for the
+   subprocess to print a `ready` line (default 30).
+ - `--plan-task-deadline FLOAT` — seconds to wait for proposals from a
+   single dispatched plan task (default 120).
+ - `--plan-shutdown-deadline FLOAT` — seconds to allow for graceful
+   shutdown when the host stops (default 10).
+-- `--plan-env-file PATH` — additional env vars to inject (KEY=VALUE
+-  per line); intended for `ANTHROPIC_API_KEY` and similar.
++- `--plan-env-file PATH`
+ 
+ **Implementer-host subprocess flags (added):**
+ 
+-- `--implement-command STR`
+ - `--worktrees-dir PATH` — base directory under which per-task
+   worktrees are created (default: `/var/lib/eden/worktrees` in
+-  Compose; same volume as repo by convention).
++  Compose; not on the same volume as the bare repo to avoid
++  ownership clashes — see §D.5).
+ - `--implement-task-deadline FLOAT` (default 600).
+ - `--implement-env-file PATH`
+ 
+ **Evaluator-host subprocess flags (added):**
+ 
+-- `--evaluate-command STR`
+ - `--worktrees-dir PATH`
+ - `--evaluate-task-deadline FLOAT` (default 300).
+ - `--evaluate-env-file PATH`
+ 
+-The implementer's existing `--repo-path` is required in subprocess
+-mode (the host needs to manipulate the bare repo); the evaluator
+-gains a new `--repo-path` requirement in subprocess mode.
++The implementer's existing `--repo-path` stays required (the host
++needs to manipulate the bare repo); the evaluator gains a new
++`--repo-path` requirement in subprocess mode.
+ 
+ ### D.2 Planner subprocess protocol
+ 
+ Wire format: one JSON object per line, on both stdin and stdout. The
+ host writes "dispatch" lines, the worker writes "proposal" /
+-"plan-done" / "plan-error" / "ready" lines.
++"plan-done" / "plan-error" / "ready" lines. The subprocess runs
++once per host with cwd=experiment-dir per §D.0; it reads
++`EDEN_EXPERIMENT_DIR` from the env (also accessible as cwd) for
++auxiliary file lookup, and uses stdin/stdout exclusively for
++protocol traffic.
+ 
+ **Startup handshake.** When the host launches the subprocess, the
+ subprocess must print exactly one line `{"event": "ready"}` to
+@@ -182,19 +257,39 @@
+ 
+ ### D.3 Implementer subprocess protocol
+ 
+-Per-task short-lived subprocess. The host:
++The flow honors [`spec/v0/03-roles.md`](../../spec/v0/03-roles.md) §3.2
++step 1: the trial MUST be persisted with `status == "starting"`
++**before** any repository write becomes observable. This matches the
++chunk-9c web-ui implementer's ordering and the scripted
++`ScriptedImplementer._drive_starting_trial` pattern. Per-task
++short-lived subprocess. The host:
+ 
+-1. Resolves `proposal.parent_commits[0]` against the bare repo and
+-   creates a fresh worktree at
+-   `<worktrees_dir>/<task_id>/` checked out to that commit, using
+-   `git worktree add --detach <path> <commit>`. (If
+-   `parent_commits` has multiple entries, the worktree is
++1. Generates a host-owned `trial_id` (server-only, never round-trips
++   through the request surface or the subprocess; matches chunk-9c).
++2. **Pre-Phase-1 ref-collision guard.** Computes the canonical work
++   branch name `work/<slug>-<trial_id>`. If
++   `repo.ref_exists(f"refs/heads/{branch}")`, short-circuits with an
++   `ImplementSubmission(status="error", description="branch-collision")`
++   without creating a trial — same posture as the chunk-9c
++   implementer route.
++3. **Phase 1: Persist the starting trial.** Calls
++   `store.create_trial(trial_id=…, proposal_id=…, status="starting")`.
++   No `commit_sha` yet (it's set later by `_accept_implement` once
++   the submission lands). Crash after this point leaves a
++   recoverable orphan: the chunk-1 expired-claim sweeper composite-
++   commits the trial to `error` atomically with the implement task
++   reverting to `pending`.
++4. **Phase 2a: Create the worktree.** Resolves
++   `proposal.parent_commits[0]` against the bare repo and creates a
++   fresh worktree at `<worktrees_dir>/<host>-<task_id>/` checked out
++   to that commit via `git worktree add --detach <path> <commit>`.
++   (If `parent_commits` has multiple entries, the worktree is
+    single-parent; the user's `implement_command` is responsible for
+    producing a merge commit by writing one with `git commit-tree -p
+    <p1> -p <p2>` or equivalent. The host's job is to start the
+    worktree at the *first* parent.)
+-2. Writes the task brief to a JSON file inside the worktree at
+-   `.eden/task.json`:
++5. **Phase 2b: Write the task brief.** Writes
++   `<worktree>/.eden/task.json`:
+ 
+    ```json
+    {
+@@ -204,60 +299,63 @@
+      "proposal_slug": "p0",
+      "parent_commits": ["abc…", …],
+      "rationale_path": "/var/lib/eden/artifacts/proposals/proposal-…/rationale.md",
++     "branch": "work/p0-trial-…",
+      "output_path": ".eden/outcome.json"
+-   }
+-   ```
+-
+-   `trial_id` is host-generated up front (matching the chunk-9c
+-   pattern of host-owned IDs that don't round-trip through the
+-   wire). `rationale_path` is absolute on the host filesystem and
+-   only present if the proposal was created with a rationale (will
+-   be present for proposals submitted via the planner subprocess
+-   protocol; not present for proposals minted by the scripted
+-   workers).
+-3. Spawns `implement_command` with cwd = worktree, environment
+-   extended with `EDEN_TASK_JSON=.eden/task.json` and
+-   `EDEN_OUTPUT=.eden/outcome.json`, plus the contents of
+-   `--implement-env-file` if supplied.
+-4. Awaits exit within `--implement-task-deadline`. On timeout,
+-   sends SIGTERM, waits 10 s, sends SIGKILL.
+-5. On exit-zero, reads `.eden/outcome.json` from inside the
+-   worktree:
+-
+-   ```json
+-   {
+-     "status": "success",
+-     "commit_sha": "def…",
+-     "branch": "work/p0-trial-…",
+-     "description": "free-form summary"
+    }
+    ```
+ 
+-   Or:
++   `branch` is the canonical name from step 2; the user's script
++   may use it but cannot override (Phase 2c uses the canonical name
++   regardless of what the subprocess writes back). `rationale_path`
++   is absolute on the host filesystem and only present if the
++   proposal was created with a rationale.
++6. **Phase 2c: Run the subprocess.** Spawns `implement_command` per
++   §D.0 (cwd=worktree, env includes `EDEN_TASK_JSON`,
++   `EDEN_OUTPUT`, `EDEN_WORKTREE`, `EDEN_EXPERIMENT_DIR`, plus
++   `--implement-env-file` content). Awaits exit within
++   `--implement-task-deadline`. On timeout: SIGTERM, wait 10 s,
++   SIGKILL.
++7. **Phase 2d: Read outcome.** On exit-zero, reads
++   `<worktree>/.eden/outcome.json`:
+ 
+    ```json
+-   {"status": "error", "description": "…"}
++   {"status": "success", "commit_sha": "def…",
++    "description": "free-form summary"}
+    ```
+ 
+-6. **Validation (success path):**
++   Or `{"status": "error", "description": "…"}`. The user's script
++   does **not** set `branch` (host owns it).
++8. **Phase 2e: Validation (success path):**
+    - `commit_sha` exists in the bare repo's object database
+      (`git -C <bare> cat-file -e <sha>`). The user's `git commit`
+      inside the worktree updates the bare repo's object DB
+      automatically (worktrees share the parent's `.git/objects`).
+    - `is_ancestor(parent, commit_sha)` for **every** parent in
+      `proposal.parent_commits` per spec §3.3 reachability.
+-   - `branch` is either absent (host generates
+-     `work/<slug>-<trial_id>`) or matches `^work/[A-Za-z0-9._/-]+$`
+-     and not yet present in the bare repo as a ref.
+-7. Creates the `work/<…>` ref in the bare repo via
+-   `repo.create_ref(...)`.
+-8. Submits via the same Phase 8a retry-before-orphan path the
+-   scripted implementer uses; on transport indeterminacy, reads
+-   back the committed task to classify success vs orphan.
+-9. Removes the worktree (`git worktree remove --force <path>`).
+-10. On exit-nonzero or timeout: submits
+-    `ImplementSubmission(status="error", description=…)`; cleans up
+-    the worktree.
++   - Validation failures → submit
++     `ImplementSubmission(status="error", description=…)` (Phase 3
++     below). The trial ends up `error` via the store's
++     `_reject_implement` path, which atomically composite-commits
++     the `starting` trial to `error`.
++9. **Phase 2f: Create the work-branch ref.** `repo.create_ref(
++   f"refs/heads/{branch}", commit_sha)`. The pre-Phase-1 collision
++   guard makes this safe; an unexpected EEXIST here (race against
++   another host) → submit error with `description="branch-collision"`.
++10. **Phase 3: Submit.** Calls `store.submit(...)` with retry-before-
++    orphan (3 attempts, exponential backoff) per the existing
++    Phase-8a path. On retry exhaustion, runs the same committed-state
++    read-back the chunk-9c implementer route uses (read_task +
++    read_submission + submissions_equivalent) to classify
++    success / orphan / conflict.
++11. **Cleanup.** Removes the worktree (`git worktree remove --force
++    <path>`). Cleanup failure logs a warning; the next host startup
++    runs `git worktree prune` against the bare repo as a maintenance
++    step (see §D.5).
++12. **Failure paths:** exit-nonzero → submit
++    `ImplementSubmission(status="error", description=…)`; timeout →
++    same; missing `outcome.json` → same; outcome `status="error"`
++    → same. All four routes go through Phase 3 with the same
++    retry-before-orphan + read-back classification.
+ 
+ **Failure modes covered:**
+ 
+@@ -277,7 +375,9 @@
+ 
+ ### D.4 Evaluator subprocess protocol
+ 
+-Symmetric to implementer:
++Symmetric to implementer (the chapter-9d evaluator has no `starting`
++trial-creation step because the trial already exists from the
++implementer's flow; the evaluator only ever reads it):
+ 
+ 1. Worktree at `trial.commit_sha` (detached).
+ 2. Write `.eden/eval-task.json`:
+@@ -294,8 +394,9 @@
+    }
+    ```
+ 
+-3. Run `evaluate_command` with cwd=worktree, env extended with
+-   `EDEN_TASK_JSON` and `EDEN_OUTPUT`.
++3. Run `evaluate_command` per §D.0 (cwd=worktree, env includes
++   `EDEN_TASK_JSON`, `EDEN_OUTPUT`, `EDEN_WORKTREE`,
++   `EDEN_EXPERIMENT_DIR`, plus `--evaluate-env-file` content).
+ 4. Read outcome JSON:
+ 
+    ```json
+@@ -338,6 +439,23 @@
+ (where the commit object lives after the worker's `git commit`
+ inside the worktree).
+ 
++**Volume layout.** The worktree base directory is **not** on the
++same Compose volume as the bare repo. `git worktree add` writes
++admin metadata under `<bare>/worktrees/<name>/`, so the bare-repo
++volume needs to be writable by the host user — but the worktree
++checkout itself is bigger and gets created/destroyed per task; mixing
++the two on one volume confuses cleanup. Layout:
++
++- Volume `eden-bare-repo` mounted at `/var/lib/eden/repo` (bare
++  repo, read-write by hosts that need it).
++- Volume `eden-worktrees` mounted at `/var/lib/eden/worktrees`
++  (worktree checkouts, ephemeral, host-private subtrees).
++
++Each host writes worktrees under
++`<worktrees_dir>/<container_hostname>/<task_id>/` so
++worktree-pruning in one host can't race a worktree-add in another.
++`prune_worktrees` only prunes that host's subtree.
++
+ ### D.6 Subprocess execution and signal handling
+ 
+ Implemented in a new `eden_service_common.subprocess` module so the
+@@ -382,31 +500,49 @@
+ that does LLM work.
+ 
+ The fixture's existing `tests/fixtures/experiment/.eden/config.yaml`
+-already declares the three commands; no schema or fixture-config
+-change needed.
++already declares `plan_command` / `implement_command` /
++`evaluate_command` keys; this chunk amends their values to the
++`${EDEN_EXPERIMENT_DIR}/<script>.py` form (see §D.0). The fixture
++config change is mechanical and the schema-parity tests are
++unaffected (these keys are accepted as additional properties).
+ 
+ ### D.8 Compose updates
+ 
+ A new variant of the stack runs in subprocess mode by setting two
+-new optional `.env` keys:
++new `.env` keys:
+ 
+ ```text
+ EDEN_WORKER_MODE=subprocess        # default: scripted
+-EDEN_EXPERIMENT_DIR=/etc/eden/experiment
++EDEN_EXPERIMENT_DIR_HOST=/abs/host/path/to/experiment
+ ```
+ 
+-When `EDEN_WORKER_MODE=subprocess`, each host service appends
+-`--mode subprocess --plan-command/--implement-command/--evaluate-command "${…}"`
+-to its `command:`. The fixture experiment directory is mounted into
+-each subprocess-mode host via a new `eden-experiment-dir` config-
+-mount or named volume; setup-experiment grows a flag
+-`--experiment-dir <path>` to copy the user's experiment dir into
+-the volume.
++`EDEN_EXPERIMENT_DIR_HOST` is the **host-side** absolute path to
++the user's experiment directory, written by setup-experiment when
++invoked with `--experiment-dir <path>`. Compose bind-mounts it
++read-only into each subprocess-mode host at
++`/etc/eden/experiment-dir`, and the host's `--experiment-dir` flag
++points at that container path. The `experiment-config.yaml` config
++mount stays as-is (chunk-9c/9d wiring); the host loads the YAML and
++reads the `*_command` keys from it.
+ 
+-Compose-side flag plumbing uses the same `${VAR:?}` pattern already
+-in use; `${EDEN_PLAN_COMMAND:-}` etc. default to empty so the
+-scripted-mode default is unchanged.
++When `EDEN_WORKER_MODE=subprocess`, each host service's `command:`
++gains `--mode subprocess --experiment-dir /etc/eden/experiment-dir`
++plus the per-host subprocess flags from §D.1. The command strings
++are **not** plumbed through Compose env — they live in the
++experiment-config YAML.
+ 
++A new named volume `eden-worktrees` is added for the implementer/
++evaluator's per-task worktrees (mounted at
++`/var/lib/eden/worktrees`); see §D.5 for why this is separate from
++the bare-repo volume.
++
++Compose-side flag plumbing uses `${EDEN_WORKER_MODE:-scripted}` so
++the scripted-mode default is unchanged. The subprocess-mode flags
++appear as either-or blocks in the YAML (Compose has no native
++conditional, so the simplest approach is two compose files merged
++via `compose -f compose.yaml -f compose.subprocess.yaml`; the
++subprocess overlay adds the new flags and bind-mounts).
++
+ The compose-smoke job stays in scripted mode (the merged shape from
+ 10c) **plus** a new `compose-smoke-subprocess` matrix entry that
+ runs the same end-to-end assertions in subprocess mode against the

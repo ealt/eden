@@ -40,7 +40,7 @@ COPY --from=builder /app /app
 # path in the image, so directories that don't exist here would
 # get root-owned by the volume driver and fail every subsequent
 # write the eden user attempts.
-RUN mkdir -p /var/lib/eden/repo /var/lib/eden/artifacts \
+RUN mkdir -p /var/lib/eden/repo /var/lib/eden/artifacts /var/lib/eden/worktrees /var/lib/eden/blob \
     && chown -R eden:eden /var/lib/eden
 # Make uv-installed venv binaries discoverable.
 ENV PATH="/app/.venv/bin:${PATH}"

@@ -13,3 +13,20 @@ python -m eden_evaluator_host \
 ```
 
 Runs until SIGTERM.
+
+## Subprocess mode
+
+Pass `--mode subprocess` plus `--experiment-dir <path>`,
+`--repo-path <path>`, and (optionally) `--worktrees-dir <path>` to
+invoke a user-supplied per-task evaluate command instead of the
+scripted profile. The command string is read from the
+experiment-config YAML's `evaluate_command` key.
+
+For each evaluate task the host creates a worktree at
+`trial.commit_sha`, runs the command with cwd=wt and env
+carrying `EDEN_TASK_JSON` / `EDEN_OUTPUT` / `EDEN_WORKTREE` /
+`EDEN_EXPERIMENT_DIR`, then reads `<wt>/.eden/eval-outcome.json`
+(`status` + `metrics`). Metrics are validated against
+`metrics_schema` before submit; type mismatches route to
+`status=eval_error`. See the
+[reference binding](../../../spec/v0/reference-bindings/worker-host-subprocess.md).

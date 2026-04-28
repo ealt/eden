@@ -1,9 +1,9 @@
 planner_root: "./planner"
 workspace: "./workspace"
 parallel_trials: 1
-evaluate_command: "python3 eval.py"
-implement_command: "python3 implement.py"
-plan_command: "python3 plan.py"
+evaluate_command: "python3 ${EDEN_EXPERIMENT_DIR}/eval.py"
+implement_command: "python3 ${EDEN_EXPERIMENT_DIR}/implement.py"
+plan_command: "python3 ${EDEN_EXPERIMENT_DIR}/plan.py"
 max_trials: 20
 max_wall_time: "10m"
 metrics_schema:

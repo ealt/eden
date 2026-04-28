@@ -1,0 +1,9 @@
+**Findings**
+
+- **Risk** — [subprocess_runner.py](/Users/ericalt/Documents/eden/reference/services/_common/src/eden_service_common/subprocess_runner.py:129), [subprocess_mode.py](/Users/ericalt/Documents/eden/reference/services/planner/src/eden_planner_host/subprocess_mode.py:189): the new `task_id` plumbing only works for subprocesses that are spawned per task. The long-running planner subprocess is still started without any task context, so its stderr stream remains role-only and cannot be attributed to the active plan task. That means the §D.0/§D.6 “structured logger with `task_id`” contract is still only partially implemented for planner diagnostics. Fix by adding active-task context to planner stderr forwarding, or explicitly documenting planner stderr as intentionally unscoped.
+
+- **Risk** — [subprocess_mode.py](/Users/ericalt/Documents/eden/reference/services/implementer/src/eden_implementer_host/subprocess_mode.py:222): `outcome.description` is now logged only on the non-success path. Plan §D.3’s outcome shape includes a free-form `description` on the success case too, and that successful summary is still dropped today. Fix by logging `description` whenever present before branching on `status`, not only when the outcome is an error.
+
+**Overall Assessment**
+
+The seven issues from the first round appear to be fixed: the Compose overlay is materially better wired, the planner env override bug is closed, the respawn loop now has a ceiling, and the broken reference-binding links are fixed. I don’t see any remaining correctness or integration bugs at the same severity as the first round. The remaining gaps are narrower and mostly about observability completeness.

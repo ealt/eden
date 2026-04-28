@@ -141,6 +141,23 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke.sh
 
+  compose-smoke-subprocess:
+    name: compose-smoke-subprocess
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (subprocess overlay)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-subprocess.sh
+
   python-test-postgres:
     name: python-test-postgres
     runs-on: ubuntu-latest

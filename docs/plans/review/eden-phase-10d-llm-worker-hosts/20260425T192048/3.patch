@@ -1,0 +1,61 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-llm-worker-hosts/20260425T192048/2.md	2026-04-25 19:45:05
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-llm-worker-hosts.md	2026-04-25 19:47:01
+@@ -296,7 +296,8 @@
+    reverting to `pending`.
+ 4. **Phase 2a: Create the worktree.** Resolves
+    `proposal.parent_commits[0]` against the bare repo and creates a
+-   fresh worktree at `<worktrees_dir>/<host>-<task_id>/` checked out
++   fresh worktree at `<worktrees_dir>/<container_hostname>/<task_id>/`
++   checked out
+    to that commit via `git worktree add --detach <path> <commit>`.
+    (If `parent_commits` has multiple entries, the worktree is
+    single-parent; the user's `implement_command` is responsible for
+@@ -456,6 +457,13 @@
+     Path-scoped: never touches admin entries outside host_subdir,
+     so a sweep in one host can't race a `git worktree add` in
+     another host whose host_subdir is different.
++
++    Malformed leftovers (a directory under host_subdir without a
++    valid `.git` link, or one whose `.git` points outside the
++    expected admin path) are logged at warning and left in place
++    for operator cleanup. The sweep does not delete arbitrary
++    on-disk content — that would be a footgun if a future change
++    accidentally reused the worktrees subdir for something else.
+     """
+ ```
+ 
+@@ -533,8 +541,9 @@
+   reads dispatched plan tasks from stdin, and writes one proposal
+   per task. Deterministic: priority equals N − i for the i-th
+   proposal of an N-proposal plan; `parent_commits` from
+-  `EDEN_BASE_COMMIT_SHA`. Written so the existing fixture config's
+-  `plan_command: "python3 plan.py"` invokes it.
++  `EDEN_BASE_COMMIT_SHA`. Invoked via the amended fixture config's
++  `plan_command: "python3 ${EDEN_EXPERIMENT_DIR}/plan.py"` (see
++  §D.0).
+ - `implement.py` — short-lived; reads `EDEN_TASK_JSON`, makes a
+   trivial blob change, runs `git add`/`git commit`, writes
+   `EDEN_OUTPUT` with the resulting commit SHA. Mirrors the scripted
+@@ -688,13 +697,15 @@
+   host user to write there. The 10b/10c volume already grants this
+   to the `eden` user; verify with the new test before relying on
+   it.
+-- **Worktree leak on host crash.** Mitigation in §D.5 (`git
+-  worktree prune` at host startup), but if a single bare repo is
+-  shared across multiple host containers (planner + implementer +
+-  web-ui), a prune in one might race a worktree-add in another.
+-  Mitigation: each host writes its worktrees under
+-  `<worktrees_dir>/<container_hostname>/<task_id>/` and only prunes
+-  its own subtree. Document this in the helper module.
++- **Worktree leak on host crash.** Mitigation in §D.5: each host
++  writes its worktrees under
++  `<worktrees_dir>/<container_hostname>/<task_id>/` and the
++  startup-time `sweep_host_worktrees` only operates inside that
++  host-private subdir using path-scoped
++  `git worktree remove --force`. Cross-host races are eliminated
++  by construction (different subdirs); cross-host sweeps do not
++  exist. Malformed leftovers (no `.git` link) are logged for
++  operator cleanup rather than blindly deleted.
+ - **Long-running planner subprocess as a SPOF.** A crashed Claude
+   CLI or a stuck process kills planner availability for the whole
+   experiment. Mitigation: respawn-on-crash (subject to a max
