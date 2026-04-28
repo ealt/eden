@@ -1,0 +1,11 @@
+**Findings**
+
+- Blocker: stage 1 can still lose the orchestrator before the driver starts. The revised plan waits on `gitea` in stage 1 ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md:123)), but `gitea` has a 30s healthcheck start period ([compose.yaml](/Users/ericalt/Documents/eden/reference/compose/compose.yaml:65)) and the orchestrator exits after 30 consecutive 1s no-progress iterations ([compose.yaml](/Users/ericalt/Documents/eden/reference/compose/compose.yaml:168)). With `planner-host` intentionally absent, the orchestrator can hit quiescence and exit `0` while `compose up --wait` is still waiting on `gitea`. The repo already documents that `--wait` treats an exited service during the wait window as failure ([compose.yaml](/Users/ericalt/Documents/eden/reference/compose/compose.yaml:8)). The new “poll for all 4 tasks” mitigation in section L does not catch this, because seeded tasks remain visible even after the orchestrator has exited ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md:447)). This needs a real sequencing fix: either don’t wait on `gitea` before the UI drill, or start/wait the orchestrator later and explicitly require it to still be running before proceeding.
+
+- Low: section L is still internally contradictory and reads like working notes rather than a settled plan. It first says there is “no startup-time race,” then immediately retracts that with “Actually — let me check” and replaces it with polling ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md:432)). The mitigation itself is reasonable, but this section should be rewritten cleanly before implementation.
+
+The prior blocker about planner submit shape is fixed, and the plan-task IDs, reclaim redirect, full-container termination loop, and `httpx` pin now match the repo.
+
+**Assessment**
+
+Much better, but not ready yet because of the remaining stage-1 orchestrator/quiescence problem. Once the bring-up sequence is adjusted so the driver cannot start against an already-exited orchestrator, I don’t see another blocker-class issue in the current draft.

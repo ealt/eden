@@ -1,0 +1,7 @@
+No findings.
+
+The three prior issues are closed in the current tree. [ci.yml](/Users/ericalt/Documents/eden/.github/workflows/ci.yml:172) now uses `actions/setup-python@v5` with `python-version: '3.12'`, and [ci.yml](/Users/ericalt/Documents/eden/.github/workflows/ci.yml:184) installs `httpx` via `python3 -m pip`, so the `python3` that [e2e.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e.sh:27) imports from is the same interpreter the workflow provisioned. [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:74) no longer has the stale 10e row in the “later phases” table. [e2e_drive.py](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e_drive.py:202) now catches `httpx.HTTPError` and routes it through `_fail()`, which closes the traceback-on-transport-error gap.
+
+Residual notes only: the earlier non-blocking caveats still apply. The process-substitution producer in [e2e.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e.sh:200) is still not covered by `pipefail`, and the stage-1 “orchestrator still running” check in [e2e.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e.sh:90) is still a pragmatic guard rather than a proof against every possible slow-runner stall. I would not block on either.
+
+Overall assessment: ready to ship.
