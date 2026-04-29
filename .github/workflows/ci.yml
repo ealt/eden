@@ -101,7 +101,11 @@ jobs:
         run: uv sync --frozen
 
       - name: Pytest
-        run: uv run pytest -q
+        # Skip the `docker` marker — those tests need a docker daemon
+        # and are run by the dedicated `compose-smoke-subprocess-docker`
+        # job. github-hosted runners have docker installed so without
+        # this filter the tests would run twice and slow this job down.
+        run: uv run pytest -q -m "not docker"
 
   schema-parity:
     name: schema-parity

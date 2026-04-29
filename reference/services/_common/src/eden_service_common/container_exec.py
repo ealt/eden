@@ -186,30 +186,46 @@ def _is_under(path: str, ancestor: str) -> bool:
 def kill_via_cidfile(cidfile: Path) -> None:
     """Kill (and remove) the container recorded in ``cidfile``.
 
-    Best-effort: if the cidfile is absent, empty, or the container
-    is already gone, this is a no-op. Used as the
-    ``post_kill_callback`` on the SIGKILL escalation branch of
-    :class:`Subprocess.terminate`.
+    Best-effort with structured logging on failure. The cidfile may
+    be absent (no-op), empty (no-op), or point at a container that
+    is already gone (`docker kill`/`docker rm -f` exit non-zero,
+    which we log and ignore). Transport failures (timeout, exec
+    failure) are caught and logged at warning so the host's log
+    surfaces them — the surrounding ``Subprocess.terminate`` catches
+    its callback's exceptions, so SIGKILL cleanup doesn't propagate.
     """
     if not cidfile.is_file():
         return
     cid = cidfile.read_text().strip()
     if not cid:
         return
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            ["docker", "kill", cid],
-            check=False,
-            timeout=_DOCKER_KILL_TIMEOUT_S,
-            capture_output=True,
-        )
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            ["docker", "rm", "-f", cid],
-            check=False,
-            timeout=_DOCKER_KILL_TIMEOUT_S,
-            capture_output=True,
-        )
+    for cmd, label in (
+        (["docker", "kill", cid], "kill"),
+        (["docker", "rm", "-f", cid], "rm"),
+    ):
+        try:
+            result = subprocess.run(
+                cmd,
+                check=False,
+                timeout=_DOCKER_KILL_TIMEOUT_S,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                log.warning(
+                    "kill_via_cidfile_nonzero",
+                    extra={
+                        "step": label,
+                        "cid": cid,
+                        "returncode": result.returncode,
+                        "stderr": result.stderr.strip(),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.warning(
+                "kill_via_cidfile_failed",
+                extra={"step": label, "cid": cid, "error": str(exc)},
+            )
 
 
 def cleanup_cidfile(cidfile: Path) -> None:

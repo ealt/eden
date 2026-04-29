@@ -167,10 +167,17 @@ def test_wrap_runs_git_in_a_worktree_with_external_gitlink(tmp_path: Path) -> No
     cmd = wrap_command(
         # debian:12-slim has no git by default; install on the fly.
         # Production uses eden-runtime:dev which bakes git in.
+        # `safe.directory '*'` defeats git's dubious-ownership check
+        # — the test mounts host-side files (uid = runner / dev user)
+        # into a container that runs as root inside debian:12-slim.
+        # Production avoids this divergence by mirroring eden:1000
+        # in the runtime image (see Dockerfile.runtime); the test
+        # opts out for portability across CI hosts.
         original_command=(
             "apt-get update -qq >/dev/null 2>&1 && "
             "apt-get install -y -qq --no-install-recommends git ca-certificates "
             ">/dev/null 2>&1 && "
+            "git config --global --add safe.directory '*' && "
             "git -C /wt status --porcelain && "
             "git -C /wt log --oneline"
         ),
