@@ -286,13 +286,19 @@ def test_terminate_sigkill_path_invokes_post_kill_callback(
         binds=[BindMount(source=str(tmp_path), target="/work")],
         env_keys=[],
     )
+    # `capture_stdin=True` mirrors the planner production shape: the
+    # wrap uses `docker run -i`, which exits early on stdin EOF in
+    # environments where stdin is /dev/null (CI). With a piped stdin
+    # held open by python, docker run waits for the container to
+    # exit, which (with `trap '' TERM`) it doesn't — forcing the
+    # SIGKILL escalation branch that this test means to exercise.
     sub = spawn(
         command=cmd,
         cwd=tmp_path,
         env={},
         role="kill-test",
         task_id="kill-probe",
-        capture_stdin=False,
+        capture_stdin=True,
         post_kill_callback=post_kill,
         cleanup_callbacks=[cleanup],
     )
