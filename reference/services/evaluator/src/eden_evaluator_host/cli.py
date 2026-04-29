@@ -6,6 +6,7 @@ import argparse
 import socket
 from pathlib import Path
 
+from eden_git import GitRepo
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
@@ -61,7 +62,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-path",
         default=None,
-        help="Bare git repo (required in --mode subprocess).",
+        help=(
+            "Bare git repo (required in --mode subprocess). When "
+            "--gitea-url is set, this becomes the local bare clone, "
+            "created at startup and refreshed via fetch_all_heads."
+        ),
+    )
+    parser.add_argument(
+        "--gitea-url",
+        default=None,
+        help=(
+            "Optional HTTP(S) URL of the central git remote (Phase 10d "
+            "follow-up B). When set, the evaluator clones --repo-path "
+            "from this URL at startup and fetches each trial's "
+            "work/* branch before the worktree add."
+        ),
+    )
+    parser.add_argument(
+        "--credential-helper",
+        default=None,
+        help=(
+            "Optional path to a git credential-helper script for "
+            "HTTP Basic auth against --gitea-url."
+        ),
     )
     parser.add_argument(
         "--worktrees-dir",
@@ -81,6 +104,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     f"--{attr.replace('_', '-')} is required in --mode subprocess"
                 )
     return args
+
+
+def _ensure_repo_clone(
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+    repo_path: str,
+    gitea_url: str | None,
+    credential_helper: str | None,
+) -> None:
+    """Materialize the evaluator's local clone per Phase 10d follow-up B §D.5."""
+    if gitea_url is None:
+        return
+    path = Path(repo_path)
+    if (path / "HEAD").is_file():
+        log.info("fetching_remote_heads", url=gitea_url)
+        GitRepo(path).fetch_all_heads()
+        return
+    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    GitRepo.clone_from(
+        url=gitea_url,
+        dest=path,
+        bare=True,
+        credential_helper=credential_helper,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,6 +150,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     config = load_experiment_config(args.experiment_config)
     log.info("starting", worker_id=args.worker_id, mode=args.mode)
+    if args.mode == "subprocess":
+        # parse_args validated repo_path is set in subprocess mode.
+        assert args.repo_path is not None
+        _ensure_repo_clone(
+            log=log,
+            repo_path=args.repo_path,
+            gitea_url=args.gitea_url,
+            credential_helper=args.credential_helper,
+        )
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
