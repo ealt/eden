@@ -296,6 +296,9 @@ def _run_subprocess(
             volumes=list(config.exec_volumes),
             binds=list(config.exec_binds),
             env_keys=list(env.keys()),
+            # Per-task evaluator subprocess does NOT read stdin —
+            # same reasoning as the implementer side.
+            attach_stdin=False,
         )
         pk, cu = make_cidfile_callbacks(cidfile)
         post_kill = pk

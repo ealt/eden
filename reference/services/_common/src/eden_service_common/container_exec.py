@@ -134,6 +134,7 @@ def wrap_command(
     volumes: Sequence[VolumeMount],
     binds: Sequence[BindMount],
     env_keys: Iterable[str],
+    attach_stdin: bool = True,
 ) -> str:
     """Build the ``docker run …`` shell command that wraps ``original_command``.
 
@@ -144,6 +145,15 @@ def wrap_command(
     Validates that ``cwd_target`` falls under at least one mount
     target; raises :class:`ValueError` otherwise. (A cwd outside
     every mount would yield an empty cwd inside the container.)
+
+    ``attach_stdin`` controls whether ``-i`` is added to the docker
+    run flags. Set ``True`` (default) when the caller will pipe
+    stdin to the spawn (planner protocol). Set ``False`` for
+    short-lived non-interactive workloads (implementer / evaluator)
+    so docker run doesn't exit early when the worker host's stdin
+    is closed (compose containers run with stdin closed by default,
+    and `-i` makes docker run treat that EOF as a signal to detach
+    before the container has a chance to do useful work).
     """
     targets = [m.target for m in volumes] + [m.target for m in binds]
     if not any(_is_under(cwd_target, t) for t in targets):
@@ -162,7 +172,9 @@ def wrap_command(
     # escalation that should have run the post_kill_callback never
     # fires. With `exec`, popen.pid IS docker run; SIGTERM goes
     # straight to it.
-    parts: list[str] = ["exec", "docker", "run", "--rm", "-i", "--init"]
+    parts: list[str] = ["exec", "docker", "run", "--rm", "--init"]
+    if attach_stdin:
+        parts.append("-i")
     parts += ["--cidfile", str(cidfile)]
     parts += ["--label", f"eden.host={host_id}"]
     parts += ["--label", f"eden.task_id={task_id}"]

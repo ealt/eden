@@ -372,6 +372,10 @@ def _run_subprocess(
             volumes=list(config.exec_volumes),
             binds=list(config.exec_binds),
             env_keys=list(env.keys()),
+            # Per-task implementer subprocess does NOT read stdin —
+            # leaving `-i` set would make docker run exit early on
+            # the worker host's closed stdin.
+            attach_stdin=False,
         )
         pk, cu = make_cidfile_callbacks(cidfile)
         post_kill = pk

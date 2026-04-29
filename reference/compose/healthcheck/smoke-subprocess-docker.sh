@@ -123,6 +123,15 @@ TRIAL_INTEGRATED="$(
 )"
 test "$TRIAL_INTEGRATED" -ge 3 || {
     echo "expected >= 3 trial.integrated events; got $TRIAL_INTEGRATED" >&2
+    echo "--- planner-host logs ---" >&2
+    docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
+        --env-file "$ENV_FILE" logs --tail 80 planner-host >&2 || true
+    echo "--- implementer-host logs ---" >&2
+    docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
+        --env-file "$ENV_FILE" logs --tail 80 implementer-host >&2 || true
+    echo "--- evaluator-host logs ---" >&2
+    docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
+        --env-file "$ENV_FILE" logs --tail 80 evaluator-host >&2 || true
     exit 1
 }
 TASK_COMPLETED="$(
