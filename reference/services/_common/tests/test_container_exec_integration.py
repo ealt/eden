@@ -238,7 +238,9 @@ def test_stale_cidfile_blocks_reuse(tmp_path: Path) -> None:
     cleanup_cidfile(cidfile)
 
 
-def test_terminate_sigkill_path_invokes_post_kill_callback(tmp_path: Path) -> None:
+def test_terminate_sigkill_path_invokes_post_kill_callback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """End-to-end: SIGKILL escalation in ``Subprocess.terminate`` runs the
     cidfile-driven `docker kill && docker rm -f` callback.
 
@@ -251,11 +253,19 @@ def test_terminate_sigkill_path_invokes_post_kill_callback(tmp_path: Path) -> No
     Without the post-kill callback the spawned container would
     survive that — this asserts it doesn't.
     """
+    import logging
+
     from eden_service_common import (
         make_cidfile_callbacks,
         make_cidfile_path,
         spawn,
     )
+
+    # caplog captures logging output so kill_via_cidfile's structured
+    # warnings (`kill_via_cidfile_nonzero` / `_failed`) show up in
+    # pytest output if `docker kill` or `docker rm -f` errors.
+    caplog.set_level(logging.WARNING, logger="eden_service_common.container_exec")
+    caplog.set_level(logging.WARNING, logger="eden_service_common.subprocess_runner")
 
     cidfile_dir = tmp_path / "cidfiles"
     cidfile = make_cidfile_path(cidfile_dir=cidfile_dir, role="kill-test")
@@ -286,14 +296,19 @@ def test_terminate_sigkill_path_invokes_post_kill_callback(tmp_path: Path) -> No
         post_kill_callback=post_kill,
         cleanup_callbacks=[cleanup],
     )
-    # Wait for the cidfile to land so we have a real container id
-    # to chase.
+    # Wait for the cidfile to land AND have content. `docker run
+    # --cidfile <path>` creates the file early then writes the cid
+    # asynchronously, so a `is_file()` check alone races against
+    # the daemon and returns an empty string.
     deadline = time.monotonic() + 30
-    while time.monotonic() < deadline and not cidfile.is_file():
+    cid = ""
+    while time.monotonic() < deadline:
+        if cidfile.is_file():
+            cid = cidfile.read_text().strip()
+            if cid:
+                break
         time.sleep(0.1)
-    assert cidfile.is_file(), "cidfile never appeared"
-    cid = cidfile.read_text().strip()
-    assert cid
+    assert cid, f"cidfile never gained a container id (file={cidfile})"
 
     # Force SIGKILL escalation by setting an immediate shutdown
     # deadline. SIGTERM will fire, the trap-empty container ignores
@@ -302,9 +317,9 @@ def test_terminate_sigkill_path_invokes_post_kill_callback(tmp_path: Path) -> No
     sub.terminate(shutdown_deadline=0.5)
 
     # The spawned sibling container must be gone (not just the local
-    # docker-run client). Wait briefly for docker to finalize the
-    # remove.
-    deadline = time.monotonic() + 10
+    # docker-run client). Wait up to 30s for docker to finalize the
+    # remove — CI hosts can be slow under load.
+    deadline = time.monotonic() + 30
     last_stdout = "<not yet polled>"
     while time.monotonic() < deadline:
         result = subprocess.run(
@@ -318,10 +333,27 @@ def test_terminate_sigkill_path_invokes_post_kill_callback(tmp_path: Path) -> No
         if not last_stdout:
             break
         time.sleep(0.5)
-    assert not last_stdout, (
-        f"spawned container {cid} survived SIGKILL escalation; "
-        f"post_kill_callback did not run or failed"
-    )
+    if last_stdout:
+        # Diagnostic dump: show container state + caplog so we can
+        # see why kill_via_cidfile did not finish removing it.
+        inspect = subprocess.run(
+            ["docker", "inspect", cid],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        captured_logs = "\n".join(
+            f"{r.levelname} {r.name} {r.getMessage()}" for r in caplog.records
+        )
+        pytest.fail(
+            f"spawned container {cid} survived SIGKILL escalation;\n"
+            f"--- docker inspect (rc={inspect.returncode}) ---\n"
+            f"stdout: {inspect.stdout[:2000]}\n"
+            f"stderr: {inspect.stderr[:500]}\n"
+            f"--- captured warnings ({len(caplog.records)}) ---\n"
+            f"{captured_logs}"
+        )
     # And the cidfile cleanup ran on the SIGKILL escalation branch.
     assert not cidfile.is_file(), (
         "cleanup callback did not unlink cidfile after SIGKILL escalation"
