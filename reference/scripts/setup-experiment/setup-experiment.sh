@@ -31,11 +31,18 @@ Usage:
                       [--env-file <path>]
                       [--experiment-dir <path>]
                       [--proposals-per-plan <N>]
+                      [--exec-mode {host,docker}]
 
 Generates `reference/compose/.env` and copies <config.yaml> to
 `reference/compose/experiment-config.yaml`, then seeds the bare
 repo via a one-shot `compose run --rm --no-deps eden-repo-init`
 call. Operator's next step is `docker compose up -d --wait`.
+
+When --exec-mode docker is used (subprocess overlay only), the
+script also: probes the in-VM gid of /var/run/docker.sock, builds
+`eden-runtime:dev`, optionally builds an experiment-specific image
+from `<EXPERIMENT_DIR>/Dockerfile`, and creates the host-side
+cidfile dir mounted into worker hosts.
 EOF
 }
 
@@ -59,6 +66,7 @@ ARG_SHARED_TOKEN=""
 ARG_POSTGRES_PASSWORD=""
 ARG_EXPERIMENT_DIR=""
 ARG_PROPOSALS_PER_PLAN=""
+ARG_EXEC_MODE="host"
 
 require_value() {
     # Validate that a flag's value is present, since `set -u` would
@@ -80,6 +88,7 @@ while [[ $# -gt 0 ]]; do
         --env-file)             require_value "$1" "$#"; ENV_FILE="$2";              shift 2 ;;
         --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
         --proposals-per-plan)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
+        --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         --*)                    echo "unknown flag: $1" >&2; usage; exit 2 ;;
         *)
@@ -193,6 +202,73 @@ fi
 EXISTING_PROPOSALS_PER_PLAN="$(read_env_key EDEN_PROPOSALS_PER_PLAN "$ENV_FILE")"
 EDEN_PROPOSALS_PER_PLAN="${ARG_PROPOSALS_PER_PLAN:-${EXISTING_PROPOSALS_PER_PLAN:-1}}"
 
+# --- Phase 10d follow-up A: --exec-mode docker resolution ---
+# All four are written to .env unconditionally; the compose overlay's
+# defaults make EDEN_EXEC_MODE=host a no-op (existing scripted /
+# subprocess host-mode CI jobs stay green). When --exec-mode=docker
+# we additionally:
+#   * probe the in-VM gid of /var/run/docker.sock (so worker host
+#     containers can use the bind-mounted socket as supplementary
+#     group; see plan §D.6),
+#   * build the default eden-runtime:dev image,
+#   * if the experiment dir contains a Dockerfile, build an
+#     experiment-specific image and use it as EDEN_EXEC_IMAGE,
+#   * mkdir a host-side cidfile dir for cross-restart cidfile
+#     persistence (see plan §D.3).
+case "$ARG_EXEC_MODE" in
+    host|docker) ;;
+    *)
+        echo "--exec-mode must be 'host' or 'docker'; got '$ARG_EXEC_MODE'" >&2
+        exit 2
+        ;;
+esac
+EDEN_EXEC_MODE="$ARG_EXEC_MODE"
+EDEN_EXEC_IMAGE="eden-runtime:dev"
+EDEN_DOCKER_GID="0"
+EDEN_CIDFILES_DIR_HOST="${COMPOSE_DIR}/.cidfiles-${EXPERIMENT_ID}"
+mkdir -p "$EDEN_CIDFILES_DIR_HOST"
+# 0777 so worker-host containers (running as eden:1000) can write
+# regardless of who created the dir on the host. The dir holds only
+# unique-per-spawn cidfiles, no secrets.
+chmod 0777 "$EDEN_CIDFILES_DIR_HOST" 2>/dev/null || true
+
+if [[ "$EDEN_EXEC_MODE" = "docker" ]]; then
+    if [[ ! -S /var/run/docker.sock ]]; then
+        echo "--exec-mode docker requires /var/run/docker.sock on the host" >&2
+        exit 2
+    fi
+    echo "--- probing in-container docker socket gid ---" >&2
+    # Run `stat -c '%g'` from inside a throwaway container that
+    # bind-mounts the socket. This returns the gid the worker host
+    # container will see, which is what `group_add` needs. On Linux
+    # native this matches the host's stat; on Docker Desktop /
+    # Colima it does NOT (the VM has its own gid namespace).
+    PROBED_GID="$(
+        docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            alpine:3.20 \
+            stat -c '%g' /var/run/docker.sock 2>/dev/null
+    )"
+    if [[ -z "$PROBED_GID" ]]; then
+        echo "failed to probe docker socket gid" >&2
+        exit 2
+    fi
+    EDEN_DOCKER_GID="$PROBED_GID"
+
+    echo "--- building eden-runtime:dev ---" >&2
+    docker build \
+        -t eden-runtime:dev \
+        -f "${COMPOSE_DIR}/Dockerfile.runtime" \
+        "$REPO_ROOT" >&2
+
+    if [[ -f "${EDEN_EXPERIMENT_DIR_HOST}/Dockerfile" ]]; then
+        EXP_IMAGE="eden-experiment-${EXPERIMENT_ID}:dev"
+        echo "--- building ${EXP_IMAGE} from experiment Dockerfile ---" >&2
+        docker build -t "$EXP_IMAGE" "$EDEN_EXPERIMENT_DIR_HOST" >&2
+        EDEN_EXEC_IMAGE="$EXP_IMAGE"
+    fi
+fi
+
 # --- Copy experiment config into compose dir ---
 cp "$CONFIG_PATH" "${COMPOSE_DIR}/experiment-config.yaml"
 
@@ -233,6 +309,16 @@ WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 # --- 10d subprocess overlay (only used by compose.subprocess.yaml) ---
 EDEN_EXPERIMENT_DIR_HOST=${EDEN_EXPERIMENT_DIR_HOST}
 EDEN_PROPOSALS_PER_PLAN=${EDEN_PROPOSALS_PER_PLAN}
+
+# --- 10d follow-up A: container-isolated *_command execution ---
+# EDEN_EXEC_MODE=host (default) keeps the chunk-10d behavior — user
+# commands run on the worker host container. EDEN_EXEC_MODE=docker
+# (set via --exec-mode docker) wraps each spawn in a sibling docker
+# container via DooD (host /var/run/docker.sock).
+EDEN_EXEC_MODE=${EDEN_EXEC_MODE}
+EDEN_EXEC_IMAGE=${EDEN_EXEC_IMAGE}
+EDEN_DOCKER_GID=${EDEN_DOCKER_GID}
+EDEN_CIDFILES_DIR_HOST=${EDEN_CIDFILES_DIR_HOST}
 
 # Placeholder; replaced at the end of setup-experiment with the
 # real seed SHA. docker compose v2 validates ALL services'

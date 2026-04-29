@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+# Default fallback image for `--exec-mode docker`. Has python3, git,
+# bash, and ca-certificates. Experiments that need richer dependency
+# graphs ship a `Dockerfile` in their experiment dir; setup-experiment
+# builds that as `eden-experiment-<id>:dev` and writes the image
+# tag into `.env`.
+
+FROM python:3.12.7-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# bash is required by container_exec.wrap_command (the wrap shape
+# is `bash -lc '<original-command>'`); git supports user *_command
+# scripts that shell out to git in the bind-mounted worktree;
+# ca-certificates supports outbound HTTPS for LLM clients etc.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       bash git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Mirror the eden:1000 user from eden-reference:dev (same uid/gid).
+# Worktree files written by the worker host are owned by uid 1000;
+# spawned children must read/write as the same user or git rejects
+# the worktree with "dubious ownership", and any commits the child
+# produces would be uid-0-owned, breaking the worker host's
+# subsequent integrator reads. The USER directive at the bottom
+# pins this; the wrap deliberately does NOT pass --user so an
+# experiment image that overrides USER (e.g. for a containerized
+# LLM CLI that needs root for system installs) can do so safely.
+RUN useradd --uid 1000 --create-home --shell /bin/bash eden
+
+# Empty .bashrc so `bash -lc` doesn't fail on a missing rc file or
+# inherit unexpected behavior from a base image's shell init. Users
+# who need bashrc behavior set their own in the experiment image.
+RUN install -m 0644 /dev/null /home/eden/.bashrc \
+    && chown eden:eden /home/eden/.bashrc
+
+USER eden

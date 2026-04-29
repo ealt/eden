@@ -120,4 +120,5 @@ testpaths = [
 ]
 markers = [
     "e2e: real-subprocess end-to-end tests (forks multiple OS processes)",
+    "docker: tests that require a reachable docker daemon (skipped otherwise)",
 ]

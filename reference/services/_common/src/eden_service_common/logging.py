@@ -42,6 +42,24 @@ class _JsonFormatter(logging.Formatter):
             for k, v in extras.items():
                 if k not in body:
                     body[k] = v
+        # Merge plain ``extra=`` kwargs too — some call sites use the
+        # standard logging API directly (subprocess_runner's stderr
+        # forwarder is one) and would otherwise lose every field they
+        # set. Standard LogRecord attributes are blacklisted to avoid
+        # dumping internal state.
+        _LOG_RECORD_RESERVED = {
+            "name", "msg", "args", "levelname", "levelno", "pathname",
+            "filename", "module", "exc_info", "exc_text", "stack_info",
+            "lineno", "funcName", "created", "msecs", "relativeCreated",
+            "thread", "threadName", "processName", "process",
+            "ctx", "taskName", "message", "asctime",
+        }
+        for k, v in record.__dict__.items():
+            if k in _LOG_RECORD_RESERVED or k.startswith("_"):
+                continue
+            if k in body:
+                continue
+            body[k] = v
         if record.exc_info:
             body["exc"] = self.formatException(record.exc_info)
         return json.dumps(body, sort_keys=False, default=str)

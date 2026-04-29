@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +31,15 @@ _HISTORY_LIMIT = 50
 """Cap on completed-trial history attached to each plan dispatch."""
 
 
+WrapResult = tuple[str, Callable[[], None] | None, list[Callable[[], None]]]
+"""Result of a per-spawn ``wrap_factory`` call.
+
+Tuple of (wrapped command, post_kill_callback, cleanup_callbacks).
+The post_kill_callback runs after SIGKILL escalation; cleanup_callbacks
+run on every terminal exit branch. Both are forwarded into ``spawn``.
+"""
+
+
 @dataclass
 class PlannerSubprocessConfig:
     """Knobs for the planner subprocess loop."""
@@ -41,6 +50,14 @@ class PlannerSubprocessConfig:
     startup_deadline: float
     task_deadline: float
     shutdown_deadline: float
+    wrap_factory: Callable[[], WrapResult] | None = None
+    """Optional factory invoked once per spawn (i.e. per host restart
+    cycle) to build a wrapped command + per-spawn cleanup callbacks.
+
+    When set, it takes precedence over ``command`` — useful for
+    ``--exec-mode=docker`` where each spawn needs a fresh cidfile.
+    The ``command`` field still must be set (used as a fallback +
+    for log diagnostics)."""
 
 
 class ProtocolViolation(Exception):
@@ -192,11 +209,17 @@ class PlannerSubprocess:
 
 def start_planner_subprocess(config: PlannerSubprocessConfig) -> PlannerSubprocess:
     """Spawn the planner subprocess and wait for the ``ready`` line."""
+    if config.wrap_factory is not None:
+        command, post_kill, cleanups = config.wrap_factory()
+    else:
+        command, post_kill, cleanups = config.command, None, []
     sub = spawn(
-        command=config.command,
+        command=command,
         cwd=config.cwd,
         env=config.env,
         role="planner",
+        post_kill_callback=post_kill,
+        cleanup_callbacks=cleanups,
     )
     wrapper = PlannerSubprocess(sub=sub, config=config)
     try:

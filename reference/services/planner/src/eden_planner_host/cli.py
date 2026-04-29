@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import socket
 from pathlib import Path
 
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
+    add_exec_arguments,
     configure_logging,
     get_logger,
     install_stop_handlers,
     load_experiment_config,
+    make_cidfile_callbacks,
+    make_cidfile_path,
     parse_env_file,
     parse_log_level,
+    reap_orphaned_containers,
     require_command,
+    resolve_exec_args,
     wait_for_task_store,
+    wrap_command,
 )
 from eden_wire import StoreClient
 
@@ -76,6 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--plan-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
+    add_exec_arguments(parser)
     args = parser.parse_args(argv)
     if args.mode == "scripted":
         if not args.base_commit_sha:
@@ -139,7 +147,60 @@ def main(argv: list[str] | None = None) -> int:
             env: dict[str, str] = {}
             if args.plan_env_file:
                 env.update(parse_env_file(args.plan_env_file))
+            # When --exec-mode=docker, EDEN_EXPERIMENT_DIR inside the
+            # spawned child container resolves to the bind-mount
+            # target supplied via --exec-bind, NOT the host-side path.
+            # We set EDEN_EXPERIMENT_DIR to the *worker-host*-side
+            # path here; the wrap echoes it through to the child via
+            # `-e EDEN_EXPERIMENT_DIR`. The bind mount in the
+            # spawned child uses the same target path so the env var
+            # resolves consistently in both places (because the child
+            # mount target equals the worker host's path).
             env["EDEN_EXPERIMENT_DIR"] = str(Path(args.experiment_dir).resolve())
+            try:
+                exec_args = resolve_exec_args(args)
+            except ValueError as exc:
+                parser_error_msg = str(exc)
+                raise SystemExit(f"eden-planner-host: {parser_error_msg}") from exc
+
+            wrap_factory = None
+            if exec_args.mode == "docker":
+                # Reap any orphaned sibling containers from a prior
+                # crash before we spawn fresh ones.
+                host_id = socket.gethostname()
+                reap_orphaned_containers(role="planner", host=host_id)
+
+                # Capture per-spawn closure inputs.
+                planner_command = command
+                cwd_target = str(Path(args.experiment_dir).resolve())
+                env_keys = list(env.keys())
+                volumes = exec_args.volumes
+                binds = exec_args.binds
+                image = exec_args.image
+                cidfile_dir = exec_args.cidfile_dir
+                assert image is not None  # guaranteed by resolve_exec_args
+
+                def _planner_wrap_factory():
+                    cidfile = make_cidfile_path(
+                        cidfile_dir=cidfile_dir, role="planner"
+                    )
+                    wrapped = wrap_command(
+                        original_command=planner_command,
+                        image=image,
+                        cwd_target=cwd_target,
+                        cidfile=cidfile,
+                        role="planner",
+                        task_id=host_id,
+                        host_id=host_id,
+                        volumes=volumes,
+                        binds=binds,
+                        env_keys=env_keys,
+                    )
+                    post_kill, cleanup = make_cidfile_callbacks(cidfile)
+                    return wrapped, post_kill, [cleanup]
+
+                wrap_factory = _planner_wrap_factory
+
             subprocess_config = build_subprocess_config(
                 command=command,
                 cwd=Path(args.experiment_dir).resolve(),
@@ -147,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
                 startup_deadline=args.plan_startup_deadline,
                 task_deadline=args.plan_task_deadline,
                 shutdown_deadline=args.plan_shutdown_deadline,
+                wrap_factory=wrap_factory,
             )
             run_planner_subprocess_loop(
                 store=client,

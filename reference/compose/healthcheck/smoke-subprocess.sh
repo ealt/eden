@@ -59,6 +59,18 @@ echo "--- bringing up the full stack with subprocess overlay ---"
 docker compose -f compose.yaml -f compose.subprocess.yaml \
     --env-file "$ENV_FILE" up -d --wait --wait-timeout 240
 
+# Sanity: assert the docker socket is NOT bound into the worker host
+# in plain subprocess (host) mode. Without compose.docker-exec.yaml
+# layered on, the socket mount must not appear — this guards against
+# accidental DooD privilege drift back into the host-mode overlay.
+if docker inspect eden-implementer-host --format \
+       '{{range .HostConfig.Binds}}{{println .}}{{end}}' \
+       | grep -q '/var/run/docker.sock'; then
+    echo "implementer-host has /var/run/docker.sock bound in HOST mode" >&2
+    echo "(this should only happen with compose.docker-exec.yaml layered on)" >&2
+    exit 1
+fi
+
 echo "--- waiting for orchestrator to exit on quiescence ---"
 deadline=$((SECONDS + 240))
 while [[ $SECONDS -lt $deadline ]]; do

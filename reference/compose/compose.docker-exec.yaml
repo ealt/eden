@@ -1,0 +1,181 @@
+# Phase 10d follow-up A — docker-exec overlay.
+#
+# Layered ON TOP of compose.subprocess.yaml:
+#
+#   docker compose -f compose.yaml \
+#                  -f compose.subprocess.yaml \
+#                  -f compose.docker-exec.yaml \
+#                  --env-file .env up -d --wait
+#
+# Activates Docker outside of Docker (DooD): every spawn of the
+# user's `*_command` runs in a sibling container the worker host
+# starts via the host docker daemon (mounted at /var/run/docker.sock).
+# Worker-side soft isolation (chunk-10d host mode) is preserved when
+# this overlay is NOT layered on; the docker socket is bind-mounted
+# only here.
+#
+# Required env (set by `setup-experiment.sh --exec-mode docker`):
+#   EDEN_EXEC_IMAGE          tag of the image used for spawned children
+#   EDEN_DOCKER_GID          gid of /var/run/docker.sock as seen
+#                            from inside a probe container
+#                            (probe-from-inside, NOT host-side stat)
+#   EDEN_CIDFILES_DIR_HOST   host-side dir mounted into worker hosts
+#                            so cidfiles survive worker restart
+#
+# See spec/v0/reference-bindings/worker-host-subprocess.md §7 for the
+# full design rationale and the soft-boundary security caveat.
+
+name: eden-reference
+
+services:
+  planner-host:
+    command:
+      - python
+      - -m
+      - eden_planner_host
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --worker-id
+      - planner-1
+      - --mode
+      - subprocess
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --experiment-dir
+      - /etc/eden/experiment-dir
+      - --artifacts-dir
+      - /var/lib/eden/artifacts
+      - --plan-env-file
+      - /etc/eden/planner.env
+      - --exec-mode
+      - docker
+      - --exec-image
+      - ${EDEN_EXEC_IMAGE:?}
+      - --exec-bind
+      - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
+      - --cidfile-dir
+      - ${EDEN_CIDFILES_DIR_HOST:?}
+      - --log-level
+      - info
+    group_add:
+      - "${EDEN_DOCKER_GID:?}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Bind the cidfile dir at the SAME path the host uses, so when
+      # the worker invokes `docker run --cidfile <path>` the host
+      # docker daemon resolves that path to the same directory the
+      # worker is reading from. (`docker run --cidfile` is interpreted
+      # on the daemon side, not in the calling container's mount
+      # namespace — so the path the worker passes must be valid on
+      # the host filesystem.)
+      - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}
+
+  implementer-host:
+    command:
+      - python
+      - -m
+      - eden_implementer_host
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --worker-id
+      - implementer-1
+      - --repo-path
+      - /var/lib/eden/repo
+      - --mode
+      - subprocess
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --experiment-dir
+      - /etc/eden/experiment-dir
+      - --worktrees-dir
+      - /var/lib/eden/worktrees
+      - --implement-env-file
+      - /etc/eden/implement.env
+      - --exec-mode
+      - docker
+      - --exec-image
+      - ${EDEN_EXEC_IMAGE:?}
+      - --exec-volume
+      - eden-bare-repo:/var/lib/eden/repo
+      - --exec-volume
+      - eden-worktrees:/var/lib/eden/worktrees
+      - --exec-volume
+      - eden-artifacts-data:/var/lib/eden/artifacts:ro
+      - --exec-bind
+      - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
+      - --cidfile-dir
+      - ${EDEN_CIDFILES_DIR_HOST:?}
+      - --log-level
+      - info
+    group_add:
+      - "${EDEN_DOCKER_GID:?}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Bind the cidfile dir at the SAME path the host uses, so when
+      # the worker invokes `docker run --cidfile <path>` the host
+      # docker daemon resolves that path to the same directory the
+      # worker is reading from. (`docker run --cidfile` is interpreted
+      # on the daemon side, not in the calling container's mount
+      # namespace — so the path the worker passes must be valid on
+      # the host filesystem.)
+      - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}
+
+  evaluator-host:
+    command:
+      - python
+      - -m
+      - eden_evaluator_host
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --shared-token
+      - ${EDEN_SHARED_TOKEN:?}
+      - --worker-id
+      - evaluator-1
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --mode
+      - subprocess
+      - --experiment-dir
+      - /etc/eden/experiment-dir
+      - --repo-path
+      - /var/lib/eden/repo
+      - --worktrees-dir
+      - /var/lib/eden/worktrees
+      - --evaluate-env-file
+      - /etc/eden/evaluate.env
+      - --exec-mode
+      - docker
+      - --exec-image
+      - ${EDEN_EXEC_IMAGE:?}
+      - --exec-volume
+      - eden-bare-repo:/var/lib/eden/repo
+      - --exec-volume
+      - eden-worktrees:/var/lib/eden/worktrees
+      - --exec-bind
+      - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
+      - --cidfile-dir
+      - ${EDEN_CIDFILES_DIR_HOST:?}
+      - --log-level
+      - info
+    group_add:
+      - "${EDEN_DOCKER_GID:?}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Bind the cidfile dir at the SAME path the host uses, so when
+      # the worker invokes `docker run --cidfile <path>` the host
+      # docker daemon resolves that path to the same directory the
+      # worker is reading from. (`docker run --cidfile` is interpreted
+      # on the daemon side, not in the calling container's mount
+      # namespace — so the path the worker passes must be valid on
+      # the host filesystem.)
+      - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}

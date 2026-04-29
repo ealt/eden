@@ -109,7 +109,7 @@ pick up changes to `command:`, env files, or `configs:`.
 | Gitea SSH  | `ssh://git@localhost:2222`     | (idem)                                         |
 | Web UI     | `http://localhost:8090/`       | sign in with any worker_id                     |
 | Blob volume | `eden-reference_eden-blob-data` (Docker named volume) | mounted at `/var/lib/eden/blobs` by future consumers |
-| Bare repo  | `eden-reference_eden-bare-repo` (Docker named volume) | mounted at `/var/lib/eden/repo` by orchestrator/implementer/web-ui |
+| Bare repo  | `eden-bare-repo` (Docker named volume; `name:` pinned in compose.yaml) | mounted at `/var/lib/eden/repo` by orchestrator/implementer/web-ui |
 
 Defaults intentionally avoid the well-known ports (5432, 3000, 22)
 to sidestep collisions with locally-running Postgres or Gitea

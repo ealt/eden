@@ -23,9 +23,12 @@ from eden_contracts import EvaluateTask, ExperimentConfig
 from eden_service_common import (
     StopFlag,
     TaskWorktree,
+    make_cidfile_callbacks,
+    make_cidfile_path,
     parse_json_line,
     spawn,
     sweep_host_worktrees,
+    wrap_command,
 )
 from eden_storage import (
     ConflictingResubmission,
@@ -54,6 +57,12 @@ class EvaluatorSubprocessConfig:
     worktrees_root: Path
     task_deadline: float
     shutdown_deadline: float
+    exec_mode: str = "host"
+    exec_image: str | None = None
+    exec_volumes: tuple = ()
+    exec_binds: tuple = ()
+    cidfile_dir: Path | None = None
+    host_id: str = ""
 
 
 def host_worktrees_subdir(*, worktrees_root: Path) -> Path:
@@ -267,52 +276,87 @@ def _run_subprocess(
     env["EDEN_WORKTREE"] = str(wt_path)
     env["EDEN_EXPERIMENT_DIR"] = str(config.experiment_dir.resolve())
 
+    command = config.command
+    post_kill = None
+    cleanups: list = []
+    if config.exec_mode == "docker":
+        assert config.exec_image is not None
+        assert config.cidfile_dir is not None
+        cidfile = make_cidfile_path(
+            cidfile_dir=config.cidfile_dir, role="evaluator"
+        )
+        command = wrap_command(
+            original_command=config.command,
+            image=config.exec_image,
+            cwd_target=str(wt_path),
+            cidfile=cidfile,
+            role="evaluator",
+            task_id=task.task_id,
+            host_id=config.host_id,
+            volumes=list(config.exec_volumes),
+            binds=list(config.exec_binds),
+            env_keys=list(env.keys()),
+            # Per-task evaluator subprocess does NOT read stdin —
+            # same reasoning as the implementer side.
+            attach_stdin=False,
+        )
+        pk, cu = make_cidfile_callbacks(cidfile)
+        post_kill = pk
+        cleanups = [cu]
+
     sub = spawn(
-        command=config.command,
+        command=command,
         cwd=wt_path,
         env=env,
         role="evaluator",
         task_id=task.task_id,
         capture_stdin=False,
+        post_kill_callback=post_kill,
+        cleanup_callbacks=cleanups,
     )
-    deadline = time.monotonic() + config.task_deadline
-    while sub.is_alive():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+    try:
+        deadline = time.monotonic() + config.task_deadline
+        while sub.is_alive():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.warning(
+                    "evaluator_subprocess_timeout",
+                    extra={"task_id": task.task_id},
+                )
+                sub.terminate(shutdown_deadline=config.shutdown_deadline)
+                return {"status": "eval_error"}
+            try:
+                line = sub.read_line(
+                    deadline=time.monotonic() + min(remaining, 1.0)
+                )
+            except TimeoutError:
+                continue
+            if line is None:
+                break
+            log.debug("evaluator_subprocess_stdout", extra={"line": line})
+        rc = sub.popen.wait(timeout=max(0.1, config.shutdown_deadline))
+        if rc != 0:
             log.warning(
-                "evaluator_subprocess_timeout",
+                "evaluator_subprocess_nonzero_exit",
+                extra={"task_id": task.task_id, "exit_code": rc},
+            )
+            return {"status": "eval_error"}
+        if not output_json.is_file():
+            log.warning(
+                "evaluator_subprocess_missing_outcome",
                 extra={"task_id": task.task_id},
             )
-            sub.terminate(shutdown_deadline=config.shutdown_deadline)
             return {"status": "eval_error"}
-        try:
-            line = sub.read_line(deadline=time.monotonic() + min(remaining, 1.0))
-        except TimeoutError:
-            continue
-        if line is None:
-            break
-        log.debug("evaluator_subprocess_stdout", extra={"line": line})
-    rc = sub.popen.wait(timeout=max(0.1, config.shutdown_deadline))
-    if rc != 0:
-        log.warning(
-            "evaluator_subprocess_nonzero_exit",
-            extra={"task_id": task.task_id, "exit_code": rc},
-        )
-        return {"status": "eval_error"}
-    if not output_json.is_file():
-        log.warning(
-            "evaluator_subprocess_missing_outcome",
-            extra={"task_id": task.task_id},
-        )
-        return {"status": "eval_error"}
-    parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
-    if parsed is None:
-        log.warning(
-            "evaluator_subprocess_malformed_outcome",
-            extra={"task_id": task.task_id},
-        )
-        return {"status": "eval_error"}
-    return parsed
+        parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
+        if parsed is None:
+            log.warning(
+                "evaluator_subprocess_malformed_outcome",
+                extra={"task_id": task.task_id},
+            )
+            return {"status": "eval_error"}
+        return parsed
+    finally:
+        sub.run_cleanups()
 
 
 def _submit_with_readback(

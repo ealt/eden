@@ -23,8 +23,8 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
@@ -73,6 +73,22 @@ class Subprocess:
     """Lines from stdout. Sentinel ``None`` is pushed at EOF."""
     _stderr_thread: threading.Thread
     _task_id_holder: list[str | None]
+    _post_kill_callback: Callable[[], None] | None = None
+    """Runs after SIGKILL escalation in :meth:`terminate`.
+
+    Used by the docker-mode wrap to kill the sibling container the
+    local ``docker run`` client was talking to (the SIGKILL on the
+    docker-run client itself does NOT kill the container; the daemon
+    keeps it running until the workload exits or is killed
+    externally).
+    """
+    cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    """Callbacks invoked on every terminal exit branch in
+    :meth:`terminate` and via :meth:`run_cleanups`.
+
+    Used by the docker-mode wrap to unlink the per-spawn cidfile
+    on every exit path (SIGTERM-graceful, fast-path, SIGKILL).
+    """
     """Mutable single-cell holder for the current task_id (long-running
     planner subprocess updates this per dispatch; per-task hosts can
     leave it as the value passed at spawn-time). Read by the stderr
@@ -126,6 +142,23 @@ class Subprocess:
         """Return ``True`` if the subprocess hasn't exited."""
         return self.popen.poll() is None
 
+    def run_cleanups(self) -> None:
+        """Run and clear all registered cleanup callbacks.
+
+        Idempotent — safe to call multiple times because the list is
+        cleared on first call. Failures in any one callback are
+        logged but do not stop the rest.
+        """
+        callbacks, self.cleanup_callbacks = self.cleanup_callbacks, []
+        for cb in callbacks:
+            try:
+                cb()
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                log.warning(
+                    "subprocess_cleanup_failed",
+                    extra={"role": self.role, "error": str(exc)},
+                )
+
     def terminate(self, *, shutdown_deadline: float) -> int:
         """Stop the subprocess: SIGTERM, wait, SIGKILL fallback.
 
@@ -133,15 +166,26 @@ class Subprocess:
         guarantees there is one), waits up to ``shutdown_deadline``
         seconds for exit, then SIGKILLs the group. Returns the exit
         code.
+
+        On every exit branch this calls :meth:`run_cleanups`; on the
+        SIGKILL-escalation branch it additionally calls
+        ``self._post_kill_callback`` (if set) **before**
+        ``run_cleanups`` so docker container teardown runs before
+        cidfile unlink.
         """
         if self.popen.poll() is not None:
+            self.run_cleanups()
             return self.popen.returncode
         try:
             os.killpg(self.popen.pid, signal.SIGTERM)
         except ProcessLookupError:
-            return self.popen.wait(timeout=1)
+            rc = self.popen.wait(timeout=1)
+            self.run_cleanups()
+            return rc
         try:
-            return self.popen.wait(timeout=shutdown_deadline)
+            rc = self.popen.wait(timeout=shutdown_deadline)
+            self.run_cleanups()
+            return rc
         except subprocess.TimeoutExpired:
             log.warning(
                 "subprocess_sigkill",
@@ -149,7 +193,17 @@ class Subprocess:
             )
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.popen.pid, signal.SIGKILL)
-            return self.popen.wait(timeout=5)
+            rc = self.popen.wait(timeout=5)
+            if self._post_kill_callback is not None:
+                try:
+                    self._post_kill_callback()
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    log.warning(
+                        "subprocess_post_kill_failed",
+                        extra={"role": self.role, "error": str(exc)},
+                    )
+            self.run_cleanups()
+            return rc
 
 
 def spawn(
@@ -162,6 +216,8 @@ def spawn(
     capture_stdout: bool = True,
     capture_stderr: bool = True,
     capture_stdin: bool = True,
+    post_kill_callback: Callable[[], None] | None = None,
+    cleanup_callbacks: list[Callable[[], None]] | None = None,
 ) -> Subprocess:
     """Launch ``command`` via ``shell=True`` with a fresh process group.
 
@@ -211,6 +267,8 @@ def spawn(
         stdout_queue=stdout_queue,
         _stderr_thread=stderr_thread,
         _task_id_holder=task_id_holder,
+        _post_kill_callback=post_kill_callback,
+        cleanup_callbacks=list(cleanup_callbacks) if cleanup_callbacks else [],
     )
 
 

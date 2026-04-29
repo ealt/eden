@@ -185,8 +185,15 @@ def build_subprocess_config(
     startup_deadline: float,
     task_deadline: float,
     shutdown_deadline: float,
+    wrap_factory: object | None = None,
 ) -> PlannerSubprocessConfig:
-    """Helper for the CLI layer to construct the subprocess config."""
+    """Helper for the CLI layer to construct the subprocess config.
+
+    ``wrap_factory`` is forwarded to the config; when set, the
+    subprocess loop calls it once per spawn to build a fresh wrapped
+    command + per-spawn cleanup callbacks. Used by the docker exec
+    mode for per-spawn cidfile management.
+    """
     return PlannerSubprocessConfig(
         command=command,
         cwd=Path(cwd),
@@ -194,4 +201,5 @@ def build_subprocess_config(
         startup_deadline=startup_deadline,
         task_deadline=task_deadline,
         shutdown_deadline=shutdown_deadline,
+        wrap_factory=wrap_factory,  # type: ignore[arg-type]
     )

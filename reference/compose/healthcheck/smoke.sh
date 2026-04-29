@@ -88,9 +88,16 @@ echo "--- compose ps ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" ps -a
 
 echo "--- asserting all five named volumes exist ---"
-for vol in eden-postgres-data eden-gitea-data eden-blob-data \
-           eden-bare-repo eden-artifacts-data; do
+# eden-bare-repo and eden-artifacts-data have explicit `name:` in
+# compose.yaml so the host docker daemon can resolve them by literal
+# name (needed for the chunk-10d follow-up A docker exec wrap).
+# The other three keep compose's default `<project>_<volume>`
+# auto-prefix.
+for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
     docker volume inspect "${PROJECT}_${vol}" >/dev/null
+done
+for vol in eden-bare-repo eden-artifacts-data; do
+    docker volume inspect "$vol" >/dev/null
 done
 
 echo "--- asserting blob-init exited 0 ---"
