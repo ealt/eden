@@ -227,6 +227,10 @@ EDEN_EXEC_IMAGE="eden-runtime:dev"
 EDEN_DOCKER_GID="0"
 EDEN_CIDFILES_DIR_HOST="${COMPOSE_DIR}/.cidfiles-${EXPERIMENT_ID}"
 mkdir -p "$EDEN_CIDFILES_DIR_HOST"
+# 0777 so worker-host containers (running as eden:1000) can write
+# regardless of who created the dir on the host. The dir holds only
+# unique-per-spawn cidfiles, no secrets.
+chmod 0777 "$EDEN_CIDFILES_DIR_HOST" 2>/dev/null || true
 
 if [[ "$EDEN_EXEC_MODE" = "docker" ]]; then
     if [[ ! -S /var/run/docker.sock ]]; then

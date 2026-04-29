@@ -58,14 +58,21 @@ services:
       - --exec-bind
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
-      - /var/lib/eden/cidfiles
+      - ${EDEN_CIDFILES_DIR_HOST:?}
       - --log-level
       - info
     group_add:
       - "${EDEN_DOCKER_GID:?}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${EDEN_CIDFILES_DIR_HOST:?}:/var/lib/eden/cidfiles
+      # Bind the cidfile dir at the SAME path the host uses, so when
+      # the worker invokes `docker run --cidfile <path>` the host
+      # docker daemon resolves that path to the same directory the
+      # worker is reading from. (`docker run --cidfile` is interpreted
+      # on the daemon side, not in the calling container's mount
+      # namespace — so the path the worker passes must be valid on
+      # the host filesystem.)
+      - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}
 
   implementer-host:
     command:
@@ -105,14 +112,21 @@ services:
       - --exec-bind
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
-      - /var/lib/eden/cidfiles
+      - ${EDEN_CIDFILES_DIR_HOST:?}
       - --log-level
       - info
     group_add:
       - "${EDEN_DOCKER_GID:?}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${EDEN_CIDFILES_DIR_HOST:?}:/var/lib/eden/cidfiles
+      # Bind the cidfile dir at the SAME path the host uses, so when
+      # the worker invokes `docker run --cidfile <path>` the host
+      # docker daemon resolves that path to the same directory the
+      # worker is reading from. (`docker run --cidfile` is interpreted
+      # on the daemon side, not in the calling container's mount
+      # namespace — so the path the worker passes must be valid on
+      # the host filesystem.)
+      - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}
 
   evaluator-host:
     command:
@@ -150,11 +164,18 @@ services:
       - --exec-bind
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
-      - /var/lib/eden/cidfiles
+      - ${EDEN_CIDFILES_DIR_HOST:?}
       - --log-level
       - info
     group_add:
       - "${EDEN_DOCKER_GID:?}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${EDEN_CIDFILES_DIR_HOST:?}:/var/lib/eden/cidfiles
+      # Bind the cidfile dir at the SAME path the host uses, so when
+      # the worker invokes `docker run --cidfile <path>` the host
+      # docker daemon resolves that path to the same directory the
+      # worker is reading from. (`docker run --cidfile` is interpreted
+      # on the daemon side, not in the calling container's mount
+      # namespace — so the path the worker passes must be valid on
+      # the host filesystem.)
+      - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}
