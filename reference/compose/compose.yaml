@@ -355,5 +355,16 @@ volumes:
   eden-postgres-data:
   eden-gitea-data:
   eden-blob-data:
+  # Volumes that are forwarded into spawned sibling containers when
+  # --exec-mode docker is active need explicit `name:` to override
+  # compose's default `<project>_<volume>` prefix. The wrap mounts
+  # them by literal name (`--mount type=volume,source=eden-bare-repo,...`)
+  # against the host docker daemon's catalog; without `name:`, compose
+  # creates them as `eden-reference_eden-bare-repo`, the wrap's mount
+  # of `eden-bare-repo` resolves to a fresh empty volume, and spawned
+  # containers see an empty bind-mount instead of the worker host's
+  # data. See plan §D.2.
   eden-bare-repo:
+    name: eden-bare-repo
   eden-artifacts-data:
+    name: eden-artifacts-data

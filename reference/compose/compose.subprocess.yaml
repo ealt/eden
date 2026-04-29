@@ -1,18 +1,22 @@
-# Phase 10d subprocess-mode overlay.
+# Phase 10d subprocess-mode overlay (host-mode default).
 #
 # Layered on top of compose.yaml:
 #
 #   docker compose -f compose.yaml -f compose.subprocess.yaml --env-file .env up -d --wait
 #
-# Switches the planner / implementer / evaluator hosts to
-# `--mode subprocess`, bind-mounts the experiment directory
-# (`EDEN_EXPERIMENT_DIR_HOST`), and adds a volume for per-task
-# worktrees. The user's `plan_command` / `implement_command` /
-# `evaluate_command` come from the same experiment-config.yaml the
-# scripted-mode stack already mounts.
+# This overlay switches the planner / implementer / evaluator hosts
+# to `--mode subprocess` and bind-mounts the experiment dir so the
+# user's `*_command` runs in the worker host container itself
+# (chunk-10d behavior — no docker access).
+#
+# To run the user command in a sibling container instead (chunk-10d
+# follow-up A docker mode), layer `compose.docker-exec.yaml` ON TOP
+# of this file. That second overlay is the only place the docker
+# socket gets mounted into worker hosts, so plain subprocess mode
+# keeps the soft-isolation security posture chunk 10d shipped.
 #
 # When this overlay is active, the orchestrator's `--plan-tasks`
-# count must still be a comma-separated list of plan task ids
+# value must still be a comma-separated list of plan task ids
 # (e.g. plan-1,plan-2,plan-3); that flag is unchanged.
 
 name: eden-reference
@@ -160,4 +164,9 @@ configs:
       # evaluator subprocess env — extend with API keys etc.
 
 volumes:
+  # Same `name:` discipline as the bare-repo + artifacts volumes in
+  # compose.yaml — needed for --exec-mode docker volume forwarding
+  # (compose.docker-exec.yaml). Pinning the name in this overlay
+  # keeps host-mode and docker-mode using the same volume name.
   eden-worktrees:
+    name: eden-worktrees

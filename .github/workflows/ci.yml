@@ -158,6 +158,43 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-subprocess.sh
 
+  compose-smoke-subprocess-docker:
+    name: compose-smoke-subprocess-docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same PEP 668 posture as compose-e2e — docker-backed pytest
+      # markers may need pip installs in future expansions; setting
+      # this up now keeps the path consistent.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Run docker-backed unit tests
+        run: uv run pytest -q -m docker reference/services/_common/tests
+
+      - name: Run compose smoke (subprocess + docker exec mode)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-subprocess-docker.sh
+
   compose-e2e:
     name: compose-e2e
     runs-on: ubuntu-latest

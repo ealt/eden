@@ -1,0 +1,38 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-followup-a-container-isolation/20260428T161958/2.md	2026-04-28 16:30:24
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md	2026-04-28 16:31:16
+@@ -399,10 +399,18 @@
+   passed `cwd` to `subprocess_runner.spawn` stays on the worker host
+   (so `docker run` inherits it locally); the wrapper's `-w` is the
+   same path inside the container, since the worktrees volume is
+-  mounted at the same target. The cleanup callback is registered
+-  via the new `cleanup_callbacks` kwarg.
++  mounted at the same target. **Both** the cleanup callback (cidfile
++  unlink, runs on every exit branch) **and** the `post_kill_callback`
++  (cidfile-driven `docker kill && docker rm -f`, runs only on
++  SIGKILL escalation) are registered at spawn time. This is
++  load-bearing for the implementer/evaluator: their existing code
++  already calls `sub.terminate(shutdown_deadline=…)` on the task-
++  deadline branch (see [implementer subprocess_mode.py:358](reference/services/implementer/src/eden_implementer_host/subprocess_mode.py#L358)
++  and [evaluator subprocess_mode.py:286](reference/services/evaluator/src/eden_evaluator_host/subprocess_mode.py#L286)),
++  and without the post_kill callback the timed-out user code's
++  container would be orphaned.
+ - `reference/services/evaluator/src/eden_evaluator_host/cli.py`
+-  + `subprocess_mode.py` — same.
++  + `subprocess_mode.py` — same: both callbacks registered at spawn.
+ - All three `subprocess_mode.py` files: the `_run_subprocess`
+   helpers gain new fields on their `*SubprocessConfig` dataclasses
+   to carry the docker mode params (image, mounts, binds, cidfile-
+@@ -432,7 +440,12 @@
+   - new `--exec-mode {host,docker}` flag (default `host` to keep
+     the chunk-10d smoke-subprocess path green).
+   - When `docker`:
+-    - resolve `EDEN_DOCKER_GID` via `stat`.
++    - resolve `EDEN_DOCKER_GID` via the probe-from-inside method
++      from §D.6 (`docker run --rm -v
++      /var/run/docker.sock:/var/run/docker.sock alpine:3.20 stat
++      -c '%g' /var/run/docker.sock`); the host-side `stat` is NOT
++      used, because Docker Desktop / Colima return a different gid
++      from what the worker container will see.
+     - `docker build -t eden-runtime:dev -f reference/compose/Dockerfile.runtime .`
+       (idempotent; cached after first build).
+     - if `${EDEN_EXPERIMENT_DIR}/Dockerfile` exists, build

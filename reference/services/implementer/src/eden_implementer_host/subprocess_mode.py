@@ -27,9 +27,12 @@ from eden_git import GitRepo
 from eden_service_common import (
     StopFlag,
     TaskWorktree,
+    make_cidfile_callbacks,
+    make_cidfile_path,
     parse_json_line,
     spawn,
     sweep_host_worktrees,
+    wrap_command,
 )
 from eden_storage import (
     ConflictingResubmission,
@@ -59,6 +62,16 @@ class ImplementerSubprocessConfig:
     """Container-private subdir under <worktrees_dir>/<hostname>/."""
     task_deadline: float
     shutdown_deadline: float
+    exec_mode: str = "host"
+    """Either ``"host"`` (default) or ``"docker"``. When docker,
+    every per-task spawn is wrapped in ``docker run`` (DooD)."""
+    exec_image: str | None = None
+    exec_volumes: tuple = ()
+    exec_binds: tuple = ()
+    cidfile_dir: Path | None = None
+    """Where per-spawn cidfiles are written. Required in docker mode."""
+    host_id: str = ""
+    """Container hostname used as the ``eden.host=`` label."""
 
 
 def _now_iso() -> str:
@@ -339,55 +352,90 @@ def _run_subprocess(
     env["EDEN_WORKTREE"] = str(wt_path)
     env["EDEN_EXPERIMENT_DIR"] = str(config.experiment_dir.resolve())
 
+    command = config.command
+    post_kill = None
+    cleanups: list = []
+    if config.exec_mode == "docker":
+        assert config.exec_image is not None
+        assert config.cidfile_dir is not None
+        cidfile = make_cidfile_path(
+            cidfile_dir=config.cidfile_dir, role="implementer"
+        )
+        command = wrap_command(
+            original_command=config.command,
+            image=config.exec_image,
+            cwd_target=str(wt_path),
+            cidfile=cidfile,
+            role="implementer",
+            task_id=task.task_id,
+            host_id=config.host_id,
+            volumes=list(config.exec_volumes),
+            binds=list(config.exec_binds),
+            env_keys=list(env.keys()),
+        )
+        pk, cu = make_cidfile_callbacks(cidfile)
+        post_kill = pk
+        cleanups = [cu]
+
     sub = spawn(
-        command=config.command,
+        command=command,
         cwd=wt_path,
         env=env,
         role="implementer",
         task_id=task.task_id,
         capture_stdin=False,
+        post_kill_callback=post_kill,
+        cleanup_callbacks=cleanups,
     )
-    deadline = time.monotonic() + config.task_deadline
-    while sub.is_alive():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+    try:
+        deadline = time.monotonic() + config.task_deadline
+        while sub.is_alive():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.warning(
+                    "implementer_subprocess_timeout",
+                    extra={"task_id": task.task_id},
+                )
+                sub.terminate(shutdown_deadline=config.shutdown_deadline)
+                return {"status": "error"}
+            # Drain any stdout the subprocess produced (the protocol
+            # doesn't actually use it, but we read so the pipe doesn't
+            # block).
+            try:
+                line = sub.read_line(
+                    deadline=time.monotonic() + min(remaining, 1.0)
+                )
+            except TimeoutError:
+                continue
+            if line is None:
+                break
+            log.debug("implementer_subprocess_stdout", extra={"line": line})
+        rc = sub.popen.wait(timeout=max(0.1, config.shutdown_deadline))
+        if rc != 0:
             log.warning(
-                "implementer_subprocess_timeout",
+                "implementer_subprocess_nonzero_exit",
+                extra={"task_id": task.task_id, "exit_code": rc},
+            )
+            return {"status": "error"}
+        if not output_json.is_file():
+            log.warning(
+                "implementer_subprocess_missing_outcome",
                 extra={"task_id": task.task_id},
             )
-            sub.terminate(shutdown_deadline=config.shutdown_deadline)
             return {"status": "error"}
-        # Drain any stdout the subprocess produced (the protocol
-        # doesn't actually use it, but we read so the pipe doesn't
-        # block).
-        try:
-            line = sub.read_line(deadline=time.monotonic() + min(remaining, 1.0))
-        except TimeoutError:
-            continue
-        if line is None:
-            break
-        log.debug("implementer_subprocess_stdout", extra={"line": line})
-    rc = sub.popen.wait(timeout=max(0.1, config.shutdown_deadline))
-    if rc != 0:
-        log.warning(
-            "implementer_subprocess_nonzero_exit",
-            extra={"task_id": task.task_id, "exit_code": rc},
-        )
-        return {"status": "error"}
-    if not output_json.is_file():
-        log.warning(
-            "implementer_subprocess_missing_outcome",
-            extra={"task_id": task.task_id},
-        )
-        return {"status": "error"}
-    parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
-    if parsed is None:
-        log.warning(
-            "implementer_subprocess_malformed_outcome",
-            extra={"task_id": task.task_id},
-        )
-        return {"status": "error"}
-    return parsed
+        parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
+        if parsed is None:
+            log.warning(
+                "implementer_subprocess_malformed_outcome",
+                extra={"task_id": task.task_id},
+            )
+            return {"status": "error"}
+        return parsed
+    finally:
+        # `terminate()` runs cleanups itself; the happy path needs
+        # an explicit call so the cidfile is unlinked when the
+        # subprocess exits naturally.
+        sub.run_cleanups()
 
 
 def _rationale_path_from_uri(uri: str | None) -> str | None:

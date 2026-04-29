@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import socket
 from pathlib import Path
 
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
+    add_exec_arguments,
     configure_logging,
     get_logger,
     install_stop_handlers,
     load_experiment_config,
     parse_env_file,
     parse_log_level,
+    reap_orphaned_containers,
     require_command,
+    resolve_exec_args,
     wait_for_task_store,
 )
 from eden_wire import StoreClient
@@ -63,6 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--implement-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
+    add_exec_arguments(parser)
     args = parser.parse_args(argv)
     if args.mode == "subprocess":
         for attr in ("experiment_config", "experiment_dir"):
@@ -112,6 +117,13 @@ def main(argv: list[str] | None = None) -> int:
             env = {}
             if args.implement_env_file:
                 env.update(parse_env_file(args.implement_env_file))
+            try:
+                exec_args = resolve_exec_args(args)
+            except ValueError as exc:
+                raise SystemExit(f"eden-implementer-host: {exc}") from exc
+            host_id = socket.gethostname()
+            if exec_args.mode == "docker":
+                reap_orphaned_containers(role="implementer", host=host_id)
             sub_config = ImplementerSubprocessConfig(
                 command=command,
                 experiment_dir=Path(args.experiment_dir).resolve(),
@@ -120,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
                 worktrees_root=Path(args.worktrees_dir),
                 task_deadline=args.implement_task_deadline,
                 shutdown_deadline=args.implement_shutdown_deadline,
+                exec_mode=exec_args.mode,
+                exec_image=exec_args.image,
+                exec_volumes=tuple(exec_args.volumes),
+                exec_binds=tuple(exec_args.binds),
+                cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
+                host_id=host_id,
             )
             run_implementer_subprocess_loop(
                 store=client,

@@ -1,0 +1,232 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-followup-a-container-isolation/20260428T161958/1.md	2026-04-28 16:27:10
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md	2026-04-28 16:30:15
+@@ -140,12 +140,17 @@
+ escalation, the local docker-run client is killed but the container
+ keeps running until the workload exits or is killed externally.
+ 
+-Fix: `Subprocess.terminate()` gains an optional
+-`post_kill_callback: Callable[[], None] | None = None`. When set,
+-it runs **after** the SIGKILL escalation branch (AFTER `os.killpg`
+-of the local docker-run process group). The container_exec module
+-sets this callback to:
++**API:** the SIGKILL-escalation cleanup is stored on the `Subprocess`
++instance, not threaded through every `terminate()` call. Concretely:
+ 
++- `spawn()` gains a `post_kill_callback: Callable[[], None] | None
++  = None` kwarg. The value is stashed as `Subprocess._post_kill_callback`.
++- `Subprocess.terminate()` takes **no** new parameters. On the
++  SIGKILL-escalation branch (after `os.killpg(SIGKILL)`), if
++  `self._post_kill_callback is not None`, it is called.
++- The container_exec spawn helper sets the callback to a closure
++  over the cidfile path:
++
+ ```python
+ def _kill_via_cidfile(cidfile: Path) -> None:
+     cid = cidfile.read_text().strip() if cidfile.is_file() else ""
+@@ -155,6 +160,11 @@
+ ```
+ 
+ `check=False` because the container may already be gone via `--rm`.
++
++This means call sites never see `post_kill_callback` directly — it's
++configured at spawn time and runs automatically on terminate-with-
++escalation. There is exactly one API surface (`spawn`), no per-call
++threading, no ambiguity about who calls what.
+ 
+ **(b) Happy-path cleanup.** `--rm` removes the container on its own
+ exit, but the cidfile on the host filesystem stays. Reuse of a
+@@ -262,8 +272,8 @@
+ Two options:
+ 
+ 1. **GID-matching `group_add`** — at compose-load time, set
+-   `EDEN_DOCKER_GID` to the host's docker socket gid (read with
+-   `stat -c '%g' /var/run/docker.sock`) and use
++   `EDEN_DOCKER_GID` to the gid the worker container will see on
++   the bind-mounted socket, and use
+    `group_add: ["${EDEN_DOCKER_GID}"]` on each subprocess-mode
+    service. The container's `eden` user inherits that gid as a
+    supplementary group → the socket is rw without changing the
+@@ -272,28 +282,46 @@
+    privilege. Acceptable for the reference because (per §D.5) DooD
+    is already a soft security boundary, but option 1 is preferred.
+ 
+-We pick **option 1**. setup-experiment.sh gains:
++We pick **option 1**.
+ 
++**Detection: probe-from-inside.** A host-side `stat
++/var/run/docker.sock` returns the gid in the host kernel's view,
++which on Linux native is the same gid the worker sees, but on
++Docker Desktop (macOS / Windows) is *not* — Desktop runs a Linux
++VM, the socket is bind-forwarded into the VM with a VM-internal
++gid, and the host-side stat returns the host user's gid (often
++20 / staff on macOS), which is meaningless inside the worker.
++
++setup-experiment.sh therefore detects the gid by probing from
++inside a throwaway container that bind-mounts the socket:
++
+ ```bash
+ if [[ "$EXEC_MODE" = "docker" ]]; then
+-    if [[ -S /var/run/docker.sock ]]; then
+-        EDEN_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null \
+-            || stat -f '%g' /var/run/docker.sock)"
+-    else
++    if [[ ! -S /var/run/docker.sock ]]; then
+         echo "setup-experiment: --exec-mode docker requires /var/run/docker.sock" >&2
+         exit 2
+     fi
++    EDEN_DOCKER_GID="$(
++        docker run --rm \
++            -v /var/run/docker.sock:/var/run/docker.sock \
++            alpine:3.20 \
++            stat -c '%g' /var/run/docker.sock
++    )"
++    if [[ -z "$EDEN_DOCKER_GID" ]]; then
++        echo "setup-experiment: failed to probe docker socket gid" >&2
++        exit 2
++    fi
+ fi
+ ```
+ 
+-(`stat -c` is GNU; `stat -f` is BSD/macOS — try GNU first because
+-that's what GitHub-hosted runners and Linux developers have.)
++This single method works on Linux native (the in-container gid
++equals the host's, both come from the same kernel), on Docker
++Desktop (the in-VM gid is what counts), and on Colima / lima / etc.
++(same).
+ 
+ `EDEN_DOCKER_GID` is written into `.env`. The compose overlay's
+ `group_add: ["${EDEN_DOCKER_GID:?}"]` resolves it at compose-up
+-time. On macOS / Docker Desktop, the socket forwarder typically
+-exposes the socket with the user's gid via vmnetd; the same `stat`
+-call returns it.
++time.
+ 
+ ### D.7 What does NOT change
+ 
+@@ -333,19 +361,23 @@
+ - `reference/services/_common/src/eden_service_common/__init__.py` —
+   re-export the new helpers.
+ - `reference/services/_common/src/eden_service_common/subprocess_runner.py`:
+-  - `Subprocess` gains a `cleanup_callbacks: list[Callable[[], None]]`
+-    field (default empty).
++  - `Subprocess` gains two new fields:
++    `_post_kill_callback: Callable[[], None] | None` and
++    `cleanup_callbacks: list[Callable[[], None]]`.
+   - New `Subprocess.run_cleanups()` — calls each callback and
+     clears the list. Safe to call multiply (idempotent because of
+     the clear).
+-  - `Subprocess.terminate()` gains a `post_kill_callback:
+-    Callable[[], None] | None = None`. Called after SIGKILL
+-    escalation, before `run_cleanups()`.
+-  - `terminate()` calls `run_cleanups()` on every exit branch
+-    (SIGTERM-graceful, SIGTERM-via-ProcessLookupError-fast-path,
+-    SIGKILL-escalation).
+-  - `spawn()` gains `cleanup_callbacks: list[...] | None = None`
+-    forwarded to the constructed `Subprocess`.
++  - `Subprocess.terminate()` signature is unchanged. On every exit
++    branch (SIGTERM-graceful, SIGTERM-via-ProcessLookupError-fast-
++    path, SIGKILL-escalation), it calls `run_cleanups()`. On the
++    SIGKILL-escalation branch only, it also calls
++    `self._post_kill_callback()` (if set) **before**
++    `run_cleanups()` so the cidfile cleanup is callback-ordered
++    after the docker container is killed.
++  - `spawn()` gains two new kwargs:
++    `post_kill_callback: Callable[[], None] | None = None` and
++    `cleanup_callbacks: list[Callable[[], None]] | None = None`.
++    Both are stashed on the `Subprocess` instance.
+ - `reference/services/_common/src/eden_service_common/cli.py` — add
+   `--exec-mode {host,docker}` (default `host`), `--exec-image`
+   (default from `EDEN_EXEC_IMAGE` env), `--exec-volume` (repeatable,
+@@ -449,22 +481,35 @@
+ 
+ These run only when `docker` is on PATH and the daemon is reachable
+ (skipped otherwise — same posture as the existing
+-`pytest.mark.e2e` tests). CI runs them in the new
+-`compose-smoke-subprocess-docker` job's pre-step (or inline as part
+-of the smoke; whichever is simpler — TBD at impl time, but unit-
+-level is preferred).
++`pytest.mark.e2e` tests). They run **inline as a pytest step in the
++new `compose-smoke-subprocess-docker` CI job** (added to the same
++`uv run pytest -m docker` invocation in that job; not a separate
++GitHub-Actions step). Locally, `uv run pytest -m docker` runs them
++when docker is present.
+ 
+-- Spawn a container via wrap_command, run `git status` on a
+-  bind-mounted scratch git repo, assert exit 0. Proves the mount
+-  shape works for git (the codex round-0 worry).
+-- Pre-create a stale cidfile, spawn another wrap with the SAME path,
+-  assert `docker run --cidfile` errors. Then call `cleanup_cidfile`
+-  first and assert spawn succeeds. Proves the cidfile reuse rule.
+-- Spawn a container, kill the local docker-run client with SIGKILL,
+-  assert the container is still running (worst case pre-fix), then
+-  call `kill_via_cidfile` and assert the container is gone.
+-- `reap_orphaned_containers`: pre-spawn a container with the right
+-  labels but detached + sleeping, call reap, assert it's gone.
++- **Mount shape works for git.** Spawn a container via
++  wrap_command, run `git status` on a bind-mounted scratch git repo
++  (mirroring the chapter-3 implementer setup: bare repo + worktree
++  with `.git` file pointing back), assert exit 0. Closes the codex
++  round-0 high finding directly.
++- **Stale cidfile rejection.** Pre-create a stale cidfile, spawn
++  another wrap with the SAME path, assert `docker run --cidfile`
++  errors. Then call `cleanup_cidfile` first and assert spawn
++  succeeds. Closes the cidfile-reuse risk.
++- **SIGKILL-escalation actually kills the container.** Spawn a
++  long-running detached `sleep 600` container via the same path
++  the production code uses, kill the local docker-run client with
++  SIGKILL (bypassing the `post_kill_callback`), assert the
++  container is still running. Then call `kill_via_cidfile` and
++  assert the container is gone within 5s. Proves the post-kill
++  cleanup actually does what it's supposed to.
++- **Orphan reaping.** Spawn a container directly with the right
++  labels (`eden.role=test`, `eden.host=<gethostname()>`), detached
++  + sleeping. Call `reap_orphaned_containers(role="test",
++  host=socket.gethostname())`. Assert the container is gone.
++  Proves `reap_orphaned_containers` actually reaps — closes the
++  worker-host-crash-mid-task risk at unit speed without needing
++  a full compose orchestration.
+ 
+ ### E.3 Smoke (`reference/compose/healthcheck/smoke-subprocess-docker.sh`)
+ 
+@@ -479,15 +524,13 @@
+   for each subprocess-mode service and assert empty (no leftover
+   containers).
+ 
+-A second smoke variant `smoke-subprocess-docker-orphan.sh` (or an
+-inline section in the same script — TBD) kills the implementer-
+-host container mid-experiment, brings it back up, and asserts the
+-experiment still completes (with one fewer trial — the killed one
+-recovers via the chunk-1 expired-claim sweeper). Proves
+-`reap_orphaned_containers` actually reaps. **If this is too
+-expensive for CI, fall back to a unit-level test that simulates
+-the orphan via a pre-spawned labeled container.** Decision at
+-impl time; document outcome in the chunk delta.
++The **smoke does not** include the kill-host-mid-experiment
++scenario. The `reap_orphaned_containers` integration test in §E.2
++covers it deterministically at unit speed; an end-to-end mid-task
++kill in compose would add 60-90s of CI time and a flaky failure
++mode (the killed container's claim has to expire, the sweeper has
++to pick it up, etc.) that doesn't exercise additional code beyond
++what the unit-level test already covers.
+ 
+ ## F. Verification
+ 
+@@ -550,13 +593,8 @@
+ - **DooD security boundary is soft.** Documented in §D.5 and §7 of
+   the reference-binding chapter and called out in AGENTS.md as a
+   review checkpoint.
+-- **macOS Docker Desktop GID quirk.** The docker socket inside the
+-  Linux VM that Desktop runs has a Linux gid (often 0 for root, or
+-  a desktop-specific gid). The `stat -f` fallback handles macOS-
+-  side reads from the user's perspective; the in-container side
+-  uses whatever gid is on the *bind-mounted* socket inside the
+-  worker. setup-experiment computes that gid from inside a brief
+-  `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+-  alpine stat -c '%g' /var/run/docker.sock`-style probe — yields
+-  the gid the worker container will see, which is exactly what
+-  `group_add` needs.
++- **macOS Docker Desktop GID quirk.** Desktop runs a Linux VM and
++  bind-forwards the socket into it with a VM-internal gid that's
++  not visible to a host-side stat. The probe-from-inside detection
++  in §D.6 handles this uniformly across Linux native, Desktop,
++  and Colima.

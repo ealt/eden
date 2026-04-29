@@ -247,3 +247,124 @@ cleanup of leftover worktrees uses path-scoped
 `git worktree remove --force <path>`, walking only the host's own
 subdir; the repo-global `git worktree prune` is **not** used. This
 makes cross-host races impossible by construction.
+
+## 7. Container-isolated reference deployment (DooD)
+
+The Phase 10d follow-up A reference deployment offers an opt-in
+`--exec-mode docker` flag on every host. With this active, each
+spawn of the user's `*_command` runs in a sibling docker container
+via Docker outside of Docker (DooD): the worker host container
+mounts `/var/run/docker.sock` and shells out `docker run`, which
+talks to the host docker daemon to start a child container.
+
+The wrap shape is:
+
+```bash
+docker run --rm -i --init \
+  --cidfile <unique-cidfile> \
+  --label eden.host=<container-hostname> \
+  --label eden.task_id=<task-or-host-id> \
+  --label eden.role=<role> \
+  --mount type=volume,source=<vol-name>,target=<path>[,readonly] \
+  ... \
+  --mount type=bind,source=<host-path>,target=<path>[,readonly] \
+  ... \
+  -w <cwd-target-inside-child> \
+  -e <ENV_KEY> ... \
+  <image> bash -lc '<original-command>'
+```
+
+The set of `--mount` entries is supplied by the deployment via
+repeatable `--exec-volume` / `--exec-bind` flags (the reference
+Compose overlay drives them). Mount targets inside the child match
+the worker host's own paths exactly so worker-internal env vars
+(`EDEN_TASK_JSON`, `EDEN_OUTPUT`, `EDEN_WORKTREE`,
+`EDEN_EXPERIMENT_DIR`) resolve consistently in both places.
+
+### 7.1 Mount strategy
+
+DooD means `--mount source=` references are resolved against the
+**host docker daemon's catalog**, not the worker host container's
+filesystem. So named volumes (`eden-bare-repo`, `eden-worktrees`,
+`eden-artifacts-data`) are forwarded by literal name; the
+experiment dir is forwarded by host-side absolute path captured by
+setup-experiment as `EDEN_EXPERIMENT_DIR_HOST`. The reference
+Compose stack pins explicit `name:` on each forwarded volume so
+compose's default `<project>_<volume>` prefix doesn't mismatch
+the wrap's literal name reference.
+
+### 7.2 Container lifecycle
+
+- **Per-spawn cidfile.** Every spawn writes its container id to
+  `<cidfile_dir>/<role>-<spawn-uuid>.cid`. Paths are unique per
+  spawn (uuid-suffixed) so `docker run --cidfile` never trips on
+  a stale path.
+- **Cleanup on every exit branch.** A cleanup callback registered
+  at spawn time unlinks the cidfile on every terminal path
+  (graceful exit, SIGTERM-then-exit, fast-path, SIGKILL
+  escalation).
+- **SIGKILL → kill the sibling.** Killing the local `docker run`
+  client does NOT kill the spawned container — the daemon parent
+  keeps it running. A `post_kill_callback` registered at spawn
+  time runs `docker kill <cid> && docker rm -f <cid>` on the
+  SIGKILL escalation branch.
+- **Startup-time orphan reaping.** Each host calls
+  `reap_orphaned_containers(role, host=gethostname())` before its
+  main loop, removing any `eden.host=<this-host>
+  eden.role=<this-role>` containers left from a prior crash. The
+  filter is host-scoped to mirror the cross-host worktree
+  isolation in §6.
+
+### 7.3 Identity
+
+The default reference runtime image (`eden-runtime:dev`) runs as
+the same `eden:1000` user that the worker host uses, so worktree
+files (uid 1000) are readable/writable inside the child without a
+`safe.directory` workaround, and any commits the child produces
+are owned by the same user the integrator runs as. Experiment
+images that need a different uid (e.g. for system-level installs)
+override `USER` in their Dockerfile; the wrap deliberately does
+NOT pass `--user` so this override is honored.
+
+### 7.4 Socket permissions
+
+The host docker socket is conventionally `root:docker` mode
+`0660` on Linux. The reference compose overlay supplies the
+worker container's supplementary gid via `group_add:
+["${EDEN_DOCKER_GID}"]`. setup-experiment probes the gid by
+running `stat -c '%g' /var/run/docker.sock` from inside a
+throwaway container that bind-mounts the socket — this is the
+gid the worker container will see, which on Docker Desktop /
+Colima differs from a host-side stat.
+
+### 7.5 Security boundary
+
+DooD with a shared `/var/run/docker.sock` is **not a hard
+isolation boundary**. A `*_command` running in the spawned child
+has, via the same shared socket the worker host uses,
+daemon-level access: it can `docker run` arbitrary containers,
+read other containers' `docker inspect` output (so secrets
+passed via `-e KEY` are visible to a malicious sibling), and
+mount host paths. Hardened deployments substitute sysbox / Kata /
+a per-worker docker daemon; the wrap shape is unchanged in those
+deployments — only the daemon socket origin differs.
+
+The reference deployment trades that boundary for operational
+simplicity. The intent of `--exec-mode docker` in the reference
+is **bug isolation** (a buggy `*_command` writing to disk doesn't
+clobber the worker host's filesystem) and **dependency isolation**
+(experiment-specific images), not hostile-code containment.
+
+### 7.6 Image strategy
+
+Two layers, in priority order:
+
+1. **Experiment-specific image.** If the experiment dir contains
+   a `Dockerfile`, setup-experiment builds it as
+   `eden-experiment-<id>:dev` and writes that tag into `.env` as
+   `EDEN_EXEC_IMAGE`. The image's `FROM eden-runtime:dev` line
+   is recommended (so the eden:1000 user identity is inherited)
+   but not required.
+2. **Default runtime image.** Otherwise the worker hosts use
+   `eden-runtime:dev` — a small image with python3 + git +
+   bash + ca-certificates + the eden:1000 user.

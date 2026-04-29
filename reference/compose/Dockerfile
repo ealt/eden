@@ -13,6 +13,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Phase-10d follow-up A: when --exec-mode docker is active on a
+# subprocess-mode worker host, the host shells out `docker run` to
+# the host daemon mounted at /var/run/docker.sock (DooD — Docker
+# outside of Docker). That requires the docker CLI inside the worker
+# container. Copying just the binary from the official docker:cli
+# image keeps us off the daemon path and avoids adding Docker's apt
+# repo.
+COPY --from=docker:27.3.1-cli /usr/local/bin/docker /usr/local/bin/docker
 RUN useradd --uid 1000 --create-home --shell /bin/bash eden
 
 FROM base AS builder
