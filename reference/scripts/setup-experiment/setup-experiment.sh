@@ -418,14 +418,17 @@ chmod 0755 "$HELPER_PATH"
 # --- Seed the bare-repo volume + push to Gitea ---
 echo "--- seeding bare-repo volume + pushing seed to gitea ---" >&2
 # eden-repo-init's --push-to flag uses the credential helper at
-# /etc/eden/credential-helper.sh (mounted by compose.yaml).
+# /etc/eden/credential-helper.sh (bind-mounted via the run command
+# below). The `--no-deps` ensures we don't accidentally start
+# unrelated services for the seed step.
+GITEA_REMOTE_URL_SHELL="http://gitea:3000/eden/${EXPERIMENT_ID}.git"
 SEED_OUTPUT="$(cd "$COMPOSE_DIR" && \
     docker compose --env-file "$ENV_FILE" run --rm --no-deps \
         -v "${HELPER_PATH}:/etc/eden/credential-helper.sh:ro" \
         eden-repo-init \
         python -m eden_service_common.repo_init \
             --repo-path /var/lib/eden/repo \
-            --push-to "${GITEA_REMOTE_URL}" \
+            --push-to "${GITEA_REMOTE_URL_SHELL}" \
             --credential-helper /etc/eden/credential-helper.sh)"
 SEED_SHA="$(echo "$SEED_OUTPUT" | sed -nE 's/^EDEN_REPO_(SEEDED|ALREADY_SEEDED) sha=([0-9a-f]{40})$/\2/p' | head -n1)"
 if [[ -z "$SEED_SHA" ]]; then

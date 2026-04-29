@@ -63,21 +63,24 @@ test -n "$EDEN_BASE_COMMIT_SHA" || {
     exit 1
 }
 
-echo "--- asserting seeded ref before stack starts ---"
-# Reuse the already-built eden-reference:dev image (it has git
-# installed) for a one-shot probe that mounts the volume. Reusing
-# the image avoids a floating `latest` tag of an external image
-# and matches the rest of the stack's pinning discipline.
+echo "--- asserting seeded ref published to gitea ---"
+# Phase 10d follow-up B: the seed lives on Gitea, not on a shared
+# bare-repo volume. Probe via `git ls-remote` against the gitea
+# container (Gitea was brought up by setup-experiment).
+GITEA_REMOTE_PASSWORD="$(grep -E '^GITEA_REMOTE_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$GITEA_REMOTE_PASSWORD"
+EDEN_EXPERIMENT_ID="$(grep -E '^EDEN_EXPERIMENT_ID=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$EDEN_EXPERIMENT_ID"
 SEEDED_SHA="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         run --rm --no-deps \
         --entrypoint sh \
         eden-repo-init \
-        -c "git -C /var/lib/eden/repo show-ref --hash refs/heads/main"
+        -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git refs/heads/main | awk '{print \$1}'"
 )"
 SEEDED_SHA="$(echo "$SEEDED_SHA" | tr -d '[:space:]')"
 test "$SEEDED_SHA" = "$EDEN_BASE_COMMIT_SHA" || {
-    echo "seeded SHA mismatch: $SEEDED_SHA != $EDEN_BASE_COMMIT_SHA" >&2
+    echo "gitea seed mismatch: $SEEDED_SHA != $EDEN_BASE_COMMIT_SHA" >&2
     exit 1
 }
 
@@ -87,18 +90,22 @@ docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait --wait-timeou
 echo "--- compose ps ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" ps -a
 
-echo "--- asserting all five named volumes exist ---"
-# eden-bare-repo and eden-artifacts-data have explicit `name:` in
-# compose.yaml so the host docker daemon can resolve them by literal
-# name (needed for the chunk-10d follow-up A docker exec wrap).
-# The other three keep compose's default `<project>_<volume>`
-# auto-prefix.
-for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
+echo "--- asserting expected named volumes exist ---"
+# Phase 10d follow-up B: per-service repo volumes (no shared
+# eden-bare-repo anymore). eden-artifacts-data has explicit
+# `name:` for the docker-exec wrap; other compose-prefixed volumes
+# keep the default `<project>_<volume>` shape.
+for vol in eden-postgres-data eden-gitea-data eden-blob-data \
+           eden-orchestrator-repo eden-implementer-repo \
+           eden-web-ui-repo; do
     docker volume inspect "${PROJECT}_${vol}" >/dev/null
 done
-for vol in eden-bare-repo eden-artifacts-data; do
-    docker volume inspect "$vol" >/dev/null
-done
+# eden-evaluator-repo is declared in compose.yaml but only mounted
+# in subprocess-mode (compose.subprocess.yaml's evaluator-host) —
+# scripted-mode evaluator-host (compose.yaml) doesn't need git, so
+# the volume isn't materialized. Subprocess-mode smokes assert it
+# separately.
+docker volume inspect eden-artifacts-data >/dev/null
 
 echo "--- asserting blob-init exited 0 ---"
 test "$(docker inspect --format '{{.State.ExitCode}}' eden-blob-init)" = "0"
@@ -177,6 +184,23 @@ PLAN_COMPLETED="$(
 )"
 test "$PLAN_COMPLETED" -ge 3 || {
     echo "expected >= 3 plan-task.completed events; got $PLAN_COMPLETED" >&2
+    exit 1
+}
+
+echo "--- asserting trial/* refs published to gitea ---"
+# Phase 10d follow-up B §D.6: trial/* refs must be visible on the
+# Gitea remote after integration. Each `trial.integrated` event
+# corresponds to a published ref.
+TRIAL_REMOTE_REFS="$(
+    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+        run --rm --no-deps \
+        --entrypoint sh \
+        eden-repo-init \
+        -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git 'refs/heads/trial/*' | wc -l" \
+        | tr -d '[:space:]'
+)"
+test "$TRIAL_REMOTE_REFS" -ge 3 || {
+    echo "expected >= 3 trial/* refs on gitea; got $TRIAL_REMOTE_REFS" >&2
     exit 1
 }
 
