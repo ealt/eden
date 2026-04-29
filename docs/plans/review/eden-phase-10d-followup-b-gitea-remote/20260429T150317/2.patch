@@ -1,0 +1,337 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-followup-b-gitea-remote/20260429T150317/1.md	2026-04-29 15:09:58
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md	2026-04-29 15:15:10
+@@ -12,21 +12,26 @@
+ **central git remote** that's the sole source of truth.
+ 
+ This sub-chunk closes that delta. Workers stop touching the shared
+-bare-repo volume; they `git fetch` / `git push` against Gitea over
+-HTTPS instead. The orchestrator's integrator does the same for
+-`trial/*` promotion. setup-experiment provisions Gitea (admin,
+-HTTPS-Basic credentials, repo creation, seed push).
++bare-repo volume; they `git fetch` / `git push` against Gitea
++(plain HTTP — see §D.3 for the soft-boundary rationale) instead.
++The orchestrator's integrator does the same for `trial/*`
++promotion. setup-experiment provisions Gitea (admin, HTTP Basic
++credentials, repo creation, seed push).
+ 
+ Direction confirmed with the user before drafting:
+ 
+ - **A. Full cutover** — no shared bare-repo fallback. Cleaner
+   blast radius; the volume gets removed.
+-- **B. HTTPS Basic auth** via per-experiment credential helper —
+-  matches the existing reference soft-isolation posture.
++- **B. HTTP Basic auth** via per-experiment credential helper —
++  matches the existing reference soft-isolation posture (Gitea
++  runs in the compose internal network with no TLS, same
++  trust model as the existing `EDEN_SHARED_TOKEN` HTTP between
++  workers and the task-store-server).
+ - **C. Extend `eden_git.GitRepo` with a remote-aware variant** —
+   `GitRepo` itself stays additive; existing `create_ref` and
+-  related local ops keep working for in-process tests, plus a
+-  new `push_ref` and `fetch_ref` (and a few helpers) on top.
++  related local ops keep working for in-process tests, plus
++  new `clone_from`, `push_ref`, `fetch_ref`, and
++  `delete_remote_ref` operations on top.
+ 
+ ## Design
+ 
+@@ -34,7 +39,7 @@
+ 
+ Before:
+ 
+-```
++```text
+             ┌──────────────────────┐
+             │  eden-bare-repo vol  │ ←── orchestrator/integrator
+             │  (shared, writable)  │ ←── implementer-host
+@@ -43,10 +48,10 @@
+ 
+ After:
+ 
+-```
++```text
+                     ┌─────────────┐
+                     │   Gitea     │
+-                    │   HTTPS     │   <─── source of truth
++                    │   HTTP/3000 │   <─── source of truth
+                     └─────────────┘
+                   fetch │ ▲ push
+             ┌───────────┘ │ └───────────┐
+@@ -71,7 +76,7 @@
+ - `clone_from(*, url: str, dest: Path, credential_helper: str | None) -> GitRepo`
+   — `git clone --bare` (for the integrator) or `git clone`
+   (for implementer/evaluator). When `credential_helper` is set,
+-  threads it through `git -c credential.helper=<…>` so HTTPS
++  threads it through `git -c credential.helper=<…>` so HTTP
+   Basic creds don't have to land in `~/.git-credentials`.
+ - `push_ref(ref: str, expected_old_sha: str | None) -> None` —
+   `git push origin <ref>` with `--force-with-lease=<ref>:<sha>`
+@@ -129,6 +134,7 @@
+        -X POST http://localhost:${GITEA_HOST_PORT}/api/v1/users/eden/tokens \
+        -d '{"name":"setup","scopes":["write:repository"]}'
+    ```
++
+ 4. Create the repo `eden/<EXPERIMENT_ID>.git` via
+    `POST /api/v1/user/repos` (idempotent — handle 409).
+ 5. Write the **credential-helper script** to a host-side path
+@@ -222,22 +228,31 @@
+   `eden-orchestrator-repo` (no shared `eden-bare-repo` anymore).
+ - The credential-helper script bind-mounted RO at
+   `/etc/eden/credential-helper.sh`.
+-- A new `--gitea-url <https-url>` CLI flag on each host.
++- A new `--gitea-url <http-url>` CLI flag on each host.
+ 
+ Each worker host's startup logic:
+ 
+ 1. If `/var/lib/eden/repo` is not yet a git repo, `clone_from`
+-   from Gitea (use `--bare` for the orchestrator/integrator and
+-   the web-ui's implementer module; non-bare otherwise so
+-   worktrees can be added).
+-2. Otherwise, `git fetch origin '+refs/heads/*:refs/heads/*'` to
+-   refresh ALL local heads to match remote.
+-3. **Reconcile local-only refs.** Walk every local `work/*` and
+-   `trial/*` ref. For each, `git ls-remote origin <ref>` —
+-   if the remote doesn't have it, `delete_ref` locally (it's an
+-   orphan from a pre-crash run). This handles both the
+-   §D.7-implementer crash window AND the §D.6-step-4a-failed
+-   case from a prior integrator crash.
++   from Gitea via `clone --bare` (per §D.8a — all worker hosts
++   are bare clones).
++2. Otherwise, `git fetch --prune origin '+refs/heads/*:refs/heads/*'`
++   to refresh local heads and prune any local heads that no
++   longer exist on the remote (one-shot orphan cleanup as a
++   fetch side effect).
++3. **Integrator-only: reconcile orphan REMOTE refs.** The
++   orchestrator's startup additionally walks the remote
++   `trial/*` heads via `git ls-remote origin 'refs/heads/trial/*'`
++   and for each, calls `Store.read_trial(trial_id)`. If the
++   trial doesn't exist OR has no `trial_commit_sha` (i.e.,
++   `trial.integrated` was never committed), the integrator
++   issues `delete_remote_ref` against Gitea to clean up. This
++   is the recovery rule for the §D.6 step-4a failure mode:
++   "remote publish succeeded, store write failed, remote
++   compensating delete failed" — the next integrator startup
++   notices the remote ref has no matching `trial_commit_sha`
++   and removes it. The check is store-authoritative because
++   the spec's chapter 6 §3.4 makes the store the source of
++   truth for "is this trial integrated."
+ 4. Enter the normal poll loop.
+ 
+ **Per-operation freshness for long-lived clones.** The orchestrator
+@@ -259,8 +274,25 @@
+ non-zero and compose's `restart: on-failure` (existing posture)
+ retries until healthy. Mid-operation Gitea unreachability raises
+ `GitTransportError` from `eden_git`; service-level handlers catch
+-it and submit `status="error"` for the in-flight task.
++it role-specifically per [chapter 3](../../spec/v0/03-roles.md):
+ 
++- **Implementer** (chapter 3 §3.3): infrastructure faults during
++  worker-side execution map to `ImplementSubmission(status="error",
++  trial_id=..., commit_sha=None)`. The trial composite-commits
++  to `error` atomically with the task transition. Same posture
++  as today's chunk-10d "subprocess timeout" path.
++- **Evaluator** (chapter 3 §4.4): infrastructure faults map to
++  `EvaluateSubmission(status="eval_error", trial_id=..., metrics=None)`.
++  The trial stays at its prior status (`success` from the
++  implementer) so the trial can be re-evaluated; this is the
++  spec-mandated distinction between `error` (worker-determined
++  bad outcome) and `eval_error` (infrastructure failure).
++- **Integrator** (chapter 6 §3.4): a transport failure during
++  `push_ref` is the same as a "rejected by remote" — local
++  rollback runs (step 4b only), no `trial.integrated`. A
++  transport failure during `delete_remote_ref` (step 4a) is
++  the §D.7c recovery case above.
++
+ ### D.6 Integrator (orchestrator) changes — explicit four-step flow
+ 
+ The current integrator at
+@@ -344,12 +376,53 @@
+ 
+ ### D.8 Evaluator changes
+ 
+-The evaluator currently does `git worktree add <path>
+-<trial.commit_sha>`. After cutover it must `git fetch
+-origin trial/<id>` first so the local clone has the trial
+-commit. The chapter-3 contract is unchanged; only the local
+-fetch is added. Evaluator never pushes.
++The evaluator runs **before** integration, so the commit it
++must check out lives on the implementer's `work/*` branch
++(stored as `trial.branch` and `trial.commit_sha` per chapter
++3 §3.2 step 3) — NOT on `trial/*`, which is the post-integration
++namespace.
++
++After cutover, the evaluator's pre-worktree-add step is:
++
++```python
++repo.fetch_ref(trial.branch)        # work/<slug>-<trial_id>
++# fetch_ref returns the remote SHA; assert it equals
++# trial.commit_sha or surface eval_error
++repo.task_worktree_add(commit=trial.commit_sha)
++```
++
++The chapter-3 contract is unchanged; only the local fetch is
++added so the worker's clone sees the implementer's freshly-
++pushed commit. Evaluator never pushes.
++
++### D.8a Bare-clone topology for ALL worker hosts
++
++The current implementer/evaluator hosts use `git worktree add`
++against a bare repo (`TaskWorktree` in
++[`reference/services/_common/src/eden_service_common/worktrees.py`](../../reference/services/_common/src/eden_service_common/worktrees.py)
++takes a bare-repo path). Bare-clone topology is preserved
++post-cutover for ALL worker hosts:
++
++- orchestrator / integrator: bare clone
++- implementer host: bare clone
++- evaluator host: bare clone
++- web-ui (chunk-9c implementer module + chunk-9e admin
++  work-refs GC): bare clone
++
++`git worktree add` works fine against a bare repo; that's how
++chunk-10d already runs. The `clone_from` operation passes
++`--bare` unconditionally for worker hosts.
+ 
++The startup-refresh fetch becomes:
++
++```bash
++git fetch --prune origin '+refs/heads/*:refs/heads/*'
++```
++
++`--prune` removes local heads that no longer exist on remote
++(orphan-cleanup as a side effect of fetch). This works on bare
++repos because there's no checked-out branch to refuse-update.
++
+ ### D.9 What does NOT change
+ 
+ - Spec chapters 03 / 04 / 06 — the role contracts and integrator
+@@ -446,7 +519,7 @@
+ 
+ - Happy path: `integrate` succeeds → local ref + remote ref +
+   `trial.integrated` event all present.
+-- Push race (step 2 fails): set the remote `trial/<id>` ref to
++- Push race (step 2 fails): set the remote `trial/<trial_id>-<slug>` ref to
+   a different SHA before `integrate` runs. Assert: local ref
+   rolled back, remote untouched, no `trial.integrated` event.
+ - Store failure after push (step 3 fails): monkeypatch
+@@ -540,8 +613,8 @@
+     new processes. Both tests are already `pytest.mark.e2e`,
+     skipped on Windows.
+ 
+-**Total file changes for the cutover:** ~14 source files modified
+-+ ~3 new files. Tests that don't touch a real bare repo
++**Total file changes for the cutover:** ~14 source files modified,
++plus ~3 new files. Tests that don't touch a real bare repo
+ (everything in `_common/tests/test_common.py`, web-ui non-flow
+ tests, contracts tests, storage tests) are entirely unaffected.
+ 
+@@ -554,25 +627,31 @@
+ 
+ ## Verification
+ 
+-1. `uv run pytest -q` — full suite + new unit tests pass.
+-2. `uv run pytest -m gitea` — integration tests pass (locally,
+-   when a test Gitea is up).
+-3. `bash healthcheck/smoke.sh` — host-mode smoke passes,
++1. `uv run pytest -q` — full suite + new unit tests + new
++   `test_remote_integrator.py` integration tests pass. (No
++   `pytest.mark.gitea` marker — see §F-Tests for why
++   `file://` is sufficient at unit/integration speed; HTTP
++   transport is exercised by the smokes against the real
++   Gitea container.)
++2. `bash healthcheck/smoke.sh` — host-mode smoke passes,
+    workers actually push to Gitea, integrator promotes via
+-   Gitea.
+-4. `bash healthcheck/smoke-subprocess.sh` and
++   Gitea (asserted via `git ls-remote`).
++3. `bash healthcheck/smoke-subprocess.sh` and
+    `bash healthcheck/smoke-subprocess-docker.sh` — same.
+-5. `bash healthcheck/e2e.sh` — Web UI flow still passes; Web UI
++4. `bash healthcheck/e2e.sh` — Web UI flow still passes; Web UI
+    implementer module now pushes to Gitea on submit.
+-6. CI: all 11 jobs green; no new required jobs in this chunk
++5. CI: all 11 jobs green; no new required jobs in this chunk
+    (per the chunk-10d / 10e posture).
+ 
+ ## Out of scope
+ 
+ - **Gitea HA / multi-instance.** Single Gitea, single bare-repo
+   there. HA is a Phase 12+ control-plane concern.
+-- **SSH instead of HTTPS.** SSH key management is its own
+-  follow-up; HTTPS Basic is enough for the reference.
++- **SSH or HTTPS-with-TLS instead of plain HTTP.** SSH key
++  management and TLS termination are their own follow-ups; plain
++  HTTP Basic is enough for the reference (Gitea is on the
++  compose internal network only; the same soft-boundary as the
++  existing reference posture).
+ - **Gitea webhooks.** The orchestrator polls `Store` directly
+   for state; Gitea doesn't need to notify anyone.
+ - **Multi-experiment Gitea.** This chunk creates ONE repo per
+@@ -590,32 +669,41 @@
+ - **Local ref + remote push atomicity.** Between the local
+   `create_ref` and the remote `push_ref` there's a window
+   where the local ref exists but the remote doesn't. If the
+-  worker host crashes there, the next startup's `git fetch`
+-  gives it a stale local view. Mitigation: at startup, after
+-  fetch, trim any local-only `work/*` refs that aren't on
+-  the remote (they're orphans by definition under the
+-  full-cutover model).
++  worker host crashes there, the next startup's `git fetch
++  --prune` removes the local-only orphan as a side effect
++  (covers `work/*`). For local-only orphan `trial/*` refs in
++  the orchestrator's clone, the same prune-on-fetch removes
++  them. For orphan `trial/*` refs that ended up REMOTELY
++  published (the §D.6 step-4a-failed case), §D.7c's
++  store-authoritative reconciliation pass handles cleanup at
++  integrator startup.
+ - **Credential exposure.** The credential-helper script lives
+-  on the host filesystem with mode 0644 (mounted ro into the
+-  worker). Any process on the host with read access can grab
+-  the password. This matches the existing soft-isolation
+-  posture; we document it in §7 of the reference-binding
+-  chapter alongside the existing DooD caveats.
++  on the host filesystem with mode 0755 (executable; mounted
++  ro into the worker). Any process on the host with read
++  access can grab the password. This matches the existing
++  soft-isolation posture; documented in §7 of the
++  reference-binding chapter alongside the existing DooD
++  caveats. Hardened deployments substitute Docker secrets,
++  Vault, or sysbox-isolated workers; the wrap shape is
++  unchanged in those deployments.
+ - **Push-rejected during integration.** If two integrators race
+-  and one's push gets `RefRefused`, the loser must run the
+-  chapter-6 §3.4 compensating delete on its local trial ref
+-  AND ensure no `trial.integrated` event was emitted for that
+-  trial yet. The fix is structural: emit `trial.integrated`
+-  only AFTER the push succeeds; before then, only the local
+-  ref exists and the loser's compensating delete is local-only.
+-- **Gitea downtime.** Workers exit on Gitea-unreachable; compose
+-  restarts them. Brief Gitea downtime should not lose data
+-  (workers just re-fetch when Gitea comes back). Long downtime
+-  is operator concern.
+-- **Setup-experiment ordering.** Gitea provisioning depends on
+-  Gitea being healthy, which depends on `compose up`. So
+-  `setup-experiment.sh` either (a) runs `compose up gitea --wait`
+-  itself before provisioning, or (b) defers provisioning until
+-  the operator runs `compose up`. Cleanest: option (a) — the
+-  script already runs blob-init synchronously, this is the
+-  same shape.
++  and one's push gets `RefRefused`, the loser runs §D.6 step
++  4b (local rollback). No `trial.integrated` was emitted yet
++  (only step 3 emits it), so the event log stays consistent.
++- **Store-write-after-push failure.** The §D.6 step-4a flow
++  ensures the remote ref is deleted before the local one if
++  the store write fails. If 4a itself fails, the §D.7c
++  reconciliation pass at the next integrator startup catches
++  the orphaned remote ref.
++- **Gitea downtime.** Workers exit on Gitea-unreachable;
++  compose restarts them. Brief Gitea downtime should not lose
++  data (workers just re-fetch when Gitea comes back); a
++  mid-task Gitea outage maps to the role-specific failure
++  contract per §D.7d above.
++- **Plain HTTP transport.** All git traffic is unencrypted on
++  the compose internal network. This is identical posture to
++  the existing reference's `EDEN_SHARED_TOKEN` plain-HTTP
++  traffic between workers and the task-store-server; the
++  trust boundary is the compose network, not the wire.
++  Hardened deployments terminate TLS at a sidecar or
++  Gitea-side reverse proxy.

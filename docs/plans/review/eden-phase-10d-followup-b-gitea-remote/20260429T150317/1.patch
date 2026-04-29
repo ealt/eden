@@ -1,0 +1,471 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-followup-b-gitea-remote/20260429T150317/0.md	2026-04-29 15:03:17
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md	2026-04-29 15:09:29
+@@ -89,57 +89,130 @@
+ discipline (CAS via zero-oid on create, expected-old-sha on update)
+ intact, and adds publication as a strictly-additive step.
+ 
+-### D.3 Auth flow — HTTPS Basic via per-experiment credential helper
++### D.3 Auth flow — HTTP Basic via per-experiment credential helper
+ 
+-setup-experiment.sh, after Gitea is healthy:
++The reference Gitea is exposed on plain HTTP inside the compose
++network (no TLS). That matches the existing soft-isolation
++posture documented in §7 of
++[`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md):
++the reference deployment trades isolation for operational
++simplicity, and a hardened deployment substitutes a TLS-fronted
++Gitea behind the same `git://` URL. We document this caveat
++alongside the existing DooD soft boundary; the secret-handling
++boundary widens by exactly one channel (now the eden user's
++Gitea password is also visible to anyone with daemon access).
+ 
+-1. Provisions an admin user (idempotent — checks `gitea admin
+-   user list` first).
+-2. Creates an API token for that user.
+-3. Creates a repo `eden/<experiment-id>.git` (idempotent).
+-4. Generates a per-experiment HTTPS password (32 hex bytes; same
+-   shape as `EDEN_SHARED_TOKEN` etc.) and writes it into `.env` as
+-   `GITEA_REMOTE_PASSWORD`.
+-5. Writes a small **credential-helper script** to a host-side
+-   path `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/credential-helper.sh`
+-   that prints `username=eden\npassword=${GITEA_REMOTE_PASSWORD}`
+-   for matching URLs. The script is mounted read-only into every
+-   worker host container.
++setup-experiment.sh, after starting Gitea + waiting for healthy:
+ 
+-Workers configure git to use the helper:
++1. Generate a per-experiment password `GITEA_REMOTE_PASSWORD`
++   (32 hex bytes; same shape as other reference secrets).
++2. Provision the eden user (idempotent — first checks via
++   `gitea admin user list`):
+ 
+-```text
+-git -c credential.helper="!sh /etc/eden/credential-helper.sh"
+-    push origin work/<…>
++   ```bash
++   docker compose exec -T gitea gitea admin user create \
++       --username eden \
++       --password "${GITEA_REMOTE_PASSWORD}" \
++       --email eden@invalid \
++       --admin
++   ```
++
++   Re-running with a different password updates the existing
++   user (`gitea admin user change-password`) so re-runs of
++   setup-experiment with new env files don't desync.
++3. Generate a per-experiment access token (used only by
++   setup-experiment for repo creation, NOT by workers; workers
++   use Basic auth):
++
++   ```bash
++   curl -fsS -u "eden:${GITEA_REMOTE_PASSWORD}" \
++       -X POST http://localhost:${GITEA_HOST_PORT}/api/v1/users/eden/tokens \
++       -d '{"name":"setup","scopes":["write:repository"]}'
++   ```
++4. Create the repo `eden/<EXPERIMENT_ID>.git` via
++   `POST /api/v1/user/repos` (idempotent — handle 409).
++5. Write the **credential-helper script** to a host-side path
++   `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/credential-helper.sh`,
++   substituting the password into a template. The script:
++
++   ```sh
++   #!/bin/sh
++   case "$1" in
++     get)
++       cat <<EOF
++   username=eden
++   password=__GITEA_REMOTE_PASSWORD__
++   EOF
++       ;;
++   esac
++   ```
++
++   Mode 0755. Mounted read-only into every worker host container
++   at `/etc/eden/credential-helper.sh`.
++
++Workers configure git to use the helper via repo-local config
++written at clone time (NOT global config — keeps the secret out
++of the worker's home dir):
++
++```bash
++git -c credential.helper="/etc/eden/credential-helper.sh" \
++    -c http.extraHeader="" \
++    clone http://gitea:3000/eden/<EXPERIMENT_ID>.git \
++    /var/lib/eden/repo
++git -C /var/lib/eden/repo config credential.helper \
++    "/etc/eden/credential-helper.sh"
+ ```
+ 
+-Why a helper script instead of `~/.git-credentials`: keeps the
+-secret off any disk that survives the experiment. The script is
+-host-mounted, eden-readable, and goes away when the experiment
+-goes away (the dir is rm'd by setup-experiment cleanup paths).
++Subsequent `git fetch` / `git push` invocations from that repo
++pick up the helper automatically. The chunk-10d-followup-A
++soft-boundary caveat (§7) is extended to cover this: the eden
++user's Gitea password is on the host filesystem at
++`${COMPOSE_DIR}/.gitea-creds-<id>/credential-helper.sh` mode 0755,
++readable by anyone on the host and (under DooD) by any
++concurrent `*_command`.
+ 
+-### D.4 setup-experiment.sh extensions
++### D.4 setup-experiment.sh sequencing — option (a) selected
+ 
+-A new step that runs *after* the bare-repo seed step:
++`setup-experiment.sh` already runs the bare-repo seed step
++synchronously via `compose run --rm --no-deps eden-repo-init`.
++This sub-chunk extends that pattern: setup-experiment now also
++**brings Gitea up** synchronously (before the rest of the stack)
++and provisions it before writing the operator's next-step
++instructions. No deferred work in the operator's own
++`compose up`.
+ 
+-1. Wait for Gitea's healthcheck to pass (already healthy via
+-   `compose up --wait` — re-check defensively).
+-2. `docker compose exec gitea gitea admin user create
+-   --username eden --password <one-time-password>
+-   --email eden@invalid --admin` (idempotent).
+-3. `curl` the Gitea API to generate a per-experiment access
+-   token; capture into `GITEA_ACCESS_TOKEN`.
+-4. `curl` the Gitea API to create the repo (idempotent).
+-5. Push the seed commit from a one-shot
+-   `compose run --rm eden-repo-init` invocation (extends the
+-   existing init container with a `--push-to <https-url>` flag).
+-6. Generate `GITEA_REMOTE_PASSWORD`, write the credential-helper
+-   script under the host-side dir, write the env vars into `.env`.
++Concrete sequence (replaces the current "seed bare repo, write
++.env, exit" flow):
+ 
+-The bare-repo init container's role becomes "seed local bare repo
+-+ push to Gitea." The shared `eden-bare-repo` volume is then
+-**unused**; it gets removed from `compose.yaml` in the cutover.
++1. Generate / preserve all secrets (existing flow), including
++   the new `GITEA_REMOTE_PASSWORD`.
++2. Write the partial `.env` (without `EDEN_BASE_COMMIT_SHA` —
++   filled in step 7).
++3. **Bring Gitea up:**
++   `docker compose --env-file "$ENV_FILE" up -d --wait gitea`
++   (uses Gitea's existing healthcheck).
++4. **Provision Gitea** per §D.3 (eden user, access token, repo).
++5. **Write the credential-helper script** under
++   `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/`.
++6. **Seed + push** via `compose run --rm --no-deps eden-repo-init`,
++   which now takes a `--push-to <url>` flag and pushes the seed
++   commit to Gitea after creating the local bare repo.
++7. Capture the seed SHA, replace the `.env` placeholder
++   (existing pattern).
++8. Print operator next-steps (existing — `compose up -d --wait`).
+ 
++The shared `eden-bare-repo` volume is removed from `compose.yaml`
++in the cutover; `eden-repo-init` keeps writing to it locally only
++so the seed-and-push step is self-contained, then the volume is
++discarded by the existing `compose down -v` posture.
++
++**Idempotency:** all four provisioning operations (user create,
++token mint, repo create, ref push) are idempotent. Re-running
++setup-experiment with the same env file is a no-op for Gitea
++state. Re-running with a NEW env file (different
++`GITEA_REMOTE_PASSWORD`) updates the user's password via
++`gitea admin user change-password`.
++
+ ### D.5 Per-service compose changes
+ 
+ Each worker host gains:
+@@ -154,36 +227,93 @@
+ Each worker host's startup logic:
+ 
+ 1. If `/var/lib/eden/repo` is not yet a git repo, `clone_from`
+-   from Gitea.
+-2. Otherwise, `git fetch` to refresh.
+-3. Enter the normal poll loop.
++   from Gitea (use `--bare` for the orchestrator/integrator and
++   the web-ui's implementer module; non-bare otherwise so
++   worktrees can be added).
++2. Otherwise, `git fetch origin '+refs/heads/*:refs/heads/*'` to
++   refresh ALL local heads to match remote.
++3. **Reconcile local-only refs.** Walk every local `work/*` and
++   `trial/*` ref. For each, `git ls-remote origin <ref>` —
++   if the remote doesn't have it, `delete_ref` locally (it's an
++   orphan from a pre-crash run). This handles both the
++   §D.7-implementer crash window AND the §D.6-step-4a-failed
++   case from a prior integrator crash.
++4. Enter the normal poll loop.
+ 
++**Per-operation freshness for long-lived clones.** The orchestrator
++loop and the web-ui's admin/implementer modules are long-lived;
++remote refs change under their feet between the startup fetch and
++the next operation. Two policies:
++
++- **Read-before-write:** any service path that's about to write a
++  ref via `repo.create_ref` first runs `git fetch origin <ref>`
++  to refresh its local view. This keeps `--force-with-lease`'s
++  expected-old-sha aligned with the remote.
++- **Read-before-display:** the web-ui admin work-refs GC page
++  (chunk-9e) runs `git fetch origin '+refs/heads/work/*:refs/heads/work/*'`
++  on every GET so the operator's view matches the remote. The
++  per-op fetch budget here is one HTTP roundtrip + a small ref
++  list, well under 100ms in the reference deployment.
++
+ Failure mode: if Gitea is unreachable at startup, the host exits
+ non-zero and compose's `restart: on-failure` (existing posture)
+-retries until healthy.
++retries until healthy. Mid-operation Gitea unreachability raises
++`GitTransportError` from `eden_git`; service-level handlers catch
++it and submit `status="error"` for the in-flight task.
+ 
+-### D.6 Integrator (orchestrator) changes
++### D.6 Integrator (orchestrator) changes — explicit four-step flow
+ 
+-The integrator already does:
++The current integrator at
++[`reference/packages/eden-git/src/eden_git/integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py)
++does (chapter 6 §3.2 / §3.4):
+ 
+-```python
+-repo.create_ref("refs/heads/trial/<id>", squash_sha)
++```text
++1. local create_ref     # CAS-guarded
++2. store.integrate_trial
++3. on store failure: local delete_ref (compensating)
+ ```
+ 
+-After this sub-chunk:
++After this sub-chunk, the flow becomes a literal four-step
++publish-then-commit-then-rollback ladder:
+ 
+-```python
+-repo.create_ref(...)        # local CAS-guarded ref write
+-repo.push_ref(...)          # publish to Gitea, force-with-lease
++```text
++1. local create_ref           # CAS-guarded local
++2. remote push_ref            # publish to Gitea (force-with-lease)
++3. store.integrate_trial      # writes trial_commit_sha + trial.integrated
++4. on store failure:
++   4a. remote delete_ref      # compensating remote delete
++   4b. local delete_ref       # compensating local delete
+ ```
+ 
+-If the push is rejected (concurrent integrator on a different
+-host won the race), the local ref is rolled back and the
+-existing chapter-6 §3.4 compensating-delete flow takes over.
+-This means the local ref-write must NOT be atomic with the
+-trial.integrated event yet — only the *published* ref counts as
+-"integrated." See §H risks below.
++The new step 4a — **remote compensating delete** — is load-bearing
++under chapter 6 §3.4: leaving `trial/*` on Gitea without the
++matching `trial.integrated` event in the store is a protocol
++violation, because the next replay of the event log would see a
++ref that no event explains. We MUST run step 4a before step 4b
++so a re-tried integration sees a clean Gitea slate.
+ 
++`GitRepo` therefore needs a fourth new method:
++
++- `delete_remote_ref(ref: str, expected_sha: str | None) -> None`
++  — `git push origin --delete <ref>` with a CAS guard via
++  `--force-with-lease=<ref>:<sha>`. If the remote ref has
++  diverged (someone else integrated a different commit on the
++  same trial id), raise `RefRefused` and let the caller decide.
++
++If step 2 fails (push rejected — concurrent integrator won
++the race), only step 1's local ref exists; we run step 4b
++(local delete) and skip 4a. If step 3 fails after step 2
++succeeded, we run BOTH 4a and 4b. If step 4a itself fails (Gitea
++unreachable), we log a critical-severity diagnostic and leave
++the local ref in place — the next integrator startup's
++fetch-and-reconcile pass (§D.7c below) cleans up.
++
++**Important:** `trial.integrated` is emitted by step 3 (atomically
++with the trial's `trial_commit_sha` write). Step 1 alone does NOT
++emit anything — only the *committed-and-published* ref counts.
++This preserves chapter 5 §2.2's "events emit only on committed
++state changes."
++
+ ### D.7 Implementer changes
+ 
+ The implementer's existing flow per [chapter 03 §3.2](../../spec/v0/03-roles.md):
+@@ -272,45 +402,156 @@
+   mount to spawned children **only** in the implementer/evaluator
+   case where the user `*_command` may run git commands. (For
+   the planner, no git ops happen in the user command.)
+-- All test fixtures that `init` a local bare repo gain a
+-  matching test helper to spin up a `git daemon`-style local
+-  remote. Most existing tests can stay on local-only paths; the
+-  smoke-level tests cover the actual Gitea path.
++- Test fixtures: see §F-T (Cutover blast-radius inventory)
++  below for the concrete file count.
+ 
+ ## Tests
+ 
+-### Unit (`test_remote_ops.py`)
++Three tiers, each driving the **public entry point** the
++production code calls (per the AGENTS.md "test the actual code
++path" pitfall) — no helper-only assertions.
+ 
+-- `clone_from` against a `file://` URL produces a working clone.
+-- `push_ref` succeeds when the remote ref is at the expected SHA.
+-- `push_ref` fails (raises `RefRefused`) when the remote has
+-  diverged.
+-- `fetch_ref` updates the local ref to match remote.
+-- Credential-helper roundtrip: when `credential_helper` is set
+-  on a private remote (simulated via local `git http-backend`?
+-  — or simpler: just verify the `-c credential.helper=…` arg
+-  appears in the subprocess invocation). Probably the simpler
+-  shape is enough at unit level.
++### Unit (`reference/packages/eden-git/tests/test_remote_ops.py`)
+ 
+-### Integration (`test_gitea_integrator.py`, `pytest.mark.gitea`)
++Run against a local file-URL git remote (`file:///path/to/bare`)
++— no Gitea daemon, no http. Sufficient because git's transport
++abstraction makes file:// share the same ref-update code path as
++http:// for our four new operations.
+ 
+-Marker-gated like `pytest.mark.docker`. Runs only when a
+-reachable Gitea instance is configured (env var
+-`EDEN_TEST_GITEA_URL` + creds). Skipped otherwise.
++- `GitRepo.clone_from(url=file://…, dest=…)` produces a working
++  clone at `dest`.
++- `GitRepo.push_ref(ref, expected_old_sha)` succeeds when the
++  remote ref matches `expected_old_sha`; raises `RefRefused`
++  when the remote has diverged.
++- `GitRepo.fetch_ref(ref)` updates the local ref to match
++  remote; returns the fetched SHA.
++- `GitRepo.delete_remote_ref(ref, expected_sha)` succeeds when
++  the remote matches; raises `RefRefused` on divergence; raises
++  `RefRefused` (not silent success) when the remote ref is
++  already gone (idempotency caveat: callers handle the
++  already-gone case explicitly because chapter-6 §3.4
++  rollback semantics distinguish "no-op" from "won the race").
++- Credential-helper roundtrip: drive a real `git http-backend`
++  via Python's `http.server` + the helper script generated by
++  setup-experiment's template. Assert that without the helper
++  the push fails 401, with the helper the push succeeds. This
++  proves the helper is wired correctly end-to-end at unit
++  speed; argv-only inspection would NOT.
+ 
+-- End-to-end: implementer pushes a `work/*` ref, integrator
+-  fetches + creates `trial/*`, pushes back. Verify the ref
+-  shape matches chapter 6 §3.2.
+-- Concurrent integrator: two integrator instances race on the
+-  same trial; one wins via `--force-with-lease`, the loser sees
+-  `RefRefused` and runs the §3.4 compensating delete.
++### Integration (`reference/packages/eden-git/tests/test_remote_integrator.py`)
+ 
+-### Smoke
++Drive the **public `Integrator.integrate(trial_id)` method**
++through each failure mode, using a real local-file remote +
++a monkey-patched Store:
+ 
+-Extended `compose-smoke` (and the subprocess variants) to also
+-assert the integrated trial ref appears on the **Gitea remote**
+-(via `gitea api` or `git ls-remote`), not just the local clone.
++- Happy path: `integrate` succeeds → local ref + remote ref +
++  `trial.integrated` event all present.
++- Push race (step 2 fails): set the remote `trial/<id>` ref to
++  a different SHA before `integrate` runs. Assert: local ref
++  rolled back, remote untouched, no `trial.integrated` event.
++- Store failure after push (step 3 fails): monkeypatch
++  `Store.integrate_trial` to raise `DispatchError`. Assert:
++  remote ref deleted (compensating push), local ref deleted,
++  no `trial.integrated` event.
++- Compensating delete itself fails (step 4a fails): monkeypatch
++  `delete_remote_ref` to raise `GitTransportError`. Assert:
++  the integrator logs a critical-severity diagnostic AND the
++  next-startup reconciliation pass (§D.7c) cleans up the orphan
++  on Gitea. (Tested via a second `Integrator()` instance after
++  the first's failure.)
+ 
++### Smoke (`compose-smoke-*` extensions)
++
++Extends both `compose-smoke` and `compose-smoke-subprocess(-docker)`
++with one new post-quiescence assertion:
++
++```bash
++git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EXPERIMENT_ID}.git \
++    | grep -E 'refs/heads/trial/' | wc -l
++```
++
++≥3 (matches the existing `trial.integrated` event count
++assertion). Proves the remote actually has the integrated trial
++refs, not just the local clones.
++
++A new `compose-e2e` extension covers the chunk-9e admin
++work-refs GC page driving a `delete_remote_ref` against Gitea
++(asserts the remote ref is gone after the operator-clicks-delete
++flow).
++
++### `eden_git` testing scope: file-URL is enough
++
++The new unit + integration tests use `file://` URLs for the
++remote. We do NOT add a `pytest.mark.gitea` marker. Justification:
++
++- `git push --force-with-lease` and `git push --delete` use the
++  same wire protocol over file:// as over http://. The CAS
++  semantics are server-side (the remote's reflog), not transport-
++  dependent.
++- HTTP transport is exercised end-to-end by the smoke scripts
++  against the real Gitea container — that's where any
++  http-specific issue (auth, redirect, content-length, etc.)
++  surfaces.
++- A separate marker would split coverage and require yet another
++  CI service container (Gitea), with no proof that http exposes
++  bugs the file:// path doesn't already catch.
++
++The credential-helper unit test is the one exception: it spins
++up a tiny http server in-process so the auth round-trip is real,
++no external dependency needed.
++
++## F-T. Cutover blast-radius inventory
++
++Concrete file count from `grep -l "init_bare\|GitRepo.*bare"`
++across the repo (excluding READMEs):
++
++- **`reference/packages/eden-git/tests/`** (4 files —
++  `test_repo_branches_worktrees.py`, `test_repo_plumbing.py`,
++  `test_environment_isolation.py`, `conftest.py`) — these
++  exercise local-only `GitRepo` ops; they STAY on local-only
++  paths because the new ops are tested separately in
++  `test_remote_ops.py`.
++- **`reference/packages/eden-git/src/eden_git/repo.py`** — the
++  module under modification. New methods land here.
++- **Service tests that init a local bare repo:**
++  - `reference/services/_common/tests/test_worktrees.py` — pure
++    worktree behavior, no remote — STAYS local.
++  - `reference/services/planner/tests/test_planner_subprocess.py`
++    — planner doesn't touch git refs (only proposals) — STAYS
++    local.
++  - `reference/services/implementer/tests/test_implementer_subprocess.py`,
++    `test_host.py` — these exercise `_run_subprocess` and
++    submit flows. The implementer change in §D.7 adds a single
++    `repo.push_ref` call after the existing `repo.create_ref`.
++    Tests gain a tiny bare-repo `init --bare` as the local
++    "remote" + assertion that `push_ref` was invoked. Net
++    change per test: ~5 lines.
++  - `reference/services/evaluator/tests/test_evaluator_subprocess.py`
++    — evaluator gains `fetch_ref` before worktree-add. Same
++    pattern: local "remote" + one-line assertion.
++  - `reference/services/orchestrator/tests/test_e2e.py`,
++    `test_subprocess_e2e.py` — these are the heavyweights.
++    Each spawns the full 5-process stack against an in-memory /
++    sqlite store. Adding a real local file-URL remote here
++    means: setUp creates `tmp_path/remote.git` as a bare repo,
++    the test's `seed_bare_repo` pushes to it, each spawned
++    service gets `--gitea-url file://<path>` instead of
++    `--repo-path <path>`. Net change per file: ~30 lines, no
++    new processes. Both tests are already `pytest.mark.e2e`,
++    skipped on Windows.
++
++**Total file changes for the cutover:** ~14 source files modified
+++ ~3 new files. Tests that don't touch a real bare repo
++(everything in `_common/tests/test_common.py`, web-ui non-flow
++tests, contracts tests, storage tests) are entirely unaffected.
++
++The "most existing tests can stay on local-only paths" claim is
++defensible because the **only** tests that previously exercised
++the implementer/evaluator/integrator flows did so against an
++in-process bare repo on disk; switching that bare repo to be
++the remote (via `file://`) and adding a tiny local working clone
++is mechanical — no new architecture surfaces.
++
+ ## Verification
+ 
+ 1. `uv run pytest -q` — full suite + new unit tests pass.

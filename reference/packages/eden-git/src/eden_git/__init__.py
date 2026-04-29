@@ -10,7 +10,7 @@ for the normative contract. This package provides:
   to produce the §3.2 single-commit squash.
 """
 
-from .errors import GitError
+from .errors import GitError, GitTransportError, RefRefused
 from .integrator import (
     AtomicityViolation,
     CorruptIntegrationState,
@@ -29,12 +29,14 @@ __all__ = [
     "EvalManifestPathCollision",
     "GitError",
     "GitRepo",
+    "GitTransportError",
     "Identity",
     "IntegrationResult",
     "Integrator",
     "IntegratorError",
     "NotReadyForIntegration",
     "ReachabilityViolation",
+    "RefRefused",
     "TreeEntry",
     "WorktreeInfo",
 ]
