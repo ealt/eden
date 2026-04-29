@@ -89,6 +89,10 @@ services:
       - implementer-1
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --mode
       - subprocess
       - --experiment-config
@@ -104,7 +108,7 @@ services:
       - --exec-image
       - ${EDEN_EXEC_IMAGE:?}
       - --exec-volume
-      - eden-bare-repo:/var/lib/eden/repo
+      - eden-implementer-repo:/var/lib/eden/repo
       - --exec-volume
       - eden-worktrees:/var/lib/eden/worktrees
       - --exec-volume
@@ -149,6 +153,10 @@ services:
       - /etc/eden/experiment-dir
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --worktrees-dir
       - /var/lib/eden/worktrees
       - --evaluate-env-file
@@ -158,7 +166,7 @@ services:
       - --exec-image
       - ${EDEN_EXEC_IMAGE:?}
       - --exec-volume
-      - eden-bare-repo:/var/lib/eden/repo
+      - eden-evaluator-repo:/var/lib/eden/repo
       - --exec-volume
       - eden-worktrees:/var/lib/eden/worktrees
       - --exec-bind
