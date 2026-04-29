@@ -96,10 +96,13 @@ echo "--- asserting expected named volumes exist ---"
 # `name:` for the docker-exec wrap; other compose-prefixed volumes
 # keep the default `<project>_<volume>` shape.
 for vol in eden-postgres-data eden-gitea-data eden-blob-data \
-           eden-orchestrator-repo eden-implementer-repo \
-           eden-web-ui-repo; do
+           eden-orchestrator-repo eden-web-ui-repo; do
     docker volume inspect "${PROJECT}_${vol}" >/dev/null
 done
+# eden-implementer-repo and eden-evaluator-repo have explicit
+# `name:` for docker-exec wrap parity (resolved by literal name,
+# not auto-prefixed).
+docker volume inspect eden-implementer-repo >/dev/null
 # eden-evaluator-repo is declared in compose.yaml but only mounted
 # in subprocess-mode (compose.subprocess.yaml's evaluator-host) —
 # scripted-mode evaluator-host (compose.yaml) doesn't need git, so

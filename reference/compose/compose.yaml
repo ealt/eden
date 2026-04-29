@@ -377,9 +377,20 @@ volumes:
   # owns a private bare clone of the Gitea-hosted repo;
   # eden-repo-init's seed-and-push uses its own ephemeral copy
   # under eden-repo-init-staging.
+  #
+  # The eden-implementer-repo and eden-evaluator-repo volumes get
+  # explicit `name:` so the docker-exec wrap's
+  # `--mount source=eden-implementer-repo` resolves to the SAME
+  # volume the worker host is reading from. (Same trap that bit
+  # eden-bare-repo / eden-worktrees in sub-chunk A — compose's
+  # default `<project>_<volume>` prefix doesn't match the wrap's
+  # literal-name reference, leading docker daemon to silently
+  # create a fresh empty volume.)
   eden-orchestrator-repo:
   eden-implementer-repo:
+    name: eden-implementer-repo
   eden-evaluator-repo:
+    name: eden-evaluator-repo
   eden-web-ui-repo:
   eden-repo-init-staging:
   # Artifacts volume kept with explicit `name:` for the chunk-10d
