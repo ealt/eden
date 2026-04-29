@@ -75,8 +75,11 @@ def test_wrap_command_basic_shape(tmp_path: Path) -> None:
     cidfile = tmp_path / "cid"
     out = wrap_command(**_common_wrap_kwargs(cidfile))
     parts = shlex.split(out)
-    assert parts[0] == "docker"
-    assert parts[1] == "run"
+    # `exec` prefix makes the wrapping `/bin/sh -c …` shell `exec`
+    # docker run in place — see container_exec.py for rationale.
+    assert parts[0] == "exec"
+    assert parts[1] == "docker"
+    assert parts[2] == "run"
     assert "--rm" in parts
     assert "-i" in parts
     assert "--init" in parts

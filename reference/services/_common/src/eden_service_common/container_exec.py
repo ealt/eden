@@ -153,7 +153,16 @@ def wrap_command(
             f"Mount targets: {targets!r}"
         )
 
-    parts: list[str] = ["docker", "run", "--rm", "-i", "--init"]
+    # The leading `exec` makes the wrapping `/bin/sh -c …` shell
+    # `exec` docker run in place rather than fork-and-wait. Without
+    # it, on Linux (where /bin/sh is typically dash) SIGTERM to
+    # subprocess.Popen's pgid kills the shell first; the shell exits
+    # without giving docker run time to forward the signal, popen
+    # exits, terminate's wait returns success — and the SIGKILL
+    # escalation that should have run the post_kill_callback never
+    # fires. With `exec`, popen.pid IS docker run; SIGTERM goes
+    # straight to it.
+    parts: list[str] = ["exec", "docker", "run", "--rm", "-i", "--init"]
     parts += ["--cidfile", str(cidfile)]
     parts += ["--label", f"eden.host={host_id}"]
     parts += ["--label", f"eden.task_id={task_id}"]
