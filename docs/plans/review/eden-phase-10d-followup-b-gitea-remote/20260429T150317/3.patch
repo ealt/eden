@@ -1,0 +1,94 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10d-followup-b-gitea-remote/20260429T150317/2.md	2026-04-29 15:15:31
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md	2026-04-29 15:17:46
+@@ -101,8 +101,10 @@
+ posture documented in §7 of
+ [`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md):
+ the reference deployment trades isolation for operational
+-simplicity, and a hardened deployment substitutes a TLS-fronted
+-Gitea behind the same `git://` URL. We document this caveat
++simplicity. A hardened deployment terminates TLS at a sidecar or
++Gitea-side reverse proxy, swapping the `http://gitea:3000/...`
++URL for `https://gitea/...`; the workers' `--gitea-url` flag is
++opaque to the rest of the design. We document this caveat
+ alongside the existing DooD soft boundary; the secret-handling
+ boundary widens by exactly one channel (now the eden user's
+ Gitea password is also visible to anyone with daemon access).
+@@ -241,18 +243,32 @@
+    fetch side effect).
+ 3. **Integrator-only: reconcile orphan REMOTE refs.** The
+    orchestrator's startup additionally walks the remote
+-   `trial/*` heads via `git ls-remote origin 'refs/heads/trial/*'`
+-   and for each, calls `Store.read_trial(trial_id)`. If the
+-   trial doesn't exist OR has no `trial_commit_sha` (i.e.,
+-   `trial.integrated` was never committed), the integrator
+-   issues `delete_remote_ref` against Gitea to clean up. This
+-   is the recovery rule for the §D.6 step-4a failure mode:
+-   "remote publish succeeded, store write failed, remote
+-   compensating delete failed" — the next integrator startup
+-   notices the remote ref has no matching `trial_commit_sha`
+-   and removes it. The check is store-authoritative because
+-   the spec's chapter 6 §3.4 makes the store the source of
+-   truth for "is this trial integrated."
++   `refs/heads/trial/*` via `git ls-remote origin
++   'refs/heads/trial/*'`. For each ref the spec gives us a
++   **machine-parseable artifact** at the commit tip — chapter 6
++   §3.2 mandates the squash commit's tree contains
++   `.eden/trials/<trial_id>/eval.json`. The reconciliation
++   reads `<commit_sha>:.eden/trials/` via `git ls-tree --name-only
++   <commit_sha> .eden/trials/` to recover the trial_id (a
++   single subdir name; reject if zero or more than one — that
++   commit isn't a valid integrator squash). Then the
++   integrator calls `Store.read_trial(trial_id)`:
++   - If the trial doesn't exist OR has no `trial_commit_sha`
++     (i.e., `trial.integrated` was never committed), issue
++     `delete_remote_ref` against Gitea to clean up.
++   - Otherwise the trial is properly integrated; leave the ref
++     alone.
++
++   This is the recovery rule for the §D.6 step-4a failure mode
++   ("remote publish succeeded, store write failed, remote
++   compensating delete failed") AND for transport-indeterminate
++   step-2 failures whose post-failure read-back also failed (the
++   only case §D.7d's branch-decision-tree leaves to the sweep).
++   The trial_id-from-tree path is spec-authoritative; ref-name
++   parsing is not, since the spec treats trial_id as opaque.
++   Branch names happen to follow `trial/<trial_id>-<slug>` as a
++   reference-impl convention, but the integrator's reconciliation
++   does NOT depend on that convention.
+ 4. Enter the normal poll loop.
+ 
+ **Per-operation freshness for long-lived clones.** The orchestrator
+@@ -287,11 +303,28 @@
+   implementer) so the trial can be re-evaluated; this is the
+   spec-mandated distinction between `error` (worker-determined
+   bad outcome) and `eval_error` (infrastructure failure).
+-- **Integrator** (chapter 6 §3.4): a transport failure during
+-  `push_ref` is the same as a "rejected by remote" — local
+-  rollback runs (step 4b only), no `trial.integrated`. A
+-  transport failure during `delete_remote_ref` (step 4a) is
+-  the §D.7c recovery case above.
++- **Integrator** (chapter 6 §3.4): two distinct cases.
++  - A **definite remote rejection** (`RefRefused`) on `push_ref`
++    means the remote did not accept the ref — only step 1's
++    local create exists, and step 4b's local rollback alone is
++    sufficient.
++  - A **transport-indeterminate failure** (`GitTransportError`)
++    on `push_ref` means we don't know if the remote accepted —
++    the ack was lost. We MUST disambiguate by immediately
++    running `git ls-remote origin <ref>`:
++    - If the remote ref is absent → rollback step 4b (local) only.
++    - If the remote ref equals our pushed SHA → the push DID
++      land, so run BOTH 4a (remote delete) and 4b (local).
++    - If the remote ref exists at a different SHA → another
++      integrator integrated a different commit on the same
++      trial id; this is `RefRefused` semantics, run 4b only.
++    - If `ls-remote` itself transport-fails (Gitea still down)
++      → log critical-severity and rely on §D.7c's startup sweep
++      to clean up. This is the only case where an orphan can
++      persist across the integrator restart, and the sweep is
++      its backstop.
++  - A transport failure during `delete_remote_ref` (step 4a)
++    falls through to §D.7c likewise.
+ 
+ ### D.6 Integrator (orchestrator) changes — explicit four-step flow
+ 

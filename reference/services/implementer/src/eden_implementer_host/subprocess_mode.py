@@ -74,6 +74,19 @@ class ImplementerSubprocessConfig:
     """Container hostname used as the ``eden.host=`` label."""
 
 
+def _repo_has_origin(repo: GitRepo) -> bool:
+    """Return True if the implementer's repo has an origin remote.
+
+    Used to gate ``push_ref`` after ``create_ref`` so existing local-
+    only test paths (no Gitea, no clone) skip the push entirely.
+    """
+    try:
+        result = repo._run(["remote"], check=False)
+    except Exception:  # noqa: BLE001
+        return False
+    return "origin" in result.stdout.split()
+
+
 def _now_iso() -> str:
     return datetime.now(tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -271,7 +284,7 @@ def _handle_one(
     assert isinstance(commit_sha_raw, str)
     commit_sha: str = commit_sha_raw
 
-    # Phase 2f: create_ref.
+    # Phase 2f: create_ref locally.
     try:
         repo.create_ref(f"refs/heads/{branch}", commit_sha)
     except Exception:  # noqa: BLE001 — git-shaped (incl. EEXIST race)
@@ -288,6 +301,41 @@ def _handle_one(
             ),
         )
         return
+
+    # Phase 2g (Phase 10d follow-up B §D.7): if the repo has an
+    # origin remote, publish the work/* ref so the integrator's
+    # clone can fetch it. Per chapter 3 §3.3, infrastructure failure
+    # here maps to ImplementSubmission(status=error). On push failure
+    # we roll back the local ref so we don't leave a local-only
+    # work/* that the orchestrator can never integrate.
+    if _repo_has_origin(repo):
+        try:
+            repo.push_ref(f"refs/heads/{branch}")
+        except Exception:  # noqa: BLE001 — git-shaped
+            log.warning(
+                "implementer_push_ref_failed",
+                extra={"task_id": task.task_id, "branch": branch},
+            )
+            try:
+                repo.delete_ref(
+                    f"refs/heads/{branch}", expected_old_sha=commit_sha
+                )
+            except Exception:  # noqa: BLE001
+                # Local rollback failed — the next host startup's
+                # fetch_all_heads --prune will catch the orphan.
+                log.warning(
+                    "implementer_local_rollback_failed",
+                    extra={"task_id": task.task_id, "branch": branch},
+                )
+            _submit_with_readback(
+                store=store,
+                task_id=task.task_id,
+                token=claim.token,
+                submission=ImplementSubmission(
+                    status="error", trial_id=trial_id, commit_sha=None
+                ),
+            )
+            return
 
     # Phase 3: submit success with retry-before-orphan + read-back.
     _submit_with_readback(

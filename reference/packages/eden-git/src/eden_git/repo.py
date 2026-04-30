@@ -38,7 +38,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .errors import GitError
+from .errors import GitError, GitTransportError, RefRefused
 
 # Git environment variables the wrapper strips from every child
 # process. Three groups:
@@ -589,6 +589,179 @@ class GitRepo:
             records.append(_worktree_record(current))
         return records
 
+    # --- remote operations -----------------------------------------------
+
+    @classmethod
+    def clone_from(
+        cls,
+        *,
+        url: str,
+        dest: Path | str,
+        bare: bool = False,
+        credential_helper: str | None = None,
+    ) -> GitRepo:
+        """Clone ``url`` to ``dest``; return a ``GitRepo`` over the result.
+
+        Used at worker-host startup to materialize a private clone of
+        the Gitea-hosted repo per Phase 10d follow-up B §D.5.
+
+        ``credential_helper``, when set, is passed via
+        ``-c credential.helper=<value>`` for the clone itself AND
+        persisted as repo-local config so subsequent fetch/push from
+        the cloned repo pick it up automatically without re-passing.
+
+        Network failures (Gitea unreachable, DNS failure) raise
+        :class:`GitTransportError`; other failures (target dir not
+        empty, ref-format problems) raise :class:`GitError`.
+        """
+        target = Path(dest)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        argv: list[str] = ["git"]
+        if credential_helper is not None:
+            argv += ["-c", f"credential.helper={credential_helper}"]
+        argv.append("clone")
+        if bare:
+            argv.append("--bare")
+        argv += [url, str(target)]
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_sanitized_git_env(),
+        )
+        if result.returncode != 0:
+            _raise_remote_error(argv, result)
+        repo = cls(target)
+        if credential_helper is not None:
+            repo._run(["config", "credential.helper", credential_helper])
+        return repo
+
+    def push_ref(
+        self,
+        ref: str,
+        *,
+        expected_old_sha: str | None = None,
+        remote: str = "origin",
+    ) -> None:
+        """Push ``ref`` to ``remote`` with optional CAS via force-with-lease.
+
+        ``expected_old_sha`` becomes ``--force-with-lease=<ref>:<sha>``
+        — the daemon rejects with a non-fast-forward error if the
+        remote has diverged. ``None`` does a regular push (rejected by
+        default if the remote has a non-fast-forward).
+
+        Raises :class:`RefRefused` on definite remote rejection (CAS
+        miss / non-fast-forward / ref hook reject), or
+        :class:`GitTransportError` on transport-layer failure
+        (ambiguous: the remote may or may not have applied the ref).
+        Callers writing ``trial/*`` per chapter 6 §3.4 MUST disambiguate
+        the latter via ``ls_remote``.
+        """
+        argv = ["push"]
+        if expected_old_sha is not None:
+            argv.append(f"--force-with-lease={ref}:{expected_old_sha}")
+        argv += [remote, f"{ref}:{ref}"]
+        result = self._run(argv, check=False)
+        if result.returncode != 0:
+            _raise_remote_error(self._git_argv(argv), result)
+
+    def fetch_ref(
+        self, ref: str, *, remote: str = "origin"
+    ) -> str | None:
+        """Fetch ``ref`` from ``remote`` and return the fetched SHA.
+
+        Equivalent to ``git fetch <remote> +<ref>:<ref>`` — overwrites
+        the local ref with the remote's view.
+
+        Returns the SHA the local ref points at after the fetch, or
+        ``None`` if the remote does not have ``ref``. Raises
+        :class:`GitTransportError` on transport failure.
+        """
+        argv = ["fetch", remote, f"+{ref}:{ref}"]
+        result = self._run(argv, check=False)
+        if result.returncode != 0:
+            # `fetch` returns non-zero if the remote ref is missing;
+            # disambiguate transport from no-such-ref via stderr
+            # pattern, since neither has a clean exit code.
+            if _stderr_indicates_no_such_ref(result.stderr):
+                return None
+            _raise_remote_error(self._git_argv(argv), result)
+        return self.resolve_ref(ref)
+
+    def fetch_all_heads(self, *, remote: str = "origin") -> None:
+        """Fetch every remote head into the local namespace.
+
+        Equivalent to
+        ``git fetch --prune <remote> '+refs/heads/*:refs/heads/*'``.
+        Used by worker-host startup to refresh the entire branch
+        namespace AND prune local heads that no longer exist on the
+        remote (orphan-cleanup as a side effect of fetch). Bare-repo-
+        safe; used on every worker host's clone per §D.7c.
+        """
+        argv = [
+            "fetch",
+            "--prune",
+            remote,
+            "+refs/heads/*:refs/heads/*",
+        ]
+        result = self._run(argv, check=False)
+        if result.returncode != 0:
+            _raise_remote_error(self._git_argv(argv), result)
+
+    def delete_remote_ref(
+        self,
+        ref: str,
+        *,
+        expected_sha: str | None = None,
+        remote: str = "origin",
+    ) -> None:
+        """Delete ``ref`` from ``remote``.
+
+        With ``expected_sha`` set, the delete is CAS-guarded via
+        ``--force-with-lease=<ref>:<sha>`` so an integrator's
+        compensating-delete never racially deletes a ref another
+        integrator just published with a different SHA.
+
+        Raises :class:`RefRefused` on CAS miss or if the remote does
+        not have the ref (the latter is a "no-op vs. won the race"
+        ambiguity; chapter 6 §3.4 callers handle it by reading
+        ``ls_remote`` first).
+        """
+        argv = ["push"]
+        if expected_sha is not None:
+            argv.append(f"--force-with-lease={ref}:{expected_sha}")
+        argv += [remote, f":{ref}"]
+        result = self._run(argv, check=False)
+        if result.returncode != 0:
+            _raise_remote_error(self._git_argv(argv), result)
+
+    def ls_remote(
+        self, pattern: str = "refs/heads/*", *, remote: str = "origin"
+    ) -> list[tuple[str, str]]:
+        """Return ``[(refname, sha), ...]`` for refs on ``remote``.
+
+        Patterns follow ``git ls-remote`` semantics. Used by
+        ``Integrator`` step-2 transport-indeterminate read-back and
+        the §D.7c remote-orphan reconciliation pass.
+
+        Raises :class:`GitTransportError` on transport failure (which
+        the integrator's callers handle by deferring to the startup
+        sweep).
+        """
+        argv = ["ls-remote", remote, pattern]
+        result = self._run(argv, check=False)
+        if result.returncode != 0:
+            _raise_remote_error(self._git_argv(argv), result)
+        out: list[tuple[str, str]] = []
+        for line in result.stdout.splitlines():
+            sha, _, name = line.partition("\t")
+            sha = sha.strip()
+            name = name.strip()
+            if sha and name:
+                out.append((name, sha))
+        return out
+
     # --- internals --------------------------------------------------------
 
     def _git_argv(self, args: list[str]) -> list[str]:
@@ -681,6 +854,79 @@ def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     if result.returncode != 0:
         raise GitError(argv, result.returncode, result.stdout, result.stderr)
     return result
+
+
+# Heuristic stderr patterns. Git does not emit structured error
+# output, so distinguishing transport-layer failure from
+# remote-rejection has to grep stderr. The patterns below are the
+# stable substrings git has emitted for years across versions
+# 2.20+; tested locally against git 2.44 + 2.34 (Debian 12 / Ubuntu
+# 24.04). When git's error vocabulary changes, these tighten on
+# the new wording; see test_remote_ops.py for the
+# round-trip checks.
+
+_TRANSPORT_STDERR_MARKERS: tuple[str, ...] = (
+    "Could not resolve host",
+    "Connection refused",
+    "Couldn't connect to server",
+    "Could not connect to",
+    "Failed to connect",
+    "unable to access",
+    "fatal: unable to access",
+    "early EOF",
+    "the remote end hung up",
+    "RPC failed",
+    "fatal: protocol",
+    "operation timed out",
+    "Operation timed out",
+    "Network is unreachable",
+)
+
+_REJECTION_STDERR_MARKERS: tuple[str, ...] = (
+    "[rejected]",
+    "stale info",
+    "non-fast-forward",
+    "remote rejected",
+    "would clobber existing tag",
+    "fetch first",
+    "deny updating a hidden ref",
+    "pre-receive hook declined",
+)
+
+
+def _is_transport_stderr(stderr: str) -> bool:
+    return any(marker in stderr for marker in _TRANSPORT_STDERR_MARKERS)
+
+
+def _is_rejection_stderr(stderr: str) -> bool:
+    return any(marker in stderr for marker in _REJECTION_STDERR_MARKERS)
+
+
+def _stderr_indicates_no_such_ref(stderr: str) -> bool:
+    return (
+        "couldn't find remote ref" in stderr
+        or "Couldn't find remote ref" in stderr
+        or "fatal: refspec" in stderr
+    )
+
+
+def _raise_remote_error(
+    argv: list[str], result: subprocess.CompletedProcess[str]
+) -> None:
+    """Map a failed remote-op subprocess result to the right exception class.
+
+    Transport-layer failures raise :class:`GitTransportError`; remote
+    rejections raise :class:`RefRefused`; everything else raises the
+    generic :class:`GitError`.
+    """
+    rc = result.returncode
+    out = result.stdout
+    err = result.stderr
+    if _is_transport_stderr(err):
+        raise GitTransportError(argv, rc, out, err)
+    if _is_rejection_stderr(err):
+        raise RefRefused(argv, rc, out, err)
+    raise GitError(argv, rc, out, err)
 
 
 def _worktree_record(entry: dict[str, str]) -> WorktreeInfo:

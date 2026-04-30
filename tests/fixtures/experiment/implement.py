@@ -28,8 +28,18 @@ def _git(*args: str, cwd: Path) -> str:
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        # Surface git's stderr so smoke / e2e diagnostics can show
+        # what actually broke; otherwise check=True's
+        # CalledProcessError swallows it.
+        print(
+            f"implement.py: git {' '.join(args)} failed (rc={result.returncode}); "
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     return result.stdout.strip()
 
 

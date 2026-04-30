@@ -248,7 +248,109 @@ cleanup of leftover worktrees uses path-scoped
 subdir; the repo-global `git worktree prune` is **not** used. This
 makes cross-host races impossible by construction.
 
-## 7. Container-isolated reference deployment (DooD)
+## 7. Gitea-as-remote reference deployment
+
+The Phase 10d follow-up B reference deployment has every worker
+host (orchestrator integrator, implementer host, evaluator host,
+web-ui implementer module) treat **Gitea** as the central git
+remote — workers stop touching a shared bare-repo volume and
+instead clone a private bare copy from Gitea over HTTP, fetch on
+subsequent starts, push their `work/*` and `trial/*` refs back,
+and rely on Gitea's CAS for chapter 6 §3.4 atomicity.
+
+### 7.1 Auth — HTTP Basic via per-experiment credential helper
+
+The reference Gitea is exposed on plain HTTP inside the compose
+network (no TLS). That matches the reference soft-isolation
+posture (the trust boundary is the compose network, not the
+wire). A hardened deployment substitutes a TLS-fronted Gitea
+behind the same `--gitea-url` flag — the wrapping code is opaque
+to the URL scheme.
+
+setup-experiment provisions an admin `eden` user with a
+per-experiment password, a repo `eden/<experiment-id>.git`
+(idempotent), and a credential-helper script at
+`reference/compose/.gitea-creds-<experiment-id>/credential-helper.sh`
+that prints `username=eden\npassword=<generated>` for matching
+URLs. The script is mounted RO into every worker container at
+`/etc/eden/credential-helper.sh` and configured as the local
+clone's `credential.helper`. The seed commit is pushed by a
+one-shot `eden-repo-init --push-to <gitea-url>` invocation.
+
+The credential-helper script lives on the host filesystem
+(mode 0755). The eden user's Gitea password is therefore visible
+to anyone with read access to the host — same soft boundary as
+the DooD socket mount documented in §8.
+
+### 7.2 Per-role git operations
+
+| Role | Reads | Writes |
+|---|---|---|
+| Orchestrator/integrator | fetch_all_heads at startup; ls_remote at orphan-reconciliation | local create_ref → push_ref → integrate_trial → on store fail compensating delete_remote_ref |
+| Implementer | local create_ref → push_ref of `work/*` after the user `*_command` produces a commit | rolls back local on push failure + submits status=error |
+| Evaluator | fetch_ref of `trial.branch` before `git worktree add`; eval_error on transport failure | never pushes |
+| Web-ui implementer | same as implementer | same as implementer |
+
+### 7.3 Integrator atomicity ladder (chapter 6 §3.4)
+
+`Integrator.integrate(trial_id)` runs a four-step
+publish-then-commit-then-rollback ladder:
+
+1. local `create_ref` — CAS-guarded local ref write.
+2. remote `push_ref` — publish to Gitea with
+   `--force-with-lease`. Three branches:
+   - `RefRefused`: definite remote rejection. Step 4b only.
+   - `GitTransportError`: ambiguous; disambiguate by an
+     immediate `ls_remote` read-back. Outcomes: remote absent
+     (4b only), remote = our SHA (4a + 4b), remote =
+     different SHA (4b only), ls_remote also fails (4b only,
+     `reconcile_remote_orphans` cleans up at next startup).
+3. `store.integrate_trial` — atomic with the
+   `trial.integrated` event in the store. Only this step
+   commits the trial as integrated.
+4. on store failure:
+   - 4a. remote `delete_ref` (compensating) if step 2 succeeded.
+   - 4b. local `delete_ref` (compensating).
+
+`trial.integrated` is emitted ONLY at step 3 — NOT at step 1.
+Local-only state is invisible to chapter 5 §2.2 event-log
+consumers.
+
+### 7.4 Startup remote-orphan reconciliation
+
+`Integrator.reconcile_remote_orphans()` runs at orchestrator
+startup. It walks `refs/heads/trial/*` on Gitea via `ls-remote`,
+recovers the `trial_id` from each commit's
+`.eden/trials/<trial_id>/eval.json` tree path
+(spec-authoritative — chapter 6 §3.2), and for each calls
+`Store.read_trial(trial_id)`. If the trial has no
+`trial_commit_sha`, the integrator deletes the remote ref.
+
+The `trial_id` recovery deliberately does NOT parse ref names —
+chapter 2 §1.3 treats `trial_id` as opaque, and branch names
+following `trial/<trial_id>-<slug>` are a reference-impl
+convention conforming alternatives may not match.
+
+This is the backstop for the §7.3 "step 4a failed" case and the
+"push transport-fails AND ls-remote also transport-fails" case.
+
+### 7.5 Crash recovery
+
+Each worker host's startup:
+
+1. If `/var/lib/eden/repo` is not yet a git repo, `clone --bare`
+   from Gitea via `--gitea-url`.
+2. Otherwise,
+   `git fetch --prune origin '+refs/heads/*:refs/heads/*'` to
+   refresh ALL local heads + delete any local heads no longer
+   on the remote (orphan-cleanup as a fetch side effect).
+3. Enter the role's normal poll loop.
+
+Long-lived web-ui clones additionally `git fetch origin <ref>`
+read-before-display + read-before-write so the rendered view
+matches the remote.
+
+## 8. Container-isolated reference deployment (DooD)
 
 The Phase 10d follow-up A reference deployment offers an opt-in
 `--exec-mode docker` flag on every host. With this active, each

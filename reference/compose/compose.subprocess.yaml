@@ -74,6 +74,10 @@ services:
       - implementer-1
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --mode
       - subprocess
       - --experiment-config
@@ -92,7 +96,10 @@ services:
       - source: eden-implement-env
         target: /etc/eden/implement.env
     volumes:
-      - eden-bare-repo:/var/lib/eden/repo
+      # Phase 10d follow-up B: per-service clone (was eden-bare-repo).
+      # The host clones from gitea on first run via --gitea-url.
+      - eden-implementer-repo:/var/lib/eden/repo
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
       # Read-only mount of the planner-written rationale tree so the
       # implementer can resolve `proposal.artifacts_uri` →
@@ -127,6 +134,10 @@ services:
       - /etc/eden/experiment-dir
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --worktrees-dir
       - /var/lib/eden/worktrees
       - --evaluate-env-file
@@ -139,7 +150,10 @@ services:
       - source: eden-evaluate-env
         target: /etc/eden/evaluate.env
     volumes:
-      - eden-bare-repo:/var/lib/eden/repo
+      # Phase 10d follow-up B: per-service clone (was eden-bare-repo).
+      # The host clones from gitea on first run via --gitea-url.
+      - eden-evaluator-repo:/var/lib/eden/repo
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
       - type: bind
         source: ${EDEN_EXPERIMENT_DIR_HOST:?}

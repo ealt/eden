@@ -65,6 +65,21 @@ class EvaluatorSubprocessConfig:
     host_id: str = ""
 
 
+def _fetch_trial_branch(*, repo_path: Path, branch: str) -> None:
+    """Fetch ``refs/heads/<branch>`` from origin into the local repo.
+
+    No-op when the repo has no origin (Phase 10d follow-up B local-only
+    fallback). Raises on transport / git errors so the caller can map
+    to ``eval_error`` per chapter 3 §4.4.
+    """
+    from eden_git import GitRepo
+
+    repo = GitRepo(repo_path)
+    if "origin" not in repo._run(["remote"], check=False).stdout.split():
+        return
+    repo.fetch_ref(f"refs/heads/{branch}")
+
+
 def host_worktrees_subdir(*, worktrees_root: Path) -> Path:
     """Return ``<worktrees_root>/<hostname>/`` for cross-host isolation."""
     return Path(worktrees_root) / socket.gethostname()
@@ -132,6 +147,36 @@ def _handle_one(
         )
         return
     claim = store.claim(task.task_id, worker_id)
+
+    # Phase 10d follow-up B §D.8: when the local repo has an origin
+    # remote (Gitea cutover), fetch the implementer's work/* branch
+    # so the worker commit is present locally before we worktree-add.
+    # Per chapter 3 §4.4, infrastructure failures here map to
+    # eval_error (NOT error) so the trial stays at `success` and
+    # can be re-evaluated later.
+    if trial.branch is not None:
+        try:
+            _fetch_trial_branch(
+                repo_path=config.repo_path,
+                branch=trial.branch,
+            )
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "evaluator_fetch_failed",
+                extra={"task_id": task.task_id, "branch": trial.branch},
+            )
+            _submit_with_readback(
+                store=store,
+                task_id=task.task_id,
+                token=claim.token,
+                submission=EvaluateSubmission(
+                    status="eval_error",
+                    trial_id=trial_id,
+                    metrics=None,
+                    artifacts_uri=None,
+                ),
+            )
+            return
 
     wt = TaskWorktree(
         repo_path=config.repo_path,

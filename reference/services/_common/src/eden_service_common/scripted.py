@@ -114,6 +114,22 @@ def make_implement_fn(
         )
         branch_short = f"work/{proposal.slug}-{trial_id}"
         repo.create_ref(f"refs/heads/{branch_short}", commit_sha)
+        # Phase 10d follow-up B: when the local repo has an origin
+        # remote (Gitea cutover), publish the work/* ref so the
+        # orchestrator's clone can fetch it. Push failure rolls back
+        # the local ref + maps to ImplementOutcome(status="error") —
+        # mirrors the production subprocess flow per chapter 3 §3.3.
+        if "origin" in repo._run(["remote"], check=False).stdout.split():
+            try:
+                repo.push_ref(f"refs/heads/{branch_short}")
+            except Exception:  # noqa: BLE001 — git/transport-shaped
+                import contextlib
+                with contextlib.suppress(Exception):
+                    repo.delete_ref(
+                        f"refs/heads/{branch_short}",
+                        expected_old_sha=commit_sha,
+                    )
+                return ImplementOutcome(status="error")
         return ImplementOutcome(
             status="success",
             commit_sha=commit_sha,

@@ -60,7 +60,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-path",
         required=True,
-        help="Bare git repo that the Integrator writes trial/* refs into.",
+        help=(
+            "Bare git repo that the Integrator writes trial/* refs into. "
+            "When --gitea-url is also set, this path becomes the local "
+            "bare clone of the Gitea-hosted repo (created at startup if "
+            "it doesn't already exist)."
+        ),
+    )
+    parser.add_argument(
+        "--gitea-url",
+        default=None,
+        help=(
+            "Optional HTTP(S) URL of the central git remote (Phase 10d "
+            "follow-up B). When set, the integrator clones --repo-path "
+            "from this URL at startup, fetches all heads + reconciles "
+            "remote orphan trial/* refs, and publishes new trial/* refs "
+            "back to this remote."
+        ),
+    )
+    parser.add_argument(
+        "--credential-helper",
+        default=None,
+        help=(
+            "Optional path to a git credential-helper script "
+            "(see Phase 10d follow-up B §D.3). Used to provide HTTP "
+            "Basic auth to --gitea-url."
+        ),
     )
     parser.add_argument(
         "--integrator-author",
@@ -121,6 +146,41 @@ def _expand_plan_tasks(spec: str) -> list[str]:
     return [s.strip() for s in spec.split(",") if s.strip()]
 
 
+def _ensure_repo(
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+    repo_path: str,
+    gitea_url: str | None,
+    credential_helper: str | None,
+) -> GitRepo:
+    """Materialize the integrator's local repo per Phase 10d follow-up B §D.5.
+
+    When ``gitea_url`` is set:
+      - if ``repo_path`` is not yet a git repo, clone --bare from gitea;
+      - otherwise, fetch_all_heads to refresh + prune.
+
+    When ``gitea_url`` is None, return a plain ``GitRepo(repo_path)``
+    over the existing local bare repo (chunk-10d behavior, no remote).
+    """
+    from pathlib import Path
+
+    path = Path(repo_path)
+    if gitea_url is None:
+        return GitRepo(path)
+    if (path / "HEAD").is_file() or (path / ".git" / "HEAD").is_file():
+        log.info("fetching_remote_heads", url=gitea_url)
+        repo = GitRepo(path)
+        repo.fetch_all_heads()
+        return repo
+    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    return GitRepo.clone_from(
+        url=gitea_url,
+        dest=path,
+        bare=True,
+        credential_helper=credential_helper,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_orchestrator``."""
     args = parse_args(argv)
@@ -150,12 +210,26 @@ def main(argv: list[str] | None = None) -> int:
         args.experiment_id,
         token=args.shared_token,
     ) as client:
-        repo = GitRepo(args.repo_path)
+        repo = _ensure_repo(
+            log=log,
+            repo_path=args.repo_path,
+            gitea_url=args.gitea_url,
+            credential_helper=args.credential_helper,
+        )
         integrator = Integrator(
             store=client,
             repo=repo,
             author=_parse_author(args.integrator_author),
         )
+        if args.gitea_url is not None:
+            # §D.7c: store-authoritative reconciliation of remote
+            # orphan trial/* refs at startup.
+            try:
+                deleted = integrator.reconcile_remote_orphans()
+                if deleted:
+                    log.info("reconciled_remote_orphans", count=len(deleted))
+            except Exception:
+                log.exception("reconcile_remote_orphans_failed")
         run_orchestrator_loop(
             store=client,
             integrator=integrator,

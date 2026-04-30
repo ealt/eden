@@ -83,6 +83,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "/implementer/* routes return 404."
         ),
     )
+    parser.add_argument(
+        "--gitea-url",
+        default=None,
+        help=(
+            "Optional HTTP(S) URL of the central git remote (Phase 10d "
+            "follow-up B). When set, --repo-path becomes the local "
+            "bare clone of the Gitea-hosted repo (created at startup) "
+            "and the implementer module pushes work/* refs to gitea "
+            "after every successful submit."
+        ),
+    )
+    parser.add_argument(
+        "--credential-helper",
+        default=None,
+        help=(
+            "Optional path to a git credential-helper script for "
+            "HTTP Basic auth against --gitea-url."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -123,7 +142,22 @@ def main(argv: list[str] | None = None) -> int:
     config = load_experiment_config(args.experiment_config)
     repo: GitRepo | None = None
     if args.repo_path is not None:
-        repo = GitRepo(str(args.repo_path))
+        # Phase 10d follow-up B: when --gitea-url is set, materialize
+        # the local clone (or fetch on subsequent starts).
+        if args.gitea_url is not None:
+            head = args.repo_path / "HEAD"
+            if head.is_file():
+                repo = GitRepo(str(args.repo_path))
+                repo.fetch_all_heads()
+            else:
+                repo = GitRepo.clone_from(
+                    url=args.gitea_url,
+                    dest=args.repo_path,
+                    bare=True,
+                    credential_helper=args.credential_helper,
+                )
+        else:
+            repo = GitRepo(str(args.repo_path))
         repo.rev_parse("HEAD")
     store = StoreClient(
         base_url=args.task_store_url,

@@ -6,6 +6,7 @@ import argparse
 import socket
 from pathlib import Path
 
+from eden_git import GitRepo
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
@@ -46,7 +47,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-path",
         required=True,
-        help="Bare git repo the implementer writes work/* refs into.",
+        help=(
+            "Bare git repo the implementer writes work/* refs into. "
+            "When --gitea-url is also set, this path becomes the local "
+            "bare clone of the Gitea-hosted repo (created at startup if "
+            "it doesn't already exist)."
+        ),
+    )
+    parser.add_argument(
+        "--gitea-url",
+        default=None,
+        help=(
+            "Optional HTTP(S) URL of the central git remote (Phase 10d "
+            "follow-up B). When set, the implementer clones --repo-path "
+            "from this URL at startup, fetches all heads, and pushes "
+            "work/* refs back after each successful submit."
+        ),
+    )
+    parser.add_argument(
+        "--credential-helper",
+        default=None,
+        help=(
+            "Optional path to a git credential-helper script for "
+            "HTTP Basic auth against --gitea-url."
+        ),
     )
     parser.add_argument(
         "--fail-every",
@@ -78,6 +102,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _ensure_repo_clone(
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+    repo_path: str,
+    gitea_url: str | None,
+    credential_helper: str | None,
+) -> None:
+    """Materialize the implementer's local clone per Phase 10d follow-up B §D.5.
+
+    No-op when ``gitea_url`` is None (chunk-10d behavior — the
+    operator pre-populates ``repo_path`` via setup-experiment).
+    Otherwise: clone bare at first run, fetch_all_heads on subsequent
+    starts so the local clone reflects the remote.
+    """
+    if gitea_url is None:
+        return
+    path = Path(repo_path)
+    if (path / "HEAD").is_file():
+        log.info("fetching_remote_heads", url=gitea_url)
+        GitRepo(path).fetch_all_heads()
+        return
+    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    GitRepo.clone_from(
+        url=gitea_url,
+        dest=path,
+        bare=True,
+        credential_helper=credential_helper,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_implementer_host``."""
     args = parse_args(argv)
@@ -97,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
         deadline_seconds=args.startup_timeout,
     )
     log.info("starting", worker_id=args.worker_id, repo=args.repo_path, mode=args.mode)
+    _ensure_repo_clone(
+        log=log,
+        repo_path=args.repo_path,
+        gitea_url=args.gitea_url,
+        credential_helper=args.credential_helper,
+    )
     with StoreClient(
         args.task_store_url,
         args.experiment_id,

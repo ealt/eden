@@ -25,10 +25,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from eden_contracts import Trial
-from eden_storage import InvalidPrecondition, Store
+from eden_storage import InvalidPrecondition, NotFound, Store
 
 from ._manifest import ManifestFieldMissing, build_manifest
-from .errors import GitError
+from .errors import GitError, GitTransportError, RefRefused
 from .repo import GitRepo, Identity
 
 __all__ = [
@@ -143,6 +143,20 @@ class Integrator:
         if trial.trial_commit_sha is not None:
             return self._check_idempotent(trial, branch, branch_ref)
 
+        # Phase 10d follow-up B: when the integrator's clone has an
+        # origin remote, fetch the implementer-pushed work/* branch
+        # before §2 reachability checks run. The startup-only
+        # fetch_all_heads can race against work/* refs the
+        # implementer pushes AFTER orchestrator startup; the
+        # promotion path must refresh local state per the long-lived-
+        # clone freshness rule (plan §D.7d). Transport / git failure
+        # falls through to the existing reachability check, which
+        # raises NotReadyForIntegration with a precise diagnostic.
+        import contextlib
+        if trial.branch is not None and _has_origin(self._repo):
+            with contextlib.suppress(Exception):
+                self._repo.fetch_ref(f"refs/heads/{trial.branch}")
+
         self._require_promotion_preconditions(trial)
         self._require_reachability(trial)
         manifest_path = _manifest_path(trial.trial_id)
@@ -152,8 +166,40 @@ class Integrator:
         tree_sha = self._build_squash_tree(trial, manifest_path)
         commit_sha = self._commit_squash(trial, slug, tree_sha)
 
+        # Step 1: local CAS-guarded ref write.
         self._repo.create_ref(branch_ref, commit_sha)
 
+        # Step 2: publish to remote (if origin is configured).
+        # Phase 10d follow-up B §D.6: when the integrator's repo has
+        # an `origin` remote (the Gitea cutover), publish the ref
+        # there before committing the store-side trial state. Skip
+        # the push for repos with no origin (the local-only test
+        # path stays a single-step integration).
+        published = False
+        if _has_origin(self._repo):
+            try:
+                self._repo.push_ref(branch_ref, expected_old_sha=self._repo.zero_oid())
+                published = True
+            except RefRefused as push_rejected:
+                # Definite remote rejection — only step-1's local
+                # ref exists. Roll back local; do NOT touch remote
+                # (the remote either has a different SHA on the same
+                # ref, in which case another integrator wrote a
+                # different commit and our ref does not belong, or
+                # the remote refused for a hook-level reason).
+                self._rollback_local_only(
+                    branch_ref, commit_sha, push_rejected
+                )
+                raise
+            except GitTransportError as push_transport:
+                # Transport-indeterminate: the remote may or may
+                # not have applied the ref. Disambiguate via
+                # ls-remote per §D.7d.
+                published = self._reconcile_indeterminate_push(
+                    branch_ref, commit_sha, push_transport
+                )
+
+        # Step 3: store integrate_trial (atomic with trial.integrated).
         try:
             self._store.integrate_trial(trial.trial_id, commit_sha)
         except BaseException as store_error:
@@ -184,6 +230,44 @@ class Integrator:
                     f"compensated; operator intervention required.",
                     original=store_error,
                 ) from store_error
+            # Step 4a: remote compensating delete (if we published).
+            if published:
+                try:
+                    self._repo.delete_remote_ref(
+                        branch_ref, expected_sha=commit_sha
+                    )
+                except BaseException as remote_delete_error:
+                    # Per §D.7d, this is the case where §D.7c's
+                    # startup sweep is the backstop. Annotate the
+                    # AtomicityViolation so the operator can see
+                    # both halves of the failure chain; do NOT skip
+                    # step 4b (local rollback still runs so the next
+                    # in-process retry is clean).
+                    try:
+                        self._repo.delete_ref(
+                            branch_ref, expected_old_sha=commit_sha
+                        )
+                    except BaseException as local_rollback_error:
+                        raise AtomicityViolation(
+                            f"integrator failed to commit trial "
+                            f"{trial.trial_id!r}, the remote compensating "
+                            f"delete failed, AND the local rollback "
+                            f"failed; ref {branch_ref!r} is dangling at "
+                            f"{commit_sha} both locally and remotely",
+                            original=store_error,
+                            rollback=local_rollback_error,
+                        ) from store_error
+                    raise AtomicityViolation(
+                        f"integrator failed to commit trial "
+                        f"{trial.trial_id!r} and the remote compensating "
+                        f"delete failed; remote ref {branch_ref!r} "
+                        f"dangling at {commit_sha} until the next "
+                        f"integrator-startup remote-orphan sweep "
+                        f"(§D.7c) cleans it up",
+                        original=store_error,
+                        rollback=remote_delete_error,
+                    ) from store_error
+            # Step 4b: local compensating delete.
             try:
                 self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
             except BaseException as rollback_error:
@@ -202,6 +286,72 @@ class Integrator:
             branch=branch,
             already_integrated=False,
         )
+
+    def _rollback_local_only(
+        self,
+        branch_ref: str,
+        commit_sha: str,
+        push_error: BaseException,
+    ) -> None:
+        """Roll back step 1 after a definite remote rejection (step 2)."""
+        try:
+            self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
+        except BaseException as rollback_error:
+            raise AtomicityViolation(
+                f"integrator's push to remote was rejected and the "
+                f"local rollback also failed; local ref {branch_ref!r} "
+                f"is dangling at {commit_sha}",
+                original=push_error,
+                rollback=rollback_error,
+            ) from push_error
+
+    def _reconcile_indeterminate_push(
+        self,
+        branch_ref: str,
+        commit_sha: str,
+        push_error: GitTransportError,
+    ) -> bool:
+        """Disambiguate a transport-failed push via ls-remote read-back.
+
+        Returns ``True`` if the remote DID accept our ref (so step 4a
+        compensating-delete must run on store failure), ``False`` if
+        the remote did NOT accept (only step 4b local rollback). On
+        ls-remote-also-fails, raises :class:`GitTransportError` —
+        the caller treats this as a §D.7d "defer to startup sweep"
+        and rolls back local only.
+        """
+        try:
+            refs = self._repo.ls_remote(branch_ref)
+        except GitTransportError:
+            # Both push and ls-remote transport-failed. Local-only
+            # rollback is the safest action; the §D.7c startup
+            # sweep is the backstop for any remote orphan.
+            self._rollback_local_only(branch_ref, commit_sha, push_error)
+            raise
+        remote_sha: str | None = None
+        for name, sha in refs:
+            if name == branch_ref:
+                remote_sha = sha
+                break
+        if remote_sha is None:
+            # Push transport-failed and the ref is not on the remote
+            # — local rollback only.
+            self._rollback_local_only(branch_ref, commit_sha, push_error)
+            raise push_error
+        if remote_sha == commit_sha:
+            # Push DID land; ack just got lost.
+            return True
+        # Remote has a DIFFERENT SHA — another integrator won the
+        # race. RefRefused semantics: roll back local only.
+        self._rollback_local_only(branch_ref, commit_sha, push_error)
+        raise RefRefused(
+            ["push", "origin", branch_ref],
+            push_error.returncode,
+            push_error.stdout,
+            f"remote ref {branch_ref!r} resolved to {remote_sha!r} after "
+            f"transport-indeterminate push; another integrator integrated "
+            f"a different commit on the same trial id",
+        ) from push_error
 
     # ------------------------------------------------------------------
     # Preconditions
@@ -374,6 +524,116 @@ class Integrator:
             already_integrated=True,
         )
 
+    # ------------------------------------------------------------------
+    # Phase 10d follow-up B §D.7c — startup remote-orphan reconciliation
+    # ------------------------------------------------------------------
+
+    def reconcile_remote_orphans(self) -> list[str]:
+        """Sweep ``trial/*`` refs on the remote that lack store-side trials.
+
+        Recovery rule for the §D.6 step-4a-failed and the
+        push-transport-then-ls-remote-also-failed cases. Only meaningful
+        when the integrator's repo has an ``origin`` remote.
+
+        Returns the list of remote refs that were deleted. Refs whose
+        store-side trial cannot be derived (malformed trial commit) are
+        left in place and logged via raised ``CorruptIntegrationState``
+        — the operator decides; the integrator does not attempt
+        corrective writes for them.
+        """
+        deleted: list[str] = []
+        if not _has_origin(self._repo):
+            return deleted
+        try:
+            remote_refs = self._repo.ls_remote("refs/heads/trial/*")
+        except GitTransportError:
+            # Gitea unreachable at startup — caller exits non-zero
+            # and compose's restart loop retries. Don't raise here
+            # because we don't want to block startup if the only
+            # transient is reconciliation; the next startup tries
+            # again.
+            return deleted
+        for ref, ref_sha in remote_refs:
+            trial_id = self._recover_trial_id_from_remote_commit(ref, ref_sha)
+            if trial_id is None:
+                continue
+            try:
+                trial = self._store.read_trial(trial_id)
+            except NotFound:
+                # Authoritative: the trial truly doesn't exist in the
+                # store. Safe to delete the orphan ref.
+                trial = None
+            except Exception:  # noqa: BLE001
+                # Indeterminate: transport / server failure. We MUST
+                # NOT delete a remote ref that may correspond to a
+                # valid integrated trial — chapter 6 §3.4 only
+                # authorizes the delete when the store is
+                # authoritatively missing the trial. Skip and let
+                # the next startup retry.
+                continue
+            if trial is None or trial.trial_commit_sha is None:
+                try:
+                    self._repo.delete_remote_ref(ref, expected_sha=ref_sha)
+                    deleted.append(ref)
+                except Exception:  # noqa: BLE001 — best-effort
+                    # The next startup tries again. Don't raise.
+                    pass
+        return deleted
+
+    def _recover_trial_id_from_remote_commit(
+        self, ref: str, ref_sha: str
+    ) -> str | None:
+        """Recover the trial_id from a remote trial-commit's tree.
+
+        Per chapter 6 §3.2 the squash commit's tree must contain
+        exactly one ``.eden/trials/<trial_id>/eval.json`` entry. The
+        spec treats trial_id as opaque (chapter 2 §1.3), so ref-name
+        parsing is NOT used.
+
+        Fetches the commit locally if not already present, then reads
+        ``ls-tree --name-only <sha> .eden/trials/`` and recovers the
+        single subdir name.
+
+        Returns ``None`` if the commit isn't retrievable, the tree
+        lacks ``.eden/trials/``, or the entry shape is malformed
+        (zero or multiple subdirs).
+        """
+        # Make sure we have the commit locally so we can read its tree.
+        if not self._repo.commit_exists(ref_sha):
+            try:
+                self._repo.fetch_ref(ref)
+            except (GitTransportError, GitError):
+                return None
+            if not self._repo.commit_exists(ref_sha):
+                return None
+        try:
+            tree_sha = self._repo.commit_tree_sha(ref_sha)
+        except GitError:
+            return None
+        # Read `.eden/trials/` directory entries via ls-tree (one-level).
+        try:
+            entries = self._repo.ls_tree(
+                tree_sha, ".eden/trials/", recursive=False
+            )
+        except GitError:
+            return None
+        # Filter to direct children (subdirectories — the trial_id dirs).
+        subdirs = [
+            entry for entry in entries
+            if entry.type == "tree"
+            and entry.path.startswith(".eden/trials/")
+            and entry.path.count("/") == 2
+        ]
+        if len(subdirs) != 1:
+            # Malformed: zero or multiple. Per the residual-risk note
+            # in plan §F-T, fail closed.
+            return None
+        # entry.path is ".eden/trials/<trial_id>"
+        trial_id = subdirs[0].path.rsplit("/", 1)[1]
+        if not trial_id:
+            return None
+        return trial_id
+
     def _require_squash_tree_matches(
         self,
         worker_commit_sha: str,
@@ -398,6 +658,20 @@ class Integrator:
                 f"trial {worker_commit_sha!r} integrated tree does not match "
                 f"worker-tip tree plus manifest (§3.2 / §5.3)"
             )
+
+
+def _has_origin(repo: GitRepo) -> bool:
+    """Return ``True`` if the repo has an ``origin`` remote configured.
+
+    Used by ``Integrator.integrate`` to gate the publish-to-remote
+    step. Repos initialized via ``GitRepo.init_bare`` (the local-only
+    test path) have no origin and skip the push entirely.
+    """
+    try:
+        result = repo._run(["remote"], check=False)
+    except Exception:  # noqa: BLE001
+        return False
+    return "origin" in result.stdout.split()
 
 
 def _manifest_path(trial_id: str) -> str:

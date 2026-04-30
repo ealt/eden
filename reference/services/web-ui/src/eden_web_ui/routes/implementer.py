@@ -58,6 +58,15 @@ router = APIRouter(prefix="/implementer")
 _CLAIMS: dict[tuple[str, str], tuple[str, str]] = {}
 
 
+def _repo_has_origin(repo: Any) -> bool:
+    """Return True if the GitRepo has an origin remote configured."""
+    try:
+        result = repo._run(["remote"], check=False)
+    except Exception:  # noqa: BLE001
+        return False
+    return "origin" in result.stdout.split()
+
+
 def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
     return (session_csrf, task_id)
 
@@ -306,7 +315,10 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
             recovery_kind="transport",
         )
 
-    # Phase 2: create_ref (status=success only).
+    # Phase 2: create_ref locally (status=success only). Phase 10d
+    # follow-up B §D.7: when origin is configured, also push_ref so
+    # the orchestrator's clone can fetch the work/* commit. Push
+    # failure rolls back the local ref + classifies as orphan.
     if draft.status == "success":
         assert draft.commit_sha is not None
         try:
@@ -321,6 +333,29 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                 banner=f"repo error: {exc.__class__.__name__}",
                 recovery_kind="auto",
             )
+        if _repo_has_origin(repo):
+            try:
+                repo.push_ref(f"refs/heads/{branch}")
+            except Exception as exc:  # noqa: BLE001
+                # Roll back local ref so we don't leave a local-only
+                # work/* the orchestrator can never integrate. The
+                # next host startup's fetch_all_heads --prune is the
+                # backstop if delete_ref itself fails here.
+                import contextlib
+                with contextlib.suppress(Exception):
+                    repo.delete_ref(
+                        f"refs/heads/{branch}",
+                        expected_old_sha=draft.commit_sha,
+                    )
+                return _render_orphaned(
+                    request,
+                    task_id=task_id,
+                    trial_id=trial_id,
+                    commit_sha=draft.commit_sha,
+                    branch=branch,
+                    banner=f"push error: {exc.__class__.__name__}",
+                    recovery_kind="auto",
+                )
 
     # Phase 3: submit, with retry-before-orphan + read-back.
     submission = ImplementSubmission(

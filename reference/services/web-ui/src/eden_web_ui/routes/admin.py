@@ -552,6 +552,16 @@ async def work_refs_index(request: Request) -> HTMLResponse | RedirectResponse:
             },
         )
     store = request.app.state.store
+    # Phase 10d follow-up B §D.7c read-before-display: fetch from
+    # the remote so the operator's view of work/* matches Gitea.
+    # No-op when origin is not configured (legacy local-only mode).
+    if _repo_has_origin(repo):
+        try:
+            repo.fetch_all_heads()
+        except Exception:  # noqa: BLE001 — git or transport
+            return _read_failure_response(
+                request, "could not fetch from gitea"
+            )
     try:
         groups = _classify_work_refs(repo, store)
     except Exception:  # noqa: BLE001 — git or transport
@@ -610,6 +620,29 @@ async def work_refs_delete(
     live_sha = target["current_sha"]
     from eden_git.repo import GitError
 
+    # Phase 10d follow-up B §D.7c: when origin is configured, the
+    # remote IS the source of truth — delete there first. Local
+    # delete still happens after so the local clone matches.
+    if _repo_has_origin(repo):
+        try:
+            repo.delete_remote_ref(ref_name, expected_sha=live_sha)
+        except GitError as exc:
+            stderr = (exc.stderr or "").lower()
+            if "stale info" in stderr or "rejected" in stderr:
+                return RedirectResponse(
+                    url="/admin/work-refs/?error=ref-changed",
+                    status_code=303,
+                )
+            if (
+                "deleting unknown ref" in stderr
+                or "remote ref does not exist" in stderr
+            ):
+                return RedirectResponse(
+                    url="/admin/work-refs/?error=not-found",
+                    status_code=303,
+                )
+            raise
+
     try:
         repo.delete_ref(ref_name, expected_old_sha=live_sha)
     except GitError as exc:
@@ -620,10 +653,11 @@ async def work_refs_delete(
         #   read at GET-time is no longer the ref's current SHA).
         # - "unable to resolve reference ..." → the ref vanished
         #   between our list_refs read and the delete call.
-        # Anything else (permissions, broken repo, malformed args)
-        # is an unexpected failure that must propagate to FastAPI's
-        # default 500 handler so the operator sees a real error page
-        # and the failure shows up in logs.
+        # When origin was configured, the remote-delete already
+        # succeeded; a local-delete failure here only affects the
+        # local clone (a `fetch_all_heads --prune` on the next
+        # restart will align it). Surface as the same operator
+        # banner as before.
         if "expected" in stderr and "but is" in stderr:
             return RedirectResponse(
                 url="/admin/work-refs/?error=ref-changed", status_code=303
@@ -696,6 +730,20 @@ def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+
+def _repo_has_origin(repo: Any) -> bool:
+    """Return True if the GitRepo has an origin remote configured.
+
+    Phase 10d follow-up B: gates the read-before-display fetch and
+    the remote-delete on the work-refs admin page. Pre-cutover (no
+    --gitea-url) deployments skip the new code paths entirely.
+    """
+    try:
+        result = repo._run(["remote"], check=False)
+    except Exception:  # noqa: BLE001
+        return False
+    return "origin" in result.stdout.split()
 
 
 def _csrf_failure_response() -> HTMLResponse:

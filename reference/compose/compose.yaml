@@ -98,6 +98,9 @@ services:
       dockerfile: reference/compose/Dockerfile
     container_name: eden-repo-init
     restart: "no"
+    # The compose default command stays a no-arg seed for parity with
+    # local dev. setup-experiment.sh OVERRIDES this when invoking via
+    # `compose run` to add --push-to + --credential-helper.
     command:
       - python
       - -m
@@ -105,7 +108,7 @@ services:
       - --repo-path
       - /var/lib/eden/repo
     volumes:
-      - eden-bare-repo:/var/lib/eden/repo
+      - eden-repo-init-staging:/var/lib/eden/repo
 
   task-store-server:
     image: eden-reference:dev
@@ -185,6 +188,10 @@ services:
       - ${EDEN_SHARED_TOKEN:?}
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --plan-tasks
       - ${EDEN_PLAN_TASKS:-3}
       # Compose-friendly quiescence: 30 iterations × 1s = 30s of
@@ -200,7 +207,8 @@ services:
       - --log-level
       - info
     volumes:
-      - eden-bare-repo:/var/lib/eden/repo
+      - eden-orchestrator-repo:/var/lib/eden/repo
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   planner-host:
     image: eden-reference:dev
@@ -253,10 +261,15 @@ services:
       - implementer-1
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --log-level
       - info
     volumes:
-      - eden-bare-repo:/var/lib/eden/repo
+      - eden-implementer-repo:/var/lib/eden/repo
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   evaluator-host:
     image: eden-reference:dev
@@ -316,6 +329,10 @@ services:
       - /var/lib/eden/artifacts
       - --repo-path
       - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --worker-id
       - web-ui-1
       - --host
@@ -328,8 +345,9 @@ services:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
     volumes:
-      - eden-bare-repo:/var/lib/eden/repo
+      - eden-web-ui-repo:/var/lib/eden/repo
       - eden-artifacts-data:/var/lib/eden/artifacts
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
     ports:
       - "${WEB_UI_HOST_PORT:-8090}:8090"
     healthcheck:
@@ -355,16 +373,28 @@ volumes:
   eden-postgres-data:
   eden-gitea-data:
   eden-blob-data:
-  # Volumes that are forwarded into spawned sibling containers when
-  # --exec-mode docker is active need explicit `name:` to override
-  # compose's default `<project>_<volume>` prefix. The wrap mounts
-  # them by literal name (`--mount type=volume,source=eden-bare-repo,...`)
-  # against the host docker daemon's catalog; without `name:`, compose
-  # creates them as `eden-reference_eden-bare-repo`, the wrap's mount
-  # of `eden-bare-repo` resolves to a fresh empty volume, and spawned
-  # containers see an empty bind-mount instead of the worker host's
-  # data. See plan §D.2.
-  eden-bare-repo:
-    name: eden-bare-repo
+  # Per-service git clones (Phase 10d follow-up B). Each worker
+  # owns a private bare clone of the Gitea-hosted repo;
+  # eden-repo-init's seed-and-push uses its own ephemeral copy
+  # under eden-repo-init-staging.
+  #
+  # The eden-implementer-repo and eden-evaluator-repo volumes get
+  # explicit `name:` so the docker-exec wrap's
+  # `--mount source=eden-implementer-repo` resolves to the SAME
+  # volume the worker host is reading from. (Same trap that bit
+  # eden-bare-repo / eden-worktrees in sub-chunk A — compose's
+  # default `<project>_<volume>` prefix doesn't match the wrap's
+  # literal-name reference, leading docker daemon to silently
+  # create a fresh empty volume.)
+  eden-orchestrator-repo:
+  eden-implementer-repo:
+    name: eden-implementer-repo
+  eden-evaluator-repo:
+    name: eden-evaluator-repo
+  eden-web-ui-repo:
+  eden-repo-init-staging:
+  # Artifacts volume kept with explicit `name:` for the chunk-10d
+  # follow-up A docker-exec wrap that forwards it to spawned
+  # children.
   eden-artifacts-data:
     name: eden-artifacts-data
