@@ -149,16 +149,13 @@ class Integrator:
         # fetch_all_heads can race against work/* refs the
         # implementer pushes AFTER orchestrator startup; the
         # promotion path must refresh local state per the long-lived-
-        # clone freshness rule (plan §D.7d).
+        # clone freshness rule (plan §D.7d). Transport / git failure
+        # falls through to the existing reachability check, which
+        # raises NotReadyForIntegration with a precise diagnostic.
+        import contextlib
         if trial.branch is not None and _has_origin(self._repo):
-            try:
+            with contextlib.suppress(Exception):
                 self._repo.fetch_ref(f"refs/heads/{trial.branch}")
-            except Exception:  # noqa: BLE001 — git/transport-shaped
-                # Fall through to the existing reachability check;
-                # if the branch genuinely isn't on the remote OR
-                # we couldn't fetch it, the next check raises
-                # NotReadyForIntegration with a precise diagnostic.
-                pass
 
         self._require_promotion_preconditions(trial)
         self._require_reachability(trial)
