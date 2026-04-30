@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from eden_contracts import Trial
-from eden_storage import InvalidPrecondition, Store
+from eden_storage import InvalidPrecondition, NotFound, Store
 
 from ._manifest import ManifestFieldMissing, build_manifest
 from .errors import GitError, GitTransportError, RefRefused
@@ -142,6 +142,23 @@ class Integrator:
 
         if trial.trial_commit_sha is not None:
             return self._check_idempotent(trial, branch, branch_ref)
+
+        # Phase 10d follow-up B: when the integrator's clone has an
+        # origin remote, fetch the implementer-pushed work/* branch
+        # before §2 reachability checks run. The startup-only
+        # fetch_all_heads can race against work/* refs the
+        # implementer pushes AFTER orchestrator startup; the
+        # promotion path must refresh local state per the long-lived-
+        # clone freshness rule (plan §D.7d).
+        if trial.branch is not None and _has_origin(self._repo):
+            try:
+                self._repo.fetch_ref(f"refs/heads/{trial.branch}")
+            except Exception:  # noqa: BLE001 — git/transport-shaped
+                # Fall through to the existing reachability check;
+                # if the branch genuinely isn't on the remote OR
+                # we couldn't fetch it, the next check raises
+                # NotReadyForIntegration with a precise diagnostic.
+                pass
 
         self._require_promotion_preconditions(trial)
         self._require_reachability(trial)
@@ -545,9 +562,18 @@ class Integrator:
                 continue
             try:
                 trial = self._store.read_trial(trial_id)
-            except Exception:  # noqa: BLE001
-                # Trial doesn't exist in store at all — orphan.
+            except NotFound:
+                # Authoritative: the trial truly doesn't exist in the
+                # store. Safe to delete the orphan ref.
                 trial = None
+            except Exception:  # noqa: BLE001
+                # Indeterminate: transport / server failure. We MUST
+                # NOT delete a remote ref that may correspond to a
+                # valid integrated trial — chapter 6 §3.4 only
+                # authorizes the delete when the store is
+                # authoritatively missing the trial. Skip and let
+                # the next startup retry.
+                continue
             if trial is None or trial.trial_commit_sha is None:
                 try:
                     self._repo.delete_remote_ref(ref, expected_sha=ref_sha)
