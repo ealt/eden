@@ -38,31 +38,39 @@ FIXTURE_CONFIG = (
 )
 
 
-def _spawn(args: list[str]) -> subprocess.Popen:
+def _spawn(args: list[str], log_path: Path) -> subprocess.Popen:
+    # Redirect stdout+stderr to a per-subprocess file. The reference
+    # logger writes to stdout (eden_service_common.logging); a long
+    # test that leaves subprocess.PIPE undrained eventually fills the
+    # 64 KiB pipe buffer and wedges any subprocess that tries to log
+    # — including the server's async event loop. See eden#39.
     return subprocess.Popen(
         [sys.executable, "-m", *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=open(log_path, "wb"),  # noqa: SIM115 — handle owned by Popen
+        stderr=subprocess.STDOUT,
     )
 
 
-def _read_port_announcement(proc: subprocess.Popen, timeout: float = 10.0) -> int:
+def _read_port_announcement(
+    log_path: Path, proc: subprocess.Popen, timeout: float = 10.0
+) -> int:
     """Read task-store-server's EDEN_TASK_STORE_LISTENING line and return the port."""
     deadline = time.monotonic() + timeout
-    assert proc.stdout is not None
     while time.monotonic() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            # Process may have died before listening.
-            if proc.poll() is not None:
-                raise RuntimeError(
-                    f"task-store-server exited early with code {proc.returncode}"
-                )
-            continue
-        if line.startswith("EDEN_TASK_STORE_LISTENING"):
-            parts = dict(p.split("=", 1) for p in line.strip().split()[1:])
-            return int(parts["port"])
+        if log_path.exists():
+            try:
+                content = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            for line in content.splitlines():
+                if line.startswith("EDEN_TASK_STORE_LISTENING"):
+                    parts = dict(p.split("=", 1) for p in line.strip().split()[1:])
+                    return int(parts["port"])
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"task-store-server exited early with code {proc.returncode}"
+            )
+        time.sleep(0.05)
     raise RuntimeError("task-store-server did not announce its port in time")
 
 
@@ -77,17 +85,19 @@ def _terminate(proc: subprocess.Popen, timeout: float = 5.0) -> None:
         proc.wait(timeout=2)
 
 
-def _dump_stderr(procs: dict[str, subprocess.Popen]) -> str:
+def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
     parts = []
-    for name, p in procs.items():
-        stderr = ""
-        if p.stderr is not None:
-            try:
-                stderr = p.stderr.read() or ""
-            except Exception as exc:  # noqa: BLE001
-                stderr = f"<failed to read stderr: {exc!r}>"
+    for name, (p, log_path) in procs_logs.items():
+        try:
+            content = (
+                log_path.read_text(encoding="utf-8", errors="replace")
+                if log_path.exists()
+                else ""
+            )
+        except OSError as exc:
+            content = f"<failed to read {log_path}: {exc!r}>"
         parts.append(
-            f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{stderr}\n"
+            f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{content}\n"
         )
     return "\n".join(parts)
 
@@ -113,7 +123,10 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
     db_path = tmp_path / "eden.sqlite"
     experiment_id = "exp-e2e"
     token = "test-token"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
 
+    server_log = logs_dir / "server.log"
     server = _spawn(
         [
             "eden_task_store_server",
@@ -131,11 +144,13 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             token,
             "--subscribe-timeout",
             "1.0",
-        ]
+        ],
+        server_log,
     )
-    port = _read_port_announcement(server)
+    port = _read_port_announcement(server_log, server)
     base_url = f"http://127.0.0.1:{port}"
 
+    planner_log = logs_dir / "planner.log"
     planner = _spawn(
         [
             "eden_planner_host",
@@ -149,8 +164,10 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             "planner-1",
             "--base-commit-sha",
             base_sha,
-        ]
+        ],
+        planner_log,
     )
+    implementer_log = logs_dir / "implementer.log"
     implementer = _spawn(
         [
             "eden_implementer_host",
@@ -164,8 +181,10 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             "implementer-1",
             "--repo-path",
             str(bare_repo),
-        ]
+        ],
+        implementer_log,
     )
+    evaluator_log = logs_dir / "evaluator.log"
     evaluator = _spawn(
         [
             "eden_evaluator_host",
@@ -179,8 +198,10 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             "evaluator-1",
             "--experiment-config",
             str(FIXTURE_CONFIG),
-        ]
+        ],
+        evaluator_log,
     )
+    orchestrator_log = logs_dir / "orchestrator.log"
     orchestrator = _spawn(
         [
             "eden_orchestrator",
@@ -194,40 +215,39 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             str(bare_repo),
             "--plan-tasks",
             "plan-1,plan-2,plan-3",
-        ]
+        ],
+        orchestrator_log,
     )
 
-    procs = {
-        "task-store-server": server,
-        "planner": planner,
-        "implementer": implementer,
-        "evaluator": evaluator,
-        "orchestrator": orchestrator,
+    procs_logs = {
+        "task-store-server": (server, server_log),
+        "planner": (planner, planner_log),
+        "implementer": (implementer, implementer_log),
+        "evaluator": (evaluator, evaluator_log),
+        "orchestrator": (orchestrator, orchestrator_log),
     }
 
     try:
         try:
             rc = orchestrator.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            # Tear workers + server down before reading stderr so any
-            # buffered output flushes; then dump everything.
-            for p in procs.values():
+            for p, _ in procs_logs.values():
                 _terminate(p)
             pytest.fail(
-                "orchestrator did not exit within 60s. Subprocess stderr:\n"
-                + _dump_stderr(procs)
+                "orchestrator did not exit within 60s. Subprocess output:\n"
+                + _dump_logs(procs_logs)
             )
         if rc != 0:
-            for p in procs.values():
+            for p, _ in procs_logs.values():
                 _terminate(p)
             pytest.fail(
-                f"orchestrator exited {rc}. Subprocess stderr:\n"
-                + _dump_stderr(procs)
+                f"orchestrator exited {rc}. Subprocess output:\n"
+                + _dump_logs(procs_logs)
             )
 
         # Tear down workers + server so the SqliteStore's file is released.
         for name in ("planner", "implementer", "evaluator", "task-store-server"):
-            _terminate(procs[name])
+            _terminate(procs_logs[name][0])
 
         # Inspect final state.
         store = SqliteStore(
@@ -239,8 +259,8 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             trials = store.list_trials(status="success")
             if len(trials) != 3:
                 pytest.fail(
-                    f"expected 3 success trials, got {len(trials)}. Stderr:\n"
-                    + _dump_stderr(procs)
+                    f"expected 3 success trials, got {len(trials)}. Output:\n"
+                    + _dump_logs(procs_logs)
                 )
             repo = GitRepo(str(bare_repo))
             for trial in trials:
@@ -301,7 +321,7 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
         finally:
             store.close()
     finally:
-        for p in procs.values():
+        for p, _ in procs_logs.values():
             _terminate(p)
 
 
