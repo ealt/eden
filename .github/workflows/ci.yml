@@ -162,6 +162,11 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-subprocess.sh
 
+  # TODO(eden#38): bump branch protection to require this job once it
+  # has stayed clean on main for ~2 weeks since 2026-05-01. If this
+  # job flakes on main between now and then, leave a comment on
+  # issue #38 with the run URL and the failure mode so the bump can
+  # account for it.
   compose-smoke-subprocess-docker:
     name: compose-smoke-subprocess-docker
     runs-on: ubuntu-latest
@@ -262,6 +267,11 @@ jobs:
           EDEN_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/postgres
         run: uv run pytest -q reference/packages/eden-storage/tests
 
+  # TODO(eden#38): bump branch protection to require this job once it
+  # has stayed clean on main for ~2 weeks since 2026-05-01. If this
+  # job flakes on main between now and then, leave a comment on
+  # issue #38 with the run URL and the failure mode so the bump can
+  # account for it.
   conformance:
     name: conformance
     runs-on: ubuntu-latest
