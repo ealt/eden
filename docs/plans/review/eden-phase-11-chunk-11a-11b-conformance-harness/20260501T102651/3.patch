@@ -1,0 +1,92 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-11-chunk-11a-11b-conformance-harness/20260501T102651/2.md	2026-05-01 11:38:44
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md	2026-05-01 11:41:30
+@@ -131,7 +131,8 @@
+      (`task.claimed.worker_id`, `task.failed.reason`,
+      `task.reclaimed.cause`, `proposal.dispatched.task_id`,
+      `trial.integrated.trial_commit_sha`, etc.); §4.1 total order; §4.3
+-     at-least-once via replay; §4.4 replayability from cursor 0.
++     at-least-once via subscribe-reconnect; §4.4 replayability from
++     cursor 0.
+    - Composite commits: §2.2 — implement dispatch, implement terminal,
+      evaluate terminal (`success` / `error` / `eval_error`), implement
+      reclaim with in-flight trial.
+@@ -354,8 +355,9 @@
+ def pytest_configure(config: pytest.Config) -> None:
+     config.addinivalue_line(
+         "markers",
+-        "conformance: scenario asserts a chapter-02/04/05/06/07/08 "
+-        "MUST. Every conforming v0 IUT must pass.",
++        "conformance: scenario asserts a chapter-02/04/05/07/08 "
++        "task-store-or-wire MUST. Every IUT claiming v1 conformance "
++        "must pass.",
+     )
+     config.addinivalue_line(
+         "markers",
+@@ -637,8 +639,24 @@
+ 
+ #### E.8 Composite commits (`test_composite_commits.py`)
+ 
+-Per chapter 05 §2.2, six composite-commit cases. Each test:
++This section covers the chapter 05 §2.2 composite-commit cases that
++are observable through task-store wire endpoints — implement
++dispatch, implement terminal, evaluate terminal (success / error),
++retry-exhausted eval_error terminalization, and implement reclaim
++with an in-flight trial. The remaining §2.2 case, **trial promotion**,
++is covered separately in §E.14 (integrate idempotency) because the
++wire endpoint binding it (`POST /trials/{T}/integrate`) lives in
++chapter 07 §5, not chapter 05.
+ 
++The section also includes one non-composite control case
++(`test_evaluate_terminal_eval_error_keeps_trial_starting`): the
++worker-side `eval_error` per-attempt path explicitly does NOT compose
++with a trial state change, per chapter 04 §4.3. The control test
++exists to fence the boundary between the per-attempt path and the
++retry-exhausted §2.2 case.
++
++Each test:
++
+ - Drives the composite operation through the wire binding,
+ - Reads the event log,
+ - Asserts both component events are present (no partial visibility),
+@@ -857,9 +875,12 @@
+ scenarios that drive an IUT through chapter-07 HTTP and assert MUSTs
+ from those chapters. The suite is delivered in three increments —
+ **v1**, **v1+roles**, and **v1+roles+integrator** — each adding a
+-group of scenarios to the prior level. An IUT MAY claim the level
+-that matches the scenarios it passes; "v0 conformance" without a
+-qualifier means the highest level shipped at the time of the claim.
++group of scenarios to the prior level. **An IUT MUST qualify its
++conformance claim with the level it passes** (e.g. "v1 conformant",
++"v1+roles+integrator conformant"); the term "v0 conformance" without
++a level qualifier is reserved for the final `v1+roles+integrator`
++level once it exists. Until then, an unqualified "v0 conformance"
++claim is not meaningful.
+ 
+ The suite is one expression, not the only one. A future suite — in a
+ different language, against a different harness — that drives the same
+@@ -971,15 +992,16 @@
+ 
+ ## 7. Reference posture
+ 
+-The reference implementation in [`reference/`](../../reference/) is
+-one demonstration of v0 conformance at the highest currently-shipped
+-level (v1 at the time chapter 09 first lands; v1+roles after chunk
+-11c; v1+roles+integrator after chunk 11d). CI gates the reference
+-impl on every level the suite has shipped, via the `conformance` job.
+-A reference-impl test failure that cannot be cited to a normative
+-MUST is either a suite bug or a spec gap; the resolution is one of:
+-amend the suite, amend the spec, fix the impl. The reference impl
+-does NOT have authority to reinterpret the spec.
++The reference implementation in [`reference/`](../../reference/)
++demonstrates conformance at the highest currently-shipped level —
++**v1** at the time chapter 09 first lands; **v1+roles** after chunk
++11c; **v1+roles+integrator** after chunk 11d. The reference impl's
++conformance claim is always level-qualified per §1. CI gates the
++reference impl on every level the suite has shipped, via the
++`conformance` job. A reference-impl test failure that cannot be
++cited to a normative MUST is either a suite bug or a spec gap; the
++resolution is one of: amend the suite, amend the spec, fix the impl.
++The reference impl does NOT have authority to reinterpret the spec.
+ ```
+ 
+ The chapter is intentionally informative on the adapter shape and on

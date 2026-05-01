@@ -1,0 +1,14 @@
+planner_root: "./planner"
+workspace: "./workspace"
+parallel_trials: 1
+plan_command: "true"
+implement_command: "true"
+evaluate_command: "true"
+max_trials: 20
+max_wall_time: "10m"
+metrics_schema:
+  score: real
+  retries: integer
+objective:
+  expr: "score"
+  direction: "maximize"
