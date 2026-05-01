@@ -4,6 +4,15 @@ Mirrors ``test_e2e.py`` but runs each worker host with
 ``--mode subprocess`` and the fixture's ``plan.py`` /
 ``implement.py`` / ``eval.py`` scripts. Asserts the same final
 3-trial-success shape against the bare repo.
+
+# TODO(eden#39): this test flakes ~30% locally because the
+# orchestrator's default ``--max-quiescent-iterations 3 ×
+# --poll-interval 0.1 = 0.3s`` quiescence tolerance is shorter
+# than the subprocess-mode worker startup window. Bumping the
+# tolerance triggers a deeper bug (task-store-server stalls on
+# ``list_trials`` after ~8s of orchestrator runtime). Investigation
+# in progress; if this test flakes on CI, leave a comment on issue
+# #39 with the run URL.
 """
 
 from __future__ import annotations
