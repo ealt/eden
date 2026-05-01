@@ -34,6 +34,16 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY reference/packages reference/packages
 COPY reference/services reference/services
+# eden-conformance is a uv-workspace member (Phase 11 chunk 11a+11b).
+# uv's frozen-resolution requires every workspace member to be
+# present in the build context. Conformance's deps are test tools
+# (pytest, httpx, aiohttp, …) that the runtime image won't import,
+# but they're installed by `--all-packages` along with the package
+# itself. The bloat is small (~30 MB of Python wheels) and is the
+# trade-off for keeping the conformance CI job's `uv sync --frozen`
+# invocation simple; see the deliberate-choice comment in
+# conformance/pyproject.toml.
+COPY conformance conformance
 # `--all-packages` installs every workspace member; without it the
 # eden-* packages would be skipped because the root `pyproject.toml`
 # is non-installable (`tool.uv.package = false`) and the workspace
