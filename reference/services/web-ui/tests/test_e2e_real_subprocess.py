@@ -41,12 +41,13 @@ FIXTURE_CONFIG = (
 )
 
 
-def _spawn(args: list[str]) -> subprocess.Popen:
+def _spawn(args: list[str], log_path: Path) -> subprocess.Popen:
+    # See eden#39: undrained subprocess.PIPE handles fill the 64 KiB
+    # pipe buffer and wedge the writer's async event loop.
     return subprocess.Popen(
         [sys.executable, "-m", *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=open(log_path, "wb"),  # noqa: SIM115 — handle owned by Popen
+        stderr=subprocess.STDOUT,
     )
 
 
@@ -55,22 +56,28 @@ _WEB_UI_RE = re.compile(r"^EDEN_WEB_UI_LISTENING\s+(.*)$")
 
 
 def _read_announcement(
-    proc: subprocess.Popen, pattern: re.Pattern[str], timeout: float = 10.0
+    log_path: Path,
+    proc: subprocess.Popen,
+    pattern: re.Pattern[str],
+    timeout: float = 10.0,
 ) -> int:
     deadline = time.monotonic() + timeout
-    assert proc.stdout is not None
     while time.monotonic() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
-                raise RuntimeError(
-                    f"subprocess exited early with code {proc.returncode}"
-                )
-            continue
-        m = pattern.match(line.strip())
-        if m is not None:
-            kv = dict(p.split("=", 1) for p in m.group(1).split())
-            return int(kv["port"])
+        if log_path.exists():
+            try:
+                content = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            for line in content.splitlines():
+                m = pattern.match(line.strip())
+                if m is not None:
+                    kv = dict(p.split("=", 1) for p in m.group(1).split())
+                    return int(kv["port"])
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"subprocess exited early with code {proc.returncode}"
+            )
+        time.sleep(0.05)
     raise RuntimeError("subprocess did not announce its port in time")
 
 
@@ -85,16 +92,20 @@ def _terminate(proc: subprocess.Popen, timeout: float = 5.0) -> None:
         proc.wait(timeout=2)
 
 
-def _dump_stderr(procs: dict[str, subprocess.Popen]) -> str:
+def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
     parts = []
-    for name, p in procs.items():
-        stderr = ""
-        if p.stderr is not None:
-            try:
-                stderr = p.stderr.read() or ""
-            except Exception as exc:  # noqa: BLE001
-                stderr = f"<failed to read stderr: {exc!r}>"
-        parts.append(f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{stderr}\n")
+    for name, (p, log_path) in procs_logs.items():
+        try:
+            content = (
+                log_path.read_text(encoding="utf-8", errors="replace")
+                if log_path.exists()
+                else ""
+            )
+        except OSError as exc:
+            content = f"<failed to read {log_path}: {exc!r}>"
+        parts.append(
+            f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{content}\n"
+        )
     return "\n".join(parts)
 
 
@@ -105,7 +116,10 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / "artifacts"
     experiment_id = "exp-web-ui-e2e"
     token = "e2e-test-token"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
 
+    server_log = logs_dir / "server.log"
     server = _spawn(
         [
             "eden_task_store_server",
@@ -123,11 +137,13 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
             token,
             "--subscribe-timeout",
             "1.0",
-        ]
+        ],
+        server_log,
     )
-    server_port = _read_announcement(server, _TASK_STORE_RE)
+    server_port = _read_announcement(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
             "eden_web_ui",
@@ -151,12 +167,16 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
             "0",
             "--claim-ttl-seconds",
             "60",
-        ]
+        ],
+        web_ui_log,
     )
-    web_port = _read_announcement(web_ui, _WEB_UI_RE)
+    web_port = _read_announcement(web_ui_log, web_ui, _WEB_UI_RE)
     web_url = f"http://127.0.0.1:{web_port}"
 
-    procs = {"task-store-server": server, "web-ui": web_ui}
+    procs_logs = {
+        "task-store-server": (server, server_log),
+        "web-ui": (web_ui, web_ui_log),
+    }
 
     try:
         # Seed one plan task via the wire StoreClient.
@@ -219,12 +239,12 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
             if resp.status_code != 200:
                 pytest.fail(
                     f"submit returned {resp.status_code}: {resp.text}\n"
-                    + _dump_stderr(procs)
+                    + _dump_logs(procs_logs)
                 )
             assert "submitted" in resp.text.lower()
 
         # Tear down processes before reading SQLite (release file lock).
-        for p in procs.values():
+        for p, _ in procs_logs.values():
             _terminate(p)
 
         store = SqliteStore(
@@ -246,7 +266,7 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
         finally:
             store.close()
     finally:
-        for p in procs.values():
+        for p, _ in procs_logs.values():
             _terminate(p)
 
 
@@ -275,7 +295,10 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
 
     experiment_id = "exp-strand"
     token = "strand-token"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
 
+    server_log = logs_dir / "server.log"
     server = _spawn(
         [
             "eden_task_store_server",
@@ -293,11 +316,13 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             token,
             "--subscribe-timeout",
             "1.0",
-        ]
+        ],
+        server_log,
     )
-    server_port = _read_announcement(server, _TASK_STORE_RE)
+    server_port = _read_announcement(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
             "eden_web_ui",
@@ -321,14 +346,15 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             "0",
             "--claim-ttl-seconds",
             "1",
-        ]
+        ],
+        web_ui_log,
     )
-    web_port = _read_announcement(web_ui, _WEB_UI_RE)
+    web_port = _read_announcement(web_ui_log, web_ui, _WEB_UI_RE)
     web_url = f"http://127.0.0.1:{web_port}"
 
-    procs: dict[str, subprocess.Popen] = {
-        "task-store-server": server,
-        "web-ui": web_ui,
+    procs_logs: dict[str, tuple[subprocess.Popen, Path]] = {
+        "task-store-server": (server, server_log),
+        "web-ui": (web_ui, web_ui_log),
     }
 
     try:
@@ -367,6 +393,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         # Now spawn the orchestrator with NO plan tasks; its loop runs
         # sweep_expired_claims once per iteration, sees no other
         # progress, and quiesces.
+        orchestrator_log = logs_dir / "orchestrator.log"
         orchestrator = _spawn(
             [
                 "eden_orchestrator",
@@ -384,23 +411,24 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 "2",
                 "--poll-interval",
                 "0.1",
-            ]
+            ],
+            orchestrator_log,
         )
-        procs["orchestrator"] = orchestrator
+        procs_logs["orchestrator"] = (orchestrator, orchestrator_log)
         try:
             rc = orchestrator.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            for p in procs.values():
+            for p, _ in procs_logs.values():
                 _terminate(p)
             pytest.fail(
-                "orchestrator did not quiesce within 30s. Stderr:\n"
-                + _dump_stderr(procs)
+                "orchestrator did not quiesce within 30s. Output:\n"
+                + _dump_logs(procs_logs)
             )
         if rc != 0:
-            for p in procs.values():
+            for p, _ in procs_logs.values():
                 _terminate(p)
             pytest.fail(
-                f"orchestrator exited {rc}. Stderr:\n" + _dump_stderr(procs)
+                f"orchestrator exited {rc}. Output:\n" + _dump_logs(procs_logs)
             )
 
         # Verify state via a separate StoreClient.
@@ -423,5 +451,5 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         finally:
             client.close()
     finally:
-        for p in procs.values():
+        for p, _ in procs_logs.values():
             _terminate(p)

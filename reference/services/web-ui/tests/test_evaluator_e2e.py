@@ -42,28 +42,37 @@ _TASK_STORE_RE = re.compile(r"^EDEN_TASK_STORE_LISTENING\s+(.*)$")
 _WEB_UI_RE = re.compile(r"^EDEN_WEB_UI_LISTENING\s+(.*)$")
 
 
-def _spawn(args: list[str]) -> subprocess.Popen:
+def _spawn(args: list[str], log_path: Path) -> subprocess.Popen:
+    # See eden#39: undrained subprocess.PIPE handles fill the 64 KiB
+    # pipe buffer and wedge the writer's async event loop.
     return subprocess.Popen(
         [sys.executable, "-m", *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=open(log_path, "wb"),  # noqa: SIM115 — handle owned by Popen
+        stderr=subprocess.STDOUT,
     )
 
 
-def _read_port(proc: subprocess.Popen, pattern: re.Pattern[str], timeout: float = 10.0) -> int:
+def _read_port(
+    log_path: Path,
+    proc: subprocess.Popen,
+    pattern: re.Pattern[str],
+    timeout: float = 10.0,
+) -> int:
     deadline = time.monotonic() + timeout
-    assert proc.stdout is not None
     while time.monotonic() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
-                raise RuntimeError(f"subprocess exited early rc={proc.returncode}")
-            continue
-        m = pattern.match(line.strip())
-        if m is not None:
-            kv = dict(p.split("=", 1) for p in m.group(1).split())
-            return int(kv["port"])
+        if log_path.exists():
+            try:
+                content = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            for line in content.splitlines():
+                m = pattern.match(line.strip())
+                if m is not None:
+                    kv = dict(p.split("=", 1) for p in m.group(1).split())
+                    return int(kv["port"])
+        if proc.poll() is not None:
+            raise RuntimeError(f"subprocess exited early rc={proc.returncode}")
+        time.sleep(0.05)
     raise RuntimeError("subprocess did not announce its port in time")
 
 
@@ -78,16 +87,20 @@ def _terminate(proc: subprocess.Popen) -> None:
         proc.wait(timeout=2)
 
 
-def _dump_stderr(procs: dict[str, subprocess.Popen]) -> str:
+def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
     parts = []
-    for name, p in procs.items():
-        stderr = ""
-        if p.stderr is not None:
-            try:
-                stderr = p.stderr.read() or ""
-            except Exception as exc:  # noqa: BLE001
-                stderr = f"<failed to read stderr: {exc!r}>"
-        parts.append(f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{stderr}\n")
+    for name, (p, log_path) in procs_logs.items():
+        try:
+            content = (
+                log_path.read_text(encoding="utf-8", errors="replace")
+                if log_path.exists()
+                else ""
+            )
+        except OSError as exc:
+            content = f"<failed to read {log_path}: {exc!r}>"
+        parts.append(
+            f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{content}\n"
+        )
     return "\n".join(parts)
 
 
@@ -99,7 +112,10 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     artifacts_dir.mkdir()
     experiment_id = "exp-eval-e2e"
     token = "eval-e2e-token"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
 
+    server_log = logs_dir / "server.log"
     server = _spawn(
         [
             "eden_task_store_server",
@@ -117,11 +133,13 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             token,
             "--subscribe-timeout",
             "1.0",
-        ]
+        ],
+        server_log,
     )
-    server_port = _read_port(server, _TASK_STORE_RE)
+    server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
             "eden_web_ui",
@@ -145,12 +163,16 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             "0",
             "--claim-ttl-seconds",
             "60",
-        ]
+        ],
+        web_ui_log,
     )
-    web_port = _read_port(web_ui, _WEB_UI_RE)
+    web_port = _read_port(web_ui_log, web_ui, _WEB_UI_RE)
     web_url = f"http://127.0.0.1:{web_port}"
 
-    procs = {"task-store-server": server, "web-ui": web_ui}
+    procs_logs = {
+        "task-store-server": (server, server_log),
+        "web-ui": (web_ui, web_ui_log),
+    }
 
     try:
         # Seed: ready proposal + implement task; drive it to a
@@ -244,11 +266,11 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             if resp.status_code != 200:
                 pytest.fail(
                     f"submit returned {resp.status_code}: {resp.text}\n"
-                    + _dump_stderr(procs)
+                    + _dump_logs(procs_logs)
                 )
             assert "0.875" in resp.text
 
-        for p in procs.values():
+        for p, _ in procs_logs.values():
             _terminate(p)
 
         store = SqliteStore(
@@ -268,5 +290,5 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
         finally:
             store.close()
     finally:
-        for p in procs.values():
+        for p, _ in procs_logs.values():
             _terminate(p)
