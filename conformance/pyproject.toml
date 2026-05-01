@@ -1,0 +1,29 @@
+[project]
+name = "eden-conformance"
+version = "0.0.1"
+description = "EDEN conformance suite — black-box scenarios that any v0 IUT can run against itself."
+requires-python = ">=3.12"
+# Conformance's dependencies are all test-time tools (pytest, httpx,
+# aiohttp, etc.). Listing them under `[project] dependencies` (rather
+# than a `dev` group) is deliberate: it lets the standard
+# `uv sync --frozen` invocation in the conformance CI job install
+# them without juggling per-member dev-group activation. The
+# reference Dockerfile copies the conformance package and installs
+# these deps as part of `--all-packages`; the runtime cost is small
+# (~30 MB of Python packages) and conformance is never imported by
+# any production service.
+dependencies = [
+    "httpx>=0.27,<1",
+    "pytest>=8.0",
+    "pytest-ordering>=0.6",
+    "pytest-json-report>=1.5",
+    "aiohttp>=3.9,<4",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conformance"]

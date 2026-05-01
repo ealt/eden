@@ -4,20 +4,47 @@ Black-box test suite that any third-party implementation of an EDEN component ca
 
 ## Status
 
-**Stub — lands in Phase 11.** No scenarios are implemented yet. This directory currently exists only to reserve the location and frame the intent.
+**v1 shipped (Phase 11 chunk 11a + 11b).** The v1 suite covers the task-store + wire-binding subset: chapters 02 / 04 / 05 / 07 plus the storage MUSTs (chapter 08 §1.1, §1.7) the wire binding exposes. The chapter-03 role contracts (chunk 11c) and chapter-06 integrator scenarios (chunk 11d) are out of v1 scope.
 
-## Intent
+See [`spec/v0/09-conformance.md`](../spec/v0/09-conformance.md) for the normative chapter, including the level taxonomy (`v1` / `v1+roles` / `v1+roles+integrator`).
 
-- **Implementation-agnostic.** Scenarios drive an implementation-under-test via its advertised protocol surface (HTTP, wire messages), not via language-specific hooks. This is what lets a suite written in Python validate a component written in Go.
-- **Per-component.** Separate scenarios for each role — task store, orchestrator, planner worker host, integrator, event log, storage. You run the subset that matches the component you're testing.
-- **Spec-anchored.** Every scenario cites the spec paragraph it validates. When the spec changes, the suite changes.
+## Running the suite
 
-## Planned scenarios
+Against the reference implementation:
 
-See [`../docs/roadmap.md`](../docs/roadmap.md#phase-11--conformance-suite-v1). Summary:
+```bash
+uv run pytest -q conformance/
+```
 
-- State-machine scenarios (task lifecycle, claim-token semantics, transactional event invariant).
-- Role-contract scenarios (planner submission, implementer submission, evaluator submission, backpressure, idempotency).
-- Integrator scenarios (squash shape, eval-manifest shape, `work/*` access discipline).
+Against a third-party IUT (whose adapter implements `conformance.harness.adapter.IutAdapter`):
 
-The reference implementation in [`../reference/`](../reference/) will be the first subject run through the suite when Phase 11 lands, but the harness is designed to run against any implementation.
+```bash
+uv run pytest -q conformance/ --iut-adapter=my_pkg.my_module:MyAdapter
+```
+
+Verify every scenario cites a real spec section:
+
+```bash
+uv run python conformance/src/conformance/tools/check_citations.py
+```
+
+## Layout
+
+- [`src/conformance/harness/`](src/conformance/harness/) — `IutAdapter` Protocol, pytest plugin, thin httpx `WireClient`, event-log helpers, scenario seeding helpers.
+- [`src/conformance/adapters/reference/`](src/conformance/adapters/reference/) — reference adapter that spawns `python -m eden_task_store_server` against in-memory storage.
+- [`src/conformance/_meta/`](src/conformance/_meta/) — the `MisbehavingAdapter` + proxy used by the self-validation scenario.
+- [`src/conformance/tools/`](src/conformance/tools/) — citation-check tool.
+- [`src/conformance/fixtures/`](src/conformance/fixtures/) — minimal experiment-config used by the harness.
+- [`scenarios/`](scenarios/) — the test files; each citation in a docstring's first line is verified by `tools/check_citations.py`.
+
+## Layer discipline
+
+- `src/conformance/harness/` and `scenarios/` MUST NOT import from `reference/` packages.
+- `src/conformance/adapters/reference/` is the only place where the reference impl is taught how to be a subject; it MAY import `eden_*` packages.
+- CI gates this directionality.
+
+## Adding a scenario
+
+Every test's docstring's first line MUST cite a normative MUST in the spec, in the format `spec/v0/<chapter>.md §<sec>`. CI fails if the citation can't be resolved or if a chapter-9 §5 scenario-index group has no citing test.
+
+For the full plan-writing pitfalls and conformance-discipline guidance, see [`AGENTS.md`](../AGENTS.md).

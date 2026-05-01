@@ -261,3 +261,35 @@ jobs:
         env:
           EDEN_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/postgres
         run: uv run pytest -q reference/packages/eden-storage/tests
+
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: '0.11.2'
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --frozen
+
+      - name: Run conformance suite
+        run: uv run pytest -q conformance/
+
+      - name: Verify directionality (no reference imports outside adapters/reference/)
+        run: |
+          set -euo pipefail
+          if grep -RnE '^(from|import) (reference|eden_)' \
+            conformance/src/conformance/harness \
+            conformance/src/conformance/_meta \
+            conformance/scenarios; then
+            echo "FAIL: conformance/harness, conformance/_meta, or conformance/scenarios import reference packages."
+            exit 1
+          fi
+
+      - name: Verify scenario citations
+        run: uv run python conformance/src/conformance/tools/check_citations.py

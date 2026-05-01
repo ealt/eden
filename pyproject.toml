@@ -9,6 +9,7 @@ package = false
 
 [tool.uv.workspace]
 members = [
+    "conformance",
     "reference/packages/eden-contracts",
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
@@ -24,6 +25,7 @@ members = [
 ]
 
 [tool.uv.sources]
+eden-conformance = { workspace = true }
 eden-contracts = { workspace = true }
 eden-dispatch = { workspace = true }
 eden-evaluator-host = { workspace = true }
@@ -45,6 +47,7 @@ dev = [
     "jsonschema>=4.21",
     "referencing>=0.30",
     "pyyaml>=6.0",
+    "eden-conformance",
     "eden-contracts",
     "eden-dispatch",
     "eden-evaluator-host",
@@ -73,6 +76,17 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "reference/packages/*/tests/**" = ["D"]
 "reference/services/*/tests/**" = ["D"]
+# Conformance scenarios are pytest test files; the docstring's first
+# line is a spec citation (D100/D102/D103/D107 don't add value).
+# PT018 (assertion-should-be-multiple-parts) and SIM105 (try/except
+# pass) are disabled because the suite reads more clearly with
+# compact assertions and small try/except guards in the proxy.
+"conformance/scenarios/**" = ["D", "PT018"]
+# The harness modules' wire-method docstrings would just restate the
+# URL; the IUT-adapter Protocol doc covers the contract.
+"conformance/src/conformance/harness/**" = ["D102", "D103"]
+"conformance/src/conformance/_meta/**" = ["D", "SIM105", "PT018"]
+"conformance/src/conformance/adapters/**" = ["D102", "D103", "PT018", "SIM105"]
 # Wire adapters are thin facades over the Store Protocol; the
 # protocol method docstrings are authoritative. B008 is the
 # standard FastAPI pattern for Body/Header/Query defaults.

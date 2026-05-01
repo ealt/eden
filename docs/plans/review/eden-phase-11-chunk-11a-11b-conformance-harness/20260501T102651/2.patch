@@ -1,0 +1,210 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-11-chunk-11a-11b-conformance-harness/20260501T102651/1.md	2026-05-01 11:33:44
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md	2026-05-01 11:38:31
+@@ -48,16 +48,26 @@
+ be cite-able to a `§N.M` in a specific chapter. That discipline is the
+ load-bearing part of the chunk; the pytest plumbing is incidental.
+ 
+-## Conformance posture for v1 (resolved from review round 0)
++## Conformance posture for v1 (resolved from review rounds 0–1)
+ 
+ The v0 spec defines exactly one wire binding ([`07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)).
+ A conforming v0 IUT MAY in principle implement the chapter-04/05/08
+ behavior over a non-HTTP transport, but no such transport is currently
+ specified, and the v1 suite drives the IUT exclusively through chapter
+-07's HTTP binding. **Chapter 09 therefore declares one v1 conformance
+-level: an IUT that passes the v1 suite is conformant to chapters 02 /
+-04 / 05 / 06 / 07 / 08 over HTTP.**
++07's HTTP binding.
+ 
++**Chapter 09 therefore declares the v1 conformance level as a partial
++claim, not full v0 conformance.** Specifically, the v1 suite covers
++the **task-store + wire-binding subset**: chapters 02 / 04 / 05 / 07
++plus the storage MUSTs in chapter 08 that the wire endpoints expose
++(§1.1, §1.7). Chapter-06 integrator MUSTs and the chapter-03 role
++submission contracts that the worker hosts uphold are explicitly out
++of scope for v1 and ship in chunks 11d (integrator) and 11c (role
++contracts). Chapter 09 §4 names the levels as `v1` (this chunk),
++`v1+roles` (after 11c), and `v1+roles+integrator` (after 11d). The
++final level is the closest the suite gets to "full v0 conformance"
++without a non-HTTP binding.
++
+ Accordingly:
+ 
+ - The suite uses **one** pytest marker, `conformance`, applied at the
+@@ -310,9 +320,15 @@
+ The handle is **flat** (no callable for fetching a fresh token mid-
+ scenario); every secret a scenario needs is observable through the
+ wire binding. The handle's `extra_headers` field replaces a bespoke
+-`shared_token` to keep the contract scheme-agnostic — an IUT that uses
+-mTLS, a custom header, or no auth at all can still satisfy the
+-contract.
++`shared_token` so the contract covers header-based auth (`Authorization:
++Bearer …`, custom header, or none at all). Transport-level auth
++(mTLS, IP allowlists) is NOT supported by this adapter shape — those
++schemes would need an extended contract that exposes the underlying
++httpx client config (TLS context, transport hooks). v1 declines to
++support them; an IUT that requires transport-level auth must front
++itself with a TLS-terminating proxy that adds an `Authorization`
++header for the harness, or implement a richer adapter for its own
++suite.
+ 
+ The adapter is **per-scenario**: each test gets `start()` → use →
+ `stop()`. The reference adapter takes ~2 seconds per cycle (subprocess
+@@ -433,6 +449,7 @@
+                 "--experiment-id", experiment_id,
+                 "--experiment-config", str(experiment_config_path),
+                 "--shared-token", token,
++                "--subscribe-timeout", "2.0",
+                 "--port", "0",
+                 "--host", "127.0.0.1",
+             ],
+@@ -473,6 +490,16 @@
+ rather than `PostgresStore`. Conformance does not test durability;
+ [`reference/packages/eden-storage/tests/`](../../reference/packages/eden-storage/tests/)
+ does. SQLite-in-memory gives the fastest possible test cycle.
++
++`--subscribe-timeout 2.0` is passed so the timeout-path subscribe test
++in §E.9 (`test_subscribe_empty_batch_after_timeout`) completes in 2-3
++seconds rather than the 30-second default. Chapter 07 §6.2 makes 30s
++a `RECOMMENDED:` value (i.e. SHOULD), so a 2-second window is
++spec-conforming. The reference-adapter-specific override is acceptable;
++a third-party adapter SHOULD pass an equivalently-short timeout for
++its own subject. The chapter-07 §6.2 conformance assertion in the
++test is "the subscribe response after timeout has the empty-batch
++shape," not "the timeout is 30 seconds."
+ 
+ ### E. Scenario inventory
+ 
+@@ -626,6 +653,7 @@
+ | `test_evaluate_terminal_success_emits_trial_succeeded` | Evaluate `submitted → completed` with worker `status=success`: `task.completed` AND `trial.succeeded` both appear; trial is `status == "success"`. | 05 §2.2; 04 §4.3 |
+ | `test_evaluate_terminal_error_emits_trial_errored` | Evaluate `submitted → failed` with worker `status=error`: `task.failed` AND `trial.errored` both appear; trial is `status == "error"`. | 05 §2.2; 04 §4.3 |
+ | `test_evaluate_terminal_eval_error_keeps_trial_starting` | Evaluate `submitted → failed` with worker `status=eval_error`: `task.failed` appears; trial stays `status == "starting"` (NO `trial.eval_errored` event yet — that fires only when the orchestrator decides to terminalize the trial). | 04 §4.3 |
++| `test_retry_exhausted_eval_error_terminalization` | After one or more `eval_error` cycles, an explicit `POST /trials/{T}/declare-eval-error` (the chapter 07 §4 endpoint binding the chapter 04 §4.3 retry-exhausted decision) atomically terminalizes the trial: trial.status flips `starting → eval_error` AND a `trial.eval_errored` event appears. (Codex review round 1 finding 2.) | 05 §2.2 retry-exhausted; 04 §4.3 |
+ | `test_implement_reclaim_with_starting_trial` | Implement reclaim on a task whose execution had created a starting trial: `task.reclaimed` AND `trial.errored` both appear atomically. | 05 §2.2; 04 §5.4 |
+ 
+ #### E.9 Event delivery (`test_event_delivery.py`)
+@@ -634,15 +662,17 @@
+ |---|---|---|
+ | `test_total_order_per_experiment` | Two reads of the event log return events in the same order. | 05 §4.1 |
+ | `test_replay_from_cursor_zero_returns_all_events` | After driving N transitions, `GET /events?cursor=0` returns all N events. | 05 §4.4 |
+-| `test_at_least_once_via_cursor_replay` | A subsequent `GET /events?cursor=0` returns the same set (at-least-once subsumes replay's bounded-many-times semantics). | 05 §4.3 |
+-| `test_subscribe_long_poll_yields_event` | Open `GET /events/subscribe?cursor=N` then issue a transition; the long-poll returns the new event within the chapter 07 §6.2 timeout. | 07 §6.2 |
+-| `test_subscribe_empty_batch_after_timeout` | Open subscribe against a quiescent log; after the server timeout, response is `{events: [], cursor: <unchanged>}`. | 07 §6.2 |
++| `test_replay_repeatable` | Repeated `GET /events?cursor=0` returns the same set across calls (replay is deterministic across reads). | 05 §4.4 |
++| `test_subscribe_at_least_once_via_reconnect` | Open `GET /events/subscribe?cursor=N` and consume one event; reconnect with `cursor=N` (not the post-batch cursor) and observe the same event again. The chapter 05 §4.3 MUST is "deliver every appended event to every active subscriber at least once"; reconnect-with-prior-cursor is the test that an event remains delivered after a recover/restart. (Codex review round 1 finding 4.) | 05 §4.3 |
++| `test_subscribe_long_poll_yields_event` | Open `GET /events/subscribe?cursor=N` then issue a transition; the long-poll returns the new event within the configured timeout. | 07 §6.2 |
++| `test_subscribe_empty_batch_after_timeout` | Open subscribe against a quiescent log; after the server timeout, response is `{events: [], cursor: <unchanged>}`. The reference adapter's 2.0s timeout (§D) keeps this test fast. | 07 §6.2 |
+ 
+ #### E.10 Status codes (`test_status_codes.py`)
+ 
+ | Test | Asserts | Citation |
+ |---|---|---|
+ | `test_create_task_returns_200` | Successful create returns 200. | 07 §2.1 |
++| `test_create_duplicate_task_returns_409_already_exists` | Two `POST /tasks` with the same `task_id` field: second returns 409 + `eden://error/already-exists`. (Codex review round 1 finding 3 — without this, the §E.12 vocabulary-closure test cannot observe `already-exists` and the closure assertion either fails or silently stops being exhaustive.) | 07 §7 |
+ | `test_read_unknown_task_returns_404` | Unknown task returns 404 + `eden://error/not-found`. | 07 §2.2; §7 |
+ | `test_claim_non_pending_returns_409` | Claim on non-pending returns 409 + `eden://error/illegal-transition`. | 07 §2.3 |
+ | `test_submit_wrong_token_returns_403` | Submit with wrong token returns 403 + `eden://error/wrong-token`. | 07 §2.4 |
+@@ -820,13 +850,16 @@
+ 
+ A v0-conforming IUT (implementation under test) implements chapter
+ 07's HTTP wire binding with the normative semantics of chapters 02 /
+-04 / 05 / 06 / 08.
++03 / 04 / 05 / 06 / 08.
+ 
+-The v1 conformance suite — under [`conformance/`](../../conformance/)
+-in this repo — is one expression of that contract: a set of black-box
+-scenarios that drive an IUT through chapter-07 HTTP and assert
+-chapter-02/04/05/06/07/08 MUSTs. An IUT that passes the v1 suite is
+-v0-conformant.
++Conformance is verified by passing the conformance suite under
++[`conformance/`](../../conformance/) in this repo: a set of black-box
++scenarios that drive an IUT through chapter-07 HTTP and assert MUSTs
++from those chapters. The suite is delivered in three increments —
++**v1**, **v1+roles**, and **v1+roles+integrator** — each adding a
++group of scenarios to the prior level. An IUT MAY claim the level
++that matches the scenarios it passes; "v0 conformance" without a
++qualifier means the highest level shipped at the time of the claim.
+ 
+ The suite is one expression, not the only one. A future suite — in a
+ different language, against a different harness — that drives the same
+@@ -865,20 +898,34 @@
+ 
+ ## 4. Conformance levels
+ 
+-For v0, there is exactly one conformance level: **v1 conformance** —
+-passing the v1 suite. The v0 spec defines exactly one wire binding
+-(chapter 07 HTTP), and the v1 suite drives every IUT through it; the
+-suite cannot meaningfully separate "core operation semantics" from
+-"chapter-07 wire shapes" until a second binding exists.
++The v0 spec defines exactly one wire binding (chapter 07 HTTP). The
++suite drives every IUT through it; transport-neutral semantic tests
++vs. per-binding wire tests cannot be meaningfully separated until a
++second binding exists. Levels are therefore distinguished by
++**scenario coverage**, not transport:
+ 
++- **v1** — task-store and event-log MUSTs from chapters 02 / 04 /
++  05 / 07 plus the chapter-08 storage MUSTs the wire binding exposes
++  (§1.1, §1.7). v1 does NOT cover chapter-03 role contracts or the
++  chapter-06 integrator atomicity ladder.
++
++- **v1+roles** — adds chapter-03 role-contract scenarios (per-role
++  submission semantics, backpressure, idempotency). Lands in chunk
++  11c.
++
++- **v1+roles+integrator** — adds chapter-06 integrator scenarios
++  (squash shape, eval-manifest shape, `work/*` access discipline,
++  the §3.4 atomicity ladder under transport-indeterminate failures).
++  Lands in chunk 11d.
++
+ A future spec lineage that introduces a second wire binding will at
+-that point split the suite into transport-neutral semantic tests + per-
+-binding wire tests, and chapter 09 will gain a `core` level claimable
+-by IUTs implementing only the semantic layer. The marker structure in
+-[`conformance/`](../../conformance/) anticipates this refactor but does
+-not enable it in v0.
++that point split the suite into transport-neutral semantic tests +
++per-binding wire tests, and chapter 09 will gain a `core` level
++claimable by IUTs implementing only the semantic layer. The marker
++structure in [`conformance/`](../../conformance/) anticipates that
++refactor but does not enable it in v0.
+ 
+-## 5. Scenario index (v1)
++## 5. Scenario index (v1; v1+roles and v1+roles+integrator extend)
+ 
+ | Group | Scope | Spec citations |
+ |---|---|---|
+@@ -897,8 +944,11 @@
+ | Experiment-id header disagreement | 400 experiment-id-mismatch. | 07 §1.3 |
+ | Integrate idempotency | Same-value / different-value / preconditions. | 07 §5 |
+ 
+-v2 (chunk 11c) extends with role-contract scenarios; v3 (chunk 11d)
+-adds integrator scenarios.
++Chunk 11c adds the v1+roles entries (chapter 03 role contracts);
++chunk 11d adds the v1+roles+integrator entries (chapter 06 integrator
++flows). The exact scenario lists for those levels are out of scope
++for the v1 chapter-09 ship; they will be appended in their respective
++chunks.
+ 
+ ## 6. Adapter (informative)
+ 
+@@ -922,12 +972,14 @@
+ ## 7. Reference posture
+ 
+ The reference implementation in [`reference/`](../../reference/) is
+-one demonstration of v0 conformance. CI gates the reference impl on
+-the v1 suite via the `conformance` job. A reference-impl test failure
+-that cannot be cited to a normative MUST is either a suite bug or a
+-spec gap; the resolution is one of: amend the suite, amend the spec,
+-fix the impl. The reference impl does NOT have authority to
+-reinterpret the spec.
++one demonstration of v0 conformance at the highest currently-shipped
++level (v1 at the time chapter 09 first lands; v1+roles after chunk
++11c; v1+roles+integrator after chunk 11d). CI gates the reference
++impl on every level the suite has shipped, via the `conformance` job.
++A reference-impl test failure that cannot be cited to a normative
++MUST is either a suite bug or a spec gap; the resolution is one of:
++amend the suite, amend the spec, fix the impl. The reference impl
++does NOT have authority to reinterpret the spec.
+ ```
+ 
+ The chapter is intentionally informative on the adapter shape and on
