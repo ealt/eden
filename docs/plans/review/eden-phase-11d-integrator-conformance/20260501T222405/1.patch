@@ -1,0 +1,225 @@
+--- docs/plans/review/eden-phase-11d-integrator-conformance/20260501T222405/0.md	2026-05-01 22:24:09
++++ docs/plans/eden-phase-11d-integrator-conformance.md	2026-05-01 22:30:46
+@@ -37,19 +37,32 @@
+ chapter 9 §6 makes the chapter-7 binding the **only** IUT contract a
+ conformance harness can rely on.
+ 
++§2 (promotion trigger) names **three** preconditions:
++
++(a) `status == "success"` — wire-observable (`read_trial`).
++(b) `commit_sha` is set — wire-observable (`read_trial`).
++(c) `commit_sha` resolves to a commit on the trial's `branch` in the
++    experiment repository — **NOT** wire-observable through chapter 7
++    alone (would require the IUT's wire endpoint to validate against
++    a real git repo, which the wire spec does not require). This is
++    the integrator-side §1.4 reachability check restated as a §2
++    trigger condition.
++
+ This means several MUSTs from chapter 06 cannot be asserted by a
+ chapter-7-only suite, even at the v1+roles+integrator level:
+ 
+ | Chapter-06 MUST | Wire-observable? |
+ |---|---|
+ | §1.4 reachability check | NO — requires git access |
++| §2 (c) commit_sha-resolves-on-branch | NO — same as §1.4 |
+ | §3.2 squash shape | NO — git tree shape, off-wire |
+ | §3.3 commit message format | NO — git commit, off-wire |
+ | §4.x eval-manifest path/shape | NO — git tree content, off-wire |
+ | §1.3 work/* access discipline | NO — git ref existence, off-wire |
+-| §2 promotion trigger preconditions | YES — wire surfaces `status` + `commit_sha` + `trial_commit_sha` |
++| §2 (a) `status == success` | YES — `read_trial.status` |
++| §2 (b) `commit_sha` is set | YES — `read_trial.commit_sha` |
+ | §3.4 atomic-three (field + event projection) | YES — `read_trial` + `events` |
+-| §5.3 repeat-promotion idempotency | YES — already in v1 `Integrate idempotency` |
++| §5.3 repeat-promotion (no-overwrite) | YES — `read_trial` + event count |
+ | §5.1 metrics-schema-violation detection | PARTIAL — orchestrator catches at evaluate-terminal (§2 last paragraph) |
+ 
+ ### 2.1 Spec gap surfaced
+@@ -72,16 +85,24 @@
+ canonical statement and tighten the prose. The fix shape:
+ 
+ - **Chapter 9 §4** — rewrite the v1+roles+integrator bullet to scope
+-  the level to "the wire-observable projection of chapter 06 §3.4 and
+-  §2: atomicity-of-(field, event) on `integrate_trial`, promotion
+-  preconditions over the trial-status vocabulary, and idempotency
+-  under retry. The git-side artifacts (squash shape, eval-manifest
+-  shape, work/* discipline, reachability) are part of chapter 06 but
+-  are **not** asserted by a wire-only suite; a future binding chapter
+-  that defines a 'conformance + git access' contract MAY add those
+-  tests at a higher level."
++  the level to "the wire-observable projection of chapter 06: §2
++  promotion preconditions on the trial-status vocabulary and on the
++  presence/absence of `commit_sha`; §3.4 atomicity-of-(field, event)
++  on `integrate_trial`; §5.3 no-overwrite under repeat promotion. The
++  git-side artifacts (squash shape, eval-manifest shape, work/*
++  discipline, reachability) are part of chapter 06 but are **not**
++  asserted by a wire-only suite; a future binding chapter that
++  defines a 'conformance + git access' contract MAY add those tests
++  at a higher level."
+ - **Chapter 9 §3** — already cites chapter 06 generically; no edit.
+-- **Chapter 9 §5** — gain two new groups (see §3.2 below).
++- **Chapter 9 §5** — gain two new groups (see §3.2 below). The prose
++  immediately above the v1+roles index table — currently "The
++  **v1+roles+integrator** level adds its own group; its contents are
++  out of scope for chunk 11c and will be appended in chunk 11d." —
++  is also rewritten to "The **v1+roles+integrator** level adds the
++  groups below" (singular → plural), and a new sub-table is
++  appended for the v1+roles+integrator entries to mirror the §3
++  prose's level distinction.
+ 
+ This is a single-paragraph spec amendment, not a refactor. It
+ preserves the v0 contract and tightens chapter 9's claim to match
+@@ -94,57 +115,78 @@
+ Two new chapter-9 §5 groups, with new scenario files under
+ [`conformance/scenarios/`](../../conformance/scenarios/):
+ 
+-#### 3.1.a Group `Integrator atomicity` — citing chapter 06 §3.4
++#### 3.1.a Group `Integrator atomicity` — citing chapter 06 §3.4 + §5.3
+ 
+ Asserts the wire-observable projection of the atomic-three invariant
+-on the **two** wire-visible artifacts (field + event):
++on the **two** wire-visible artifacts (field + event), and the
++no-overwrite half of repeat-promotion idempotency.
+ 
+-- **field-implies-event consistency.** After
+-  `POST /trials/{T}/integrate` returns 2xx, GET `/trials/{T}` shows
+-  `trial_commit_sha == X`, AND `events?cursor=0` contains exactly one
+-  `trial.integrated` event for T with `data.trial_commit_sha == X`.
+-  Cites: [chapter 06 §3.4](../../spec/v0/06-integrator.md) atomic-write.
+-- **event-implies-field consistency.** Stronger formulation: for any
+-  `trial.integrated` event observable in the log, GET on its trial_id
+-  MUST show a matching `trial_commit_sha`. Test does both directions
+-  symmetrically as one assertion, but the second test is a
+-  field-implies-event run starting from the GET side. (Reverse-direction
+-  test is deliberately a separate function so the citation-check keeps
+-  per-test traceability.)
+-- **failed-integrate-leaves-no-artifacts.** A non-success-status
+-  precondition rejection (the existing v1 test asserts the `409` code
+-  and that `trial_commit_sha` stays unset; this test additionally
+-  asserts NO `trial.integrated` event was appended for T). Pins the
+-  rollback-half of §3.4: a failed write produces neither field nor
+-  event. Cites §3.4.
++- **cross-artifact-consistency-on-success.** Single test that asserts
++  both directions of the atomic-three (field, event) projection in
++  one composed assertion: after `POST /trials/{T}/integrate` returns
++  2xx, (1) GET `/trials/{T}` shows `trial_commit_sha == X`, AND
++  (2) the event log contains exactly one `trial.integrated` event
++  for T with `data.trial_commit_sha == X`, AND (3) the field's value
++  and the event's payload reference the **same** SHA — i.e. they
++  are derived from the same atomic write. The cross-SHA-equality
++  assertion is the chunk's central new content; the field-only and
++  event-only halves are already covered by the v1 `Integrate
++  idempotency` group. Cites: [chapter 06 §3.4](../../spec/v0/06-integrator.md)
++  atomic-write.
+ - **divergent-resubmit-leaves-no-second-event.** The existing v1
+   `test_different_sha_returns_409` asserts the field is unchanged
+   but does **not** explicitly assert the event log shows exactly
+-  one `trial.integrated` (not two). This test pins that. Cites §3.4.
++  one `trial.integrated` (not two). This test pins that AND that
++  the field's stored SHA is still the original — the §5.3
++  no-overwrite rule projected onto the event side. Cites: chapter 06
++  §5.3.
++
++The cross-consistency direction-dual test (event-implies-field as a
++distinct test) was considered and dropped: it is logically the same
++invariant as field-implies-event and adds little debug value over a
++single composed assertion. Likewise, "failed-integrate-leaves-no-
++artifacts" was considered but moved to the §3.1.b group, where it
++belongs (it is a §2 precondition rejection, not a §3.4 atomicity
++test).
+ 
+ #### 3.1.b Group `Promotion preconditions` — citing chapter 06 §2
+ 
+-Asserts the §2 promotion-trigger requirements on the trial-status
+-vocabulary:
++Asserts the §2 promotion-trigger requirements on the wire-observable
++preconditions: status (a) and commit_sha-set (b). The §2 (c) branch-
++reachability condition is **off-wire** in v0 and is explicitly NOT
++asserted (per §2.1 above); a future binding chapter MAY add it.
+ 
+-- **`error` trial → 409 invalid-precondition.** §2 says "trials in
+-  `error` ... MUST NOT receive a `trial/*` commit." Wire-projection:
+-  `integrate_trial` against an errored trial returns 409 with
+-  `eden://error/invalid-precondition`. Cites §2.
+-- **`eval_error` trial → 409 invalid-precondition.** Same MUST,
+-  different status. Cites §2.
+-- **`starting` trial without commit_sha → 409 invalid-precondition.**
+-  §2 says the trial's `commit_sha` "is set and resolves to a commit on
+-  the trial's `branch`". Wire projection: a trial whose `commit_sha`
+-  field is unset rejects integrate. The existing v1 test
++Each test asserts the **end-state**, not just the wire response, per
++the chunk-11c "end-state, not endpoint" pattern (
++[`conformance/README.md`](../../conformance/README.md)): the response
++is 4xx in `eden://error/invalid-precondition`, AND the trial's
++`trial_commit_sha` is unset, AND no `trial.integrated` event was
++appended for T. The composite end-state pins the §3.4 rollback-half
++"a failed write produces neither field nor event" without needing a
++separate §3.4 test for it.
++
++- **`error` trial → 409 invalid-precondition + no artifacts.** §2 says
++  "trials in `error` ... MUST NOT receive a `trial/*` commit." Cites
++  chapter 06 §2.
++- **`eval_error` trial → 409 invalid-precondition + no artifacts.**
++  Same MUST, different status. Cites §2.
++- **`starting` trial without commit_sha → 409 invalid-precondition +
++  no artifacts.** §2 says the trial's `commit_sha` "is set and
++  resolves to a commit on the trial's `branch`". Wire projection of
++  the (b) condition: a trial whose `commit_sha` field is unset rejects
++  integrate. The existing v1 test
+   `test_integrate_against_non_success_trial_returns_409` covers a
+-  `starting` trial that DOES have commit_sha (the chunk-11c hardening
+-  asserts this in `drive_to_starting_trial`); this test covers the
++  `starting` trial that DOES have commit_sha (chunk-11c hardening of
++  `drive_to_starting_trial` asserts this); this test covers the
+   earlier point in the lifecycle where commit_sha hasn't been written
+   yet — i.e. `_seed.create_trial(status="starting")` without going
+-  through implement-accept. Cites §2.
++  through implement-accept. Note: even in this state, the trial's
++  `status` is `starting` (not `success`), so the IUT may reject for
++  status alone rather than commit_sha-unset; the test asserts the
++  end-state regardless of which precondition the IUT detects first
++  — chapter 06 §2 doesn't pin that ordering. Cites §2.
+ 
+-That's **7 new scenarios across two new groups**, plus the spec
++That's **5 new scenarios across two new groups**, plus the spec
+ amendment to chapter 9 §4 + §5 index.
+ 
+ ### 3.2 Out of scope (deferred)
+@@ -227,9 +269,13 @@
+ ### 5.2 Conformance suite
+ 
+ - `conformance/scenarios/test_integrator_atomicity.py` — NEW file.
+-  Group `Integrator atomicity`. ~4 tests citing chapter 06 §3.4.
++  Group `Integrator atomicity`. 2 tests: cross-artifact-consistency-
++  on-success (cites §3.4) and divergent-resubmit-leaves-no-second-
++  event (cites §5.3).
+ - `conformance/scenarios/test_promotion_preconditions.py` — NEW file.
+-  Group `Promotion preconditions`. ~3 tests citing chapter 06 §2.
++  Group `Promotion preconditions`. 3 tests: error trial → 409,
++  eval_error trial → 409, starting-trial-without-commit_sha → 409.
++  All cite §2.
+ - `conformance/src/conformance/harness/_seed.py` — extend with
+   `drive_to_error_trial(client, *, proposal_id=None) -> str` and
+   `drive_to_eval_error_trial(client, *, proposal_id=None) -> str`.
+@@ -334,7 +380,7 @@
+    are type-checked.
+ 6. `uv run pytest -q` passes (full reference test suite, including
+    the chunk-11c v1+roles scenarios). Total scenario count rises
+-   from 106 to ~113.
++   from 106 to ~111.
+ 7. `uv run python conformance/src/conformance/tools/check_citations.py`
+    passes — every new test cites a real MUST; every new group has a
+    valid citing test; per-test relevance check passes.
+@@ -368,9 +414,9 @@
+ overlaps with the v1 `test_different_sha_returns_409` — both submit
+ the same wire shape. Decision: keep both. Each cites a different
+ chapter and asserts a different invariant (HTTP idempotency vs
+-atomic-three event-side projection). The test-redundancy cost is
+-small (one wire round-trip) and the assertion strengthening is
+-real.
++chapter-06 §5.3 no-overwrite). The test-redundancy cost is small
++(one wire round-trip) and the assertion strengthening is real
++(the new test additionally asserts the event log's cardinality).
+ 
+ ### 9.4 Trial-status helper coverage
+ 
