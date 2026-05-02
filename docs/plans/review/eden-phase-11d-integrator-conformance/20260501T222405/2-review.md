@@ -1,0 +1,3 @@
+ready to proceed
+
+The corrections are accurate. The §2(b) downgrade now matches both the wire-seeding limits and the actual reference implementation, the two-group / four-test structure fits `check_citations.py`, the single composed cross-artifact success test is the right granularity, and the reference-impl section now describes `Store.integrate_trial` correctly. I don’t see any remaining blocking issues.

@@ -324,6 +324,76 @@ def drive_to_starting_trial(
     return trial_id
 
 
+def drive_to_error_trial(
+    client: WireClient,
+    *,
+    proposal_id: str | None = None,
+) -> str:
+    """Drive a fresh proposal through implement-status-error.
+
+    Returns trial_id of a trial that landed at ``status="error"`` via
+    the chapter-3 §3.4 implementer status=error path: implementer
+    creates the starting trial, submits ``status="error"``, then the
+    orchestrator's reject path terminalizes the trial as error
+    atomically with the task.failed event (chapter 05 §2.2 composite
+    commit).
+    """
+    pid = proposal_id or create_proposal(client)
+    mark_proposal_ready(client, pid)
+    impl_tid = create_implement_task(client, proposal_id=pid)
+    impl_claim = claim(client, impl_tid, worker_id="impl-worker")
+    trial_id = fresh_trial_id()
+    create_trial(
+        client,
+        trial_id=trial_id,
+        proposal_id=pid,
+        status="starting",
+    )
+    r = submit_implement(
+        client,
+        impl_tid,
+        token=impl_claim["token"],
+        trial_id=trial_id,
+        status="error",
+    )
+    r.raise_for_status()
+    rejected = reject(client, impl_tid, reason="worker_error")
+    rejected.raise_for_status()
+    trial = read_trial(client, trial_id)
+    assert trial.get("status") == "error", (
+        f"setup precondition: trial {trial_id!r} should be 'error' after "
+        f"implement /reject with status=error; got {trial.get('status')!r}"
+    )
+    return trial_id
+
+
+def drive_to_eval_error_trial(
+    client: WireClient,
+    *,
+    proposal_id: str | None = None,
+    commit_sha: str = "1" * 40,
+) -> str:
+    """Drive a fresh proposal through to ``status="eval_error"``.
+
+    Drives implement-accept (so the trial reaches ``starting`` with
+    ``commit_sha``) and then calls ``declare_trial_eval_error`` to
+    terminalize the trial as ``eval_error`` per chapter 04 §4.3 retry-
+    exhaustion / chapter 05 §3.3 ``trial.eval_errored``. Returns
+    trial_id.
+    """
+    trial_id = drive_to_starting_trial(
+        client, proposal_id=proposal_id, commit_sha=commit_sha
+    )
+    declared = declare_trial_eval_error(client, trial_id)
+    declared.raise_for_status()
+    trial = read_trial(client, trial_id)
+    assert trial.get("status") == "eval_error", (
+        f"setup precondition: trial {trial_id!r} should be 'eval_error' "
+        f"after declare-eval-error; got {trial.get('status')!r}"
+    )
+    return trial_id
+
+
 def drive_to_success_trial(
     client: WireClient,
     *,

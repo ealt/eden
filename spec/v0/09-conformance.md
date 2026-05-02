@@ -33,7 +33,7 @@ The v0 spec defines exactly one wire binding ([`07-wire-protocol.md`](07-wire-pr
 
 - **v1** — task-store and event-log MUSTs from [`02-data-model.md`](02-data-model.md), [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`07-wire-protocol.md`](07-wire-protocol.md), plus the storage MUSTs that the wire binding exposes from [`08-storage.md`](08-storage.md) §1.1, §1.7. v1 does NOT cover the [`03-roles.md`](03-roles.md) role contracts or the [`06-integrator.md`](06-integrator.md) integrator atomicity ladder.
 - **v1+roles** — adds [`03-roles.md`](03-roles.md) role-contract scenarios (per-role submission semantics, backpressure, idempotency).
-- **v1+roles+integrator** — adds [`06-integrator.md`](06-integrator.md) §3.4 integrator scenarios (squash shape, eval-manifest shape, `work/*` access discipline, atomicity ladder under transport-indeterminate failures).
+- **v1+roles+integrator** — adds the wire-observable projection of [`06-integrator.md`](06-integrator.md) §2, §3.4, §5.3 — promotion preconditions on the trial-status vocabulary; atomicity-of-(field, event) on `integrate_trial`; no-overwrite under repeat promotion. The git-side artifacts (squash shape, eval-manifest shape, `work/*` discipline, reachability) are part of [`06-integrator.md`](06-integrator.md) but are **not** asserted by a wire-only suite — chapter 9 §6 makes the chapter-7 binding the only IUT contract a conformance harness can rely on, and git refs are not exposed through that binding. A future binding chapter that defines a "conformance + git access" contract MAY add those tests at a higher level.
 
 A future spec lineage that introduces a second wire binding will at that point split the suite into transport-neutral semantic tests + per-binding wire tests, and chapter 9 will gain a `core` level claimable by IUTs implementing only the semantic layer. The marker structure in [`conformance/`](../../conformance/) anticipates that refactor but does not enable it in v0.
 
@@ -58,7 +58,7 @@ The v1 scenario groups, with their primary spec citations:
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
 | Integrate idempotency | Same-value / different-value / preconditions. | [`07-wire-protocol.md`](07-wire-protocol.md) §5 |
 
-The **v1+roles** level adds the role-contract groups below. The **v1+roles+integrator** level adds its own group; its contents are out of scope for chunk 11c and will be appended in chunk 11d.
+The **v1+roles** level adds the role-contract groups below. The **v1+roles+integrator** level adds the integrator groups further below.
 
 The v1+roles scenario groups (added in chunk 11c), with their primary spec citations:
 
@@ -67,6 +67,13 @@ The v1+roles scenario groups (added in chunk 11c), with their primary spec citat
 | Planner submission | Drafting-proposal precondition; status vocabulary; proposal-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
 | Implementer submission | Submission-shape preconditions; trial-binding; status vocabulary. | [`03-roles.md`](03-roles.md) §3.4 |
 | Evaluator submission | Status vocabulary; metrics-schema validation; per-status trial-side writes; eval_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
+
+The v1+roles+integrator scenario groups (added in chunk 11d), with their primary spec citations:
+
+| Group | Scope | Spec citations |
+|---|---|---|
+| Integrator atomicity | Cross-artifact (field, event) consistency on success; no-overwrite under repeat promotion. | [`06-integrator.md`](06-integrator.md) §3.4, §5.3 |
+| Promotion preconditions | Status-vocabulary preconditions for promotion (`error`, `eval_error`); end-state assertion on rejection. | [`06-integrator.md`](06-integrator.md) §2 |
 
 ## 6. Adapter (informative)
 

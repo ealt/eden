@@ -1,0 +1,201 @@
+--- docs/plans/review/eden-phase-11d-integrator-conformance/20260501T222405/1.md	2026-05-01 22:30:51
++++ docs/plans/eden-phase-11d-integrator-conformance.md	2026-05-01 22:34:30
+@@ -39,8 +39,22 @@
+ 
+ §2 (promotion trigger) names **three** preconditions:
+ 
+-(a) `status == "success"` — wire-observable (`read_trial`).
+-(b) `commit_sha` is set — wire-observable (`read_trial`).
++(a) `status == "success"` — wire-observable (`read_trial.status`).
++(b) `commit_sha` is set — **NOT independently wire-observable** in v0.
++    The trial-status lifecycle (chapter 02 §7.1, chapter 03 §3.2, §4.4)
++    requires `commit_sha` to be written before a trial can transition
++    to `success`: implementer-accept writes `commit_sha` on the
++    `starting` trial; evaluator-accept transitions `starting` →
++    `success`. So a `success` trial with `commit_sha` unset is
++    unreachable through normal wire endpoints. Without a back-door,
++    a wire-only suite cannot isolate (b) from (a) — any test that
++    sees `commit_sha` unset will also see `status != success`, and
++    the IUT may reject for either reason. The reference impl's
++    `Store.integrate_trial` checks (a) and same-value-idempotency
++    only (see [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
++    `integrate_trial`); it does NOT inspect `trial.commit_sha`. The
++    suite therefore covers (b) only transitively, through (a)'s
++    enforcement of the lifecycle ordering.
+ (c) `commit_sha` resolves to a commit on the trial's `branch` in the
+     experiment repository — **NOT** wire-observable through chapter 7
+     alone (would require the IUT's wire endpoint to validate against
+@@ -60,7 +74,7 @@
+ | §4.x eval-manifest path/shape | NO — git tree content, off-wire |
+ | §1.3 work/* access discipline | NO — git ref existence, off-wire |
+ | §2 (a) `status == success` | YES — `read_trial.status` |
+-| §2 (b) `commit_sha` is set | YES — `read_trial.commit_sha` |
++| §2 (b) `commit_sha` is set | TRANSITIVELY only — see (b) note above; the lifecycle enforces (b) as a precondition for `status == success`, so (a)'s assertion subsumes (b) under any wire-driven seed |
+ | §3.4 atomic-three (field + event projection) | YES — `read_trial` + `events` |
+ | §5.3 repeat-promotion (no-overwrite) | YES — `read_trial` + event count |
+ | §5.1 metrics-schema-violation detection | PARTIAL — orchestrator catches at evaluate-terminal (§2 last paragraph) |
+@@ -86,14 +100,13 @@
+ 
+ - **Chapter 9 §4** — rewrite the v1+roles+integrator bullet to scope
+   the level to "the wire-observable projection of chapter 06: §2
+-  promotion preconditions on the trial-status vocabulary and on the
+-  presence/absence of `commit_sha`; §3.4 atomicity-of-(field, event)
+-  on `integrate_trial`; §5.3 no-overwrite under repeat promotion. The
+-  git-side artifacts (squash shape, eval-manifest shape, work/*
+-  discipline, reachability) are part of chapter 06 but are **not**
+-  asserted by a wire-only suite; a future binding chapter that
+-  defines a 'conformance + git access' contract MAY add those tests
+-  at a higher level."
++  promotion preconditions on the trial-status vocabulary; §3.4
++  atomicity-of-(field, event) on `integrate_trial`; §5.3 no-overwrite
++  under repeat promotion. The git-side artifacts (squash shape,
++  eval-manifest shape, work/* discipline, reachability) are part of
++  chapter 06 but are **not** asserted by a wire-only suite; a future
++  binding chapter that defines a 'conformance + git access' contract
++  MAY add those tests at a higher level."
+ - **Chapter 9 §3** — already cites chapter 06 generically; no edit.
+ - **Chapter 9 §5** — gain two new groups (see §3.2 below). The prose
+   immediately above the v1+roles index table — currently "The
+@@ -151,10 +164,17 @@
+ 
+ #### 3.1.b Group `Promotion preconditions` — citing chapter 06 §2
+ 
+-Asserts the §2 promotion-trigger requirements on the wire-observable
+-preconditions: status (a) and commit_sha-set (b). The §2 (c) branch-
+-reachability condition is **off-wire** in v0 and is explicitly NOT
+-asserted (per §2.1 above); a future binding chapter MAY add it.
++Asserts the §2(a) status-precondition requirement across the two
++**non-`starting`** terminal-error trial statuses (`error`,
++`eval_error`). The §2(b) commit_sha-set precondition is not
++independently wire-observable in v0 (per §2 above); a wire-only suite
++covers it only transitively through (a). The §2(c) branch-reachability
++precondition is off-wire in v0 (per §2 above); a future binding
++chapter MAY add it. The existing v1
++`test_integrate_against_non_success_trial_returns_409` covers (a) for
++the `starting` status; the two new tests below cover (a) for the
++remaining two non-`starting` non-`success` statuses, completing the
++status vocabulary.
+ 
+ Each test asserts the **end-state**, not just the wire response, per
+ the chunk-11c "end-state, not endpoint" pattern (
+@@ -170,23 +190,8 @@
+   chapter 06 §2.
+ - **`eval_error` trial → 409 invalid-precondition + no artifacts.**
+   Same MUST, different status. Cites §2.
+-- **`starting` trial without commit_sha → 409 invalid-precondition +
+-  no artifacts.** §2 says the trial's `commit_sha` "is set and
+-  resolves to a commit on the trial's `branch`". Wire projection of
+-  the (b) condition: a trial whose `commit_sha` field is unset rejects
+-  integrate. The existing v1 test
+-  `test_integrate_against_non_success_trial_returns_409` covers a
+-  `starting` trial that DOES have commit_sha (chunk-11c hardening of
+-  `drive_to_starting_trial` asserts this); this test covers the
+-  earlier point in the lifecycle where commit_sha hasn't been written
+-  yet — i.e. `_seed.create_trial(status="starting")` without going
+-  through implement-accept. Note: even in this state, the trial's
+-  `status` is `starting` (not `success`), so the IUT may reject for
+-  status alone rather than commit_sha-unset; the test asserts the
+-  end-state regardless of which precondition the IUT detects first
+-  — chapter 06 §2 doesn't pin that ordering. Cites §2.
+ 
+-That's **5 new scenarios across two new groups**, plus the spec
++That's **4 new scenarios across two new groups**, plus the spec
+ amendment to chapter 9 §4 + §5 index.
+ 
+ ### 3.2 Out of scope (deferred)
+@@ -201,8 +206,8 @@
+ - §3.3 commit message format.
+ - §4.x eval-manifest path/shape/contents.
+ - §5.1 partial-write rollback (server-side internal; wire only sees
+-  the post-rollback state, which is captured by the
+-  `failed-integrate-leaves-no-artifacts` test above).
++  the post-rollback state, which the §3.1.b precondition tests
++  pin via their composite end-state assertion).
+ - §5.2 ref-durability.
+ 
+ A future spec lineage that introduces a "git-access conformance
+@@ -273,12 +278,15 @@
+   on-success (cites §3.4) and divergent-resubmit-leaves-no-second-
+   event (cites §5.3).
+ - `conformance/scenarios/test_promotion_preconditions.py` — NEW file.
+-  Group `Promotion preconditions`. 3 tests: error trial → 409,
+-  eval_error trial → 409, starting-trial-without-commit_sha → 409.
+-  All cite §2.
++  Group `Promotion preconditions`. 2 tests: error trial → 409,
++  eval_error trial → 409. Both cite §2.
+ - `conformance/src/conformance/harness/_seed.py` — extend with
+   `drive_to_error_trial(client, *, proposal_id=None) -> str` and
+   `drive_to_eval_error_trial(client, *, proposal_id=None) -> str`.
++  Note: the helper `drive_to_eval_error_trial` takes
++  `proposal_id` for symmetry but does not use it directly — it
++  forwards to `drive_to_starting_trial(proposal_id=...)` and then
++  calls `declare_trial_eval_error`.
+   Both follow the chunk-11c hardening pattern: call
+   `raise_for_status()` on every wire call AND assert the end-state
+   trial status before returning. The `error`-trial helper drives
+@@ -299,28 +307,37 @@
+ 
+ ## 6. Reference-impl behavior (verification)
+ 
+-The reference impl already supports all the wire-observable chapter-06
+-projections via the `eden_storage._base.SqliteStore` /
+-`PostgresStore` / `InMemoryStore` `integrate_trial` composite-commit:
++The reference impl's `Store.integrate_trial` lives at
++[`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
++(method `integrate_trial`). It is a single composite-commit (chapter 05
++§2.2) that:
+ 
+-- `_accept_integrate` writes `trial_commit_sha` and `trial.integrated`
+-  in one DB transaction (composite-commit invariant — chapter 05 §2.2).
+-- The pre-commit precondition check rejects non-`success` trials with
+-  `IllegalTransition` (mapped to 409 `invalid-precondition` at the
+-  wire layer in `eden_wire.errors`).
+-- A trial without `commit_sha` set is rejected the same way at integrate
+-  time (the precondition check looks for `trial.commit_sha`).
+-- Same-value retry is no-op (existing v1 test passes).
+-- Different-value rejection raises `InvalidPrecondition` without
+-  mutating state (existing v1 test passes; the new
+-  `divergent-resubmit-leaves-no-second-event` test will still pass).
++1. Validates `trial.status == "success"`; otherwise raises
++   `InvalidPrecondition` (mapped to 409 `eden://error/invalid-precondition`
++   at the wire layer per chapter 7 §5/§7).
++2. Validates same-value idempotency: if `trial.trial_commit_sha`
++   equals the request body's `trial_commit_sha`, returns no-op (no
++   second write, no second event).
++3. Validates no-overwrite: if `trial.trial_commit_sha` is set and
++   differs from the request body's value, raises `InvalidPrecondition`.
++4. On success, writes the new `trial_commit_sha` field and emits
++   `trial.integrated` in one transaction.
+ 
++The reference impl does **not** inspect `trial.commit_sha` at integrate
++time; the §2(b) precondition is enforced transitively by the trial-
++status lifecycle (a trial cannot reach `success` without `commit_sha`
++set; see chunk-11c hardening of `drive_to_starting_trial` /
++`drive_to_success_trial`).
++
+ The new tests are **not expected to fail** against the reference impl;
+-they extend coverage rather than discovering new behavior. If any
+-new test reveals a gap, it will surface at run time and the resolution
+-is one of: amend the spec, fix the impl, fix the suite (per chapter 9
+-§7 — the reference impl does not have authority to reinterpret the
+-spec).
++they extend coverage of cross-artifact consistency (already enforced
++by the composite-commit primitive) and broaden status-precondition
++coverage to `error` and `eval_error` (which the existing
++`Store.integrate_trial` rejects via the same `status != "success"`
++branch as the existing v1 `starting` test). If any new test reveals
++a gap, it will surface at run time and the resolution is one of:
++amend the spec, fix the impl, fix the suite (per chapter 9 §7 — the
++reference impl does not have authority to reinterpret the spec).
+ 
+ ## 7. Test-design notes
+ 
+@@ -380,7 +397,7 @@
+    are type-checked.
+ 6. `uv run pytest -q` passes (full reference test suite, including
+    the chunk-11c v1+roles scenarios). Total scenario count rises
+-   from 106 to ~111.
++   from 106 to ~110.
+ 7. `uv run python conformance/src/conformance/tools/check_citations.py`
+    passes — every new test cites a real MUST; every new group has a
+    valid citing test; per-test relevance check passes.
