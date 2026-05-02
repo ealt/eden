@@ -1,0 +1,51 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-11c-role-contracts/20260501T175638/2.md	2026-05-01 18:05:11
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-11c-role-contracts.md	2026-05-01 18:06:34
+@@ -208,9 +208,13 @@
+        `status="error"` succeeds, the orchestrator's reject path runs,
+        the trial's `status` becomes `"error"` per §3.4 ("The trial
+        MUST be persisted with `status == 'error'`"), and a
+-       `task.failed` event names the impl task. Cited at §3.4 from
+-       the role-contract angle (a Composite-commits test in chunk 11b
+-       already exercises the chapter-05 §2.2 atomicity angle).
++       `task.failed` event names the impl task. The test ALSO asserts
++       the §3.4 "no evaluate task is dispatched against an errored
++       trial" MUST: after the reject path runs, no `task.created`
++       event with `kind == "evaluate"` references the errored trial
++       (revision-2 addition). Cited at §3.4 from the role-contract
++       angle (a Composite-commits test in chunk 11b already exercises
++       the chapter-05 §2.2 atomicity angle).
+ 
+    - `test_evaluator_submission.py` — group `Evaluator submission`,
+      citing §4.2 / §4.4. Tests:
+@@ -219,8 +223,14 @@
+        end-state: `trial.status != "success"`
+      - type-violating metric (`retries: 1.5` against the fixture's
+        `retries: integer`) — same pattern
+-     - accepted success writes metrics + completed_at atomically with
+-       `trial.succeeded`
++     - accepted success writes metrics + completed_at + `artifacts_uri`
++       atomically with `trial.succeeded`. The submission carries a
++       non-None `artifacts_uri`; the test asserts it lands on the
++       trial alongside `metrics`. §4.4 explicitly makes
++       `artifacts_uri` part of the trial write for `status ∈
++       {"success", "error"}`, so positive-write coverage on
++       `artifacts_uri` is a §4.4 MUST that round-2 review flagged
++       as missing.
+      - eval_error keeps trial in `starting` AND discards
+        submission-carried metrics + artifacts_uri
+      - retry-exhausted `declare-eval-error` after a metrics-bearing
+@@ -428,8 +438,12 @@
+ 5. `uv run pyright conformance/scenarios/test_*_submission.py` —
+    clean.
+ 
+-6. `npx --yes markdownlint-cli2@0.14.0 spec/v0/09-conformance.md
+-   docs/roadmap.md AGENTS.md conformance/README.md` — clean.
++6. `npx --yes markdownlint-cli2@0.14.0 spec/v0/03-roles.md
++   spec/v0/09-conformance.md docs/roadmap.md AGENTS.md
++   conformance/README.md docs/plans/eden-phase-11c-role-contracts.md` —
++   clean. (`spec/v0/03-roles.md` covered because §4.4 is amended in
++   this chunk; the plan file itself covered because it's a new
++   tracked markdown file.)
+ 
+ 7. `python3 scripts/spec-xref-check.py` — pre-existing 3 unresolved
+    §-references on main are unchanged. Total resolvable count goes

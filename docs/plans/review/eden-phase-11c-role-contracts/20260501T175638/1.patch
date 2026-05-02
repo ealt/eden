@@ -1,0 +1,158 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-11c-role-contracts/20260501T175638/0.md	2026-05-01 17:56:38
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-11c-role-contracts.md	2026-05-01 18:01:51
+@@ -49,6 +49,46 @@
+ Chapter 03 §5 (integrator) is deliberately scoped out of this chunk and
+ into 11d, matching the §4 conformance-level structure.
+ 
++## Spec gap surfaced by this chunk: §4.4 evaluator idempotency
++
++While drafting the evaluator-resubmission test, codex-review (round 0)
++flagged a real internal conflict in the spec:
++
++- **Chapter 04 §4.2** (canonical idempotency rule for the task store)
++  defines evaluate equivalence as `trial_id` + `status` + `metrics`
++  (as JSON values). `artifacts_uri` is not listed.
++- **Chapter 03 §4.4** (role-side restatement) says "identical
++  `trial_id` + `status` + `metrics` + `artifacts_uri` MUST be
++  accepted." `artifacts_uri` IS listed.
++
++The reference impl follows §4.2: see `submissions_equivalent` in
++[`reference/packages/eden-storage/src/eden_storage/submissions.py`](../../reference/packages/eden-storage/src/eden_storage/submissions.py)
++which deliberately excludes `artifacts_uri` per its docstring.
++
++This is the kind of "spec wins" disagreement chunk 11c is supposed
++to surface. The resolution this chunk takes:
++
++**Amend `spec/v0/03-roles.md` §4.4 to drop `artifacts_uri` from
++the equivalence formula and defer to chapter 04 §4.2 as the
++canonical statement.** Rationale: §4.2 is the wire-binding /
++task-store side; §4.4 is the role-side restatement. The role-side
++should defer to the task-store side, not contradict it. The impl
++already follows §4.2.
++
++The new §4.4 sentence will read approximately:
++
++> Resubmission is idempotent under the same rules as §3.4 and
++> [`04-task-protocol.md`](04-task-protocol.md) §4.2: identical
++> normative fields (`trial_id`, `status`, `metrics`) MUST be
++> accepted; inconsistent resubmission MUST be rejected.
++> `artifacts_uri` is NOT part of equivalence — the first
++> submission's `artifacts_uri` is the committed one.
++
++The role-rule idempotent-resubmit test will assert this:
++identical normative fields succeed; the test will NOT vary
++`artifacts_uri` between calls (which would have hit the spec
++ambiguity).
++
+ ## Conformance posture for v1+roles
+ 
+ Three new chapter-9 §5 index groups, one per worker role:
+@@ -132,7 +172,13 @@
+      - zero-proposal status=success accepted (the "MAY produce zero
+        proposals" branch)
+      - status=error keeps any partially-drafted proposals in `drafting`
+-       and emits no `proposal.dispatched`
++       and emits no `proposal.dispatched`. Wire shape: the test sends
++       `{"kind": "plan", "status": "error"}` with `proposal_ids`
++       omitted. This is wire-conformant: `PlanSubmission.proposal_ids`
++       has a `()` default ([`submissions.py`](../../reference/packages/eden-storage/src/eden_storage/submissions.py)),
++       and §2.4 lists `proposal_ids` as part of the success contract,
++       so absence is conforming on `status="error"`. `_seed.submit_plan`
++       already encodes this shape.
+ 
+    - `test_implementer_submission.py` — group `Implementer submission`,
+      citing §3.4. Tests:
+@@ -142,8 +188,14 @@
+      - status=success without commit_sha — drive submit + accept;
+        observable end-state: `trial.status != "success"` (uses the
+        end-state-not-endpoint pattern)
+-     - accepted success writes `commit_sha` onto the trial atomically
+-       with `task.completed` + `proposal.completed`
++     - accepted success writes `commit_sha` onto the trial. Asserts
++       `trial.commit_sha == submission.commit_sha` after `/accept` only;
++       does NOT assert atomicity with `task.completed` /
++       `proposal.completed` events — that composite-commit is a chapter
++       04 §4.3 / chapter 05 §2.2 invariant already covered by
++       `Composite commits` (chunk 11b). Citing only §3.4 keeps this
++       test inside its declared `Implementer submission` group per the
++       chapter-9 §5 traceability rule.
+      - duplicate submit with same commit_sha is idempotent (one
+        `task.submitted` event)
+      - duplicate submit with different commit_sha → 409
+@@ -164,7 +216,21 @@
+        eval_error submit does NOT graft prior metrics onto the trial
+      - role-rule idempotent resubmit (one `task.submitted` event)
+ 
+-3. **Doc updates:**
++3. **Spec amendment:** `spec/v0/03-roles.md` §4.4 evaluator-idempotency
++   formula update per §"Spec gap surfaced by this chunk" above.
++
++4. **Helper extension:** `conformance/src/conformance/harness/_seed.py`
++   `submit_evaluate` is extended to include `metrics` in the wire
++   payload whenever explicitly passed by the caller (today it only
++   includes metrics when `status == "success"`). Required by the
++   eval_error-with-metrics test below: without this, the test would
++   silently send a metrics-less wire payload and the §4.4 "discard
++   submission-carried metrics" assertion would be trivially satisfied.
++   The helper change is shape-faithful: nothing else uses
++   `submit_evaluate` with non-success+metrics today, so the change
++   is additive.
++
++5. **Doc updates:**
+    - `docs/roadmap.md` Phase 11 unit summaries (mark 11a/11b/11c
+      complete with summary).
+    - `AGENTS.md` current-phase header + commands table.
+@@ -182,13 +248,16 @@
+ 2. **Integrator §5 / chapter 06 MUSTs** — deferred to 11d per the
+    chapter-9 §4 level taxonomy.
+ 
+-3. **Modifications to `_seed.py` helpers.** The new tests use existing
+-   helpers everywhere they fit; the one shape `_seed.submit_implement`
+-   doesn't expose (success without commit_sha) is exercised through a
+-   direct `wire_client.post(...)` call inline. Adding a
+-   `submit_implement_no_sha` helper would normalize the malformed-shape
++3. **Adding helpers for malformed-by-design wire shapes.** Where a test
++   needs a payload that violates the role contract — e.g. implementer
++   `status=success` without `commit_sha` — the test issues a direct
++   `wire_client.post(...)` call inline rather than getting a helper.
++   Adding `submit_implement_no_sha` would normalize the malformed shape
+    into the same surface as well-formed submissions and obscure that
+-   it's deliberately broken.
++   it's deliberately broken. (Note: the `_seed.submit_evaluate`
++   extension in §"In scope" item 4 is different — that's normalizing
++   how a *valid* wire shape with explicit metrics on `eval_error` is
++   sent, not papering over a malformed shape.)
+ 
+ 4. **New `eden_*` package code.** This chunk is conformance-suite-only;
+    no reference impl changes are expected. If a test fails on the
+@@ -219,7 +288,9 @@
+ 
+ ```text
+ docs/plans/eden-phase-11c-role-contracts.md   (this file, new)
++spec/v0/03-roles.md                           (modify: §4.4 idempotency formula — see "Spec gap")
+ spec/v0/09-conformance.md                     (modify: §3 prose, §5 index)
++conformance/src/conformance/harness/_seed.py  (modify: submit_evaluate metrics-passthrough)
+ conformance/scenarios/test_planner_submission.py     (new)
+ conformance/scenarios/test_implementer_submission.py (new)
+ conformance/scenarios/test_evaluator_submission.py   (new)
+@@ -230,7 +301,6 @@
+ 
+ No other files. In particular:
+ 
+-- `conformance/src/conformance/harness/_seed.py` — untouched.
+ - `conformance/src/conformance/harness/wire_client.py` — untouched.
+ - `conformance/conftest.py` — untouched.
+ - `conformance/src/conformance/tools/check_citations.py` — untouched.
+@@ -300,7 +370,11 @@
+ 1. `uv run python conformance/src/conformance/tools/check_citations.py`
+    — every new test's citation resolves to a real MUST in
+    chapter 03. Expected output: `OK: 102 scenarios cite valid spec
+-   MUSTs.` (was 85 before; +17).
++   MUSTs.` (was 85 before; +17). Citation count (102) and pytest
++   count (103, see step 3) differ by one because the citation tool
++   only walks `scenarios/test_*.py`; the harness-self-validation
++   `scenarios/_meta/test_self_validation.py` is a `conformance_meta`
++   marker and is intentionally excluded.
+ 
+ 2. `uv run pytest -q conformance/scenarios/test_planner_submission.py
+    conformance/scenarios/test_implementer_submission.py

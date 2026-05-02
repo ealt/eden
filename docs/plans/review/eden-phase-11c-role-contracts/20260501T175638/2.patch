@@ -1,0 +1,124 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-11c-role-contracts/20260501T175638/1.md	2026-05-01 18:01:59
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-11c-role-contracts.md	2026-05-01 18:05:05
+@@ -173,12 +173,16 @@
+        proposals" branch)
+      - status=error keeps any partially-drafted proposals in `drafting`
+        and emits no `proposal.dispatched`. Wire shape: the test sends
+-       `{"kind": "plan", "status": "error"}` with `proposal_ids`
+-       omitted. This is wire-conformant: `PlanSubmission.proposal_ids`
+-       has a `()` default ([`submissions.py`](../../reference/packages/eden-storage/src/eden_storage/submissions.py)),
+-       and §2.4 lists `proposal_ids` as part of the success contract,
+-       so absence is conforming on `status="error"`. `_seed.submit_plan`
+-       already encodes this shape.
++       `{"kind": "plan", "status": "error", "proposal_ids": []}`. §2.4
++       reads "the submission payload MUST include: `proposal_ids` ...
++       MAY be empty" with no condition on `status` — so `proposal_ids`
++       MUST be present on every plan submission, empty on error. The
++       reference impl's `PlanSubmission.proposal_ids` happens to have a
++       `()` default that lets a missing key parse, but a non-Python IUT
++       might enforce the literal-spec MUST. This chunk fixes
++       `_seed.submit_plan` to always include `proposal_ids` (it
++       currently omits when `status="error"`), so the helper produces
++       a wire-shape that's conforming under both readings.
+ 
+    - `test_implementer_submission.py` — group `Implementer submission`,
+      citing §3.4. Tests:
+@@ -200,6 +204,13 @@
+        `task.submitted` event)
+      - duplicate submit with different commit_sha → 409
+        conflicting-resubmission
++     - **status=error round-trip** (new in revision 1): submit with
++       `status="error"` succeeds, the orchestrator's reject path runs,
++       the trial's `status` becomes `"error"` per §3.4 ("The trial
++       MUST be persisted with `status == 'error'`"), and a
++       `task.failed` event names the impl task. Cited at §3.4 from
++       the role-contract angle (a Composite-commits test in chunk 11b
++       already exercises the chapter-05 §2.2 atomicity angle).
+ 
+    - `test_evaluator_submission.py` — group `Evaluator submission`,
+      citing §4.2 / §4.4. Tests:
+@@ -215,21 +226,48 @@
+      - retry-exhausted `declare-eval-error` after a metrics-bearing
+        eval_error submit does NOT graft prior metrics onto the trial
+      - role-rule idempotent resubmit (one `task.submitted` event)
++     - **artifacts_uri NOT part of equivalence** (new in revision 1):
++       per the §4.4 amendment in this chunk, a resubmit with identical
++       `trial_id` + `status` + `metrics` but a *different*
++       `artifacts_uri` MUST be accepted (200) AND emit only one
++       `task.submitted` event. The first submission's `artifacts_uri`
++       is the committed one. Pins the §4.4 amendment so a future
++       impl regression that incorrectly tightens equivalence to
++       include `artifacts_uri` is caught.
++     - **status=error trial-side write** (new in revision 1): submit
++       with `status="error"` and a metrics object, run the
++       orchestrator reject path, then read the trial. §4.4 says
++       "metrics — set to the submission's `metrics` when status ∈
++       {'success', 'error'}", so the trial's `metrics` MUST equal
++       the submission's metrics and `trial.status == 'error'`.
++       Distinguishes `error` from `eval_error` on the trial-side
++       write rule, which the existing `eval_error keeps starting`
++       test does not exercise.
+ 
+ 3. **Spec amendment:** `spec/v0/03-roles.md` §4.4 evaluator-idempotency
+    formula update per §"Spec gap surfaced by this chunk" above.
+ 
+-4. **Helper extension:** `conformance/src/conformance/harness/_seed.py`
+-   `submit_evaluate` is extended to include `metrics` in the wire
+-   payload whenever explicitly passed by the caller (today it only
+-   includes metrics when `status == "success"`). Required by the
+-   eval_error-with-metrics test below: without this, the test would
+-   silently send a metrics-less wire payload and the §4.4 "discard
+-   submission-carried metrics" assertion would be trivially satisfied.
+-   The helper change is shape-faithful: nothing else uses
+-   `submit_evaluate` with non-success+metrics today, so the change
+-   is additive.
++4. **Helper extensions:** `conformance/src/conformance/harness/_seed.py`
++   gets two minor adjustments:
+ 
++   - `submit_evaluate` is extended to include `metrics` in the wire
++     payload whenever explicitly passed by the caller (today it only
++     includes metrics when `status == "success"`). Required by the
++     eval_error-with-metrics test below: without this, the test would
++     silently send a metrics-less wire payload and the §4.4 "discard
++     submission-carried metrics" assertion would be trivially satisfied.
++     The helper change is shape-faithful: nothing else uses
++     `submit_evaluate` with non-success+metrics today, so the change
++     is additive. `submit_evaluate` also gets an `artifacts_uri: str |
++     None = None` parameter so the new artifacts_uri-not-equivalence
++     test (see Evaluator scenarios) can vary it without an inline POST.
++
++   - `submit_plan` is changed to always include `proposal_ids` in the
++     wire payload (it currently omits when `status="error"`), per the
++     §2.4 reading that `proposal_ids` is unconditionally part of the
++     submission shape. This is conforming under both literal-spec and
++     reference-impl readings (see Planner scenarios above).
++
+ 5. **Doc updates:**
+    - `docs/roadmap.md` Phase 11 unit summaries (mark 11a/11b/11c
+      complete with summary).
+@@ -369,18 +407,19 @@
+ 
+ 1. `uv run python conformance/src/conformance/tools/check_citations.py`
+    — every new test's citation resolves to a real MUST in
+-   chapter 03. Expected output: `OK: 102 scenarios cite valid spec
+-   MUSTs.` (was 85 before; +17). Citation count (102) and pytest
+-   count (103, see step 3) differ by one because the citation tool
+-   only walks `scenarios/test_*.py`; the harness-self-validation
++   chapter 03. Expected output: `OK: 105 scenarios cite valid spec
++   MUSTs.` (was 85 before; +20: 4 planner + 7 implementer + 9
++   evaluator). Citation count (105) and pytest count (106, see
++   step 3) differ by one because the citation tool only walks
++   `scenarios/test_*.py`; the harness-self-validation
+    `scenarios/_meta/test_self_validation.py` is a `conformance_meta`
+    marker and is intentionally excluded.
+ 
+ 2. `uv run pytest -q conformance/scenarios/test_planner_submission.py
+    conformance/scenarios/test_implementer_submission.py
+-   conformance/scenarios/test_evaluator_submission.py` — 17/17 pass.
++   conformance/scenarios/test_evaluator_submission.py` — 20/20 pass.
+ 
+-3. `uv run pytest -q conformance/` — 103/103 pass (no regressions in
++3. `uv run pytest -q conformance/` — 106/106 pass (no regressions in
+    prior chunks).
+ 
+ 4. `uv run ruff check conformance/scenarios/test_*_submission.py` —
