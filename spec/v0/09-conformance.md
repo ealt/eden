@@ -21,7 +21,7 @@ Anything else — language, deployment topology, persistence, auth scheme, scali
 
 ## 3. Assertion vocabulary
 
-Every assertion in the v1 suite is keyed off a normative MUST in [`02-data-model.md`](02-data-model.md), [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`07-wire-protocol.md`](07-wire-protocol.md), or [`08-storage.md`](08-storage.md). The suite does NOT assert SHOULDs; SHOULDs are interop guidance, not interop contracts.
+Every assertion in the v1 suite is keyed off a normative MUST in [`02-data-model.md`](02-data-model.md), [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`07-wire-protocol.md`](07-wire-protocol.md), or [`08-storage.md`](08-storage.md). The v1+roles suite extends this to include [`03-roles.md`](03-roles.md). The v1+roles+integrator suite further extends to include [`06-integrator.md`](06-integrator.md). The suite does NOT assert SHOULDs; SHOULDs are interop guidance, not interop contracts.
 
 When the spec evolves, the suite evolves with it. A change that removes a MUST or downgrades it to SHOULD MUST be accompanied by a matching scenario removal or rewrite.
 
@@ -58,7 +58,15 @@ The v1 scenario groups, with their primary spec citations:
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
 | Integrate idempotency | Same-value / different-value / preconditions. | [`07-wire-protocol.md`](07-wire-protocol.md) §5 |
 
-The **v1+roles** and **v1+roles+integrator** levels add their own scenario groups; their contents are out of scope for the chapter 9 v1 ship and will be appended in chunks 11c and 11d respectively.
+The **v1+roles** level adds the role-contract groups below. The **v1+roles+integrator** level adds its own group; its contents are out of scope for chunk 11c and will be appended in chunk 11d.
+
+The v1+roles scenario groups (added in chunk 11c), with their primary spec citations:
+
+| Group | Scope | Spec citations |
+|---|---|---|
+| Planner submission | Drafting-proposal precondition; status vocabulary; proposal-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
+| Implementer submission | Submission-shape preconditions; trial-binding; status vocabulary. | [`03-roles.md`](03-roles.md) §3.4 |
+| Evaluator submission | Status vocabulary; metrics-schema validation; per-status trial-side writes; eval_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
 
 ## 6. Adapter (informative)
 

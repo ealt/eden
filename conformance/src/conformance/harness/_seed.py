@@ -119,9 +119,11 @@ def submit_plan(
     proposal_ids: list[str] | None = None,
     status: str = "success",
 ) -> Any:
-    payload: dict[str, Any] = {"kind": "plan", "status": status}
-    if status == "success":
-        payload["proposal_ids"] = proposal_ids if proposal_ids is not None else []
+    payload: dict[str, Any] = {
+        "kind": "plan",
+        "status": status,
+        "proposal_ids": proposal_ids if proposal_ids is not None else [],
+    }
     return client.post(
         client.tasks_path(task_id, "/submit"),
         json={"token": token, "payload": payload},
@@ -158,14 +160,24 @@ def submit_evaluate(
     trial_id: str,
     status: str = "success",
     metrics: dict[str, Any] | None = None,
+    artifacts_uri: str | None = None,
 ) -> Any:
     payload: dict[str, Any] = {
         "kind": "evaluate",
         "status": status,
         "trial_id": trial_id,
     }
-    if status == "success":
-        payload["metrics"] = metrics or {"score": 1.0, "retries": 0}
+    # status=success defaults a metrics object so well-formed
+    # successes don't need to repeat the boilerplate. Other statuses
+    # only get metrics when the caller explicitly passes them, so
+    # eval_error/error tests can drive the §4.4 "discard
+    # submission-carried metrics" rule with a real wire payload.
+    if metrics is not None:
+        payload["metrics"] = metrics
+    elif status == "success":
+        payload["metrics"] = {"score": 1.0, "retries": 0}
+    if artifacts_uri is not None:
+        payload["artifacts_uri"] = artifacts_uri
     return client.post(
         client.tasks_path(task_id, "/submit"),
         json={"token": token, "payload": payload},
@@ -297,7 +309,18 @@ def drive_to_starting_trial(
         commit_sha=commit_sha,
     )
     r.raise_for_status()
-    accept(client, impl_tid)
+    accepted = accept(client, impl_tid)
+    accepted.raise_for_status()
+    # Sanity-check that the accept actually wrote commit_sha onto the
+    # trial — a setup regression that silently leaves the trial in an
+    # unexpected shape would otherwise surface as a misleading
+    # downstream test failure.
+    trial = read_trial(client, trial_id)
+    assert trial.get("commit_sha") == commit_sha, (
+        f"setup precondition: trial {trial_id!r} should carry "
+        f"commit_sha={commit_sha!r} after implement /accept; got "
+        f"{trial.get('commit_sha')!r}"
+    )
     return trial_id
 
 
@@ -326,7 +349,13 @@ def drive_to_success_trial(
         metrics=metrics,
     )
     r.raise_for_status()
-    accept(client, eval_tid)
+    accepted = accept(client, eval_tid)
+    accepted.raise_for_status()
+    trial = read_trial(client, trial_id)
+    assert trial.get("status") == "success", (
+        f"setup precondition: trial {trial_id!r} should be 'success' after "
+        f"evaluate /accept; got {trial.get('status')!r}"
+    )
     return trial_id
 
 

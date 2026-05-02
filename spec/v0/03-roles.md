@@ -157,7 +157,7 @@ On a `submitted → completed` or `submitted → failed` transition (per [`04-ta
 
 On the retry-exhausted `"eval_error"` terminal transition itself, the orchestrator MUST NOT graft metrics or artifacts from any prior `eval_error` submission onto the trial; the trial's `metrics` and `artifacts_uri` fields remain unset. This keeps the trial object canonical: a trial either carries the outputs of a successful or code-level-failed evaluation, or it carries nothing.
 
-Resubmission is idempotent under the same rules as §3.4: identical `trial_id` + `status` + `metrics` + `artifacts_uri` MUST be accepted; inconsistent resubmission MUST be rejected.
+Resubmission is idempotent under the same rules as §3.4 and [`04-task-protocol.md`](04-task-protocol.md) §4.2: identical normative fields (`trial_id`, `status`, `metrics`) MUST be accepted; inconsistent resubmission MUST be rejected. `artifacts_uri` is NOT part of equivalence — the first submission's `artifacts_uri` is the committed one. (Earlier drafts of this section listed `artifacts_uri` as part of the equivalence formula; the §4.2 statement is canonical and this section now defers to it.)
 
 ## 5. Integrator
 

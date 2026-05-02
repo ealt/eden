@@ -1,0 +1,22 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-11c-role-contracts/20260501T175638/3.md	2026-05-01 18:06:40
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-11c-role-contracts.md	2026-05-01 18:07:25
+@@ -84,10 +84,15 @@
+ > `artifacts_uri` is NOT part of equivalence — the first
+ > submission's `artifacts_uri` is the committed one.
+ 
+-The role-rule idempotent-resubmit test will assert this:
+-identical normative fields succeed; the test will NOT vary
+-`artifacts_uri` between calls (which would have hit the spec
+-ambiguity).
++The §4.4 amendment is pinned by two tests in the Evaluator
++submission group: a baseline idempotent-resubmit test that holds
++all four fields (`trial_id`, `status`, `metrics`, `artifacts_uri`)
++identical, and a separate test that resubmits with identical
++normative fields but a *different* `artifacts_uri` and asserts
++the resubmit is accepted (200) with only one `task.submitted`
++event. The two together pin both halves of the amendment: identical
++fields succeed; differing `artifacts_uri` does NOT block
++equivalence.
+ 
+ ## Conformance posture for v1+roles
+ 
