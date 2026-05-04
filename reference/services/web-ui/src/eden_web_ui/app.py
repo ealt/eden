@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import admin as admin_routes
+from .routes import artifacts as artifacts_routes
 from .routes import auth as auth_routes
 from .routes import evaluator as evaluator_routes
 from .routes import executor as executor_routes
@@ -89,6 +90,7 @@ def make_app(
     app.include_router(ideator_routes.router)
     app.include_router(evaluator_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(artifacts_routes.router)
     if repo is not None:
         app.include_router(executor_routes.router)
 

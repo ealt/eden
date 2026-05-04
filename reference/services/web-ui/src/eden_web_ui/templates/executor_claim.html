@@ -23,8 +23,10 @@
                 <th>artifacts_uri</th>
                 <td>
                     {% set scheme = idea.artifacts_uri.split(":", 1)[0] | lower %}
-                    {% if scheme in ("http", "https", "file") %}
-                    <a href="{{ idea.artifacts_uri }}"><code>{{ idea.artifacts_uri }}</code></a>
+                    {% if scheme == "file" %}
+                    <a href="/artifacts?uri={{ idea.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
+                    {% elif scheme in ("http", "https") %}
+                    <a href="{{ idea.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
                     {% else %}
                     <code>{{ idea.artifacts_uri }}</code>
                     <span class="field-error">(unrenderable scheme)</span>
