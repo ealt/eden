@@ -52,6 +52,7 @@ def make_app(
     secure_cookies: bool = False,
     now: Callable[[], datetime] | None = None,
     repo: GitRepo | None = None,
+    clone_url: str | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -81,6 +82,7 @@ def make_app(
     app.state.now = now or _now_factory()
     app.state.templates = templates
     app.state.repo = repo
+    app.state.clone_url = clone_url
 
     app.include_router(index_routes.router)
     app.include_router(auth_routes.router)

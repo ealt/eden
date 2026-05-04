@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+# eden-experiment — lifecycle CLI for manual-UI sessions.
+#
+# Subcommands:
+#   up <config> --experiment-id <id> [--seed-from <dir>] [--with-workers]
+#                                    [--port <n>]
+#       Bring up a fresh experiment from scratch. Refuses to run if a
+#       stack is already up.
+#   down [--purge]
+#       Stop containers and remove all volumes (always; that's the point
+#       of this script — it's not a "stop" command). With --purge, also
+#       removes the per-experiment .env, gitea credential helpers,
+#       experiment-config.yaml, and the manual-CLI scratch state at
+#       /tmp/eden-manual. Use --purge unless you specifically want to
+#       re-run setup-experiment with the same secrets.
+#   reset <config> --experiment-id <id> [--seed-from <dir>] [--with-workers]
+#       down --purge, then up. Common case for "give me a fresh
+#       experiment under a different name / different seed".
+#   status
+#       Snapshot of the current stack: containers, experiment-id,
+#       seed SHA, gitea contents (top level), task counts.
+#
+# Always runs against the same compose dir under
+# `reference/compose/`. Use `EDEN_MANUAL_WORK_ROOT` to override the
+# manual-CLI scratch dir (default /tmp/eden-manual).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+COMPOSE_DIR="${REPO_ROOT}/reference/compose"
+SETUP_SCRIPT="${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh"
+ENV_FILE="${COMPOSE_DIR}/.env"
+WORK_ROOT="${EDEN_MANUAL_WORK_ROOT:-/tmp/eden-manual}"
+EDEN_MANUAL="${SCRIPT_DIR}/eden-manual"
+CHECKPOINTS_DIR="${COMPOSE_DIR}/checkpoints"
+
+# Authoritative state-bearing volumes (the four that contain
+# experiment data; everything else is derivative).
+GITEA_VOLUME="eden-reference_eden-gitea-data"
+POSTGRES_VOLUME="eden-reference_eden-postgres-data"
+ARTIFACTS_VOLUME="eden-artifacts-data"
+
+# Volume that compose down -v misses (issue #8). Keep this list explicit
+# and short so the operator can audit what we're nuking.
+ORPHAN_VOLUMES=(
+    eden-reference_eden-repo-init-staging
+)
+
+NON_WORKER_SERVICES=(
+    postgres
+    gitea
+    blob-init
+    task-store-server
+    orchestrator
+    web-ui
+)
+
+WORKER_SERVICES=(
+    planner-host
+    implementer-host
+    evaluator-host
+)
+
+usage() {
+    cat <<'EOF' >&2
+eden-experiment — manual-UI experiment lifecycle.
+
+Usage:
+  eden-experiment up <config> --experiment-id <id>
+                              [--seed-from <host-dir>]
+                              [--with-workers]
+                              [--port <web-ui-host-port>]
+  eden-experiment down [--purge]
+  eden-experiment reset <config> --experiment-id <id>
+                                 [--seed-from <host-dir>]
+                                 [--with-workers]
+                                 [--port <web-ui-host-port>]
+  eden-experiment status
+  eden-experiment checkpoint <name> [--force]
+  eden-experiment restore <name>
+  eden-experiment list-checkpoints
+EOF
+}
+
+# ---- helpers -----------------------------------------------------
+
+die() { echo "error: $*" >&2; exit 1; }
+
+require_value() {
+    local flag="$1" remaining="$2"
+    if [[ "$remaining" -lt 2 ]]; then die "$flag requires a value"; fi
+}
+
+# Best-effort: do we have an existing stack up?
+stack_running() {
+    local count
+    count="$(cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" ps -q 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$count" -gt 0 ]]
+}
+
+# Read EDEN_EXPERIMENT_ID from .env if present (else empty).
+current_experiment_id() {
+    if [[ -f "$ENV_FILE" ]]; then
+        grep -E '^EDEN_EXPERIMENT_ID=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true
+    fi
+}
+
+# ---- up ----------------------------------------------------------
+
+cmd_up() {
+    local config_path="" experiment_id="" seed_from="" with_workers="" web_port=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --experiment-id) require_value "$1" "$#"; experiment_id="$2"; shift 2 ;;
+            --seed-from)     require_value "$1" "$#"; seed_from="$2";     shift 2 ;;
+            --port)          require_value "$1" "$#"; web_port="$2";      shift 2 ;;
+            --with-workers)  with_workers="1"; shift ;;
+            -h|--help)       usage; exit 0 ;;
+            --*)             die "unknown flag: $1" ;;
+            *)               if [[ -z "$config_path" ]]; then config_path="$1"; else die "extra arg: $1"; fi; shift ;;
+        esac
+    done
+    [[ -n "$config_path" ]] || die "config <path> is required"
+    [[ -n "$experiment_id" ]] || die "--experiment-id is required"
+    [[ -f "$config_path" ]] || die "config not found: $config_path"
+
+    if stack_running; then
+        die "stack is already running (current experiment: $(current_experiment_id)); run 'eden-experiment down' or 'reset' first"
+    fi
+
+    # Always pre-remove the orphan staging volume so a stale seed from a
+    # prior run can't silently shadow --seed-from (issue #8).
+    for vol in "${ORPHAN_VOLUMES[@]}"; do
+        docker volume rm "$vol" >/dev/null 2>&1 || true
+    done
+
+    # Run setup-experiment.
+    local setup_args=("$config_path" --experiment-id "$experiment_id")
+    if [[ -n "$seed_from" ]]; then
+        [[ -d "$seed_from" ]] || die "--seed-from path is not a directory: $seed_from"
+        setup_args+=(--seed-from "$seed_from")
+    fi
+    echo "--- running setup-experiment ---" >&2
+    bash "$SETUP_SCRIPT" "${setup_args[@]}"
+
+    # Optionally override the web-ui host port. setup-experiment writes
+    # WEB_UI_HOST_PORT into .env; we just patch it in place.
+    if [[ -n "$web_port" ]]; then
+        local tmp; tmp="$(mktemp)"
+        sed -E "s/^WEB_UI_HOST_PORT=.*/WEB_UI_HOST_PORT=${web_port}/" "$ENV_FILE" > "$tmp"
+        mv "$tmp" "$ENV_FILE"
+    fi
+
+    # Bring up services. Default: non-worker only (manual UI mode).
+    local services=("${NON_WORKER_SERVICES[@]}")
+    if [[ -n "$with_workers" ]]; then
+        services+=("${WORKER_SERVICES[@]}")
+    fi
+    echo "--- bringing up services: ${services[*]} ---" >&2
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" up -d --wait "${services[@]}")
+
+    # Confirm.
+    cmd_status
+}
+
+# ---- down --------------------------------------------------------
+
+cmd_down() {
+    local purge=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --purge) purge="1"; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unexpected arg: $1" ;;
+        esac
+    done
+
+    if [[ -f "$ENV_FILE" ]]; then
+        echo "--- compose down -v ---" >&2
+        (cd "$COMPOSE_DIR" && \
+            docker compose --env-file "$ENV_FILE" down -v 2>&1 | tail -10) || true
+    fi
+    # Always wipe the orphan staging volume.
+    for vol in "${ORPHAN_VOLUMES[@]}"; do
+        if docker volume inspect "$vol" >/dev/null 2>&1; then
+            echo "--- docker volume rm $vol ---" >&2
+            docker volume rm "$vol" >/dev/null
+        fi
+    done
+
+    if [[ -n "$purge" ]]; then
+        echo "--- purging per-experiment files ---" >&2
+        rm -f "$ENV_FILE" \
+              "${COMPOSE_DIR}/experiment-config.yaml" \
+              "${COMPOSE_DIR}"/.gitea-creds-*/credential-helper.sh
+        # rmdir empty per-experiment dirs (best-effort).
+        # .gitea-creds-<id>/ holds the per-experiment HTTP credential helper.
+        # .cidfiles-<id>/ holds DooD container-id files (setup-experiment
+        # creates these even in host-exec mode). Both are empty/harmless
+        # but accumulate one per experiment-id.
+        for d in "${COMPOSE_DIR}"/.gitea-creds-*/ "${COMPOSE_DIR}"/.cidfiles-*/; do
+            [[ -d "$d" ]] && rm -rf "$d" || true
+        done
+        rm -rf "$WORK_ROOT"
+    fi
+    echo "down complete." >&2
+}
+
+# ---- reset -------------------------------------------------------
+
+cmd_reset() {
+    cmd_down --purge
+    cmd_up "$@"
+}
+
+# ---- status ------------------------------------------------------
+
+cmd_status() {
+    if [[ ! -f "$ENV_FILE" ]]; then
+        echo "no .env present — no experiment configured." >&2
+        return 0
+    fi
+    local experiment_id; experiment_id="$(current_experiment_id)"
+    local base_sha; base_sha="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2- || true)"
+    local web_port; web_port="$(grep -E '^WEB_UI_HOST_PORT=' "$ENV_FILE" | cut -d= -f2- || echo 8090)"
+    echo
+    echo "experiment:    ${experiment_id:-(unset)}"
+    echo "seed SHA:      ${base_sha:-(unset)}"
+    echo "web-ui:        http://localhost:${web_port}/"
+    echo
+    echo "--- containers ---"
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" ps 2>/dev/null) || true
+    echo
+    if stack_running && [[ -x "$EDEN_MANUAL" ]]; then
+        echo "--- tasks ---"
+        "$EDEN_MANUAL" list-tasks 2>/dev/null | head -20 || true
+    fi
+}
+
+# ---- checkpoint --------------------------------------------------
+
+cmd_checkpoint() {
+    local name="" force=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force) force="1"; shift ;;
+            -h|--help) usage; exit 0 ;;
+            --*) die "unknown flag: $1" ;;
+            *) if [[ -z "$name" ]]; then name="$1"; shift; else die "extra arg: $1"; fi ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "checkpoint name required"
+    [[ "$name" =~ ^[a-zA-Z0-9._-]+$ ]] || die "invalid name (allowed: alphanumeric/.-/_)"
+    [[ -f "$ENV_FILE" ]] || die "no .env present; nothing to checkpoint"
+    stack_running || die "stack must be running to checkpoint (need pg_dump)"
+
+    local ckpt_dir="${CHECKPOINTS_DIR}/${name}"
+    if [[ -d "$ckpt_dir" && -z "$force" ]]; then
+        die "checkpoint '${name}' already exists; pass --force to overwrite"
+    fi
+    rm -rf "$ckpt_dir"
+    mkdir -p "$ckpt_dir"
+
+    local exp_id pg_user pg_db
+    exp_id="$(current_experiment_id)"
+    pg_user="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2- || echo eden)"
+    pg_db="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2- || echo eden)"
+
+    echo "--- pg_dump → ${ckpt_dir}/postgres.sql ---" >&2
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" exec -T postgres \
+            pg_dump --clean --if-exists -U "$pg_user" -d "$pg_db") \
+        > "${ckpt_dir}/postgres.sql"
+
+    # Stop gitea briefly for a consistent on-disk snapshot. Gitea's own
+    # `gitea dump` would be cleaner but requires running as the right
+    # user and produces a different format; volume tar is portable.
+    echo "--- snapshotting gitea volume (brief stop) ---" >&2
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" stop gitea >/dev/null)
+    docker run --rm \
+        -v "${GITEA_VOLUME}:/data:ro" \
+        -v "${ckpt_dir}:/backup" \
+        alpine:3.20 \
+        tar czf /backup/gitea.tar.gz -C / data
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" start gitea >/dev/null)
+
+    echo "--- snapshotting artifacts volume ---" >&2
+    docker run --rm \
+        -v "${ARTIFACTS_VOLUME}:/data:ro" \
+        -v "${ckpt_dir}:/backup" \
+        alpine:3.20 \
+        tar czf /backup/artifacts.tar.gz -C / data
+
+    echo "--- copying .env + experiment-config + gitea creds ---" >&2
+    cp "$ENV_FILE" "${ckpt_dir}/env"
+    if [[ -f "${COMPOSE_DIR}/experiment-config.yaml" ]]; then
+        cp "${COMPOSE_DIR}/experiment-config.yaml" "${ckpt_dir}/experiment-config.yaml"
+    fi
+    if [[ -d "${COMPOSE_DIR}/.gitea-creds-${exp_id}" ]]; then
+        cp -R "${COMPOSE_DIR}/.gitea-creds-${exp_id}" "${ckpt_dir}/gitea-creds"
+    fi
+
+    cat > "${ckpt_dir}/metadata.json" <<EOF
+{
+  "name": "${name}",
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "experiment_id": "${exp_id}",
+  "base_commit_sha": "$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2- || true)"
+}
+EOF
+
+    echo "checkpoint saved to ${ckpt_dir}" >&2
+    du -sh "${ckpt_dir}" 2>/dev/null >&2 || true
+}
+
+# ---- restore -----------------------------------------------------
+
+cmd_restore() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help) usage; exit 0 ;;
+            --*) die "unknown flag: $1" ;;
+            *) if [[ -z "$name" ]]; then name="$1"; shift; else die "extra arg: $1"; fi ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "checkpoint name required"
+
+    local ckpt_dir="${CHECKPOINTS_DIR}/${name}"
+    [[ -d "$ckpt_dir" ]] || die "checkpoint not found: ${ckpt_dir}"
+    [[ -f "${ckpt_dir}/postgres.sql" ]] || die "checkpoint missing postgres.sql"
+    [[ -f "${ckpt_dir}/gitea.tar.gz" ]] || die "checkpoint missing gitea.tar.gz"
+    [[ -f "${ckpt_dir}/artifacts.tar.gz" ]] || die "checkpoint missing artifacts.tar.gz"
+    [[ -f "${ckpt_dir}/env" ]] || die "checkpoint missing env"
+
+    if stack_running; then
+        die "stack is currently running; run 'eden-experiment down --purge' first"
+    fi
+
+    # Wipe any volumes left over (compose down -v should have caught
+    # them; this is belt-and-braces).
+    for vol in "$GITEA_VOLUME" "$POSTGRES_VOLUME" "$ARTIFACTS_VOLUME" "${ORPHAN_VOLUMES[@]}"; do
+        if docker volume inspect "$vol" >/dev/null 2>&1; then
+            echo "--- removing stale volume $vol ---" >&2
+            docker volume rm "$vol" >/dev/null
+        fi
+    done
+    rm -rf "$WORK_ROOT"
+
+    echo "--- restoring .env + config + gitea creds ---" >&2
+    cp "${ckpt_dir}/env" "$ENV_FILE"
+    if [[ -f "${ckpt_dir}/experiment-config.yaml" ]]; then
+        cp "${ckpt_dir}/experiment-config.yaml" "${COMPOSE_DIR}/experiment-config.yaml"
+    fi
+    local exp_id; exp_id="$(current_experiment_id)"
+    if [[ -d "${ckpt_dir}/gitea-creds" ]]; then
+        rm -rf "${COMPOSE_DIR}/.gitea-creds-${exp_id}"
+        cp -R "${ckpt_dir}/gitea-creds" "${COMPOSE_DIR}/.gitea-creds-${exp_id}"
+    fi
+
+    echo "--- materializing volumes from snapshot ---" >&2
+    docker volume create "$GITEA_VOLUME"     >/dev/null
+    docker volume create "$ARTIFACTS_VOLUME" >/dev/null
+    docker run --rm \
+        -v "${GITEA_VOLUME}:/data" \
+        -v "${ckpt_dir}:/backup:ro" \
+        alpine:3.20 \
+        sh -c 'cd / && tar xzf /backup/gitea.tar.gz'
+    docker run --rm \
+        -v "${ARTIFACTS_VOLUME}:/data" \
+        -v "${ckpt_dir}:/backup:ro" \
+        alpine:3.20 \
+        sh -c 'cd / && tar xzf /backup/artifacts.tar.gz'
+
+    # Bring up postgres alone first so we can replay the dump into a
+    # fresh DB. The pg image's initdb runs only on a fresh data dir;
+    # since we wiped POSTGRES_VOLUME above, it will create an empty
+    # ${POSTGRES_DB} that pg_dump's --clean output can populate.
+    echo "--- starting postgres for dump replay ---" >&2
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" up -d --wait postgres)
+    local pg_user pg_db
+    pg_user="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2- || echo eden)"
+    pg_db="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2- || echo eden)"
+    echo "--- replaying postgres.sql ---" >&2
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" exec -T postgres \
+            psql -v ON_ERROR_STOP=1 -U "$pg_user" -d "$pg_db") \
+        < "${ckpt_dir}/postgres.sql" >/dev/null
+
+    echo "--- bringing up remaining services ---" >&2
+    (cd "$COMPOSE_DIR" && \
+        docker compose --env-file "$ENV_FILE" up -d --wait \
+            "${NON_WORKER_SERVICES[@]}")
+
+    cmd_status
+}
+
+# ---- list-checkpoints --------------------------------------------
+
+cmd_list_checkpoints() {
+    if [[ ! -d "$CHECKPOINTS_DIR" ]]; then
+        echo "(no checkpoints)" >&2
+        return 0
+    fi
+    local found=""
+    for d in "$CHECKPOINTS_DIR"/*/; do
+        [[ -d "$d" ]] || continue
+        found="1"
+        local meta="${d}metadata.json"
+        local name; name="$(basename "$d")"
+        if [[ -f "$meta" ]]; then
+            local exp_id created
+            exp_id="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("experiment_id",""))' "$meta" 2>/dev/null || echo "?")"
+            created="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("created_at",""))' "$meta" 2>/dev/null || echo "?")"
+            local size; size="$(du -sh "$d" 2>/dev/null | awk '{print $1}')"
+            printf "%-30s  exp=%-20s  %s  %s\n" "$name" "$exp_id" "$created" "$size"
+        else
+            printf "%-30s  (no metadata)\n" "$name"
+        fi
+    done
+    [[ -n "$found" ]] || echo "(no checkpoints)" >&2
+}
+
+# ---- main --------------------------------------------------------
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+SUBCMD="$1"; shift
+case "$SUBCMD" in
+    up)               cmd_up "$@" ;;
+    down)             cmd_down "$@" ;;
+    reset)            cmd_reset "$@" ;;
+    status)           cmd_status "$@" ;;
+    checkpoint)       cmd_checkpoint "$@" ;;
+    restore)          cmd_restore "$@" ;;
+    list-checkpoints) cmd_list_checkpoints "$@" ;;
+    -h|--help)        usage ;;
+    *)                die "unknown subcommand: $SUBCMD" ;;
+esac

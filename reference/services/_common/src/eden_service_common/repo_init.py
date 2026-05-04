@@ -21,7 +21,7 @@ from pathlib import Path
 
 from eden_git import GitRepo
 
-from .repo import seed_bare_repo
+from .repo import seed_bare_repo, seed_bare_repo_from_dir
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,6 +48,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Optional path to a git credential-helper script for "
             "HTTP Basic auth against --push-to."
+        ),
+    )
+    parser.add_argument(
+        "--seed-from",
+        default=None,
+        help=(
+            "Optional directory whose working-tree contents are "
+            "committed verbatim as the seed instead of the empty "
+            "stub. Nested .git/ in the source is skipped — the seed "
+            "is a snapshot, not a fork."
         ),
     )
     return parser.parse_args(argv)
@@ -100,7 +110,10 @@ def main(argv: list[str] | None = None) -> int:
         check=True,
         capture_output=True,
     )
-    sha = seed_bare_repo(str(repo_path))
+    if args.seed_from is not None:
+        sha = seed_bare_repo_from_dir(str(repo_path), args.seed_from)
+    else:
+        sha = seed_bare_repo(str(repo_path))
     sys.stdout.write(f"EDEN_REPO_SEEDED sha={sha}\n")
     sys.stdout.flush()
     if args.push_to is not None:

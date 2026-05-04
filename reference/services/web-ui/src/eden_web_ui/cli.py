@@ -102,6 +102,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "HTTP Basic auth against --gitea-url."
         ),
     )
+    parser.add_argument(
+        "--clone-url",
+        default=None,
+        help=(
+            "Optional host-accessible URL of the central git remote "
+            "to surface in the implementer UI (e.g., "
+            "http://localhost:3001/eden/<exp-id>.git when running in "
+            "Compose). Distinct from --gitea-url, which is the "
+            "in-network URL the web-ui itself uses. Purely "
+            "informational — affects only template rendering."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -174,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         artifacts_dir=args.artifacts_dir,
         secure_cookies=args.secure_cookies,
         repo=repo,
+        clone_url=args.clone_url,
     )
     uv_config = uvicorn.Config(
         app,

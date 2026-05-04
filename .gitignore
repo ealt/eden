@@ -53,3 +53,4 @@ reference/compose/.cidfiles-*/
 # scripts (host-side bind-mount source). Contains the per-experiment
 # Gitea password — must NOT be committed.
 reference/compose/.gitea-creds-*/
+/reference/compose/checkpoints/
