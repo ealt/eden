@@ -904,7 +904,7 @@ per-claim assertion coverage — is the open work.
 
 ---
 
-## 25. Chapter 00 promises class-based conformance; chapter 09
+## 25. ✅ Resolved (option 2 — level-based wins). Chapter 00 promises class-based conformance; chapter 09
 delivers level-based conformance with a single IUT contract
 
 **What's there.**
@@ -975,9 +975,33 @@ and acts on its current promise.
 **Found while.** Spec consistency audit, walking chapter 00 against
 chapter 09 for concept drift.
 
----
+**Resolution: picked option 2 (level-based wins).** Rewrote
+[`spec/v0/00-overview.md`](spec/v0/00-overview.md) §2.2 and §2.3:
 
-## Open questions (not yet issues)
+- §2.2 retitled "The unit of conformance" and now says the IUT is
+  the whole chapter-7 HTTP server. The role and store names are
+  identified as parts of the protocol introduced by chapter 01,
+  *not* independent conformance units. The "v0 has one binding,
+  so it has one IUT shape" framing names why this is the right
+  posture today and points at where finer-grained units would
+  show up if a future binding were added.
+- §2.3 retitled "Conformance levels" and lists v1 / v1+roles /
+  v1+roles+integrator with the level-qualification rule from
+  chapter 09 §1. Defers normative detail to chapter 09 with an
+  explicit "where this overview and chapter 09 disagree, chapter
+  09 wins" tiebreaker.
+
+Why option 2: option 1 (rewrite chapter 09 to deliver per-class
+conformance) would have been ~weeks of scenario-grouping +
+harness work for an architectural shape no IUT has asked for. The
+reference impl is whole-IUT today and Phase 12 / 13 don't argue
+for splitting it. Option 2 honestly describes what we ship and
+keeps the option of growing finer units in v1 if/when a transport
+split arrives.
+
+Verified: `python3 scripts/spec-xref-check.py` reports all 334
+§-references resolve (was 333; the rewrite added one §6 link).
+markdownlint-cli2 clean.
 
 - Should the implementer page show `EDEN_BASE_COMMIT_SHA` as the
   default-implicit parent for first-round trials?
