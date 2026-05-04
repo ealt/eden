@@ -77,7 +77,7 @@ The v1+roles+integrator scenario groups (added in chunk 11d), with their primary
 
 ## 6. Adapter (informative)
 
-A v1 IUT does NOT need to ship a Python adapter. The reference suite's adapter shape — under [`conformance/harness/adapter.py`](../../conformance/harness/adapter.py) — is one convenience for IUTs that prefer to integrate with the reference Python harness; it is not a normative requirement. A non-Python implementor MAY:
+A v1 IUT does NOT need to ship a Python adapter. The reference suite's adapter shape — under [`conformance/harness/adapter.py`](../../conformance/harness/adapter.py) — is one convenience for IUTs that prefer to integrate with the reference Python harness; it is not a normative requirement. A non-Python implementer MAY:
 
 - Write a Python `IutAdapter` subclass that spawns their service.
 - Run the suite against an already-running IUT pointed at by an environment variable, via a thin Python adapter that simply returns an `IutHandle` to that URL.
