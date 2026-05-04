@@ -63,11 +63,11 @@ artifact bytes. By chapter:
 | 02 (data model) | The experiment record (id, config) |
 | 04 (task protocol) | All tasks, every state |
 | 05 (event protocol) | The full event log |
-| 06 (integrator) | All trials, including ``trial_commit_sha`` for promoted ones |
-| chapter 02 §1 (proposals) | All proposals |
+| 06 (integrator) | All variants, including ``variant_commit_sha`` for promoted ones |
+| chapter 02 §1 (ideas) | All ideas |
 | 02 §2.4 (submissions) | All submissions, both ``read_submission``-able and historical |
-| git repo | All refs + reachable objects (seed, ``work/*``, ``trial/*``, anything else) |
-| artifacts | Bytes for every ``artifacts_uri`` referenced by proposals/trials |
+| git repo | All refs + reachable objects (seed, ``work/*``, ``variant/*``, anything else) |
+| artifacts | Bytes for every ``artifacts_uri`` referenced by ideas/variants |
 
 Importantly: **events are first-class**, not derivable. The event log
 is the audit trail; it's not reconstructible from the current task
@@ -83,8 +83,8 @@ transport convenience; the *logical* format is the directory.
   manifest.json             # required
   experiment-config.yaml    # the experiment config (verbatim)
   tasks.jsonl               # one JSON object per line, schema = task.schema.json
-  proposals.jsonl           # schema = proposal.schema.json
-  trials.jsonl              # schema = trial.schema.json
+  ideas.jsonl           # schema = idea.schema.json
+  variants.jsonl              # schema = variant.schema.json
   submissions.jsonl         # schema = submission shape per role (see 04 §4.2)
   events.jsonl              # schema = event.schema.json, in append order
   repo.bundle               # `git bundle create --all` of the experiment's bare repo
@@ -104,16 +104,16 @@ Required top-level. Self-describes the checkpoint and its components.
   "created_at": "2026-05-04T17:03:31Z",
   "counts": {
     "tasks": 3,
-    "proposals": 0,
-    "trials": 0,
+    "ideas": 0,
+    "variants": 0,
     "submissions": 0,
     "events": 4
   },
   "files": {
     "experiment_config": "experiment-config.yaml",
     "tasks": "tasks.jsonl",
-    "proposals": "proposals.jsonl",
-    "trials": "trials.jsonl",
+    "ideas": "ideas.jsonl",
+    "variants": "variants.jsonl",
     "submissions": "submissions.jsonl",
     "events": "events.jsonl",
     "repo_bundle": "repo.bundle",
@@ -139,7 +139,7 @@ in another deployment.
 The checkpoint format normalizes artifact references to a
 **content-addressed** scheme: every unique artifact is stored as
 ``artifacts/sha256/<hex>``, where ``<hex>`` is the SHA-256 of the
-artifact's bytes. The proposal's / trial's ``artifacts_uri`` field in
+artifact's bytes. The idea's / variant's ``artifacts_uri`` field in
 the dumped JSONL is rewritten to ``checkpoint:sha256:<hex>``.
 
 On import, the receiving implementation:
@@ -156,7 +156,7 @@ checkpoint.
 
 The repo is exported with ``git bundle create <path> --all``, which
 captures every ref and every object reachable from any ref in a single
-file. ``--all`` is load-bearing: ``trial/*``, ``work/*``, ``main``, and
+file. ``--all`` is load-bearing: ``variant/*``, ``work/*``, ``main``, and
 anything else live alongside.
 
 A bundle is universally importable with ``git fetch <bundle>`` or
@@ -172,7 +172,7 @@ Specifically, after import:
 - The set of tasks MUST be identical: same ids, same kinds, same
   states, same payloads, same claims (including tokens), same
   timestamps.
-- The set of proposals/trials/submissions MUST be identical to their
+- The set of ideas/variants/submissions MUST be identical to their
   schema-validated forms — except that ``artifacts_uri`` MAY differ
   (because URIs are rewritten on import to point at the new
   deployment's artifact store). The artifact *content* MUST be
@@ -241,11 +241,11 @@ wire ops are required for over-the-network conformance.
 
 2. **Selective export.** Does ``export`` support partial / filtered
    captures? E.g., "everything except event log older than X", or
-   "just the trials and their evaluators". Probably v2; v1 is
+   "just the variants and their evaluators". Probably v2; v1 is
    full-state.
 
 3. **Encryption.** Checkpoints contain potentially sensitive
-   experiment data (proposal text, evaluation rationales). The format
+   experiment data (idea text, evaluation rationales). The format
    itself doesn't encrypt; that's a transport concern. Should the spec
    say anything? Probably an informative note.
 

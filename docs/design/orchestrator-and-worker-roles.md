@@ -21,7 +21,7 @@ core assumptions of that model break in a real human/AI deployment:
 2. **The orchestrator is *not* a singleton autonomous process.** The
    "orchestrator" today is a polling loop that makes four kinds of
    routing decisions. Each decision is a plausible point for human
-   override — "evaluate this trial with Alice, not Bob"; "don't
+   override — "evaluate this variant with Alice, not Bob"; "don't
    integrate yet, I want to verify off-protocol". The current shape
    gives operators no in-protocol way to override individual
    decisions.
@@ -54,61 +54,61 @@ Mapping examples:
 | "Reserve for me" | ``eric`` |
 | "Any human" | ``humans`` |
 | "Claude only" | ``claude-agents`` |
-| "Any planner" | ``null`` |
+| "Any ideator" | ``null`` |
 | "Teammate Alice specifically" | ``alice`` |
 
-### 2. Plan task creation: shared between auto-orchestrator and humans
+### 2. Ideate task creation: shared between auto-orchestrator and humans
 
-Today the orchestrator pre-seeds N plan tasks at startup and never
+Today the orchestrator pre-seeds N ideate tasks at startup and never
 creates more. This conflates "experiment planning capacity" with
 "static budget at t=0". Replace with:
 
-- The auto-orchestrator continuously creates plan tasks per a
-  configurable policy (e.g., "maintain M pending plan tasks at a
-  time", "create one per integrated trial", "create one per fixed
+- The auto-orchestrator continuously creates ideate tasks per a
+  configurable policy (e.g., "maintain M pending ideate tasks at a
+  time", "create one per integrated variant", "create one per fixed
   interval"). The policy is a deployment concern; default for
   validation runs is "maintain 3 pending".
-- Humans (and other privileged callers) can also create plan tasks
+- Humans (and other privileged callers) can also create ideate tasks
   directly via ``create_task``, with whatever ``target`` they want.
 - Both paths use the same underlying wire op
   (``POST /v0/experiments/<id>/tasks`` already exists from chapter 7).
 
-When a human creates a plan task targeted at themselves, no other
+When a human creates a ideate task targeted at themselves, no other
 worker can claim it — the contention with the auto-orchestrator
 disappears. When a human creates one targeted broadly (e.g., at
 ``humans``), the routing intent is explicit.
 
-### 3. Per-proposal implementer hint
+### 3. Per-idea executor hint
 
-The proposal carries an optional ``intended_implementer: worker_id |
+The idea carries an optional ``intended_executor: worker_id |
 group_id | null``. When the orchestrator (auto or human) creates the
-implement task derived from this proposal, that hint becomes the
+execute task derived from this idea, that hint becomes the
 created task's ``target``. ``null`` means "no preference; orchestrator
 default policy applies".
 
-The hint is at proposal granularity, not plan-submission granularity,
-because each proposal is dispatched independently and may want a
-different implementer.
+The hint is at idea granularity, not ideate-submission granularity,
+because each idea is dispatched independently and may want a
+different executor.
 
-The planner needs to *know* what implementer ids/groups are valid:
+The ideator needs to *know* what executor ids/groups are valid:
 
-- **UI**: surface available worker ids and groups in the proposal-draft
+- **UI**: surface available worker ids and groups in the idea-draft
   form (autocomplete or dropdown).
 - **CLI**: surface available worker ids and groups via a new subcommand
   (``eden-manual list-workers``).
-- **Agentic planner**: experiment setup (e.g., AGENTS.md or a
-  per-experiment manifest) names the worker ids and groups the planner
-  should know about. Planners that don't know — or don't care — submit
-  ``intended_implementer = null``.
+- **Agentic ideator**: experiment setup (e.g., AGENTS.md or a
+  per-experiment manifest) names the worker ids and groups the ideator
+  should know about. Ideators that don't know — or don't care — submit
+  ``intended_executor = null``.
 
 ### 4. Evaluator assignment: orchestrator owns; humans can override
 
-Implementer should not pick the evaluator (anti-pattern: implementer
-cherry-picks favorable evaluators). Planner-set evaluator hints have a
+Executor should not pick the evaluator (anti-pattern: executor
+cherry-picks favorable evaluators). Ideator-set evaluator hints have a
 similar smell. Default policy is the auto-orchestrator's call;
 deployment chooses the policy (round-robin, random, load-balanced).
 
-Humans override per-trial via the per-decision pause/unpause
+Humans override per-variant via the per-decision pause/unpause
 mechanism (§6).
 
 ### 5. Worker attribution survives on artifacts
@@ -118,11 +118,11 @@ only survives in the event log. Make it a first-class field:
 
 - ``Task`` gains ``created_by`` and ``submitted_by`` (preserves the
   claimant's ``worker_id`` after the task reaches a terminal state).
-- ``Proposal`` gains ``created_by`` (the planner who drafted it).
-- ``Trial`` gains ``implemented_by`` and ``evaluated_by``.
+- ``Idea`` gains ``created_by`` (the ideator who drafted it).
+- ``Variant`` gains ``executed_by`` and ``evaluated_by``.
 
 Attribution is *data*, not log content. The user-facing query "who
-implemented trial T?" should be a single read, not an event-log
+implemented variant T?" should be a single read, not an event-log
 fold.
 
 Backward-compat: each is a new optional field; existing artifacts
@@ -138,7 +138,7 @@ decision type entirely and waits.
 
 The UI exposes a per-decision-type toggle. Operator workflow:
 
-1. Trial T transitions to ``starting`` with ``commit_sha`` set.
+1. Variant T transitions to ``starting`` with ``commit_sha`` set.
 2. Operator wants to manually assign an evaluator. They flip "evaluate
    dispatch" to ``manual`` *before* the auto-orchestrator runs (or
    after, see below).
@@ -149,7 +149,7 @@ If the auto-orchestrator was faster and already dispatched, operator
 uses ``reassign(task_id, new_target)`` instead.
 
 The pause is per-decision-type, not global. Humans pausing "evaluate
-dispatch" doesn't stop "implement dispatch" or integration.
+dispatch" doesn't stop "execute dispatch" or integration.
 
 ### 7. Task reassignment
 
@@ -168,7 +168,7 @@ instance produced it. The web-ui stores claim tokens in an in-process
 Python dict (``_CLAIMS``); the CLI stores them in
 ``/tmp/eden-manual/.claims.json``. A claim made via one is invisible
 to the other — the user can't claim in the CLI and then draft
-proposals in the web-ui's nicer form. They have to commit to one
+ideas in the web-ui's nicer form. They have to commit to one
 application for the whole task lifecycle, or hand-copy the token.
 
 **Why this happens.** Today's per-claim token does triple duty:
@@ -219,7 +219,7 @@ worker_id (new behavior), allowing rolling deploys.
 
 **Today's drift.** The spec at
 [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §3
-declares four termination fields (``max_trials``, ``max_wall_time``,
+declares four termination fields (``max_variants``, ``max_wall_time``,
 ``convergence_window``, ``target_condition``) and the JSON schema +
 Pydantic models declare them too. **None are enforced anywhere in the
 reference implementation.** The orchestrator's only termination is
@@ -232,11 +232,11 @@ audit findings.
 specific termination conditions. Different deployments have wildly
 different needs:
 
-- A research deployment: "no objective improvement in 10 trials AND
+- A research deployment: "no objective improvement in 10 variants AND
   wall-time > 1h"
-- A production deployment: "abort if any trial's eval-error rate >
+- A production deployment: "abort if any variant's eval-error rate >
   5%"
-- A demo deployment: "stop after 20 trials"
+- A demo deployment: "stop after 20 variants"
 - A multi-experiment deployment: "no termination; experiments are
   archived by operator"
 
@@ -252,7 +252,7 @@ termination policy.**
   ``terminate(reason?)`` or ``continue``.
 - The spec defines the **input surface**: the read-only view exposes
   exactly the data already in chapters 02 / 04 / 05 / 06 / 08 — tasks,
-  proposals, trials, events, the integrated repo. No new data type;
+  ideas, variants, events, the integrated repo. No new data type;
   just a query interface over what's already canonical.
 - The spec does **not** define the **policy**: how the deployment
   *provides* the decision is implementation-defined. The reference
@@ -262,7 +262,7 @@ termination policy.**
 
 **What disappears from the spec:**
 
-- ``max_trials``, ``max_wall_time``, ``convergence_window``,
+- ``max_variants``, ``max_wall_time``, ``convergence_window``,
   ``target_condition`` from
   [`02-data-model.md`](../../spec/v0/02-data-model.md) §3 and from
   [`experiment-config.schema.json`](../../spec/v0/schemas/experiment-config.schema.json).
@@ -283,7 +283,7 @@ termination policy.**
   is invoked once per iteration. Default: a "never terminate" policy
   that lets the experiment run forever (operator-driven termination).
 - Real deployments override with whatever predicate they want.
-- Common predicates (max_trials, max_wall_time, etc.) ship as a
+- Common predicates (max_variants, max_wall_time, etc.) ship as a
   reference-impl library of pluggable policies, not as spec
   requirements.
 
@@ -295,13 +295,13 @@ library don't need to set them. Schema's permissive
 
 **Termination state.** Once the policy says terminate:
 
-- Orchestrator stops dispatching new tasks (no new implement /
+- Orchestrator stops dispatching new tasks (no new execute /
   evaluate task creation).
 - In-flight tasks complete or time out per existing semantics.
 - ``experiment.terminated`` event emitted with the policy's reason
   string.
-- Experiment transitions to ``terminated`` state. New plan tasks
-  cannot be created (so #2's "humans can create plan tasks" stops
+- Experiment transitions to ``terminated`` state. New ideate tasks
+  cannot be created (so #2's "humans can create ideate tasks" stops
   applying).
 
 **Resumability** is a separate concern: in v0, ``terminated`` is
@@ -317,10 +317,10 @@ decision driven by humans.
 
 The auto-orchestrator process changes:
 
-- It no longer pre-seeds plan tasks; instead it runs a continuous
+- It no longer pre-seeds ideate tasks; instead it runs a continuous
   policy.
 - It no longer "exits on quiescence" (issue #1) — there is no
-  experiment-level quiescence to detect, since new plan tasks may
+  experiment-level quiescence to detect, since new ideate tasks may
   arrive at any time.
 - Its decisions respect the per-decision-type ``dispatch_mode`` flags.
 
@@ -331,8 +331,8 @@ is a working list.
 
 | Chapter | Change |
 |---|---|
-| 02 (data model) | ``Worker`` becomes first-class. ``Group`` introduced. ``Task.target``, ``Task.created_by``, ``Task.submitted_by`` added. ``Proposal.intended_implementer``, ``Proposal.created_by`` added. ``Trial.implemented_by``, ``Trial.evaluated_by`` added. ``max_trials``, ``max_wall_time``, ``convergence_window``, ``target_condition`` REMOVED from normative experiment-config (per §9 — termination is policy). |
-| 03 (roles) | ``Orchestrator`` becomes a defined role with four decision types. Planner contract gains optional ``intended_implementer`` per proposal. Evaluator-assignment policy clarified (orchestrator owns; implementer/planner do not set). New "termination decision" contract for the orchestrator: takes read-only state view, returns terminate/continue (per §9). |
+| 02 (data model) | ``Worker`` becomes first-class. ``Group`` introduced. ``Task.target``, ``Task.created_by``, ``Task.submitted_by`` added. ``Idea.intended_executor``, ``Idea.created_by`` added. ``Variant.executed_by``, ``Variant.evaluated_by`` added. ``max_variants``, ``max_wall_time``, ``convergence_window``, ``target_condition`` REMOVED from normative experiment-config (per §9 — termination is policy). |
+| 03 (roles) | ``Orchestrator`` becomes a defined role with four decision types. Ideator contract gains optional ``intended_executor`` per idea. Evaluator-assignment policy clarified (orchestrator owns; executor/ideator do not set). New "termination decision" contract for the orchestrator: takes read-only state view, returns terminate/continue (per §9). |
 | 04 (task protocol) | ``claim`` enforces ``target`` matching against the worker's id and group memberships. ``submit`` shifts authentication from per-claim token to authenticated worker-id matching the claim's worker_id (token retained as idempotency hint). ``reassign`` added. ``dispatch_mode`` per-experiment-per-decision flag added. |
 | 05 (events) | New event type ``experiment.terminated`` with ``reason`` payload. |
 | 07 (wire) | New endpoints: ``register_worker``, ``register_group``, ``list_workers``, ``list_groups``, ``reassign_task``, per-experiment ``set_dispatch_mode``. Per-worker auth (current shared bearer becomes per-worker credentials so `submit` can match by worker identity). |
@@ -374,7 +374,7 @@ this doc:
 - #9 — Plan-task budget is statically pre-allocated
 - #10 — No worker affinity
 - #11 — Orchestrator should be a role
-- #12 — Worker attribution should survive on tasks/trials/proposals
+- #12 — Worker attribution should survive on tasks/variants/ideas
 
 (#1 — orchestrator quiescence-exit — is also addressed by §6/§9/§10 here
 but kept in the issues file as an immediate-impact bug for current

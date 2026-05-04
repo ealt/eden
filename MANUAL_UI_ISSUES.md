@@ -12,12 +12,12 @@ Worktree: `/Users/ericalt/Documents/eden-worktrees/test-main` (detached at
 that runs experiments — many of them, concurrently or sequentially. One
 experiment going idle / quiescing / being archived doesn't mean the
 orchestrator's job is over. It should stick around to host the next
-experiment, accept new plan tasks injected by operators, etc.
+experiment, accept new ideate tasks injected by operators, etc.
 
 **Current code.** `run_orchestrator_loop` (`reference/services/
 orchestrator/src/eden_orchestrator/loop.py:46-84`) is hard-wired to a
 single experiment passed via the required `--experiment-id` CLI flag.
-It seeds plan tasks at startup (line 52-59), runs the loop, and exits 0
+It seeds ideate tasks at startup (line 52-59), runs the loop, and exits 0
 after `max_quiescent_iterations` consecutive zero-progress iterations
 (line 80-82). `restart: "on-failure"` on the compose service lets exit-0
 stick. Lifetime of orchestrator process == lifetime of one experiment.
@@ -25,11 +25,11 @@ stick. Lifetime of orchestrator process == lifetime of one experiment.
 **Two things wrong with this, somewhat independent.**
 
 **1a. Within-experiment: "no work right now" ≠ "experiment over".** Even
-for a single experiment, an operator can inject new plan tasks via the
-admin panel, replan after looking at trial results, or just be slow. The
+for a single experiment, an operator can inject new ideate tasks via the
+admin panel, replan after looking at variant results, or just be slow. The
 30s quiescence-exit is a heuristic that conflates "no work in flight" with
 "done forever", which is wrong even with the current single-experiment
-scope. Smoke-test deployments (where every plan task is auto-claimed by a
+scope. Smoke-test deployments (where every ideate task is auto-claimed by a
 worker host within milliseconds) hide this; manual sessions and any
 operator-in-the-loop workflow expose it.
 
@@ -52,7 +52,7 @@ when Phase 12 lands.
   Quiescence becomes meaningful again — but it's per-experiment status
   ("this experiment has nothing to do; archive when ready"), not a process
   exit signal.
-- Honor `experiment_config.max_wall_time` / `max_trials` as the termination
+- Honor `experiment_config.max_wall_time` / `max_variants` as the termination
   signal for "this experiment is done"; that's a state transition, not a
   process exit, and other experiments keep running.
 
@@ -62,20 +62,20 @@ but unblocks manual sessions today.
 
 ---
 
-## 2. Planner draft form loses typed state if you navigate after a validation error
+## 2. Ideator draft form loses typed state if you navigate after a validation error
 
-**What happened.** Filled in proposals on the planner page, hit submit
+**What happened.** Filled in ideas on the ideator page, hit submit
 without parent_commits SHA → got a validation error. Couldn't recover by
 editing the form; the only way to submit successfully was to reclaim the
-task from `/admin/`, claim again from `/planner/`, and re-type everything.
+task from `/admin/`, claim again from `/ideator/`, and re-type everything.
 
 **Root cause.** The validation-error path in
-`reference/services/web-ui/src/eden_web_ui/routes/planner.py:244-258` does
+`reference/services/web-ui/src/eden_web_ui/routes/ideator.py:244-258` does
 re-render `planner_claim.html` with the typed values populated, so
 edit-and-resubmit on the same response page works. BUT if the user navigates
 anywhere — back button, refresh, clicking a nav link — and lands on
-`GET /planner/<task_id>/draft` (planner.py:111-138), that handler always
-renders a blank form (`form_state: [_empty_row()]`, planner.py:135) and the
+`GET /ideator/<task_id>/draft` (ideator.py:111-138), that handler always
+renders a blank form (`form_state: [_empty_row()]`, ideator.py:135) and the
 typed state is gone. The session still holds a valid claim in `_CLAIMS`, but
 none of the typed input.
 
@@ -91,15 +91,15 @@ validation) rather than always rendering an empty row.
 
 ---
 
-## 3. Planner form gives no hint where to find a valid commit SHA
+## 3. Ideator form gives no hint where to find a valid commit SHA
 
 **What happened.** Faced the `parent_commits` field on the very first plan
 draft and had no idea what to put there. The setup-experiment script printed
 the seed SHA at install time, but that's gone from the terminal by the time
 you're in the UI.
 
-**Fix.** Surface available commit SHAs on the planner page:
-- A "Recent integrated trials" panel (mirroring what's on the admin trial
+**Fix.** Surface available commit SHAs on the ideator page:
+- A "Recent integrated variants" panel (mirroring what's on the admin variant
   list) with copy-to-clipboard SHAs.
 - The seed/base commit SHA as a labeled option ("Base: `666b95f0...`").
 - Possibly a dropdown / autocomplete on the parent_commits field instead of
@@ -111,11 +111,11 @@ Both are available without new wire endpoints.
 
 ---
 
-## 4. Implementer submit doesn't fetch from origin before commit_exists check
+## 4. Executor submit doesn't fetch from origin before commit_exists check
 
-**What happened.** Played the implementer role: cloned from gitea, made
+**What happened.** Played the executor role: cloned from gitea, made
 changes, pushed `my-work` branch back to gitea, pasted the resulting SHA
-into the implementer form. The web-ui's local clone hadn't fetched since
+into the executor form. The web-ui's local clone hadn't fetched since
 startup, so `repo.commit_exists(sha)` returned False and the form rejected
 with "commit not found in the bare repo; did you push it?".
 
@@ -126,24 +126,24 @@ docker compose --env-file .env exec web-ui \
 ```
 
 **Root cause.** `reference/services/web-ui/src/eden_web_ui/routes/
-implementer.py:225` calls `repo.commit_exists(draft.commit_sha)` directly
+executor.py:225` calls `repo.commit_exists(draft.commit_sha)` directly
 without a prior `repo.fetch_ref(...)` or `repo.fetch_all_heads()`. Per
 Phase 10d follow-up B's roadmap delta, the integrator was patched to
 fetch before the chapter-6 §2 reachability check; the same fix needs to
-apply to the web-ui implementer submit.
+apply to the web-ui executor submit.
 
 **Fix.** Before `commit_exists`, call something like
 `repo.fetch_all_heads()` (or, more targeted, fetch by commit SHA if
 available). Same posture as the integrator's per-promote-call fetch.
 
-**Adjacent.** The admin work-refs page got a similar fix; the implementer
+**Adjacent.** The admin work-refs page got a similar fix; the executor
 submit is the matching gap.
 
 ---
 
-## 5. Implementer page tells you to push to a container path
+## 5. Executor page tells you to push to a container path
 
-**What happened.** Implementer page instructions say:
+**What happened.** Executor page instructions say:
 
 > 2. Push your tip commit (any branch name works) to the bare repo at
 >    `/var/lib/eden/repo`. The UI will create a canonical ref...
@@ -161,49 +161,49 @@ fetch-on-server, paste SHA).
 
 ---
 
-## 6. Orchestrator crashes the whole process on a malformed trial
+## 6. Orchestrator crashes the whole process on a malformed variant
 
-**What happened.** Built a CLI implement-submit that POSTed `create_trial`
-without setting the `branch` field. The first such trial reached
+**What happened.** Built a CLI execute-submit that POSTed `create_variant`
+without setting the `branch` field. The first such variant reached
 `status=success` after evaluation. The integrator's
-`_require_promotion_preconditions` raised `NotReadyForIntegration: trial
+`_require_promotion_preconditions` raised `NotReadyForIntegration: variant
 '<id>' has no branch`. That exception propagates up through
 `_promote_successful_trials` → `run_orchestrator_iteration` →
 `run_orchestrator_loop` → `main()`, crashing the orchestrator process
 entirely. `restart: on-failure` brings it back, the loop re-encounters
-the same trial, and crashes again. Persistent crash loop until the
-malformed trial is hand-patched in postgres.
+the same variant, and crashes again. Persistent crash loop until the
+malformed variant is hand-patched in postgres.
 
-**Workaround applied.** Patched the trial's `branch` field directly in
+**Workaround applied.** Patched the variant's `branch` field directly in
 postgres so the integrator could promote it. After that, the orchestrator
 recovered.
 
-**Root cause / design issue.** A single malformed trial state (caused by
+**Root cause / design issue.** A single malformed variant state (caused by
 an exotic submission path the spec presumably didn't anticipate) bricks
 the orchestrator. The reasonable behavior is "log + skip + continue" so
-one trial's brokenness doesn't take down the whole dispatcher.
+one variant's brokenness doesn't take down the whole dispatcher.
 
 **Fix candidates.**
-- Wrap each `integrate_trial(trial.trial_id)` call in
+- Wrap each `integrate_variant(variant.variant_id)` call in
   `try/except NotReadyForIntegration` (and arguably `Exception` more
   broadly) inside `_promote_successful_trials`. Log + continue.
-- Add a server-side validity check at `create_trial` time that rejects
-  trials missing `branch` when `status=starting` (depends on whether
-  branch is normatively required at create_trial — see
+- Add a server-side validity check at `create_variant` time that rejects
+  variants missing `branch` when `status=starting` (depends on whether
+  branch is normatively required at create_variant — see
   `spec/v0/03-roles.md` §3.2 step 1).
-- Surface `NotReadyForIntegration` as a recoverable trial state
+- Surface `NotReadyForIntegration` as a recoverable variant state
   (`integration_failed`?) rather than an unhandled exception.
 
 **Note.** I caused this by writing a buggy CLI; the bug is in my CLI
 (now fixed). But the orchestrator's blast radius for any *future*
-malformed trial state is what makes this a real issue.
+malformed variant state is what makes this a real issue.
 
 ---
 
-## 7. `_dispatch_evaluate` requires `trial.branch` indirectly via integration
+## 7. `_dispatch_evaluate` requires `variant.branch` indirectly via integration
 
-**What happened.** When the broken trial blocked integration, evaluate
-tasks for *other* trials were still dispatched correctly — confirmed by
+**What happened.** When the broken variant blocked integration, evaluate
+tasks for *other* variants were still dispatched correctly — confirmed by
 the orchestrator continuing to log dispatches even while the integration
 exception was firing. Good. But the per-iteration crash means every
 N seconds of crash-restart costs ~1 iteration of progress. So new work
@@ -263,28 +263,28 @@ the design doc.
 
 ---
 
-## 13. `planner_root` and `workspace` are dead keys in the experiment config
+## 13. ✅ Resolved by the directed-evolution rename. `planner_root` and `workspace` were dead keys in the experiment config
 
 **What's there.** The fixture
 [`tests/fixtures/experiment/.eden/config.yaml`](tests/fixtures/experiment/.eden/config.yaml)
 declares:
 
 ```yaml
-planner_root: "./planner"
+planner_root: "./ideator"
 workspace: "./workspace"
 ```
 
 **What's missing.** Neither key is defined in
 [`spec/v0/schemas/experiment-config.schema.json`](spec/v0/schemas/experiment-config.schema.json)
 (top-level properties are
-``parallel_trials, max_trials, max_wall_time, metrics_schema,
+``parallel_variants, max_variants, max_wall_time, evaluation_schema,
 objective, convergence_window, target_condition``). Neither key is
 read anywhere in the reference implementation. They are tolerated
 silently because the schema's ``additionalProperties`` is permissive
 by default.
 
 **Why this matters.** The keys *look meaningful* — a user (or
-another Claude session) reasonably assumes the planner role has its
+another Claude session) reasonably assumes the ideator role has its
 own scoped directory to operate in. There's no way to discover
 they're dead without grep'ing the codebase. Documentation-impl
 drift: the fixture promises something the code doesn't deliver.
@@ -295,15 +295,15 @@ drift: the fixture promises something the code doesn't deliver.
    schema with ``additionalProperties: false`` so future stray keys
    get caught.
 
-2. **Implement them.** Give the planner role a workspace directory.
+2. **Implement them.** Give the ideator role a workspace directory.
    Candidate uses (none normative today):
-   - **Read context.** A snapshot of integrated trials' content
-     (diffs, evaluator metrics) the planner consults while drafting.
-   - **Scratch / persistent notes.** Cross-session planner notes
-     preserved across plan tasks.
-   - **Rationale authoring.** A directory the planner writes
+   - **Read context.** A snapshot of integrated variants' content
+     (diffs, evaluator metrics) the ideator consults while drafting.
+   - **Scratch / persistent notes.** Cross-session ideator notes
+     preserved across ideate tasks.
+   - **Rationale authoring.** A directory the ideator writes
      ``rationale.md`` etc. into, which the host bundles into the
-     proposal artifact at submission time.
+     idea artifact at submission time.
 
 3. **Leave the schema permissive but document the keys as
    "informative only / for forks to interpret"**. Weakest;
@@ -314,6 +314,19 @@ drift: the fixture promises something the code doesn't deliver.
 that role-binding fields are deferred to a future chapter. Both
 ``planner_root`` and ``workspace`` are role-binding fields in
 spirit; clarifying them is part of that chapter's scope.
+
+**Resolved.** The directed-evolution rename pass removed both
+`planner_root` and `workspace` from
+[`tests/fixtures/experiment/.eden/config.yaml`](tests/fixtures/experiment/.eden/config.yaml)
+and from
+[`conformance/src/conformance/fixtures/minimal-experiment.yaml`](conformance/src/conformance/fixtures/minimal-experiment.yaml).
+Option 1 effectively chose itself. Tightening the schema with
+`additionalProperties: false` is still a separate decision —
+[`spec/v0/02-data-model.md`](spec/v0/02-data-model.md) §2.4 keeps
+the schema permissive on purpose so role-binding extensions can
+land without spec changes — and that decision is unchanged by the
+rename. The `*_command` fixture-only keys remain documented
+intentional drift per the same §2.4.
 
 ---
 
@@ -331,9 +344,9 @@ four termination-related fields:
 
 | Field | Spec text |
 |---|---|
-| ``max_trials`` | (required) implicit termination when reached |
+| ``max_variants`` | (required) implicit termination when reached |
 | ``max_wall_time`` | (required) implicit termination when exceeded |
-| ``convergence_window`` | "Terminate if the objective has not improved in this many trials." |
+| ``convergence_window`` | "Terminate if the objective has not improved in this many variants." |
 | ``target_condition`` | "A condition over metrics; when satisfied, the experiment terminates early." |
 
 All four are present in
@@ -347,19 +360,19 @@ and
 shows zero consumers of any of these fields. The orchestrator's
 *only* termination mechanism is the 30-iteration quiescence heuristic
 (``--max-quiescent-iterations``) — see issue #1. That heuristic
-doesn't reference ``max_trials``, ``max_wall_time``,
+doesn't reference ``max_variants``, ``max_wall_time``,
 ``convergence_window``, or ``target_condition`` at all.
 
 ### Why this matters
 
-A user setting ``max_trials: 20`` in the experiment config reasonably
-expects the experiment to stop after 20 trials. It doesn't. The
+A user setting ``max_variants: 20`` in the experiment config reasonably
+expects the experiment to stop after 20 variants. It doesn't. The
 termination semantics they got is whatever the orchestrator's
 quiescence heuristic produces, which is unrelated to any of the
 documented bounds.
 
 This is more concerning than #13's dead keys because:
-- The keys *are* in the spec (so a conforming implementer would expect
+- The keys *are* in the spec (so a conforming executor would expect
   them to be enforced).
 - The Pydantic models *do* validate them (so they pass schema parity
   tests, hiding the impl gap).
@@ -373,7 +386,7 @@ deployment policy, not protocol. The spec defines a *mechanism* (a
 termination-decision callback the orchestrator consults each
 iteration; input = read-only experiment state; output =
 terminate/continue); the deployment supplies the *policy* (whatever
-predicate it wants — could be max_trials, could be metric thresholds,
+predicate it wants — could be max_variants, could be metric thresholds,
 could be operator-driven).
 
 See [`docs/design/orchestrator-and-worker-roles.md`](docs/design/orchestrator-and-worker-roles.md)
@@ -412,7 +425,7 @@ that aligns with the design doc. Latter is preferred per design.
 
 ---
 
-## 15. Proposal `priority` field is unused for dispatch ordering
+## 15. Idea `priority` field is unused for dispatch ordering
 
 **Spec text** ([`spec/v0/02-data-model.md`](spec/v0/02-data-model.md)
 §5.1 line 158, [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §2.4 line
@@ -420,27 +433,27 @@ that aligns with the design doc. Latter is preferred per design.
 
 > `priority` | yes | number | Ordering hint; higher dispatches earlier.
 >
-> dispatch ordering is determined by each proposal's `priority` field.
+> dispatch ordering is determined by each idea's `priority` field.
 
 **Impl reality.** `_dispatch_implement_tasks` in
 [`reference/packages/eden-dispatch/src/eden_dispatch/driver.py:84`](reference/packages/eden-dispatch/src/eden_dispatch/driver.py)
-iterates ``store.list_proposals(state="ready")`` and creates implement
-tasks in *list order*. ``list_proposals`` (sqlite + postgres backends)
+iterates ``store.list_ideas(state="ready")`` and creates implement
+tasks in *list order*. ``list_ideas`` (sqlite + postgres backends)
 sorts by ``proposal_id`` (alphabetical UUID hex), not by priority.
 Memory backend has no documented ordering at all. Priority is read on
-the proposal object and stored, but never consulted.
+the idea object and stored, but never consulted.
 
 **Severity.** SHOULD-level claim per the spec wording ("higher values
 SHOULD dispatch earlier"), so a deployment that ignores priority is
 not strictly nonconformant. But the field's *only* documented
 purpose is ordering, so leaving it unused makes it dead weight on
-proposals.
+ideas.
 
 **Resolution.** Either:
 1. Sort by ``-priority`` then ``proposal_id`` (stable tiebreak) in the
    dispatch loop. Trivial change to `_dispatch_implement_tasks`.
-2. Remove ``priority`` from the proposal schema if there's no real use
-   case. The fixture sets it to 1.0 for every proposal, suggesting no
+2. Remove ``priority`` from the idea schema if there's no real use
+   case. The fixture sets it to 1.0 for every idea, suggesting no
    one has needed differentiation.
 
 Option 1 is the spec-aligned answer. Option 2 is honest about what
@@ -458,7 +471,7 @@ written by setup-experiment) carries 24+ variables, including
 critical ones like ``EDEN_SHARED_TOKEN`` (bearer auth),
 ``EDEN_SESSION_SECRET`` (web UI cookie signing), ``EDEN_STORE_URL``
 (postgres DSN), ``EDEN_EXPERIMENT_ID``, ``EDEN_BASE_COMMIT_SHA``,
-``EDEN_PLAN_TASKS`` and ``EDEN_PROPOSALS_PER_PLAN`` (orchestrator
+``EDEN_IDEATE_TASKS`` and ``EDEN_IDEAS_PER_IDEATION`` (orchestrator
 policy), and the docker-exec / subprocess overlay variables
 (``EDEN_EXPERIMENT_DIR_HOST``, ``EDEN_GITEA_CREDS_DIR_HOST``,
 ``EDEN_EXEC_*``, ``EDEN_DOCKER_GID``, ``EDEN_CIDFILES_DIR_HOST``).
@@ -553,8 +566,8 @@ configs, the import paths split:
 
 | Service | Imports from |
 |---|---|
-| `planner` | `eden_service_common` |
-| `implementer` | `eden_service_common` |
+| `ideator` | `eden_service_common` |
+| `executor` | `eden_service_common` |
 | `evaluator` | `eden_task_store_server` |
 | `web-ui` | `eden_task_store_server` |
 | `task-store-server` | `eden_task_store_server.app` (its own) |
@@ -646,14 +659,14 @@ defines a `blob-init` service (busybox one-shot) whose only job is
 to ensure `eden-blob-data` is initialized; line 375 declares the
 named volume; the README at
 [`reference/compose/README.md:47`](reference/compose/README.md) lists
-it as "implementer-host artifact storage (10d)".
+it as "executor-host artifact storage (10d)".
 
 **Reality.** No service mounts `eden-blob-data`. `grep -nE "blob"
 reference/compose/compose*.yaml` shows the volume is declared and
 the init runs, but no `volumes:` block on any of the EDEN services
-references it. Implementer artifacts in the current impl flow through
+references it. Executor artifacts in the current impl flow through
 the shared bare-repo + Gitea remote (chunk 10d follow-up B); the blob
-volume is an unused future-implementer placeholder paired with the
+volume is an unused future-executor placeholder paired with the
 empty `eden-blob` package (#19).
 
 **Adjacent typo — investigated and fixed inline.**
@@ -713,7 +726,7 @@ When Phase 13 ships:
 patched in this audit
 
 **What was there.** The README claimed "`plan.py`, `implement.py`,
-`eval.py`, and the planner workspace are not part of the protocol-layer
+`eval.py`, and the ideator workspace are not part of the protocol-layer
 fixture; they will be migrated with the reference implementation in
 a later phase." But Phase 10d added them as the canonical
 subprocess-mode role-script fixtures, consumed by
@@ -740,7 +753,7 @@ across services
 | Service | imports `eden_git`? | declares `eden-git` in pyproject? |
 |---|---|---|
 | `orchestrator` | yes | yes |
-| `implementer` | yes | yes |
+| `executor` | yes | yes |
 | `evaluator` | yes (`cli.py:9`, `subprocess_mode.py:75`) | **no** |
 | `web-ui` | yes (transitively via `eden_dispatch`/`eden_service_common` paths) | **no** |
 | `_common` | yes (4 modules) | yes |
@@ -808,7 +821,7 @@ and found no drift:
   `CommitSha` (40 or 64 hex chars).
 - **Integrator commit subject pattern.**
   [`reference/packages/eden-git/src/eden_git/integrator.py:434`](reference/packages/eden-git/src/eden_git/integrator.py)
-  writes `f"trial: {trial_id} {slug}\n"` matching
+  writes `f"variant: {variant_id} {slug}\n"` matching
   [`spec/v0/06-integrator.md`](spec/v0/06-integrator.md) §3.5.
 - **Stale TODOs.** The only `TODO` markers in the tree are in
   `.github/workflows/ci.yml` lines 165 / 270, both linking the
@@ -934,7 +947,7 @@ delivers level-based conformance with a single IUT contract
 
 **What's there.**
 [`spec/v0/00-overview.md`](spec/v0/00-overview.md) §2.2 enumerates
-**eight conformance classes** — Planner, Implementer, Evaluator,
+**eight conformance classes** — Ideator, Executor, Evaluator,
 Integrator, Task store, Event log, Artifact store, Orchestrator —
 and tells the reader: *"An implementation MAY conform to one or
 more classes. It need not conform to all."* §2.3 says *"An
@@ -952,18 +965,18 @@ binding** as a whole:
 > *"The contract between an IUT and a conformance harness is the
 > chapter-7 HTTP binding. Everything else is convenience."*
 
-There is no path to claim "Planner conformance" independently of
+There is no path to claim "Ideator conformance" independently of
 the rest of an HTTP server that exposes the chapter-7 endpoints.
-A standalone Planner that only implemented the planner-side
+A standalone Ideator that only implemented the ideator-side
 operations could not be exercised by the conformance suite, because
 the suite drives every IUT through the full chapter-7 binding from
 the outside.
 
 **Why this matters.** The class-based reading in chapter 00 is
 load-bearing for the project's stated framing — it's what justifies
-the claim that someone can "build a conforming planner ... in any
-language and interoperate". If a third-party implementer reads
-chapter 00, decides to ship a Python planner, and only later opens
+the claim that someone can "build a conforming ideator ... in any
+language and interoperate". If a third-party executor reads
+chapter 00, decides to ship a Python ideator, and only later opens
 chapter 09 to find that conformance is actually whole-IUT, they've
 spent their effort on the wrong shape.
 
@@ -973,14 +986,14 @@ reconciled. Class-vs-level isn't a typo — it's a different theory
 of what conformance means.
 
 **Severity.** SHOULD-level for the spec (the inconsistency is
-load-bearing for what an implementer can claim), but no impl bug
+load-bearing for what an executor can claim), but no impl bug
 yet because no third-party impl exists.
 
 **Resolution direction.** Two clean options, both spec-only:
 
 1. **Class-based wins.** Rewrite chapter 09 to define per-class
-   conformance: a Planner-only implementation that exposes only
-   the planner-relevant chapter-7 operations satisfies the planner
+   conformance: a Ideator-only implementation that exposes only
+   the ideator-relevant chapter-7 operations satisfies the ideator
    class. Per-class scenario subsets need to be re-grouped from the
    current v1 / v1+roles / v1+roles+integrator levels. Suite
    harness needs an "IUT advertises which classes" mode.
@@ -994,7 +1007,7 @@ yet because no third-party impl exists.
 
 Either is conformant; option 2 is honest about today, option 1 is
 ambitious about tomorrow. The choice is a small design call,
-worth making before any third-party implementer reads chapter 00
+worth making before any third-party executor reads chapter 00
 and acts on its current promise.
 
 **Found while.** Spec consistency audit, walking chapter 00 against
@@ -1028,8 +1041,8 @@ Verified: `python3 scripts/spec-xref-check.py` reports all 334
 §-references resolve (was 333; the rewrite added one §6 link).
 markdownlint-cli2 clean.
 
-- Should the implementer page show `EDEN_BASE_COMMIT_SHA` as the
-  default-implicit parent for first-round trials?
+- Should the executor page show `EDEN_BASE_COMMIT_SHA` as the
+  default-implicit parent for first-round variants?
 - Is there a pattern for "infra services that should never quiesce-exit"
   vs "experiment runners that should"? Worth pulling apart?
 - Should completed phase plans under `docs/plans/eden-phase-*.md`
