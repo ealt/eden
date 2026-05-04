@@ -49,7 +49,7 @@ All mutating operations on a single task MUST be serialized: the observable hist
 
 ### 1.7 Idea and variant persistence
 
-Ideas ([`02-data-model.md`](02-data-model.md) §5) and variants (§7) are persisted alongside tasks. A conforming deployment MAY back them with the task store itself, with a separate store, or with any combination; the protocol constrains the observable contract, not the physical layout. Every conforming deployment MUST expose, for both ideas and variants, at minimum:
+Ideas ([`02-data-model.md`](02-data-model.md) §5) and variants ([`02-data-model.md`](02-data-model.md) §7) are persisted alongside tasks. A conforming deployment MAY back them with the task store itself, with a separate store, or with any combination; the protocol constrains the observable contract, not the physical layout. Every conforming deployment MUST expose, for both ideas and variants, at minimum:
 
 - **Create** — durably insert a new object whose fields validate against the corresponding schema ([`schemas/idea.schema.json`](schemas/idea.schema.json), [`schemas/variant.schema.json`](schemas/variant.schema.json)).
 - **Read** — return the current object or a well-defined not-found signal.
@@ -109,7 +109,7 @@ A store MUST NOT materialize an event, a task, an idea, or a variant from nothin
 
 ## 4. Per-experiment metrics schemas
 
-Every experiment declares a evaluation schema in its `experiment_config` ([`02-data-model.md`](02-data-model.md) §1.3, [`schemas/evaluation-schema.schema.json`](schemas/evaluation-schema.schema.json)). The task store (or an equivalently-scoped component in a conforming deployment) MUST enforce the following at every write that touches variant metrics.
+Every experiment declares an evaluation schema in its `experiment_config` ([`02-data-model.md`](02-data-model.md) §6, [`schemas/evaluation-schema.schema.json`](schemas/evaluation-schema.schema.json)). The task store (or an equivalently-scoped component in a conforming deployment) MUST enforce the following at every write that touches variant metrics.
 
 ### 4.1 Registration
 

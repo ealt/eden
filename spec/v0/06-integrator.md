@@ -180,7 +180,7 @@ If the integrator re-validates metrics (per §2) and finds them in violation of 
 
 ### 5.2 Partial git write
 
-If the underlying git ref write appears to succeed but later fails durability (crashed filesystem, partial replication), the integrator's atomicity contract (§3.4) is violated. Implementations MUST ensure ref durability before considering a promotion complete; conforming storage requirements are pinned in [`08-storage.md`](08-storage.md) §5 (artifact store) and §3 (durability semantics applied at the git layer by the integrator).
+If the underlying git ref write appears to succeed but later fails durability (crashed filesystem, partial replication), the integrator's atomicity contract (§3.4) is violated. Implementations MUST ensure ref durability before considering a promotion complete; the durability semantics that apply at the git layer mirror the storage-side rules in [`08-storage.md`](08-storage.md) §3 (write durability, read-after-write, crash recovery).
 
 ### 5.3 Repeat promotion
 
