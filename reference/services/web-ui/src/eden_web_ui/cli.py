@@ -17,9 +17,13 @@ from typing import Any
 
 import uvicorn
 from eden_git import GitRepo
-from eden_service_common import add_common_arguments, get_logger, parse_log_level
+from eden_service_common import (
+    add_common_arguments,
+    get_logger,
+    load_experiment_config,
+    parse_log_level,
+)
 from eden_service_common.logging import configure_logging
-from eden_task_store_server import load_experiment_config
 from eden_wire import StoreClient
 
 from .app import make_app

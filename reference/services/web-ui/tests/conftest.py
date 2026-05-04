@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from eden_contracts import ExperimentConfig
 from eden_git import GitRepo, Identity, TreeEntry
+from eden_service_common import load_experiment_config
 from eden_storage import InMemoryStore
-from eden_task_store_server import load_experiment_config
 from eden_web_ui import make_app
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

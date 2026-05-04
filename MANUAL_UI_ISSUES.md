@@ -535,7 +535,7 @@ no-longer-meaningful "Phase 5 is next" call to action.
 
 ---
 
-## 18. Duplicate `load_experiment_config` in two packages, called
+## 18. ✅ Resolved. Duplicate `load_experiment_config` in two packages, called
 inconsistently across services
 
 **What's there.** Two byte-equivalent 5-line implementations of
@@ -573,6 +573,14 @@ from `eden_task_store_server.app`. Have the task-store-server's `cli.py`
 and the evaluator + web-ui CLIs import from `eden_service_common`
 instead. Remove the export from
 `eden_task_store_server/__init__.py`'s `__all__`.
+
+**Resolved.** `eden_service_common.load_experiment_config` is now the
+single source of truth. `eden_task_store_server.app` re-exports it
+from there (kept the re-export for backward compat with any external
+caller that imports from the old path; the `__all__` entry stays so
+the alias is documented). Web-ui + evaluator CLIs and the
+web-ui test conftest now import directly from `eden_service_common`.
+222 service-side tests pass (`pytest -q reference/services/{task-store-server,web-ui,evaluator}/tests`).
 
 ---
 
