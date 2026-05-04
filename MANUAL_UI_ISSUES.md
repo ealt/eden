@@ -637,7 +637,7 @@ the "deferred, not abandoned" posture.
 
 ---
 
-## 20. Compose stack ships a `blob-init` service + `eden-blob-data`
+## 20. ✅ Partially resolved (Dockerfile typo); plumbing held for Phase 13. Compose stack ships a `blob-init` service + `eden-blob-data`
 volume that no service consumes
 
 **What's there.**
@@ -688,6 +688,24 @@ cosmetic / SHOULD-level.
 consumer lands (then revert the Dockerfile fix above too); or (b)
 defer cleanup to Phase 13, when the consumer ships per #19's
 roadmap-tracked posture and earns the plumbing.
+
+**Resolution call: option (b).** Holding the plumbing for Phase 13.
+The `blob-init` + `eden-blob-data` plumbing pairs with the
+`reference/packages/eden-blob/` placeholder (resolved in #19 with a
+README pointing at Phase 13). Removing the Compose-side wiring now
+would force re-introducing it in Phase 13 — same churn, no shipped
+benefit. The Dockerfile typo (the only active bug) was already
+patched inline (`/blob` → `/blobs`); the README + Dockerfile are
+now internally consistent for whoever lands the Phase-13 consumer.
+
+When Phase 13 ships:
+- Wire the actual blob backend to mount `eden-blob-data` at
+  `/var/lib/eden/blobs`.
+- The `chown eden:eden /var/lib/eden/blobs` line in
+  [`reference/compose/Dockerfile`](reference/compose/Dockerfile)
+  is already in place.
+- `blob-init` can either stay (idempotent) or be replaced by the
+  real backend's startup.
 
 ---
 
