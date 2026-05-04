@@ -776,6 +776,26 @@ and found no drift:
 ## 24. Scheduled work item — line-by-line MUST/SHOULD audit against
 the conformance suite
 
+**Status: first-pass matrix delivered.** [`docs/conformance-coverage.md`](docs/conformance-coverage.md)
+generated from [`scripts/conformance-coverage.py`](scripts/conformance-coverage.py).
+Headline: 322 MUST/MUST-NOT lines, 73 with at least one citing
+scenario, 141 with no citation (~23% line-coverage). The matrix
+includes a "How to read the gap list" section that classifies the
+141 gaps into three kinds: structurally-coverage-immune chapters
+(chapter 00/01/09), citation gaps (chapter 08 storage MUSTs are
+asserted via wire chapters but not cited from 08), and
+schema-enforced MUSTs (data-shape rules the JSON Schema covers).
+
+**What's left — the assertion-coverage pass.** Today's matrix
+records *line-coverage* (does any scenario cite this line's
+section?). It does NOT record whether the cited scenario actually
+exercises this specific MUST — a section can have ten MUSTs and
+one scenario that cites it, and all ten line-counts as "covered".
+The natural next step is the per-claim breakdown the matrix's
+"future revision" table describes: tag each row with `(scenario)`
+/ `(schema)` / `(restatement)` / `(impl-only)`. That's a half-day
+of careful reading per chapter.
+
 **Why this is its own entry, not a "checked clean" line.** The
 audit's category I (spec MUST/SHOULD claims not covered by the
 conformance suite) is the highest-signal category but also the most
@@ -822,10 +842,11 @@ after THAT inherits a partial matrix instead of starting from zero.
 bug. The bugs it would surface have unknown severity until the audit
 runs.
 
-**Resolution direction.** Schedule explicitly. The matrix should
-live as a markdown table in `docs/conformance-coverage.md` (new) or
-appended to `spec/v0/09-conformance.md` as a non-normative §7
-"coverage matrix" (informative).
+**Resolution direction.** First-pass matrix delivered at
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md);
+generator script at [`scripts/conformance-coverage.py`](scripts/conformance-coverage.py).
+Re-run the script after spec edits to refresh. The next pass —
+per-claim assertion coverage — is the open work.
 
 ---
 
