@@ -486,9 +486,296 @@ doc itself is a candidate for either updating or moving to
 
 ---
 
+## 17. Top-level `README.md` and `CONTRIBUTING.md` "phase" claims are
+~7 phases stale
+
+**What's there.** [`README.md`](README.md) line 20 ("Status" section) and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) line 9 ("Current phase") both open
+with **"Phase 4 complete."** README's prose then describes Phase 4's
+Pydantic bindings as the latest milestone and points at Phase 5 as
+"next". CONTRIBUTING says "the most useful next area is Phase 5 (the
+in-memory reference dispatch loop)".
+
+**Reality.** Per [`AGENTS.md`](AGENTS.md) and `git log`, the codebase is
+at **Phase 11 chunk 11d complete** (v1+roles+integrator conformance
+suite shipped, 110/110 scenarios). Phases 5, 6, 7, 8, 9, 10, 11 are all
+complete. The next area is Phase 12 (multi-experiment / control plane).
+[`docs/roadmap.md`](docs/roadmap.md) is correctly up to date — only the
+two top-level docs are stale.
+
+**Why this matters.** README is the first impression for anyone landing
+on the repo. CONTRIBUTING is the first impression for anyone wanting to
+help. Both currently misrepresent ~7 phases of progress and route would-
+be contributors at work that's been done. Worse: CONTRIBUTING line 11
+says "Phase 5 is the most useful next area" — a contributor who follows
+that guidance would re-implement work that's been shipped.
+
+**Adjacent.** CONTRIBUTING.md line 40 says **"Node.js 20+ for the
+reference web UI"** as a prerequisite. The reference web UI is
+server-side Jinja with HTMX 1.9.12 vendored under `static/`; there is
+no Node runtime requirement and no Node-side build step. (Node IS used
+for `npx markdownlint-cli2` per AGENTS.md, but that's a doc-lint
+prerequisite for spec contributors, not a web-ui prerequisite.)
+
+**Severity.** Cosmetic but high-visibility. Top-of-funnel docs.
+
+**Resolution direction.** Replace both "Phase 4 complete" blocks with
+short one-paragraph summaries that mirror the AGENTS.md "Current phase"
+lead (or simply point at it). Drop the "Phase 5 is next" guidance.
+Remove the bogus Node prerequisite from CONTRIBUTING; if any Node
+pre-req remains relevant (markdownlint-cli2 for docs contributors), word
+it as such.
+
+---
+
+## 18. Duplicate `load_experiment_config` in two packages, called
+inconsistently across services
+
+**What's there.** Two byte-equivalent 5-line implementations of
+`load_experiment_config`:
+
+- [`reference/services/_common/src/eden_service_common/experiment_config.py:19`](reference/services/_common/src/eden_service_common/experiment_config.py)
+  — re-exported from `eden_service_common`'s public `__init__`.
+- [`reference/services/task-store-server/src/eden_task_store_server/app.py:18`](reference/services/task-store-server/src/eden_task_store_server/app.py)
+  — re-exported from `eden_task_store_server`'s public `__init__`.
+
+Both: open the path, `yaml.safe_load`, `ExperimentConfig.model_validate`.
+
+**Inconsistent callers.** Of the four worker hosts + web-ui that load
+configs, the import paths split:
+
+| Service | Imports from |
+|---|---|
+| `planner` | `eden_service_common` |
+| `implementer` | `eden_service_common` |
+| `evaluator` | `eden_task_store_server` |
+| `web-ui` | `eden_task_store_server` |
+| `task-store-server` | `eden_task_store_server.app` (its own) |
+
+**Why this matters.** Two sources of truth for the same loader. A
+future change to YAML loading (env-var interpolation, schema-version
+gating, etc.) has to land in two files or the services drift apart by
+loader. Also: `eden_task_store_server` exporting `load_experiment_config`
+makes the server look like a re-usable library when its real job is to
+host a uvicorn app.
+
+**Severity.** SHOULD-level (DRY / single source of truth).
+
+**Resolution direction.** Drop the `load_experiment_config` definition
+from `eden_task_store_server.app`. Have the task-store-server's `cli.py`
+and the evaluator + web-ui CLIs import from `eden_service_common`
+instead. Remove the export from
+`eden_task_store_server/__init__.py`'s `__all__`.
+
+---
+
+## 19. Empty placeholder packages and test directories with no current
+consumer
+
+**What's there.** Five `.gitkeep`-only directories that look like real
+code/test homes but are placeholders:
+
+- [`reference/packages/eden-blob/`](reference/packages/eden-blob/) —
+  future artifact-store backend (chapter 8 §5). Not declared as a
+  workspace member in `pyproject.toml`.
+- [`reference/services/control-plane/`](reference/services/control-plane/)
+  — future control-plane service (Phase 12, deferred per AGENTS.md).
+  Not declared as a workspace member.
+- [`tests/integration/.gitkeep`](tests/integration/),
+  [`tests/unit/.gitkeep`](tests/unit/) — root-level test directories.
+  All actual tests live under per-package
+  `reference/{packages,services}/*/tests/` and `conformance/scenarios/`;
+  `pyproject.toml`'s `[tool.pytest.ini_options].testpaths` enumerates the
+  per-package paths and never visits these.
+
+**Why this matters.** Every one is a hint to a reader (or to a future
+Claude session searching the tree) that something lives there. Searching
+for "where do integration tests live?" lands on `tests/integration/`,
+which is empty — wastes time. New contributors might add a test there
+and have it never collected. The eden-blob and control-plane stubs
+encourage someone to start adding code to a directory whose final shape
+is unspecified.
+
+**Severity.** Cosmetic, but pure cruft (no current value).
+
+**Resolution direction.** Two clean options:
+
+1. **Delete.** Remove all five placeholder directories. When the
+   real work lands (Phase 12 control plane, future blob store), create
+   the directory then. The roadmap already names the work.
+2. **Document the placeholder.** Replace each `.gitkeep` with a
+   short README explaining the deferred work and pointing at the
+   roadmap entry that will populate the directory.
+
+Option 1 matches the AGENTS.md "no half-finished implementations"
+discipline; option 2 preserves discoverability at the cost of more
+prose to maintain.
+
+---
+
+## 20. Compose stack ships a `blob-init` service + `eden-blob-data`
+volume that no service consumes
+
+**What's there.**
+[`reference/compose/compose.yaml:72`](reference/compose/compose.yaml)
+defines a `blob-init` service (busybox one-shot) whose only job is
+to ensure `eden-blob-data` is initialized; line 375 declares the
+named volume; the README at
+[`reference/compose/README.md:47`](reference/compose/README.md) lists
+it as "implementer-host artifact storage (10d)".
+
+**Reality.** No service mounts `eden-blob-data`. `grep -nE "blob"
+reference/compose/compose*.yaml` shows the volume is declared and
+the init runs, but no `volumes:` block on any of the EDEN services
+references it. Implementer artifacts in the current impl flow through
+the shared bare-repo + Gitea remote (chunk 10d follow-up B); the blob
+volume is an unused future-implementer placeholder paired with the
+empty `eden-blob` package (#19).
+
+**Adjacent typo.**
+[`reference/compose/Dockerfile:62`](reference/compose/Dockerfile)
+pre-creates `/var/lib/eden/blob` (singular) but the compose mount in
+`blob-init` is at `/var/lib/eden/blobs` (plural). The pre-created
+directory is never used.
+
+**Why this matters.** Same shape as #19: the stack carries a service
++ volume + healthcheck dependency for a feature that doesn't exist
+yet. Every `compose up` waits on `blob-init` to exit successfully
+(see `depends_on: blob-init: condition: service_completed_successfully`
+on the postgres dependency). Removing the dead service would shorten
+bring-up; or land the consuming code and earn its keep.
+
+**Severity.** Cosmetic; SHOULD-level if you count the bring-up
+dependency as wasted work.
+
+**Resolution direction.** Either (a) drop `blob-init`,
+`eden-blob-data`, and the `depends_on: blob-init` lines until a real
+consumer lands; or (b) ship the consumer (the deferred blob-store
+backend in `eden-blob`) and earn the plumbing.
+
+---
+
+## 21. `tests/fixtures/experiment/README.md` is stale and has been
+patched in this audit
+
+**What was there.** The README claimed "`plan.py`, `implement.py`,
+`eval.py`, and the planner workspace are not part of the protocol-layer
+fixture; they will be migrated with the reference implementation in
+a later phase." But Phase 10d added them as the canonical
+subprocess-mode role-script fixtures, consumed by
+`compose-smoke-subprocess` and `compose-smoke-subprocess-docker`. The
+README also said nothing about `planner_root` / `workspace` being dead
+(connects to #13).
+
+**Patched in this audit.** The README now lists each script + the
+Dockerfile, names the CI jobs that consume them, points at
+`spec/v0/reference-bindings/worker-host-subprocess.md`, and explicitly
+acknowledges the dead `planner_root` / `workspace` carryover with a
+pointer to #13.
+
+**Severity.** Cosmetic; was actively misleading.
+
+---
+
+## 22. Inconsistent direct-vs-transitive declaration of `eden-git`
+across services
+
+**What's there.** The four EDEN services that use git all import
+`eden_git` directly:
+
+| Service | imports `eden_git`? | declares `eden-git` in pyproject? |
+|---|---|---|
+| `orchestrator` | yes | yes |
+| `implementer` | yes | yes |
+| `evaluator` | yes (`cli.py:9`, `subprocess_mode.py:75`) | **no** |
+| `web-ui` | yes (transitively via `eden_dispatch`/`eden_service_common` paths) | **no** |
+| `_common` | yes (4 modules) | yes |
+
+Evaluator and web-ui pick up `eden-git` transitively through their
+declared dep on `eden-service-common`. It works because Python
+resolves any installed module regardless of which `pyproject.toml`
+brought it in.
+
+**Why this matters.** Direct deps document intent; transitive deps
+are a side effect. If `eden-service-common` ever drops `eden-git`,
+the evaluator and web-ui silently break. Same posture as a missing
+`peerDependency` declaration in JS land. Inconsistent across services
+that have the same actual relationship to `eden-git` is the
+clearest tell that the inconsistency is accidental.
+
+**Severity.** Cosmetic; SHOULD-level dependency hygiene.
+
+**Resolution direction.** Add `"eden-git"` to the `dependencies` list
+in `reference/services/evaluator/pyproject.toml` and
+`reference/services/web-ui/pyproject.toml`.
+
+---
+
+## 23. `.gitignore` phase comments are stale; "Node" comment was
+misleading (patched inline)
+
+**What was there.** Two `.gitignore` section comments referenced
+phases as if they were future:
+
+- `# Python (lands in Phase 3)` — Phase 3 has been done for ~8 phases.
+- `# Node (reference web-ui, lands in Phase 9)` — implies the web-ui
+  needs Node, which is wrong (server-side Jinja + vendored HTMX).
+
+**Patched in this audit.** First comment becomes `# Python`. Second
+becomes a clarifying note that Node is for `npx markdownlint-cli2` and
+ad-hoc tooling, not for the web-ui.
+
+**Severity.** Cosmetic; mildly misleading to new contributors.
+
+---
+
+## What I checked that came up clean
+
+To save the next session re-hunting the same ground, I noted these
+and found no drift:
+
+- **Event types.** All 15 spec-registered types
+  ([`spec/v0/05-event-protocol.md`](spec/v0/05-event-protocol.md)
+  §3.1–§3.3) are emitted by the reference impl.
+- **Wire endpoints.** Every endpoint in
+  [`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) §§2–6
+  has a matching `@app.{post,get}` route in `eden_wire/server.py`.
+- **Reserved metric names.**
+  [`reference/packages/eden-contracts/src/eden_contracts/metrics.py:21`](reference/packages/eden-contracts/src/eden_contracts/metrics.py)
+  enforces all 10 reserved names from
+  [`02-data-model.md`](spec/v0/02-data-model.md) §6.2.
+- **Timestamp `Z` suffix and SHA length.**
+  [`reference/packages/eden-contracts/src/eden_contracts/_common.py`](reference/packages/eden-contracts/src/eden_contracts/_common.py)
+  enforces both via `DateTimeStr` (regex + `fromisoformat`) and
+  `CommitSha` (40 or 64 hex chars).
+- **Integrator commit subject pattern.**
+  [`reference/packages/eden-git/src/eden_git/integrator.py:434`](reference/packages/eden-git/src/eden_git/integrator.py)
+  writes `f"trial: {trial_id} {slug}\n"` matching
+  [`spec/v0/06-integrator.md`](spec/v0/06-integrator.md) §3.5.
+- **Stale TODOs.** The only `TODO` markers in the tree are in
+  `.github/workflows/ci.yml` lines 165 / 270, both linking the
+  tracked GitHub issue eden#38 (branch-protection bump after green
+  runs) — intentional per commit `c9576f4`.
+- **Predecessor (direvo) carryover.** A diff against
+  `~/Documents/direvo/` confirmed only the fixture was ported
+  verbatim (#13 covers the carryover keys). The reference impl
+  itself is greenfield; no source files match.
+- **Compose env-var coverage.** Every `${VAR}` in `compose.yaml`,
+  `compose.subprocess.yaml`, and `compose.docker-exec.yaml` is
+  written by `setup-experiment.sh`. The two vars setup writes that
+  don't appear in compose YAML (`EDEN_EXEC_MODE`,
+  `GITEA_REMOTE_PASSWORD`) are consumed by the healthcheck shell
+  scripts — not dead.
+
+---
+
 ## Open questions (not yet issues)
 
 - Should the implementer page show `EDEN_BASE_COMMIT_SHA` as the
   default-implicit parent for first-round trials?
 - Is there a pattern for "infra services that should never quiesce-exit"
   vs "experiment runners that should"? Worth pulling apart?
+- Should completed phase plans under `docs/plans/eden-phase-*.md`
+  rotate into `docs/archive/` once the phase ships? Current state is
+  every chunk plan back to Phase 7 lives alongside active work.
+  Not strictly stale — they're history — but they grow without bound.
