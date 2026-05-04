@@ -20,6 +20,6 @@ Current version: **v0 (draft, in development)**. See [`v0/`](v0/) for the list o
 
 ## What conforms
 
-A conforming **component** (planner, implementer, evaluator, integrator, storage backend, git host, control plane, web UI) implements the contract(s) defined in the spec version it targets. A conforming **system** is any composition of conforming components that together satisfy the end-to-end invariants.
+A conforming **component** (ideator, executor, evaluator, integrator, storage backend, git host, control plane, web UI) implements the contract(s) defined in the spec version it targets. A conforming **system** is any composition of conforming components that together satisfy the end-to-end invariants.
 
 The [conformance suite](../conformance/) (landing in Phase 11 per [`docs/roadmap.md`](../docs/roadmap.md)) validates components against their contracts.

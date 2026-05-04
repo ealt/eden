@@ -1,8 +1,8 @@
 # EDEN
 
-**E**ric's **D**irected **E**volution **N**exus — a protocol for orchestrating directed code evolution, with an open reference implementation and a conformance suite.
+**E**ric's **D**irected **E**volution **N**exus — a protocol for orchestrating directed evolution, with an open reference implementation and a conformance suite.
 
-EDEN is not a single system. It is a specification that defines the roles (planner, implementer, evaluator, integrator), the messages they exchange, and the invariants they must honor. Anyone can build a conforming planner, implementer, evaluator, or backing store in any language and interoperate with other conforming components.
+EDEN is not a single system. It is a specification that defines the roles (ideator, executor, evaluator, integrator), the messages they exchange, and the invariants they must honor. Anyone can build a conforming ideator, executor, evaluator, or backing store in any language and interoperate with other conforming components.
 
 > **Intelligent evolution.**
 

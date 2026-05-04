@@ -1,12 +1,10 @@
-planner_root: "./planner"
-workspace: "./workspace"
-parallel_trials: 1
+parallel_variants: 1
 evaluate_command: "python3 ${EDEN_EXPERIMENT_DIR}/eval.py"
-implement_command: "python3 ${EDEN_EXPERIMENT_DIR}/implement.py"
-plan_command: "python3 ${EDEN_EXPERIMENT_DIR}/plan.py"
-max_trials: 20
+execute_command: "python3 ${EDEN_EXPERIMENT_DIR}/execute.py"
+ideate_command: "python3 ${EDEN_EXPERIMENT_DIR}/ideate.py"
+max_variants: 20
 max_wall_time: "10m"
-metrics_schema:
+evaluation_schema:
   score: real
 objective:
   expr: "score"

@@ -8,21 +8,21 @@
 
 ## Short description
 
-EDEN is a protocol for orchestrating directed code evolution, with an open reference implementation. Planners propose experiments, parallel trials run against a shared data model, results feed back into the next round — an automated loop of diversify, evaluate, amplify. Anyone can build a conforming planner, implementer, evaluator, or backing store in any language and interoperate with other conforming components.
+EDEN is a protocol for orchestrating directed evolution, with an open reference implementation. Ideators propose experiments, parallel variants run against a shared data model, results feed back into the next round — an automated loop of diversify, evaluate, amplify. Anyone can build a conforming ideator, executor, evaluator, or backing store in any language and interoperate with other conforming components.
 
 ## Elevator pitch
 
-Most research automation tools are either a single-agent loop (try something, check if it worked, repeat) or a static job runner (execute a fixed matrix of experiments). EDEN is neither — and, importantly, EDEN is not a single system. It is a **protocol**: a specification that defines the roles (planner, implementer, evaluator, integrator), the messages they exchange, and the invariants they must honor. A conforming system coordinates concurrent research trials in which a planner — human, AI, or hybrid — proposes experiments, an integrator dispatches them against a versioned workspace, implementers modify code on isolated branches, and evaluators score the results against a fitness function. Results flow back to the planner to inform the next generation of proposals. The architecture mirrors directed evolution in the lab: generate a library of variants, screen them, amplify the winners, repeat.
+Most research automation tools are either a single-agent loop (try something, check if it worked, repeat) or a static job runner (execute a fixed matrix of experiments). EDEN is neither — and, importantly, EDEN is not a single system. It is a **protocol**: a specification that defines the roles (ideator, executor, evaluator, integrator), the messages they exchange, and the invariants they must honor. A conforming system coordinates concurrent research variants in which an ideator — human, AI, or hybrid — proposes experiments, an integrator dispatches them against a versioned workspace, executors modify code on isolated branches, and evaluators score the results against a fitness function. Results flow back to the ideator to inform the next generation of ideas. The architecture mirrors directed evolution in the lab: generate a library of variants, screen them, amplify the winners, repeat.
 
-The repo is structured to house a **reference implementation** of the protocol, built up incrementally over the roadmap, plus a **conformance suite** that any independently-built component will be able to run against itself once the suite lands. The planner brings the intelligence; EDEN's contracts bring the infrastructure to run the search at scale, regardless of which implementation is plugged in where.
+The repo is structured to house a **reference implementation** of the protocol, built up incrementally over the roadmap, plus a **conformance suite** that any independently-built component will be able to run against itself once the suite lands. The ideator brings the intelligence; EDEN's contracts bring the infrastructure to run the search at scale, regardless of which implementation is plugged in where.
 
 ## Etymology
 
 The name operates on two levels.
 
-**The acronym:** Eric's Directed Evolution Nexus — a nexus where experimental proposals, parallel execution, and evaluative selection meet. The system is the convergence point between a planner's intelligence and the outcomes of automated trials.
+**The acronym:** Eric's Directed Evolution Nexus — a nexus where experimental ideas, parallel execution, and evaluative selection meet. The system is the convergence point between an ideator's intelligence and the outcomes of automated variants.
 
-**The allusion:** The Garden of Eden is where creation happens by design — an omniscient creator, a deliberate act. Directed evolution is the opposite: creation through iterative selection, not foresight. EDEN sits in the tension between these two ideas. The planner brings intent and strategy (intelligent design), but the mechanism is evolutionary — propose variants, run trials, select the fittest, repeat. The tagline "Intelligent evolution" captures this tension directly: it inverts "intelligent design," preserving the cadence but swapping the noun.
+**The allusion:** The Garden of Eden is where creation happens by design — an omniscient creator, a deliberate act. Directed evolution is the opposite: creation through iterative selection, not foresight. EDEN sits in the tension between these two ideas. The ideator brings intent and strategy (intelligent design), but the mechanism is evolutionary — propose variants, run variants, select the fittest, repeat. The tagline "Intelligent evolution" captures this tension directly: it inverts "intelligent design," preserving the cadence but swapping the noun.
 
 ## Scientific lineage
 
@@ -32,12 +32,12 @@ The parallel to EDEN's architecture is nearly 1:1:
 
 | Directed Evolution          | EDEN                                        |
 | --------------------------- | ------------------------------------------- |
-| Library of variants         | Parallel trials in isolated git worktrees   |
+| Library of variants         | Parallel variants in isolated git worktrees   |
 | Screening / assay           | Eval script producing JSON metrics          |
-| Amplification (next round)  | Planner reads results, proposes next batch  |
+| Amplification (next round)  | Ideator reads results, proposes next batch  |
 | Iterative rounds            | The propose / execute / evaluate loop       |
-| Mutagenesis                 | Planner proposes modifications to the code  |
-| Intelligent guidance        | Planner is strategic, not random            |
+| Mutagenesis                 | Ideator proposes modifications to the code  |
+| Intelligent guidance        | Ideator is strategic, not random            |
 
 ## Package name (reference implementation, planned)
 

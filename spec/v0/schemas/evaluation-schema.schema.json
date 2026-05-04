@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN evaluation schema",
+  "description": "Declarative map from evaluation key name to storage type. Appears as the evaluation_schema field on experiment configs; used to validate every evaluation payload an evaluator produces.",
+  "type": "object",
+  "minProperties": 1,
+  "propertyNames": {
+    "type": "string",
+    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+    "not": {
+      "enum": [
+        "variant_id",
+        "commit_sha",
+        "parent_commits",
+        "branch",
+        "status",
+        "artifacts_uri",
+        "description",
+        "timestamp",
+        "started_at",
+        "completed_at"
+      ]
+    }
+  },
+  "additionalProperties": {
+    "type": "string",
+    "enum": ["integer", "real", "text"]
+  }
+}

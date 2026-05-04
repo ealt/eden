@@ -2,7 +2,7 @@
 
 Forks task-store-server + web-ui (no ``--repo-path`` needed; the
 evaluator never touches a repo through the UI), seeds a ready
-proposal + implement task and drives it through to ``starting``
+idea + execute task and drives it through to ``starting``
 with a ``commit_sha`` set so an evaluate task can be created. Then
 drives the full claim → draft → submit flow over real HTTP.
 Asserts the resulting task / submission state via a separate
@@ -21,8 +21,8 @@ from urllib.parse import urlencode
 
 import httpx
 import pytest
-from eden_contracts import MetricsSchema, Proposal
-from eden_storage import EvaluateSubmission, ImplementSubmission, SqliteStore
+from eden_contracts import EvaluationSchema, Idea
+from eden_storage import EvaluateSubmission, ExecuteSubmission, SqliteStore
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -175,8 +175,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed: ready proposal + implement task; drive it to a
-        # starting trial with commit_sha so the evaluate task can be
+        # Seed: ready idea + execute task; drive it to a
+        # starting variant with commit_sha so the evaluate task can be
         # created.
         from eden_wire import StoreClient
 
@@ -188,8 +188,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
         try:
             artifact_path = artifacts_dir / "p-eval.md"
             artifact_path.write_text("rationale")
-            proposal = Proposal(
-                proposal_id="p-eval",
+            idea = Idea(
+                idea_id="p-eval",
                 experiment_id=experiment_id,
                 slug="eval-e2e",
                 priority=1.0,
@@ -198,31 +198,31 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
                 state="drafting",
                 created_at="2026-04-24T11:00:00Z",
             )
-            seed.create_proposal(proposal)
-            seed.mark_proposal_ready("p-eval")
-            seed.create_implement_task("t-impl-1", "p-eval")
-            # Drive to starting trial with commit_sha.
-            from eden_contracts import Trial
+            seed.create_idea(idea)
+            seed.mark_idea_ready("p-eval")
+            seed.create_execute_task("t-exec-1", "p-eval")
+            # Drive to starting variant with commit_sha.
+            from eden_contracts import Variant
 
-            trial = Trial(
-                trial_id="tr-1",
+            variant = Variant(
+                variant_id="tr-1",
                 experiment_id=experiment_id,
-                proposal_id="p-eval",
+                idea_id="p-eval",
                 status="starting",
                 parent_commits=["a" * 40],
                 branch="work/eval-e2e-tr-1",
                 started_at="2026-04-24T12:00:00Z",
             )
-            seed.create_trial(trial)
-            claim = seed.claim("t-impl-1", "impl-w")
+            seed.create_variant(variant)
+            claim = seed.claim("t-exec-1", "executor-w")
             seed.submit(
-                "t-impl-1",
+                "t-exec-1",
                 claim.token,
-                ImplementSubmission(
-                    status="success", trial_id="tr-1", commit_sha="b" * 40
+                ExecuteSubmission(
+                    status="success", variant_id="tr-1", commit_sha="b" * 40
                 ),
             )
-            seed.accept("t-impl-1")
+            seed.accept("t-exec-1")
             seed.create_evaluate_task("t-eval-1", "tr-1")
         finally:
             seed.close()
@@ -276,7 +276,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
         store = SqliteStore(
             experiment_id=experiment_id,
             path=str(db_path),
-            metrics_schema=MetricsSchema({"score": "real"}),
+            evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         try:
             task = store.read_task("t-eval-1")
@@ -284,8 +284,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             recorded = store.read_submission("t-eval-1")
             assert isinstance(recorded, EvaluateSubmission)
             assert recorded.status == "success"
-            assert recorded.trial_id == "tr-1"
-            assert recorded.metrics == {"score": 0.875}
+            assert recorded.variant_id == "tr-1"
+            assert recorded.evaluation == {"score": 0.875}
             assert recorded.artifacts_uri == "https://logs.example/run-1"
         finally:
             store.close()

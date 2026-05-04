@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 from eden_dispatch import ScriptedEvaluator
 from eden_service_common import StopFlag, get_logger, make_evaluate_fn
 from eden_storage import Store
@@ -14,7 +14,7 @@ def run_evaluator_loop(
     *,
     store: Store,
     worker_id: str,
-    metrics_schema: MetricsSchema,
+    evaluation_schema: EvaluationSchema,
     fail_every: int | None,
     poll_interval: float,
     stop: StopFlag,
@@ -26,7 +26,7 @@ def run_evaluator_loop(
     evaluator = ScriptedEvaluator(
         worker_id=worker_id,
         evaluate_fn=make_evaluate_fn(
-            metrics_schema=metrics_schema,
+            evaluation_schema=evaluation_schema,
             fail_every=fail_every,
         ),
     )

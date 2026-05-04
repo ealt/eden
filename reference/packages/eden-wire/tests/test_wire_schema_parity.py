@@ -105,7 +105,7 @@ class TestClaimResponseParity:
 
 class TestSubmitRequestParity:
     def test_accept(self) -> None:
-        model = SubmitRequest(token="tok", payload={"kind": "plan", "status": "success"})
+        model = SubmitRequest(token="tok", payload={"kind": "ideate", "status": "success"})
         _validate_against(
             "submit-request.schema.json",
             model.model_dump(mode="json", exclude_none=True),
@@ -138,14 +138,14 @@ class TestReclaimRequestParity:
 
 class TestIntegrateRequestParity:
     def test_accept_sha1(self) -> None:
-        model = IntegrateRequest(trial_commit_sha="a" * 40)
+        model = IntegrateRequest(variant_commit_sha="a" * 40)
         _validate_against(
             "integrate-request.schema.json",
             model.model_dump(mode="json", exclude_none=True),
         )
 
     def test_accept_sha256(self) -> None:
-        model = IntegrateRequest(trial_commit_sha="a" * 64)
+        model = IntegrateRequest(variant_commit_sha="a" * 64)
         _validate_against(
             "integrate-request.schema.json",
             model.model_dump(mode="json", exclude_none=True),
@@ -153,7 +153,7 @@ class TestIntegrateRequestParity:
 
     def test_reject_malformed_sha(self) -> None:
         with pytest.raises(ValidationError):
-            IntegrateRequest(trial_commit_sha="not-a-sha")
+            IntegrateRequest(variant_commit_sha="not-a-sha")
 
 
 class TestEventsResponseParity:
@@ -171,7 +171,7 @@ class TestErrorEnvelopeParity:
             type="eden://error/not-found",
             title="Not Found",
             status=404,
-            detail="trial missing",
+            detail="variant missing",
             instance="http://host/x",
         )
         _validate_against("error.schema.json", envelope.to_dict())

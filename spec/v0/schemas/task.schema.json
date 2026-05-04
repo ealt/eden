@@ -11,7 +11,7 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["plan", "implement", "evaluate"]
+      "enum": ["ideate", "execute", "evaluate"]
     },
     "state": {
       "type": "string",
@@ -57,7 +57,7 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"kind": {"const": "plan"}}, "required": ["kind"]},
+      "if": {"properties": {"kind": {"const": "ideate"}}, "required": ["kind"]},
       "then": {
         "properties": {
           "payload": {
@@ -71,14 +71,14 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"const": "implement"}}, "required": ["kind"]},
+      "if": {"properties": {"kind": {"const": "execute"}}, "required": ["kind"]},
       "then": {
         "properties": {
           "payload": {
             "type": "object",
-            "required": ["proposal_id"],
+            "required": ["idea_id"],
             "properties": {
-              "proposal_id": {"type": "string", "minLength": 1}
+              "idea_id": {"type": "string", "minLength": 1}
             }
           }
         }
@@ -90,9 +90,9 @@
         "properties": {
           "payload": {
             "type": "object",
-            "required": ["trial_id"],
+            "required": ["variant_id"],
             "properties": {
-              "trial_id": {"type": "string", "minLength": 1}
+              "variant_id": {"type": "string", "minLength": 1}
             }
           }
         }

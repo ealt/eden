@@ -19,7 +19,7 @@ from ._common import CommitSha, DateTimeStr
 
 EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
-TaskKind = Literal["plan", "implement", "evaluate"]
+TaskKind = Literal["ideate", "execute", "evaluate"]
 FailReason = Literal["worker_error", "validation_error", "policy_limit"]
 ReclaimCause = Literal["expired", "operator", "health_policy"]
 
@@ -117,101 +117,101 @@ class TaskReclaimedEvent(_RegisteredEventBase):
     data: _TaskReclaimedData
 
 
-class _ProposalIdOnlyData(BaseModel):
+class _IdeaIdOnlyData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
-    proposal_id: Annotated[str, Field(min_length=1)]
+    idea_id: Annotated[str, Field(min_length=1)]
 
 
-class ProposalDraftedEvent(_RegisteredEventBase):
-    """``proposal.drafted`` — a proposal entered the ``drafting`` state."""
+class IdeaDraftedEvent(_RegisteredEventBase):
+    """``idea.drafted`` — an idea entered the ``drafting`` state."""
 
-    type: Literal["proposal.drafted"]
-    data: _ProposalIdOnlyData
-
-
-class ProposalReadyEvent(_RegisteredEventBase):
-    """``proposal.ready`` — ``drafting → ready`` (planner-declared)."""
-
-    type: Literal["proposal.ready"]
-    data: _ProposalIdOnlyData
+    type: Literal["idea.drafted"]
+    data: _IdeaIdOnlyData
 
 
-class _ProposalAndTaskData(BaseModel):
+class IdeaReadyEvent(_RegisteredEventBase):
+    """``idea.ready`` — ``drafting → ready`` (ideator-declared)."""
+
+    type: Literal["idea.ready"]
+    data: _IdeaIdOnlyData
+
+
+class _IdeaAndTaskData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
-    proposal_id: Annotated[str, Field(min_length=1)]
+    idea_id: Annotated[str, Field(min_length=1)]
     task_id: Annotated[str, Field(min_length=1)]
 
 
-class ProposalDispatchedEvent(_RegisteredEventBase):
-    """``proposal.dispatched`` — ``ready → dispatched`` with its implement task."""
+class IdeaDispatchedEvent(_RegisteredEventBase):
+    """``idea.dispatched`` — ``ready → dispatched`` with its execute task."""
 
-    type: Literal["proposal.dispatched"]
-    data: _ProposalAndTaskData
-
-
-class ProposalCompletedEvent(_RegisteredEventBase):
-    """``proposal.completed`` — ``dispatched → completed`` with its implement task."""
-
-    type: Literal["proposal.completed"]
-    data: _ProposalAndTaskData
+    type: Literal["idea.dispatched"]
+    data: _IdeaAndTaskData
 
 
-class _TrialStartedData(BaseModel):
+class IdeaCompletedEvent(_RegisteredEventBase):
+    """``idea.completed`` — ``dispatched → completed`` with its execute task."""
+
+    type: Literal["idea.completed"]
+    data: _IdeaAndTaskData
+
+
+class _VariantStartedData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
-    trial_id: Annotated[str, Field(min_length=1)]
-    proposal_id: Annotated[str, Field(min_length=1)]
+    variant_id: Annotated[str, Field(min_length=1)]
+    idea_id: Annotated[str, Field(min_length=1)]
 
 
-class TrialStartedEvent(_RegisteredEventBase):
-    """``trial.started`` — a trial entered ``starting`` under a proposal."""
+class VariantStartedEvent(_RegisteredEventBase):
+    """``variant.started`` — a variant entered ``starting`` under an idea."""
 
-    type: Literal["trial.started"]
-    data: _TrialStartedData
+    type: Literal["variant.started"]
+    data: _VariantStartedData
 
 
-class _TrialSucceededData(BaseModel):
+class _VariantSucceededData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
-    trial_id: Annotated[str, Field(min_length=1)]
+    variant_id: Annotated[str, Field(min_length=1)]
     commit_sha: CommitSha
 
 
-class TrialSucceededEvent(_RegisteredEventBase):
-    """``trial.succeeded`` — ``starting → success`` with the measured commit."""
+class VariantSucceededEvent(_RegisteredEventBase):
+    """``variant.succeeded`` — ``starting → success`` with the measured commit."""
 
-    type: Literal["trial.succeeded"]
-    data: _TrialSucceededData
+    type: Literal["variant.succeeded"]
+    data: _VariantSucceededData
 
 
-class _TrialIdOnlyData(BaseModel):
+class _VariantIdOnlyData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
-    trial_id: Annotated[str, Field(min_length=1)]
+    variant_id: Annotated[str, Field(min_length=1)]
 
 
-class TrialErroredEvent(_RegisteredEventBase):
-    """``trial.errored`` — ``starting → error`` (worker-declared)."""
+class VariantErroredEvent(_RegisteredEventBase):
+    """``variant.errored`` — ``starting → error`` (worker-declared)."""
 
-    type: Literal["trial.errored"]
-    data: _TrialIdOnlyData
-
-
-class TrialEvalErroredEvent(_RegisteredEventBase):
-    """``trial.eval_errored`` — ``starting → eval_error`` (retry-exhausted)."""
-
-    type: Literal["trial.eval_errored"]
-    data: _TrialIdOnlyData
+    type: Literal["variant.errored"]
+    data: _VariantIdOnlyData
 
 
-class _TrialIntegratedData(BaseModel):
+class VariantEvalErroredEvent(_RegisteredEventBase):
+    """``variant.eval_errored`` — ``starting → eval_error`` (retry-exhausted)."""
+
+    type: Literal["variant.eval_errored"]
+    data: _VariantIdOnlyData
+
+
+class _VariantIntegratedData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
-    trial_id: Annotated[str, Field(min_length=1)]
-    trial_commit_sha: CommitSha
+    variant_id: Annotated[str, Field(min_length=1)]
+    variant_commit_sha: CommitSha
 
 
-class TrialIntegratedEvent(_RegisteredEventBase):
-    """``trial.integrated`` — integrator wrote ``trial_commit_sha`` for the trial."""
+class VariantIntegratedEvent(_RegisteredEventBase):
+    """``variant.integrated`` — integrator wrote ``variant_commit_sha`` for the variant."""
 
-    type: Literal["trial.integrated"]
-    data: _TrialIntegratedData
+    type: Literal["variant.integrated"]
+    data: _VariantIntegratedData
 
 
 RegisteredEvent = Annotated[
@@ -221,15 +221,15 @@ RegisteredEvent = Annotated[
     | TaskCompletedEvent
     | TaskFailedEvent
     | TaskReclaimedEvent
-    | ProposalDraftedEvent
-    | ProposalReadyEvent
-    | ProposalDispatchedEvent
-    | ProposalCompletedEvent
-    | TrialStartedEvent
-    | TrialSucceededEvent
-    | TrialErroredEvent
-    | TrialEvalErroredEvent
-    | TrialIntegratedEvent,
+    | IdeaDraftedEvent
+    | IdeaReadyEvent
+    | IdeaDispatchedEvent
+    | IdeaCompletedEvent
+    | VariantStartedEvent
+    | VariantSucceededEvent
+    | VariantErroredEvent
+    | VariantEvalErroredEvent
+    | VariantIntegratedEvent,
     Field(discriminator="type"),
 ]
 """Discriminated union of registered event types (spec §3.1–§3.3)."""
@@ -245,15 +245,15 @@ REGISTERED_EVENT_TYPES: frozenset[str] = frozenset(
         "task.completed",
         "task.failed",
         "task.reclaimed",
-        "proposal.drafted",
-        "proposal.ready",
-        "proposal.dispatched",
-        "proposal.completed",
-        "trial.started",
-        "trial.succeeded",
-        "trial.errored",
-        "trial.eval_errored",
-        "trial.integrated",
+        "idea.drafted",
+        "idea.ready",
+        "idea.dispatched",
+        "idea.completed",
+        "variant.started",
+        "variant.succeeded",
+        "variant.errored",
+        "variant.eval_errored",
+        "variant.integrated",
     }
 )
 """The v0 normative event registry (spec §3.1–§3.3)."""

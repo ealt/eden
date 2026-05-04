@@ -35,26 +35,26 @@ def run_orchestrator_iteration(
     *,
     implement_task_id_factory: Callable[[], str],
     evaluate_task_id_factory: Callable[[], str],
-    integrate_trial: Callable[[str], object] | None = None,
+    integrate_variant: Callable[[str], object] | None = None,
 ) -> bool:
     """Run one orchestrator pass: finalize + dispatch + integrate.
 
     Returns ``True`` if any transition fired this iteration.
 
-    ``integrate_trial``, if supplied, is called once per ``success``
-    trial that still has no ``trial_commit_sha``. Typically this is
+    ``integrate_variant``, if supplied, is called once per ``success``
+    variant that still has no ``variant_commit_sha``. Typically this is
     ``Integrator.integrate`` from ``eden_git``, which handles the full
-    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    §3.2 / §3.4 promotion (writing the ref, the variant field, and the
     event atomically). The return value is ignored.
     """
     progress = False
-    progress |= _finalize_submitted(store, kind="plan")
-    progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
-    progress |= _finalize_submitted(store, kind="implement")
+    progress |= _finalize_submitted(store, kind="ideate")
+    progress |= _dispatch_execute_tasks(store, implement_task_id_factory)
+    progress |= _finalize_submitted(store, kind="execute")
     progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
     progress |= _finalize_submitted(store, kind="evaluate")
-    if integrate_trial is not None:
-        progress |= _promote_successful_trials(store, integrate_trial)
+    if integrate_variant is not None:
+        progress |= _promote_successful_variants(store, integrate_variant)
     return progress
 
 
@@ -81,13 +81,13 @@ def _finalize_submitted(store: Store, *, kind: str) -> bool:
     return progress
 
 
-def _dispatch_implement_tasks(
+def _dispatch_execute_tasks(
     store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
-    for proposal in store.list_proposals(state="ready"):
+    for idea in store.list_ideas(state="ready"):
         task_id = factory()
-        store.create_implement_task(task_id, proposal.proposal_id)
+        store.create_execute_task(task_id, idea.idea_id)
         progress = True
     return progress
 
@@ -96,40 +96,40 @@ def _dispatch_evaluate_tasks(
     store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
-    for trial in _list_trials_needing_evaluation(store):
+    for variant in _list_variants_needing_evaluation(store):
         task_id = factory()
-        store.create_evaluate_task(task_id, trial.trial_id)
+        store.create_evaluate_task(task_id, variant.variant_id)
         progress = True
     return progress
 
 
-def _promote_successful_trials(
-    store: Store, integrate_trial: Callable[[str], object]
+def _promote_successful_variants(
+    store: Store, integrate_variant: Callable[[str], object]
 ) -> bool:
     progress = False
-    for trial in store.list_trials(status="success"):
-        if trial.trial_commit_sha is not None:
+    for variant in store.list_variants(status="success"):
+        if variant.variant_commit_sha is not None:
             continue
-        integrate_trial(trial.trial_id)
+        integrate_variant(variant.variant_id)
         progress = True
     return progress
 
 
-def _list_trials_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
-    dispatched = _trials_with_evaluate_task(store)
+def _list_variants_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
+    dispatched = _variants_with_evaluate_task(store)
     out = []
-    for trial in store.list_trials(status="starting"):
-        if trial.commit_sha is None:
+    for variant in store.list_variants(status="starting"):
+        if variant.commit_sha is None:
             continue
-        if trial.trial_id in dispatched:
+        if variant.variant_id in dispatched:
             continue
-        out.append(trial)
+        out.append(variant)
     return out
 
 
-def _trials_with_evaluate_task(store: Store) -> set[str]:
+def _variants_with_evaluate_task(store: Store) -> set[str]:
     dispatched: set[str] = set()
     for task in store.list_tasks(kind="evaluate"):
         assert isinstance(task, EvaluateTask)
-        dispatched.add(task.payload.trial_id)
+        dispatched.add(task.payload.variant_id)
     return dispatched

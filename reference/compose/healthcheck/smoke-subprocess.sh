@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Phase 10d subprocess-mode smoke test for the EDEN reference Compose
 # stack. Mirrors smoke.sh but layers on `compose.subprocess.yaml` so
-# the planner / implementer / evaluator hosts run the fixture's
-# user-supplied `*_command` scripts (`plan.py` / `implement.py` /
+# the ideator / executor / evaluator hosts run the fixture's
+# user-supplied `*_command` scripts (`ideate.py` / `execute.py` /
 # `eval.py`) instead of their scripted profiles.
 
 for tool in docker jq curl python3; do
@@ -63,10 +63,10 @@ docker compose -f compose.yaml -f compose.subprocess.yaml \
 # in plain subprocess (host) mode. Without compose.docker-exec.yaml
 # layered on, the socket mount must not appear — this guards against
 # accidental DooD privilege drift back into the host-mode overlay.
-if docker inspect eden-implementer-host --format \
+if docker inspect eden-executor-host --format \
        '{{range .HostConfig.Binds}}{{println .}}{{end}}' \
        | grep -q '/var/run/docker.sock'; then
-    echo "implementer-host has /var/run/docker.sock bound in HOST mode" >&2
+    echo "executor-host has /var/run/docker.sock bound in HOST mode" >&2
     echo "(this should only happen with compose.docker-exec.yaml layered on)" >&2
     exit 1
 fi
@@ -83,8 +83,8 @@ done
 test "$(docker inspect --format '{{.State.Status}}' eden-orchestrator)" = "exited" || {
     echo "orchestrator did not exit within 240s; current status: $status" >&2
     docker compose -f compose.yaml -f compose.subprocess.yaml \
-        --env-file "$ENV_FILE" logs --tail 50 orchestrator planner-host \
-        implementer-host evaluator-host >&2
+        --env-file "$ENV_FILE" logs --tail 50 orchestrator ideator-host \
+        executor-host evaluator-host >&2
     exit 1
 }
 test "$(docker inspect --format '{{.State.ExitCode}}' eden-orchestrator)" = "0" || {
@@ -107,10 +107,10 @@ EVENTS_JSON="$(
 )"
 TRIAL_INTEGRATED="$(
     echo "$EVENTS_JSON" \
-        | jq '(.events // .) | [.[] | select(.type == "trial.integrated")] | length'
+        | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
 test "$TRIAL_INTEGRATED" -ge 3 || {
-    echo "expected >= 3 trial.integrated events; got $TRIAL_INTEGRATED" >&2
+    echo "expected >= 3 variant.integrated events; got $TRIAL_INTEGRATED" >&2
     exit 1
 }
 TASK_COMPLETED="$(
@@ -125,11 +125,11 @@ PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("plan-"))
+              and (.data.task_id | startswith("ideate-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 3 || {
-    echo "expected >= 3 plan-task.completed events; got $PLAN_COMPLETED" >&2
+    echo "expected >= 3 ideate-task.completed events; got $PLAN_COMPLETED" >&2
     exit 1
 }
 

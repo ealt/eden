@@ -4,12 +4,12 @@
 <h1>submitted</h1>
 <p>Task <code>{{ task_id }}</code> submitted with status <code>{{ status }}</code>.</p>
 <dl>
-    <dt>trial_id</dt><dd><code>{{ trial_id }}</code></dd>
-    {% if metrics %}
-    <dt>metrics</dt>
+    <dt>variant_id</dt><dd><code>{{ variant_id }}</code></dd>
+    {% if evaluation %}
+    <dt>evaluation</dt>
     <dd>
         <ul>
-        {% for name, value in metrics.items() %}
+        {% for name, value in evaluation.items() %}
             <li><code>{{ name }}</code> = <code>{{ value }}</code></li>
         {% endfor %}
         </ul>

@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ._common import NotNone
-from .metrics import MetricsSchema
+from .evaluation import EvaluationSchema
 
 Direction = Literal["maximize", "minimize"]
 """Objective direction — whether the scalar expression is to be maximized or minimized."""
@@ -32,17 +32,17 @@ class ObjectiveSpec(BaseModel):
 class ExperimentConfig(BaseModel):
     """Declarative experiment input.
 
-    Role bindings (how the planner, implementer, and evaluator are hosted)
+    Role bindings (how the ideator, executor, and evaluator are hosted)
     are implementation-defined and flow through via ``extra="allow"`` until
     the spec pins them.
     """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    parallel_trials: Annotated[int, Field(ge=1)]
-    max_trials: Annotated[int, Field(ge=1)]
+    parallel_variants: Annotated[int, Field(ge=1)]
+    max_variants: Annotated[int, Field(ge=1)]
     max_wall_time: WallTime
-    metrics_schema: MetricsSchema
+    evaluation_schema: EvaluationSchema
     objective: ObjectiveSpec
     convergence_window: Annotated[int | None, NotNone, Field(ge=1)] = None
     target_condition: Annotated[str | None, NotNone, Field(min_length=1)] = None

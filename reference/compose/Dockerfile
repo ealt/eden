@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 # git is required by eden_git's subprocess wrapper (orchestrator,
-# implementer, integrator, web-ui). curl is used by container
+# executor, integrator, web-ui). curl is used by container
 # healthchecks; ca-certificates supports HTTPS pulls in setup
 # scripts.
 RUN apt-get update \

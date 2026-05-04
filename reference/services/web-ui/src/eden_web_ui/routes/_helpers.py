@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from eden_contracts import Proposal
+from eden_contracts import Idea
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
@@ -25,7 +25,7 @@ def htmx_aware_redirect(request: Request, url: str) -> Response:
     HTMX does not process 3xx responses — it follows the redirect
     transparently and swaps the redirected target's HTML into the
     configured target. For an ``add_row`` button targeted at
-    ``#proposal-rows`` that produces a full ``<html>`` document
+    ``#idea-rows`` that produces a full ``<html>`` document
     inside the rows container. The fix is to send back ``HX-Redirect``
     on a 200/204 instead; htmx intercepts that header and does a
     full client-side navigation.
@@ -71,8 +71,8 @@ def _read_inline_artifact(
 ) -> str | None:
     """Return the artifact text iff ``uri`` resolves inside ``artifacts_dir``.
 
-    Trust-boundary helper used by both the proposal rationale
-    rendering (chunk 9c §A.1) and the trial-side artifact rendering
+    Trust-boundary helper used by both the idea rationale
+    rendering (chunk 9c §A.1) and the variant-side artifact rendering
     (chunk 9d §A.1):
 
     - Only ``file://`` URIs are eligible. Any other scheme returns
@@ -113,20 +113,20 @@ def _read_inline_artifact(
         return None
 
 
-def read_proposal_rationale(
-    proposal: Proposal, artifacts_dir: Path
+def read_idea_rationale(
+    idea: Idea, artifacts_dir: Path
 ) -> str | None:
     """Return the rationale text iff the artifact is safely confined."""
-    return _read_inline_artifact(proposal.artifacts_uri, artifacts_dir)
+    return _read_inline_artifact(idea.artifacts_uri, artifacts_dir)
 
 
-def read_trial_artifact(
+def read_variant_artifact(
     artifacts_uri: str | None, artifacts_dir: Path
 ) -> str | None:
-    """Return the trial's inline artifact text iff safely confined.
+    """Return the variant's inline artifact text iff safely confined.
 
-    Sibling to :func:`read_proposal_rationale` for the
-    chunk-9d evaluator draft view; ``trial.artifacts_uri`` is
+    Sibling to :func:`read_idea_rationale` for the
+    chunk-9d evaluator draft view; ``variant.artifacts_uri`` is
     optional and may be ``None``, which short-circuits to ``None``.
     """
     return _read_inline_artifact(artifacts_uri, artifacts_dir)

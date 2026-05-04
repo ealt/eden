@@ -46,7 +46,7 @@ class GitTransportError(GitError):
     Possible causes: Gitea unreachable, DNS failure, TCP refused, TLS
     handshake error. The remote's state is INDETERMINATE — the request
     may have been received and applied before the response was lost.
-    Callers driving ``trial/*`` writes (per chapter 6 §3.4) MUST run a
+    Callers driving ``variant/*`` writes (per chapter 6 §3.4) MUST run a
     follow-up ``ls-remote`` read-back to disambiguate before deciding
     whether to compensate.
     """

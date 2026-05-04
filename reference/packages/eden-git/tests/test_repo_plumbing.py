@@ -58,18 +58,18 @@ class TestBlobsAndTrees:
     def test_write_tree_with_file_nested(
         self, repo_with_main: tuple[GitRepo, str]
     ) -> None:
-        """The eval-manifest path lives under .eden/trials/<id>/eval.json."""
+        """The eval-manifest path lives under .eden/variants/<id>/eval.json."""
         repo, seed = repo_with_main
         seed_tree = repo.commit_tree_sha(seed)
-        manifest = repo.write_blob(b'{"trial_id":"t1"}\n')
+        manifest = repo.write_blob(b'{"variant_id":"t1"}\n')
         new_tree = repo.write_tree_with_file(
-            seed_tree, ".eden/trials/t1/eval.json", manifest
+            seed_tree, ".eden/variants/t1/eval.json", manifest
         )
 
         entries = {e.path: e for e in repo.ls_tree(new_tree, recursive=True)}
         # README survives, manifest appears, no extra entries.
-        assert set(entries) == {"README", ".eden/trials/t1/eval.json"}
-        assert entries[".eden/trials/t1/eval.json"].sha == manifest
+        assert set(entries) == {"README", ".eden/variants/t1/eval.json"}
+        assert entries[".eden/variants/t1/eval.json"].sha == manifest
 
     def test_write_tree_with_file_rejects_existing_path(
         self, repo_with_main: tuple[GitRepo, str]
@@ -88,7 +88,7 @@ class TestBlobsAndTrees:
         repo, seed = repo_with_main
         seed_tree = repo.commit_tree_sha(seed)
         manifest = repo.write_blob(b"{}")
-        repo.write_tree_with_file(seed_tree, ".eden/trials/t1/eval.json", manifest)
+        repo.write_tree_with_file(seed_tree, ".eden/variants/t1/eval.json", manifest)
         # No lingering .git/index in the bare repo (bare repos don't
         # have one by default; the isolated GIT_INDEX_FILE must not
         # have accidentally written into the bare repo dir).
@@ -152,18 +152,18 @@ class TestCommitAndRefs:
         self, repo_with_main: tuple[GitRepo, str]
     ) -> None:
         repo, seed = repo_with_main
-        repo.create_ref("refs/heads/trial/t1-demo", seed)
-        assert repo.ref_exists("refs/heads/trial/t1-demo")
-        assert repo.resolve_ref("refs/heads/trial/t1-demo") == seed
+        repo.create_ref("refs/heads/variant/t1-demo", seed)
+        assert repo.ref_exists("refs/heads/variant/t1-demo")
+        assert repo.resolve_ref("refs/heads/variant/t1-demo") == seed
 
     def test_create_ref_rejects_existing(
         self, repo_with_main: tuple[GitRepo, str]
     ) -> None:
-        """§1.2: trial/* branches are immutable — create must not overwrite."""
+        """§1.2: variant/* branches are immutable — create must not overwrite."""
         repo, seed = repo_with_main
-        repo.create_ref("refs/heads/trial/t1-demo", seed)
+        repo.create_ref("refs/heads/variant/t1-demo", seed)
         with pytest.raises(GitError):
-            repo.create_ref("refs/heads/trial/t1-demo", seed)
+            repo.create_ref("refs/heads/variant/t1-demo", seed)
 
     def test_update_ref_cas_matches(self, repo_with_main: tuple[GitRepo, str]) -> None:
         repo, seed = repo_with_main
@@ -208,13 +208,13 @@ class TestCommitAndRefs:
         self, repo_with_main: tuple[GitRepo, str]
     ) -> None:
         repo, seed = repo_with_main
-        repo.create_ref("refs/heads/trial/t1-demo", seed)
-        repo.create_ref("refs/heads/trial/t2-demo", seed)
+        repo.create_ref("refs/heads/variant/t1-demo", seed)
+        repo.create_ref("refs/heads/variant/t2-demo", seed)
         repo.create_ref("refs/heads/work/t1-impl", seed)
-        trial_refs = dict(repo.list_refs("refs/heads/trial/*"))
+        trial_refs = dict(repo.list_refs("refs/heads/variant/*"))
         assert set(trial_refs) == {
-            "refs/heads/trial/t1-demo",
-            "refs/heads/trial/t2-demo",
+            "refs/heads/variant/t1-demo",
+            "refs/heads/variant/t2-demo",
         }
 
 
@@ -261,7 +261,7 @@ class TestAncestryAndInspection:
         repo, seed = repo_with_main
         tree = repo.commit_tree_sha(seed)
         assert repo.tree_entry_exists(tree, "README") is True
-        assert repo.tree_entry_exists(tree, ".eden/trials/t1/eval.json") is False
+        assert repo.tree_entry_exists(tree, ".eden/variants/t1/eval.json") is False
 
     def test_ls_tree_recursive_descends(
         self, repo_with_main: tuple[GitRepo, str]
@@ -270,10 +270,10 @@ class TestAncestryAndInspection:
         seed_tree = repo.commit_tree_sha(seed)
         manifest = repo.write_blob(b"{}")
         new_tree = repo.write_tree_with_file(
-            seed_tree, ".eden/trials/t1/eval.json", manifest
+            seed_tree, ".eden/variants/t1/eval.json", manifest
         )
         recursive = {e.path for e in repo.ls_tree(new_tree, recursive=True)}
-        assert recursive == {"README", ".eden/trials/t1/eval.json"}
+        assert recursive == {"README", ".eden/variants/t1/eval.json"}
         # Non-recursive returns only the top level, showing a tree
         # entry for `.eden`.
         top = {e.path: e.type for e in repo.ls_tree(new_tree)}

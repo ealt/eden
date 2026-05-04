@@ -113,9 +113,9 @@ def test_push_ref_succeeds(tmp_path: Path) -> None:
         author_date=FIXED_DATE,
         committer_date=FIXED_DATE,
     )
-    cloned.create_ref("refs/heads/work/p0-trial-x", work)
-    cloned.push_ref("refs/heads/work/p0-trial-x")
-    assert remote.resolve_ref("refs/heads/work/p0-trial-x") == work
+    cloned.create_ref("refs/heads/work/p0-variant-x", work)
+    cloned.push_ref("refs/heads/work/p0-variant-x")
+    assert remote.resolve_ref("refs/heads/work/p0-variant-x") == work
 
 
 def test_push_ref_with_cas_rejects_on_divergence(tmp_path: Path) -> None:
@@ -139,7 +139,7 @@ def test_push_ref_with_cas_rejects_on_divergence(tmp_path: Path) -> None:
         author_date=FIXED_DATE,
         committer_date=FIXED_DATE,
     )
-    remote.create_ref("refs/heads/work/p0-trial-x", intruder)
+    remote.create_ref("refs/heads/work/p0-variant-x", intruder)
 
     # Our push, with CAS expecting the ref to be absent, must fail.
     blob = cloned.write_blob(b"ours\n")
@@ -154,10 +154,10 @@ def test_push_ref_with_cas_rejects_on_divergence(tmp_path: Path) -> None:
         author_date=FIXED_DATE,
         committer_date=FIXED_DATE,
     )
-    cloned.create_ref("refs/heads/work/p0-trial-x", ours)
+    cloned.create_ref("refs/heads/work/p0-variant-x", ours)
     with pytest.raises(RefRefused):
         cloned.push_ref(
-            "refs/heads/work/p0-trial-x",
+            "refs/heads/work/p0-variant-x",
             expected_old_sha=cloned.zero_oid(),
         )
 
@@ -185,10 +185,10 @@ def test_fetch_ref_pulls_remote_state(tmp_path: Path) -> None:
         author_date=FIXED_DATE,
         committer_date=FIXED_DATE,
     )
-    remote.create_ref("refs/heads/work/x-trial-y", new_commit)
-    fetched = cloned.fetch_ref("refs/heads/work/x-trial-y")
+    remote.create_ref("refs/heads/work/x-variant-y", new_commit)
+    fetched = cloned.fetch_ref("refs/heads/work/x-variant-y")
     assert fetched == new_commit
-    assert cloned.resolve_ref("refs/heads/work/x-trial-y") == new_commit
+    assert cloned.resolve_ref("refs/heads/work/x-variant-y") == new_commit
 
 
 def test_fetch_ref_returns_none_for_missing_ref(tmp_path: Path) -> None:
@@ -220,21 +220,21 @@ def test_fetch_all_heads_prunes_local_orphans(tmp_path: Path) -> None:
 
 def test_delete_remote_ref_succeeds(tmp_path: Path) -> None:
     remote, seed = _seeded_bare(tmp_path)
-    remote.create_ref("refs/heads/work/p0-trial-x", seed)
+    remote.create_ref("refs/heads/work/p0-variant-x", seed)
     cloned = GitRepo.clone_from(
         url=f"file://{remote.path}",
         dest=tmp_path / "clone.git",
         bare=True,
     )
     cloned.delete_remote_ref(
-        "refs/heads/work/p0-trial-x", expected_sha=seed
+        "refs/heads/work/p0-variant-x", expected_sha=seed
     )
-    assert remote.resolve_ref("refs/heads/work/p0-trial-x") is None
+    assert remote.resolve_ref("refs/heads/work/p0-variant-x") is None
 
 
 def test_delete_remote_ref_cas_rejects_on_divergence(tmp_path: Path) -> None:
     remote, seed = _seeded_bare(tmp_path)
-    remote.create_ref("refs/heads/work/p0-trial-x", seed)
+    remote.create_ref("refs/heads/work/p0-variant-x", seed)
     cloned = GitRepo.clone_from(
         url=f"file://{remote.path}",
         dest=tmp_path / "clone.git",
@@ -253,12 +253,12 @@ def test_delete_remote_ref_cas_rejects_on_divergence(tmp_path: Path) -> None:
         author_date=FIXED_DATE,
         committer_date=FIXED_DATE,
     )
-    remote.update_ref("refs/heads/work/p0-trial-x", later)
+    remote.update_ref("refs/heads/work/p0-variant-x", later)
     # Local thinks the ref is at `seed` and tries to compensating-delete.
     # CAS guards against blowing away the new value.
     with pytest.raises((RefRefused, GitError)):
         cloned.delete_remote_ref(
-            "refs/heads/work/p0-trial-x", expected_sha=seed
+            "refs/heads/work/p0-variant-x", expected_sha=seed
         )
 
 
@@ -267,8 +267,8 @@ def test_delete_remote_ref_cas_rejects_on_divergence(tmp_path: Path) -> None:
 
 def test_ls_remote_lists_all_heads(tmp_path: Path) -> None:
     remote, seed = _seeded_bare(tmp_path)
-    remote.create_ref("refs/heads/trial/abc-p0", seed)
-    remote.create_ref("refs/heads/work/p0-trial-y", seed)
+    remote.create_ref("refs/heads/variant/abc-p0", seed)
+    remote.create_ref("refs/heads/work/p0-variant-y", seed)
     cloned = GitRepo.clone_from(
         url=f"file://{remote.path}",
         dest=tmp_path / "clone.git",
@@ -277,22 +277,22 @@ def test_ls_remote_lists_all_heads(tmp_path: Path) -> None:
     refs = cloned.ls_remote("refs/heads/*")
     names = {name for name, _ in refs}
     assert "refs/heads/main" in names
-    assert "refs/heads/trial/abc-p0" in names
-    assert "refs/heads/work/p0-trial-y" in names
+    assert "refs/heads/variant/abc-p0" in names
+    assert "refs/heads/work/p0-variant-y" in names
 
 
 def test_ls_remote_pattern_filters(tmp_path: Path) -> None:
     remote, seed = _seeded_bare(tmp_path)
-    remote.create_ref("refs/heads/trial/abc-p0", seed)
-    remote.create_ref("refs/heads/work/p0-trial-y", seed)
+    remote.create_ref("refs/heads/variant/abc-p0", seed)
+    remote.create_ref("refs/heads/work/p0-variant-y", seed)
     cloned = GitRepo.clone_from(
         url=f"file://{remote.path}",
         dest=tmp_path / "clone.git",
         bare=True,
     )
-    only_trials = cloned.ls_remote("refs/heads/trial/*")
-    names = [name for name, _ in only_trials]
-    assert names == ["refs/heads/trial/abc-p0"]
+    only_variants = cloned.ls_remote("refs/heads/variant/*")
+    names = [name for name, _ in only_variants]
+    assert names == ["refs/heads/variant/abc-p0"]
 
 
 # ---------------------------------------------------------------- credential helper

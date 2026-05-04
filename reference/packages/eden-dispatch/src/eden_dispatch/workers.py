@@ -6,7 +6,7 @@ state machine — claim, execute, submit — so the dispatch loop's
 behavior can be asserted end-to-end without any LLM or git machinery.
 
 Phase 5 non-goals (roadmap):
-  • no git: implementer ``commit_sha`` values are fabricated.
+  • no git: executor ``commit_sha`` values are fabricated.
   • no evaluation logic: metrics come from a script hook.
   • no dispatch policy: there is one worker per role.
 """
@@ -19,22 +19,22 @@ from typing import Any, Literal
 
 from eden_contracts import (
     EvaluateTask,
-    ImplementTask,
-    PlanTask,
-    Proposal,
-    Trial,
+    ExecuteTask,
+    Idea,
+    IdeateTask,
+    Variant,
 )
 from eden_storage import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     Store,
 )
 
 
 @dataclass(frozen=True)
-class ProposalTemplate:
-    """Stand-in for the planner's domain logic; planner persists these as proposals."""
+class IdeaTemplate:
+    """Stand-in for the ideator's domain logic; ideator persists these as ideas."""
 
     slug: str
     priority: float
@@ -43,8 +43,8 @@ class ProposalTemplate:
 
 
 @dataclass(frozen=True)
-class ImplementOutcome:
-    """Stand-in for the implementer's output."""
+class ExecuteOutcome:
+    """Stand-in for the executor's output."""
 
     status: Literal["success", "error"]
     commit_sha: str | None = None
@@ -57,22 +57,22 @@ class EvaluateOutcome:
     """Stand-in for the evaluator's output."""
 
     status: Literal["success", "error", "eval_error"]
-    metrics: dict[str, Any] | None = None
+    evaluation: dict[str, Any] | None = None
     artifacts_uri: str | None = None
 
 
-PlanFn = Callable[[PlanTask], list[ProposalTemplate]]
-ImplementFn = Callable[[ImplementTask, Proposal], ImplementOutcome]
-EvaluateFn = Callable[[EvaluateTask, Trial], EvaluateOutcome]
+PlanFn = Callable[[IdeateTask], list[IdeaTemplate]]
+ImplementFn = Callable[[ExecuteTask, Idea], ExecuteOutcome]
+EvaluateFn = Callable[[EvaluateTask, Variant], EvaluateOutcome]
 
 
-class ScriptedPlanner:
-    """Poll-and-run planner worker.
+class ScriptedIdeator:
+    """Poll-and-run ideator worker.
 
-    Discovers pending ``plan`` tasks, claims each in turn, drafts its
-    scripted proposals (one by one, marking each ``ready`` before
-    submitting), and submits with ``status=success``. Multi-proposal
-    drafting per plan is supported; zero-proposal plans also submit
+    Discovers pending ``ideate`` tasks, claims each in turn, drafts its
+    scripted ideas (one by one, marking each ``ready`` before
+    submitting), and submits with ``status=success``. Multi-idea
+    drafting per plan is supported; zero-idea plans also submit
     with success per ``03-roles.md`` §2.4.
     """
 
@@ -81,17 +81,17 @@ class ScriptedPlanner:
         worker_id: str,
         plan_fn: PlanFn,
         *,
-        proposal_id_factory: Callable[[], str],
+        idea_id_factory: Callable[[], str],
         now: Callable[[], str],
     ) -> None:
         self._worker_id = worker_id
         self._plan_fn = plan_fn
-        self._proposal_id_factory = proposal_id_factory
+        self._idea_id_factory = idea_id_factory
         self._now = now
 
     @property
     def worker_id(self) -> str:
-        """Opaque worker identifier this planner claims tasks under."""
+        """Opaque worker identifier this ideator claims tasks under."""
         return self._worker_id
 
     def run_pending(
@@ -100,7 +100,7 @@ class ScriptedPlanner:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending plan task. Returns count processed.
+        """Claim and process every pending ideate task. Returns count processed.
 
         If ``stop`` is provided, it is consulted before each task; the loop
         returns early when it returns ``True``. This lets a host running
@@ -111,22 +111,22 @@ class ScriptedPlanner:
         while True:
             if stop is not None and stop():
                 return count
-            pending = store.list_tasks(kind="plan", state="pending")
+            pending = store.list_tasks(kind="ideate", state="pending")
             if not pending:
                 return count
             task = pending[0]
-            assert isinstance(task, PlanTask)
+            assert isinstance(task, IdeateTask)
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: Store, task: PlanTask) -> None:
+    def _handle(self, store: Store, task: IdeateTask) -> None:
         claim = store.claim(task.task_id, self._worker_id)
         templates = self._plan_fn(task)
-        proposal_ids: list[str] = []
+        idea_ids: list[str] = []
         for tpl in templates:
-            proposal_id = self._proposal_id_factory()
-            proposal = Proposal(
-                proposal_id=proposal_id,
+            idea_id = self._idea_id_factory()
+            idea = Idea(
+                idea_id=idea_id,
                 experiment_id=store.experiment_id,
                 slug=tpl.slug,
                 priority=tpl.priority,
@@ -135,21 +135,21 @@ class ScriptedPlanner:
                 state="drafting",
                 created_at=self._now(),
             )
-            store.create_proposal(proposal)
-            store.mark_proposal_ready(proposal_id)
-            proposal_ids.append(proposal_id)
+            store.create_idea(idea)
+            store.mark_idea_ready(idea_id)
+            idea_ids.append(idea_id)
         store.submit(
             task.task_id,
             claim.token,
-            PlanSubmission(status="success", proposal_ids=tuple(proposal_ids)),
+            IdeateSubmission(status="success", idea_ids=tuple(idea_ids)),
         )
 
 
-class ScriptedImplementer:
-    """Poll-and-run implementer worker.
+class ScriptedExecutor:
+    """Poll-and-run executor worker.
 
-    Discovers pending ``implement`` tasks, reads the referenced
-    proposal, creates a ``starting`` trial on a scripted ``work/*``
+    Discovers pending ``execute`` tasks, reads the referenced
+    idea, creates a ``starting`` variant on a scripted ``work/*``
     branch, and submits with the scripted outcome. A successful
     outcome carries ``commit_sha``; an errored outcome submits with
     ``status=error``.
@@ -165,12 +165,12 @@ class ScriptedImplementer:
     ) -> None:
         self._worker_id = worker_id
         self._implement_fn = implement_fn
-        self._trial_id_factory = trial_id_factory
+        self._variant_id_factory = trial_id_factory
         self._now = now
 
     @property
     def worker_id(self) -> str:
-        """Opaque worker identifier this implementer claims tasks under."""
+        """Opaque worker identifier this executor claims tasks under."""
         return self._worker_id
 
     def run_pending(
@@ -179,49 +179,49 @@ class ScriptedImplementer:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending implement task. Returns count processed.
+        """Claim and process every pending execute task. Returns count processed.
 
         ``stop`` lets a host break mid-drain on SIGTERM. See
-        :meth:`ScriptedPlanner.run_pending`.
+        :meth:`ScriptedIdeator.run_pending`.
         """
         count = 0
         while True:
             if stop is not None and stop():
                 return count
-            pending = store.list_tasks(kind="implement", state="pending")
+            pending = store.list_tasks(kind="execute", state="pending")
             if not pending:
                 return count
             task = pending[0]
-            assert isinstance(task, ImplementTask)
+            assert isinstance(task, ExecuteTask)
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: Store, task: ImplementTask) -> None:
-        proposal = store.read_proposal(task.payload.proposal_id)
+    def _handle(self, store: Store, task: ExecuteTask) -> None:
+        idea = store.read_idea(task.payload.idea_id)
         claim = store.claim(task.task_id, self._worker_id)
 
-        trial_id = self._trial_id_factory()
-        outcome = self._implement_fn(task, proposal)
-        branch = outcome.branch or f"work/{proposal.slug}-{trial_id}"
+        variant_id = self._variant_id_factory()
+        outcome = self._implement_fn(task, idea)
+        branch = outcome.branch or f"work/{idea.slug}-{variant_id}"
         trial_kwargs: dict[str, Any] = {
-            "trial_id": trial_id,
+            "variant_id": variant_id,
             "experiment_id": store.experiment_id,
-            "proposal_id": proposal.proposal_id,
+            "idea_id": idea.idea_id,
             "status": "starting",
-            "parent_commits": list(proposal.parent_commits),
+            "parent_commits": list(idea.parent_commits),
             "branch": branch,
             "started_at": self._now(),
         }
         if outcome.description is not None:
             trial_kwargs["description"] = outcome.description
-        trial = Trial(**trial_kwargs)
-        store.create_trial(trial)
+        variant = Variant(**trial_kwargs)
+        store.create_variant(variant)
         store.submit(
             task.task_id,
             claim.token,
-            ImplementSubmission(
+            ExecuteSubmission(
                 status=outcome.status,
-                trial_id=trial_id,
+                variant_id=variant_id,
                 commit_sha=outcome.commit_sha,
             ),
         )
@@ -230,10 +230,10 @@ class ScriptedImplementer:
 class ScriptedEvaluator:
     """Poll-and-run evaluator worker.
 
-    Discovers pending ``evaluate`` tasks, reads the referenced trial,
+    Discovers pending ``evaluate`` tasks, reads the referenced variant,
     runs its scripted evaluation, and submits. ``success`` and
-    ``error`` write metrics on the trial via the orchestrator's
-    terminal transition; ``eval_error`` leaves the trial in
+    ``error`` write metrics on the variant via the orchestrator's
+    terminal transition; ``eval_error`` leaves the variant in
     ``starting`` per ``03-roles.md`` §4.4.
     """
 
@@ -259,7 +259,7 @@ class ScriptedEvaluator:
         """Claim and process every pending evaluate task. Returns count processed.
 
         ``stop`` lets a host break mid-drain on SIGTERM. See
-        :meth:`ScriptedPlanner.run_pending`.
+        :meth:`ScriptedIdeator.run_pending`.
         """
         count = 0
         while True:
@@ -274,16 +274,16 @@ class ScriptedEvaluator:
             count += 1
 
     def _handle(self, store: Store, task: EvaluateTask) -> None:
-        trial = store.read_trial(task.payload.trial_id)
+        variant = store.read_variant(task.payload.variant_id)
         claim = store.claim(task.task_id, self._worker_id)
-        outcome = self._evaluate_fn(task, trial)
+        outcome = self._evaluate_fn(task, variant)
         store.submit(
             task.task_id,
             claim.token,
             EvaluateSubmission(
                 status=outcome.status,
-                trial_id=trial.trial_id,
-                metrics=outcome.metrics,
+                variant_id=variant.variant_id,
+                evaluation=outcome.evaluation,
                 artifacts_uri=outcome.artifacts_uri,
             ),
         )

@@ -11,12 +11,12 @@
     <h2>pending evaluate tasks</h2>
     {% if pending %}
     <table>
-        <thead><tr><th>task id</th><th>trial id</th><th>created</th><th>action</th></tr></thead>
+        <thead><tr><th>task id</th><th>variant id</th><th>created</th><th>action</th></tr></thead>
         <tbody>
         {% for task in pending %}
             <tr>
                 <td><code>{{ task.task_id }}</code></td>
-                <td><code>{{ task.payload.trial_id }}</code></td>
+                <td><code>{{ task.payload.variant_id }}</code></td>
                 <td>{{ task.created_at }}</td>
                 <td>
                     <form action="/evaluator/{{ task.task_id }}/claim" method="post">
@@ -33,14 +33,14 @@
     {% endif %}
 </section>
 <section class="recent">
-    <h2>recent trials (most recent {{ recent_trials | length }})</h2>
-    {% if recent_trials %}
+    <h2>recent variants (most recent {{ recent_variants | length }})</h2>
+    {% if recent_variants %}
     <table>
         <thead><tr><th>id</th><th>status</th><th>branch</th></tr></thead>
         <tbody>
-        {% for t in recent_trials %}
+        {% for t in recent_variants %}
             <tr>
-                <td><code>{{ t.trial_id }}</code></td>
+                <td><code>{{ t.variant_id }}</code></td>
                 <td>{{ t.status }}</td>
                 <td>{% if t.branch %}<code>{{ t.branch }}</code>{% else %}—{% endif %}</td>
             </tr>

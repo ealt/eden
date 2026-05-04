@@ -12,12 +12,12 @@ from eden_storage import (
     ConflictingResubmission,
     DispatchError,
     EvaluateSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     IllegalTransition,
-    ImplementSubmission,
     InMemoryStore,
     InvalidPrecondition,
     NotFound,
-    PlanSubmission,
     SqliteStore,
     Store,
     WrongToken,
@@ -25,7 +25,7 @@ from eden_storage import (
 
 from .driver import run_orchestrator_iteration
 from .sweep import sweep_expired_claims
-from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
+from .workers import ScriptedEvaluator, ScriptedExecutor, ScriptedIdeator
 
 __all__ = [
     "AlreadyExists",
@@ -33,14 +33,14 @@ __all__ = [
     "DispatchError",
     "EvaluateSubmission",
     "IllegalTransition",
-    "ImplementSubmission",
+    "ExecuteSubmission",
     "InMemoryStore",
     "InvalidPrecondition",
     "NotFound",
-    "PlanSubmission",
+    "IdeateSubmission",
     "ScriptedEvaluator",
-    "ScriptedImplementer",
-    "ScriptedPlanner",
+    "ScriptedExecutor",
+    "ScriptedIdeator",
     "SqliteStore",
     "Store",
     "WrongToken",

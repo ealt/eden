@@ -4,7 +4,7 @@ Every service emits one JSON object per line to stdout. Fields:
 
 - ``ts``: ISO-8601 timestamp (UTC).
 - ``level``: ``debug`` / ``info`` / ``warning`` / ``error``.
-- ``service``: service name (planner-host, orchestrator, …).
+- ``service``: service name (ideator-host, orchestrator, …).
 - ``experiment_id``: experiment the service is attached to.
 - ``message``: human-readable summary.
 - Additional context keys merged in from structured kwargs.

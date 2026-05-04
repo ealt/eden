@@ -1,7 +1,7 @@
 """Git repo helper for bootstrapping bare repos in tests.
 
 Phase 8b's real-subprocess E2E seeds the bare repo with a single
-empty commit so the planner's ``--base-commit-sha`` has something
+empty commit so the ideator's ``--base-commit-sha`` has something
 real to point at. Consolidated here so every worker-host test can
 reuse the same shape.
 """
@@ -18,7 +18,7 @@ def seed_bare_repo(repo_path: str) -> str:
     """Write an empty initial commit on ``refs/heads/main``.
 
     The repo must already exist (caller runs ``git init --bare``).
-    Returns the seed commit's SHA for threading into the planner's
+    Returns the seed commit's SHA for threading into the ideator's
     ``--base-commit-sha`` flag.
     """
     repo = GitRepo(repo_path)

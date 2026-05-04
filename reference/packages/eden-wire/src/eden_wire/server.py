@@ -26,13 +26,13 @@ import hmac
 import time
 from typing import Any
 
-from eden_contracts import Proposal, TaskAdapter, Trial
+from eden_contracts import Idea, TaskAdapter, Variant
 from eden_storage import Store
 from eden_storage.errors import StorageError
 from eden_storage.submissions import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     Submission,
 )
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
@@ -54,7 +54,7 @@ from .models import (
     ReclaimRequest,
     RejectRequest,
     SubmitRequest,
-    ValidateMetricsRequest,
+    ValidateEvaluationRequest,
     ValidateTerminalResponse,
 )
 
@@ -327,148 +327,148 @@ def make_app(
         return Response(status_code=204)
 
     # ------------------------------------------------------------------
-    # Proposals
+    # Ideas
     # ------------------------------------------------------------------
 
-    @app.post(f"{base}/proposals")
-    async def _create_proposal(
+    @app.post(f"{base}/ideas")
+    async def _create_idea(
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
         _check_experiment(
-            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/proposals"
+            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/ideas"
         )
         try:
-            proposal = Proposal.model_validate(body)
+            idea = Idea.model_validate(body)
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
-        store.create_proposal(proposal)
-        # §3: response body matches proposal.schema.json; return the
-        # stored proposal so the caller sees what landed.
-        return store.read_proposal(proposal.proposal_id).model_dump(
+        store.create_idea(idea)
+        # §3: response body matches idea.schema.json; return the
+        # stored idea so the caller sees what landed.
+        return store.read_idea(idea.idea_id).model_dump(
             mode="json", exclude_none=True
         )
 
-    @app.get(f"{base}/proposals")
-    async def _list_proposals(
+    @app.get(f"{base}/ideas")
+    async def _list_ideas(
         experiment_id: str,
         state: str | None = Query(None),
         x_eden_experiment_id: str | None = Header(None),
     ) -> list[dict[str, Any]]:
         _check_experiment(
-            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/proposals"
+            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/ideas"
         )
-        proposals = store.list_proposals(state=state)
-        return [p.model_dump(mode="json", exclude_none=True) for p in proposals]
+        ideas = store.list_ideas(state=state)
+        return [p.model_dump(mode="json", exclude_none=True) for p in ideas]
 
-    @app.get(f"{base}/proposals/{{proposal_id}}")
-    async def _read_proposal(
+    @app.get(f"{base}/ideas/{{idea_id}}")
+    async def _read_idea(
         experiment_id: str,
-        proposal_id: str,
+        idea_id: str,
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/v0/experiments/{experiment_id}/proposals/{proposal_id}",
+            f"/v0/experiments/{experiment_id}/ideas/{idea_id}",
         )
-        return store.read_proposal(proposal_id).model_dump(mode="json", exclude_none=True)
+        return store.read_idea(idea_id).model_dump(mode="json", exclude_none=True)
 
-    @app.post(f"{base}/proposals/{{proposal_id}}/mark-ready")
-    async def _mark_proposal_ready(
+    @app.post(f"{base}/ideas/{{idea_id}}/mark-ready")
+    async def _mark_idea_ready(
         experiment_id: str,
-        proposal_id: str,
+        idea_id: str,
         x_eden_experiment_id: str | None = Header(None),
     ) -> Response:
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/v0/experiments/{experiment_id}/proposals/{proposal_id}/mark-ready",
+            f"/v0/experiments/{experiment_id}/ideas/{idea_id}/mark-ready",
         )
-        store.mark_proposal_ready(proposal_id)
+        store.mark_idea_ready(idea_id)
         return Response(status_code=204)
 
     # ------------------------------------------------------------------
-    # Trials
+    # Variants
     # ------------------------------------------------------------------
 
-    @app.post(f"{base}/trials")
-    async def _create_trial(
+    @app.post(f"{base}/variants")
+    async def _create_variant(
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
         _check_experiment(
-            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/trials"
+            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/variants"
         )
         try:
-            trial = Trial.model_validate(body)
+            variant = Variant.model_validate(body)
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
-        store.create_trial(trial)
-        # §4: response body matches trial.schema.json.
-        return store.read_trial(trial.trial_id).model_dump(
+        store.create_variant(variant)
+        # §4: response body matches variant.schema.json.
+        return store.read_variant(variant.variant_id).model_dump(
             mode="json", exclude_none=True
         )
 
-    @app.get(f"{base}/trials")
-    async def _list_trials(
+    @app.get(f"{base}/variants")
+    async def _list_variants(
         experiment_id: str,
         status: str | None = Query(None),
         x_eden_experiment_id: str | None = Header(None),
     ) -> list[dict[str, Any]]:
         _check_experiment(
-            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/trials"
+            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/variants"
         )
         return [
             t.model_dump(mode="json", exclude_none=True)
-            for t in store.list_trials(status=status)
+            for t in store.list_variants(status=status)
         ]
 
-    @app.get(f"{base}/trials/{{trial_id}}")
-    async def _read_trial(
+    @app.get(f"{base}/variants/{{variant_id}}")
+    async def _read_variant(
         experiment_id: str,
-        trial_id: str,
+        variant_id: str,
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/v0/experiments/{experiment_id}/trials/{trial_id}",
+            f"/v0/experiments/{experiment_id}/variants/{variant_id}",
         )
-        return store.read_trial(trial_id).model_dump(mode="json", exclude_none=True)
+        return store.read_variant(variant_id).model_dump(mode="json", exclude_none=True)
 
-    @app.post(f"{base}/trials/{{trial_id}}/declare-eval-error")
-    async def _declare_trial_eval_error(
+    @app.post(f"{base}/variants/{{variant_id}}/declare-eval-error")
+    async def _declare_variant_eval_error(
         experiment_id: str,
-        trial_id: str,
+        variant_id: str,
         x_eden_experiment_id: str | None = Header(None),
     ) -> Response:
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/v0/experiments/{experiment_id}/trials/{trial_id}/declare-eval-error",
+            f"/v0/experiments/{experiment_id}/variants/{variant_id}/declare-eval-error",
         )
-        store.declare_trial_eval_error(trial_id)
+        store.declare_variant_eval_error(variant_id)
         return Response(status_code=204)
 
-    @app.post(f"{base}/trials/{{trial_id}}/integrate")
-    async def _integrate_trial(
+    @app.post(f"{base}/variants/{{variant_id}}/integrate")
+    async def _integrate_variant(
         experiment_id: str,
-        trial_id: str,
+        variant_id: str,
         body: IntegrateRequest,
         x_eden_experiment_id: str | None = Header(None),
     ) -> Response:
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/v0/experiments/{experiment_id}/trials/{trial_id}/integrate",
+            f"/v0/experiments/{experiment_id}/variants/{variant_id}/integrate",
         )
         # §5: 200 + empty body on success and same-value idempotent
         # retries; 409 invalid-precondition on different-SHA divergence
-        # (raised by Store.integrate_trial).
-        store.integrate_trial(trial_id, body.trial_commit_sha)
+        # (raised by Store.integrate_variant).
+        store.integrate_variant(variant_id, body.variant_commit_sha)
         return Response(status_code=200)
 
     # ------------------------------------------------------------------
@@ -538,35 +538,35 @@ def make_app(
             decision=decision, reason=reason
         ).model_dump(mode="json", exclude_none=True)
 
-    @app.post(f"{ref_base}/validate/metrics")
-    async def _validate_metrics(
+    @app.post(f"{ref_base}/validate/evaluation")
+    async def _validate_evaluation(
         experiment_id: str,
-        body: ValidateMetricsRequest,
+        body: ValidateEvaluationRequest,
         x_eden_experiment_id: str | None = Header(None),
     ) -> Response:
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/_reference/experiments/{experiment_id}/validate/metrics",
+            f"/_reference/experiments/{experiment_id}/validate/evaluation",
         )
-        store.validate_metrics(body.metrics)
+        store.validate_evaluation(body.evaluation)
         return Response(status_code=204)
 
     return app
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, PlanSubmission):
+    if isinstance(submission, IdeateSubmission):
         return {
-            "kind": "plan",
+            "kind": "ideate",
             "status": submission.status,
-            "proposal_ids": list(submission.proposal_ids),
+            "idea_ids": list(submission.idea_ids),
         }
-    if isinstance(submission, ImplementSubmission):
+    if isinstance(submission, ExecuteSubmission):
         body: dict[str, Any] = {
-            "kind": "implement",
+            "kind": "execute",
             "status": submission.status,
-            "trial_id": submission.trial_id,
+            "variant_id": submission.variant_id,
         }
         if submission.commit_sha is not None:
             body["commit_sha"] = submission.commit_sha
@@ -575,10 +575,10 @@ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
         body = {
             "kind": "evaluate",
             "status": submission.status,
-            "trial_id": submission.trial_id,
+            "variant_id": submission.variant_id,
         }
-        if submission.metrics is not None:
-            body["metrics"] = submission.metrics
+        if submission.evaluation is not None:
+            body["evaluation"] = submission.evaluation
         if submission.artifacts_uri is not None:
             body["artifacts_uri"] = submission.artifacts_uri
         return body
@@ -586,22 +586,22 @@ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "plan":
-        return PlanSubmission(
+    if kind == "ideate":
+        return IdeateSubmission(
             status=payload["status"],
-            proposal_ids=tuple(payload.get("proposal_ids", ())),
+            idea_ids=tuple(payload.get("idea_ids", ())),
         )
-    if kind == "implement":
-        return ImplementSubmission(
+    if kind == "execute":
+        return ExecuteSubmission(
             status=payload["status"],
-            trial_id=payload["trial_id"],
+            variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
     if kind == "evaluate":
         return EvaluateSubmission(
             status=payload["status"],
-            trial_id=payload["trial_id"],
-            metrics=payload.get("metrics"),
+            variant_id=payload["variant_id"],
+            evaluation=payload.get("evaluation"),
             artifacts_uri=payload.get("artifacts_uri"),
         )
     raise HTTPException(status_code=400, detail=f"unknown task kind {kind!r}")

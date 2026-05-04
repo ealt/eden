@@ -3,7 +3,7 @@
 A Docker Compose stack that runs the EDEN reference implementation
 end-to-end locally: third-party infrastructure (Postgres, Gitea, blob
 volume) plus the six EDEN services (`task-store-server`,
-`orchestrator`, `planner-host`, `implementer-host`,
+`orchestrator`, `ideator-host`, `executor-host`,
 `evaluator-host`, `web-ui`), plus a one-shot `eden-repo-init` setup
 service.
 
@@ -18,7 +18,7 @@ test (10e) are still ahead.
 | Service     | Image                                | Purpose                                             |
 | ----------- | ------------------------------------ | --------------------------------------------------- |
 | `postgres`  | `postgres:16.6-alpine`               | Durable backend for the EDEN task store (`PostgresStore`) |
-| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `trial/*` branches (idle this chunk; see "Gitea is idle" below) |
+| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `variant/*` branches (idle this chunk; see "Gitea is idle" below) |
 | `blob-init` | `busybox:1.36.1`                     | One-shot — ensures the blob volume exists           |
 
 ### EDEN reference services (10b)
@@ -27,8 +27,8 @@ test (10e) are still ahead.
 | ------------------- | ----------------------------------- | ------------------------------------------------------ |
 | `task-store-server` | `eden_task_store_server`            | Hosts the `Store` over the wire protocol               |
 | `orchestrator`      | `eden_orchestrator`                 | Runs finalize → dispatch → integrate to quiescence     |
-| `planner-host`      | `eden_planner_host`                 | Scripted planner worker                                |
-| `implementer-host`  | `eden_implementer_host`             | Scripted implementer worker; writes work commits       |
+| `ideator-host`      | `eden_ideator_host`                 | Scripted ideator worker                                |
+| `executor-host`  | `eden_executor_host`             | Scripted executor worker; writes work commits       |
 | `evaluator-host`    | `eden_evaluator_host`               | Scripted evaluator worker                              |
 | `web-ui`            | `eden_web_ui`                       | Backend-for-frontend Web UI on `localhost:${WEB_UI_HOST_PORT}` |
 
@@ -44,9 +44,9 @@ test (10e) are still ahead.
 | --------------------- | --------------------------------------------------------- | ------------------------------------------------ |
 | `eden-postgres-data`  | `postgres`                                                | task-store-server's `PostgresStore` backend      |
 | `eden-gitea-data`     | `gitea`                                                   | git host data (idle this chunk)                  |
-| `eden-blob-data`      | `blob-init`                                               | implementer-host artifact storage (10d)          |
-| `eden-bare-repo`      | `orchestrator`, `implementer-host`, `web-ui`, `eden-repo-init` | Shared bare git repo                            |
-| `eden-artifacts-data` | `web-ui`                                                  | Web UI's `--artifacts-dir` for proposal markdown |
+| `eden-blob-data`      | `blob-init`                                               | executor-host artifact storage (10d)          |
+| `eden-bare-repo`      | `orchestrator`, `executor-host`, `web-ui`, `eden-repo-init` | Shared bare git repo                            |
+| `eden-artifacts-data` | `web-ui`                                                  | Web UI's `--artifacts-dir` for idea markdown |
 
 **Postgres backs the EDEN task store, not Gitea.** Gitea uses its
 own embedded SQLite. Pointing Gitea at our Postgres would couple the
@@ -61,12 +61,12 @@ Gitea is a meaningful body of work. Gitea is in the stack so 10c's
 setup-experiment can adopt it incrementally; for now it sits
 healthy but unconsumed.
 
-**The web-ui implementer module overlaps with `implementer-host`.**
-Passing `--repo-path` to web-ui activates the full implementer
-module (chunk 9c). Both can claim implement tasks; whoever wins the
+**The web-ui executor module overlaps with `executor-host`.**
+Passing `--repo-path` to web-ui activates the full executor
+module (chunk 9c). Both can claim execute tasks; whoever wins the
 claim does the work via `Store.claim`'s atomicity guarantee. The
-`implementer-host` is the unattended scripted worker; web-ui's
-implementer module is for human override / debugging. Operators
+`executor-host` is the unattended scripted worker; web-ui's
+executor module is for human override / debugging. Operators
 who want only one or the other can use compose `profiles:` (a
 future enhancement).
 
@@ -109,7 +109,7 @@ pick up changes to `command:`, env files, or `configs:`.
 | Gitea SSH  | `ssh://git@localhost:2222`     | (idem)                                         |
 | Web UI     | `http://localhost:8090/`       | sign in with any worker_id                     |
 | Blob volume | `eden-reference_eden-blob-data` (Docker named volume) | mounted at `/var/lib/eden/blobs` by future consumers |
-| Bare repo  | `eden-bare-repo` (Docker named volume; `name:` pinned in compose.yaml) | mounted at `/var/lib/eden/repo` by orchestrator/implementer/web-ui |
+| Bare repo  | `eden-bare-repo` (Docker named volume; `name:` pinned in compose.yaml) | mounted at `/var/lib/eden/repo` by orchestrator/executor/web-ui |
 
 Defaults intentionally avoid the well-known ports (5432, 3000, 22)
 to sidestep collisions with locally-running Postgres or Gitea

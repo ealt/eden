@@ -43,7 +43,7 @@ def _now() -> datetime:
 @pytest.fixture
 def store() -> InMemoryStore:
     cfg = _config()
-    return InMemoryStore(experiment_id=EXPERIMENT_ID, metrics_schema=cfg.metrics_schema)
+    return InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema=cfg.evaluation_schema)
 
 
 @pytest.fixture
@@ -140,7 +140,7 @@ def make_child_commit(repo: GitRepo, parent_sha: str, payload: str) -> str:
 def impl_app(
     store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
 ) -> FastAPI:
-    """A make_app that has the implementer module enabled."""
+    """A make_app that has the executor module enabled."""
     return make_app(
         store=store,
         experiment_id=EXPERIMENT_ID,
@@ -176,23 +176,23 @@ def seed_implement_task(
     artifacts_dir: Path | None = None,
     artifact_text: str = "rationale",
 ) -> tuple[str, str]:
-    """Seed a ready proposal + pending implement task; return (task_id, proposal_id).
+    """Seed a ready idea + pending execute task; return (task_id, idea_id).
 
     Builds a `file://` artifacts_uri inside ``artifacts_dir`` so the
     rationale renders inline in tests that need it. Pass
     ``artifacts_dir=None`` to use a non-file URI.
     """
-    from eden_contracts import Proposal
+    from eden_contracts import Idea
 
-    proposal_id = f"proposal-{slug}"
+    idea_id = f"idea-{slug}"
     if artifacts_dir is not None:
-        path = artifacts_dir / f"{proposal_id}.md"
+        path = artifacts_dir / f"{idea_id}.md"
         path.write_text(artifact_text)
         artifacts_uri = f"file://{path.resolve()}"
     else:
-        artifacts_uri = f"https://example.invalid/{proposal_id}.md"
-    proposal = Proposal(
-        proposal_id=proposal_id,
+        artifacts_uri = f"https://example.invalid/{idea_id}.md"
+    idea = Idea(
+        idea_id=idea_id,
         experiment_id=store.experiment_id,
         slug=slug,
         priority=1.0,
@@ -201,48 +201,48 @@ def seed_implement_task(
         state="drafting",
         created_at="2026-04-24T11:00:00Z",
     )
-    store.create_proposal(proposal)
-    store.mark_proposal_ready(proposal_id)
-    task_id = f"implement-{slug}"
-    store.create_implement_task(task_id, proposal_id)
-    return task_id, proposal_id
+    store.create_idea(idea)
+    store.mark_idea_ready(idea_id)
+    task_id = f"execute-{slug}"
+    store.create_execute_task(task_id, idea_id)
+    return task_id, idea_id
 
 
 def seed_evaluate_task(
     store: InMemoryStore,
     *,
     slug: str = "demo",
-    trial_id: str = "trial-eval",
+    variant_id: str = "variant-eval",
     artifacts_dir: Path | None = None,
     artifact_text: str = "rationale",
     trial_artifact_path: Path | None = None,
     trial_description: str | None = None,
     commit_sha: str = "b" * 40,
 ) -> tuple[str, str, str]:
-    """Seed a starting trial (with commit_sha) + a pending evaluate task.
+    """Seed a starting variant (with commit_sha) + a pending evaluate task.
 
-    Drives the implementer-accept flow so the trial is in
+    Drives the executor-accept flow so the variant is in
     ``starting`` with ``commit_sha`` set, the prerequisite for
     ``create_evaluate_task`` per chapter 04 §3.1. The fixture
-    returns ``(eval_task_id, trial_id, proposal_id)``.
+    returns ``(eval_task_id, variant_id, idea_id)``.
 
-    Trial-side context (``description`` / ``artifacts_uri``) is
-    optional — they're set by the implementer per
+    Variant-side context (``description`` / ``artifacts_uri``) is
+    optional — they're set by the executor per
     ``spec/v0/03-roles.md`` §3.2 step 3 and the evaluator module
     surfaces them on the draft page.
     """
-    from eden_contracts import Proposal, Trial
-    from eden_storage import ImplementSubmission
+    from eden_contracts import Idea, Variant
+    from eden_storage import ExecuteSubmission
 
-    proposal_id = f"proposal-{slug}"
+    idea_id = f"idea-{slug}"
     if artifacts_dir is not None:
-        path = artifacts_dir / f"{proposal_id}.md"
+        path = artifacts_dir / f"{idea_id}.md"
         path.write_text(artifact_text)
         artifacts_uri = f"file://{path.resolve()}"
     else:
-        artifacts_uri = f"https://example.invalid/{proposal_id}.md"
-    proposal = Proposal(
-        proposal_id=proposal_id,
+        artifacts_uri = f"https://example.invalid/{idea_id}.md"
+    idea = Idea(
+        idea_id=idea_id,
         experiment_id=store.experiment_id,
         slug=slug,
         priority=1.0,
@@ -251,39 +251,39 @@ def seed_evaluate_task(
         state="drafting",
         created_at="2026-04-24T11:00:00Z",
     )
-    store.create_proposal(proposal)
-    store.mark_proposal_ready(proposal_id)
-    impl_task_id = f"implement-{slug}"
-    store.create_implement_task(impl_task_id, proposal_id)
-    impl_claim = store.claim(impl_task_id, "impl-w")
+    store.create_idea(idea)
+    store.mark_idea_ready(idea_id)
+    impl_task_id = f"execute-{slug}"
+    store.create_execute_task(impl_task_id, idea_id)
+    impl_claim = store.claim(impl_task_id, "executor-w")
 
     from typing import Any
 
     trial_kwargs: dict[str, Any] = {
-        "trial_id": trial_id,
+        "variant_id": variant_id,
         "experiment_id": store.experiment_id,
-        "proposal_id": proposal_id,
+        "idea_id": idea_id,
         "status": "starting",
         "parent_commits": ["a" * 40],
-        "branch": f"work/{slug}-{trial_id}",
+        "branch": f"work/{slug}-{variant_id}",
         "started_at": "2026-04-24T12:00:00Z",
     }
     if trial_description is not None:
         trial_kwargs["description"] = trial_description
     if trial_artifact_path is not None:
         trial_kwargs["artifacts_uri"] = f"file://{trial_artifact_path.resolve()}"
-    store.create_trial(Trial(**trial_kwargs))
+    store.create_variant(Variant(**trial_kwargs))
 
     store.submit(
         impl_task_id,
         impl_claim.token,
-        ImplementSubmission(status="success", trial_id=trial_id, commit_sha=commit_sha),
+        ExecuteSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
     )
     store.accept(impl_task_id)
 
     eval_task_id = f"evaluate-{slug}"
-    store.create_evaluate_task(eval_task_id, trial_id)
-    return eval_task_id, trial_id, proposal_id
+    store.create_evaluate_task(eval_task_id, variant_id)
+    return eval_task_id, variant_id, idea_id
 
 
 def get_evaluate_submission(store: InMemoryStore, task_id: str):

@@ -76,10 +76,10 @@ docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec
 # Sanity: assert the docker socket bind landed via the docker-exec
 # overlay (regression catch — without compose.docker-exec.yaml the
 # overlay should NOT mount the socket).
-docker inspect eden-implementer-host --format \
+docker inspect eden-executor-host --format \
     '{{range .HostConfig.Binds}}{{println .}}{{end}}' \
     | grep -q '/var/run/docker.sock' || {
-    echo "implementer-host is missing /var/run/docker.sock bind in docker-exec mode" >&2
+    echo "executor-host is missing /var/run/docker.sock bind in docker-exec mode" >&2
     exit 1
 }
 
@@ -95,8 +95,8 @@ done
 test "$(docker inspect --format '{{.State.Status}}' eden-orchestrator)" = "exited" || {
     echo "orchestrator did not exit within 300s; current status: $status" >&2
     docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
-        --env-file "$ENV_FILE" logs --tail 60 orchestrator planner-host \
-        implementer-host evaluator-host >&2
+        --env-file "$ENV_FILE" logs --tail 60 orchestrator ideator-host \
+        executor-host evaluator-host >&2
     exit 1
 }
 test "$(docker inspect --format '{{.State.ExitCode}}' eden-orchestrator)" = "0" || {
@@ -119,16 +119,16 @@ EVENTS_JSON="$(
 )"
 TRIAL_INTEGRATED="$(
     echo "$EVENTS_JSON" \
-        | jq '(.events // .) | [.[] | select(.type == "trial.integrated")] | length'
+        | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
 test "$TRIAL_INTEGRATED" -ge 3 || {
-    echo "expected >= 3 trial.integrated events; got $TRIAL_INTEGRATED" >&2
-    echo "--- planner-host logs ---" >&2
+    echo "expected >= 3 variant.integrated events; got $TRIAL_INTEGRATED" >&2
+    echo "--- ideator-host logs ---" >&2
     docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
-        --env-file "$ENV_FILE" logs --tail 80 planner-host >&2 || true
-    echo "--- implementer-host logs ---" >&2
+        --env-file "$ENV_FILE" logs --tail 80 ideator-host >&2 || true
+    echo "--- executor-host logs ---" >&2
     docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
-        --env-file "$ENV_FILE" logs --tail 80 implementer-host >&2 || true
+        --env-file "$ENV_FILE" logs --tail 80 executor-host >&2 || true
     echo "--- evaluator-host logs ---" >&2
     docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
         --env-file "$ENV_FILE" logs --tail 80 evaluator-host >&2 || true
@@ -146,35 +146,35 @@ PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("plan-"))
+              and (.data.task_id | startswith("ideate-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 3 || {
-    echo "expected >= 3 plan-task.completed events; got $PLAN_COMPLETED" >&2
+    echo "expected >= 3 ideate-task.completed events; got $PLAN_COMPLETED" >&2
     exit 1
 }
 
-echo "--- asserting no per-task orphan sibling containers (implementer/evaluator) ---"
+echo "--- asserting no per-task orphan sibling containers (executor/evaluator) ---"
 # Per-task short-lived spawns must terminate before quiescence. The
-# planner subprocess is long-running and still alive at this point —
+# ideator subprocess is long-running and still alive at this point —
 # it's only torn down when its worker-host container shuts down, so
-# we exclude planner here and assert it separately after compose
+# we exclude ideator here and assert it separately after compose
 # stop.
 ORPHAN_COUNT=0
-for role in implementer evaluator; do
+for role in executor evaluator; do
     n="$(docker ps -aq --filter "label=eden.role=${role}" 2>/dev/null | wc -l | tr -d ' ')"
     ORPHAN_COUNT=$((ORPHAN_COUNT + n))
 done
 test "$ORPHAN_COUNT" -eq 0 || {
-    echo "found $ORPHAN_COUNT orphan implementer/evaluator containers after quiescence" >&2
-    for role in implementer evaluator; do
+    echo "found $ORPHAN_COUNT orphan executor/evaluator containers after quiescence" >&2
+    for role in executor evaluator; do
         docker ps -a --filter "label=eden.role=${role}" >&2
     done
     exit 1
 }
 
-echo "--- stopping worker hosts and asserting no planner sibling remains ---"
-# After `compose stop`, no `eden.role=planner` sibling container
+echo "--- stopping worker hosts and asserting no ideator sibling remains ---"
+# After `compose stop`, no `eden.role=ideator` sibling container
 # may remain. This proves clean teardown end-to-end (clean SIGTERM
 # OR SIGKILL escalation — either is acceptable for this smoke).
 # The dedicated SIGKILL-escalation invariant is exercised by the
@@ -183,10 +183,10 @@ echo "--- stopping worker hosts and asserting no planner sibling remains ---"
 docker compose -f compose.yaml -f compose.subprocess.yaml \
     --env-file "$ENV_FILE" stop --timeout 15 >/dev/null
 
-PLANNER_LEFTOVER="$(docker ps -aq --filter label=eden.role=planner 2>/dev/null | wc -l | tr -d ' ')"
+PLANNER_LEFTOVER="$(docker ps -aq --filter label=eden.role=ideator 2>/dev/null | wc -l | tr -d ' ')"
 test "$PLANNER_LEFTOVER" -eq 0 || {
-    echo "planner sibling container survived compose stop (count=$PLANNER_LEFTOVER)" >&2
-    docker ps -a --filter label=eden.role=planner >&2
+    echo "ideator sibling container survived compose stop (count=$PLANNER_LEFTOVER)" >&2
+    docker ps -a --filter label=eden.role=ideator >&2
     exit 1
 }
 

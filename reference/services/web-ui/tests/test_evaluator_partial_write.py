@@ -3,7 +3,7 @@
 Pins each branch of §C-recovery from the Phase 9d plan, including
 the new ``IllegalTransition`` → read-back arm (sub-cases I-a / I-b
 / I-c) that distinguishes the chunk-9d evaluator from the chunk-9c
-implementer (which short-circuits ``IllegalTransition``).
+executor (which short-circuits ``IllegalTransition``).
 
 Sub-cases:
 
@@ -68,14 +68,14 @@ def _clear_claims():
 def _claim(
     client: TestClient, store: InMemoryStore, slug: str = "demo"
 ) -> tuple[str, str, str]:
-    """Seed a task, claim it, and return (task_id, trial_id, csrf)."""
-    eval_id, trial_id, _ = seed_evaluate_task(store, slug=slug)
+    """Seed a task, claim it, and return (task_id, variant_id, csrf)."""
+    eval_id, variant_id, _ = seed_evaluate_task(store, slug=slug)
     csrf = get_csrf(client)
     resp = _post_form(
         client, f"/evaluator/{eval_id}/claim", [("csrf_token", csrf)]
     )
     assert resp.status_code == 303
-    return eval_id, trial_id, csrf
+    return eval_id, variant_id, csrf
 
 
 def _success_form(csrf: str, score: float = 0.9) -> list[tuple[str, str]]:
@@ -121,7 +121,7 @@ class TestSubCaseAPrime:
         store: InMemoryStore,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        eval_id, trial_id, csrf = _claim(signed_in_client, store)
+        eval_id, variant_id, csrf = _claim(signed_in_client, store)
         original_submit = store.submit
         calls = {"n": 0}
 
@@ -139,7 +139,7 @@ class TestSubCaseAPrime:
                     task_id,
                     other.token,
                     EvaluateSubmission(
-                        status="success", trial_id=trial_id, metrics={"score": 0.123}
+                        status="success", variant_id=variant_id, evaluation={"score": 0.123}
                     ),
                 )
                 store.accept(task_id)
@@ -192,7 +192,7 @@ class TestSubCaseC:
         def submit_boom(*args, **kwargs):
             raise RuntimeError("net")
 
-        # The route also calls store.read_trial / store.read_proposal
+        # The route also calls store.read_variant / store.read_idea
         # before the submit; those are hit before we patch read_task.
         # Patch read_task only AFTER the route's pre-submit reads run.
         # Easiest: wrap submit so the *first* call patches read_task,
@@ -241,7 +241,7 @@ class TestSubCaseD:
             task_id=eval_id,
             kind="evaluate",
             state="submitted",
-            payload=EvaluatePayload(trial_id="trial-eval"),
+            payload=EvaluatePayload(variant_id="variant-eval"),
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T12:00:00.000Z",
             claim=TaskClaim(
@@ -403,14 +403,14 @@ class TestSubCaseIb:
         store: InMemoryStore,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        eval_id, trial_id, csrf = _claim(signed_in_client, store)
+        eval_id, variant_id, csrf = _claim(signed_in_client, store)
 
         # Drive the task to completed under a *different* claim, but
         # with an *equivalent* submission to what the route is about
         # to send. We must do this without using our claim's token,
         # so reclaim, re-claim, and submit equivalent payload.
         equivalent = EvaluateSubmission(
-            status="success", trial_id=trial_id, metrics={"score": 0.9}
+            status="success", variant_id=variant_id, evaluation={"score": 0.9}
         )
         store.reclaim(eval_id, "operator")
         other = store.claim(eval_id, "evaluator-other")
@@ -434,14 +434,14 @@ class TestSubCaseIc:
         store: InMemoryStore,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        eval_id, trial_id, csrf = _claim(signed_in_client, store)
+        eval_id, variant_id, csrf = _claim(signed_in_client, store)
         store.reclaim(eval_id, "operator")
         other = store.claim(eval_id, "evaluator-other")
         store.submit(
             eval_id,
             other.token,
             EvaluateSubmission(
-                status="success", trial_id=trial_id, metrics={"score": 0.111}
+                status="success", variant_id=variant_id, evaluation={"score": 0.111}
             ),
         )
         store.accept(eval_id)

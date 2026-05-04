@@ -1,7 +1,7 @@
 """Real-subprocess end-to-end test.
 
-Forks five processes (task-store-server + planner + implementer +
-evaluator + orchestrator) on an ephemeral port and drives a 3-trial
+Forks five processes (task-store-server + ideator + executor +
+evaluator + orchestrator) on an ephemeral port and drives a 3-variant
 experiment to quiescence over real HTTP.
 
 The test passes if the orchestrator exits 0 and the final DB + repo
@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 from eden_git import GitRepo
 from eden_service_common import seed_bare_repo
 from eden_storage import SqliteStore
@@ -103,7 +103,7 @@ def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
 
 
 @pytest.mark.e2e
-def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
+def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
     """Spawn 5 processes, run to quiescence, assert final state."""
     bare_repo = tmp_path / "bare-repo.git"
     subprocess.run(
@@ -150,10 +150,10 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
     port = _read_port_announcement(server_log, server)
     base_url = f"http://127.0.0.1:{port}"
 
-    planner_log = logs_dir / "planner.log"
-    planner = _spawn(
+    ideator_log = logs_dir / "ideator.log"
+    ideator = _spawn(
         [
-            "eden_planner_host",
+            "eden_ideator_host",
             "--task-store-url",
             base_url,
             "--experiment-id",
@@ -161,16 +161,16 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             "--shared-token",
             token,
             "--worker-id",
-            "planner-1",
+            "ideator-1",
             "--base-commit-sha",
             base_sha,
         ],
-        planner_log,
+        ideator_log,
     )
-    implementer_log = logs_dir / "implementer.log"
-    implementer = _spawn(
+    executor_log = logs_dir / "executor.log"
+    executor = _spawn(
         [
-            "eden_implementer_host",
+            "eden_executor_host",
             "--task-store-url",
             base_url,
             "--experiment-id",
@@ -178,11 +178,11 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             "--shared-token",
             token,
             "--worker-id",
-            "implementer-1",
+            "executor-1",
             "--repo-path",
             str(bare_repo),
         ],
-        implementer_log,
+        executor_log,
     )
     evaluator_log = logs_dir / "evaluator.log"
     evaluator = _spawn(
@@ -213,16 +213,16 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             token,
             "--repo-path",
             str(bare_repo),
-            "--plan-tasks",
-            "plan-1,plan-2,plan-3",
+            "--ideate-tasks",
+            "ideate-1,plan-2,plan-3",
         ],
         orchestrator_log,
     )
 
     procs_logs = {
         "task-store-server": (server, server_log),
-        "planner": (planner, planner_log),
-        "implementer": (implementer, implementer_log),
+        "ideator": (ideator, ideator_log),
+        "executor": (executor, executor_log),
         "evaluator": (evaluator, evaluator_log),
         "orchestrator": (orchestrator, orchestrator_log),
     }
@@ -246,62 +246,62 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             )
 
         # Tear down workers + server so the SqliteStore's file is released.
-        for name in ("planner", "implementer", "evaluator", "task-store-server"):
+        for name in ("ideator", "executor", "evaluator", "task-store-server"):
             _terminate(procs_logs[name][0])
 
         # Inspect final state.
         store = SqliteStore(
             experiment_id=experiment_id,
             path=str(db_path),
-            metrics_schema=MetricsSchema({"score": "real"}),
+            evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         try:
-            trials = store.list_trials(status="success")
-            if len(trials) != 3:
+            variants = store.list_variants(status="success")
+            if len(variants) != 3:
                 pytest.fail(
-                    f"expected 3 success trials, got {len(trials)}. Output:\n"
+                    f"expected 3 success variants, got {len(variants)}. Output:\n"
                     + _dump_logs(procs_logs)
                 )
             repo = GitRepo(str(bare_repo))
-            for trial in trials:
-                assert trial.trial_commit_sha is not None
-                assert trial.parent_commits == [base_sha]
-                parents = repo.commit_parents(trial.trial_commit_sha)
-                assert parents == list(trial.parent_commits)
+            for variant in variants:
+                assert variant.variant_commit_sha is not None
+                assert variant.parent_commits == [base_sha]
+                parents = repo.commit_parents(variant.variant_commit_sha)
+                assert parents == list(variant.parent_commits)
                 # The integrator MUST write a canonical
-                # `refs/heads/trial/<id>-<slug>` ref pointing at
+                # `refs/heads/variant/<id>-<slug>` ref pointing at
                 # the same commit (chapter 06 §3.2).
-                slug = store.read_proposal(trial.proposal_id).slug
-                ref = f"refs/heads/trial/{trial.trial_id}-{slug}"
-                assert repo.resolve_ref(ref) == trial.trial_commit_sha
+                slug = store.read_idea(variant.idea_id).slug
+                ref = f"refs/heads/variant/{variant.variant_id}-{slug}"
+                assert repo.resolve_ref(ref) == variant.variant_commit_sha
 
             # Every plan/implement/evaluate task terminal.
-            for kind in ("plan", "implement", "evaluate"):
+            for kind in ("ideate", "execute", "evaluate"):
                 tasks = store.list_tasks(kind=kind)
                 completed = [t for t in tasks if t.state == "completed"]
                 assert len(completed) == 3, (
                     f"expected 3 completed {kind} tasks, got {len(completed)}"
                 )
 
-            # Event-log assertions (codex-review feedback): a 3-trial
-            # experiment must emit one task.completed per role per trial
-            # and one trial.integrated per trial. The full transcript is
+            # Event-log assertions (codex-review feedback): a 3-variant
+            # experiment must emit one task.completed per role per variant
+            # and one variant.integrated per variant. The full transcript is
             # richer (drafting, claimed, submitted, succeeded, …); this
             # test pins the must-have terminal events without freezing
             # the exact count of every intermediate event.
             events = list(store.read_range())
             event_types = [e.type for e in events]
             assert event_types.count("task.completed") == 9, (
-                f"expected 9 task.completed events (3 per role × 3 trials), got "
+                f"expected 9 task.completed events (3 per role × 3 variants), got "
                 f"{event_types.count('task.completed')}; full sequence: {event_types}"
             )
-            assert event_types.count("trial.integrated") == 3, (
-                f"expected 3 trial.integrated events, got "
-                f"{event_types.count('trial.integrated')}"
+            assert event_types.count("variant.integrated") == 3, (
+                f"expected 3 variant.integrated events, got "
+                f"{event_types.count('variant.integrated')}"
             )
-            assert event_types.count("trial.succeeded") == 3, (
-                f"expected 3 trial.succeeded events, got "
-                f"{event_types.count('trial.succeeded')}"
+            assert event_types.count("variant.succeeded") == 3, (
+                f"expected 3 variant.succeeded events, got "
+                f"{event_types.count('variant.succeeded')}"
             )
 
             # Replay the full event log to a final-state map and assert
@@ -310,14 +310,14 @@ def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
             # in Phase 8c.
             lifecycle = _reconstruct_lifecycle(events)
             # 3 plan + 3 implement + 3 evaluate = 9 tasks; the
-            # `--plan-tasks` flag above seeds three plan IDs, each of
-            # which becomes one proposal → one trial.
+            # `--ideate-tasks` flag above seeds three plan IDs, each of
+            # which becomes one idea → one variant.
             assert len(lifecycle["tasks"]) == 9
             assert set(lifecycle["tasks"].values()) == {"completed"}
-            assert len(lifecycle["proposals"]) == 3
-            assert set(lifecycle["proposals"].values()) == {"completed"}
-            assert len(lifecycle["trials"]) == 3
-            assert set(lifecycle["trials"].values()) == {"success"}
+            assert len(lifecycle["ideas"]) == 3
+            assert set(lifecycle["ideas"].values()) == {"completed"}
+            assert len(lifecycle["variants"]) == 3
+            assert set(lifecycle["variants"].values()) == {"success"}
         finally:
             store.close()
     finally:
@@ -329,13 +329,13 @@ def _reconstruct_lifecycle(events) -> dict:  # noqa: ANN001 - sequence of EventR
     """Fold the event log into a final-state map per entity.
 
     Lifecycle-bearing event types map to a status; integration events
-    (`trial.integrated`) are intentionally ignored — the trial's
+    (`variant.integrated`) are intentionally ignored — the variant's
     lifecycle status is `success`, with integration recorded as a
-    separate field on the trial entity.
+    separate field on the variant entity.
     """
     tasks: dict[str, str] = {}
-    proposals: dict[str, str] = {}
-    trials: dict[str, str] = {}
+    ideas: dict[str, str] = {}
+    variants: dict[str, str] = {}
     for event in events:
         data = event.data
         t = event.type
@@ -351,20 +351,20 @@ def _reconstruct_lifecycle(events) -> dict:  # noqa: ANN001 - sequence of EventR
             tasks[data["task_id"]] = "failed"
         elif t == "task.reclaimed":
             tasks[data["task_id"]] = "pending"
-        elif t == "proposal.drafted":
-            proposals[data["proposal_id"]] = "drafting"
-        elif t == "proposal.ready":
-            proposals[data["proposal_id"]] = "ready"
-        elif t == "proposal.dispatched":
-            proposals[data["proposal_id"]] = "dispatched"
-        elif t == "proposal.completed":
-            proposals[data["proposal_id"]] = "completed"
-        elif t == "trial.started":
-            trials[data["trial_id"]] = "starting"
-        elif t == "trial.succeeded":
-            trials[data["trial_id"]] = "success"
-        elif t == "trial.errored":
-            trials[data["trial_id"]] = "error"
-        elif t == "trial.eval_errored":
-            trials[data["trial_id"]] = "eval_error"
-    return {"tasks": tasks, "proposals": proposals, "trials": trials}
+        elif t == "idea.drafted":
+            ideas[data["idea_id"]] = "drafting"
+        elif t == "idea.ready":
+            ideas[data["idea_id"]] = "ready"
+        elif t == "idea.dispatched":
+            ideas[data["idea_id"]] = "dispatched"
+        elif t == "idea.completed":
+            ideas[data["idea_id"]] = "completed"
+        elif t == "variant.started":
+            variants[data["variant_id"]] = "starting"
+        elif t == "variant.succeeded":
+            variants[data["variant_id"]] = "success"
+        elif t == "variant.errored":
+            variants[data["variant_id"]] = "error"
+        elif t == "variant.eval_errored":
+            variants[data["variant_id"]] = "eval_error"
+    return {"tasks": tasks, "ideas": ideas, "variants": variants}

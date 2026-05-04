@@ -16,7 +16,7 @@ import secrets
 from collections.abc import Iterator
 
 import pytest
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 from eden_storage import InvalidPrecondition, PostgresStore
 
 _DSN = os.environ.get("EDEN_TEST_POSTGRES_DSN") or None
@@ -67,68 +67,68 @@ def test_reopen_on_non_default_schema_does_not_re_run_migrations(
     reopening an existing PostgresStore on a non-`public` schema
     re-ran v1 migrations and failed on duplicate-table.
     """
-    metrics = MetricsSchema.model_validate({"score": "real"})
-    store = PostgresStore("exp-1", schema_dsn, metrics_schema=metrics)
-    store.create_plan_task("plan-0001")
+    evaluation=EvaluationSchema.model_validate({"score": "real"})
+    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
+    store.create_ideate_task("ideate-0001")
     store.close()
 
     # Reopen — must succeed and see the persisted task.
-    reopened = PostgresStore("exp-1", schema_dsn, metrics_schema=metrics)
+    reopened = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
     try:
-        task = reopened.read_task("plan-0001")
+        task = reopened.read_task("ideate-0001")
         assert task is not None
-        assert task.task_id == "plan-0001"
+        assert task.task_id == "ideate-0001"
     finally:
         reopened.close()
 
 
 def test_reopen_with_different_experiment_id_rejected(schema_dsn: str) -> None:
     """Chapter 8 §4.2 — experiment_id is part of the database identity."""
-    metrics = MetricsSchema.model_validate({"score": "real"})
-    PostgresStore("exp-A", schema_dsn, metrics_schema=metrics).close()
+    evaluation=EvaluationSchema.model_validate({"score": "real"})
+    PostgresStore("exp-A", schema_dsn, evaluation_schema=evaluation).close()
 
     with pytest.raises(InvalidPrecondition):
-        PostgresStore("exp-B", schema_dsn, metrics_schema=metrics)
+        PostgresStore("exp-B", schema_dsn, evaluation_schema=evaluation)
 
 
-def test_reopen_with_changed_metrics_schema_rejected(schema_dsn: str) -> None:
-    """Chapter 8 §4.2 — metrics_schema MUST NOT change for the lifetime of an experiment."""
+def test_reopen_with_changed_evaluation_schema_rejected(schema_dsn: str) -> None:
+    """Chapter 8 §4.2 — evaluation_schema MUST NOT change for the lifetime of an experiment."""
     PostgresStore(
         "exp-1",
         schema_dsn,
-        metrics_schema=MetricsSchema.model_validate({"score": "real"}),
+        evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
     ).close()
 
     with pytest.raises(InvalidPrecondition):
         PostgresStore(
             "exp-1",
             schema_dsn,
-            metrics_schema=MetricsSchema.model_validate(
+            evaluation_schema=EvaluationSchema.model_validate(
                 {"score": "real", "extra": "integer"}
             ),
         )
 
 
-def test_reopen_inherits_persisted_metrics_schema(schema_dsn: str) -> None:
+def test_reopen_inherits_persisted_evaluation_schema(schema_dsn: str) -> None:
     """Reopen with no schema arg inherits whatever was persisted.
 
-    Validates inheritance by exercising metrics validation after
-    reopen — `validate_metrics` returns a no-op for `None` schemas,
+    Validates inheritance by exercising evaluation validation after
+    reopen — `validate_evaluation` returns a no-op for `None` schemas,
     so a reopened store that *failed* to inherit the schema would
     accept `{"unknown": 1.0}`. With inheritance, an unknown metric
     name raises `InvalidPrecondition`.
     """
-    metrics = MetricsSchema.model_validate({"score": "real"})
-    PostgresStore("exp-1", schema_dsn, metrics_schema=metrics).close()
+    evaluation=EvaluationSchema.model_validate({"score": "real"})
+    PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation).close()
 
     reopened = PostgresStore("exp-1", schema_dsn)
     try:
         # The persisted schema knows only `score`; an unknown
         # metric name should raise.
         with pytest.raises(InvalidPrecondition):
-            reopened.validate_metrics({"unknown": 1.0})
+            reopened.validate_evaluation({"unknown": 1.0})
         # The valid metric still passes.
-        reopened.validate_metrics({"score": 0.5})
+        reopened.validate_evaluation({"score": 0.5})
     finally:
         reopened.close()
 
@@ -139,19 +139,19 @@ def test_event_id_counter_resumes_across_reopen(schema_dsn: str) -> None:
     Without resumption, two stores on the same database would emit
     duplicate ``event_id`` values and violate the UNIQUE constraint.
     """
-    metrics = MetricsSchema.model_validate({"score": "real"})
-    store = PostgresStore("exp-1", schema_dsn, metrics_schema=metrics)
-    store.create_plan_task("plan-0001")
+    evaluation=EvaluationSchema.model_validate({"score": "real"})
+    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
+    store.create_ideate_task("ideate-0001")
     first_event_count = len(list(store.events()))
     store.close()
 
-    reopened = PostgresStore("exp-1", schema_dsn, metrics_schema=metrics)
+    reopened = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
     try:
         # Create another task — exercising another event insert. If
         # the counter restarted from 1, the second store would
         # collide on `evt-000001` (which the first store already
         # used).
-        reopened.create_plan_task("plan-0002")
+        reopened.create_ideate_task("ideate-0002")
         all_events = list(reopened.events())
         assert len(all_events) > first_event_count
     finally:

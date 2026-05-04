@@ -37,7 +37,7 @@ def test_task_state_change_visible_only_after_event_appended(
     be consistent. A regression that advanced state ahead of the event
     would be visible if the poller saw the new state before its event.
     """
-    tid = _seed.create_plan_task(wire_client)
+    tid = _seed.create_ideate_task(wire_client)
     # Drain the events from task creation so the subscribe waits past them.
     initial_events, cursor = event_log.replay_from(0)
     assert len(initial_events) >= 1, "task.created event expected"

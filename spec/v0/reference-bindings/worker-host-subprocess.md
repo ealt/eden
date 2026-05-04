@@ -1,7 +1,7 @@
 # Worker host protocol — informative
 
 > **Status: informative.** This chapter records a convention used by
-> the **reference** worker hosts (planner / implementer / evaluator)
+> the **reference** worker hosts (ideator / executor / evaluator)
 > for invoking user-supplied commands. Conforming EDEN
 > implementations are **not** required to use this convention. The
 > normative role contracts live in [chapter 3](../03-roles.md); the
@@ -20,8 +20,8 @@ deliberately different conventions.
 Each role's host invokes a command string from the experiment-config
 YAML:
 
-- planner: `plan_command`
-- implementer: `implement_command`
+- ideator: `ideate_command`
+- executor: `execute_command`
 - evaluator: `evaluate_command`
 
 All three keys are accepted as additional properties on the
@@ -30,7 +30,7 @@ schema (the schema does not pin them; user-supplied tooling may
 ignore or repurpose them).
 
 The host invokes the command via `shell=True` so user expressions
-like `python3 ${EDEN_EXPERIMENT_DIR}/plan.py` expand against the
+like `python3 ${EDEN_EXPERIMENT_DIR}/ideate.py` expand against the
 host-supplied environment.
 
 ### 1.1 Environment supplied to every subprocess
@@ -40,7 +40,7 @@ host-supplied environment.
 | `EDEN_EXPERIMENT_DIR` | Absolute host-side path to the user's experiment directory. |
 | `EDEN_TASK_JSON` | Relative path (under cwd) to a JSON file the host wrote describing the current task. |
 | `EDEN_OUTPUT` | Relative path (under cwd) the subprocess MUST write its outcome JSON to. |
-| `EDEN_WORKTREE` | (implementer / evaluator only) Absolute path to the per-task git worktree (also equals cwd, redundant for convenience). |
+| `EDEN_WORKTREE` | (executor / evaluator only) Absolute path to the per-task git worktree (also equals cwd, redundant for convenience). |
 
 User-supplied env from a `--*-env-file` flag is also injected
 (intended for LLM API keys etc.).
@@ -49,16 +49,16 @@ User-supplied env from a `--*-env-file` flag is also injected
 
 | Role | cwd |
 |---|---|
-| planner | `EDEN_EXPERIMENT_DIR` |
-| implementer | the per-task git worktree |
+| ideator | `EDEN_EXPERIMENT_DIR` |
+| executor | the per-task git worktree |
 | evaluator | the per-task git worktree |
 
-## 2. Planner subprocess: long-running JSON-line protocol
+## 2. Ideator subprocess: long-running JSON-line protocol
 
-The planner subprocess is launched **once per host** and serves
-every plan task that arrives during the host's lifetime. The
+The ideator subprocess is launched **once per host** and serves
+every ideate task that arrives during the host's lifetime. The
 intent is that user code can hold accumulating session state (e.g.
-a running LLM conversation) across plan tasks.
+a running LLM conversation) across ideate tasks.
 
 Wire format: one JSON object per line, on both stdin and stdout.
 
@@ -76,17 +76,17 @@ Lines emitted before `ready` are treated as debug-only and dropped.
 If `ready` is not received within the host's startup deadline, the
 host kills the subprocess.
 
-### 2.2 Plan dispatch
+### 2.2 Ideate dispatch
 
-For each plan task, the host writes one stdin line of the form:
+For each ideate task, the host writes one stdin line of the form:
 
 ```json
-{"event": "plan", "task_id": "plan-…", "experiment_id": "exp-1",
+{"event": "ideate", "task_id": "ideate-…", "experiment_id": "exp-1",
  "objective": {"expr": "score", "direction": "maximize"},
- "metrics_schema": {"score": "real"},
+ "evaluation_schema": {"score": "real"},
  "history": [
-   {"trial_id": "trial-…", "status": "success",
-    "commit_sha": "abc…", "metrics": {"score": 0.7}},
+   {"variant_id": "variant-…", "status": "success",
+    "commit_sha": "abc…", "evaluation": {"score": 0.7}},
    …
  ]}
 ```
@@ -96,25 +96,25 @@ results, newest first, capped at 50 entries by the reference host.
 
 ### 2.3 Worker response
 
-The subprocess writes any number of `proposal` lines followed by
-exactly one terminator (`plan-done` or `plan-error`). All lines
+The subprocess writes any number of `idea` lines followed by
+exactly one terminator (`ideate-done` or `ideate-error`). All lines
 MUST carry the same `task_id` as the dispatch.
 
 ```json
-{"event": "proposal", "task_id": "plan-…",
+{"event": "idea", "task_id": "ideate-…",
  "slug": "p0", "priority": 1.0,
  "parent_commits": ["abc…"],
  "rationale": "free-form markdown text"}
-{"event": "plan-done", "task_id": "plan-…"}
+{"event": "ideate-done", "task_id": "ideate-…"}
 ```
 
 If `rationale` is present, the host writes it to
-`<artifacts_dir>/proposals/<proposal_id>/rationale.md` and uses the
-resulting `file://` URI as the proposal's `artifacts_uri`. If
+`<artifacts_dir>/ideas/<idea_id>/rationale.md` and uses the
+resulting `file://` URI as the idea's `artifacts_uri`. If
 `rationale` is absent, the subprocess MUST set `artifacts_uri`
 explicitly.
 
-A `plan-error` terminator submits a chapter-3 `PlanSubmission`
+An `ideate-error` terminator submits a chapter-3 `IdeateSubmission`
 with `status="error"`.
 
 ### 2.4 Error handling
@@ -129,33 +129,33 @@ with `status="error"`.
   subprocess's process group, waits the configured shutdown
   deadline, then SIGKILLs.
 
-## 3. Implementer subprocess: per-task short-lived
+## 3. Executor subprocess: per-task short-lived
 
-The host honors [chapter 3 §3.2 step 1](../03-roles.md): the trial
+The host honors [chapter 3 §3.2 step 1](../03-roles.md): the variant
 MUST be persisted with `status == "starting"` **before** any
 repository write becomes observable. The reference flow is:
 
-1. Host generates `trial_id` and computes the canonical work-branch
-   name `work/<slug>-<trial_id>`.
+1. Host generates `variant_id` and computes the canonical work-branch
+   name `work/<slug>-<variant_id>`.
 2. Pre-Phase-1 ref-collision guard.
-3. `Store.create_trial(status="starting")` (no `commit_sha` yet).
+3. `Store.create_variant(status="starting")` (no `commit_sha` yet).
 4. `git worktree add --detach <wt> <parent_commits[0]>`.
 5. Write `<wt>/.eden/task.json`:
 
    ```json
    {
-     "task_id": "implement-…",
-     "trial_id": "trial-…",
-     "proposal_id": "proposal-…",
-     "proposal_slug": "p0",
+     "task_id": "execute-…",
+     "variant_id": "variant-…",
+     "idea_id": "idea-…",
+     "idea_slug": "p0",
      "parent_commits": ["abc…", …],
-     "branch": "work/p0-trial-…",
+     "branch": "work/p0-variant-…",
      "rationale_path": "/abs/path/to/rationale.md",
      "output_path": ".eden/outcome.json"
    }
    ```
 
-6. Spawn `implement_command` with cwd = worktree.
+6. Spawn `execute_command` with cwd = worktree.
 7. Read `<wt>/.eden/outcome.json`:
 
    ```json
@@ -165,7 +165,7 @@ repository write becomes observable. The reference flow is:
 
    or `{"status": "error", "description": "…"}`.
 8. Validate `commit_sha` exists and `is_ancestor(parent, commit_sha)`
-   for every parent in `proposal.parent_commits` (chapter 3 §3.3).
+   for every parent in `idea.parent_commits` (chapter 3 §3.3).
 9. `repo.create_ref("refs/heads/work/<…>", commit_sha)`.
 10. `Store.submit(...)` with retry-before-orphan + committed-state
     read-back.
@@ -175,8 +175,8 @@ repository write becomes observable. The reference flow is:
 
 All four of (subprocess exit-nonzero, missing outcome.json,
 malformed outcome, `outcome.status != "success"`) terminalize as
-`ImplementSubmission(status="error", trial_id=…)`. The
-`Store._reject_implement` path composite-commits the trial to
+`ExecuteSubmission(status="error", variant_id=…)`. The
+`Store._reject_execute` path composite-commits the variant to
 `error` atomically with the task transition. The user-supplied
 `description` field on `outcome.json` is logged for diagnostics
 but **not** propagated to the wire (the submission dataclass has
@@ -184,16 +184,16 @@ no free-form field; see §5).
 
 ## 4. Evaluator subprocess: per-task short-lived
 
-1. `git worktree add --detach <wt> <trial.commit_sha>`.
+1. `git worktree add --detach <wt> <variant.commit_sha>`.
 2. Write `<wt>/.eden/eval-task.json`:
 
    ```json
    {
      "task_id": "evaluate-…",
-     "trial_id": "trial-…",
-     "trial_branch": "trial/…-p0",
-     "trial_commit_sha": "ghi…",
-     "metrics_schema": {"score": "real"},
+     "variant_id": "variant-…",
+     "variant_branch": "variant/…-p0",
+     "variant_commit_sha": "ghi…",
+     "evaluation_schema": {"score": "real"},
      "objective": {"expr": "score", "direction": "maximize"},
      "output_path": ".eden/eval-outcome.json"
    }
@@ -203,13 +203,13 @@ no free-form field; see §5).
 4. Read outcome:
 
    ```json
-   {"status": "success", "metrics": {"score": 0.83},
+   {"status": "success", "evaluation": {"score": 0.83},
     "artifacts_uri": "file:///…"}
    ```
 
    or `{"status": "error" | "eval_error"}`.
-5. Validate metrics against `metrics_schema` via
-   `Store.validate_metrics`. Validation failures route to
+5. Validate evaluation against `evaluation_schema` via
+   `Store.validate_evaluation`. Validation failures route to
    `eval_error`.
 6. `Store.submit(...)`. Cleanup worktree.
 
@@ -226,9 +226,9 @@ revision.
 ### 5.1 Stderr task-id attribution is best-effort
 
 The reference host stamps each forwarded stderr line with the
-current task id. For the **per-task** implementer and evaluator
+current task id. For the **per-task** executor and evaluator
 subprocesses this is exact (the subprocess is spawned per task and
-exits before the next one begins). For the **long-running** planner
+exits before the next one begins). For the **long-running** ideator
 subprocess it is best-effort: stdout (the protocol channel) and
 stderr (the diagnostic channel) are independent pipes, and a stderr
 line whose underlying syscall completed under task A may be
@@ -251,11 +251,11 @@ makes cross-host races impossible by construction.
 ## 7. Gitea-as-remote reference deployment
 
 The Phase 10d follow-up B reference deployment has every worker
-host (orchestrator integrator, implementer host, evaluator host,
-web-ui implementer module) treat **Gitea** as the central git
+host (orchestrator integrator, executor host, evaluator host,
+web-ui executor module) treat **Gitea** as the central git
 remote — workers stop touching a shared bare-repo volume and
 instead clone a private bare copy from Gitea over HTTP, fetch on
-subsequent starts, push their `work/*` and `trial/*` refs back,
+subsequent starts, push their `work/*` and `variant/*` refs back,
 and rely on Gitea's CAS for chapter 6 §3.4 atomicity.
 
 ### 7.1 Auth — HTTP Basic via per-experiment credential helper
@@ -286,14 +286,14 @@ the DooD socket mount documented in §8.
 
 | Role | Reads | Writes |
 |---|---|---|
-| Orchestrator/integrator | fetch_all_heads at startup; ls_remote at orphan-reconciliation | local create_ref → push_ref → integrate_trial → on store fail compensating delete_remote_ref |
-| Implementer | local create_ref → push_ref of `work/*` after the user `*_command` produces a commit | rolls back local on push failure + submits status=error |
-| Evaluator | fetch_ref of `trial.branch` before `git worktree add`; eval_error on transport failure | never pushes |
-| Web-ui implementer | same as implementer | same as implementer |
+| Orchestrator/integrator | fetch_all_heads at startup; ls_remote at orphan-reconciliation | local create_ref → push_ref → integrate_variant → on store fail compensating delete_remote_ref |
+| Executor | local create_ref → push_ref of `work/*` after the user `*_command` produces a commit | rolls back local on push failure + submits status=error |
+| Evaluator | fetch_ref of `variant.branch` before `git worktree add`; eval_error on transport failure | never pushes |
+| Web-ui executor | same as executor | same as executor |
 
 ### 7.3 Integrator atomicity ladder (chapter 6 §3.4)
 
-`Integrator.integrate(trial_id)` runs a four-step
+`Integrator.integrate(variant_id)` runs a four-step
 publish-then-commit-then-rollback ladder:
 
 1. local `create_ref` — CAS-guarded local ref write.
@@ -305,30 +305,30 @@ publish-then-commit-then-rollback ladder:
      (4b only), remote = our SHA (4a + 4b), remote =
      different SHA (4b only), ls_remote also fails (4b only,
      `reconcile_remote_orphans` cleans up at next startup).
-3. `store.integrate_trial` — atomic with the
-   `trial.integrated` event in the store. Only this step
-   commits the trial as integrated.
+3. `store.integrate_variant` — atomic with the
+   `variant.integrated` event in the store. Only this step
+   commits the variant as integrated.
 4. on store failure:
    - 4a. remote `delete_ref` (compensating) if step 2 succeeded.
    - 4b. local `delete_ref` (compensating).
 
-`trial.integrated` is emitted ONLY at step 3 — NOT at step 1.
+`variant.integrated` is emitted ONLY at step 3 — NOT at step 1.
 Local-only state is invisible to chapter 5 §2.2 event-log
 consumers.
 
 ### 7.4 Startup remote-orphan reconciliation
 
 `Integrator.reconcile_remote_orphans()` runs at orchestrator
-startup. It walks `refs/heads/trial/*` on Gitea via `ls-remote`,
-recovers the `trial_id` from each commit's
-`.eden/trials/<trial_id>/eval.json` tree path
+startup. It walks `refs/heads/variant/*` on Gitea via `ls-remote`,
+recovers the `variant_id` from each commit's
+`.eden/variants/<variant_id>/eval.json` tree path
 (spec-authoritative — chapter 6 §3.2), and for each calls
-`Store.read_trial(trial_id)`. If the trial has no
-`trial_commit_sha`, the integrator deletes the remote ref.
+`Store.read_variant(variant_id)`. If the variant has no
+`variant_commit_sha`, the integrator deletes the remote ref.
 
-The `trial_id` recovery deliberately does NOT parse ref names —
-chapter 2 §1.3 treats `trial_id` as opaque, and branch names
-following `trial/<trial_id>-<slug>` are a reference-impl
+The `variant_id` recovery deliberately does NOT parse ref names —
+chapter 2 §1.3 treats `variant_id` as opaque, and branch names
+following `variant/<variant_id>-<slug>` are a reference-impl
 convention conforming alternatives may not match.
 
 This is the backstop for the §7.3 "step 4a failed" case and the

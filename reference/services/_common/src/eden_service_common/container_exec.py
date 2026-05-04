@@ -148,8 +148,8 @@ def wrap_command(
 
     ``attach_stdin`` controls whether ``-i`` is added to the docker
     run flags. Set ``True`` (default) when the caller will pipe
-    stdin to the spawn (planner protocol). Set ``False`` for
-    short-lived non-interactive workloads (implementer / evaluator)
+    stdin to the spawn (ideator protocol). Set ``False`` for
+    short-lived non-interactive workloads (executor / evaluator)
     so docker run doesn't exit early when the worker host's stdin
     is closed (compose containers run with stdin closed by default,
     and `-i` makes docker run treat that EOF as a signal to detach

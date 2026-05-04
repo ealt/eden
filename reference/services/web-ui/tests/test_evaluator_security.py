@@ -4,16 +4,16 @@
 - CSRF mismatch returns 403 on each mutating route.
 - Cookie attributes (HttpOnly, SameSite=Lax, Path=/) hold across
   evaluator routes; opt-in Secure works.
-- ``trial_id`` is server-only; the rendered draft form has no
-  ``name="trial_id"`` input, and a forged form value is ignored.
+- ``variant_id`` is server-only; the rendered draft form has no
+  ``name="variant_id"`` input, and a forged form value is ignored.
 - The submission's ``artifacts_uri`` is rendered as plain
   ``<code>`` on the confirmation page (NOT inside an ``<a href>``)
   even when the operator typed a ``javascript:`` URI.
-- The proposal's ``artifacts_uri`` rendering uses the chunk-9c
-  scheme allowlist; same for the trial's ``artifacts_uri``.
-- The trial's ``description`` is rendered escaped via Jinja2
+- The idea's ``artifacts_uri`` rendering uses the chunk-9c
+  scheme allowlist; same for the variant's ``artifacts_uri``.
+- The variant's ``description`` is rendered escaped via Jinja2
   autoescape.
-- ``_read_inline_artifact`` trust-boundary cases for the trial-side
+- ``_read_inline_artifact`` trust-boundary cases for the variant-side
   surface (outside dir, traversal, non-file scheme, > 1 MiB,
   directory).
 """
@@ -38,7 +38,7 @@ from conftest import (
 from eden_storage import InMemoryStore
 from eden_web_ui import make_app
 from eden_web_ui.routes import evaluator as evaluator_routes
-from eden_web_ui.routes._helpers import read_trial_artifact
+from eden_web_ui.routes._helpers import read_variant_artifact
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -143,8 +143,8 @@ class TestCookieAttributes:
         assert "secure" in resp.headers["set-cookie"].lower()
 
 
-class TestTrialIdNotInRequestSurface:
-    def test_draft_form_has_no_trial_id_input(
+class TestVariantIdNotInRequestSurface:
+    def test_draft_form_has_no_variant_id_input(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         eval_id, _, _ = seed_evaluate_task(store)
@@ -155,13 +155,13 @@ class TestTrialIdNotInRequestSurface:
             [("csrf_token", csrf)],
         )
         resp = signed_in_client.get(f"/evaluator/{eval_id}/draft")
-        assert 'name="trial_id"' not in resp.text
-        assert 'id="trial_id"' not in resp.text
+        assert 'name="variant_id"' not in resp.text
+        assert 'id="variant_id"' not in resp.text
 
-    def test_forged_trial_id_form_field_ignored(
+    def test_forged_variant_id_form_field_ignored(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
+        eval_id, variant_id, _ = seed_evaluate_task(store)
         csrf = get_csrf(signed_in_client)
         _post_form(
             signed_in_client,
@@ -175,31 +175,31 @@ class TestTrialIdNotInRequestSurface:
                 ("csrf_token", csrf),
                 ("status", "success"),
                 ("metric.score", "0.5"),
-                ("trial_id", "trial-attacker-controls-this"),
+                ("variant_id", "variant-attacker-controls-this"),
             ],
         )
         assert resp.status_code == 200
         recorded = get_evaluate_submission(store, eval_id)
-        assert recorded.trial_id == trial_id
-        assert recorded.trial_id != "trial-attacker-controls-this"
+        assert recorded.variant_id == variant_id
+        assert recorded.variant_id != "variant-attacker-controls-this"
 
 
 class TestArtifactRendering:
-    def test_proposal_javascript_uri_is_not_hyperlinked(
+    def test_idea_javascript_uri_is_not_hyperlinked(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
         eval_id, _, _ = seed_evaluate_task(store, slug="evil-prop")
-        # Patch the proposal's artifacts_uri to a javascript: URI.
-        proposal_id = "proposal-evil-prop"
-        proposal = store.read_proposal(proposal_id)
-        # We need to mutate the in-memory store; since proposals are
+        # Patch the idea's artifacts_uri to a javascript: URI.
+        idea_id = "idea-evil-prop"
+        idea = store.read_idea(idea_id)
+        # We need to mutate the in-memory store; since ideas are
         # frozen after creation, swap in a new one via the internal
-        # proposals dict.
-        # Proposal is a Pydantic model; use model_copy.
-        new_p = proposal.model_copy(update={"artifacts_uri": "javascript:alert(1)"})
-        store._proposals[proposal_id] = new_p
+        # ideas dict.
+        # Idea is a Pydantic model; use model_copy.
+        new_p = idea.model_copy(update={"artifacts_uri": "javascript:alert(1)"})
+        store._ideas[idea_id] = new_p
 
         csrf = get_csrf(signed_in_client)
         _post_form(
@@ -209,20 +209,20 @@ class TestArtifactRendering:
         )
         resp = signed_in_client.get(f"/evaluator/{eval_id}/draft")
         assert resp.status_code == 200
-        # Proposal artifacts_uri renders as code with "(unrenderable scheme)"
+        # Idea artifacts_uri renders as code with "(unrenderable scheme)"
         # — not as an <a href>.
         assert 'href="javascript:' not in resp.text
         assert "unrenderable scheme" in resp.text
 
-    def test_trial_javascript_uri_is_not_hyperlinked(
+    def test_variant_javascript_uri_is_not_hyperlinked(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
-        trial = store.read_trial(trial_id)
-        new_t = trial.model_copy(update={"artifacts_uri": "javascript:alert(1)"})
-        store._trials[trial_id] = new_t
+        eval_id, variant_id, _ = seed_evaluate_task(store)
+        variant = store.read_variant(variant_id)
+        new_t = variant.model_copy(update={"artifacts_uri": "javascript:alert(1)"})
+        store._variants[variant_id] = new_t
         csrf = get_csrf(signed_in_client)
         _post_form(
             signed_in_client,
@@ -232,10 +232,10 @@ class TestArtifactRendering:
         resp = signed_in_client.get(f"/evaluator/{eval_id}/draft")
         assert resp.status_code == 200
         assert 'href="javascript:' not in resp.text
-        # Both proposal and trial unrenderable; check for the trial one.
+        # Both idea and variant unrenderable; check for the variant one.
         assert resp.text.count("unrenderable scheme") >= 1
 
-    def test_trial_description_is_escaped(
+    def test_variant_description_is_escaped(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
@@ -283,16 +283,16 @@ class TestArtifactRendering:
         assert "javascript:alert(1)" in resp.text  # rendered as plain text/code
 
 
-class TestTrialArtifactTrustBoundary:
-    """`_read_inline_artifact` envelope, exercised via ``read_trial_artifact``."""
+class TestVariantArtifactTrustBoundary:
+    """`_read_inline_artifact` envelope, exercised via ``read_variant_artifact``."""
 
     def test_file_inside_artifacts_dir_is_inlined(
         self, artifacts_dir: Path
     ) -> None:
-        target = artifacts_dir / "trial.md"
-        target.write_text("inline trial content")
+        target = artifacts_dir / "variant.md"
+        target.write_text("inline variant content")
         uri = f"file://{target.resolve()}"
-        assert read_trial_artifact(uri, artifacts_dir) == "inline trial content"
+        assert read_variant_artifact(uri, artifacts_dir) == "inline variant content"
 
     def test_absolute_path_outside_returns_none(
         self, artifacts_dir: Path, tmp_path: Path
@@ -300,7 +300,7 @@ class TestTrialArtifactTrustBoundary:
         outside = tmp_path / "outside.md"
         outside.write_text("secret")
         uri = f"file://{outside.resolve()}"
-        assert read_trial_artifact(uri, artifacts_dir) is None
+        assert read_variant_artifact(uri, artifacts_dir) is None
 
     def test_path_traversal_returns_none(
         self, artifacts_dir: Path, tmp_path: Path
@@ -309,11 +309,11 @@ class TestTrialArtifactTrustBoundary:
         target.write_text("secret")
         traversal = artifacts_dir / ".." / "escape.md"
         uri = f"file://{traversal}"
-        assert read_trial_artifact(uri, artifacts_dir) is None
+        assert read_variant_artifact(uri, artifacts_dir) is None
 
     def test_https_uri_returns_none(self, artifacts_dir: Path) -> None:
         assert (
-            read_trial_artifact("https://example.invalid/x.md", artifacts_dir)
+            read_variant_artifact("https://example.invalid/x.md", artifacts_dir)
             is None
         )
 
@@ -321,13 +321,13 @@ class TestTrialArtifactTrustBoundary:
         target = artifacts_dir / "big.md"
         target.write_bytes(b"x" * ((1 << 20) + 1))
         uri = f"file://{target.resolve()}"
-        assert read_trial_artifact(uri, artifacts_dir) is None
+        assert read_variant_artifact(uri, artifacts_dir) is None
 
     def test_directory_returns_none(self, artifacts_dir: Path) -> None:
         sub = artifacts_dir / "sub"
         sub.mkdir()
         uri = f"file://{sub.resolve()}"
-        assert read_trial_artifact(uri, artifacts_dir) is None
+        assert read_variant_artifact(uri, artifacts_dir) is None
 
     def test_none_uri_returns_none(self, artifacts_dir: Path) -> None:
-        assert read_trial_artifact(None, artifacts_dir) is None
+        assert read_variant_artifact(None, artifacts_dir) is None

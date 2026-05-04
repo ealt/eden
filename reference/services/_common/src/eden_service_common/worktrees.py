@@ -1,6 +1,6 @@
 """Per-task git worktrees for the subprocess worker hosts.
 
-The implementer / evaluator hosts (Phase 10d subprocess mode) run a
+The executor / evaluator hosts (Phase 10d subprocess mode) run a
 user-supplied command inside a per-task worktree of the bare repo.
 The host owns the worktree lifecycle: create at a known commit,
 hand cwd to the subprocess, read HEAD afterward, then remove. A

@@ -77,7 +77,7 @@ class TestClaim:
     def test_claim_redirects_to_draft(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
+        eval_id, variant_id, _ = seed_evaluate_task(store)
         csrf = get_csrf(signed_in_client)
         resp = _post_form(
             signed_in_client,
@@ -86,11 +86,11 @@ class TestClaim:
         )
         assert resp.status_code == 303
         assert resp.headers["location"] == f"/evaluator/{eval_id}/draft"
-        # _CLAIMS contains (csrf, task_id) -> (token, trial_id)
+        # _CLAIMS contains (csrf, task_id) -> (token, variant_id)
         keys = list(evaluator_routes._CLAIMS.keys())
         assert len(keys) == 1
-        _, recorded_trial = evaluator_routes._CLAIMS[keys[0]]
-        assert recorded_trial == trial_id
+        _, recorded_variant = evaluator_routes._CLAIMS[keys[0]]
+        assert recorded_variant == variant_id
 
     def test_claim_already_claimed_surfaces_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -159,7 +159,7 @@ class TestDraftRender:
     def test_draft_renders_metric_inputs_per_schema(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        # Fixture metrics_schema has "score" : "real" — make sure
+        # Fixture evaluation_schema has "score" : "real" — make sure
         # the right input type is generated.
         eval_id, _, _ = seed_evaluate_task(store)
         csrf = get_csrf(signed_in_client)
@@ -202,7 +202,7 @@ class TestSubmitValidation:
         assert resp.status_code == 400
         assert "status must be one of" in resp.text
 
-    def test_success_with_zero_metrics_rejected(
+    def test_success_with_zero_evaluation_rejected(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         eval_id, _, _ = seed_evaluate_task(store)
@@ -213,12 +213,12 @@ class TestSubmitValidation:
             [("csrf_token", csrf), ("status", "success")],
         )
         assert resp.status_code == 400
-        assert "at least one metric value" in resp.text
+        assert "at least one evaluation value" in resp.text
 
-    def test_error_with_zero_metrics_accepted(
+    def test_error_with_zero_evaluation_accepted(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
+        eval_id, variant_id, _ = seed_evaluate_task(store)
         csrf = self._claim(signed_in_client, eval_id)
         resp = _post_form(
             signed_in_client,
@@ -229,10 +229,10 @@ class TestSubmitValidation:
         assert "submitted" in resp.text
         recorded = get_evaluate_submission(store, eval_id)
         assert recorded.status == "error"
-        assert recorded.metrics is None
-        assert recorded.trial_id == trial_id
+        assert recorded.evaluation is None
+        assert recorded.variant_id == variant_id
 
-    def test_eval_error_with_zero_metrics_accepted(
+    def test_eval_error_with_zero_evaluation_accepted(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         eval_id, _, _ = seed_evaluate_task(store)
@@ -267,7 +267,7 @@ class TestSubmitValidation:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         # Hand-crafted POST: the body carries a `metric.ghost` field
-        # outside the experiment's metrics_schema. The route must
+        # outside the experiment's evaluation_schema. The route must
         # forward every `metric.*` to the parser so the unknown key
         # is rejected with a 400 + field error.
         eval_id, _, _ = seed_evaluate_task(store)
@@ -287,10 +287,10 @@ class TestSubmitValidation:
         # And submit must not have been called.
         assert store.read_submission(eval_id) is None
 
-    def test_forged_trial_id_form_field_ignored(
+    def test_forged_variant_id_form_field_ignored(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
+        eval_id, variant_id, _ = seed_evaluate_task(store)
         csrf = self._claim(signed_in_client, eval_id)
         resp = _post_form(
             signed_in_client,
@@ -299,18 +299,18 @@ class TestSubmitValidation:
                 ("csrf_token", csrf),
                 ("status", "success"),
                 ("metric.score", "0.7"),
-                ("trial_id", "trial-attacker-controls-this"),
+                ("variant_id", "variant-attacker-controls-this"),
             ],
         )
         assert resp.status_code == 200
         recorded = get_evaluate_submission(store, eval_id)
-        assert recorded.trial_id == trial_id
-        assert recorded.trial_id != "trial-attacker-controls-this"
+        assert recorded.variant_id == variant_id
+        assert recorded.variant_id != "variant-attacker-controls-this"
 
     def test_success_records_metric(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
+        eval_id, variant_id, _ = seed_evaluate_task(store)
         csrf = self._claim(signed_in_client, eval_id)
         resp = _post_form(
             signed_in_client,
@@ -325,8 +325,8 @@ class TestSubmitValidation:
         assert resp.status_code == 200
         recorded = get_evaluate_submission(store, eval_id)
         assert recorded.status == "success"
-        assert recorded.trial_id == trial_id
-        assert recorded.metrics == {"score": 0.875}
+        assert recorded.variant_id == variant_id
+        assert recorded.evaluation == {"score": 0.875}
         assert recorded.artifacts_uri == "https://logs.example/run/42"
 
 
@@ -335,28 +335,28 @@ class TestIntegerWireForm:
 
     def test_integer_dot_zero_accepted(self) -> None:
         # Use a schema with an integer metric for this test.
-        from eden_contracts import MetricsSchema
+        from eden_contracts import EvaluationSchema
         from eden_web_ui.forms import parse_evaluate_form
 
-        schema = MetricsSchema.model_validate({"count": "integer"})
+        schema = EvaluationSchema.model_validate({"count": "integer"})
         draft, errors = parse_evaluate_form(
-            metrics_schema=schema,
+            evaluation_schema=schema,
             status_raw="success",
             metric_inputs={"count": "1.0"},
             artifacts_uri_raw="",
         )
         assert errors.by_row == {}
         assert draft is not None
-        assert draft.metrics == {"count": 1}
-        assert isinstance(draft.metrics["count"], int)
+        assert draft.evaluation == {"count": 1}
+        assert isinstance(draft.evaluation["count"], int)
 
     def test_integer_one_point_five_rejected(self) -> None:
-        from eden_contracts import MetricsSchema
+        from eden_contracts import EvaluationSchema
         from eden_web_ui.forms import parse_evaluate_form
 
-        schema = MetricsSchema.model_validate({"count": "integer"})
+        schema = EvaluationSchema.model_validate({"count": "integer"})
         draft, errors = parse_evaluate_form(
-            metrics_schema=schema,
+            evaluation_schema=schema,
             status_raw="success",
             metric_inputs={"count": "1.5"},
             artifacts_uri_raw="",

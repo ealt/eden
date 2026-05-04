@@ -15,11 +15,11 @@ Pydantic v2 bindings for the EDEN protocol wire formats. These models are **refe
 | Model | Schema |
 |---|---|
 | `ExperimentConfig`, `ObjectiveSpec` | `experiment-config.schema.json` |
-| `MetricsSchema` | `metrics-schema.schema.json` |
-| `Task` (discriminated: `PlanTask` / `ImplementTask` / `EvaluateTask`), `TaskClaim`, `PlanPayload`, `ImplementPayload`, `EvaluatePayload` | `task.schema.json` |
+| `EvaluationSchema` | `evaluation-schema.schema.json` |
+| `Task` (discriminated: `IdeateTask` / `ExecuteTask` / `EvaluateTask`), `TaskClaim`, `IdeatePayload`, `ExecutePayload`, `EvaluatePayload` | `task.schema.json` |
 | `Event` | `event.schema.json` |
-| `Proposal` | `proposal.schema.json` |
-| `Trial` | `trial.schema.json` |
+| `Idea` | `idea.schema.json` |
+| `Variant` | `variant.schema.json` |
 
 `Task` is a discriminated union (`Field(discriminator="kind")`); use `TaskAdapter` (a `pydantic.TypeAdapter`) to validate arbitrary task objects.
 
@@ -30,7 +30,7 @@ from eden_contracts import TaskAdapter, ExperimentConfig
 
 task = TaskAdapter.validate_python({
     "task_id": "t-1",
-    "kind": "plan",
+    "kind": "ideate",
     "state": "pending",
     "payload": {"experiment_id": "exp-1"},
     "created_at": "2026-04-23T12:00:00Z",
@@ -51,4 +51,4 @@ Use `model.model_dump(mode="json", exclude_none=True)` when emitting JSON intend
 A handful of cross-field constraints are enforced by model validators because JSON Schema cannot (or can only clumsily) express them. These constraints are also present in the JSON Schema via `if/then/else`; the models and schemas agree on every fixture in `tests/fixtures/`.
 
 - `Task`: `claim` MUST be present iff `state ∈ {claimed, submitted}`.
-- `MetricsSchema`: keys MUST NOT collide with reserved trial-object field names.
+- `EvaluationSchema`: keys MUST NOT collide with reserved variant-object field names.

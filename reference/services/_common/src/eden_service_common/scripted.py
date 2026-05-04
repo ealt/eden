@@ -19,47 +19,47 @@ from typing import Any
 
 from eden_contracts import (
     EvaluateTask,
-    ImplementTask,
-    MetricsSchema,
-    PlanTask,
-    Proposal,
-    Trial,
+    EvaluationSchema,
+    ExecuteTask,
+    Idea,
+    IdeateTask,
+    Variant,
 )
 from eden_dispatch.workers import (
     EvaluateOutcome,
-    ImplementOutcome,
-    ProposalTemplate,
+    ExecuteOutcome,
+    IdeaTemplate,
 )
 from eden_git import GitRepo, Identity, TreeEntry
 
-ScriptedPlanFn = Callable[[PlanTask], list[ProposalTemplate]]
-ScriptedImplementFn = Callable[[ImplementTask, Proposal], ImplementOutcome]
-ScriptedEvaluateFn = Callable[[EvaluateTask, Trial], EvaluateOutcome]
+ScriptedPlanFn = Callable[[IdeateTask], list[IdeaTemplate]]
+ScriptedImplementFn = Callable[[ExecuteTask, Idea], ExecuteOutcome]
+ScriptedEvaluateFn = Callable[[EvaluateTask, Variant], EvaluateOutcome]
 
 
 _IMPL_IDENTITY = Identity(
-    name="EDEN Implementer",
-    email="implementer@eden.invalid",
+    name="EDEN Executor",
+    email="executor@eden.invalid",
 )
 _IMPL_DATE = "2026-04-01T00:00:00+00:00"
 
 
 def make_plan_fn(
-    *, base_commit_sha: str, proposals_per_plan: int = 1
+    *, base_commit_sha: str, ideas_per_ideation: int = 1
 ) -> ScriptedPlanFn:
-    """Build a plan_fn that drafts ``proposals_per_plan`` proposals per plan task.
+    """Build a plan_fn that drafts ``ideas_per_ideation`` ideas per ideate task.
 
-    Each proposal carries ``parent_commits=(base_commit_sha,)``,
+    Each idea carries ``parent_commits=(base_commit_sha,)``,
     satisfying the schema's ``min_length=1`` constraint.
     """
 
-    def _plan(task: PlanTask) -> list[ProposalTemplate]:
-        templates: list[ProposalTemplate] = []
-        for i in range(proposals_per_plan):
+    def _plan(task: IdeateTask) -> list[IdeaTemplate]:
+        templates: list[IdeaTemplate] = []
+        for i in range(ideas_per_ideation):
             templates.append(
-                ProposalTemplate(
+                IdeaTemplate(
                     slug=f"{task.task_id}-p{i}",
-                    priority=float(proposals_per_plan - i),
+                    priority=float(ideas_per_ideation - i),
                     parent_commits=(base_commit_sha,),
                     artifacts_uri=f"file:///tmp/artifacts/{task.task_id}/{i}",
                 )
@@ -74,24 +74,24 @@ def make_implement_fn(
 ) -> ScriptedImplementFn:
     """Build an implement_fn that writes a real git commit per task.
 
-    The commit's parents come directly from ``proposal.parent_commits``
+    The commit's parents come directly from ``idea.parent_commits``
     (supporting both single-parent and merge shapes). The commit's
-    tree contains one deterministic blob keyed by proposal slug +
-    trial ID so each call produces a distinct commit.
+    tree contains one deterministic blob keyed by idea slug +
+    variant ID so each call produces a distinct commit.
 
     ``fail_every``, if set, returns ``status=error`` for every Nth
     task (1-indexed); useful for exercising rejection paths.
     """
     counter = itertools.count(1)
 
-    def _implement(task: ImplementTask, proposal: Proposal) -> ImplementOutcome:
+    def _implement(task: ExecuteTask, idea: Idea) -> ExecuteOutcome:
         index = next(counter)
         if fail_every is not None and fail_every > 0 and index % fail_every == 0:
-            return ImplementOutcome(status="error")
+            return ExecuteOutcome(status="error")
 
         repo = GitRepo(repo_path)
-        trial_id = task.task_id.replace("implement-", "trial-")
-        payload = f"trial={trial_id!r} slug={proposal.slug!r}\n".encode()
+        variant_id = task.task_id.replace("implement-", "variant-")
+        payload = f"variant={variant_id!r} slug={idea.slug!r}\n".encode()
         blob = repo.write_blob(payload)
         tree = repo.write_tree_from_entries(
             [
@@ -99,25 +99,25 @@ def make_implement_fn(
                     mode="100644",
                     type="blob",
                     sha=blob,
-                    path=f"{proposal.slug}.txt",
+                    path=f"{idea.slug}.txt",
                 )
             ]
         )
         commit_sha = repo.commit_tree(
             tree,
-            parents=list(proposal.parent_commits),
-            message=f"eden: {proposal.slug} ({trial_id})\n",
+            parents=list(idea.parent_commits),
+            message=f"eden: {idea.slug} ({variant_id})\n",
             author=_IMPL_IDENTITY,
             committer=_IMPL_IDENTITY,
             author_date=_IMPL_DATE,
             committer_date=_IMPL_DATE,
         )
-        branch_short = f"work/{proposal.slug}-{trial_id}"
+        branch_short = f"work/{idea.slug}-{variant_id}"
         repo.create_ref(f"refs/heads/{branch_short}", commit_sha)
         # Phase 10d follow-up B: when the local repo has an origin
         # remote (Gitea cutover), publish the work/* ref so the
         # orchestrator's clone can fetch it. Push failure rolls back
-        # the local ref + maps to ImplementOutcome(status="error") —
+        # the local ref + maps to ExecuteOutcome(status="error") —
         # mirrors the production subprocess flow per chapter 3 §3.3.
         if "origin" in repo._run(["remote"], check=False).stdout.split():
             try:
@@ -129,8 +129,8 @@ def make_implement_fn(
                         f"refs/heads/{branch_short}",
                         expected_old_sha=commit_sha,
                     )
-                return ImplementOutcome(status="error")
-        return ImplementOutcome(
+                return ExecuteOutcome(status="error")
+        return ExecuteOutcome(
             status="success",
             commit_sha=commit_sha,
             branch=branch_short,
@@ -140,11 +140,11 @@ def make_implement_fn(
 
 
 def make_evaluate_fn(
-    *, metrics_schema: MetricsSchema, fail_every: int | None = None
+    *, evaluation_schema: EvaluationSchema, fail_every: int | None = None
 ) -> ScriptedEvaluateFn:
     """Build an evaluate_fn that emits deterministic metrics.
 
-    Keys come from ``metrics_schema`` so the metrics validate against
+    Keys come from ``evaluation_schema`` so the metrics validate against
     the experiment's schema. Every real-valued key gets a fixed
     float; categorical keys get their first permitted value.
 
@@ -153,20 +153,20 @@ def make_evaluate_fn(
     """
     counter = itertools.count(1)
 
-    def _evaluate(task: EvaluateTask, trial: Trial) -> EvaluateOutcome:
+    def _evaluate(task: EvaluateTask, variant: Variant) -> EvaluateOutcome:
         index = next(counter)
         if fail_every is not None and fail_every > 0 and index % fail_every == 0:
             return EvaluateOutcome(
                 status="error",
-                artifacts_uri=f"file:///tmp/artifacts/{trial.trial_id}",
+                artifacts_uri=f"file:///tmp/artifacts/{variant.variant_id}",
             )
-        metrics: dict[str, Any] = {}
-        for name, kind in metrics_schema.root.items():
-            metrics[name] = _default_for_kind(kind, index)
+        evaluation: dict[str, Any] = {}
+        for name, kind in evaluation_schema.root.items():
+            evaluation[name] = _default_for_kind(kind, index)
         return EvaluateOutcome(
             status="success",
-            metrics=metrics,
-            artifacts_uri=f"file:///tmp/artifacts/{trial.trial_id}",
+            evaluation=evaluation,
+            artifacts_uri=f"file:///tmp/artifacts/{variant.variant_id}",
         )
 
     return _evaluate

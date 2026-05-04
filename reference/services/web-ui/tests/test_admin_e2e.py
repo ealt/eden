@@ -1,6 +1,6 @@
 """Real-subprocess end-to-end test for the admin module.
 
-Spawns task-store-server + web-ui (no orchestrator), drives a planner
+Spawns task-store-server + web-ui (no orchestrator), drives an ideator
 submit through real HTTP so a task moves to ``submitted``, then hits
 ``POST /admin/tasks/<id>/reclaim`` and verifies via a separate
 ``StoreClient`` that the task is back in ``pending`` and the
@@ -179,7 +179,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_plan_task("t-plan-1")
+            seed.create_ideate_task("t-ideate-1")
         finally:
             seed.close()
 
@@ -187,14 +187,14 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             resp = ui.post("/signin", follow_redirects=False)
             assert resp.status_code == 303
 
-            resp = ui.get("/planner/")
+            resp = ui.get("/ideator/")
             assert resp.status_code == 200
             m = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text)
             assert m is not None
             csrf = m.group(1)
 
             resp = ui.post(
-                "/planner/t-plan-1/claim",
+                "/ideator/t-ideate-1/claim",
                 content=urlencode({"csrf_token": csrf}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -203,10 +203,10 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
 
             resp = ui.get("/admin/tasks/?state=claimed")
             assert resp.status_code == 200, resp.text
-            assert "t-plan-1" in resp.text
+            assert "t-ideate-1" in resp.text
 
             resp = ui.post(
-                "/admin/tasks/t-plan-1/reclaim",
+                "/admin/tasks/t-ideate-1/reclaim",
                 content=urlencode({"csrf_token": csrf}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -224,7 +224,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            task = verify.read_task("t-plan-1")
+            task = verify.read_task("t-ideate-1")
             assert task.state == "pending"
             events = verify.replay()
             reclaim_events = [e for e in events if e.type == "task.reclaimed"]

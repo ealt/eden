@@ -16,6 +16,7 @@ Bring EDEN's vocabulary in line with the agreed direction in
    so qualitative results aren't second-class citizens.
 
 The user has directed:
+
 - **Single cohesive change**, no incremental stages — partial states
   would leave the codebase incoherent. One PR.
 - **Greenfield treatment** — no compat shims, no aliasing, no
@@ -371,6 +372,7 @@ data-shape uses.
 The `EvaluateSubmission.metrics` field becomes
 `EvaluateSubmission.evaluation`. The class name doesn't change. The
 rename touches:
+
 - `submissions.py` field declaration
 - `submissions_equivalent` content equivalence check
 - All wire-payload JSON keys (`{"metrics": ...}` → `{"evaluation": ...}`)
@@ -421,6 +423,7 @@ modules track this).
 
 The `manual-ui-wip` branch has its own copies of bug-fix code and
 tooling that touch the renamed surfaces. Two options:
+
 1. Rebase the branch onto the rename PR after it lands (manual
    conflict resolution touching every surface; tedious but
    self-contained).
@@ -468,6 +471,7 @@ vocabulary; need a quick pass to update prose).
 ## Acceptance for "done"
 
 The PR is mergeable when:
+
 - All 15 validation gates pass.
 - `grep -rin '\bplanner\b\|\bimplementer\b\|\bproposal\b\|\btrial\b\|\bmetrics_schema\b'`
   returns only matches in `docs/archive/`, `docs/plans/eden-phase-*`,

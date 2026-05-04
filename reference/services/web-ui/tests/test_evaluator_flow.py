@@ -56,7 +56,7 @@ class TestHappyPath:
         store: InMemoryStore,
         artifacts_dir: Path,
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(
+        eval_id, variant_id, _ = seed_evaluate_task(
             store, artifacts_dir=artifacts_dir, artifact_text="rationale text"
         )
         csrf = get_csrf(signed_in_client)
@@ -71,7 +71,7 @@ class TestHappyPath:
         draft_resp = signed_in_client.get(f"/evaluator/{eval_id}/draft")
         assert draft_resp.status_code == 200
         assert "rationale text" in draft_resp.text
-        assert trial_id in draft_resp.text
+        assert variant_id in draft_resp.text
         # Submit
         submit_resp = _post_form(
             signed_in_client,
@@ -89,7 +89,7 @@ class TestHappyPath:
         # Task is in submitted; submission has the metric.
         recorded = get_evaluate_submission(store, eval_id)
         assert recorded.status == "success"
-        assert recorded.metrics == {"score": 0.42}
+        assert recorded.evaluation == {"score": 0.42}
 
 
 class TestValidationRecovery:
@@ -133,7 +133,7 @@ class TestValidationRecovery:
 
 
 class TestEvalErrorPath:
-    def test_eval_error_with_partial_metrics(
+    def test_eval_error_with_partial_evaluation(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
@@ -157,7 +157,7 @@ class TestEvalErrorPath:
         assert resp.status_code == 200
         recorded = get_evaluate_submission(store, eval_id)
         assert recorded.status == "eval_error"
-        assert recorded.metrics == {"score": 0.1}
+        assert recorded.evaluation == {"score": 0.1}
 
 
 class TestStrandedClaimRecovery:
@@ -211,7 +211,7 @@ class TestConflictPath:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        eval_id, trial_id, _ = seed_evaluate_task(store)
+        eval_id, variant_id, _ = seed_evaluate_task(store)
         csrf = get_csrf(signed_in_client)
         _post_form(
             signed_in_client,
@@ -227,8 +227,8 @@ class TestConflictPath:
             other.token,
             EvaluateSubmission(
                 status="success",
-                trial_id=trial_id,
-                metrics={"score": 0.123},
+                variant_id=variant_id,
+                evaluation={"score": 0.123},
             ),
         )
         # Our session's submit hits WrongToken because our claim is gone.

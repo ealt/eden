@@ -29,7 +29,7 @@ def _common_wrap_kwargs(
     cidfile: Path,
     *,
     cwd_target: str = "/var/lib/eden/worktrees/host-a/task-1",
-    role: str = "implementer",
+    role: str = "executor",
     task_id: str = "task-1",
     host_id: str = "host-a",
     extra_volumes: list[VolumeMount] | None = None,
@@ -94,7 +94,7 @@ def test_wrap_command_labels(tmp_path: Path) -> None:
     labels = [parts[i + 1] for i, p in enumerate(parts) if p == "--label"]
     assert "eden.host=host-a" in labels
     assert "eden.task_id=task-1" in labels
-    assert "eden.role=implementer" in labels
+    assert "eden.role=executor" in labels
 
 
 def test_wrap_command_volume_and_bind_mounts(tmp_path: Path) -> None:
@@ -154,17 +154,17 @@ def test_wrap_command_quotes_user_command(tmp_path: Path) -> None:
     assert parts[-1] == tricky
 
 
-def test_wrap_command_planner_only_bind(tmp_path: Path) -> None:
-    """Planner has no volume mounts (cwd = experiment-dir bind)."""
+def test_wrap_command_ideator_only_bind(tmp_path: Path) -> None:
+    """Ideator has no volume mounts (cwd = experiment-dir bind)."""
     cidfile = tmp_path / "cid"
     out = wrap_command(
         original_command="python3 plan.py",
         image="eden-runtime:dev",
         cwd_target="/etc/eden/experiment-dir",
         cidfile=cidfile,
-        role="planner",
-        task_id="planner-host",
-        host_id="planner-host",
+        role="ideator",
+        task_id="ideator-host",
+        host_id="ideator-host",
         volumes=[],
         binds=[
             BindMount(
@@ -226,11 +226,11 @@ def test_parse_bind_spec_rejects_malformed(spec: str) -> None:
 
 
 def test_make_cidfile_path_unique(tmp_path: Path) -> None:
-    a = make_cidfile_path(cidfile_dir=tmp_path, role="planner")
-    b = make_cidfile_path(cidfile_dir=tmp_path, role="planner")
+    a = make_cidfile_path(cidfile_dir=tmp_path, role="ideator")
+    b = make_cidfile_path(cidfile_dir=tmp_path, role="ideator")
     assert a != b
     assert a.parent == tmp_path
-    assert a.name.startswith("planner-")
+    assert a.name.startswith("ideator-")
     assert a.suffix == ".cid"
 
 

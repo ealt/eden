@@ -15,7 +15,7 @@ def test_create_task_returns_200(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.1 — successful create returns 200."""
     body = {
         "task_id": _seed.fresh_task_id(),
-        "kind": "plan",
+        "kind": "ideate",
         "state": "pending",
         "payload": {"experiment_id": wire_client.experiment_id},
         "created_at": "2026-05-01T00:00:00Z",
@@ -36,7 +36,7 @@ def test_create_duplicate_task_returns_409_already_exists(
     tid = _seed.fresh_task_id()
     body = {
         "task_id": tid,
-        "kind": "plan",
+        "kind": "ideate",
         "state": "pending",
         "payload": {"experiment_id": wire_client.experiment_id},
         "created_at": "2026-05-01T00:00:00Z",
@@ -57,7 +57,7 @@ def test_read_unknown_task_returns_404(wire_client: WireClient) -> None:
 
 def test_claim_non_pending_returns_409(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.3 — claim of non-pending returns 409 illegal-transition."""
-    tid = _seed.create_plan_task(wire_client)
+    tid = _seed.create_ideate_task(wire_client)
     _seed.claim(wire_client, tid, worker_id="w1")
     r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
     assert r.status_code == 409
@@ -66,7 +66,7 @@ def test_claim_non_pending_returns_409(wire_client: WireClient) -> None:
 
 def test_submit_wrong_token_returns_403(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.4 — wrong token returns 403 wrong-token."""
-    tid = _seed.create_plan_task(wire_client)
+    tid = _seed.create_ideate_task(wire_client)
     _seed.claim(wire_client, tid)
     r = _seed.submit_plan(wire_client, tid, token="wrong")
     assert r.status_code == 403
@@ -75,24 +75,24 @@ def test_submit_wrong_token_returns_403(wire_client: WireClient) -> None:
 
 def test_submit_divergent_returns_409(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.4 — divergent resubmit returns 409 conflicting-resubmission."""  # noqa: E501
-    pid_a = _seed.create_proposal(wire_client, slug="a")
-    pid_b = _seed.create_proposal(wire_client, slug="b")
-    _seed.mark_proposal_ready(wire_client, pid_a)
-    _seed.mark_proposal_ready(wire_client, pid_b)
-    tid = _seed.create_plan_task(wire_client)
+    pid_a = _seed.create_idea(wire_client, slug="a")
+    pid_b = _seed.create_idea(wire_client, slug="b")
+    _seed.mark_idea_ready(wire_client, pid_a)
+    _seed.mark_idea_ready(wire_client, pid_b)
+    tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_plan(wire_client, tid, token=c["token"], proposal_ids=[pid_a])
-    r = _seed.submit_plan(wire_client, tid, token=c["token"], proposal_ids=[pid_b])
+    _seed.submit_plan(wire_client, tid, token=c["token"], idea_ids=[pid_a])
+    r = _seed.submit_plan(wire_client, tid, token=c["token"], idea_ids=[pid_b])
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/conflicting-resubmission"
 
 
 def test_integrate_different_sha_returns_409(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §5 — different SHA returns 409 invalid-precondition."""
-    trial_id = _seed.drive_to_success_trial(wire_client)
-    r1 = _seed.integrate_trial(wire_client, trial_id, trial_commit_sha="a" * 40)
+    variant_id = _seed.drive_to_success_variant(wire_client)
+    r1 = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha="a" * 40)
     assert 200 <= r1.status_code < 300, r1.text
-    r2 = _seed.integrate_trial(wire_client, trial_id, trial_commit_sha="b" * 40)
+    r2 = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha="b" * 40)
     assert r2.status_code == 409
     assert r2.json().get("type") == "eden://error/invalid-precondition"
 
@@ -113,7 +113,7 @@ def test_replay_returns_200_with_cursor(wire_client: WireClient) -> None:
     the full stream from the experiment's first event"; chapter 7 §6.1
     binds it via `GET /events?cursor=0` returning `{events, cursor}`.
     """
-    _seed.create_plan_task(wire_client)
+    _seed.create_ideate_task(wire_client)
     r = wire_client.get(wire_client.events_path(), params={"cursor": 0})
     assert r.status_code == 200
     body = r.json()
@@ -128,7 +128,7 @@ def test_reclaim_cause_vocabulary_closed(wire_client: WireClient) -> None:
     {expired, operator, health_policy}; anything else is a malformed
     request body.
     """
-    tid = _seed.create_plan_task(wire_client)
+    tid = _seed.create_ideate_task(wire_client)
     _seed.claim(wire_client, tid)
     r = wire_client.post(
         wire_client.tasks_path(tid, "/reclaim"), json={"cause": "garbage"}

@@ -1,6 +1,6 @@
 # eden-evaluator-host
 
-Reference evaluator worker: claims pending `evaluate` tasks, emits deterministic metrics matching the experiment's `metrics_schema`, and submits.
+Reference evaluator worker: claims pending `evaluate` tasks, emits deterministic metrics matching the experiment's `evaluation_schema`, and submits.
 
 ## Run
 
@@ -23,10 +23,10 @@ scripted profile. The command string is read from the
 experiment-config YAML's `evaluate_command` key.
 
 For each evaluate task the host creates a worktree at
-`trial.commit_sha`, runs the command with cwd=wt and env
+`variant.commit_sha`, runs the command with cwd=wt and env
 carrying `EDEN_TASK_JSON` / `EDEN_OUTPUT` / `EDEN_WORKTREE` /
 `EDEN_EXPERIMENT_DIR`, then reads `<wt>/.eden/eval-outcome.json`
-(`status` + `metrics`). Metrics are validated against
-`metrics_schema` before submit; type mismatches route to
+(`status` + `metrics`). Evaluation are validated against
+`evaluation_schema` before submit; type mismatches route to
 `status=eval_error`. See the
 [reference binding](../../../spec/v0/reference-bindings/worker-host-subprocess.md).

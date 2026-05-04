@@ -2,7 +2,7 @@
 
 This chapter specifies the event log: the envelope every event MUST carry, the transactional invariant that binds event writes to the state changes they describe, the per-type payload shapes for the v0 event registry, and the delivery guarantees a conforming event log MUST offer to subscribers.
 
-The event envelope's JSON Schema is [`schemas/event.schema.json`](schemas/event.schema.json). The behavioral contracts that produce events are in [`04-task-protocol.md`](04-task-protocol.md) (task transitions) and [`06-integrator.md`](06-integrator.md) (trial promotion). The event log's durability and subscription semantics as a *store* are in [`08-storage.md`](08-storage.md); this chapter specifies what events mean, not how they are persisted.
+The event envelope's JSON Schema is [`schemas/event.schema.json`](schemas/event.schema.json). The behavioral contracts that produce events are in [`04-task-protocol.md`](04-task-protocol.md) (task transitions) and [`06-integrator.md`](06-integrator.md) (variant promotion). The event log's durability and subscription semantics as a *store* are in [`08-storage.md`](08-storage.md); this chapter specifies what events mean, not how they are persisted.
 
 ## 1. Envelope
 
@@ -30,11 +30,11 @@ The envelope is closed over these fields for conforming events; a conforming log
 
 The central invariant of the event protocol, stated in [`01-concepts.md`](01-concepts.md) §6:
 
-> **Every state change that is observable via tasks, proposals, or > trials MUST be accompanied by a corresponding event, and the event > write MUST be atomic with the state change it describes.**
+> **Every state change that is observable via tasks, ideas, or > variants MUST be accompanied by a corresponding event, and the event > write MUST be atomic with the state change it describes.**
 
 "Atomic" means: either both the state change and the event append are durable, or neither is. A conforming implementation MUST NOT expose a state change to readers (direct store reads, cached projections, push notifications, role dispatch) before its event is durable in the log; conversely, it MUST NOT append an event whose state change has not been durably written. If a transaction covering both is aborted, neither is observable.
 
-The invariant applies to the set of entities enumerated in [`02-data-model.md`](02-data-model.md): tasks, proposals, trials. Implementations MAY emit *additional* events outside this set (see §3.5) that do not correspond to a protocol-defined state change; those additional events are not subject to the transactional invariant because there is no state change to bind them to.
+The invariant applies to the set of entities enumerated in [`02-data-model.md`](02-data-model.md): tasks, ideas, variants. Implementations MAY emit *additional* events outside this set (see §3.5) that do not correspond to a protocol-defined state change; those additional events are not subject to the transactional invariant because there is no state change to bind them to.
 
 ### 2.1 Why atomic
 
@@ -44,12 +44,12 @@ The event log is the normative observability channel ([`04-task-protocol.md`](04
 
 Several transitions span multiple entities and MUST commit together:
 
-- **Implement dispatch** — creating a `task` with `kind=implement` and transitioning its referenced `proposal` from `ready` to `dispatched` ([`04-task-protocol.md`](04-task-protocol.md) §2). Events: `task.created` + `proposal.dispatched`, in one atomic commit.
-- **Implement terminal** — the `implement` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `proposal` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §7). Events: `task.completed` (or `task.failed`) + `proposal.completed`, in one atomic commit.
-- **Evaluate terminal (`success`/`error`)** — the `evaluate` task's terminal transition plus writes to the trial's `status`, `metrics`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `trial.succeeded` / `trial.errored`, in one atomic commit.
-- **Implement reclaim with in-flight trial** — reclamation of an `implement` task whose prior execution left a trial in `starting` requires transitioning that trial to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `trial.errored`, in one atomic commit.
-- **Retry-exhausted `eval_error` terminal** — the orchestrator's transition of a trial from `starting` to `eval_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the trial, it MUST emit `trial.eval_errored` atomically.
-- **Trial promotion** — the integrator's write of a `trial/*` commit and the `trial_commit_sha` field on the trial ([`06-integrator.md`](06-integrator.md)). Event: `trial.integrated`.
+- **Implement dispatch** — creating a `task` with `kind=implement` and transitioning its referenced `idea` from `ready` to `dispatched` ([`04-task-protocol.md`](04-task-protocol.md) §2). Events: `task.created` + `idea.dispatched`, in one atomic commit.
+- **Implement terminal** — the `execute` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §7). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
+- **Evaluate terminal (`success`/`error`)** — the `evaluate` task's terminal transition plus writes to the variant's `status`, `metrics`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
+- **Implement reclaim with in-flight variant** — reclamation of an `execute` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
+- **Retry-exhausted `eval_error` terminal** — the orchestrator's transition of a variant from `starting` to `eval_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.eval_errored` atomically.
+- **Variant promotion** — the integrator's write of a `variant/*` commit and the `variant_commit_sha` field on the variant ([`06-integrator.md`](06-integrator.md)). Event: `variant.integrated`.
 
 A subscriber processing any of these composite events MUST therefore either observe the full set or observe none; partial visibility is a protocol violation.
 
@@ -57,8 +57,8 @@ A subscriber processing any of these composite events MUST therefore either obse
 
 Operations that do not change protocol-owned state do not require events:
 
-- Reading a task, proposal, trial, or event.
-- Uploading artifacts to the artifact store before they are referenced from a protocol-owned object. (Populating `artifacts_uri` on a proposal or trial *is* a state change and is covered by the events on those objects.)
+- Reading a task, idea, variant, or event.
+- Uploading artifacts to the artifact store before they are referenced from a protocol-owned object. (Populating `artifacts_uri` on an idea or variant *is* a state change and is covered by the events on those objects.)
 - Worker-internal progress (scratch files, local logs).
 
 Implementations MAY expose operational telemetry through other channels without running it through the event log.
@@ -92,48 +92,48 @@ Payload field definitions:
 
 The payload MAY include additional fields beyond those required; subscribers MUST tolerate them. A conforming orchestrator SHOULD include the submitting worker's `worker_id` on `task.submitted`, `task.completed`, and `task.failed` events when known, as an operational convenience — but this is not required because the worker-task binding is already recoverable from the preceding `task.claimed` event.
 
-### 3.2 Proposal events
+### 3.2 Idea events
 
-Produced atomically with the proposal `state` transitions defined in [`02-data-model.md`](02-data-model.md) §5 and [`03-roles.md`](03-roles.md) §2.2. Composite commits that bind a proposal event to a task event are enumerated in §2.2.
-
-| Type | Transition | `data` required fields |
-|---|---|---|
-| `proposal.drafted` | — → `drafting` | `proposal_id` |
-| `proposal.ready` | `drafting` → `ready` | `proposal_id` |
-| `proposal.dispatched` | `ready` → `dispatched` | `proposal_id`, `task_id` |
-| `proposal.completed` | `dispatched` → `completed` | `proposal_id`, `task_id` |
-
-Payload field definitions:
-
-- `proposal_id` — the `proposal_id` of the transitioning proposal.
-- `task_id` — for `proposal.dispatched`, the `task_id` of the `implement` task created by the same commit (§2.2). For `proposal.completed`, the `task_id` of the `implement` task whose terminal transition is being recorded.
-
-### 3.3 Trial events
-
-Produced atomically with trial `status` transitions and with the integrator's promotion write. The trial's lifecycle is defined in [`02-data-model.md`](02-data-model.md) §7 and [`03-roles.md`](03-roles.md) §3–§4; the promotion step is in [`06-integrator.md`](06-integrator.md).
+Produced atomically with the idea `state` transitions defined in [`02-data-model.md`](02-data-model.md) §5 and [`03-roles.md`](03-roles.md) §2.2. Composite commits that bind an idea event to a task event are enumerated in §2.2.
 
 | Type | Transition | `data` required fields |
 |---|---|---|
-| `trial.started` | — → `starting` | `trial_id`, `proposal_id` |
-| `trial.succeeded` | `starting` → `success` | `trial_id`, `commit_sha` |
-| `trial.errored` | `starting` → `error` | `trial_id` |
-| `trial.eval_errored` | `starting` → `eval_error` | `trial_id` |
-| `trial.integrated` | — (integrator writes `trial_commit_sha`) | `trial_id`, `trial_commit_sha` |
+| `idea.drafted` | — → `drafting` | `idea_id` |
+| `idea.ready` | `drafting` → `ready` | `idea_id` |
+| `idea.dispatched` | `ready` → `dispatched` | `idea_id`, `task_id` |
+| `idea.completed` | `dispatched` → `completed` | `idea_id`, `task_id` |
 
 Payload field definitions:
 
-- `trial_id` — the `trial_id` of the transitioning trial.
-- `proposal_id` — the trial's `proposal_id` ([`02-data-model.md`](02-data-model.md) §7.1).
-- `commit_sha` — the worker-branch tip recorded on the trial at the moment of success ([`02-data-model.md`](02-data-model.md) §7.1).
-- `trial_commit_sha` — the canonical-lineage SHA the integrator wrote ([`06-integrator.md`](06-integrator.md)). A 40-hex SHA-1 or a 64-hex SHA-256; the same pattern as commits elsewhere in the data model.
+- `idea_id` — the `idea_id` of the transitioning idea.
+- `task_id` — for `idea.dispatched`, the `task_id` of the `execute` task created by the same commit (§2.2). For `idea.completed`, the `task_id` of the `execute` task whose terminal transition is being recorded.
 
-`trial.integrated` is not a trial-`status` transition — integration does not change the trial's `status` field, only its `trial_commit_sha`. The event marks promotion so subscribers can reconstruct the canonical lineage without reading git directly.
+### 3.3 Variant events
+
+Produced atomically with variant `status` transitions and with the integrator's promotion write. The variant's lifecycle is defined in [`02-data-model.md`](02-data-model.md) §7 and [`03-roles.md`](03-roles.md) §3–§4; the promotion step is in [`06-integrator.md`](06-integrator.md).
+
+| Type | Transition | `data` required fields |
+|---|---|---|
+| `variant.started` | — → `starting` | `variant_id`, `idea_id` |
+| `variant.succeeded` | `starting` → `success` | `variant_id`, `commit_sha` |
+| `variant.errored` | `starting` → `error` | `variant_id` |
+| `variant.eval_errored` | `starting` → `eval_error` | `variant_id` |
+| `variant.integrated` | — (integrator writes `variant_commit_sha`) | `variant_id`, `variant_commit_sha` |
+
+Payload field definitions:
+
+- `variant_id` — the `variant_id` of the transitioning variant.
+- `idea_id` — the variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §7.1).
+- `commit_sha` — the worker-branch tip recorded on the variant at the moment of success ([`02-data-model.md`](02-data-model.md) §7.1).
+- `variant_commit_sha` — the canonical-lineage SHA the integrator wrote ([`06-integrator.md`](06-integrator.md)). A 40-hex SHA-1 or a 64-hex SHA-256; the same pattern as commits elsewhere in the data model.
+
+`variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks promotion so subscribers can reconstruct the canonical lineage without reading git directly.
 
 ### 3.4 Subscriber observability guarantee
 
-Every protocol-owned state-machine transition in v0 is covered by exactly one event type in §3.1–§3.3. A subscriber that consumes every event with a registered `type`, in log order, MUST be able to reconstruct the **lifecycle history** of every task, proposal, and trial in the experiment: which entities exist, in what states, in what order. A conforming implementation MUST NOT expose a state- machine transition that is not marked by its corresponding registered event.
+Every protocol-owned state-machine transition in v0 is covered by exactly one event type in §3.1–§3.3. A subscriber that consumes every event with a registered `type`, in log order, MUST be able to reconstruct the **lifecycle history** of every task, idea, and variant in the experiment: which entities exist, in what states, in what order. A conforming implementation MUST NOT expose a state- machine transition that is not marked by its corresponding registered event.
 
-Registered event payloads carry only the fields needed to *identify* the transitioning entity and any cross-entity references (e.g. `proposal.dispatched` carries the implement `task_id`). They do not carry full entity snapshots. A subscriber that needs the content of an entity (the proposal's `parent_commits` and `artifacts_uri`, the trial's `metrics` and `completed_at`) MUST read that entity from its store using the identifier the event carries; the read returns the entity's current state ([`08-storage.md`](08-storage.md) §1.7). This boundary is deliberate: events mark what happened; the entity stores hold what the entity *is*. Coupling the two into a full event-sourced projection — a subscriber reconstructing every intermediate entity value from events alone — is a deployment MAY implement on top of v0 but is not a protocol requirement, since v0 does not mandate historical reads on the entity stores.
+Registered event payloads carry only the fields needed to *identify* the transitioning entity and any cross-entity references (e.g. `idea.dispatched` carries the implement `task_id`). They do not carry full entity snapshots. A subscriber that needs the content of an entity (the idea's `parent_commits` and `artifacts_uri`, the variant's `metrics` and `completed_at`) MUST read that entity from its store using the identifier the event carries; the read returns the entity's current state ([`08-storage.md`](08-storage.md) §1.7). This boundary is deliberate: events mark what happened; the entity stores hold what the entity *is*. Coupling the two into a full event-sourced projection — a subscriber reconstructing every intermediate entity value from events alone — is a deployment MAY implement on top of v0 but is not a protocol requirement, since v0 does not mandate historical reads on the entity stores.
 
 The transactional invariant (§2) combined with the atomic event + state-change rule guarantees that any entity reachable via an event's identifier is already durable at read time.
 

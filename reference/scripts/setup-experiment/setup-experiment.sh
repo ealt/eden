@@ -19,7 +19,7 @@ set -euo pipefail
 #                                     [--postgres-password <P>]
 #                                     [--env-file <path>]
 #                                     [--experiment-dir <path>]
-#                                     [--proposals-per-plan <N>]
+#                                     [--ideas-per-ideation <N>]
 
 usage() {
     cat <<'EOF' >&2
@@ -30,7 +30,7 @@ Usage:
                       [--postgres-password <P>]
                       [--env-file <path>]
                       [--experiment-dir <path>]
-                      [--proposals-per-plan <N>]
+                      [--ideas-per-ideation <N>]
                       [--exec-mode {host,docker}]
 
 Generates `reference/compose/.env` and copies <config.yaml> to
@@ -87,7 +87,7 @@ while [[ $# -gt 0 ]]; do
         --postgres-password)    require_value "$1" "$#"; ARG_POSTGRES_PASSWORD="$2"; shift 2 ;;
         --env-file)             require_value "$1" "$#"; ENV_FILE="$2";              shift 2 ;;
         --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
-        --proposals-per-plan)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
+        --ideas-per-ideation)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
         --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         --*)                    echo "unknown flag: $1" >&2; usage; exit 2 ;;
@@ -189,8 +189,8 @@ GITEA_SSH_HOST_PORT="${EXISTING_GITEA_SSH_HOST_PORT:-2222}"
 EXISTING_WEB_UI_HOST_PORT="$(read_env_key WEB_UI_HOST_PORT "$ENV_FILE")"
 WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
 
-EXISTING_PLAN_TASKS="$(read_env_key EDEN_PLAN_TASKS "$ENV_FILE")"
-EDEN_PLAN_TASKS="${EXISTING_PLAN_TASKS:-3}"
+EXISTING_PLAN_TASKS="$(read_env_key EDEN_IDEATE_TASKS "$ENV_FILE")"
+EDEN_IDEATE_TASKS="${EXISTING_PLAN_TASKS:-3}"
 
 # 10d subprocess overlay: experiment-dir bind-mount source. Default
 # is the directory containing the experiment config's `.eden`
@@ -206,8 +206,8 @@ else
         EDEN_EXPERIMENT_DIR_HOST="$(cd "$parent" && pwd)"
     fi
 fi
-EXISTING_PROPOSALS_PER_PLAN="$(read_env_key EDEN_PROPOSALS_PER_PLAN "$ENV_FILE")"
-EDEN_PROPOSALS_PER_PLAN="${ARG_PROPOSALS_PER_PLAN:-${EXISTING_PROPOSALS_PER_PLAN:-1}}"
+EXISTING_PROPOSALS_PER_PLAN="$(read_env_key EDEN_IDEAS_PER_IDEATION "$ENV_FILE")"
+EDEN_IDEAS_PER_IDEATION="${ARG_PROPOSALS_PER_PLAN:-${EXISTING_PROPOSALS_PER_PLAN:-1}}"
 
 # --- Phase 10d follow-up A: --exec-mode docker resolution ---
 # All four are written to .env unconditionally; the compose overlay's
@@ -310,12 +310,12 @@ EDEN_EXPERIMENT_ID=${EXPERIMENT_ID}
 EDEN_SHARED_TOKEN=${EDEN_SHARED_TOKEN}
 EDEN_SESSION_SECRET=${EDEN_SESSION_SECRET}
 EDEN_STORE_URL=${EDEN_STORE_URL}
-EDEN_PLAN_TASKS=${EDEN_PLAN_TASKS}
+EDEN_IDEATE_TASKS=${EDEN_IDEATE_TASKS}
 WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 
 # --- 10d subprocess overlay (only used by compose.subprocess.yaml) ---
 EDEN_EXPERIMENT_DIR_HOST=${EDEN_EXPERIMENT_DIR_HOST}
-EDEN_PROPOSALS_PER_PLAN=${EDEN_PROPOSALS_PER_PLAN}
+EDEN_IDEAS_PER_IDEATION=${EDEN_IDEAS_PER_IDEATION}
 
 # --- 10d follow-up A: container-isolated *_command execution ---
 # EDEN_EXEC_MODE=host (default) keeps the chunk-10d behavior — user
@@ -330,7 +330,7 @@ EDEN_CIDFILES_DIR_HOST=${EDEN_CIDFILES_DIR_HOST}
 # --- 10d follow-up B: Gitea-as-remote ---
 # The workers' git remote is the in-network Gitea container. Workers
 # clone bare on first run and fetch/push thereafter; the integrator
-# publishes trial/* refs back to Gitea per chapter 6 §3.4.
+# publishes variant/* refs back to Gitea per chapter 6 §3.4.
 GITEA_REMOTE_PASSWORD=${GITEA_REMOTE_PASSWORD}
 GITEA_REMOTE_URL=http://gitea:3000/eden/${EXPERIMENT_ID}.git
 EDEN_GITEA_CREDS_DIR_HOST=${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}

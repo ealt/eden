@@ -28,11 +28,11 @@
 name: eden-reference
 
 services:
-  planner-host:
+  ideator-host:
     command:
       - python
       - -m
-      - eden_planner_host
+      - eden_ideator_host
       - --task-store-url
       - http://task-store-server:8080
       - --experiment-id
@@ -40,7 +40,7 @@ services:
       - --shared-token
       - ${EDEN_SHARED_TOKEN:?}
       - --worker-id
-      - planner-1
+      - ideator-1
       - --mode
       - subprocess
       - --experiment-config
@@ -49,8 +49,8 @@ services:
       - /etc/eden/experiment-dir
       - --artifacts-dir
       - /var/lib/eden/artifacts
-      - --plan-env-file
-      - /etc/eden/planner.env
+      - --ideate-env-file
+      - /etc/eden/ideator.env
       - --exec-mode
       - docker
       - --exec-image
@@ -74,11 +74,11 @@ services:
       # the host filesystem.)
       - ${EDEN_CIDFILES_DIR_HOST:?}:${EDEN_CIDFILES_DIR_HOST:?}
 
-  implementer-host:
+  executor-host:
     command:
       - python
       - -m
-      - eden_implementer_host
+      - eden_executor_host
       - --task-store-url
       - http://task-store-server:8080
       - --experiment-id
@@ -86,7 +86,7 @@ services:
       - --shared-token
       - ${EDEN_SHARED_TOKEN:?}
       - --worker-id
-      - implementer-1
+      - executor-1
       - --repo-path
       - /var/lib/eden/repo
       - --gitea-url
@@ -101,14 +101,14 @@ services:
       - /etc/eden/experiment-dir
       - --worktrees-dir
       - /var/lib/eden/worktrees
-      - --implement-env-file
-      - /etc/eden/implement.env
+      - --execute-env-file
+      - /etc/eden/execute.env
       - --exec-mode
       - docker
       - --exec-image
       - ${EDEN_EXEC_IMAGE:?}
       - --exec-volume
-      - eden-implementer-repo:/var/lib/eden/repo
+      - eden-executor-repo:/var/lib/eden/repo
       - --exec-volume
       - eden-worktrees:/var/lib/eden/worktrees
       - --exec-volume

@@ -108,7 +108,7 @@ def test_wrap_runs_a_simple_command(tmp_path: Path) -> None:
 def test_wrap_runs_git_in_a_worktree_with_external_gitlink(tmp_path: Path) -> None:
     """Mount shape works for the production worktree-with-gitlink case.
 
-    Models the implementer's deployment exactly: a bare repo lives at
+    Models the executor's deployment exactly: a bare repo lives at
     one mounted path, a worktree's `.git` is a *gitlink file* pointing
     into the bare repo's `worktrees/<name>/` subdir, and the spawned
     child container must see BOTH paths to make `git status` work.
@@ -153,7 +153,7 @@ def test_wrap_runs_git_in_a_worktree_with_external_gitlink(tmp_path: Path) -> No
     )
     # Sanity: confirm `.git` in the worktree is a gitlink file
     # pointing into the bare repo, not a directory. This mirrors the
-    # production implementer flow and is the case that broke when
+    # production executor flow and is the case that broke when
     # only the worktree was mounted into the spawned child.
     gitlink = wt / ".git"
     assert gitlink.is_file(), f".git should be a gitlink file, got {gitlink!r}"
@@ -286,7 +286,7 @@ def test_terminate_sigkill_path_invokes_post_kill_callback(
         binds=[BindMount(source=str(tmp_path), target="/work")],
         env_keys=[],
     )
-    # `capture_stdin=True` mirrors the planner production shape: the
+    # `capture_stdin=True` mirrors the ideator production shape: the
     # wrap uses `docker run -i`, which exits early on stdin EOF in
     # environments where stdin is /dev/null (CI). With a piped stdin
     # held open by python, docker run waits for the container to

@@ -51,7 +51,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--experiment-config",
         required=True,
-        help="YAML experiment-config.schema.json file for metrics_schema seeding.",
+        help="YAML experiment-config.schema.json file for evaluation_schema seeding.",
     )
     parser.add_argument(
         "--host",

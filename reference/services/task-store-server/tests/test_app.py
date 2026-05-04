@@ -20,8 +20,8 @@ FIXTURE_CONFIG = (
 
 def test_load_experiment_config_parses_fixture() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    assert config.metrics_schema.root == {"score": "real"}
-    assert config.parallel_trials >= 1
+    assert config.evaluation_schema.root == {"score": "real"}
+    assert config.parallel_variants >= 1
 
 
 def test_build_store_memory_backend() -> None:

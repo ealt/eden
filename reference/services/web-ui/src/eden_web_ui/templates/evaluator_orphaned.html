@@ -6,7 +6,7 @@
 
 <dl>
     <dt>task_id</dt><dd><code>{{ task_id }}</code></dd>
-    <dt>trial_id</dt><dd><code>{{ trial_id }}</code></dd>
+    <dt>variant_id</dt><dd><code>{{ variant_id }}</code></dd>
     <dt>declared status</dt><dd><code>{{ status }}</code></dd>
 </dl>
 
@@ -14,9 +14,9 @@
     {% if recovery_kind == "auto" %}
     <h2>auto-recovers via reclaim</h2>
     <p>
-        The trial itself is unaffected — the evaluator never
-        creates or mutates trials, so there is no orphaned
-        <code>starting</code> trial here. The task may still be
+        The variant itself is unaffected — the evaluator never
+        creates or mutates variants, so there is no orphaned
+        <code>starting</code> variant here. The task may still be
         claimed by this session until the claim TTL expires (or an
         operator reclaims it). On reclaim the orchestrator
         transitions the task back to <code>pending</code>; a fresh

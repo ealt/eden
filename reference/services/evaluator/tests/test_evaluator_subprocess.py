@@ -8,11 +8,11 @@ from pathlib import Path
 
 from eden_contracts import (
     EvaluateTask,
+    EvaluationSchema,
     ExperimentConfig,
-    MetricsSchema,
+    Idea,
     ObjectiveSpec,
-    Proposal,
-    Trial,
+    Variant,
 )
 from eden_evaluator_host.subprocess_mode import (
     EvaluatorSubprocessConfig,
@@ -26,14 +26,14 @@ from eden_storage import EvaluateSubmission, InMemoryStore
 EXPERIMENT_ID = "exp-1"
 
 
-def _store_with_evaluable_trial(tmp_path: Path) -> tuple[InMemoryStore, str, str, str]:
+def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, str, str]:
     repo_path = tmp_path / "bare.git"
     GitRepo.init_bare(repo_path)
     seed_sha = seed_bare_repo(str(repo_path))
-    schema = MetricsSchema.model_validate({"score": "real"})
-    store = InMemoryStore(experiment_id=EXPERIMENT_ID, metrics_schema=schema)
-    proposal = Proposal(
-        proposal_id="proposal-x1",
+    schema = EvaluationSchema.model_validate({"score": "real"})
+    store = InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema=schema)
+    idea = Idea(
+        idea_id="idea-x1",
         experiment_id=EXPERIMENT_ID,
         slug="p0",
         priority=1.0,
@@ -42,33 +42,33 @@ def _store_with_evaluable_trial(tmp_path: Path) -> tuple[InMemoryStore, str, str
         state="drafting",
         created_at="2026-04-01T00:00:00.000Z",
     )
-    store.create_proposal(proposal)
-    store.mark_proposal_ready("proposal-x1")
-    store.create_implement_task("implement-1", "proposal-x1")
-    claim = store.claim("implement-1", "impl-1")
-    trial = Trial(
-        trial_id="trial-t1",
+    store.create_idea(idea)
+    store.mark_idea_ready("idea-x1")
+    store.create_execute_task("execute-1", "idea-x1")
+    claim = store.claim("execute-1", "impl-1")
+    variant = Variant(
+        variant_id="variant-t1",
         experiment_id=EXPERIMENT_ID,
-        proposal_id="proposal-x1",
+        idea_id="idea-x1",
         status="starting",
         parent_commits=[seed_sha],
-        branch="work/p0-trial-t1",
+        branch="work/p0-variant-t1",
         started_at="2026-04-01T00:00:00.000Z",
     )
-    store.create_trial(trial)
-    from eden_storage import ImplementSubmission
+    store.create_variant(variant)
+    from eden_storage import ExecuteSubmission
 
     store.submit(
-        "implement-1",
+        "execute-1",
         claim.token,
-        ImplementSubmission(status="success", trial_id="trial-t1", commit_sha=seed_sha),
+        ExecuteSubmission(status="success", variant_id="variant-t1", commit_sha=seed_sha),
     )
-    # Drive accept so the trial picks up commit_sha and we can dispatch evaluate.
-    decision, _ = store.validate_terminal("implement-1")
+    # Drive accept so the variant picks up commit_sha and we can dispatch evaluate.
+    decision, _ = store.validate_terminal("execute-1")
     assert decision == "accept"
-    store.accept("implement-1")
-    store.create_evaluate_task("evaluate-1", "trial-t1")
-    return store, str(repo_path), seed_sha, "trial-t1"
+    store.accept("execute-1")
+    store.create_evaluate_task("evaluate-1", "variant-t1")
+    return store, str(repo_path), seed_sha, "variant-t1"
 
 
 def _config(
@@ -92,10 +92,10 @@ def _config(
 
 def _experiment_config() -> ExperimentConfig:
     return ExperimentConfig(
-        parallel_trials=1,
-        max_trials=10,
+        parallel_variants=1,
+        max_variants=10,
         max_wall_time="1h",
-        metrics_schema=MetricsSchema.model_validate({"score": "real"}),
+        evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
         objective=ObjectiveSpec(expr="score", direction="maximize"),
     )
 
@@ -106,13 +106,13 @@ def _write_command(tmp_path: Path, body: str) -> str:
     return f"python3 {path}"
 
 
-def test_success_submits_metrics(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_trial(tmp_path)
+def test_success_submits_evaluation(tmp_path: Path) -> None:
+    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
     body = """
     import json, os
     from pathlib import Path
     out = Path.cwd() / os.environ["EDEN_OUTPUT"]
-    out.write_text(json.dumps({"status": "success", "metrics": {"score": 0.7}}))
+    out.write_text(json.dumps({"status": "success", "evaluation": {"score": 0.7}}))
     """
     config = _config(
         command=_write_command(tmp_path, body),
@@ -131,23 +131,23 @@ def test_success_submits_metrics(tmp_path: Path) -> None:
         task=task,
         config=config,
         host_subdir=host_subdir,
-        metrics_schema={"score": "real"},
+        evaluation_schema={"score": "real"},
         objective={"expr": "score", "direction": "maximize"},
     )
     submission = store.read_submission("evaluate-1")
     assert isinstance(submission, EvaluateSubmission)
     assert submission.status == "success"
-    assert submission.metrics == {"score": 0.7}
+    assert submission.evaluation == {"score": 0.7}
 
 
 def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_trial(tmp_path)
+    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
     body = """
     import json, os
     from pathlib import Path
     out = Path.cwd() / os.environ["EDEN_OUTPUT"]
     # Wrong metric name.
-    out.write_text(json.dumps({"status": "success", "metrics": {"unknown": 1.0}}))
+    out.write_text(json.dumps({"status": "success", "evaluation": {"unknown": 1.0}}))
     """
     config = _config(
         command=_write_command(tmp_path, body),
@@ -166,7 +166,7 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
         task=task,
         config=config,
         host_subdir=host_subdir,
-        metrics_schema={"score": "real"},
+        evaluation_schema={"score": "real"},
         objective={"expr": "score", "direction": "maximize"},
     )
     submission = store.read_submission("evaluate-1")
@@ -175,7 +175,7 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
 
 
 def test_status_error_passthrough(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_trial(tmp_path)
+    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
     body = """
     import json, os
     from pathlib import Path
@@ -199,7 +199,7 @@ def test_status_error_passthrough(tmp_path: Path) -> None:
         task=task,
         config=config,
         host_subdir=host_subdir,
-        metrics_schema={"score": "real"},
+        evaluation_schema={"score": "real"},
         objective={"expr": "score", "direction": "maximize"},
     )
     submission = store.read_submission("evaluate-1")
@@ -208,7 +208,7 @@ def test_status_error_passthrough(tmp_path: Path) -> None:
 
 
 def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_trial(tmp_path)
+    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
     config = _config(
         command="python3 -c 'import time; time.sleep(60)'",
         repo_path=repo_path,
@@ -228,7 +228,7 @@ def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
         task=task,
         config=config,
         host_subdir=host_subdir,
-        metrics_schema={"score": "real"},
+        evaluation_schema={"score": "real"},
         objective={"expr": "score", "direction": "maximize"},
     )
     elapsed = time.monotonic() - start

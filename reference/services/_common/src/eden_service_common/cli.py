@@ -80,7 +80,7 @@ class ExecArgs:
 def add_exec_arguments(parser: argparse.ArgumentParser) -> None:
     """Register the ``--exec-*`` family of flags on ``parser``.
 
-    Used by every subprocess-mode host (planner / implementer /
+    Used by every subprocess-mode host (ideator / executor /
     evaluator). Validation of the docker-mode requirements
     (image set, mounts present) happens in :func:`resolve_exec_args`
     once the parser has populated the namespace, since per-role
@@ -111,7 +111,7 @@ def add_exec_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="NAME:TARGET[:ro|rw]",
         help=(
             "Forward a docker named volume into spawned child "
-            "containers. Repeatable. Required for implementer / "
+            "containers. Repeatable. Required for executor / "
             "evaluator (eden-bare-repo + eden-worktrees)."
         ),
     )

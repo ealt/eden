@@ -4,7 +4,7 @@ This chapter specifies an **HTTP binding** for the behaviors [chapter 4](04-task
 
 A conforming EDEN deployment is **not required** to use this HTTP binding. The protocol constrains observable behavior; the transport that carries it is a deployment choice. This chapter exists so that HTTP-based deployments — including the Phase-8a reference deployment — can interoperate byte-for-byte.
 
-The binding intentionally omits the reference orchestrator's decision helpers (`validate_terminal`, `validate_metrics`). Those are reference-impl conveniences, not chapter-4/5/8 operations. A conforming third-party orchestrator is free to implement their decision logic inline; see §9.
+The binding intentionally omits the reference orchestrator's decision helpers (`validate_terminal`, `validate_evaluation`). Those are reference-impl conveniences, not chapter-4/5/8 operations. A conforming third-party orchestrator is free to implement their decision logic inline; see §9.
 
 ## 1. Transport
 
@@ -40,7 +40,7 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 
 ### 2.1 Create
 
-`POST /v0/experiments/{E}/tasks` accepts a JSON request body whose shape matches [`schemas/task.schema.json`](schemas/task.schema.json) with `state == "pending"` and no `claim`. On success the server returns 200 with the created task as the response body (same schema). The composite-commit rules in [`05-event-protocol.md`](05-event-protocol.md) §2.2 apply: creating an `implement` task transitions the referenced proposal atomically with the task insert; the server MUST perform both effects in a single transaction.
+`POST /v0/experiments/{E}/tasks` accepts a JSON request body whose shape matches [`schemas/task.schema.json`](schemas/task.schema.json) with `state == "pending"` and no `claim`. On success the server returns 200 with the created task as the response body (same schema). The composite-commit rules in [`05-event-protocol.md`](05-event-protocol.md) §2.2 apply: creating an `execute` task transitions the referenced idea atomically with the task insert; the server MUST perform both effects in a single transaction.
 
 ### 2.2 List and read
 
@@ -64,43 +64,43 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 
 `POST /v0/experiments/{E}/tasks/{T}/reclaim` transitions a `claimed` or (operator-invoked) `submitted` task back to `pending` per [`04-task-protocol.md`](04-task-protocol.md) §5. The request body carries a single field `cause` drawn from the closed v0 vocabulary: `"expired"`, `"operator"`, or `"health_policy"`.
 
-## 3. Proposal operations
+## 3. Idea operations
 
 | Operation | HTTP | Path |
 |---|---|---|
-| `create_proposal` | `POST` | `/v0/experiments/{E}/proposals` |
-| `list_proposals` | `GET` | `/v0/experiments/{E}/proposals` |
-| `read_proposal` | `GET` | `/v0/experiments/{E}/proposals/{P}` |
-| `mark_proposal_ready` | `POST` | `/v0/experiments/{E}/proposals/{P}/mark-ready` |
+| `create_idea` | `POST` | `/v0/experiments/{E}/ideas` |
+| `list_ideas` | `GET` | `/v0/experiments/{E}/ideas` |
+| `read_idea` | `GET` | `/v0/experiments/{E}/ideas/{P}` |
+| `mark_idea_ready` | `POST` | `/v0/experiments/{E}/ideas/{P}/mark-ready` |
 
-Request and response bodies match [`schemas/proposal.schema.json`](schemas/proposal.schema.json). `list_proposals` accepts an optional `state` query parameter. `mark-ready` has an empty request body.
+Request and response bodies match [`schemas/idea.schema.json`](schemas/idea.schema.json). `list_ideas` accepts an optional `state` query parameter. `mark-ready` has an empty request body.
 
-## 4. Trial operations
+## 4. Variant operations
 
 | Operation | HTTP | Path |
 |---|---|---|
-| `create_trial` | `POST` | `/v0/experiments/{E}/trials` |
-| `list_trials` | `GET` | `/v0/experiments/{E}/trials` |
-| `read_trial` | `GET` | `/v0/experiments/{E}/trials/{T}` |
-| `declare_trial_eval_error` | `POST` | `/v0/experiments/{E}/trials/{T}/declare-eval-error` |
-| `integrate_trial` | `POST` | `/v0/experiments/{E}/trials/{T}/integrate` |
+| `create_variant` | `POST` | `/v0/experiments/{E}/variants` |
+| `list_variants` | `GET` | `/v0/experiments/{E}/variants` |
+| `read_variant` | `GET` | `/v0/experiments/{E}/variants/{T}` |
+| `declare_variant_eval_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-eval-error` |
+| `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` |
 
-`integrate_trial` binds [`06-integrator.md`](06-integrator.md) §3.4 and carries additional idempotency rules (§5 below); the other endpoints are transport-only bindings of their [`08-storage.md`](08-storage.md) §1.7 operations.
+`integrate_variant` binds [`06-integrator.md`](06-integrator.md) §3.4 and carries additional idempotency rules (§5 below); the other endpoints are transport-only bindings of their [`08-storage.md`](08-storage.md) §1.7 operations.
 
-## 5. `integrate_trial` — same-value idempotency
+## 5. `integrate_variant` — same-value idempotency
 
-The `POST /v0/experiments/{E}/trials/{T}/integrate` endpoint has additional semantics beyond transport-binding because [`06-integrator.md`](06-integrator.md) §3.4's atomicity invariant spans the process boundary. The request body carries the single field `trial_commit_sha`.
+The `POST /v0/experiments/{E}/variants/{T}/integrate` endpoint has additional semantics beyond transport-binding because [`06-integrator.md`](06-integrator.md) §3.4's atomicity invariant spans the process boundary. The request body carries the single field `variant_commit_sha`.
 
-- **Success (first call).** The server atomically writes `trial_commit_sha` on the trial and appends `trial.integrated` per [`06-integrator.md`](06-integrator.md) §3.4. Response: 200, empty body.
-- **Same-value idempotency.** A repeated call whose `trial_commit_sha` equals the value already stored on the trial MUST return 200 and MUST NOT append a second `trial.integrated` event. This is what lets a client safely retry an `integrate_trial` request after a transport- indeterminate failure without double-commit.
-- **Different-value rejection.** A call whose `trial_commit_sha` differs from the value already stored MUST return 409 `eden://error/invalid-precondition`. A conforming client MUST surface this as an atomicity violation (the chapter 6 §1.2 sole-writer rule has been violated somewhere upstream); operator intervention is required.
-- **Other preconditions.** Standard [`06-integrator.md`](06-integrator.md) §3.4 preconditions continue to apply: the trial MUST be in `status == "success"`, and the `trial_commit_sha` MUST be a well-formed commit SHA; violations return `invalid-precondition`.
+- **Success (first call).** The server atomically writes `variant_commit_sha` on the variant and appends `variant.integrated` per [`06-integrator.md`](06-integrator.md) §3.4. Response: 200, empty body.
+- **Same-value idempotency.** A repeated call whose `variant_commit_sha` equals the value already stored on the variant MUST return 200 and MUST NOT append a second `variant.integrated` event. This is what lets a client safely retry an `integrate_variant` request after a transport- indeterminate failure without double-commit.
+- **Different-value rejection.** A call whose `variant_commit_sha` differs from the value already stored MUST return 409 `eden://error/invalid-precondition`. A conforming client MUST surface this as an atomicity violation (the chapter 6 §1.2 sole-writer rule has been violated somewhere upstream); operator intervention is required.
+- **Other preconditions.** Standard [`06-integrator.md`](06-integrator.md) §3.4 preconditions continue to apply: the variant MUST be in `status == "success"`, and the `variant_commit_sha` MUST be a well-formed commit SHA; violations return `invalid-precondition`.
 
-A client that issues `integrate_trial` and does not receive a 2xx response (connection reset, read timeout, proxy disconnect) MUST treat the outcome as indeterminate and MUST NOT assume the server has not committed. The reference reconciliation procedure is a read-back (`GET /v0/experiments/{E}/trials/{T}`) that resolves to one of three outcomes:
+A client that issues `integrate_variant` and does not receive a 2xx response (connection reset, read timeout, proxy disconnect) MUST treat the outcome as indeterminate and MUST NOT assume the server has not committed. The reference reconciliation procedure is a read-back (`GET /v0/experiments/{E}/variants/{T}`) that resolves to one of three outcomes:
 
-- observed `trial_commit_sha` equals the sent value → treat as success;
-- observed `trial_commit_sha` is set but differs → raise the same atomicity-violation error the server would have;
-- observed `trial_commit_sha` is absent, or the read-back itself fails → raise an indeterminate-result error. Absence does **not** prove the request failed; it may still be in flight.
+- observed `variant_commit_sha` equals the sent value → treat as success;
+- observed `variant_commit_sha` is set but differs → raise the same atomicity-violation error the server would have;
+- observed `variant_commit_sha` is absent, or the read-back itself fails → raise an indeterminate-result error. Absence does **not** prove the request failed; it may still be in flight.
 
 ## 6. Event log
 
@@ -150,7 +150,7 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/already-exists` | 409 | insert collided with existing id |
 | `eden://error/illegal-transition` | 409 | state-machine violation |
 | `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
-| `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_trial` (§5) |
+| `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_variant` (§5) |
 
 A server MUST NOT emit a `type` outside this vocabulary for a v0 endpoint. Implementations MAY add custom error types at non-`/v0/` paths (e.g. `/_reference/...`) using the same envelope.
 
@@ -162,7 +162,7 @@ The [`04-task-protocol.md`](04-task-protocol.md) §4.2 submit-idempotency rule i
 
 ### 8.2 Integrate
 
-Same-value idempotency on `integrate_trial` is pinned in §5.
+Same-value idempotency on `integrate_variant` is pinned in §5.
 
 ### 8.3 Other mutations
 
@@ -191,7 +191,7 @@ A conforming server:
 A conforming client:
 
 - Keys retry and recovery on the `type` URI, not on HTTP status alone.
-- Resolves transport-indeterminate `integrate_trial` failures via the read-back procedure in §5 and does not compensate ref writes without positive confirmation of server-side non-commit.
+- Resolves transport-indeterminate `integrate_variant` failures via the read-back procedure in §5 and does not compensate ref writes without positive confirmation of server-side non-commit.
 - Does not depend on `/_reference/` endpoints.
 
 ## 11. Implementation latitude
@@ -207,7 +207,7 @@ What the binding does **not** leave to implementations:
 
 - The URL shapes (§§2–6).
 - The problem+json error vocabulary (§7).
-- The same-value idempotency on `integrate_trial` (§5).
+- The same-value idempotency on `integrate_variant` (§5).
 - Preservation of the [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md) invariants through the HTTP transport.
 
 ## 12. Reference-only extensions — authentication (informative)

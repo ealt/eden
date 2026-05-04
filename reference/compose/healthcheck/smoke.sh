@@ -99,10 +99,10 @@ for vol in eden-postgres-data eden-gitea-data eden-blob-data \
            eden-orchestrator-repo eden-web-ui-repo; do
     docker volume inspect "${PROJECT}_${vol}" >/dev/null
 done
-# eden-implementer-repo and eden-evaluator-repo have explicit
+# eden-executor-repo and eden-evaluator-repo have explicit
 # `name:` for docker-exec wrap parity (resolved by literal name,
 # not auto-prefixed).
-docker volume inspect eden-implementer-repo >/dev/null
+docker volume inspect eden-executor-repo >/dev/null
 # eden-evaluator-repo is declared in compose.yaml but only mounted
 # in subprocess-mode (compose.subprocess.yaml's evaluator-host) —
 # scripted-mode evaluator-host (compose.yaml) doesn't need git, so
@@ -155,18 +155,18 @@ EVENTS_JSON="$(
 )"
 TRIAL_INTEGRATED="$(
     echo "$EVENTS_JSON" \
-        | jq '(.events // .) | [.[] | select(.type == "trial.integrated")] | length'
+        | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
 test "$TRIAL_INTEGRATED" -ge 3 || {
-    echo "expected >= 3 trial.integrated events; got $TRIAL_INTEGRATED" >&2
+    echo "expected >= 3 variant.integrated events; got $TRIAL_INTEGRATED" >&2
     exit 1
 }
 
-# Plan section G step 6: assert each plan task reached a terminal
+# Plan section G step 6: assert each ideate task reached a terminal
 # state. The terminal task event is `task.completed` (or
 # `task.failed` / `task.cancelled`) — `task.terminated` per the plan
 # refers to "any terminal task event" rather than a specific event
-# name. With 3 plan tasks + 3 implement tasks + 3 evaluate tasks all
+# name. With 3 ideate tasks + 3 execute tasks + 3 evaluate tasks all
 # completing on the success path, we expect >= 9 task.completed.
 TASK_COMPLETED="$(
     echo "$EVENTS_JSON" \
@@ -177,33 +177,33 @@ test "$TASK_COMPLETED" -ge 9 || {
     exit 1
 }
 
-# Each of the 3 plan tasks specifically must reach `task.completed`.
+# Each of the 3 ideate tasks specifically must reach `task.completed`.
 PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("plan-"))
+              and (.data.task_id | startswith("ideate-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 3 || {
-    echo "expected >= 3 plan-task.completed events; got $PLAN_COMPLETED" >&2
+    echo "expected >= 3 ideate-task.completed events; got $PLAN_COMPLETED" >&2
     exit 1
 }
 
-echo "--- asserting trial/* refs published to gitea ---"
-# Phase 10d follow-up B §D.6: trial/* refs must be visible on the
-# Gitea remote after integration. Each `trial.integrated` event
+echo "--- asserting variant/* refs published to gitea ---"
+# Phase 10d follow-up B §D.6: variant/* refs must be visible on the
+# Gitea remote after integration. Each `variant.integrated` event
 # corresponds to a published ref.
 TRIAL_REMOTE_REFS="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         run --rm --no-deps \
         --entrypoint sh \
         eden-repo-init \
-        -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git 'refs/heads/trial/*' | wc -l" \
+        -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git 'refs/heads/variant/*' | wc -l" \
         | tr -d '[:space:]'
 )"
 test "$TRIAL_REMOTE_REFS" -ge 3 || {
-    echo "expected >= 3 trial/* refs on gitea; got $TRIAL_REMOTE_REFS" >&2
+    echo "expected >= 3 variant/* refs on gitea; got $TRIAL_REMOTE_REFS" >&2
     exit 1
 }
 
