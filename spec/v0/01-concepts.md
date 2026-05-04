@@ -10,7 +10,7 @@ An **experiment** is a single directed evolution run. It has:
 - An **objective** — a scalar function of a variant's measured metrics, to be either maximized or minimized.
 - A declared **evaluation schema** — the names and types of the metrics evaluators will report.
 - Role configurations — how to run the ideator, executor, and evaluator for this experiment.
-- Termination conditions (variant-count, wall-clock, convergence target).
+- Termination conditions (variant-count, wall-clock, convergence window, target condition).
 
 The experiment's full configuration is specified by an **experiment-config** object (Chapter [`02-data-model.md`](02-data-model.md); schema: [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json)).
 
