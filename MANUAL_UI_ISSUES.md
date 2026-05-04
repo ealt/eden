@@ -731,7 +731,7 @@ pointer to #13.
 
 ---
 
-## 22. Inconsistent direct-vs-transitive declaration of `eden-git`
+## 22. ✅ Resolved. Inconsistent direct-vs-transitive declaration of `eden-git`
 across services
 
 **What's there.** The four EDEN services that use git all import
@@ -762,6 +762,10 @@ clearest tell that the inconsistency is accidental.
 **Resolution direction.** Add `"eden-git"` to the `dependencies` list
 in `reference/services/evaluator/pyproject.toml` and
 `reference/services/web-ui/pyproject.toml`.
+
+**Resolved.** Added `eden-git` to the `dependencies` list in both
+pyproject.toml files. `uv sync` re-resolves cleanly; 220 service-side
+tests still pass.
 
 ---
 

@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
     "eden-contracts",
     "eden-dispatch",
+    "eden-git",
     "eden-service-common",
     "eden-storage",
     "eden-task-store-server",
