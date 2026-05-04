@@ -584,7 +584,7 @@ web-ui test conftest now import directly from `eden_service_common`.
 
 ---
 
-## 19. Empty placeholder packages and test directories — roadmap-tracked
+## 19. ✅ Resolved. Empty placeholder packages and test directories — roadmap-tracked
 vs. abandoned scaffolding
 
 **Disambiguation pass** (refined after roadmap cross-reference):
@@ -617,6 +617,23 @@ that never runs.
 (Original #19 advised "delete or document" without separating the
 two cases; the roadmap cross-reference makes the right answer
 case-specific.)
+
+**Resolved.** Both halves done:
+- `tests/integration/` and `tests/unit/` deleted (along with their
+  `.gitkeep` placeholders). Per-package test layout is already
+  documented in [`AGENTS.md`](AGENTS.md) "Adding a new service or
+  package with its own `tests/` directory" and is implicit in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md)'s pointer to the conformance
+  suite.
+- `reference/packages/eden-blob/.gitkeep` replaced with a README
+  naming Phase 13 + the chapter-8 §5 contract this package will
+  implement.
+- `reference/services/control-plane/.gitkeep` replaced with a README
+  naming Phase 12 + that scope.
+
+Both READMEs say explicitly that the directory is intentionally NOT
+a workspace member yet, so a contributor who lands here understands
+the "deferred, not abandoned" posture.
 
 ---
 
