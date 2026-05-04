@@ -829,6 +829,79 @@ appended to `spec/v0/09-conformance.md` as a non-normative §7
 
 ---
 
+## 25. Chapter 00 promises class-based conformance; chapter 09
+delivers level-based conformance with a single IUT contract
+
+**What's there.**
+[`spec/v0/00-overview.md`](spec/v0/00-overview.md) §2.2 enumerates
+**eight conformance classes** — Planner, Implementer, Evaluator,
+Integrator, Task store, Event log, Artifact store, Orchestrator —
+and tells the reader: *"An implementation MAY conform to one or
+more classes. It need not conform to all."* §2.3 says *"An
+implementation conforms to a class iff it passes every scenario in
+[`09-conformance.md`](spec/v0/09-conformance.md) that targets that
+class."*
+
+**What chapter 09 actually defines.**
+[`spec/v0/09-conformance.md`](spec/v0/09-conformance.md) does not
+have per-class scenarios. §1 defines **three additive levels** —
+**v1**, **v1+roles**, **v1+roles+integrator** — and §6 (the IUT
+contract) explicitly anchors conformance to the **chapter-7 HTTP
+binding** as a whole:
+
+> *"The contract between an IUT and a conformance harness is the
+> chapter-7 HTTP binding. Everything else is convenience."*
+
+There is no path to claim "Planner conformance" independently of
+the rest of an HTTP server that exposes the chapter-7 endpoints.
+A standalone Planner that only implemented the planner-side
+operations could not be exercised by the conformance suite, because
+the suite drives every IUT through the full chapter-7 binding from
+the outside.
+
+**Why this matters.** The class-based reading in chapter 00 is
+load-bearing for the project's stated framing — it's what justifies
+the claim that someone can "build a conforming planner ... in any
+language and interoperate". If a third-party implementer reads
+chapter 00, decides to ship a Python planner, and only later opens
+chapter 09 to find that conformance is actually whole-IUT, they've
+spent their effort on the wrong shape.
+
+The two chapters were written in different phases (chapter 00 in
+Phase 1; chapter 09 in Phase 11) and the framing was never
+reconciled. Class-vs-level isn't a typo — it's a different theory
+of what conformance means.
+
+**Severity.** SHOULD-level for the spec (the inconsistency is
+load-bearing for what an implementer can claim), but no impl bug
+yet because no third-party impl exists.
+
+**Resolution direction.** Two clean options, both spec-only:
+
+1. **Class-based wins.** Rewrite chapter 09 to define per-class
+   conformance: a Planner-only implementation that exposes only
+   the planner-relevant chapter-7 operations satisfies the planner
+   class. Per-class scenario subsets need to be re-grouped from the
+   current v1 / v1+roles / v1+roles+integrator levels. Suite
+   harness needs an "IUT advertises which classes" mode.
+
+2. **Level-based wins.** Rewrite chapter 00 §2.2 / §2.3 to say what
+   chapter 09 actually delivers: an IUT is the whole chapter-7
+   server, conformance is per-level, the eight role-and-store
+   names are entities the protocol defines but not units of
+   conformance. (This is the cheaper change and matches the
+   reference impl's actual posture.)
+
+Either is conformant; option 2 is honest about today, option 1 is
+ambitious about tomorrow. The choice is a small design call,
+worth making before any third-party implementer reads chapter 00
+and acts on its current promise.
+
+**Found while.** Spec consistency audit, walking chapter 00 against
+chapter 09 for concept drift.
+
+---
+
 ## Open questions (not yet issues)
 
 - Should the implementer page show `EDEN_BASE_COMMIT_SHA` as the
