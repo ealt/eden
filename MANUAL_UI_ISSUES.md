@@ -709,7 +709,7 @@ When Phase 13 ships:
 
 ---
 
-## 21. `tests/fixtures/experiment/README.md` is stale and has been
+## 21. ✅ Resolved (during initial audit). `tests/fixtures/experiment/README.md` is stale and has been
 patched in this audit
 
 **What was there.** The README claimed "`plan.py`, `implement.py`,
@@ -769,7 +769,7 @@ tests still pass.
 
 ---
 
-## 23. `.gitignore` phase comments are stale; "Node" comment was
+## 23. ✅ Resolved (during initial audit). `.gitignore` phase comments are stale; "Node" comment was
 misleading (patched inline)
 
 **What was there.** Two `.gitignore` section comments referenced
