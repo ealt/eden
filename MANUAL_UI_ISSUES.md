@@ -42,6 +42,7 @@ binding via `--experiment-id` is a Phase-8b expedient that needs unwinding
 when Phase 12 lands.
 
 **Possible fixes.**
+
 - Short-term, just for 1a: drop the quiescence-exit branch entirely (or
   make `--max-quiescent-iterations 0` mean "never exit"). The orchestrator
   becomes a pure event loop that runs until SIGTERM. Operator declares
@@ -84,6 +85,7 @@ session-scoped draft buffer (write on every submit, including failed
 validation) rather than always rendering an empty row.
 
 **Smaller adjacent fixes.**
+
 - The error-rendered form has no "your form state is volatile, don't navigate
   away" warning. A banner would help.
 - Consider rendering the draft state in `localStorage` so an accidental
@@ -99,6 +101,7 @@ the seed SHA at install time, but that's gone from the terminal by the time
 you're in the UI.
 
 **Fix.** Surface available commit SHAs on the ideator page:
+
 - A "Recent integrated variants" panel (mirroring what's on the admin variant
   list) with copy-to-clipboard SHAs.
 - The seed/base commit SHA as a labeled option ("Base: `666b95f0...`").
@@ -120,7 +123,8 @@ startup, so `repo.commit_exists(sha)` returned False and the form rejected
 with "commit not found in the bare repo; did you push it?".
 
 **Workaround.** Run a manual fetch before submitting:
-```
+
+```text
 docker compose --env-file .env exec web-ui \
     git -C /var/lib/eden/repo fetch origin '+refs/heads/*:refs/heads/*'
 ```
@@ -145,8 +149,8 @@ submit is the matching gap.
 
 **What happened.** Executor page instructions say:
 
-> 2. Push your tip commit (any branch name works) to the bare repo at
->    `/var/lib/eden/repo`. The UI will create a canonical ref...
+> Push your tip commit (any branch name works) to the bare repo at
+> `/var/lib/eden/repo`. The UI will create a canonical ref...
 
 That path is INSIDE the web-ui container. Users push to gitea (the
 actual remote-of-record per Phase 10d follow-up B), not to the web-ui's
@@ -184,6 +188,7 @@ the orchestrator. The reasonable behavior is "log + skip + continue" so
 one variant's brokenness doesn't take down the whole dispatcher.
 
 **Fix candidates.**
+
 - Wrap each `integrate_variant(variant.variant_id)` call in
   `try/except NotReadyForIntegration` (and arguably `Exception` more
   broadly) inside `_promote_successful_trials`. Log + continue.
@@ -238,6 +243,7 @@ workflow silently no-ops unless you also remove the staging volume. The
 silent-failure mode (no warning, just an old SHA) makes this easy to miss.
 
 **Fix candidates.**
+
 - setup-experiment.sh: when `--seed-from` is set, pre-remove the staging
   volume (or call `_existing_seed_sha` and refuse to short-circuit when
   the seed source has changed).
@@ -372,6 +378,7 @@ quiescence heuristic produces, which is unrelated to any of the
 documented bounds.
 
 This is more concerning than #13's dead keys because:
+
 - The keys *are* in the spec (so a conforming executor would expect
   them to be enforced).
 - The Pydantic models *do* validate them (so they pass schema parity
@@ -450,6 +457,7 @@ purpose is ordering, so leaving it unused makes it dead weight on
 ideas.
 
 **Resolution.** Either:
+
 1. Sort by ``-priority`` then ``proposal_id`` (stable tiebreak) in the
    dispatch loop. Trivial change to `_dispatch_implement_tasks`.
 2. Remove ``priority`` from the idea schema if there's no real use
@@ -499,8 +507,7 @@ doc itself is a candidate for either updating or moving to
 
 ---
 
-## 17. ✅ Resolved. Top-level `README.md` and `CONTRIBUTING.md` "phase" claims are
-~7 phases stale
+## 17. ✅ Resolved. Top-level `README.md` and `CONTRIBUTING.md` "phase" claims are ~7 phases stale
 
 **What's there.** [`README.md`](README.md) line 20 ("Status" section) and
 [`CONTRIBUTING.md`](CONTRIBUTING.md) line 9 ("Current phase") both open
@@ -548,8 +555,7 @@ no-longer-meaningful "Phase 5 is next" call to action.
 
 ---
 
-## 18. ✅ Resolved. Duplicate `load_experiment_config` in two packages, called
-inconsistently across services
+## 18. ✅ Resolved. Duplicate `load_experiment_config` in two packages, called inconsistently across services
 
 **What's there.** Two byte-equivalent 5-line implementations of
 `load_experiment_config`:
@@ -597,8 +603,7 @@ web-ui test conftest now import directly from `eden_service_common`.
 
 ---
 
-## 19. ✅ Resolved. Empty placeholder packages and test directories — roadmap-tracked
-vs. abandoned scaffolding
+## 19. ✅ Resolved. Empty placeholder packages and test directories — roadmap-tracked vs. abandoned scaffolding
 
 **Disambiguation pass** (refined after roadmap cross-reference):
 
@@ -632,6 +637,7 @@ two cases; the roadmap cross-reference makes the right answer
 case-specific.)
 
 **Resolved.** Both halves done:
+
 - `tests/integration/` and `tests/unit/` deleted (along with their
   `.gitkeep` placeholders). Per-package test layout is already
   documented in [`AGENTS.md`](AGENTS.md) "Adding a new service or
@@ -650,8 +656,7 @@ the "deferred, not abandoned" posture.
 
 ---
 
-## 20. ✅ Partially resolved (Dockerfile typo); plumbing held for Phase 13. Compose stack ships a `blob-init` service + `eden-blob-data`
-volume that no service consumes
+## 20. ✅ Partially resolved (Dockerfile typo); plumbing held for Phase 13. Compose stack ships a `blob-init` service + `eden-blob-data` volume that no service consumes
 
 **What's there.**
 [`reference/compose/compose.yaml:72`](reference/compose/compose.yaml)
@@ -712,6 +717,7 @@ patched inline (`/blob` → `/blobs`); the README + Dockerfile are
 now internally consistent for whoever lands the Phase-13 consumer.
 
 When Phase 13 ships:
+
 - Wire the actual blob backend to mount `eden-blob-data` at
   `/var/lib/eden/blobs`.
 - The `chown eden:eden /var/lib/eden/blobs` line in
@@ -722,8 +728,7 @@ When Phase 13 ships:
 
 ---
 
-## 21. ✅ Resolved (during initial audit). `tests/fixtures/experiment/README.md` is stale and has been
-patched in this audit
+## 21. ✅ Resolved (during initial audit). `tests/fixtures/experiment/README.md` is stale and has been patched in this audit
 
 **What was there.** The README claimed "`plan.py`, `implement.py`,
 `eval.py`, and the ideator workspace are not part of the protocol-layer
@@ -744,8 +749,7 @@ pointer to #13.
 
 ---
 
-## 22. ✅ Resolved. Inconsistent direct-vs-transitive declaration of `eden-git`
-across services
+## 22. ✅ Resolved. Inconsistent direct-vs-transitive declaration of `eden-git` across services
 
 **What's there.** The four EDEN services that use git all import
 `eden_git` directly:
@@ -782,8 +786,7 @@ tests still pass.
 
 ---
 
-## 23. ✅ Resolved (during initial audit). `.gitignore` phase comments are stale; "Node" comment was
-misleading (patched inline)
+## 23. ✅ Resolved (during initial audit). `.gitignore` phase comments are stale; "Node" comment was misleading (patched inline)
 
 **What was there.** Two `.gitignore` section comments referenced
 phases as if they were future:
@@ -840,8 +843,7 @@ and found no drift:
 
 ---
 
-## 24. Scheduled work item — line-by-line MUST/SHOULD audit against
-the conformance suite
+## 24. Scheduled work item — line-by-line MUST/SHOULD audit against the conformance suite
 
 **Status: first-pass matrix delivered + chapter-04 per-claim pilot.**
 [`docs/conformance-coverage.md`](docs/conformance-coverage.md)
@@ -942,8 +944,7 @@ per-claim assertion coverage — is the open work.
 
 ---
 
-## 25. ✅ Resolved (option 2 — level-based wins). Chapter 00 promises class-based conformance; chapter 09
-delivers level-based conformance with a single IUT contract
+## 25. ✅ Resolved (option 2 — level-based wins). Chapter 00 promises class-based conformance; chapter 09 delivers level-based conformance with a single IUT contract
 
 **What's there.**
 [`spec/v0/00-overview.md`](spec/v0/00-overview.md) §2.2 enumerates

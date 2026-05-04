@@ -122,6 +122,7 @@ def parse_scenarios() -> dict[tuple[str, str], list[str]]:
 
 
 def main() -> int:
+    """Build the matrix and write it to ``docs/conformance-coverage.md``."""
     chapters = sorted(SPEC_DIR.glob("*.md"))
     chapters = [c for c in chapters if c.name != "README.md"]
 

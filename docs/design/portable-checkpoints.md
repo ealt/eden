@@ -78,7 +78,7 @@ state. Replay-ability across the round-trip is a hard requirement.
 A checkpoint is a directory tree. Tarball / zip wrapping is a
 transport convenience; the *logical* format is the directory.
 
-```
+```text
 <checkpoint>/
   manifest.json             # required
   experiment-config.yaml    # the experiment config (verbatim)
@@ -143,6 +143,7 @@ artifact's bytes. The idea's / variant's ``artifacts_uri`` field in
 the dumped JSONL is rewritten to ``checkpoint:sha256:<hex>``.
 
 On import, the receiving implementation:
+
 1. Materializes each ``artifacts/sha256/<hex>`` into its own artifact
    store.
 2. Rewrites ``checkpoint:sha256:<hex>`` references back to whatever

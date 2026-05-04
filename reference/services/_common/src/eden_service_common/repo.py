@@ -173,4 +173,9 @@ def seed_bare_repo_from_dir(repo_path: str, src_dir: str) -> str:
             check=True, capture_output=True,
         )
 
-    return GitRepo(repo_path).resolve_ref("refs/heads/main")
+    sha = GitRepo(repo_path).resolve_ref("refs/heads/main")
+    if sha is None:
+        raise RuntimeError(
+            f"seed push to refs/heads/main left no ref in {repo_path!r}"
+        )
+    return sha
