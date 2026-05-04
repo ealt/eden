@@ -13,7 +13,7 @@ This is the first lineage of the EDEN protocol specification. Chapters 00–08 a
 | `04-task-protocol.md` | Task state machine, claim tokens, submit idempotency, wire format. | Phase 2 |
 | `05-event-protocol.md` | Event log shape, transactional invariant, delivery guarantees. | Phase 4 |
 | `06-integrator.md` | Git topology: `work/*` / `variant/*` / `main` invariants; squash rule; eval manifest. | Phase 4 |
-| `07-wire-protocol.md` | HTTP binding for chapters 4, 5, [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md) §1.1, §2.1. | Phase 8a |
+| `07-wire-protocol.md` | HTTP binding for chapters 4, 5, 6, and 8 (the storage-side operations the binding exposes). | Phase 8a |
 | `08-storage.md` | Repository interface, durability, per-experiment metrics schemas. | Phase 4 |
 | `09-conformance.md` | What a conforming implementation must prove. | Phase 11 |
 

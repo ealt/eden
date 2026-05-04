@@ -52,7 +52,7 @@ The v1 scenario groups, with their primary spec citations:
 | Per-type event payloads | Each registered type's required fields. | [`05-event-protocol.md`](05-event-protocol.md) §3 |
 | Composite commits | Implement-dispatch, implement-terminal, evaluate-terminal cases, retry-exhausted `eval_error` terminalization, implement-reclaim-with-starting-variant. | [`04-task-protocol.md`](04-task-protocol.md) §4.3; [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
 | Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §6.2 |
-| Status codes | Each operation's spec-pinned status, including the chapter-7 status mappings exercised through duplicate-create / bad-request paths and the chapter-5 replay binding. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §2, §3, §4, §5, §6, §7 |
+| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §7 status mappings exercised through duplicate-create / bad-request paths and the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §2, §3, §4, §5, §6, §7 |
 | Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
 | Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
