@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}EDEN — submitted{% endblock %}
+{% block main %}
+<h1>ideate task submitted</h1>
+<p>task <code>{{ task_id }}</code> submitted with status <strong>{{ status }}</strong>.</p>
+{% if idea_ids %}
+<p>ideas created:</p>
+<ul>
+{% for pid in idea_ids %}<li><code>{{ pid }}</code></li>{% endfor %}
+</ul>
+{% endif %}
+<p><a href="/ideator/">back to ideator</a></p>
+{% endblock %}

@@ -1,13 +1,13 @@
 """Admin-module routes — observability views + operator actions.
 
-Implements the chunk 9e plan: read-only views over tasks / trials /
+Implements the chunk 9e plan: read-only views over tasks / variants /
 events, an operator ``reclaim`` action on tasks, and a ``work/*`` ref
 GC page when ``--repo-path`` is configured.
 
 Auth-first POST discipline: every handler — GET and POST — runs
 ``get_session(request)`` first; an absent session redirects to
 ``/signin``. CSRF runs after the auth check on mutating routes.
-This matches the planner / implementer / evaluator pattern.
+This matches the ideator / executor / evaluator pattern.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from eden_contracts import Event, Task, Trial
+from eden_contracts import Event, Task, Variant
 from eden_storage.errors import IllegalTransition
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ._helpers import csrf_ok, get_session, read_trial_artifact
+from ._helpers import csrf_ok, get_session, read_variant_artifact
 
 router = APIRouter(prefix="/admin")
 
@@ -32,7 +32,7 @@ _DEFAULT_EVENTS_LIMIT = 200
 _MAX_EVENTS_LIMIT = 1000
 _TRIAL_DETAIL_EVENT_CAP = 50
 
-_KIND_VALUES = ("plan", "implement", "evaluate")
+_KIND_VALUES = ("ideate", "execute", "evaluate")
 _STATE_VALUES = ("pending", "claimed", "submitted", "completed", "failed")
 _TRIAL_STATUS_VALUES = ("starting", "success", "error", "eval_error")
 
@@ -113,11 +113,11 @@ def _parse_dt(raw: str | datetime | None) -> datetime | None:
         return None
 
 
-def _trial_terminal_handled(trial: Trial) -> bool:
-    """Return True iff the trial has reached a terminal-and-handled status."""
-    if trial.status in {"error", "eval_error"}:
+def _variant_terminal_handled(variant: Variant) -> bool:
+    """Return True iff the variant has reached a terminal-and-handled status."""
+    if variant.status in {"error", "eval_error"}:
         return True
-    return trial.status == "success" and trial.trial_commit_sha is not None
+    return variant.status == "success" and variant.variant_commit_sha is not None
 
 
 def _now_dt(request: Request) -> datetime:
@@ -141,7 +141,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
 
     try:
         tasks = store.list_tasks()
-        trials = store.list_trials()
+        variants = store.list_variants()
         events_full = store.replay()
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load dashboard data")
@@ -157,7 +157,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
             expired_count += 1
 
     trial_counts = {status: 0 for status in _TRIAL_STATUS_VALUES}
-    for tr in trials:
+    for tr in variants:
         if tr.status in trial_counts:
             trial_counts[tr.status] += 1
 
@@ -335,11 +335,11 @@ async def task_reclaim(
 
 
 # ---------------------------------------------------------------------
-# Trials
+# Variants
 # ---------------------------------------------------------------------
 
 
-@router.get("/trials/", response_class=HTMLResponse, response_model=None)
+@router.get("/variants/", response_class=HTMLResponse, response_model=None)
 async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
@@ -350,7 +350,7 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
     if status == _INVALID_FILTER:
         return request.app.state.templates.TemplateResponse(
             request,
-            "admin_trials.html",
+            "admin_variants.html",
             {
                 "session": session,
                 "rows": [],
@@ -360,29 +360,29 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
         )
 
     try:
-        trials = store.list_trials(status=status)
-        impl_tasks = store.list_tasks(kind="implement")
+        variants = store.list_variants(status=status)
+        impl_tasks = store.list_tasks(kind="execute")
     except Exception:  # noqa: BLE001 — transport/store-domain
-        return _read_failure_response(request, "could not load trials")
-    impl_terminal_by_proposal: dict[str, bool] = {
-        t.payload.proposal_id: (t.state in {"completed", "failed"})
+        return _read_failure_response(request, "could not load variants")
+    impl_terminal_by_idea: dict[str, bool] = {
+        t.payload.idea_id: (t.state in {"completed", "failed"})
         for t in impl_tasks
     }
 
     rows: list[dict[str, Any]] = []
-    for tr in trials:
+    for tr in variants:
         orphaned = (
             tr.status == "starting"
-            and impl_terminal_by_proposal.get(tr.proposal_id, False)
+            and impl_terminal_by_idea.get(tr.idea_id, False)
         )
         rows.append(
             {
-                "trial_id": tr.trial_id,
-                "proposal_id": tr.proposal_id,
+                "variant_id": tr.variant_id,
+                "idea_id": tr.idea_id,
                 "status": tr.status,
                 "branch": tr.branch,
                 "commit_sha": tr.commit_sha,
-                "trial_commit_sha": tr.trial_commit_sha,
+                "variant_commit_sha": tr.variant_commit_sha,
                 "started_at": tr.started_at,
                 "completed_at": tr.completed_at,
                 "orphaned": orphaned,
@@ -391,7 +391,7 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     return request.app.state.templates.TemplateResponse(
         request,
-        "admin_trials.html",
+        "admin_variants.html",
         {
             "session": session,
             "rows": rows,
@@ -402,10 +402,10 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
 
 
 @router.get(
-    "/trials/{trial_id}/", response_class=HTMLResponse, response_model=None
+    "/variants/{variant_id}/", response_class=HTMLResponse, response_model=None
 )
 async def trial_detail(
-    trial_id: str, request: Request
+    variant_id: str, request: Request
 ) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
@@ -414,59 +414,59 @@ async def trial_detail(
     artifacts_dir = request.app.state.artifacts_dir
 
     try:
-        trial = store.read_trial(trial_id)
-        proposal = store.read_proposal(trial.proposal_id)
+        variant = store.read_variant(variant_id)
+        idea = store.read_idea(variant.idea_id)
         events_full = store.replay()
-        related, total_related = _events_for_trial(
-            events_full, store, trial_id=trial_id, proposal_id=trial.proposal_id
+        related, total_related = _events_for_variant(
+            events_full, store, variant_id=variant_id, idea_id=variant.idea_id
         )
     except StorageNotFound:
         raise
     except Exception:  # noqa: BLE001 — transport/store-domain
-        return _read_failure_response(request, "could not load trial")
+        return _read_failure_response(request, "could not load variant")
 
-    inline_artifact = read_trial_artifact(trial.artifacts_uri, artifacts_dir)
+    inline_artifact = read_variant_artifact(variant.artifacts_uri, artifacts_dir)
 
     return request.app.state.templates.TemplateResponse(
         request,
-        "admin_trial_detail.html",
+        "admin_variant_detail.html",
         {
             "session": session,
-            "trial": trial,
-            "proposal": proposal,
+            "variant": variant,
+            "idea": idea,
             "related_events": list(reversed(related))[:_TRIAL_DETAIL_EVENT_CAP],
             "related_total": total_related,
-            "trial_artifact_inline": inline_artifact,
+            "variant_artifact_inline": inline_artifact,
         },
     )
 
 
-def _events_for_trial(
+def _events_for_variant(
     events_full: list[Event],
     store: Any,
     *,
-    trial_id: str,
-    proposal_id: str,
+    variant_id: str,
+    idea_id: str,
 ) -> tuple[list[Event], int]:
-    """Return (events_correlated_to_this_trial_in_replay_order, total_match_count).
+    """Return (events_correlated_to_this_variant_in_replay_order, total_match_count).
 
-    Correlation per chunk-9e plan §A.5: trial-id direct match + task-id
-    match for the implement task that produced this trial + task-id
-    match for any evaluate task whose payload references this trial.
+    Correlation per chunk-9e plan §A.5: variant-id direct match + task-id
+    match for the execute task that produced this variant + task-id
+    match for any evaluate task whose payload references this variant.
     """
     impl_task_ids = {
         t.task_id
-        for t in store.list_tasks(kind="implement")
-        if t.payload.proposal_id == proposal_id
+        for t in store.list_tasks(kind="execute")
+        if t.payload.idea_id == idea_id
     }
     eval_task_ids = {
         t.task_id
         for t in store.list_tasks(kind="evaluate")
-        if t.payload.trial_id == trial_id
+        if t.payload.variant_id == variant_id
     }
     related: list[Event] = []
     for ev in events_full:  # replay order
-        if ev.data.get("trial_id") == trial_id:
+        if ev.data.get("variant_id") == variant_id:
             related.append(ev)
             continue
         tid = ev.data.get("task_id")
@@ -675,12 +675,12 @@ async def work_refs_delete(
 def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]]:
     """Group ``refs/heads/work/*`` refs by GC eligibility.
 
-    Ownership is keyed off exact ``trial.branch`` equality (chunk 9e
+    Ownership is keyed off exact ``variant.branch`` equality (chunk 9e
     plan §A.7), not by parsing the ref name.
     """
-    trials = store.list_trials()
-    branch_index: dict[str, Trial] = {
-        tr.branch: tr for tr in trials if tr.branch is not None
+    variants = store.list_variants()
+    branch_index: dict[str, Variant] = {
+        tr.branch: tr for tr in variants if tr.branch is not None
     }
     pairs = repo.list_refs("refs/heads/work/*")
     eligible: list[dict[str, Any]] = []
@@ -688,36 +688,36 @@ def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]
     orphan: list[dict[str, Any]] = []
     for refname, current_sha in pairs:
         branch_name = refname.removeprefix("refs/heads/")
-        trial = branch_index.get(branch_name)
+        variant = branch_index.get(branch_name)
         entry: dict[str, Any] = {
             "ref_name": refname,
             "current_sha": current_sha,
             "branch_name": branch_name,
-            "trial": trial,
+            "variant": variant,
         }
-        if trial is None:
-            entry["reason"] = "no trial owns this ref"
+        if variant is None:
+            entry["reason"] = "no variant owns this ref"
             orphan.append(entry)
             continue
-        if not _trial_terminal_handled(trial):
+        if not _variant_terminal_handled(variant):
             entry["reason"] = (
-                f"trial is {trial.status}"
+                f"variant is {variant.status}"
                 + (
                     " (integrator has not yet promoted)"
-                    if trial.status == "success" and trial.trial_commit_sha is None
+                    if variant.status == "success" and variant.variant_commit_sha is None
                     else ""
                 )
             )
             not_eligible.append(entry)
             continue
-        if trial.commit_sha != current_sha:
+        if variant.commit_sha != current_sha:
             entry["reason"] = (
-                "ref SHA does not match trial.commit_sha (manual rewrite?)"
+                "ref SHA does not match variant.commit_sha (manual rewrite?)"
             )
             not_eligible.append(entry)
             continue
         entry["reason"] = (
-            f"trial {trial.trial_id} is {trial.status}; safe to delete"
+            f"variant {variant.variant_id} is {variant.status}; safe to delete"
         )
         eligible.append(entry)
     return {

@@ -2,13 +2,13 @@
 
 Implements the spec-to-code map pinned in §C of the Phase 9d plan.
 The flow is: list pending evaluate tasks → claim with TTL +
-server-pinned ``trial_id`` from ``task.payload.trial_id`` → render
-draft form (read-only trial context, optional inline rationale +
-trial-side artifact, per-metric inputs generated from the
-experiment's ``metrics_schema``) → submit, which runs
+server-pinned ``variant_id`` from ``task.payload.variant_id`` → render
+draft form (read-only variant context, optional inline rationale +
+variant-side artifact, per-metric inputs generated from the
+experiment's ``evaluation_schema``) → submit, which runs
 
 1. validate the form (status in {success, error, eval_error};
-   metric values type-check against ``metrics_schema``;
+   metric values type-check against ``evaluation_schema``;
    ``status="success"`` requires at least one metric)
 2. ``store.submit`` with retry-before-orphan plus a
    committed-state read-back. ``IllegalTransition`` falls
@@ -20,7 +20,7 @@ experiment's ``metrics_schema``) → submit, which runs
    the draft form with a wire-error banner so a fixable metric
    drift does not orphan the operator.
 
-``trial_id`` is read from ``task.payload.trial_id`` at claim time
+``variant_id`` is read from ``task.payload.variant_id`` at claim time
 and stored in ``_CLAIMS``; it never round-trips through the
 request surface.
 """
@@ -32,7 +32,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
-from eden_contracts import EvaluateTask, Proposal, Trial
+from eden_contracts import EvaluateTask, Idea, Variant
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
@@ -50,15 +50,15 @@ from ._helpers import (
     csrf_ok,
     get_session,
     is_htmx_request,
-    read_proposal_rationale,
-    read_trial_artifact,
+    read_idea_rationale,
+    read_variant_artifact,
 )
 
 router = APIRouter(prefix="/evaluator")
 
 
-# In-memory mapping of (csrf_token, task_id) -> (claim token, trial_id).
-# Same shape as the chunk-9c implementer's _CLAIMS but a separate
+# In-memory mapping of (csrf_token, task_id) -> (claim token, variant_id).
+# Same shape as the chunk-9c executor's _CLAIMS but a separate
 # module-level dict so two simultaneous claims (one implement, one
 # evaluate) on tasks that happen to share an id don't collide.
 _CLAIMS: dict[tuple[str, str], tuple[str, str]] = {}
@@ -68,8 +68,8 @@ def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
     return (session_csrf, task_id)
 
 
-def _list_recent_trials(store: Any, *, limit: int = 20) -> list[Any]:
-    items = store.list_trials()
+def _list_recent_variants(store: Any, *, limit: int = 20) -> list[Any]:
+    items = store.list_variants()
     return items[-limit:]
 
 
@@ -81,7 +81,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     store = request.app.state.store
     try:
         pending = store.list_tasks(kind="evaluate", state="pending")
-        recent = _list_recent_trials(store)
+        recent = _list_recent_variants(store)
     except DispatchError as exc:
         return _render_error(request, _wire_error_banner(exc))
     except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
@@ -96,7 +96,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
             "session": session,
             "pending": pending,
             "objective": config.objective,
-            "recent_trials": recent,
+            "recent_variants": recent,
             "banner": request.query_params.get("banner"),
         },
     )
@@ -134,7 +134,7 @@ async def claim(
             url="/evaluator/?banner=task+is+not+an+evaluate+task",
             status_code=303,
         )
-    trial_id = task.payload.trial_id
+    variant_id = task.payload.variant_id
     now: Callable[[], Any] = request.app.state.now
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
@@ -152,7 +152,7 @@ async def claim(
             ),
             status_code=303,
         )
-    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, trial_id)
+    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, variant_id)
     return RedirectResponse(url=f"/evaluator/{task_id}/draft", status_code=303)
 
 
@@ -170,11 +170,11 @@ async def draft_form(
             url="/evaluator/?banner=claim+missing+from+session",
             status_code=303,
         )
-    _, trial_id = entry
+    _, variant_id = entry
     store = request.app.state.store
     try:
-        trial = store.read_trial(trial_id)
-        proposal: Proposal = store.read_proposal(trial.proposal_id)
+        variant = store.read_variant(variant_id)
+        idea: Idea = store.read_idea(variant.idea_id)
     except DispatchError as exc:
         return _render_error(request, _wire_error_banner(exc))
     except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
@@ -186,8 +186,8 @@ async def draft_form(
         request,
         session=session,
         task_id=task_id,
-        trial=trial,
-        proposal=proposal,
+        variant=variant,
+        idea=idea,
         form_state=_empty_form_state(request),
         errors=None,
         status_code=200,
@@ -212,12 +212,12 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
             url="/evaluator/?banner=claim+missing+from+session",
             status_code=303,
         )
-    token, trial_id = entry
+    token, variant_id = entry
 
     store = request.app.state.store
     try:
-        trial = store.read_trial(trial_id)
-        proposal: Proposal = store.read_proposal(trial.proposal_id)
+        variant = store.read_variant(variant_id)
+        idea: Idea = store.read_idea(variant.idea_id)
     except DispatchError as exc:
         return _render_error(request, _wire_error_banner(exc))
     except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
@@ -227,7 +227,7 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
         )
 
     config = request.app.state.experiment_config
-    metrics_schema = config.metrics_schema
+    evaluation_schema = config.evaluation_schema
 
     status_raw = str(form.get("status") or "")
     artifacts_uri_raw = str(form.get("artifacts_uri") or "")
@@ -236,7 +236,7 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
     # way they appear; the template only emits inputs for declared
     # metrics). Default declared schema keys to "" so the parser
     # also sees blanks for the omit-on-empty branch.
-    metric_inputs: dict[str, str] = {name: "" for name in metrics_schema.root}
+    metric_inputs: dict[str, str] = {name: "" for name in evaluation_schema.root}
     for raw_key in form:
         if not isinstance(raw_key, str) or not raw_key.startswith("metric."):
             continue
@@ -244,7 +244,7 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
         metric_inputs[name] = str(form.get(raw_key) or "")
 
     draft, errors = parse_evaluate_form(
-        metrics_schema=metrics_schema,
+        evaluation_schema=evaluation_schema,
         status_raw=status_raw,
         metric_inputs=metric_inputs,
         artifacts_uri_raw=artifacts_uri_raw,
@@ -259,8 +259,8 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
             request,
             session=session,
             task_id=task_id,
-            trial=trial,
-            proposal=proposal,
+            variant=variant,
+            idea=idea,
             form_state=form_state,
             errors=errors,
             status_code=400,
@@ -268,8 +268,8 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
 
     submission = EvaluateSubmission(
         status=draft.status,
-        trial_id=trial_id,
-        metrics=dict(draft.metrics) if draft.metrics else None,
+        variant_id=variant_id,
+        evaluation=dict(draft.evaluation) if draft.evaluation else None,
         artifacts_uri=draft.artifacts_uri,
     )
 
@@ -282,9 +282,9 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
         return _render_submitted(
             request,
             task_id=task_id,
-            trial_id=trial_id,
+            variant_id=variant_id,
             status=draft.status,
-            metrics=submission.metrics,
+            evaluation=submission.evaluation,
             artifacts_uri=draft.artifacts_uri,
         )
     if outcome == "invalid-precondition":
@@ -299,8 +299,8 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
             request,
             session=session,
             task_id=task_id,
-            trial=trial,
-            proposal=proposal,
+            variant=variant,
+            idea=idea,
             form_state=form_state,
             errors=errors,
             status_code=400,
@@ -308,7 +308,7 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
     return _render_orphaned(
         request,
         task_id=task_id,
-        trial_id=trial_id,
+        variant_id=variant_id,
         status=draft.status,
         banner=banner or "submit failed",
         recovery_kind=outcome,
@@ -429,7 +429,7 @@ def _empty_form_state(request: Request) -> dict[str, Any]:
     return {
         "status": "success",
         "artifacts_uri": "",
-        "metric_values": {name: "" for name in config.metrics_schema.root},
+        "metric_values": {name: "" for name in config.evaluation_schema.root},
     }
 
 
@@ -438,27 +438,27 @@ def _render_draft(
     *,
     session: Any,
     task_id: str,
-    trial: Trial,
-    proposal: Proposal,
+    variant: Variant,
+    idea: Idea,
     form_state: dict[str, Any],
     errors: Any,
     status_code: int,
 ) -> HTMLResponse:
     artifacts_dir = request.app.state.artifacts_dir
-    proposal_rationale = read_proposal_rationale(proposal, artifacts_dir)
-    trial_artifact_inline = read_trial_artifact(trial.artifacts_uri, artifacts_dir)
+    idea_rationale = read_idea_rationale(idea, artifacts_dir)
+    variant_artifact_inline = read_variant_artifact(variant.artifacts_uri, artifacts_dir)
     config = request.app.state.experiment_config
-    metric_schema_items = list(config.metrics_schema.root.items())
+    metric_schema_items = list(config.evaluation_schema.root.items())
     return request.app.state.templates.TemplateResponse(
         request,
         "evaluator_claim.html",
         {
             "session": session,
             "task_id": task_id,
-            "trial": trial,
-            "proposal": proposal,
-            "proposal_rationale": proposal_rationale,
-            "trial_artifact_inline": trial_artifact_inline,
+            "variant": variant,
+            "idea": idea,
+            "idea_rationale": idea_rationale,
+            "variant_artifact_inline": variant_artifact_inline,
             "metric_schema_items": metric_schema_items,
             "form_state": form_state,
             "errors": errors,
@@ -471,9 +471,9 @@ def _render_submitted(
     request: Request,
     *,
     task_id: str,
-    trial_id: str,
+    variant_id: str,
     status: str,
-    metrics: dict[str, Any] | None,
+    evaluation: dict[str, Any] | None,
     artifacts_uri: str | None,
 ) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
@@ -481,9 +481,9 @@ def _render_submitted(
         "evaluator_submitted.html",
         {
             "task_id": task_id,
-            "trial_id": trial_id,
+            "variant_id": variant_id,
             "status": status,
-            "metrics": metrics or {},
+            "evaluation": evaluation or {},
             "artifacts_uri": artifacts_uri,
         },
     )
@@ -493,7 +493,7 @@ def _render_orphaned(
     request: Request,
     *,
     task_id: str,
-    trial_id: str,
+    variant_id: str,
     status: str,
     banner: str,
     recovery_kind: str,
@@ -503,7 +503,7 @@ def _render_orphaned(
         "evaluator_orphaned.html",
         {
             "task_id": task_id,
-            "trial_id": trial_id,
+            "variant_id": variant_id,
             "status": status,
             "banner": banner,
             "recovery_kind": recovery_kind,

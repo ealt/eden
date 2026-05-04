@@ -33,12 +33,12 @@ from typing import Any
 
 import psycopg
 from eden_contracts import (
+    EvaluationSchema,
     Event,
-    MetricsSchema,
-    Proposal,
+    Idea,
     Task,
     TaskAdapter,
-    Trial,
+    Variant,
 )
 
 from . import _postgres_schema
@@ -46,8 +46,8 @@ from ._base import _StoreBase, _Tx
 from .errors import InvalidPrecondition
 from .submissions import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     Submission,
 )
 
@@ -58,27 +58,27 @@ def _serialize_model(model: Any) -> str:
 
 def _submission_to_row(submission: Submission) -> tuple[str, str]:
     """Return ``(kind, json_data)`` for a submission. Mirrors sqlite.py."""
-    if isinstance(submission, PlanSubmission):
+    if isinstance(submission, IdeateSubmission):
         payload: dict[str, Any] = {
             "status": submission.status,
-            "proposal_ids": list(submission.proposal_ids),
+            "idea_ids": list(submission.idea_ids),
         }
-        return ("plan", json.dumps(payload))
-    if isinstance(submission, ImplementSubmission):
+        return ("ideate", json.dumps(payload))
+    if isinstance(submission, ExecuteSubmission):
         payload = {
             "status": submission.status,
-            "trial_id": submission.trial_id,
+            "variant_id": submission.variant_id,
         }
         if submission.commit_sha is not None:
             payload["commit_sha"] = submission.commit_sha
-        return ("implement", json.dumps(payload))
+        return ("execute", json.dumps(payload))
     if isinstance(submission, EvaluateSubmission):
         payload = {
             "status": submission.status,
-            "trial_id": submission.trial_id,
+            "variant_id": submission.variant_id,
         }
-        if submission.metrics is not None:
-            payload["metrics"] = submission.metrics
+        if submission.evaluation is not None:
+            payload["evaluation"] = submission.evaluation
         if submission.artifacts_uri is not None:
             payload["artifacts_uri"] = submission.artifacts_uri
         return ("evaluate", json.dumps(payload))
@@ -87,22 +87,22 @@ def _submission_to_row(submission: Submission) -> tuple[str, str]:
 
 def _submission_from_row(kind: str, data: str) -> Submission:
     payload = json.loads(data)
-    if kind == "plan":
-        return PlanSubmission(
+    if kind == "ideate":
+        return IdeateSubmission(
             status=payload["status"],
-            proposal_ids=tuple(payload.get("proposal_ids") or ()),
+            idea_ids=tuple(payload.get("idea_ids") or ()),
         )
-    if kind == "implement":
-        return ImplementSubmission(
+    if kind == "execute":
+        return ExecuteSubmission(
             status=payload["status"],
-            trial_id=payload["trial_id"],
+            variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
     if kind == "evaluate":
         return EvaluateSubmission(
             status=payload["status"],
-            trial_id=payload["trial_id"],
-            metrics=payload.get("metrics"),
+            variant_id=payload["variant_id"],
+            evaluation=payload.get("evaluation"),
             artifacts_uri=payload.get("artifacts_uri"),
         )
     raise ValueError(f"unknown submission kind {kind!r}")
@@ -115,7 +115,7 @@ class PostgresStore(_StoreBase):
     ``experiment`` row is absent) or reopens an existing one (when
     present). On reopen, ``experiment_id`` MUST match the one
     recorded in the database; passing a different ``experiment_id``
-    raises :class:`InvalidPrecondition`. ``metrics_schema`` MUST NOT
+    raises :class:`InvalidPrecondition`. ``evaluation_schema`` MUST NOT
     be changed on reopen per chapter 8 §4.2 (immutability); passing a
     different schema raises.
 
@@ -130,14 +130,14 @@ class PostgresStore(_StoreBase):
         experiment_id: str,
         dsn: str,
         *,
-        metrics_schema: MetricsSchema | None = None,
+        evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         token_factory: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(
             experiment_id,
-            metrics_schema=metrics_schema,
+            evaluation_schema=evaluation_schema,
             now=now,
             event_id_factory=event_id_factory,
             token_factory=token_factory,
@@ -153,7 +153,7 @@ class PostgresStore(_StoreBase):
         self._lock = threading.RLock()
         self._in_txn = False
         _postgres_schema.ensure_schema(self._conn)
-        self._initialize_experiment(experiment_id, metrics_schema)
+        self._initialize_experiment(experiment_id, evaluation_schema)
         # Resume the default event-id counter from the persisted seq —
         # same logic as sqlite.py.
         if event_id_factory is None:
@@ -164,7 +164,7 @@ class PostgresStore(_StoreBase):
     # ------------------------------------------------------------------
 
     def _initialize_experiment(
-        self, experiment_id: str, metrics_schema: MetricsSchema | None
+        self, experiment_id: str, evaluation_schema: EvaluationSchema | None
     ) -> None:
         """Create or validate the single experiment row.
 
@@ -173,18 +173,18 @@ class PostgresStore(_StoreBase):
         reopen-immutability.
         """
         schema_json: str | None = None
-        if metrics_schema is not None:
+        if evaluation_schema is not None:
             schema_json = json.dumps(
-                metrics_schema.model_dump(mode="json"), sort_keys=True
+                evaluation_schema.model_dump(mode="json"), sort_keys=True
             )
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT experiment_id, metrics_schema FROM experiment"
+                "SELECT experiment_id, evaluation_schema FROM experiment"
             )
             row = cur.fetchone()
             if row is None:
                 cur.execute(
-                    "INSERT INTO experiment(experiment_id, metrics_schema) "
+                    "INSERT INTO experiment(experiment_id, evaluation_schema) "
                     "VALUES (%s, %s)",
                     (experiment_id, schema_json),
                 )
@@ -198,12 +198,12 @@ class PostgresStore(_StoreBase):
         stored_canonical: str | None = None
         if stored_schema is not None:
             stored_canonical = json.dumps(json.loads(stored_schema), sort_keys=True)
-        if metrics_schema is None:
+        if evaluation_schema is None:
             if stored_schema is not None:
-                self._metrics_schema = MetricsSchema.model_validate_json(stored_schema)
+                self._evaluation_schema = EvaluationSchema.model_validate_json(stored_schema)
         elif stored_canonical != schema_json:
             raise InvalidPrecondition(
-                "metrics_schema MUST NOT change for the lifetime of an "
+                "evaluation_schema MUST NOT change for the lifetime of an "
                 "experiment (08-storage.md §4.2); database at "
                 f"{self._dsn!r} has a different schema recorded"
             )
@@ -277,25 +277,25 @@ class PostgresStore(_StoreBase):
             return None
         return TaskAdapter.validate_python(json.loads(row[0]))
 
-    def _get_proposal(self, proposal_id: str) -> Proposal | None:
+    def _get_idea(self, idea_id: str) -> Idea | None:
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT data FROM proposal WHERE proposal_id = %s", (proposal_id,)
+                "SELECT data FROM idea WHERE idea_id = %s", (idea_id,)
             )
             row = cur.fetchone()
         if row is None:
             return None
-        return Proposal.model_validate_json(row[0])
+        return Idea.model_validate_json(row[0])
 
-    def _get_trial(self, trial_id: str) -> Trial | None:
+    def _get_variant(self, variant_id: str) -> Variant | None:
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT data FROM trial WHERE trial_id = %s", (trial_id,)
+                "SELECT data FROM variant WHERE variant_id = %s", (variant_id,)
             )
             row = cur.fetchone()
         if row is None:
             return None
-        return Trial.model_validate_json(row[0])
+        return Variant.model_validate_json(row[0])
 
     def _get_submission(self, task_id: str) -> Submission | None:
         with self._conn.cursor() as cur:
@@ -333,29 +333,29 @@ class PostgresStore(_StoreBase):
             rows = cur.fetchall()
         return [TaskAdapter.validate_python(json.loads(row[0])) for row in rows]
 
-    def _iter_proposals(self, *, state: str | None = None) -> Iterable[Proposal]:
+    def _iter_ideas(self, *, state: str | None = None) -> Iterable[Idea]:
         with self._conn.cursor() as cur:
             if state is None:
-                cur.execute("SELECT data FROM proposal ORDER BY proposal_id")
+                cur.execute("SELECT data FROM idea ORDER BY idea_id")
             else:
                 cur.execute(
-                    "SELECT data FROM proposal WHERE state = %s ORDER BY proposal_id",
+                    "SELECT data FROM idea WHERE state = %s ORDER BY idea_id",
                     (state,),
                 )
             rows = cur.fetchall()
-        return [Proposal.model_validate_json(row[0]) for row in rows]
+        return [Idea.model_validate_json(row[0]) for row in rows]
 
-    def _iter_trials(self, *, status: str | None = None) -> Iterable[Trial]:
+    def _iter_variants(self, *, status: str | None = None) -> Iterable[Variant]:
         with self._conn.cursor() as cur:
             if status is None:
-                cur.execute("SELECT data FROM trial ORDER BY trial_id")
+                cur.execute("SELECT data FROM variant ORDER BY variant_id")
             else:
                 cur.execute(
-                    "SELECT data FROM trial WHERE status = %s ORDER BY trial_id",
+                    "SELECT data FROM variant WHERE status = %s ORDER BY variant_id",
                     (status,),
                 )
             rows = cur.fetchall()
-        return [Trial.model_validate_json(row[0]) for row in rows]
+        return [Variant.model_validate_json(row[0]) for row in rows]
 
     def _iter_events(self) -> Iterable[Event]:
         with self._conn.cursor() as cur:
@@ -371,10 +371,10 @@ class PostgresStore(_StoreBase):
         """Apply staged writes inside the already-open transaction."""
         for task_id, task in tx.tasks.items():
             self._upsert_task(task_id, task)
-        for proposal_id, proposal in tx.proposals.items():
-            self._upsert_proposal(proposal_id, proposal)
-        for trial_id, trial in tx.trials.items():
-            self._upsert_trial(trial_id, trial)
+        for idea_id, idea in tx.ideas.items():
+            self._upsert_idea(idea_id, idea)
+        for variant_id, variant in tx.variants.items():
+            self._upsert_variant(variant_id, variant)
         for task_id, submission in tx.submissions.items():
             self._upsert_submission(task_id, submission)
         for task_id in tx.task_deletes_submission:
@@ -398,28 +398,28 @@ class PostgresStore(_StoreBase):
                 (task_id, task.kind, task.state, _serialize_model(task)),
             )
 
-    def _upsert_proposal(self, proposal_id: str, proposal: Proposal) -> None:
+    def _upsert_idea(self, idea_id: str, idea: Idea) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO proposal(proposal_id, state, data) VALUES(%s, %s, %s)
-                ON CONFLICT(proposal_id) DO UPDATE SET
+                INSERT INTO idea(idea_id, state, data) VALUES(%s, %s, %s)
+                ON CONFLICT(idea_id) DO UPDATE SET
                     state = EXCLUDED.state,
                     data = EXCLUDED.data
                 """,
-                (proposal_id, proposal.state, _serialize_model(proposal)),
+                (idea_id, idea.state, _serialize_model(idea)),
             )
 
-    def _upsert_trial(self, trial_id: str, trial: Trial) -> None:
+    def _upsert_variant(self, variant_id: str, variant: Variant) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO trial(trial_id, status, data) VALUES(%s, %s, %s)
-                ON CONFLICT(trial_id) DO UPDATE SET
+                INSERT INTO variant(variant_id, status, data) VALUES(%s, %s, %s)
+                ON CONFLICT(variant_id) DO UPDATE SET
                     status = EXCLUDED.status,
                     data = EXCLUDED.data
                 """,
-                (trial_id, trial.status, _serialize_model(trial)),
+                (variant_id, variant.status, _serialize_model(variant)),
             )
 
     def _upsert_submission(self, task_id: str, submission: Submission) -> None:

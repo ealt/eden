@@ -9,7 +9,7 @@ Covers the three isolation fixes addressed after round-0 codex review:
   system / global git config (template dir, signing config, hook
   paths) does not leak into freshly created repos.
 - ``create_ref`` must use a zero-OID sized to the repo's hash
-  algorithm, so the §1.2 `trial/*` CAS-against-absent primitive works
+  algorithm, so the §1.2 `variant/*` CAS-against-absent primitive works
   under SHA-256 as well as SHA-1.
 """
 
@@ -98,7 +98,7 @@ class TestRedirectingEnvIsIgnored:
         manifest = repo.write_blob(b"{}\n")
         seed_tree = repo.commit_tree_sha(seed)
         # This should succeed without ever touching decoy-index.
-        repo.write_tree_with_file(seed_tree, ".eden/trials/t1/eval.json", manifest)
+        repo.write_tree_with_file(seed_tree, ".eden/variants/t1/eval.json", manifest)
         assert not decoy_index.exists()
 
     def test_git_graft_file_cannot_fabricate_parents(
@@ -226,8 +226,8 @@ class TestZeroOidHashAlgo:
     ) -> None:
         """End-to-end: create_ref succeeds and uses zero_oid() internally."""
         repo, seed = repo_with_main
-        repo.create_ref("refs/heads/trial/t1-demo", seed)
-        assert repo.resolve_ref("refs/heads/trial/t1-demo") == seed
+        repo.create_ref("refs/heads/variant/t1-demo", seed)
+        assert repo.resolve_ref("refs/heads/variant/t1-demo") == seed
 
     def test_sha256_zero_oid_is_64_hex_zeros(self, tmp_path: Path) -> None:
         """SHA-256 repos need a 64-char zero OID for CAS-against-absent.
@@ -279,7 +279,7 @@ class TestWriteTreeWithFileEdgeCases:
         """A blob at an intermediate path would make the add a type conflict.
 
         E.g., base tree has `.eden` as a blob, and we try to add
-        `.eden/trials/t1/eval.json` — git can't nest under a blob.
+        `.eden/variants/t1/eval.json` — git can't nest under a blob.
         """
         repo, _ = repo_with_main
         # Build a tree where `.eden` is a blob (file), then try to add
@@ -295,14 +295,14 @@ class TestWriteTreeWithFileEdgeCases:
         from eden_git import GitError
 
         manifest = repo.write_blob(b"{}")
-        # `tree_entry_exists` at `.eden/trials/t1/eval.json` returns
+        # `tree_entry_exists` at `.eden/variants/t1/eval.json` returns
         # false (no match), so write_tree_with_file will attempt the
         # update-index. Git itself should reject because `.eden` is a
         # file, not a tree.
         with pytest.raises(GitError):
             repo.write_tree_with_file(
                 tree_with_eden_as_file,
-                ".eden/trials/t1/eval.json",
+                ".eden/variants/t1/eval.json",
                 manifest,
             )
 
@@ -329,7 +329,7 @@ class TestWriteTreeWithFileEdgeCases:
             [TreeEntry(mode="040000", type="tree", sha=inner_tree, path="t1")]
         )
         eden_tree = repo.write_tree_from_entries(
-            [TreeEntry(mode="040000", type="tree", sha=trials_tree, path="trials")]
+            [TreeEntry(mode="040000", type="tree", sha=trials_tree, path="variants")]
         )
         root_tree = repo.write_tree_from_entries(
             [
@@ -342,5 +342,5 @@ class TestWriteTreeWithFileEdgeCases:
         manifest = repo.write_blob(b"{}")
         with pytest.raises(GitError):
             repo.write_tree_with_file(
-                root_tree, ".eden/trials/t1/eval.json", manifest
+                root_tree, ".eden/variants/t1/eval.json", manifest
             )

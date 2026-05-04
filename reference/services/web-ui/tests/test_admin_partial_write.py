@@ -58,7 +58,7 @@ def signed_in_admin_repo_client(admin_repo_app: FastAPI):
 
 
 def _seed_plan_task(store: InMemoryStore, task_id: str = "plan-A") -> str:
-    store.create_plan_task(task_id)
+    store.create_ideate_task(task_id)
     return task_id
 
 
@@ -67,11 +67,11 @@ class TestTaskReclaimFailures:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """Terminal task → reclaim raises IllegalTransition → ?error=illegal-transition."""
-        from eden_storage import PlanSubmission
+        from eden_storage import IdeateSubmission
 
         task_id = _seed_plan_task(store, "plan-A")
         claim = store.claim(task_id, "w-1")
-        store.submit(task_id, claim.token, PlanSubmission(status="success", proposal_ids=()))
+        store.submit(task_id, claim.token, IdeateSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -121,40 +121,40 @@ class TestWorkRefDeleteFailures:
         artifacts_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Trial moved back to starting between GET and POST → not-eligible."""
+        """Variant moved back to starting between GET and POST → not-eligible."""
         seed_evaluate_task(
             store,
             slug="t1",
-            trial_id="trial-Z",
+            variant_id="variant-Z",
             artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "z"),
         )
-        trial = store.read_trial("trial-Z")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-Z")
+        variant = store.read_variant("variant-Z")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-Z")
         # Get the page (eligible at GET-time).
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert "eligible for deletion (1)" in resp.text
-        # Mutate the trial back to starting between GET and POST. The
+        # Mutate the variant back to starting between GET and POST. The
         # store's terminal-immutability invariant forbids the natural
         # transition, so we reach into in-memory state directly.
-        new_trial = trial.model_copy(update={"status": "starting"})
-        store._trials[trial.trial_id] = new_trial
+        new_variant = variant.model_copy(update={"status": "starting"})
+        store._variants[variant.variant_id] = new_variant
         csrf = get_csrf(signed_in_admin_repo_client)
         resp = signed_in_admin_repo_client.post(
             "/admin/work-refs/delete",
             data={
                 "csrf_token": csrf,
-                "ref_name": f"refs/heads/{trial.branch}",
+                "ref_name": f"refs/heads/{variant.branch}",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "?error=not-eligible" in resp.headers["location"]
         # The ref still exists.
-        assert bare_repo.resolve_ref(f"refs/heads/{trial.branch}") is not None
+        assert bare_repo.resolve_ref(f"refs/heads/{variant.branch}") is not None
 
     def test_ref_vanished_between_get_and_post(
         self,
@@ -168,25 +168,25 @@ class TestWorkRefDeleteFailures:
         seed_evaluate_task(
             store,
             slug="t2",
-            trial_id="trial-V",
+            variant_id="variant-V",
             artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "v"),
         )
-        trial = store.read_trial("trial-V")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-V")
+        variant = store.read_variant("variant-V")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-V")
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert "eligible for deletion (1)" in resp.text
         # Third-party deletion before POST.
-        bare_repo.delete_ref(f"refs/heads/{trial.branch}")
+        bare_repo.delete_ref(f"refs/heads/{variant.branch}")
         csrf = get_csrf(signed_in_admin_repo_client)
         resp = signed_in_admin_repo_client.post(
             "/admin/work-refs/delete",
             data={
                 "csrf_token": csrf,
-                "ref_name": f"refs/heads/{trial.branch}",
+                "ref_name": f"refs/heads/{variant.branch}",
             },
             follow_redirects=False,
         )
@@ -209,15 +209,15 @@ class TestWorkRefDeleteFailures:
         seed_evaluate_task(
             store,
             slug="t3",
-            trial_id="trial-C",
+            variant_id="variant-C",
             artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "c"),
         )
-        trial = store.read_trial("trial-C")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-C")
+        variant = store.read_variant("variant-C")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-C")
         from eden_git.repo import GitError
 
         def boom(self, *args, **kwargs):
@@ -235,7 +235,7 @@ class TestWorkRefDeleteFailures:
                 "/admin/work-refs/delete",
                 data={
                     "csrf_token": csrf,
-                    "ref_name": f"refs/heads/{trial.branch}",
+                    "ref_name": f"refs/heads/{variant.branch}",
                 },
                 follow_redirects=False,
             )
@@ -257,15 +257,15 @@ class TestWorkRefDeleteFailures:
         seed_evaluate_task(
             store,
             slug="t-uvr",
-            trial_id="trial-UVR",
+            variant_id="variant-UVR",
             artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "uvr"),
         )
-        trial = store.read_trial("trial-UVR")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-UVR")
+        variant = store.read_variant("variant-UVR")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-UVR")
         from eden_git.repo import GitError
 
         def boom(self, *args, **kwargs):
@@ -283,7 +283,7 @@ class TestWorkRefDeleteFailures:
                 "/admin/work-refs/delete",
                 data={
                     "csrf_token": csrf,
-                    "ref_name": f"refs/heads/{trial.branch}",
+                    "ref_name": f"refs/heads/{variant.branch}",
                 },
                 follow_redirects=False,
             )
@@ -306,15 +306,15 @@ class TestWorkRefDeleteFailures:
         seed_evaluate_task(
             store,
             slug="t4",
-            trial_id="trial-P",
+            variant_id="variant-P",
             artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "p"),
         )
-        trial = store.read_trial("trial-P")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-P")
+        variant = store.read_variant("variant-P")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-P")
         from eden_git.repo import GitError
 
         # exit code 128 + stderr without "expected" => unexpected git
@@ -335,7 +335,7 @@ class TestWorkRefDeleteFailures:
                     "/admin/work-refs/delete",
                     data={
                         "csrf_token": csrf,
-                        "ref_name": f"refs/heads/{trial.branch}",
+                        "ref_name": f"refs/heads/{variant.branch}",
                     },
                     follow_redirects=False,
                 )

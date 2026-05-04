@@ -1,9 +1,9 @@
-"""Typed form parsers for the planner, implementer, and evaluator modules.
+"""Typed form parsers for the ideator, executor, and evaluator modules.
 
-Planner form input arrives as a list of repeated field rows (one per
-proposal); we parse it into ``ProposalDraft`` objects plus the
-planner-level status. Implementer form input is single-row (one
-trial per task); we parse it into a single ``ImplementDraft``.
+Ideator form input arrives as a list of repeated field rows (one per
+idea); we parse it into ``IdeaDraft`` objects plus the
+ideator-level status. Executor form input is single-row (one
+variant per task); we parse it into a single ``ImplementDraft``.
 Evaluator form input is single-row (one evaluate task → one
 submission) with one input per declared metric; we parse it into a
 single ``EvaluateDraft``. Validation errors are accumulated
@@ -17,16 +17,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 
 
 @dataclass(frozen=True)
-class ProposalDraft:
-    """Validated planner-form input for one proposal.
+class IdeaDraft:
+    """Validated ideator-form input for one idea.
 
-    The canonical ``Proposal`` model is constructed by the route
+    The canonical ``Idea`` model is constructed by the route
     handler from this draft plus the server-generated
-    ``proposal_id`` and ``artifacts_uri`` from the artifact writer.
+    ``idea_id`` and ``artifacts_uri`` from the artifact writer.
     """
 
     slug: str
@@ -54,24 +54,24 @@ class FormErrors:
         return bool(self.by_row) or bool(self.overall)
 
 
-def parse_proposal_rows(
+def parse_idea_rows(
     slugs: list[str],
     priorities: list[str],
     parent_commits_csv: list[str],
     rationales: list[str],
-) -> tuple[list[ProposalDraft], FormErrors]:
+) -> tuple[list[IdeaDraft], FormErrors]:
     """Parse parallel-list form input into validated drafts + accumulated errors.
 
-    Each row is one proposal. Fields are validated independently so a
+    Each row is one idea. Fields are validated independently so a
     bad row 1 still yields an error report covering rows 2..N.
     """
     errors = FormErrors()
     n = max(len(slugs), len(priorities), len(parent_commits_csv), len(rationales))
     if n == 0:
-        errors.add_overall("at least one proposal row is required")
+        errors.add_overall("at least one idea row is required")
         return [], errors
 
-    drafts: list[ProposalDraft] = []
+    drafts: list[IdeaDraft] = []
     parsed_count = 0
     for i in range(n):
         slug = (slugs[i] if i < len(slugs) else "").strip()
@@ -114,7 +114,7 @@ def parse_proposal_rows(
         parsed_count += 1
         if not errors.by_row.get(i):
             drafts.append(
-                ProposalDraft(
+                IdeaDraft(
                     slug=slug,
                     priority=priority,
                     parent_commits=parents,
@@ -123,19 +123,19 @@ def parse_proposal_rows(
             )
 
     if parsed_count == 0:
-        errors.add_overall("at least one proposal row must be filled in")
+        errors.add_overall("at least one idea row must be filled in")
 
     return drafts, errors
 
 
 @dataclass(frozen=True)
 class ImplementDraft:
-    """Validated implementer-form input for one trial.
+    """Validated executor-form input for one variant.
 
     The route handler combines this with the server-owned
-    ``trial_id`` (from ``_CLAIMS``) and the proposal's
-    ``parent_commits`` to construct the ``Trial`` and
-    ``ImplementSubmission`` objects.
+    ``variant_id`` (from ``_CLAIMS``) and the idea's
+    ``parent_commits`` to construct the ``Variant`` and
+    ``ExecuteSubmission`` objects.
     """
 
     status: Literal["success", "error"]
@@ -149,7 +149,7 @@ def parse_implement_form(
     commit_sha_raw: str,
     description_raw: str,
 ) -> tuple[ImplementDraft | None, FormErrors]:
-    """Parse the implementer draft form into a validated draft.
+    """Parse the executor draft form into a validated draft.
 
     Returns ``(None, errors)`` if validation fails, otherwise
     ``(draft, FormErrors())``. ``commit_sha`` is required when
@@ -193,10 +193,10 @@ def parse_implement_form(
 
 @dataclass(frozen=True)
 class EvaluateDraft:
-    """Validated evaluator-form input for one trial.
+    """Validated evaluator-form input for one variant.
 
     The route handler combines this with the server-pinned
-    ``trial_id`` (read from ``task.payload.trial_id`` at claim time
+    ``variant_id`` (read from ``task.payload.variant_id`` at claim time
     and stashed in ``_CLAIMS``) to construct the
     ``EvaluateSubmission`` object. There is no ``description``
     field — the evaluator's submission shape per
@@ -205,7 +205,7 @@ class EvaluateDraft:
     """
 
     status: Literal["success", "error", "eval_error"]
-    metrics: dict[str, int | float | str]
+    evaluation: dict[str, int | float | str]
     artifacts_uri: str | None
 
 
@@ -220,7 +220,7 @@ def _parse_metric_value(
     Returns ``(value, error_message)``. ``value is None`` with a
     non-None error means a parse failure. ``value is None`` with no
     error means the field was effectively empty (and should be
-    omitted from the metrics dict). The integer parser accepts the
+    omitted from the evaluation dict). The integer parser accepts the
     wire-legal form ``1.0`` per spec §1.3 (parses as float, then
     rejects non-integer values).
     """
@@ -262,7 +262,7 @@ def _parse_metric_value(
 
 def parse_evaluate_form(
     *,
-    metrics_schema: MetricsSchema,
+    evaluation_schema: EvaluationSchema,
     status_raw: str,
     metric_inputs: Mapping[str, str],
     artifacts_uri_raw: str,
@@ -273,13 +273,13 @@ def parse_evaluate_form(
     ``(draft, FormErrors())``.
 
     - ``status`` must be one of ``success``, ``error``, ``eval_error``.
-    - For each metric in ``metrics_schema.root``: the raw form value
+    - For each metric in ``evaluation_schema.root``: the raw form value
       is parsed per :func:`_parse_metric_value`; an empty/whitespace
       input is treated as "metric omitted" (not an error). Per-metric
       type errors are accumulated under that metric's name.
     - ``status="success"`` requires at least one metric value
       (UI-side guardrail; the wire allows empty).
-    - Any key in ``metric_inputs`` outside ``metrics_schema.root``
+    - Any key in ``metric_inputs`` outside ``evaluation_schema.root``
       is rejected (only reachable from a hand-crafted POST; the
       template generates inputs only for declared metrics).
     - ``artifacts_uri_raw.strip()`` → ``None`` if empty.
@@ -290,8 +290,8 @@ def parse_evaluate_form(
         errors.add(0, "status", "status must be one of: success, error, eval_error")
         return None, errors
 
-    schema = metrics_schema.root
-    metrics: dict[str, int | float | str] = {}
+    schema = evaluation_schema.root
+    evaluation: dict[str, int | float | str] = {}
 
     for name, raw in metric_inputs.items():
         if name not in schema:
@@ -309,11 +309,11 @@ def parse_evaluate_form(
             continue
         if value is None:
             continue
-        metrics[name] = value
+        evaluation[name] = value
 
-    if status == "success" and not metrics:
+    if status == "success" and not evaluation:
         errors.add_overall(
-            "status=success requires at least one metric value"
+            "status=success requires at least one evaluation value"
         )
 
     if errors:
@@ -324,7 +324,7 @@ def parse_evaluate_form(
     return (
         EvaluateDraft(
             status=status,
-            metrics=metrics,
+            evaluation=evaluation,
             artifacts_uri=artifacts_uri,
         ),
         errors,

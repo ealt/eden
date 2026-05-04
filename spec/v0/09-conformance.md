@@ -33,7 +33,7 @@ The v0 spec defines exactly one wire binding ([`07-wire-protocol.md`](07-wire-pr
 
 - **v1** — task-store and event-log MUSTs from [`02-data-model.md`](02-data-model.md), [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`07-wire-protocol.md`](07-wire-protocol.md), plus the storage MUSTs that the wire binding exposes from [`08-storage.md`](08-storage.md) §1.1, §1.7. v1 does NOT cover the [`03-roles.md`](03-roles.md) role contracts or the [`06-integrator.md`](06-integrator.md) integrator atomicity ladder.
 - **v1+roles** — adds [`03-roles.md`](03-roles.md) role-contract scenarios (per-role submission semantics, backpressure, idempotency).
-- **v1+roles+integrator** — adds the wire-observable projection of [`06-integrator.md`](06-integrator.md) §2, §3.4, §5.3 — promotion preconditions on the trial-status vocabulary; atomicity-of-(field, event) on `integrate_trial`; no-overwrite under repeat promotion. The git-side artifacts (squash shape, eval-manifest shape, `work/*` discipline, reachability) are part of [`06-integrator.md`](06-integrator.md) but are **not** asserted by a wire-only suite — chapter 9 §6 makes the chapter-7 binding the only IUT contract a conformance harness can rely on, and git refs are not exposed through that binding. A future binding chapter that defines a "conformance + git access" contract MAY add those tests at a higher level.
+- **v1+roles+integrator** — adds the wire-observable projection of [`06-integrator.md`](06-integrator.md) §2, §3.4, §5.3 — promotion preconditions on the variant-status vocabulary; atomicity-of-(field, event) on `integrate_variant`; no-overwrite under repeat promotion. The git-side artifacts (squash shape, eval-manifest shape, `work/*` discipline, reachability) are part of [`06-integrator.md`](06-integrator.md) but are **not** asserted by a wire-only suite — chapter 9 §6 makes the chapter-7 binding the only IUT contract a conformance harness can rely on, and git refs are not exposed through that binding. A future binding chapter that defines a "conformance + git access" contract MAY add those tests at a higher level.
 
 A future spec lineage that introduces a second wire binding will at that point split the suite into transport-neutral semantic tests + per-binding wire tests, and chapter 9 will gain a `core` level claimable by IUTs implementing only the semantic layer. The marker structure in [`conformance/`](../../conformance/) anticipates that refactor but does not enable it in v0.
 
@@ -46,13 +46,13 @@ The v1 scenario groups, with their primary spec citations:
 | Task lifecycle | Every legal/illegal transition. | [`04-task-protocol.md`](04-task-protocol.md) §1, §2, §3, §4, §5 |
 | Claim tokens | Freshness, authorization, no-reclaim-while-claimed. | [`02-data-model.md`](02-data-model.md) §3.4; [`04-task-protocol.md`](04-task-protocol.md) §3, §5 |
 | Submit idempotency | Content-equivalent / divergent / post-terminal. | [`04-task-protocol.md`](04-task-protocol.md) §4.2, §4.4 |
-| Reclamation | Case matrix; token invalidation; trial reconciliation. | [`04-task-protocol.md`](04-task-protocol.md) §5 |
+| Reclamation | Case matrix; token invalidation; variant reconciliation. | [`04-task-protocol.md`](04-task-protocol.md) §5 |
 | Atomicity (regression test) | State + event consistency around a transition. Best-effort, not a certification. | [`04-task-protocol.md`](04-task-protocol.md) §1.3 |
 | Event envelope | Envelope shape; uniqueness. | [`05-event-protocol.md`](05-event-protocol.md) §1, §1.1 |
 | Per-type event payloads | Each registered type's required fields. | [`05-event-protocol.md`](05-event-protocol.md) §3 |
-| Composite commits | Implement-dispatch, implement-terminal, evaluate-terminal cases, retry-exhausted `eval_error` terminalization, implement-reclaim-with-starting-trial. | [`04-task-protocol.md`](04-task-protocol.md) §4.3; [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
+| Composite commits | Implement-dispatch, implement-terminal, evaluate-terminal cases, retry-exhausted `eval_error` terminalization, implement-reclaim-with-starting-variant. | [`04-task-protocol.md`](04-task-protocol.md) §4.3; [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
 | Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §6.2 |
-| Status codes | Each operation's spec-pinned status, including the chapter-7 §7 status mappings exercised through duplicate-create / bad-request paths and the chapter-5 §4.4 replay binding. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §2, §3, §4, §5, §6, §7 |
+| Status codes | Each operation's spec-pinned status, including the chapter-7 status mappings exercised through duplicate-create / bad-request paths and the chapter-5 replay binding. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §2, §3, §4, §5, §6, §7 |
 | Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
 | Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
@@ -64,9 +64,9 @@ The v1+roles scenario groups (added in chunk 11c), with their primary spec citat
 
 | Group | Scope | Spec citations |
 |---|---|---|
-| Planner submission | Drafting-proposal precondition; status vocabulary; proposal-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
-| Implementer submission | Submission-shape preconditions; trial-binding; status vocabulary. | [`03-roles.md`](03-roles.md) §3.4 |
-| Evaluator submission | Status vocabulary; metrics-schema validation; per-status trial-side writes; eval_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
+| Ideator submission | Drafting-idea precondition; status vocabulary; idea-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
+| Executor submission | Submission-shape preconditions; variant-binding; status vocabulary. | [`03-roles.md`](03-roles.md) §3.4 |
+| Evaluator submission | Status vocabulary; evaluation-schema validation; per-status variant-side writes; eval_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
 
 The v1+roles+integrator scenario groups (added in chunk 11d), with their primary spec citations:
 

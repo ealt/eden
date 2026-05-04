@@ -1,6 +1,6 @@
 """Branch and worktree management primitives.
 
-These are the porcelain ops later-phase consumers (implementer workers
+These are the porcelain ops later-phase consumers (executor workers
 in Phase 10) will rely on. The Phase 7b integrator itself operates via
 plumbing (``commit-tree``, ``update-ref``) and does not need a worktree.
 """

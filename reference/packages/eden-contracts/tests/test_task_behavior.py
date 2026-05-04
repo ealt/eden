@@ -6,10 +6,10 @@ import pytest
 from eden_contracts import (
     EvaluatePayload,
     EvaluateTask,
-    ImplementPayload,
-    ImplementTask,
-    PlanPayload,
-    PlanTask,
+    ExecutePayload,
+    ExecuteTask,
+    IdeatePayload,
+    IdeateTask,
     TaskAdapter,
 )
 from pydantic import ValidationError
@@ -27,15 +27,15 @@ def test_discriminator_dispatches_plan() -> None:
     task = TaskAdapter.validate_python(
         {
             "task_id": "t",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": "2026-04-23T12:00:00Z",
             "updated_at": "2026-04-23T12:00:00Z",
         }
     )
-    assert isinstance(task, PlanTask)
-    assert isinstance(task.payload, PlanPayload)
+    assert isinstance(task, IdeateTask)
+    assert isinstance(task.payload, IdeatePayload)
     assert task.payload.experiment_id == "exp-1"
 
 
@@ -43,16 +43,16 @@ def test_discriminator_dispatches_implement() -> None:
     task = TaskAdapter.validate_python(
         {
             "task_id": "t",
-            "kind": "implement",
+            "kind": "execute",
             "state": "claimed",
-            "payload": {"proposal_id": "p-1"},
+            "payload": {"idea_id": "p-1"},
             "claim": _claim(),
             "created_at": "2026-04-23T12:00:00Z",
             "updated_at": "2026-04-23T12:00:00Z",
         }
     )
-    assert isinstance(task, ImplementTask)
-    assert isinstance(task.payload, ImplementPayload)
+    assert isinstance(task, ExecuteTask)
+    assert isinstance(task.payload, ExecutePayload)
 
 
 def test_discriminator_dispatches_evaluate() -> None:
@@ -61,7 +61,7 @@ def test_discriminator_dispatches_evaluate() -> None:
             "task_id": "t",
             "kind": "evaluate",
             "state": "submitted",
-            "payload": {"trial_id": "trial-1"},
+            "payload": {"variant_id": "variant-1"},
             "claim": _claim(),
             "created_at": "2026-04-23T12:00:00Z",
             "updated_at": "2026-04-23T12:00:00Z",
@@ -76,7 +76,7 @@ def test_claim_required_when_claimed() -> None:
         TaskAdapter.validate_python(
             {
                 "task_id": "t",
-                "kind": "plan",
+                "kind": "ideate",
                 "state": "claimed",
                 "payload": {"experiment_id": "exp-1"},
                 "created_at": "2026-04-23T12:00:00Z",
@@ -90,7 +90,7 @@ def test_claim_forbidden_when_completed() -> None:
         TaskAdapter.validate_python(
             {
                 "task_id": "t",
-                "kind": "plan",
+                "kind": "ideate",
                 "state": "completed",
                 "payload": {"experiment_id": "exp-1"},
                 "claim": _claim(),

@@ -24,5 +24,5 @@ user-supplied command, scoped to a single reference deployment.
 ## Index
 
 - [`worker-host-subprocess.md`](worker-host-subprocess.md) — how
-  the reference planner / implementer / evaluator hosts invoke
+  the reference ideator / executor / evaluator hosts invoke
   user-supplied `*_command` strings as subprocesses.

@@ -48,7 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--experiment-config",
         required=True,
         help=(
-            "YAML experiment-config file — read for metrics_schema so "
+            "YAML experiment-config file — read for evaluation_schema so "
             "emitted metrics validate."
         ),
     )
@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, the evaluator clones --repo-path "
-            "from this URL at startup and fetches each trial's "
+            "from this URL at startup and fetches each variant's "
             "work/* branch before the worktree add."
         ),
     )
@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             run_evaluator_loop(
                 store=client,
                 worker_id=args.worker_id,
-                metrics_schema=config.metrics_schema,
+                evaluation_schema=config.evaluation_schema,
                 fail_every=args.fail_every,
                 poll_interval=args.poll_interval,
                 stop=stop,

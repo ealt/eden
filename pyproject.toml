@@ -17,9 +17,9 @@ members = [
     "reference/packages/eden-wire",
     "reference/services/_common",
     "reference/services/evaluator",
-    "reference/services/implementer",
+    "reference/services/executor",
     "reference/services/orchestrator",
-    "reference/services/planner",
+    "reference/services/ideator",
     "reference/services/task-store-server",
     "reference/services/web-ui",
 ]
@@ -30,9 +30,9 @@ eden-contracts = { workspace = true }
 eden-dispatch = { workspace = true }
 eden-evaluator-host = { workspace = true }
 eden-git = { workspace = true }
-eden-implementer-host = { workspace = true }
+eden-executor-host = { workspace = true }
 eden-orchestrator = { workspace = true }
-eden-planner-host = { workspace = true }
+eden-ideator-host = { workspace = true }
 eden-service-common = { workspace = true }
 eden-storage = { workspace = true }
 eden-task-store-server = { workspace = true }
@@ -52,9 +52,9 @@ dev = [
     "eden-dispatch",
     "eden-evaluator-host",
     "eden-git",
-    "eden-implementer-host",
+    "eden-executor-host",
     "eden-orchestrator",
-    "eden-planner-host",
+    "eden-ideator-host",
     "eden-service-common",
     "eden-storage",
     "eden-task-store-server",
@@ -106,9 +106,9 @@ include = [
     "reference/packages/eden-wire",
     "reference/services/_common",
     "reference/services/evaluator",
-    "reference/services/implementer",
+    "reference/services/executor",
     "reference/services/orchestrator",
-    "reference/services/planner",
+    "reference/services/ideator",
     "reference/services/task-store-server",
     "reference/services/web-ui",
 ]
@@ -126,9 +126,9 @@ testpaths = [
     "reference/packages/eden-wire/tests",
     "reference/services/_common/tests",
     "reference/services/evaluator/tests",
-    "reference/services/implementer/tests",
+    "reference/services/executor/tests",
     "reference/services/orchestrator/tests",
-    "reference/services/planner/tests",
+    "reference/services/ideator/tests",
     "reference/services/task-store-server/tests",
     "reference/services/web-ui/tests",
 ]

@@ -4,7 +4,7 @@
 #
 #   docker compose -f compose.yaml -f compose.subprocess.yaml --env-file .env up -d --wait
 #
-# This overlay switches the planner / implementer / evaluator hosts
+# This overlay switches the ideator / executor / evaluator hosts
 # to `--mode subprocess` and bind-mounts the experiment dir so the
 # user's `*_command` runs in the worker host container itself
 # (chunk-10d behavior — no docker access).
@@ -15,18 +15,18 @@
 # socket gets mounted into worker hosts, so plain subprocess mode
 # keeps the soft-isolation security posture chunk 10d shipped.
 #
-# When this overlay is active, the orchestrator's `--plan-tasks`
-# value must still be a comma-separated list of plan task ids
+# When this overlay is active, the orchestrator's `--ideate-tasks`
+# value must still be a comma-separated list of ideate task ids
 # (e.g. plan-1,plan-2,plan-3); that flag is unchanged.
 
 name: eden-reference
 
 services:
-  planner-host:
+  ideator-host:
     command:
       - python
       - -m
-      - eden_planner_host
+      - eden_ideator_host
       - --task-store-url
       - http://task-store-server:8080
       - --experiment-id
@@ -34,7 +34,7 @@ services:
       - --shared-token
       - ${EDEN_SHARED_TOKEN:?}
       - --worker-id
-      - planner-1
+      - ideator-1
       - --mode
       - subprocess
       - --experiment-config
@@ -43,15 +43,15 @@ services:
       - /etc/eden/experiment-dir
       - --artifacts-dir
       - /var/lib/eden/artifacts
-      - --plan-env-file
-      - /etc/eden/planner.env
+      - --ideate-env-file
+      - /etc/eden/ideator.env
       - --log-level
       - info
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
-      - source: eden-planner-env
-        target: /etc/eden/planner.env
+      - source: eden-ideator-env
+        target: /etc/eden/ideator.env
     volumes:
       - type: bind
         source: ${EDEN_EXPERIMENT_DIR_HOST:?EDEN_EXPERIMENT_DIR_HOST must be set (run setup-experiment with --experiment-dir)}
@@ -59,11 +59,11 @@ services:
         read_only: true
       - eden-artifacts-data:/var/lib/eden/artifacts
 
-  implementer-host:
+  executor-host:
     command:
       - python
       - -m
-      - eden_implementer_host
+      - eden_executor_host
       - --task-store-url
       - http://task-store-server:8080
       - --experiment-id
@@ -71,7 +71,7 @@ services:
       - --shared-token
       - ${EDEN_SHARED_TOKEN:?}
       - --worker-id
-      - implementer-1
+      - executor-1
       - --repo-path
       - /var/lib/eden/repo
       - --gitea-url
@@ -86,23 +86,23 @@ services:
       - /etc/eden/experiment-dir
       - --worktrees-dir
       - /var/lib/eden/worktrees
-      - --implement-env-file
-      - /etc/eden/implement.env
+      - --execute-env-file
+      - /etc/eden/execute.env
       - --log-level
       - info
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
-      - source: eden-implement-env
-        target: /etc/eden/implement.env
+      - source: eden-execute-env
+        target: /etc/eden/execute.env
     volumes:
       # Phase 10d follow-up B: per-service clone (was eden-bare-repo).
       # The host clones from gitea on first run via --gitea-url.
-      - eden-implementer-repo:/var/lib/eden/repo
+      - eden-executor-repo:/var/lib/eden/repo
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
-      # Read-only mount of the planner-written rationale tree so the
-      # implementer can resolve `proposal.artifacts_uri` →
+      # Read-only mount of the ideator-written rationale tree so the
+      # executor can resolve `idea.artifacts_uri` →
       # `task.json.rationale_path` per plan §D.3.
       - type: volume
         source: eden-artifacts-data
@@ -161,18 +161,18 @@ services:
         read_only: true
 
 configs:
-  eden-planner-env:
+  eden-ideator-env:
     content: |
       EDEN_BASE_COMMIT_SHA=${EDEN_BASE_COMMIT_SHA:?}
-      EDEN_PROPOSALS_PER_PLAN=${EDEN_PROPOSALS_PER_PLAN:-1}
-  # Implementer / evaluator env files default to empty bodies so the
+      EDEN_IDEAS_PER_IDEATION=${EDEN_IDEAS_PER_IDEATION:-1}
+  # Executor / evaluator env files default to empty bodies so the
   # `--*-env-file` flags resolve against a real path. Operators
   # extend these (typically with API keys for an LLM-driven
-  # implement_command / evaluate_command) by editing the overlay or
+  # execute_command / evaluate_command) by editing the overlay or
   # mounting a different source.
-  eden-implement-env:
+  eden-execute-env:
     content: |
-      # implementer subprocess env — extend with API keys etc.
+      # executor subprocess env — extend with API keys etc.
   eden-evaluate-env:
     content: |
       # evaluator subprocess env — extend with API keys etc.

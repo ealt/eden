@@ -1,7 +1,7 @@
 """Subprocess execution helpers for Phase 10d worker-host modes.
 
-The planner host runs a long-running subprocess and exchanges JSON
-lines with it; the implementer / evaluator hosts spawn a short-lived
+The ideator host runs a long-running subprocess and exchanges JSON
+lines with it; the executor / evaluator hosts spawn a short-lived
 subprocess per task. This module owns the bits both modes need:
 
 - env-file parsing,
@@ -68,7 +68,7 @@ class Subprocess:
 
     popen: subprocess.Popen[str]
     role: str
-    """Free-form role name used in log entries (``planner`` / etc.)."""
+    """Free-form role name used in log entries (``ideator`` / etc.)."""
     stdout_queue: queue.Queue[str | None]
     """Lines from stdout. Sentinel ``None`` is pushed at EOF."""
     _stderr_thread: threading.Thread
@@ -90,7 +90,7 @@ class Subprocess:
     on every exit path (SIGTERM-graceful, fast-path, SIGKILL).
     """
     """Mutable single-cell holder for the current task_id (long-running
-    planner subprocess updates this per dispatch; per-task hosts can
+    ideator subprocess updates this per dispatch; per-task hosts can
     leave it as the value passed at spawn-time). Read by the stderr
     forwarder so each forwarded line is tagged with whichever task is
     in flight.
@@ -99,10 +99,10 @@ class Subprocess:
     pipes. If task A's stderr drains late (after the host has already
     called ``set_current_task(B)``), those lines will be stamped with
     task B's id. Conversely, idle post-task stderr keeps the last
-    task's id until the next dispatch. Per-task hosts (implementer /
+    task's id until the next dispatch. Per-task hosts (executor /
     evaluator) don't have this issue because their subprocess is
     short-lived and exits before the next task's stderr begins.
-    The long-running planner host accepts this as a limitation; users
+    The long-running ideator host accepts this as a limitation; users
     who need exact per-task attribution should frame it themselves on
     the structured stdout protocol.
     """

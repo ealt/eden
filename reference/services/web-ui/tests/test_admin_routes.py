@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 
 def _seed_plan_task(store: InMemoryStore, task_id: str = "plan-A") -> str:
-    store.create_plan_task(task_id)
+    store.create_ideate_task(task_id)
     return task_id
 
 
@@ -71,12 +71,12 @@ class TestAdminIndex:
     ) -> None:
         _seed_plan_task(store, "plan-A")
         _seed_plan_task(store, "plan-B")
-        store.create_plan_task("plan-C")
+        store.create_ideate_task("plan-C")
         store.claim("plan-C", "w-1")
         resp = signed_in_client.get("/admin/")
         assert resp.status_code == 200
         assert "admin dashboard" in resp.text
-        # 2 pending plan tasks + 1 claimed plan task seeded above.
+        # 2 pending ideate tasks + 1 claimed ideate task seeded above.
         assert "tasks by kind" in resp.text
 
 
@@ -85,7 +85,7 @@ class TestAdminTasks:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         _seed_plan_task(store, "plan-A")
-        store.create_plan_task("plan-B")
+        store.create_ideate_task("plan-B")
         resp = signed_in_client.get("/admin/tasks/")
         assert resp.status_code == 200
         assert "plan-A" in resp.text
@@ -103,7 +103,7 @@ class TestAdminTasks:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         _seed_plan_task(store, "plan-A")
-        store.create_plan_task("plan-B")
+        store.create_ideate_task("plan-B")
         store.claim("plan-B", "w-1")
         resp = signed_in_client.get("/admin/tasks/?state=claimed")
         assert resp.status_code == 200
@@ -154,11 +154,11 @@ class TestAdminTaskDetail:
         store: InMemoryStore,
         artifacts_dir: Path,
     ) -> None:
-        from eden_storage import PlanSubmission
+        from eden_storage import IdeateSubmission
 
         task_id = _seed_plan_task(store, "plan-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, PlanSubmission(status="success", proposal_ids=()))
+        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/")
         assert resp.status_code == 200
         assert "force-reclaim" in resp.text
@@ -168,11 +168,11 @@ class TestAdminTaskDetail:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        from eden_storage import PlanSubmission
+        from eden_storage import IdeateSubmission
 
         task_id = _seed_plan_task(store, "plan-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, PlanSubmission(status="success", proposal_ids=()))
+        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/")
         assert resp.status_code == 200
@@ -206,11 +206,11 @@ class TestAdminTaskReclaim:
     def test_submitted_to_pending(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        from eden_storage import PlanSubmission
+        from eden_storage import IdeateSubmission
 
         task_id = _seed_plan_task(store, "plan-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, PlanSubmission(status="success", proposal_ids=()))
+        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             f"/admin/tasks/{task_id}/reclaim",
@@ -224,11 +224,11 @@ class TestAdminTaskReclaim:
     def test_terminal_returns_illegal_transition(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        from eden_storage import PlanSubmission
+        from eden_storage import IdeateSubmission
 
         task_id = _seed_plan_task(store, "plan-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, PlanSubmission(status="success", proposal_ids=()))
+        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -252,37 +252,37 @@ class TestAdminTaskReclaim:
         assert resp.status_code == 403
 
 
-class TestAdminTrials:
-    def test_lists_trials_with_status_filter(
+class TestAdminVariants:
+    def test_lists_variants_with_status_filter(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
         artifacts_dir: Path,
     ) -> None:
         seed_evaluate_task(
-            store, slug="t1", trial_id="trial-X", artifacts_dir=artifacts_dir
+            store, slug="t1", variant_id="variant-X", artifacts_dir=artifacts_dir
         )
-        resp = signed_in_client.get("/admin/trials/")
+        resp = signed_in_client.get("/admin/variants/")
         assert resp.status_code == 200
-        assert "trial-X" in resp.text
-        resp_filtered = signed_in_client.get("/admin/trials/?status=success")
+        assert "variant-X" in resp.text
+        resp_filtered = signed_in_client.get("/admin/variants/?status=success")
         assert resp_filtered.status_code == 200
-        # Trial is in "starting" state, so success filter excludes it
-        assert "trial-X" not in resp_filtered.text
+        # Variant is in "starting" state, so success filter excludes it
+        assert "variant-X" not in resp_filtered.text
 
-    def test_trial_detail_renders(
+    def test_variant_detail_renders(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
         artifacts_dir: Path,
     ) -> None:
         seed_evaluate_task(
-            store, slug="t1", trial_id="trial-Y", artifacts_dir=artifacts_dir
+            store, slug="t1", variant_id="variant-Y", artifacts_dir=artifacts_dir
         )
-        resp = signed_in_client.get("/admin/trials/trial-Y/")
+        resp = signed_in_client.get("/admin/variants/variant-Y/")
         assert resp.status_code == 200
-        assert "trial-Y" in resp.text
-        assert "proposal-t1" in resp.text
+        assert "variant-Y" in resp.text
+        assert "idea-t1" in resp.text
 
 
 class TestAdminEvents:
@@ -290,7 +290,7 @@ class TestAdminEvents:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         for i in range(5):
-            _seed_plan_task(store, f"plan-{i}")
+            _seed_plan_task(store, f"ideate-{i}")
         resp = signed_in_client.get("/admin/events/")
         assert resp.status_code == 200
         assert "task.created" in resp.text
@@ -362,25 +362,25 @@ class TestAdminWorkRefs:
         base_sha: str,
         artifacts_dir: Path,
     ) -> None:
-        # Seed an evaluate flow that produces a starting+success trial,
+        # Seed an evaluate flow that produces a starting+success variant,
         # then mark it eval_error so it's terminal-handled.
         seed_evaluate_task(
-            store, slug="t1", trial_id="trial-E", artifacts_dir=artifacts_dir,
+            store, slug="t1", variant_id="variant-E", artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "abc"),
         )
-        # Create the work ref pointing at the trial's commit_sha.
-        trial = store.read_trial("trial-E")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        # Mark trial terminal so it's GC-eligible.
-        store.declare_trial_eval_error("trial-E")
+        # Create the work ref pointing at the variant's commit_sha.
+        variant = store.read_variant("variant-E")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        # Mark variant terminal so it's GC-eligible.
+        store.declare_variant_eval_error("variant-E")
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert resp.status_code == 200
-        assert trial.branch in resp.text
+        assert variant.branch in resp.text
         assert "eligible for deletion (1)" in resp.text
 
-    def test_starting_trial_listed_as_not_eligible(
+    def test_starting_variant_listed_as_not_eligible(
         self,
         signed_in_admin_repo_client: TestClient,
         store: InMemoryStore,
@@ -389,14 +389,14 @@ class TestAdminWorkRefs:
         artifacts_dir: Path,
     ) -> None:
         seed_evaluate_task(
-            store, slug="t2", trial_id="trial-N", artifacts_dir=artifacts_dir,
+            store, slug="t2", variant_id="variant-N", artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "abc"),
         )
-        trial = store.read_trial("trial-N")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        # trial is "starting"
+        variant = store.read_variant("variant-N")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        # variant is "starting"
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert resp.status_code == 200
         assert "not eligible (1)" in resp.text
@@ -408,11 +408,11 @@ class TestAdminWorkRefs:
         base_sha: str,
     ) -> None:
         sha = make_child_commit(bare_repo, base_sha, "orphan")
-        bare_repo.create_ref("refs/heads/work/lone-trial", sha)
+        bare_repo.create_ref("refs/heads/work/lone-variant", sha)
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert resp.status_code == 200
         assert "orphan refs (1)" in resp.text
-        assert "work/lone-trial" in resp.text
+        assert "work/lone-variant" in resp.text
 
 
 class TestAdminWorkRefsDelete:
@@ -422,7 +422,7 @@ class TestAdminWorkRefsDelete:
         csrf = get_csrf(signed_in_admin_repo_client)
         resp = signed_in_admin_repo_client.post(
             "/admin/work-refs/delete",
-            data={"csrf_token": csrf, "ref_name": "refs/heads/trial/foo"},
+            data={"csrf_token": csrf, "ref_name": "refs/heads/variant/foo"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -436,7 +436,7 @@ class TestAdminWorkRefsDelete:
             "/admin/work-refs/delete",
             data={
                 "csrf_token": csrf,
-                "ref_name": "refs/heads/work/../trial/x",
+                "ref_name": "refs/heads/work/../variant/x",
             },
             follow_redirects=False,
         )
@@ -462,26 +462,26 @@ class TestAdminWorkRefsDelete:
         artifacts_dir: Path,
     ) -> None:
         seed_evaluate_task(
-            store, slug="t3", trial_id="trial-NE", artifacts_dir=artifacts_dir,
+            store, slug="t3", variant_id="variant-NE", artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "ne"),
         )
-        trial = store.read_trial("trial-NE")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+        variant = store.read_variant("variant-NE")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
         csrf = get_csrf(signed_in_admin_repo_client)
         resp = signed_in_admin_repo_client.post(
             "/admin/work-refs/delete",
             data={
                 "csrf_token": csrf,
-                "ref_name": f"refs/heads/{trial.branch}",
+                "ref_name": f"refs/heads/{variant.branch}",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "?error=not-eligible" in resp.headers["location"]
         # ref still exists
-        assert bare_repo.resolve_ref(f"refs/heads/{trial.branch}") is not None
+        assert bare_repo.resolve_ref(f"refs/heads/{variant.branch}") is not None
 
     def test_happy_path_eligible_deletion(
         self,
@@ -492,26 +492,26 @@ class TestAdminWorkRefsDelete:
         artifacts_dir: Path,
     ) -> None:
         seed_evaluate_task(
-            store, slug="t4", trial_id="trial-G", artifacts_dir=artifacts_dir,
+            store, slug="t4", variant_id="variant-G", artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "g"),
         )
-        trial = store.read_trial("trial-G")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-G")
+        variant = store.read_variant("variant-G")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-G")
         csrf = get_csrf(signed_in_admin_repo_client)
         resp = signed_in_admin_repo_client.post(
             "/admin/work-refs/delete",
             data={
                 "csrf_token": csrf,
-                "ref_name": f"refs/heads/{trial.branch}",
+                "ref_name": f"refs/heads/{variant.branch}",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "?deleted=ok" in resp.headers["location"]
-        assert bare_repo.resolve_ref(f"refs/heads/{trial.branch}") is None
+        assert bare_repo.resolve_ref(f"refs/heads/{variant.branch}") is None
 
     def test_orphan_ref_deletion(
         self,

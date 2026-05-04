@@ -20,7 +20,7 @@ Design points:
   ``write_tree_from_entries``, ``write_tree_with_file``,
   ``commit_tree``, ``create_ref``, ``update_ref``) are the primitives
   the Phase 7b integrator composes into the §3.2 squash. Worktree
-  and branch ops are for implementer and operator paths in later
+  and branch ops are for executor and operator paths in later
   phases.
 * Environment sanitized per invocation. Each child process runs
   with ``GIT_CONFIG_NOSYSTEM=1`` + ``GIT_CONFIG_GLOBAL=/dev/null``
@@ -221,7 +221,7 @@ class GitRepo:
         return result.returncode == 0 and result.stdout.strip() == "commit"
 
     def ref_exists(self, refname: str) -> bool:
-        """Return whether a ref exists (e.g. ``refs/heads/trial/t1-slug``)."""
+        """Return whether a ref exists (e.g. ``refs/heads/variant/t1-slug``)."""
         result = self._run(["show-ref", "--verify", "--quiet", refname], check=False)
         return result.returncode == 0
 
@@ -488,9 +488,9 @@ class GitRepo:
 
         Uses ``update-ref <ref> <new> <zero>`` which requires the ref
         to currently point at the zero OID (i.e. be absent). This is
-        the primitive the integrator uses when publishing a `trial/*`
+        the primitive the integrator uses when publishing a `variant/*`
         branch — the §1.2 invariant forbids overwriting an existing
-        `trial/*` ref.
+        `variant/*` ref.
         """
         self._run(["update-ref", refname, new_sha, self.zero_oid()])
 
@@ -655,7 +655,7 @@ class GitRepo:
         miss / non-fast-forward / ref hook reject), or
         :class:`GitTransportError` on transport-layer failure
         (ambiguous: the remote may or may not have applied the ref).
-        Callers writing ``trial/*`` per chapter 6 §3.4 MUST disambiguate
+        Callers writing ``variant/*`` per chapter 6 §3.4 MUST disambiguate
         the latter via ``ls_remote``.
         """
         argv = ["push"]

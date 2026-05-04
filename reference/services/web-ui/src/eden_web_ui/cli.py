@@ -33,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "YAML experiment-config file — read for objective and "
-            "metrics_schema. Drift between this file and the "
+            "evaluation_schema. Drift between this file and the "
             "task-store-server's copy is a known reference-impl "
             "limitation; Phase 12's control plane fixes it."
         ),
@@ -64,7 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--artifacts-dir",
         required=True,
         type=Path,
-        help="Local directory to write proposal rationale markdown files into.",
+        help="Local directory to write idea rationale markdown files into.",
     )
     parser.add_argument(
         "--secure-cookies",
@@ -76,11 +76,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Bare git repo the implementer host writes work/* refs into. "
-            "Optional: when set, the implementer module is registered "
-            "and the user can claim implement tasks via the UI; when "
-            "omitted, the implementer module is not available and the "
-            "/implementer/* routes return 404."
+            "Bare git repo the executor host writes work/* refs into. "
+            "Optional: when set, the executor module is registered "
+            "and the user can claim execute tasks via the UI; when "
+            "omitted, the executor module is not available and the "
+            "/executor/* routes return 404."
         ),
     )
     parser.add_argument(
@@ -90,7 +90,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, --repo-path becomes the local "
             "bare clone of the Gitea-hosted repo (created at startup) "
-            "and the implementer module pushes work/* refs to gitea "
+            "and the executor module pushes work/* refs to gitea "
             "after every successful submit."
         ),
     )

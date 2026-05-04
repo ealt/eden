@@ -31,7 +31,7 @@
     {% if is_force %}
     <p class="warn">
         <strong>this task is in <code>submitted</code> state.</strong>
-        reclaiming will replay the work and may produce a different trial.
+        reclaiming will replay the work and may produce a different variant.
     </p>
     {% endif %}
     <form action="/admin/tasks/{{ task.task_id }}/reclaim" method="post">

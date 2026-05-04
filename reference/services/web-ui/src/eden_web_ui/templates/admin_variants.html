@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin variants{% endblock %}
+{% block main %}
+<h1>variants</h1>
+
+<form method="get" action="/admin/variants/" class="filters">
+    <label>status
+        <select name="status">
+            <option value="*" {% if selected_status == "*" %}selected{% endif %}>all</option>
+            {% for s in trial_statuses %}
+                <option value="{{ s }}" {% if selected_status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <button type="submit">filter</button>
+</form>
+
+{% if rows %}
+<table>
+    <thead>
+        <tr>
+            <th>variant id</th>
+            <th>idea</th>
+            <th>status</th>
+            <th>branch</th>
+            <th>commit_sha</th>
+            <th>variant_commit_sha</th>
+            <th>started_at</th>
+            <th>completed_at</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+        <tr>
+            <td><a href="/admin/variants/{{ r.variant_id }}/"><code>{{ r.variant_id }}</code></a></td>
+            <td><code>{{ r.idea_id }}</code></td>
+            <td>{{ r.status }}{% if r.orphaned %} <span class="badge badge-warn">&#9888; orphaned starting</span>{% endif %}</td>
+            <td>{% if r.branch %}<code>{{ r.branch }}</code>{% else %}—{% endif %}</td>
+            <td>{% if r.commit_sha %}<code title="{{ r.commit_sha }}">{{ r.commit_sha[:12] }}</code>{% else %}—{% endif %}</td>
+            <td>{% if r.variant_commit_sha %}<code title="{{ r.variant_commit_sha }}">{{ r.variant_commit_sha[:12] }}</code>{% else %}—{% endif %}</td>
+            <td>{{ r.started_at }}</td>
+            <td>{% if r.completed_at %}{{ r.completed_at }}{% else %}—{% endif %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>no variants match this filter.</p>
+{% endif %}
+{% endblock %}

@@ -3,7 +3,7 @@
 Mirrors ``test_e2e.py`` but runs each worker host with
 ``--mode subprocess`` and the fixture's ``plan.py`` /
 ``implement.py`` / ``eval.py`` scripts. Asserts the same final
-3-trial-success shape against the bare repo.
+3-variant-success shape against the bare repo.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 from eden_git import GitRepo
 from eden_service_common import seed_bare_repo
 from eden_storage import SqliteStore
@@ -98,7 +98,7 @@ def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
 
 
 @pytest.mark.e2e
-def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
+def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
     """Spawn 5 processes in subprocess mode against fixture scripts."""
     bare_repo = tmp_path / "bare-repo.git"
     subprocess.run(
@@ -147,16 +147,16 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
     port = _read_port_announcement(server_log, server)
     base_url = f"http://127.0.0.1:{port}"
 
-    planner_env_file = tmp_path / "planner.env"
-    planner_env_file.write_text(
+    ideator_env_file = tmp_path / "ideator.env"
+    ideator_env_file.write_text(
         f"EDEN_BASE_COMMIT_SHA={base_sha}\nEDEN_PROPOSALS_PER_PLAN=1\n",
         encoding="utf-8",
     )
 
-    planner_log = logs_dir / "planner.log"
-    planner = _spawn(
+    ideator_log = logs_dir / "ideator.log"
+    ideator = _spawn(
         [
-            "eden_planner_host",
+            "eden_ideator_host",
             "--mode",
             "subprocess",
             "--task-store-url",
@@ -166,22 +166,22 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
             "--shared-token",
             token,
             "--worker-id",
-            "planner-1",
+            "ideator-1",
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--experiment-dir",
             str(FIXTURE_DIR),
             "--artifacts-dir",
             str(artifacts_dir),
-            "--plan-env-file",
-            str(planner_env_file),
+            "--ideate-env-file",
+            str(ideator_env_file),
         ],
-        planner_log,
+        ideator_log,
     )
-    implementer_log = logs_dir / "implementer.log"
-    implementer = _spawn(
+    executor_log = logs_dir / "executor.log"
+    executor = _spawn(
         [
-            "eden_implementer_host",
+            "eden_executor_host",
             "--mode",
             "subprocess",
             "--task-store-url",
@@ -191,7 +191,7 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
             "--shared-token",
             token,
             "--worker-id",
-            "implementer-1",
+            "executor-1",
             "--repo-path",
             str(bare_repo),
             "--experiment-config",
@@ -201,7 +201,7 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
             "--worktrees-dir",
             str(worktrees_dir),
         ],
-        implementer_log,
+        executor_log,
     )
     evaluator_log = logs_dir / "evaluator.log"
     evaluator = _spawn(
@@ -232,7 +232,7 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
     # Quiescence tolerance must exceed subprocess-mode worker
     # startup-to-first-claim latency; with the default 0.3s the
     # orchestrator declares quiescence before workers come online and
-    # every plan task stays pending.
+    # every ideate task stays pending.
     orchestrator = _spawn(
         [
             "eden_orchestrator",
@@ -244,8 +244,8 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
             token,
             "--repo-path",
             str(bare_repo),
-            "--plan-tasks",
-            "plan-1,plan-2,plan-3",
+            "--ideate-tasks",
+            "ideate-1,plan-2,plan-3",
             "--poll-interval",
             "0.5",
             "--max-quiescent-iterations",
@@ -256,8 +256,8 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
 
     procs_logs = {
         "task-store-server": (server, server_log),
-        "planner": (planner, planner_log),
-        "implementer": (implementer, implementer_log),
+        "ideator": (ideator, ideator_log),
+        "executor": (executor, executor_log),
         "evaluator": (evaluator, evaluator_log),
         "orchestrator": (orchestrator, orchestrator_log),
     }
@@ -280,27 +280,27 @@ def test_three_trial_experiment_subprocess_mode(tmp_path: Path) -> None:
                 + _dump_logs(procs_logs)
             )
 
-        for name in ("planner", "implementer", "evaluator", "task-store-server"):
+        for name in ("ideator", "executor", "evaluator", "task-store-server"):
             _terminate(procs_logs[name][0])
 
         store = SqliteStore(
             experiment_id=experiment_id,
             path=str(db_path),
-            metrics_schema=MetricsSchema({"score": "real"}),
+            evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         try:
-            trials = store.list_trials(status="success")
-            if len(trials) != 3:
+            variants = store.list_variants(status="success")
+            if len(variants) != 3:
                 pytest.fail(
-                    f"expected 3 success trials, got {len(trials)}. Output:\n"
+                    f"expected 3 success variants, got {len(variants)}. Output:\n"
                     + _dump_logs(procs_logs)
                 )
             repo = GitRepo(str(bare_repo))
-            for trial in trials:
-                assert trial.trial_commit_sha is not None
-                assert trial.parent_commits == [base_sha]
-                parents = repo.commit_parents(trial.trial_commit_sha)
-                assert parents, "trial commit must have at least one parent"
+            for variant in variants:
+                assert variant.variant_commit_sha is not None
+                assert variant.parent_commits == [base_sha]
+                parents = repo.commit_parents(variant.variant_commit_sha)
+                assert parents, "variant commit must have at least one parent"
         finally:
             store.close()
     finally:

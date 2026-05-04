@@ -1,8 +1,8 @@
 """Phase 10d evaluator-host subprocess mode.
 
 For each pending evaluate task: claim, materialize a per-task
-worktree at the trial's commit, run the user's ``evaluate_command``,
-parse the metrics outcome JSON, validate against ``metrics_schema``,
+worktree at the variant's commit, run the user's ``evaluate_command``,
+parse the metrics outcome JSON, validate against ``evaluation_schema``,
 and submit.
 
 See ``docs/plans/eden-phase-10d-llm-worker-hosts.md`` §D.4.
@@ -65,7 +65,7 @@ class EvaluatorSubprocessConfig:
     host_id: str = ""
 
 
-def _fetch_trial_branch(*, repo_path: Path, branch: str) -> None:
+def _fetch_variant_branch(*, repo_path: Path, branch: str) -> None:
     """Fetch ``refs/heads/<branch>`` from origin into the local repo.
 
     No-op when the repo has no origin (Phase 10d follow-up B local-only
@@ -98,7 +98,7 @@ def run_evaluator_subprocess_loop(
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
     sweep_host_worktrees(repo_path=config.repo_path, host_subdir=host_subdir)
-    metrics_schema = experiment_config.metrics_schema.root
+    evaluation_schema = experiment_config.evaluation_schema.root
     objective = experiment_config.objective.model_dump()
 
     while not stop.is_set():
@@ -118,7 +118,7 @@ def run_evaluator_subprocess_loop(
                     task=task,
                     config=config,
                     host_subdir=host_subdir,
-                    metrics_schema=metrics_schema,
+                    evaluation_schema=evaluation_schema,
                     objective=objective,
                 )
             except Exception:  # noqa: BLE001 — keep loop alive
@@ -135,35 +135,35 @@ def _handle_one(
     task: EvaluateTask,
     config: EvaluatorSubprocessConfig,
     host_subdir: Path,
-    metrics_schema: dict,
+    evaluation_schema: dict,
     objective: dict,
 ) -> None:
-    trial_id = task.payload.trial_id
-    trial = store.read_trial(trial_id)
-    if trial.commit_sha is None:
+    variant_id = task.payload.variant_id
+    variant = store.read_variant(variant_id)
+    if variant.commit_sha is None:
         log.warning(
-            "evaluator_trial_missing_commit",
-            extra={"task_id": task.task_id, "trial_id": trial_id},
+            "evaluator_variant_missing_commit",
+            extra={"task_id": task.task_id, "variant_id": variant_id},
         )
         return
     claim = store.claim(task.task_id, worker_id)
 
     # Phase 10d follow-up B §D.8: when the local repo has an origin
-    # remote (Gitea cutover), fetch the implementer's work/* branch
+    # remote (Gitea cutover), fetch the executor's work/* branch
     # so the worker commit is present locally before we worktree-add.
     # Per chapter 3 §4.4, infrastructure failures here map to
-    # eval_error (NOT error) so the trial stays at `success` and
+    # eval_error (NOT error) so the variant stays at `success` and
     # can be re-evaluated later.
-    if trial.branch is not None:
+    if variant.branch is not None:
         try:
-            _fetch_trial_branch(
+            _fetch_variant_branch(
                 repo_path=config.repo_path,
-                branch=trial.branch,
+                branch=variant.branch,
             )
         except Exception:  # noqa: BLE001
             log.warning(
                 "evaluator_fetch_failed",
-                extra={"task_id": task.task_id, "branch": trial.branch},
+                extra={"task_id": task.task_id, "branch": variant.branch},
             )
             _submit_with_readback(
                 store=store,
@@ -171,8 +171,8 @@ def _handle_one(
                 token=claim.token,
                 submission=EvaluateSubmission(
                     status="eval_error",
-                    trial_id=trial_id,
-                    metrics=None,
+                    variant_id=variant_id,
+                    evaluation=None,
                     artifacts_uri=None,
                 ),
             )
@@ -184,7 +184,7 @@ def _handle_one(
         task_id=task.task_id,
     )
     try:
-        wt.create(commit=trial.commit_sha)
+        wt.create(commit=variant.commit_sha)
     except Exception:  # noqa: BLE001
         log.exception(
             "evaluator_worktree_create_failed",
@@ -195,7 +195,7 @@ def _handle_one(
             task_id=task.task_id,
             token=claim.token,
             submission=EvaluateSubmission(
-                status="eval_error", trial_id=trial_id, metrics=None, artifacts_uri=None
+                status="eval_error", variant_id=variant_id, evaluation=None, artifacts_uri=None
             ),
         )
         return
@@ -204,8 +204,8 @@ def _handle_one(
         outcome = _run_subprocess(
             wt_path=wt.path,
             task=task,
-            trial=trial,
-            metrics_schema=metrics_schema,
+            variant=variant,
+            evaluation_schema=evaluation_schema,
             objective=objective,
             config=config,
         )
@@ -229,7 +229,7 @@ def _handle_one(
         )
     submission = _outcome_to_submission(
         outcome=outcome,
-        trial_id=trial_id,
+        variant_id=variant_id,
         store=store,
     )
     _submit_with_readback(
@@ -241,52 +241,52 @@ def _handle_one(
 
 
 def _outcome_to_submission(
-    *, outcome: dict, trial_id: str, store: Store
+    *, outcome: dict, variant_id: str, store: Store
 ) -> EvaluateSubmission:
     status = outcome.get("status")
     if status == "success":
-        metrics = outcome.get("metrics")
+        evaluation = outcome.get("evaluation")
         artifacts_uri = outcome.get("artifacts_uri")
-        if not isinstance(metrics, dict) or not metrics:
-            log.warning("evaluator_success_missing_metrics")
+        if not isinstance(evaluation, dict) or not evaluation:
+            log.warning("evaluator_success_missing_evaluation")
             return EvaluateSubmission(
                 status="eval_error",
-                trial_id=trial_id,
-                metrics=None,
+                variant_id=variant_id,
+                evaluation=None,
                 artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
             )
         try:
-            store.validate_metrics(metrics)
+            store.validate_evaluation(evaluation)
         except InvalidPrecondition as exc:
             log.warning(
-                "evaluator_metrics_invalid",
+                "evaluator_evaluation_invalid",
                 extra={"reason": str(exc)},
             )
             return EvaluateSubmission(
                 status="eval_error",
-                trial_id=trial_id,
-                metrics=None,
+                variant_id=variant_id,
+                evaluation=None,
                 artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
             )
         return EvaluateSubmission(
             status="success",
-            trial_id=trial_id,
-            metrics=metrics,
+            variant_id=variant_id,
+            evaluation=evaluation,
             artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
         )
     if status == "error":
         return EvaluateSubmission(
             status="error",
-            trial_id=trial_id,
-            metrics=None,
+            variant_id=variant_id,
+            evaluation=None,
             artifacts_uri=outcome.get("artifacts_uri")
             if isinstance(outcome.get("artifacts_uri"), str)
             else None,
         )
     return EvaluateSubmission(
         status="eval_error",
-        trial_id=trial_id,
-        metrics=None,
+        variant_id=variant_id,
+        evaluation=None,
         artifacts_uri=None,
     )
 
@@ -295,8 +295,8 @@ def _run_subprocess(
     *,
     wt_path: Path,
     task: EvaluateTask,
-    trial: Any,
-    metrics_schema: dict,
+    variant: Any,
+    evaluation_schema: dict,
     objective: dict,
     config: EvaluatorSubprocessConfig,
 ) -> dict[str, Any]:
@@ -306,10 +306,10 @@ def _run_subprocess(
     output_json = eden_dir / "eval-outcome.json"
     brief = {
         "task_id": task.task_id,
-        "trial_id": trial.trial_id,
-        "trial_branch": trial.branch,
-        "trial_commit_sha": trial.commit_sha,
-        "metrics_schema": metrics_schema,
+        "variant_id": variant.variant_id,
+        "variant_branch": variant.branch,
+        "variant_commit_sha": variant.commit_sha,
+        "evaluation_schema": evaluation_schema,
         "objective": objective,
         "output_path": ".eden/eval-outcome.json",
     }
@@ -342,7 +342,7 @@ def _run_subprocess(
             binds=list(config.exec_binds),
             env_keys=list(env.keys()),
             # Per-task evaluator subprocess does NOT read stdin —
-            # same reasoning as the implementer side.
+            # same reasoning as the executor side.
             attach_stdin=False,
         )
         pk, cu = make_cidfile_callbacks(cidfile)

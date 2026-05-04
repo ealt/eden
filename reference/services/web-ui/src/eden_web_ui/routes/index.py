@@ -18,7 +18,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
     store = request.app.state.store
     pending = {
         kind: len(store.list_tasks(kind=kind, state="pending"))
-        for kind in ("plan", "implement", "evaluate")
+        for kind in ("ideate", "execute", "evaluate")
     }
     return request.app.state.templates.TemplateResponse(
         request,

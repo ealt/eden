@@ -2,7 +2,7 @@
 
 The function is the orchestrator-iteration body — it finalizes
 submitted tasks, dispatches downstream work, and promotes successful
-trials, without invoking any workers. The standalone orchestrator
+variants, without invoking any workers. The standalone orchestrator
 service drives it in a poll loop. Each test pre-seeds the store so
 exactly one transition is applicable, then asserts that transition
 fired and ``progress`` is ``True``.
@@ -17,16 +17,16 @@ import itertools
 
 from eden_contracts import (
     EvaluateTask,
-    ImplementTask,
-    MetricsSchema,
-    Proposal,
-    Trial,
+    EvaluationSchema,
+    ExecuteTask,
+    Idea,
+    Variant,
 )
 from eden_dispatch import (
     EvaluateSubmission,
-    ImplementSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     InMemoryStore,
-    PlanSubmission,
     run_orchestrator_iteration,
 )
 
@@ -44,12 +44,12 @@ def _now_factory():
 def _make_store() -> InMemoryStore:
     return InMemoryStore(
         experiment_id="exp-orch-iter",
-        metrics_schema=MetricsSchema({"loss": "real"}),
+        evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
 
 
 def _impl_factory() -> str:
-    return f"t-impl-{itertools.count(1).__next__()}"
+    return f"t-exec-{itertools.count(1).__next__()}"
 
 
 def _eval_factory() -> str:
@@ -58,13 +58,13 @@ def _eval_factory() -> str:
 
 def test_accepts_submitted_plan_task() -> None:
     store = _make_store()
-    task_id = "t-plan-1"
-    store.create_plan_task(task_id)
-    claim = store.claim(task_id, worker_id="planner-1")
+    task_id = "t-ideate-1"
+    store.create_ideate_task(task_id)
+    claim = store.claim(task_id, worker_id="ideator-1")
     store.submit(
         task_id,
         claim.token,
-        PlanSubmission(status="success", proposal_ids=()),
+        IdeateSubmission(status="success", idea_ids=()),
     )
     # Precondition.
     assert store.read_task(task_id).state == "submitted"
@@ -79,11 +79,11 @@ def test_accepts_submitted_plan_task() -> None:
     assert store.read_task(task_id).state == "completed"
 
 
-def test_dispatches_implement_task_for_ready_proposal() -> None:
+def test_dispatches_implement_task_for_ready_idea() -> None:
     store = _make_store()
     now = _now_factory()
-    proposal = Proposal(
-        proposal_id="p-1",
+    idea = Idea(
+        idea_id="p-1",
         experiment_id=store.experiment_id,
         slug="feat-1",
         priority=1.0,
@@ -92,13 +92,13 @@ def test_dispatches_implement_task_for_ready_proposal() -> None:
         state="drafting",
         created_at=now(),
     )
-    store.create_proposal(proposal)
-    store.mark_proposal_ready("p-1")
+    store.create_idea(idea)
+    store.mark_idea_ready("p-1")
 
     dispatched_ids: list[str] = []
 
     def factory() -> str:
-        new = f"t-impl-{len(dispatched_ids) + 1}"
+        new = f"t-exec-{len(dispatched_ids) + 1}"
         dispatched_ids.append(new)
         return new
 
@@ -111,15 +111,15 @@ def test_dispatches_implement_task_for_ready_proposal() -> None:
     assert progress is True
     assert len(dispatched_ids) == 1
     impl = store.read_task(dispatched_ids[0])
-    assert isinstance(impl, ImplementTask)
-    assert impl.payload.proposal_id == "p-1"
+    assert isinstance(impl, ExecuteTask)
+    assert impl.payload.idea_id == "p-1"
 
 
-def test_dispatches_evaluate_task_for_starting_trial_with_commit() -> None:
+def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
     store = _make_store()
     now = _now_factory()
-    proposal = Proposal(
-        proposal_id="p-1",
+    idea = Idea(
+        idea_id="p-1",
         experiment_id=store.experiment_id,
         slug="feat-1",
         priority=1.0,
@@ -128,19 +128,19 @@ def test_dispatches_evaluate_task_for_starting_trial_with_commit() -> None:
         state="drafting",
         created_at=now(),
     )
-    store.create_proposal(proposal)
-    store.mark_proposal_ready("p-1")
-    trial = Trial(
-        trial_id="tr-1",
+    store.create_idea(idea)
+    store.mark_idea_ready("p-1")
+    variant = Variant(
+        variant_id="tr-1",
         experiment_id=store.experiment_id,
-        proposal_id="p-1",
+        idea_id="p-1",
         status="starting",
         parent_commits=["a" * 40],
         branch="work/feat-1-tr-1",
         commit_sha="b" * 40,
         started_at=now(),
     )
-    store.create_trial(trial)
+    store.create_variant(variant)
 
     dispatched_ids: list[str] = []
 
@@ -159,21 +159,21 @@ def test_dispatches_evaluate_task_for_starting_trial_with_commit() -> None:
     assert len(dispatched_ids) == 1
     ev = store.read_task(dispatched_ids[0])
     assert isinstance(ev, EvaluateTask)
-    assert ev.payload.trial_id == "tr-1"
+    assert ev.payload.variant_id == "tr-1"
 
 
-def _drive_trial_to_success(store: InMemoryStore) -> str:
-    """Drive one trial through the real store API to ``status=success``.
+def _drive_variant_to_success(store: InMemoryStore) -> str:
+    """Drive one variant through the real store API to ``status=success``.
 
-    Returns the trial_id. Uses legitimate state transitions so
+    Returns the variant_id. Uses legitimate state transitions so
     internal invariants hold.
     """
     now = _now_factory()
-    # Plan task
-    store.create_plan_task("t-plan-1")
-    claim = store.claim("t-plan-1", "planner-1")
-    proposal = Proposal(
-        proposal_id="p-1",
+    # Ideate task
+    store.create_ideate_task("t-ideate-1")
+    claim = store.claim("t-ideate-1", "ideator-1")
+    idea = Idea(
+        idea_id="p-1",
         experiment_id=store.experiment_id,
         slug="feat-1",
         priority=1.0,
@@ -182,65 +182,65 @@ def _drive_trial_to_success(store: InMemoryStore) -> str:
         state="drafting",
         created_at=now(),
     )
-    store.create_proposal(proposal)
-    store.mark_proposal_ready("p-1")
+    store.create_idea(idea)
+    store.mark_idea_ready("p-1")
     store.submit(
-        "t-plan-1", claim.token, PlanSubmission(status="success", proposal_ids=("p-1",))
+        "t-ideate-1", claim.token, IdeateSubmission(status="success", idea_ids=("p-1",))
     )
-    store.accept("t-plan-1")
-    # Implement task
-    store.create_implement_task("t-impl-1", "p-1")
-    claim = store.claim("t-impl-1", "implementer-1")
-    trial = Trial(
-        trial_id="tr-1",
+    store.accept("t-ideate-1")
+    # Execute task
+    store.create_execute_task("t-exec-1", "p-1")
+    claim = store.claim("t-exec-1", "executor-1")
+    variant = Variant(
+        variant_id="tr-1",
         experiment_id=store.experiment_id,
-        proposal_id="p-1",
+        idea_id="p-1",
         status="starting",
         parent_commits=["a" * 40],
         branch="work/feat-1-tr-1",
         started_at=now(),
     )
-    store.create_trial(trial)
+    store.create_variant(variant)
     store.submit(
-        "t-impl-1",
+        "t-exec-1",
         claim.token,
-        ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+        ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
     )
-    store.accept("t-impl-1")
+    store.accept("t-exec-1")
     # Evaluate task
     store.create_evaluate_task("t-eval-1", "tr-1")
     claim = store.claim("t-eval-1", "evaluator-1")
     store.submit(
         "t-eval-1",
         claim.token,
-        EvaluateSubmission(status="success", trial_id="tr-1", metrics={"loss": 0.5}),
+        EvaluateSubmission(status="success", variant_id="tr-1", evaluation={"loss": 0.5}),
     )
     store.accept("t-eval-1")
     return "tr-1"
 
 
-def test_promotes_successful_trial_via_integrate_trial_callback() -> None:
+def test_promotes_successful_variant_via_integrate_variant_callback() -> None:
     store = _make_store()
-    trial_id = _drive_trial_to_success(store)
-    assert store.read_trial(trial_id).status == "success"
-    assert store.read_trial(trial_id).trial_commit_sha is None
+    variant_id = _drive_variant_to_success(store)
+    assert store.read_variant(variant_id).status == "success"
+    assert store.read_variant(variant_id).variant_commit_sha is None
 
     calls: list[str] = []
 
     def integrate(tid: str) -> None:
         calls.append(tid)
-        store.integrate_trial(tid, "c" * 40)
+        store.integrate_variant(tid, "c" * 40)
 
     progress = run_orchestrator_iteration(
         store,
         implement_task_id_factory=_impl_factory,
         evaluate_task_id_factory=_eval_factory,
-        integrate_trial=integrate,
+        integrate_variant=integrate,
     )
 
     assert progress is True
-    assert calls == [trial_id]
-    assert store.read_trial(trial_id).trial_commit_sha == "c" * 40
+    assert calls == [variant_id]
+    assert store.read_variant(variant_id).variant_commit_sha == "c" * 40
 
 
 def test_quiesced_store_returns_false() -> None:

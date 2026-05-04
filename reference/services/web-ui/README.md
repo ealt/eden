@@ -1,14 +1,14 @@
 # eden-web-ui
 
 Reference Web UI service for the EDEN protocol. Phase 9 chunks 1
-(UI shell + planner module), 9c (implementer module), 9d
+(UI shell + ideator module), 9c (executor module), 9d
 (evaluator module), and 9e (admin / observability) ship — a human
 can play any of the three worker roles end-to-end through a
-browser, observe the experiment's task / trial / event state from
-`/admin/*`, and operator-reclaim a stranded claim. The implementer
+browser, observe the experiment's task / variant / event state from
+`/admin/*`, and operator-reclaim a stranded claim. The executor
 module and the work-ref GC sub-page of `/admin/*` are gated on the
 optional `--repo-path` flag; if omitted, the UI runs as a
-planner + evaluator + (read-only) admin deployment.
+ideator + evaluator + (read-only) admin deployment.
 
 The UI service is a **backend-for-frontend (BFF)**: it holds the
 `--shared-token` (the chapter 07 §12 reference bearer the
@@ -21,7 +21,7 @@ Rendering uses Jinja2 templates with [HTMX](https://htmx.org/) as a
 progressive-enhancement layer. Every mutating route works without
 JS (plain form-POST + 303-redirect / re-render); HTMX-aware routes
 additionally return a fragment when the browser sends
-`HX-Request: true`. The chunk-1 example is "add another proposal
+`HX-Request: true`. The chunk-1 example is "add another idea
 row" — HTMX appends one new row inline; without JS the same
 button does a full-page re-render. HTMX is vendored at
 `src/eden_web_ui/static/htmx-1.9.12.min.js`
@@ -82,41 +82,41 @@ Every UI claim sets `expires_at = now + --claim-ttl-seconds`
 abandoned by closing the tab are reclaimed automatically — no
 operator action required.
 
-## Planner submit flow
+## Ideator submit flow
 
-The planner module pins three phases:
+The ideator module pins three phases:
 
-1. **Phase 1 — drafting.** For every proposal: write rationale
-   markdown to `<artifacts-dir>/<proposal_id>.md` (atomically, via
+1. **Phase 1 — drafting.** For every idea: write rationale
+   markdown to `<artifacts-dir>/<idea_id>.md` (atomically, via
    tmp-and-rename), build a `file://` URI, then call
-   `store.create_proposal(state="drafting")`. Drafting proposals
+   `store.create_idea(state="drafting")`. Drafting ideas
    are invisible to the orchestrator's dispatch path.
-2. **Phase 2 — ready.** Loop over the just-created proposals and
-   call `store.mark_proposal_ready` for each.
+2. **Phase 2 — ready.** Loop over the just-created ideas and
+   call `store.mark_idea_ready` for each.
 3. **Phase 3 — submit.** `store.submit(...)` with retry-before-orphan
    on transport-shaped failures (3 attempts, exponential backoff,
    leveraging chapter 07 §2.4 / §8.1 idempotent resubmit). On a
    definitive divergent response or after the retries are
-   exhausted, the orphaned-proposals error page lists the
-   `ready`-but-unreferenced proposal IDs for operator recovery.
+   exhausted, the orphaned-ideas error page lists the
+   `ready`-but-unreferenced idea IDs for operator recovery.
 
 The narrowest unsafe window is between Phase 2 and Phase 3:
-proposals are `ready` but not yet referenced by a submitted plan
+ideas are `ready` but not yet referenced by a submitted plan
 task. We accept this for the reference impl; it applies equally
-to the existing scripted planner host. A spec-level fix (atomic
+to the existing scripted ideator host. A spec-level fix (atomic
 ready-and-submit) is out of scope for chunk 1.
 
-## Implementer module (chunk 9c)
+## Executor module (chunk 9c)
 
-The implementer module is registered when `--repo-path <path>` is
+The executor module is registered when `--repo-path <path>` is
 set on the CLI; it points at the same bare git repo the
-`eden_implementer_host` service writes `work/*` refs into. The
-top-level navigation hides the "implementer" link otherwise and
+`eden_executor_host` service writes `work/*` refs into. The
+top-level navigation hides the "executor" link otherwise and
 the routes return 404.
 
 Trust model and assumption: the **user does git work in their own
 checkout out-of-band**, then pushes their tip commit to the bare
-repo (any branch — the UI creates the canonical `work/<slug>-<trial_id>`
+repo (any branch — the UI creates the canonical `work/<slug>-<variant_id>`
 ref pointing at the commit when the form is submitted). The UI
 never accepts credentials, never runs `git push`, and never
 proxies a remote. Multi-machine deployments where the user's
@@ -124,36 +124,36 @@ checkout and the bare repo are not on the same filesystem are out
 of scope until Phase 10's Compose stack and a later remote-repo
 story.
 
-**Spec-to-code map for `POST /implementer/{task_id}/submit`:**
+**Spec-to-code map for `POST /executor/{task_id}/submit`:**
 
 1. **Validate** the form: `status ∈ {success, error}`, `commit_sha`
    is 40 lowercase hex when `status=success`.
 2. **§3.3 reachability check** (status=success only):
    - `repo.commit_exists(commit_sha)` — rejects refs that were not
      pushed to the bare repo with a clear "did you push it?" error.
-   - For every parent in `proposal.parent_commits`,
+   - For every parent in `idea.parent_commits`,
      `repo.is_ancestor(parent, commit_sha)` — rejects commits whose
-     history does not descend from the proposal's declared parents
+     history does not descend from the idea's declared parents
      (per `spec/v0/03-roles.md` §3.3).
 3. **Pre-Phase-1 ref-collision guard** (status=success only):
-   `repo.ref_exists("refs/heads/work/<slug>-<trial_id>")` short-
+   `repo.ref_exists("refs/heads/work/<slug>-<variant_id>")` short-
    circuits with a form re-render and no store mutation. Branch
    uniqueness is required by §3.3 ("worker branch MUST be unique
-   to this trial"); the guard turns a vanishing edge case into a
+   to this variant"); the guard turns a vanishing edge case into a
    clean form error.
-4. **Phase 1 — `store.create_trial`** with `status="starting"`,
+4. **Phase 1 — `store.create_variant`** with `status="starting"`,
    no `commit_sha`. The orchestrator's `accept` handler is what
-   writes `commit_sha` onto the trial later, per
-   `eden_storage._base._accept_implement`. This ordering honors
-   `03-roles.md` §3.2 step 1 ("trial persisted before observable
+   writes `commit_sha` onto the variant later, per
+   `eden_storage._base._accept_execute`. This ordering honors
+   `03-roles.md` §3.2 step 1 ("variant persisted before observable
    repo writes").
 5. **Phase 2 — `repo.create_ref`** (status=success only): writes
-   `refs/heads/work/<slug>-<trial_id>` pointing at the user's
+   `refs/heads/work/<slug>-<variant_id>` pointing at the user's
    `commit_sha`. On status=error this step is skipped (no work
    branch exists).
 6. **Phase 3 — `store.submit`** with retry-before-orphan plus a
    committed-state read-back. The retry policy is identical to the
-   planner's: 3 attempts, backoff `(0.05, 0.2, 0.5)`, definitive
+   ideator's: 3 attempts, backoff `(0.05, 0.2, 0.5)`, definitive
    store-domain errors short-circuit. After retries are exhausted
    on transport-shape failures, the route does
    `read_task` + `read_submission` + `submissions_equivalent` to
@@ -163,53 +163,53 @@ story.
 
 **Per-error recovery summary** (renders prose on the orphan page):
 
-- *Phase 2 failure* (`create_ref` raises): trial sits in
+- *Phase 2 failure* (`create_ref` raises): variant sits in
   `starting`, no `work/*` ref. Recovery: claim TTL → sweeper →
-  `reclaim` composite-commits the orphaned trial to `error`.
+  `reclaim` composite-commits the orphaned variant to `error`.
 - *Phase 3 retry exhaustion, server committed*: success page (the
   read-back found our equivalent submission already on file).
 - *Phase 3 retry exhaustion, server never committed*: orphan
   page; "auto-recovers via reclaim" prose.
 - *Phase 3 `WrongToken` / `IllegalTransition`*: the prior reclaim
   that invalidated our token already errored our `starting`
-  trial; orphan page "auto-recovers via reclaim".
+  variant; orphan page "auto-recovers via reclaim".
 - *Phase 3 `ConflictingResubmission`*: a different submission won
-  the race. Orphan page surfaces `trial_id` / `commit_sha` for
+  the race. Orphan page surfaces `variant_id` / `commit_sha` for
   operator triage.
 
 **Artifact-rendering trust boundary.** The draft form may inline a
-proposal's rationale markdown if (a) `proposal.artifacts_uri`
+idea's rationale markdown if (a) `idea.artifacts_uri`
 starts with `file://`, (b) the resolved path is contained within
 the UI service's `--artifacts-dir`, (c) the file is not larger
 than 1 MiB. Any other shape renders as a link only. This guards
 against a malicious / careless `artifacts_uri` pointing the UI at
 arbitrary local files.
 
-**`trial_id` is server-only.** Generated at claim time and stored
+**`variant_id` is server-only.** Generated at claim time and stored
 alongside the claim token in the in-process `_CLAIMS` dict; never
 appears in the request surface (no hidden form field, no URL
-parameter). A forged `trial_id` form value is ignored.
+parameter). A forged `variant_id` form value is ignored.
 
 ## Evaluator module (chunk 9d)
 
 The evaluator module mounts unconditionally — the evaluator never
 touches a repo through the UI (per `spec/v0/03-roles.md` §4.3 it
-reads the trial at `commit_sha` out-of-band and submits metrics
+reads the variant at `commit_sha` out-of-band and submits metrics
 back). The top-level navigation always shows the "evaluator" link.
 
 The draft page surfaces:
 
-- **Trial fields** (read-only): trial_id, branch, commit_sha,
+- **Variant fields** (read-only): variant_id, branch, commit_sha,
   parent_commits, status, started_at. `commit_sha` is what the
   operator checks out from the bare repo to evaluate.
-- **Trial-side optional fields set by the implementer per §3.2
-  step 3**: `trial.description` (rendered as a read-only `<pre>`
-  block, escaped via Jinja2 autoescape) and `trial.artifacts_uri`
+- **Variant-side optional fields set by the executor per §3.2
+  step 3**: `variant.description` (rendered as a read-only `<pre>`
+  block, escaped via Jinja2 autoescape) and `variant.artifacts_uri`
   (rendered with the chunk-9c scheme allowlist + the same trust-
-  boundary helper as the proposal rationale).
-- **Proposal context** (slug, priority, artifacts_uri, rationale).
-- **Metrics form**: one input per metric in
-  `experiment_config.metrics_schema`, typed by the declared
+  boundary helper as the idea rationale).
+- **Idea context** (slug, priority, artifacts_uri, rationale).
+- **Evaluation form**: one input per metric in
+  `experiment_config.evaluation_schema`, typed by the declared
   `MetricType` (`<input type="number" step="1">` for `integer`,
   `step="any"` for `real`, plain text otherwise).
 - **Submission status**: radio for `success` / `error` /
@@ -246,33 +246,33 @@ The draft page surfaces:
      `(0.05, 0.2, 0.5)`; on exhaustion, jump to read-back.
 3. **Read-back**. `read_task` + `read_submission` +
    `submissions_equivalent`. For `EvaluateSubmission`,
-   equivalence is `status + trial_id + metrics` per chapter 04
+   equivalence is `status + variant_id + metrics` per chapter 04
    §4.2 — `artifacts_uri` is **not** part of equivalence (the
    first submission's value wins).
 
-**`trial_id` is server-only.** Read from
-`task.payload.trial_id` at claim time and stored alongside the
+**`variant_id` is server-only.** Read from
+`task.payload.variant_id` at claim time and stored alongside the
 claim token in the in-process `_CLAIMS` dict; never appears in
 the request surface (no hidden form field, no URL parameter). A
-forged `trial_id` form value is ignored.
+forged `variant_id` form value is ignored.
 
 **No git work in the UI.** The evaluator reads the repository
 out-of-band (`git clone …` / `git fetch && git checkout
-<commit_sha>`); the UI surfaces `trial.commit_sha` and
-`trial.branch` as the load-bearing fields and never proxies git
+<commit_sha>`); the UI surfaces `variant.commit_sha` and
+`variant.branch` as the load-bearing fields and never proxies git
 commands.
 
 **Trust-boundary helper.** Chunk 9d generalizes the chunk-9c
 helper into `_read_inline_artifact(uri, artifacts_dir)` in
 [`routes/_helpers.py`](src/eden_web_ui/routes/_helpers.py).
-`read_proposal_rationale` is now a thin wrapper, and a sibling
-`read_trial_artifact` covers the trial-side `artifacts_uri`
+`read_idea_rationale` is now a thin wrapper, and a sibling
+`read_variant_artifact` covers the variant-side `artifacts_uri`
 surface. The envelope is identical: `file://` only, contained in
 `--artifacts-dir`, ≤ 1 MiB.
 
 ## What chunks 1 + 9c + 9d do **not** ship
 
-- Observability views, admin-reclaim button, orphaned-trial /
+- Observability views, admin-reclaim button, orphaned-variant /
   orphaned-`work/*`-ref garbage-collection view (9e).
 - Multi-experiment switcher (Phase 12).
 - Per-user authentication (Milestone 3).

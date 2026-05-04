@@ -2,7 +2,7 @@
 
 Thanks for your interest in EDEN.
 
-EDEN is a **protocol** for directed-code-evolution orchestration. This repo contains three kinds of artifact that call for different contribution discipline: the **specification** (`spec/`), the **reference implementation** (`reference/`), and the **conformance suite** (`conformance/`). Read the section that matches where your change lives.
+EDEN is a **protocol** for directed evolution orchestration. This repo contains three kinds of artifact that call for different contribution discipline: the **specification** (`spec/`), the **reference implementation** (`reference/`), and the **conformance suite** (`conformance/`). Read the section that matches where your change lives.
 
 ## Current phase
 

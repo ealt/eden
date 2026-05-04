@@ -2,7 +2,7 @@
 
 Two scenarios:
 
-1. ``test_planner_full_flow_through_ui`` — forks task-store-server
+1. ``test_ideator_full_flow_through_ui`` — forks task-store-server
    and web-ui, drives a one-task plan flow through the UI's HTTP
    surface, asserts the resulting task-store state.
 2. ``test_stranded_claim_recovered_by_orchestrator_loop`` — adds
@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 
 import httpx
 import pytest
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 from eden_storage import SqliteStore
 
 pytestmark = pytest.mark.skipif(
@@ -110,8 +110,8 @@ def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
 
 
 @pytest.mark.e2e
-def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
-    """Sign in, claim a plan task, draft + submit, verify state in the store."""
+def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
+    """Sign in, claim a ideate task, draft + submit, verify state in the store."""
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
     experiment_id = "exp-web-ui-e2e"
@@ -179,7 +179,7 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed one plan task via the wire StoreClient.
+        # Seed one ideate task via the wire StoreClient.
         from eden_wire import StoreClient
 
         seed = StoreClient(
@@ -188,7 +188,7 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_plan_task("t-ui-1")
+            seed.create_ideate_task("t-ui-1")
         finally:
             seed.close()
 
@@ -197,19 +197,19 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
             resp = ui.post("/signin", follow_redirects=False)
             assert resp.status_code == 303
 
-            # GET /planner/ to render and parse out the CSRF token.
-            resp = ui.get("/planner/")
+            # GET /ideator/ to render and parse out the CSRF token.
+            resp = ui.get("/ideator/")
             assert resp.status_code == 200
             assert "t-ui-1" in resp.text
             m = re.search(
                 r'name="csrf_token"\s+value="([^"]+)"', resp.text
             )
-            assert m is not None, "csrf token not found in planner list"
+            assert m is not None, "csrf token not found in ideator list"
             csrf = m.group(1)
 
             # Claim.
             resp = ui.post(
-                "/planner/t-ui-1/claim",
+                "/ideator/t-ui-1/claim",
                 content=urlencode({"csrf_token": csrf}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -217,10 +217,10 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
             assert resp.status_code == 303
 
             # Draft form.
-            resp = ui.get("/planner/t-ui-1/draft")
+            resp = ui.get("/ideator/t-ui-1/draft")
             assert resp.status_code == 200
 
-            # Submit success with one proposal.
+            # Submit success with one idea.
             body = urlencode(
                 [
                     ("csrf_token", csrf),
@@ -232,7 +232,7 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
                 ]
             )
             resp = ui.post(
-                "/planner/t-ui-1/submit",
+                "/ideator/t-ui-1/submit",
                 content=body,
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
@@ -250,11 +250,11 @@ def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
         store = SqliteStore(
             experiment_id=experiment_id,
             path=str(db_path),
-            metrics_schema=MetricsSchema({"score": "real"}),
+            evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         try:
             assert store.read_task("t-ui-1").state == "submitted"
-            ready = store.list_proposals(state="ready")
+            ready = store.list_ideas(state="ready")
             assert len(ready) == 1
             assert ready[0].slug == "e2e-feat"
             # Artifact file exists at the URI.
@@ -278,7 +278,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     orchestrator) and proves the operational path the plan
     promised: the orchestrator's per-iteration sweep is what
     actually reclaims an abandoned claim. The orchestrator is
-    launched with no plan tasks so it does the sweep, sees no
+    launched with no ideate tasks so it does the sweep, sees no
     other progress, and quiesces.
     """
     from eden_service_common import seed_bare_repo
@@ -358,7 +358,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed one plan task via the wire StoreClient.
+        # Seed one ideate task via the wire StoreClient.
         from eden_wire import StoreClient
 
         seed = StoreClient(
@@ -367,19 +367,19 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_plan_task("t-strand")
+            seed.create_ideate_task("t-strand")
         finally:
             seed.close()
 
         # Claim through UI with 1s TTL.
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             ui.post("/signin", follow_redirects=False)
-            resp = ui.get("/planner/")
+            resp = ui.get("/ideator/")
             m = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text)
             assert m is not None
             csrf = m.group(1)
             resp = ui.post(
-                "/planner/t-strand/claim",
+                "/ideator/t-strand/claim",
                 content=urlencode({"csrf_token": csrf}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -390,7 +390,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         # sweep_expired_claims call will reclaim.
         time.sleep(2.0)
 
-        # Now spawn the orchestrator with NO plan tasks; its loop runs
+        # Now spawn the orchestrator with NO ideate tasks; its loop runs
         # sweep_expired_claims once per iteration, sees no other
         # progress, and quiesces.
         orchestrator_log = logs_dir / "orchestrator.log"
@@ -405,7 +405,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 token,
                 "--repo-path",
                 str(bare_repo),
-                "--plan-tasks",
+                "--ideate-tasks",
                 "",
                 "--max-quiescent-iterations",
                 "2",

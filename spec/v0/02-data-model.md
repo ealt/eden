@@ -10,7 +10,7 @@ Behavioral concerns — when fields may change, which transitions are permitted,
 
 ### 1.1 Identifiers
 
-Entity identifiers (`task_id`, `trial_id`, `proposal_id`, `event_id`) are opaque strings. They MUST be unique within the store that issues them. The protocol does not mandate a specific format; implementations MAY use integers rendered as strings, UUIDs, or other opaque values, so long as equality comparison is well-defined.
+Entity identifiers (`task_id`, `variant_id`, `idea_id`, `event_id`) are opaque strings. They MUST be unique within the store that issues them. The protocol does not mandate a specific format; implementations MAY use integers rendered as strings, UUIDs, or other opaque values, so long as equality comparison is well-defined.
 
 ### 1.2 Timestamps
 
@@ -18,11 +18,11 @@ All timestamps in protocol messages MUST be RFC 3339 strings in UTC with second-
 
 ### 1.3 Metric values
 
-A metric value is one of: a JSON number (for `integer` or `real` types), a JSON string (for `text` type), or `null` (when the evaluator declined to report). Implementations MUST reject metric values whose JSON type does not match the declared metrics-schema type.
+A metric value is one of: a JSON number (for `integer` or `real` types), a JSON string (for `text` type), or `null` (when the evaluator declined to report). Implementations MUST reject metric values whose JSON type does not match the declared evaluation-schema type.
 
 The `integer` and `real` metric types both travel the wire as JSON numbers; they are distinguished by what values each admits:
 
-- **`integer`** — a JSON number whose value is an integer (no fractional component). Wire forms such as `3`, `-7`, or `1.0` are accepted; `1.5` MUST be rejected. A conforming orchestrator MUST validate this constraint when persisting a metrics payload.
+- **`integer`** — a JSON number whose value is an integer (no fractional component). Wire forms such as `3`, `-7`, or `1.0` are accepted; `1.5` MUST be rejected. A conforming orchestrator MUST validate this constraint when persisting a evaluation payload.
 - **`real`** — any JSON number, including values with a fractional component.
 - **`text`** — a JSON string.
 - **`null`** — allowed for any declared type when the evaluator declined to report that metric.
@@ -47,26 +47,26 @@ The protocol defines only the **host-mechanism-independent core** of the config 
 
 | Field | Type | Description |
 |---|---|---|
-| `parallel_trials` | integer ≥ 1 | Maximum number of trials that MAY be in flight simultaneously. |
-| `max_trials` | integer ≥ 1 | Hard ceiling on the number of trials attempted. |
+| `parallel_variants` | integer ≥ 1 | Maximum number of variants that MAY be in flight simultaneously. |
+| `max_variants` | integer ≥ 1 | Hard ceiling on the number of variants attempted. |
 | `max_wall_time` | duration | Hard ceiling on elapsed wall time. Format: a positive integer followed by one of `s`, `m`, `h`, `d`. |
-| `metrics_schema` | object | A metrics schema (§6). MUST be non-empty. |
+| `evaluation_schema` | object | A evaluation schema (§6). MUST be non-empty. |
 | `objective` | object | An objective spec (§2.2). |
 
 ### 2.2 Objective spec
 
 | Field | Type | Description |
 |---|---|---|
-| `expr` | string | A scalar expression over fields of `metrics_schema`. |
+| `expr` | string | A scalar expression over fields of `evaluation_schema`. |
 | `direction` | string | Either `"maximize"` or `"minimize"`. |
 
-The expression language is implementation-defined but MUST treat metric field names as the free variables. A conforming orchestrator MUST reject an objective expression that references a name absent from `metrics_schema`.
+The expression language is implementation-defined but MUST treat metric field names as the free variables. A conforming orchestrator MUST reject an objective expression that references a name absent from `evaluation_schema`.
 
 ### 2.3 Optional fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `convergence_window` | integer ≥ 1 | (none) | Terminate if the objective has not improved in this many trials. |
+| `convergence_window` | integer ≥ 1 | (none) | Terminate if the objective has not improved in this many variants. |
 | `target_condition` | string | (none) | A condition over metrics; when satisfied, the experiment terminates early. |
 
 ### 2.4 Additional top-level fields
@@ -101,9 +101,9 @@ The `state` field MUST be one of `"pending"`, `"claimed"`, `"submitted"`, `"comp
 
 The `payload` object's shape depends on `kind`.
 
-- `"plan"` — MUST contain `experiment_id` (string). MAY contain planner-specific hints.
-- `"implement"` — MUST contain `proposal_id` (string) referring to a proposal with `state == "ready"` at the time of dispatch.
-- `"evaluate"` — MUST contain `trial_id` (string) referring to a trial with `status == "starting"` and a `commit_sha` set.
+- `"plan"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints.
+- `"implement"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch.
+- `"evaluate"` — MUST contain `variant_id` (string) referring to a variant with `status == "starting"` and a `commit_sha` set.
 
 ### 3.4 Claim object
 
@@ -129,7 +129,7 @@ Every event MUST provide this envelope:
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `event_id` | yes | string | Unique identifier within the log. |
-| `type` | yes | string | A dotted type name, e.g. `task.claimed`, `trial.evaluated`. |
+| `type` | yes | string | A dotted type name, e.g. `task.claimed`, `variant.evaluated`. |
 | `occurred_at` | yes | timestamp | When the state change happened. |
 | `experiment_id` | yes | string | The experiment this event belongs to. |
 | `data` | yes | object | Type-specific payload (§4.2). |
@@ -142,85 +142,85 @@ Each event `type` corresponds to a shape under `data`. The full enumeration of t
 
 Events within a single experiment MUST form a total order consistent with causality: if event B describes a state change that depended on a state recorded by event A, A MUST precede B in the log. The ordering mechanism is a storage concern ([`08-storage.md`](08-storage.md)).
 
-## 5. Proposal
+## 5. Idea
 
-Schema: [`schemas/proposal.schema.json`](schemas/proposal.schema.json).
+Schema: [`schemas/idea.schema.json`](schemas/idea.schema.json).
 
-A proposal is the planner's output.
+An idea is the ideator's output.
 
 ### 5.1 Fields
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `proposal_id` | yes | string | Unique identifier. |
-| `experiment_id` | yes | string | The experiment this proposal belongs to. |
+| `idea_id` | yes | string | Unique identifier. |
+| `experiment_id` | yes | string | The experiment this idea belongs to. |
 | `slug` | yes | string | Human-readable short label. MUST match `^[a-z0-9][a-z0-9-]*$`. |
 | `priority` | yes | number | Ordering hint; higher dispatches earlier. |
-| `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
-| `artifacts_uri` | yes | string (URI) | Where the planner's output documents live. |
-| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the implementer's attempt has finished (successfully or not); the trial's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
-| `created_at` | yes | timestamp | When the proposal was created. |
+| `parent_commits` | yes | array of SHA | One or more commit SHAs the idea is based on. |
+| `artifacts_uri` | yes | string (URI) | Where the ideator's output documents live. |
+| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
+| `created_at` | yes | timestamp | When the idea was created. |
 
 ### 5.2 Parent commits
 
-`parent_commits` MUST contain at least one SHA. Each SHA MUST name a commit reachable from the experiment's starting commit on `main` or from an already-completed trial on the canonical trial lineage.
+`parent_commits` MUST contain at least one SHA. Each SHA MUST name a commit reachable from the experiment's starting commit on `main` or from an already-completed variant on the canonical variant lineage.
 
-## 6. Metrics schema
+## 6. Evaluation schema
 
-Schema: [`schemas/metrics-schema.schema.json`](schemas/metrics-schema.schema.json).
+Schema: [`schemas/evaluation-schema.schema.json`](schemas/evaluation-schema.schema.json).
 
-A metrics schema is a mapping from metric name to storage type. It appears as the `metrics_schema` field of an experiment config and is used to validate every metrics payload the evaluator produces.
+A evaluation schema is a mapping from metric name to storage type. It appears as the `evaluation_schema` field of an experiment config and is used to validate every evaluation payload the evaluator produces.
 
 ### 6.1 Shape
 
-The metrics schema is a JSON object whose keys are metric names and whose values are type strings.
+The evaluation schema is a JSON object whose keys are metric names and whose values are type strings.
 
 - A metric name MUST match `^[A-Za-z_][A-Za-z0-9_]*$`.
 - A type value MUST be one of `"integer"`, `"real"`, `"text"`.
-- A metrics schema MUST have at least one entry.
+- A evaluation schema MUST have at least one entry.
 
 ### 6.2 Reserved names
 
-The names `trial_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the trial object and MUST NOT appear in a metrics schema.
+The names `variant_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the variant object and MUST NOT appear in a evaluation schema.
 
-## 7. Trial
+## 7. Variant
 
-Schema: [`schemas/trial.schema.json`](schemas/trial.schema.json).
+Schema: [`schemas/variant.schema.json`](schemas/variant.schema.json).
 
-A trial is one completed attempt.
+A variant is one completed attempt.
 
 ### 7.1 Fields
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `trial_id` | yes | string | Unique identifier. |
-| `experiment_id` | yes | string | The experiment this trial belongs to. |
-| `proposal_id` | yes | string | The proposal that produced this trial. |
+| `variant_id` | yes | string | Unique identifier. |
+| `experiment_id` | yes | string | The experiment this variant belongs to. |
+| `idea_id` | yes | string | The idea that produced this variant. |
 | `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"eval_error"`. |
-| `parent_commits` | yes | array of SHA | Inherited from the proposal. |
-| `branch` | no | string | Worker branch under `work/*`. Present once the implementer starts. |
-| `commit_sha` | no | string | Worker-branch tip SHA. Present once the implementer completes. |
-| `trial_commit_sha` | no | string | Canonical-lineage SHA under `trial/*`. Present once the integrator has promoted the trial. |
-| `artifacts_uri` | no | string (URI) | Where the trial's artifacts live. |
+| `parent_commits` | yes | array of SHA | Inherited from the idea. |
+| `branch` | no | string | Worker branch under `work/*`. Present once the executor starts. |
+| `commit_sha` | no | string | Worker-branch tip SHA. Present once the executor completes. |
+| `variant_commit_sha` | no | string | Canonical-lineage SHA under `variant/*`. Present once the integrator has promoted the variant. |
+| `artifacts_uri` | no | string (URI) | Where the variant's artifacts live. |
 | `description` | no | string | Human-readable summary. |
-| `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
-| `started_at` | yes | timestamp | When the implementer began. |
-| `completed_at` | no | timestamp | Set when the trial reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+| `metrics` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
+| `started_at` | yes | timestamp | When the executor began. |
+| `completed_at` | no | timestamp | Set when the variant reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
 
-### 7.2 Metrics payload
+### 7.2 Evaluation payload
 
-If present, `metrics` MUST be an object whose keys are a subset of the declared metrics-schema keys and whose values match the declared types (§1.3) or are `null`. Because the metrics-schema is per-experiment, [`schemas/trial.schema.json`](schemas/trial.schema.json) cannot express this constraint generically and leaves `metrics` as an open object; the per-metric type check is a runtime responsibility of the orchestrator. A conforming orchestrator MUST reject a metrics payload that violates the experiment's metrics-schema, and MUST NOT record the trial as `"success"` in that case.
+If present, `metrics` MUST be an object whose keys are a subset of the declared evaluation-schema keys and whose values match the declared types (§1.3) or are `null`. Because the evaluation-schema is per-experiment, [`schemas/variant.schema.json`](schemas/variant.schema.json) cannot express this constraint generically and leaves `metrics` as an open object; the per-metric type check is a runtime responsibility of the orchestrator. A conforming orchestrator MUST reject a evaluation payload that violates the experiment's evaluation-schema, and MUST NOT record the variant as `"success"` in that case.
 
 ### 7.3 Status transitions
 
-Trial status transitions are behavioral and are defined alongside the task and event protocols in [`04-task-protocol.md`](04-task-protocol.md). The data model constrains only that the status be one of the listed strings.
+Variant status transitions are behavioral and are defined alongside the task and event protocols in [`04-task-protocol.md`](04-task-protocol.md). The data model constrains only that the status be one of the listed strings.
 
 ## 8. Invariants across entities
 
 This section collects structural invariants that span multiple entities. Behavioral invariants (claim semantics, transactional event writes) live in the corresponding behavior chapters.
 
-1. **Identifier scope.** `task_id`, `proposal_id`, `trial_id`, and `event_id` MUST each be unique within a single experiment. Uniqueness across experiments is not required by the protocol but is RECOMMENDED when an implementation shares a store across experiments.
-2. **Reference integrity.** Every `proposal_id` referenced by a task payload or trial MUST name a proposal persisted in the store before the reference is written. Every `trial_id` referenced by an `evaluate` task MUST exist with `status == "starting"` at dispatch time.
-3. **Metrics/schema conformance.** Every metrics payload persisted on a trial MUST validate against the experiment's `metrics_schema` (§6).
-4. **Canonical-lineage single-writer.** Only the integrator MAY write to `trial_commit_sha` on a trial. Workers MUST NOT set or modify this field directly.
+1. **Identifier scope.** `task_id`, `idea_id`, `variant_id`, and `event_id` MUST each be unique within a single experiment. Uniqueness across experiments is not required by the protocol but is RECOMMENDED when an implementation shares a store across experiments.
+2. **Reference integrity.** Every `idea_id` referenced by a task payload or variant MUST name an idea persisted in the store before the reference is written. Every `variant_id` referenced by an `evaluate` task MUST exist with `status == "starting"` at dispatch time.
+3. **Evaluation/schema conformance.** Every evaluation payload persisted on a variant MUST validate against the experiment's `evaluation_schema` (§6).
+4. **Canonical-lineage single-writer.** Only the integrator MAY write to `variant_commit_sha` on a variant. Workers MUST NOT set or modify this field directly.
 5. **Claim uniqueness.** A task MAY have at most one active `claim` object at any time.

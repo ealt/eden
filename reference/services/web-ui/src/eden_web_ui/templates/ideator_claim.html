@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}EDEN — draft ideas{% endblock %}
+{% block main %}
+<h1>draft ideas — task <code>{{ task_id }}</code></h1>
+{% if errors and errors.overall %}
+<div class="banner banner-error">
+    <ul>
+    {% for msg in errors.overall %}<li>{{ msg }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+<section class="objective">
+    <h2>objective</h2>
+    <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
+</section>
+<section class="evaluation-schema">
+    <h2>evaluation schema (read-only)</h2>
+    <table>
+        <thead><tr><th>metric</th><th>type</th></tr></thead>
+        <tbody>
+        {% for name, kind in evaluation_schema.items() %}
+            <tr><td><code>{{ name }}</code></td><td>{{ kind }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+<form action="/ideator/{{ task_id }}/submit" method="post" class="idea-form">
+    <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+    <fieldset>
+        <legend>ideas</legend>
+        <div id="idea-rows">
+            {% for i in row_indices %}
+                {% with row_state=(form_state[i] if i < (form_state|length) else None),
+                        row_errs=(errors.by_row[i] if errors and i in errors.by_row else {}) %}
+                    {% include "_idea_row.html" %}
+                {% endwith %}
+            {% endfor %}
+        </div>
+    </fieldset>
+    <div class="actions">
+        <button type="submit" name="status" value="success">submit (success)</button>
+        <button type="submit" name="status" value="error" class="danger">submit (error)</button>
+        {# HTMX-enhanced add-row: when JS is enabled, htmx intercepts and swaps in
+           a new row in place; without JS, the button falls back to a full-page
+           form-POST (formaction/formmethod) that re-renders the whole page with
+           one more row appended. Same end state, two transports. #}
+        <button type="submit"
+                formaction="/ideator/{{ task_id }}/add_row"
+                formmethod="post"
+                hx-post="/ideator/{{ task_id }}/add_row"
+                hx-target="#idea-rows"
+                hx-swap="beforeend"
+                hx-include="closest form">
+            add another row
+        </button>
+    </div>
+</form>
+{% endblock %}

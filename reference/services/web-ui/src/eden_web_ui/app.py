@@ -24,9 +24,9 @@ from fastapi.templating import Jinja2Templates
 from .routes import admin as admin_routes
 from .routes import auth as auth_routes
 from .routes import evaluator as evaluator_routes
-from .routes import implementer as implementer_routes
+from .routes import executor as executor_routes
+from .routes import ideator as ideator_routes
 from .routes import index as index_routes
-from .routes import planner as planner_routes
 from .sessions import SessionCodec
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -57,7 +57,7 @@ def make_app(
 
     ``now`` is injected so tests can pin time deterministically; the
     CLI passes a real wall-clock factory. ``repo`` gates the
-    implementer module: when ``None`` the ``/implementer/*`` routes
+    executor module: when ``None`` the ``/executor/*`` routes
     are not registered and the navigation hides the entry.
     """
     app = FastAPI(title="EDEN reference Web UI", version="0.0.1")
@@ -68,7 +68,7 @@ def make_app(
     )
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     templates.env.globals["experiment_id"] = experiment_id
-    templates.env.globals["implementer_enabled"] = repo is not None
+    templates.env.globals["executor_enabled"] = repo is not None
 
     app.state.store = store
     app.state.experiment_id = experiment_id
@@ -84,11 +84,11 @@ def make_app(
 
     app.include_router(index_routes.router)
     app.include_router(auth_routes.router)
-    app.include_router(planner_routes.router)
+    app.include_router(ideator_routes.router)
     app.include_router(evaluator_routes.router)
     app.include_router(admin_routes.router)
     if repo is not None:
-        app.include_router(implementer_routes.router)
+        app.include_router(executor_routes.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def _healthz() -> dict[str, str]:

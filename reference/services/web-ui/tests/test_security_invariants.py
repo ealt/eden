@@ -81,10 +81,10 @@ class TestBearerLeak:
         # app.state.* into a template, this would catch it.
         app.state.shared_token = SHARED_TOKEN
 
-        store.create_plan_task("t-leak")
+        store.create_ideate_task("t-leak")
         with TestClient(app) as c, caplog.at_level(logging.DEBUG):
             c.post("/signin", follow_redirects=False)
-            for path in ("/", "/planner/", "/signin"):
+            for path in ("/", "/ideator/", "/signin"):
                 resp = c.get(path)
                 assert SHARED_TOKEN not in resp.text, (
                     f"shared bearer leaked into {path}"
@@ -93,11 +93,11 @@ class TestBearerLeak:
 
             csrf = get_csrf(c)
             c.post(
-                "/planner/t-leak/claim",
+                "/ideator/t-leak/claim",
                 data={"csrf_token": csrf},
                 follow_redirects=False,
             )
-            draft = c.get("/planner/t-leak/draft")
+            draft = c.get("/ideator/t-leak/draft")
             assert SHARED_TOKEN not in draft.text
 
         # No log line written by web-ui code contains the bearer.
@@ -109,15 +109,15 @@ class TestCSRF:
     def test_submit_without_csrf_rejected(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_plan_task("t-1")
+        store.create_ideate_task("t-1")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
-            "/planner/t-1/claim",
+            "/ideator/t-1/claim",
             data={"csrf_token": token},
             follow_redirects=False,
         )
         resp = signed_in_client.post(
-            "/planner/t-1/submit",
+            "/ideator/t-1/submit",
             data={"status": "error"},  # no csrf_token
         )
         assert resp.status_code == 403

@@ -6,7 +6,7 @@ Exports:
 - ``StoreClient``: httpx-backed client that satisfies the ``Store``
   Protocol.
 - ``WireError`` and the ``IndeterminateIntegration`` error used when
-  an ``integrate_trial`` call's outcome cannot be determined after
+  an ``integrate_variant`` call's outcome cannot be determined after
   a transport-indeterminate failure.
 """
 

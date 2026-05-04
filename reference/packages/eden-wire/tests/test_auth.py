@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from eden_contracts import MetricsSchema
+from eden_contracts import EvaluationSchema
 from eden_storage import InMemoryStore
 from eden_wire import StoreClient, Unauthorized, make_app
 from fastapi.testclient import TestClient
@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 def store() -> InMemoryStore:
     return InMemoryStore(
         experiment_id="exp-auth",
-        metrics_schema=MetricsSchema({"loss": "real"}),
+        evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
 
 

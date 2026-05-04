@@ -1,7 +1,7 @@
 """Test-fixture helpers that seed wire-protocol entities through the chapter-7 binding only.
 
 Used by scenarios that need a precondition (e.g. a `claimed` task to
-test claim-token semantics, a `success` trial to test integrate
+test claim-token semantics, a `success` variant to test integrate
 idempotency). All helpers go through the WireClient — no shortcuts
 through the adapter or the underlying store.
 """
@@ -20,25 +20,25 @@ def fresh_task_id(prefix: str = "task") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
-def fresh_proposal_id(prefix: str = "p") -> str:
+def fresh_idea_id(prefix: str = "p") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
-def fresh_trial_id(prefix: str = "tr") -> str:
+def fresh_variant_id(prefix: str = "tr") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
-def create_plan_task(
+def create_ideate_task(
     client: WireClient,
     *,
     task_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> str:
-    """POST /tasks for a `plan` task. Returns the task_id."""
+    """POST /tasks for a `ideate` task. Returns the task_id."""
     tid = task_id or fresh_task_id("plan")
     body = {
         "task_id": tid,
-        "kind": "plan",
+        "kind": "ideate",
         "state": "pending",
         "payload": payload or {"experiment_id": client.experiment_id},
         "created_at": _NOW,
@@ -52,16 +52,16 @@ def create_plan_task(
 def create_evaluate_task(
     client: WireClient,
     *,
-    trial_id: str,
+    variant_id: str,
     task_id: str | None = None,
 ) -> str:
-    """POST /tasks for an `evaluate` task referencing the given trial."""
+    """POST /tasks for an `evaluate` task referencing the given variant."""
     tid = task_id or fresh_task_id("eval")
     body = {
         "task_id": tid,
         "kind": "evaluate",
         "state": "pending",
-        "payload": {"trial_id": trial_id},
+        "payload": {"variant_id": variant_id},
         "created_at": _NOW,
         "updated_at": _NOW,
     }
@@ -70,23 +70,23 @@ def create_evaluate_task(
     return tid
 
 
-def create_implement_task(
+def create_execute_task(
     client: WireClient,
     *,
-    proposal_id: str,
+    idea_id: str,
     task_id: str | None = None,
 ) -> str:
-    """POST /tasks for an `implement` task referencing a `ready` proposal.
+    """POST /tasks for an `execute` task referencing a `ready` idea.
 
     The composite-commit invariant ([`05-event-protocol.md`](05-event-protocol.md) §2.2)
-    flips the proposal `ready → dispatched` atomically with this insert.
+    flips the idea `ready → dispatched` atomically with this insert.
     """
     tid = task_id or fresh_task_id("impl")
     body = {
         "task_id": tid,
-        "kind": "implement",
+        "kind": "execute",
         "state": "pending",
-        "payload": {"proposal_id": proposal_id},
+        "payload": {"idea_id": idea_id},
         "created_at": _NOW,
         "updated_at": _NOW,
     }
@@ -116,13 +116,13 @@ def submit_plan(
     task_id: str,
     *,
     token: str,
-    proposal_ids: list[str] | None = None,
+    idea_ids: list[str] | None = None,
     status: str = "success",
 ) -> Any:
     payload: dict[str, Any] = {
-        "kind": "plan",
+        "kind": "ideate",
         "status": status,
-        "proposal_ids": proposal_ids if proposal_ids is not None else [],
+        "idea_ids": idea_ids if idea_ids is not None else [],
     }
     return client.post(
         client.tasks_path(task_id, "/submit"),
@@ -135,14 +135,14 @@ def submit_implement(
     task_id: str,
     *,
     token: str,
-    trial_id: str,
+    variant_id: str,
     status: str = "success",
     commit_sha: str = "0" * 40,
 ) -> Any:
     payload: dict[str, Any] = {
-        "kind": "implement",
+        "kind": "execute",
         "status": status,
-        "trial_id": trial_id,
+        "variant_id": variant_id,
     }
     if status == "success":
         payload["commit_sha"] = commit_sha
@@ -157,25 +157,25 @@ def submit_evaluate(
     task_id: str,
     *,
     token: str,
-    trial_id: str,
+    variant_id: str,
     status: str = "success",
-    metrics: dict[str, Any] | None = None,
+    evaluation: dict[str, Any] | None = None,
     artifacts_uri: str | None = None,
 ) -> Any:
     payload: dict[str, Any] = {
         "kind": "evaluate",
         "status": status,
-        "trial_id": trial_id,
+        "variant_id": variant_id,
     }
-    # status=success defaults a metrics object so well-formed
+    # status=success defaults an evaluation object so well-formed
     # successes don't need to repeat the boilerplate. Other statuses
-    # only get metrics when the caller explicitly passes them, so
+    # only get an evaluation when the caller explicitly passes one, so
     # eval_error/error tests can drive the §4.4 "discard
-    # submission-carried metrics" rule with a real wire payload.
-    if metrics is not None:
-        payload["metrics"] = metrics
+    # submission-carried evaluation" rule with a real wire payload.
+    if evaluation is not None:
+        payload["evaluation"] = evaluation
     elif status == "success":
-        payload["metrics"] = {"score": 1.0, "retries": 0}
+        payload["evaluation"] = {"score": 1.0, "retries": 0}
     if artifacts_uri is not None:
         payload["artifacts_uri"] = artifacts_uri
     return client.post(
@@ -196,20 +196,20 @@ def reclaim(client: WireClient, task_id: str, *, cause: str) -> Any:
     return client.post(client.tasks_path(task_id, "/reclaim"), json={"cause": cause})
 
 
-# Proposal / trial seeding -----------------------------------------
+# Idea / variant seeding -----------------------------------------
 
 
-def create_proposal(
+def create_idea(
     client: WireClient,
     *,
-    proposal_id: str | None = None,
+    idea_id: str | None = None,
     parent_commits: list[str] | None = None,
     slug: str = "test",
     artifacts_uri: str = "file:///tmp/eden-conformance-stub",
 ) -> str:
-    pid = proposal_id or fresh_proposal_id()
+    pid = idea_id or fresh_idea_id()
     body = {
-        "proposal_id": pid,
+        "idea_id": pid,
         "experiment_id": client.experiment_id,
         "slug": slug,
         "priority": 0.5,
@@ -224,25 +224,25 @@ def create_proposal(
     return pid
 
 
-def mark_proposal_ready(client: WireClient, proposal_id: str) -> Any:
-    return client.post(client.proposals_path(proposal_id, "/mark-ready"))
+def mark_idea_ready(client: WireClient, idea_id: str) -> Any:
+    return client.post(client.proposals_path(idea_id, "/mark-ready"))
 
 
-def create_trial(
+def create_variant(
     client: WireClient,
     *,
-    proposal_id: str,
-    trial_id: str | None = None,
+    idea_id: str,
+    variant_id: str | None = None,
     branch: str | None = None,
     commit_sha: str | None = None,
     status: str = "starting",
     parent_commits: list[str] | None = None,
 ) -> str:
-    tid = trial_id or fresh_trial_id()
+    tid = variant_id or fresh_variant_id()
     body: dict[str, Any] = {
-        "trial_id": tid,
+        "variant_id": tid,
         "experiment_id": client.experiment_id,
-        "proposal_id": proposal_id,
+        "idea_id": idea_id,
         "status": status,
         "parent_commits": parent_commits or ["0" * 40],
         "started_at": _NOW,
@@ -256,20 +256,20 @@ def create_trial(
     return tid
 
 
-def integrate_trial(
+def integrate_variant(
     client: WireClient,
-    trial_id: str,
+    variant_id: str,
     *,
-    trial_commit_sha: str,
+    variant_commit_sha: str,
 ) -> Any:
     return client.post(
-        client.trials_path(trial_id, "/integrate"),
-        json={"trial_commit_sha": trial_commit_sha},
+        client.trials_path(variant_id, "/integrate"),
+        json={"variant_commit_sha": variant_commit_sha},
     )
 
 
-def declare_trial_eval_error(client: WireClient, trial_id: str) -> Any:
-    return client.post(client.trials_path(trial_id, "/declare-eval-error"))
+def declare_variant_eval_error(client: WireClient, variant_id: str) -> Any:
+    return client.post(client.trials_path(variant_id, "/declare-eval-error"))
 
 
 def read_task(client: WireClient, task_id: str) -> dict[str, Any]:
@@ -278,164 +278,164 @@ def read_task(client: WireClient, task_id: str) -> dict[str, Any]:
     return resp.json()
 
 
-def drive_to_starting_trial(
+def drive_to_starting_variant(
     client: WireClient,
     *,
-    proposal_id: str | None = None,
+    idea_id: str | None = None,
     commit_sha: str = "1" * 40,
 ) -> str:
-    """Drive a fresh proposal through implement-accept; trial is `starting` with commit_sha.
+    """Drive a fresh idea through implement-accept; variant is `starting` with commit_sha.
 
-    The trial is NOT in `success` yet — that requires the evaluator
-    cycle to also complete. Returns trial_id.
+    The variant is NOT in `success` yet — that requires the evaluator
+    cycle to also complete. Returns variant_id.
     """
-    pid = proposal_id or create_proposal(client)
-    mark_proposal_ready(client, pid)
-    impl_tid = create_implement_task(client, proposal_id=pid)
+    pid = idea_id or create_idea(client)
+    mark_idea_ready(client, pid)
+    impl_tid = create_execute_task(client, idea_id=pid)
     impl_claim = claim(client, impl_tid, worker_id="impl-worker")
-    trial_id = fresh_trial_id()
-    # Implementer creates the starting trial before submitting (chapter 3 §3.2 step 1).
-    create_trial(
+    variant_id = fresh_variant_id()
+    # Executor creates the starting variant before submitting (chapter 3 §3.2 step 1).
+    create_variant(
         client,
-        trial_id=trial_id,
-        proposal_id=pid,
+        variant_id=variant_id,
+        idea_id=pid,
         status="starting",
     )
     r = submit_implement(
         client,
         impl_tid,
         token=impl_claim["token"],
-        trial_id=trial_id,
+        variant_id=variant_id,
         commit_sha=commit_sha,
     )
     r.raise_for_status()
     accepted = accept(client, impl_tid)
     accepted.raise_for_status()
     # Sanity-check that the accept actually wrote commit_sha onto the
-    # trial — a setup regression that silently leaves the trial in an
+    # variant — a setup regression that silently leaves the variant in an
     # unexpected shape would otherwise surface as a misleading
     # downstream test failure.
-    trial = read_trial(client, trial_id)
-    assert trial.get("commit_sha") == commit_sha, (
-        f"setup precondition: trial {trial_id!r} should carry "
+    variant = read_variant(client, variant_id)
+    assert variant.get("commit_sha") == commit_sha, (
+        f"setup precondition: variant {variant_id!r} should carry "
         f"commit_sha={commit_sha!r} after implement /accept; got "
-        f"{trial.get('commit_sha')!r}"
+        f"{variant.get('commit_sha')!r}"
     )
-    return trial_id
+    return variant_id
 
 
-def drive_to_error_trial(
+def drive_to_error_variant(
     client: WireClient,
     *,
-    proposal_id: str | None = None,
+    idea_id: str | None = None,
 ) -> str:
-    """Drive a fresh proposal through implement-status-error.
+    """Drive a fresh idea through implement-status-error.
 
-    Returns trial_id of a trial that landed at ``status="error"`` via
-    the chapter-3 §3.4 implementer status=error path: implementer
-    creates the starting trial, submits ``status="error"``, then the
-    orchestrator's reject path terminalizes the trial as error
+    Returns variant_id of a variant that landed at ``status="error"`` via
+    the chapter-3 §3.4 executor status=error path: executor
+    creates the starting variant, submits ``status="error"``, then the
+    orchestrator's reject path terminalizes the variant as error
     atomically with the task.failed event (chapter 05 §2.2 composite
     commit).
     """
-    pid = proposal_id or create_proposal(client)
-    mark_proposal_ready(client, pid)
-    impl_tid = create_implement_task(client, proposal_id=pid)
+    pid = idea_id or create_idea(client)
+    mark_idea_ready(client, pid)
+    impl_tid = create_execute_task(client, idea_id=pid)
     impl_claim = claim(client, impl_tid, worker_id="impl-worker")
-    trial_id = fresh_trial_id()
-    create_trial(
+    variant_id = fresh_variant_id()
+    create_variant(
         client,
-        trial_id=trial_id,
-        proposal_id=pid,
+        variant_id=variant_id,
+        idea_id=pid,
         status="starting",
     )
     r = submit_implement(
         client,
         impl_tid,
         token=impl_claim["token"],
-        trial_id=trial_id,
+        variant_id=variant_id,
         status="error",
     )
     r.raise_for_status()
     rejected = reject(client, impl_tid, reason="worker_error")
     rejected.raise_for_status()
-    trial = read_trial(client, trial_id)
-    assert trial.get("status") == "error", (
-        f"setup precondition: trial {trial_id!r} should be 'error' after "
-        f"implement /reject with status=error; got {trial.get('status')!r}"
+    variant = read_variant(client, variant_id)
+    assert variant.get("status") == "error", (
+        f"setup precondition: variant {variant_id!r} should be 'error' after "
+        f"implement /reject with status=error; got {variant.get('status')!r}"
     )
-    return trial_id
+    return variant_id
 
 
-def drive_to_eval_error_trial(
+def drive_to_eval_error_variant(
     client: WireClient,
     *,
-    proposal_id: str | None = None,
+    idea_id: str | None = None,
     commit_sha: str = "1" * 40,
 ) -> str:
-    """Drive a fresh proposal through to ``status="eval_error"``.
+    """Drive a fresh idea through to ``status="eval_error"``.
 
-    Drives implement-accept (so the trial reaches ``starting`` with
-    ``commit_sha``) and then calls ``declare_trial_eval_error`` to
-    terminalize the trial as ``eval_error`` per chapter 04 §4.3 retry-
-    exhaustion / chapter 05 §3.3 ``trial.eval_errored``. Returns
-    trial_id.
+    Drives implement-accept (so the variant reaches ``starting`` with
+    ``commit_sha``) and then calls ``declare_variant_eval_error`` to
+    terminalize the variant as ``eval_error`` per chapter 04 §4.3 retry-
+    exhaustion / chapter 05 §3.3 ``variant.eval_errored``. Returns
+    variant_id.
     """
-    trial_id = drive_to_starting_trial(
-        client, proposal_id=proposal_id, commit_sha=commit_sha
+    variant_id = drive_to_starting_variant(
+        client, idea_id=idea_id, commit_sha=commit_sha
     )
-    declared = declare_trial_eval_error(client, trial_id)
+    declared = declare_variant_eval_error(client, variant_id)
     declared.raise_for_status()
-    trial = read_trial(client, trial_id)
-    assert trial.get("status") == "eval_error", (
-        f"setup precondition: trial {trial_id!r} should be 'eval_error' "
-        f"after declare-eval-error; got {trial.get('status')!r}"
+    variant = read_variant(client, variant_id)
+    assert variant.get("status") == "eval_error", (
+        f"setup precondition: variant {variant_id!r} should be 'eval_error' "
+        f"after declare-eval-error; got {variant.get('status')!r}"
     )
-    return trial_id
+    return variant_id
 
 
-def drive_to_success_trial(
+def drive_to_success_variant(
     client: WireClient,
     *,
-    proposal_id: str | None = None,
+    idea_id: str | None = None,
     commit_sha: str = "1" * 40,
-    metrics: dict[str, Any] | None = None,
+    evaluation: dict[str, Any] | None = None,
 ) -> str:
-    """Drive a fresh proposal through full implement → evaluate cycle.
+    """Drive a fresh idea through full implement → evaluate cycle.
 
-    Returns trial_id of a trial in `status="success"` (the evaluator
-    accept-step transitions the trial atomically per chapter 05 §2.2).
+    Returns variant_id of a variant in `status="success"` (the evaluator
+    accept-step transitions the variant atomically per chapter 05 §2.2).
     """
-    trial_id = drive_to_starting_trial(
-        client, proposal_id=proposal_id, commit_sha=commit_sha
+    variant_id = drive_to_starting_variant(
+        client, idea_id=idea_id, commit_sha=commit_sha
     )
-    eval_tid = create_evaluate_task(client, trial_id=trial_id)
+    eval_tid = create_evaluate_task(client, variant_id=variant_id)
     eval_claim = claim(client, eval_tid, worker_id="eval-worker")
     r = submit_evaluate(
         client,
         eval_tid,
         token=eval_claim["token"],
-        trial_id=trial_id,
-        metrics=metrics,
+        variant_id=variant_id,
+        evaluation=evaluation,
     )
     r.raise_for_status()
     accepted = accept(client, eval_tid)
     accepted.raise_for_status()
-    trial = read_trial(client, trial_id)
-    assert trial.get("status") == "success", (
-        f"setup precondition: trial {trial_id!r} should be 'success' after "
-        f"evaluate /accept; got {trial.get('status')!r}"
+    variant = read_variant(client, variant_id)
+    assert variant.get("status") == "success", (
+        f"setup precondition: variant {variant_id!r} should be 'success' after "
+        f"evaluate /accept; got {variant.get('status')!r}"
     )
-    return trial_id
+    return variant_id
 
 
-def read_proposal(client: WireClient, proposal_id: str) -> dict[str, Any]:
-    resp = client.get(client.proposals_path(proposal_id))
+def read_idea(client: WireClient, idea_id: str) -> dict[str, Any]:
+    resp = client.get(client.proposals_path(idea_id))
     resp.raise_for_status()
     return resp.json()
 
 
-def read_trial(client: WireClient, trial_id: str) -> dict[str, Any]:
-    resp = client.get(client.trials_path(trial_id))
+def read_variant(client: WireClient, variant_id: str) -> dict[str, Any]:
+    resp = client.get(client.trials_path(variant_id))
     resp.raise_for_status()
     return resp.json()

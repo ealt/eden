@@ -13,17 +13,17 @@ mean what it says.
 - The public method surface (``claim``, ``submit``, ``accept``,
   ``reject``, ``reclaim``, ``create_*``, ``read_*``, ``list_*``,
   ``events``, ``validate_acceptance``, ``validate_terminal``,
-  ``create_proposal``, ``mark_proposal_ready``, ``create_trial``,
-  ``declare_trial_eval_error``, ``integrate_trial``).
+  ``create_idea``, ``mark_idea_ready``, ``create_variant``,
+  ``declare_variant_eval_error``, ``integrate_variant``).
 - All validation, composite-commit staging, and event construction.
 
 Subclasses own:
 
 - ``_atomic_operation`` — the transaction scope. In-memory wraps an
   ``RLock``; SQLite wraps ``BEGIN IMMEDIATE``…``COMMIT``.
-- ``_get_task``/``_get_proposal``/``_get_trial``/``_get_submission``
+- ``_get_task``/``_get_idea``/``_get_variant``/``_get_submission``
   — primitive lookups.
-- ``_iter_tasks``/``_iter_proposals``/``_iter_trials``/``_iter_events``
+- ``_iter_tasks``/``_iter_ideas``/``_iter_variants``/``_iter_events``
   — ordered iteration.
 - ``_apply_commit(tx)`` — apply the staged ``_Tx`` inside the already-
   open transaction, without committing it. The outer
@@ -52,18 +52,18 @@ from typing import Any
 from eden_contracts import (
     EvaluatePayload,
     EvaluateTask,
+    EvaluationSchema,
     Event,
+    ExecutePayload,
+    ExecuteTask,
     FailReason,
-    ImplementPayload,
-    ImplementTask,
-    MetricsSchema,
-    PlanPayload,
-    PlanTask,
-    Proposal,
+    Idea,
+    IdeatePayload,
+    IdeateTask,
     ReclaimCause,
     Task,
     TaskClaim,
-    Trial,
+    Variant,
 )
 from pydantic import BaseModel, ValidationError
 
@@ -77,8 +77,8 @@ from .errors import (
 )
 from .submissions import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     Submission,
     submissions_equivalent,
 )
@@ -104,8 +104,8 @@ class _Tx:
     """
 
     tasks: dict[str, Task] = field(default_factory=dict)
-    proposals: dict[str, Proposal] = field(default_factory=dict)
-    trials: dict[str, Trial] = field(default_factory=dict)
+    ideas: dict[str, Idea] = field(default_factory=dict)
+    variants: dict[str, Variant] = field(default_factory=dict)
     submissions: dict[str, Submission] = field(default_factory=dict)
     task_deletes_submission: set[str] = field(default_factory=set)
     events: list[Event] = field(default_factory=list)
@@ -117,7 +117,7 @@ def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
     Replaces Pydantic's ``model_copy(update=...)``, which does **not**
     re-run validators. Without re-validation a caller could stamp an
     invalid ``commit_sha``, ``artifacts_uri``, or ``metrics`` shape
-    onto a stored trial. Re-validating on every update is how every
+    onto a stored variant. Re-validating on every update is how every
     backend honors ``03-roles.md`` §3.4, §4.4 and ``08-storage.md``
     §3.
 
@@ -161,13 +161,13 @@ class _StoreBase:
         self,
         experiment_id: str,
         *,
-        metrics_schema: MetricsSchema | None = None,
+        evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         token_factory: Callable[[], str] | None = None,
     ) -> None:
         self._experiment_id = experiment_id
-        self._metrics_schema = metrics_schema
+        self._evaluation_schema = evaluation_schema
         self._now = now or (lambda: datetime.now(UTC))
         self._event_ids = itertools.count(1)
         self._event_id_factory = event_id_factory or self._default_event_id
@@ -199,12 +199,12 @@ class _StoreBase:
         """Return the stored task, or ``None`` if absent."""
         raise NotImplementedError
 
-    def _get_proposal(self, proposal_id: str) -> Proposal | None:
-        """Return the stored proposal, or ``None`` if absent."""
+    def _get_idea(self, idea_id: str) -> Idea | None:
+        """Return the stored idea, or ``None`` if absent."""
         raise NotImplementedError
 
-    def _get_trial(self, trial_id: str) -> Trial | None:
-        """Return the stored trial, or ``None`` if absent."""
+    def _get_variant(self, variant_id: str) -> Variant | None:
+        """Return the stored variant, or ``None`` if absent."""
         raise NotImplementedError
 
     def _get_submission(self, task_id: str) -> Submission | None:
@@ -217,12 +217,12 @@ class _StoreBase:
         """Iterate tasks matching the optional filters."""
         raise NotImplementedError
 
-    def _iter_proposals(self, *, state: str | None = None) -> Iterable[Proposal]:
-        """Iterate proposals matching the optional filter."""
+    def _iter_ideas(self, *, state: str | None = None) -> Iterable[Idea]:
+        """Iterate ideas matching the optional filter."""
         raise NotImplementedError
 
-    def _iter_trials(self, *, status: str | None = None) -> Iterable[Trial]:
-        """Iterate trials matching the optional filter."""
+    def _iter_variants(self, *, status: str | None = None) -> Iterable[Variant]:
+        """Iterate variants matching the optional filter."""
         raise NotImplementedError
 
     def _iter_events(self) -> Iterable[Event]:
@@ -251,21 +251,21 @@ class _StoreBase:
                 raise NotFound(f"task {task_id!r}")
             return _deep(task)
 
-    def read_proposal(self, proposal_id: str) -> Proposal:
-        """Return a snapshot of the current proposal, or raise ``NotFound``."""
+    def read_idea(self, idea_id: str) -> Idea:
+        """Return a snapshot of the current idea, or raise ``NotFound``."""
         with self._atomic_operation():
-            proposal = self._get_proposal(proposal_id)
-            if proposal is None:
-                raise NotFound(f"proposal {proposal_id!r}")
-            return _deep(proposal)
+            idea = self._get_idea(idea_id)
+            if idea is None:
+                raise NotFound(f"idea {idea_id!r}")
+            return _deep(idea)
 
-    def read_trial(self, trial_id: str) -> Trial:
-        """Return a snapshot of the current trial, or raise ``NotFound``."""
+    def read_variant(self, variant_id: str) -> Variant:
+        """Return a snapshot of the current variant, or raise ``NotFound``."""
         with self._atomic_operation():
-            trial = self._get_trial(trial_id)
-            if trial is None:
-                raise NotFound(f"trial {trial_id!r}")
-            return _deep(trial)
+            variant = self._get_variant(variant_id)
+            if variant is None:
+                raise NotFound(f"variant {variant_id!r}")
+            return _deep(variant)
 
     def read_submission(self, task_id: str) -> Submission | None:
         """Return the committed submission for a task, or ``None`` if not submitted.
@@ -291,15 +291,15 @@ class _StoreBase:
         with self._atomic_operation():
             return [_deep(task) for task in self._iter_tasks(kind=kind, state=state)]
 
-    def list_proposals(self, *, state: str | None = None) -> list[Proposal]:
-        """Return snapshots of proposals matching an optional ``state`` filter."""
+    def list_ideas(self, *, state: str | None = None) -> list[Idea]:
+        """Return snapshots of ideas matching an optional ``state`` filter."""
         with self._atomic_operation():
-            return [_deep(p) for p in self._iter_proposals(state=state)]
+            return [_deep(p) for p in self._iter_ideas(state=state)]
 
-    def list_trials(self, *, status: str | None = None) -> list[Trial]:
-        """Return snapshots of trials matching an optional ``status`` filter."""
+    def list_variants(self, *, status: str | None = None) -> list[Variant]:
+        """Return snapshots of variants matching an optional ``status`` filter."""
         with self._atomic_operation():
-            return [_deep(t) for t in self._iter_trials(status=status)]
+            return [_deep(t) for t in self._iter_variants(status=status)]
 
     def events(self) -> list[Event]:
         """Return an ordered snapshot of the full event log.
@@ -347,13 +347,13 @@ class _StoreBase:
         """Spec-literal ``create_task`` per chapter 8 §1.1.
 
         Inserts a fully-formed task object in ``state="pending"``.
-        For ``implement`` tasks the composite-commit from
+        For ``execute`` tasks the composite-commit from
         ``05-event-protocol.md`` §2.2 also transitions the referenced
-        proposal from ``ready`` to ``dispatched``; for ``evaluate``
-        tasks the referenced trial's ``starting``/``commit_sha``
+        idea from ``ready`` to ``dispatched``; for ``evaluate``
+        tasks the referenced variant's ``starting``/``commit_sha``
         precondition is enforced.
 
-        The typed helpers ``create_plan_task`` / ``create_implement_task``
+        The typed helpers ``create_ideate_task`` / ``create_execute_task``
         / ``create_evaluate_task`` build the task payload for the
         caller; both paths converge on the same commit.
         """
@@ -365,19 +365,19 @@ class _StoreBase:
             raise InvalidPrecondition(
                 "new task must not carry a claim (08-storage.md §1.1)"
             )
-        if task.kind == "plan":
-            assert isinstance(task, PlanTask)
+        if task.kind == "ideate":
+            assert isinstance(task, IdeateTask)
             return self._insert_plan_task(task)
-        if task.kind == "implement":
-            assert isinstance(task, ImplementTask)
+        if task.kind == "execute":
+            assert isinstance(task, ExecuteTask)
             return self._insert_implement_task(task)
         assert isinstance(task, EvaluateTask)
         return self._insert_evaluate_task(task)
 
-    def _insert_plan_task(self, task: PlanTask) -> PlanTask:
+    def _insert_plan_task(self, task: IdeateTask) -> IdeateTask:
         if task.payload.experiment_id != self._experiment_id:
             raise InvalidPrecondition(
-                f"plan task payload.experiment_id={task.payload.experiment_id!r} "
+                f"ideate task payload.experiment_id={task.payload.experiment_id!r} "
                 f"does not match store experiment {self._experiment_id!r}"
             )
         with self._atomic_operation():
@@ -385,33 +385,33 @@ class _StoreBase:
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "plan"})
+                self._event("task.created", {"task_id": task.task_id, "kind": "ideate"})
             )
             self._apply_commit(tx)
             return _deep(task)
 
-    def _insert_implement_task(self, task: ImplementTask) -> ImplementTask:
+    def _insert_implement_task(self, task: ExecuteTask) -> ExecuteTask:
         with self._atomic_operation():
             self._require_no_task(task.task_id)
-            proposal_id = task.payload.proposal_id
-            proposal = self._get_proposal(proposal_id)
-            if proposal is None:
-                raise NotFound(f"proposal {proposal_id!r}")
-            if proposal.state != "ready":
+            idea_id = task.payload.idea_id
+            idea = self._get_idea(idea_id)
+            if idea is None:
+                raise NotFound(f"idea {idea_id!r}")
+            if idea.state != "ready":
                 raise InvalidPrecondition(
-                    f"proposal {proposal_id!r} must be 'ready' "
-                    f"to dispatch, not {proposal.state!r}"
+                    f"idea {idea_id!r} must be 'ready' "
+                    f"to dispatch, not {idea.state!r}"
                 )
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
-            tx.proposals[proposal_id] = _validated_update(proposal, state="dispatched")
+            tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "implement"})
+                self._event("task.created", {"task_id": task.task_id, "kind": "execute"})
             )
             tx.events.append(
                 self._event(
-                    "proposal.dispatched",
-                    {"proposal_id": proposal_id, "task_id": task.task_id},
+                    "idea.dispatched",
+                    {"idea_id": idea_id, "task_id": task.task_id},
                 )
             )
             self._apply_commit(tx)
@@ -420,18 +420,18 @@ class _StoreBase:
     def _insert_evaluate_task(self, task: EvaluateTask) -> EvaluateTask:
         with self._atomic_operation():
             self._require_no_task(task.task_id)
-            trial_id = task.payload.trial_id
-            trial = self._get_trial(trial_id)
-            if trial is None:
-                raise NotFound(f"trial {trial_id!r}")
-            if trial.status != "starting":
+            variant_id = task.payload.variant_id
+            variant = self._get_variant(variant_id)
+            if variant is None:
+                raise NotFound(f"variant {variant_id!r}")
+            if variant.status != "starting":
                 raise InvalidPrecondition(
-                    f"trial {trial_id!r} must be 'starting' to dispatch eval, "
-                    f"not {trial.status!r}"
+                    f"variant {variant_id!r} must be 'starting' to dispatch eval, "
+                    f"not {variant.status!r}"
                 )
-            if trial.commit_sha is None:
+            if variant.commit_sha is None:
                 raise InvalidPrecondition(
-                    f"trial {trial_id!r} has no commit_sha; implementer must set it first"
+                    f"variant {variant_id!r} has no commit_sha; executor must set it first"
                 )
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
@@ -441,88 +441,88 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_plan_task(self, task_id: str) -> PlanTask:
-        """Create a ``plan`` task. Emits ``task.created`` atomically."""
+    def create_ideate_task(self, task_id: str) -> IdeateTask:
+        """Create a ``ideate`` task. Emits ``task.created`` atomically."""
         with self._atomic_operation():
             self._require_no_task(task_id)
             now = self._ts()
-            task = PlanTask(
+            task = IdeateTask(
                 task_id=task_id,
-                kind="plan",
+                kind="ideate",
                 state="pending",
-                payload=PlanPayload(experiment_id=self._experiment_id),
+                payload=IdeatePayload(experiment_id=self._experiment_id),
                 created_at=now,
                 updated_at=now,
             )
             tx = _Tx()
             tx.tasks[task_id] = task
-            tx.events.append(self._event("task.created", {"task_id": task_id, "kind": "plan"}))
+            tx.events.append(self._event("task.created", {"task_id": task_id, "kind": "ideate"}))
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_implement_task(self, task_id: str, proposal_id: str) -> ImplementTask:
-        """Create an ``implement`` task; composite-commits ``proposal.dispatched``.
+    def create_execute_task(self, task_id: str, idea_id: str) -> ExecuteTask:
+        """Create an ``execute`` task; composite-commits ``idea.dispatched``.
 
-        Per ``05-event-protocol.md`` §2.2: creating the implement task
-        and transitioning the referenced proposal from ``ready`` to
+        Per ``05-event-protocol.md`` §2.2: creating the execute task
+        and transitioning the referenced idea from ``ready`` to
         ``dispatched`` land in one atomic commit.
         """
         with self._atomic_operation():
             self._require_no_task(task_id)
-            proposal = self._get_proposal(proposal_id)
-            if proposal is None:
-                raise NotFound(f"proposal {proposal_id!r}")
-            if proposal.state != "ready":
+            idea = self._get_idea(idea_id)
+            if idea is None:
+                raise NotFound(f"idea {idea_id!r}")
+            if idea.state != "ready":
                 raise InvalidPrecondition(
-                    f"proposal {proposal_id!r} must be 'ready' "
-                    f"to dispatch, not {proposal.state!r}"
+                    f"idea {idea_id!r} must be 'ready' "
+                    f"to dispatch, not {idea.state!r}"
                 )
             now = self._ts()
-            task = ImplementTask(
+            task = ExecuteTask(
                 task_id=task_id,
-                kind="implement",
+                kind="execute",
                 state="pending",
-                payload=ImplementPayload(proposal_id=proposal_id),
+                payload=ExecutePayload(idea_id=idea_id),
                 created_at=now,
                 updated_at=now,
             )
             tx = _Tx()
             tx.tasks[task_id] = task
-            tx.proposals[proposal_id] = _validated_update(proposal, state="dispatched")
+            tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
             tx.events.append(
-                self._event("task.created", {"task_id": task_id, "kind": "implement"})
+                self._event("task.created", {"task_id": task_id, "kind": "execute"})
             )
             tx.events.append(
                 self._event(
-                    "proposal.dispatched",
-                    {"proposal_id": proposal_id, "task_id": task_id},
+                    "idea.dispatched",
+                    {"idea_id": idea_id, "task_id": task_id},
                 )
             )
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_evaluate_task(self, task_id: str, trial_id: str) -> EvaluateTask:
-        """Create an ``evaluate`` task against a starting trial with ``commit_sha``."""
+    def create_evaluate_task(self, task_id: str, variant_id: str) -> EvaluateTask:
+        """Create an ``evaluate`` task against a starting variant with ``commit_sha``."""
         with self._atomic_operation():
             self._require_no_task(task_id)
-            trial = self._get_trial(trial_id)
-            if trial is None:
-                raise NotFound(f"trial {trial_id!r}")
-            if trial.status != "starting":
+            variant = self._get_variant(variant_id)
+            if variant is None:
+                raise NotFound(f"variant {variant_id!r}")
+            if variant.status != "starting":
                 raise InvalidPrecondition(
-                    f"trial {trial_id!r} must be 'starting' to dispatch eval, "
-                    f"not {trial.status!r}"
+                    f"variant {variant_id!r} must be 'starting' to dispatch eval, "
+                    f"not {variant.status!r}"
                 )
-            if trial.commit_sha is None:
+            if variant.commit_sha is None:
                 raise InvalidPrecondition(
-                    f"trial {trial_id!r} has no commit_sha; implementer must set it first"
+                    f"variant {variant_id!r} has no commit_sha; executor must set it first"
                 )
             now = self._ts()
             task = EvaluateTask(
                 task_id=task_id,
                 kind="evaluate",
                 state="pending",
-                payload=EvaluatePayload(trial_id=trial_id),
+                payload=EvaluatePayload(variant_id=variant_id),
                 created_at=now,
                 updated_at=now,
             )
@@ -638,15 +638,15 @@ class _StoreBase:
         submission = self._get_submission(task_id)
         if submission is None:
             return "no submission recorded"
-        if isinstance(submission, PlanSubmission):
+        if isinstance(submission, IdeateSubmission):
             if submission.status != "success":
                 return None
             return self._validate_plan_acceptance(submission)
-        if isinstance(submission, ImplementSubmission):
+        if isinstance(submission, ExecuteSubmission):
             if submission.status != "success":
                 return None
-            assert isinstance(task, ImplementTask)
-            return self._validate_implement_acceptance(task, submission)
+            assert isinstance(task, ExecuteTask)
+            return self._validate_execute_acceptance(task, submission)
         if isinstance(submission, EvaluateSubmission):
             if submission.status != "success":
                 return None
@@ -667,7 +667,7 @@ class _StoreBase:
             treat this submission as a validation failure per
             ``04-task-protocol.md`` §4.3, either because the worker
             declared ``success`` with a malformed payload, or because
-            the worker declared ``error`` but the accompanying trial
+            the worker declared ``error`` but the accompanying variant
             fields (metrics, artifacts_uri) would not validate.
 
         The driver calls this before every ``accept`` / ``reject`` and
@@ -688,7 +688,7 @@ class _StoreBase:
             # status is "error" or "eval_error" — worker_error is the
             # default, but a malformed payload on `error` still has to
             # be treated as validation_error so no invalid field
-            # actually lands on the trial.
+            # actually lands on the variant.
             if isinstance(submission, EvaluateSubmission) and submission.status == "error":
                 assert isinstance(task, EvaluateTask)
                 reason = self._validate_evaluate_error(task, submission)
@@ -714,17 +714,17 @@ class _StoreBase:
                 raise IllegalTransition(
                     f"task {task_id!r} is submitted but has no recorded submission"
                 )
-            if task.kind == "plan":
+            if task.kind == "ideate":
                 self._accept_plan(task, submission)
-            elif task.kind == "implement":
-                self._accept_implement(task, submission)
+            elif task.kind == "execute":
+                self._accept_execute(task, submission)
             else:
                 self._accept_evaluate(task, submission)
 
     def reject(self, task_id: str, reason: FailReason) -> None:
         """Orchestrator reject: ``submitted → failed`` with composite effects.
 
-        Dispatches by task kind. For evaluate tasks, the trial-side
+        Dispatches by task kind. For evaluate tasks, the variant-side
         effect depends on whether the worker declared ``error`` or
         ``eval_error`` (``04-task-protocol.md`` §4.3).
         """
@@ -739,10 +739,10 @@ class _StoreBase:
                 raise IllegalTransition(
                     f"task {task_id!r} is submitted but has no recorded submission"
                 )
-            if task.kind == "plan":
+            if task.kind == "ideate":
                 self._reject_plan(task, reason)
-            elif task.kind == "implement":
-                self._reject_implement(task, submission, reason)
+            elif task.kind == "execute":
+                self._reject_execute(task, submission, reason)
             else:
                 self._reject_evaluate(task, submission, reason)
 
@@ -752,8 +752,8 @@ class _StoreBase:
         Automatic causes (``expired``, ``health_policy``) are rejected
         against ``submitted`` tasks per ``04-task-protocol.md`` §5.1;
         only ``operator`` reclaim is permitted from ``submitted``. If
-        the reclaimed task is an ``implement`` whose prior execution
-        left a trial in ``starting``, the trial transitions to
+        the reclaimed task is an ``execute`` whose prior execution
+        left a variant in ``starting``, the variant transitions to
         ``error`` atomically with the reclaim
         (``05-event-protocol.md`` §2.2).
         """
@@ -784,149 +784,149 @@ class _StoreBase:
                 self._event("task.reclaimed", {"task_id": task_id, "cause": cause})
             )
 
-            if task.kind == "implement":
-                trial = self._find_starting_trial_for_implement_task(task)
-                if trial is not None:
-                    tx.trials[trial.trial_id] = _validated_update(
-                        trial, status="error", completed_at=now
+            if task.kind == "execute":
+                variant = self._find_starting_variant_for_implement_task(task)
+                if variant is not None:
+                    tx.variants[variant.variant_id] = _validated_update(
+                        variant, status="error", completed_at=now
                     )
                     tx.events.append(
-                        self._event("trial.errored", {"trial_id": trial.trial_id})
+                        self._event("variant.errored", {"variant_id": variant.variant_id})
                     )
 
             self._apply_commit(tx)
 
     # ------------------------------------------------------------------
-    # Proposal store
+    # Idea store
     # ------------------------------------------------------------------
 
-    def create_proposal(self, proposal: Proposal) -> None:
-        """Persist a new proposal in ``drafting``. Emits ``proposal.drafted``."""
+    def create_idea(self, idea: Idea) -> None:
+        """Persist a new idea in ``drafting``. Emits ``idea.drafted``."""
         with self._atomic_operation():
-            if self._get_proposal(proposal.proposal_id) is not None:
-                raise AlreadyExists(f"proposal {proposal.proposal_id!r}")
-            if proposal.experiment_id != self._experiment_id:
+            if self._get_idea(idea.idea_id) is not None:
+                raise AlreadyExists(f"idea {idea.idea_id!r}")
+            if idea.experiment_id != self._experiment_id:
                 raise InvalidPrecondition(
-                    f"proposal experiment_id {proposal.experiment_id!r} "
+                    f"idea experiment_id {idea.experiment_id!r} "
                     f"does not match store experiment {self._experiment_id!r}"
                 )
-            if proposal.state != "drafting":
+            if idea.state != "drafting":
                 raise InvalidPrecondition(
-                    f"new proposal must start in 'drafting', not {proposal.state!r}"
+                    f"new idea must start in 'drafting', not {idea.state!r}"
                 )
             tx = _Tx()
-            tx.proposals[proposal.proposal_id] = _deep(proposal)
+            tx.ideas[idea.idea_id] = _deep(idea)
             tx.events.append(
-                self._event("proposal.drafted", {"proposal_id": proposal.proposal_id})
+                self._event("idea.drafted", {"idea_id": idea.idea_id})
             )
             self._apply_commit(tx)
 
-    def mark_proposal_ready(self, proposal_id: str) -> None:
-        """Transition a proposal ``drafting → ready``. Emits ``proposal.ready``."""
+    def mark_idea_ready(self, idea_id: str) -> None:
+        """Transition an idea ``drafting → ready``. Emits ``idea.ready``."""
         with self._atomic_operation():
-            proposal = self._require_proposal(proposal_id)
-            if proposal.state != "drafting":
+            idea = self._require_idea(idea_id)
+            if idea.state != "drafting":
                 raise IllegalTransition(
-                    f"cannot mark proposal ready from state {proposal.state!r}"
+                    f"cannot mark idea ready from state {idea.state!r}"
                 )
             tx = _Tx()
-            tx.proposals[proposal_id] = _validated_update(proposal, state="ready")
-            tx.events.append(self._event("proposal.ready", {"proposal_id": proposal_id}))
+            tx.ideas[idea_id] = _validated_update(idea, state="ready")
+            tx.events.append(self._event("idea.ready", {"idea_id": idea_id}))
             self._apply_commit(tx)
 
     # ------------------------------------------------------------------
-    # Trial store
+    # Variant store
     # ------------------------------------------------------------------
 
-    def create_trial(self, trial: Trial) -> None:
-        """Persist a new trial in ``starting``. Emits ``trial.started``."""
+    def create_variant(self, variant: Variant) -> None:
+        """Persist a new variant in ``starting``. Emits ``variant.started``."""
         with self._atomic_operation():
-            if self._get_trial(trial.trial_id) is not None:
-                raise AlreadyExists(f"trial {trial.trial_id!r}")
-            if trial.status != "starting":
+            if self._get_variant(variant.variant_id) is not None:
+                raise AlreadyExists(f"variant {variant.variant_id!r}")
+            if variant.status != "starting":
                 raise InvalidPrecondition(
-                    f"new trial must start in 'starting', not {trial.status!r}"
+                    f"new variant must start in 'starting', not {variant.status!r}"
                 )
-            if trial.experiment_id != self._experiment_id:
+            if variant.experiment_id != self._experiment_id:
                 raise InvalidPrecondition(
-                    f"trial experiment_id {trial.experiment_id!r} "
+                    f"variant experiment_id {variant.experiment_id!r} "
                     f"does not match store experiment {self._experiment_id!r}"
                 )
             tx = _Tx()
-            tx.trials[trial.trial_id] = _deep(trial)
+            tx.variants[variant.variant_id] = _deep(variant)
             tx.events.append(
                 self._event(
-                    "trial.started",
-                    {"trial_id": trial.trial_id, "proposal_id": trial.proposal_id},
+                    "variant.started",
+                    {"variant_id": variant.variant_id, "idea_id": variant.idea_id},
                 )
             )
             self._apply_commit(tx)
 
-    def declare_trial_eval_error(self, trial_id: str) -> None:
+    def declare_variant_eval_error(self, variant_id: str) -> None:
         """Retry-exhausted terminal: ``starting → eval_error`` (``05-event-protocol.md`` §2.2).
 
         Writes ``completed_at`` atomically; MUST NOT set metrics or
         artifacts_uri (``03-roles.md`` §4.4).
         """
         with self._atomic_operation():
-            trial = self._require_trial(trial_id)
-            if trial.status != "starting":
+            variant = self._require_variant(variant_id)
+            if variant.status != "starting":
                 raise IllegalTransition(
-                    f"cannot declare eval_error from trial status {trial.status!r}"
+                    f"cannot declare eval_error from variant status {variant.status!r}"
                 )
             now = self._ts()
             tx = _Tx()
-            tx.trials[trial_id] = _validated_update(
-                trial, status="eval_error", completed_at=now
+            tx.variants[variant_id] = _validated_update(
+                variant, status="eval_error", completed_at=now
             )
-            tx.events.append(self._event("trial.eval_errored", {"trial_id": trial_id}))
+            tx.events.append(self._event("variant.eval_errored", {"variant_id": variant_id}))
             self._apply_commit(tx)
 
-    def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
-        """Integrator promotion: write ``trial_commit_sha`` and emit ``trial.integrated``.
+    def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
+        """Integrator promotion: write ``variant_commit_sha`` and emit ``variant.integrated``.
 
-        Per ``08-storage.md`` §1.7: ``trial_commit_sha`` is the one
-        post-terminal write permitted on a trial; it must be written
+        Per ``08-storage.md`` §1.7: ``variant_commit_sha`` is the one
+        post-terminal write permitted on a variant; it must be written
         atomically with its event.
 
         **Same-value idempotency** (``07-wire-protocol.md`` §5): a
-        repeated call whose ``trial_commit_sha`` equals the value
-        already stored on the trial is a no-op and MUST NOT append a
-        second ``trial.integrated`` event. This rule lets an HTTP-
+        repeated call whose ``variant_commit_sha`` equals the value
+        already stored on the variant is a no-op and MUST NOT append a
+        second ``variant.integrated`` event. This rule lets an HTTP-
         mediated caller retry a transport-indeterminate
-        ``integrate_trial`` request without risking double-commit;
+        ``integrate_variant`` request without risking double-commit;
         the same-value branch also keeps direct-``Store`` callers
         and wire-mediated callers on identical contracts.
 
-        A repeated call with a **different** ``trial_commit_sha``
+        A repeated call with a **different** ``variant_commit_sha``
         raises ``InvalidPrecondition`` — the chapter 6 §1.2 sole-
         writer rule has been violated and operator intervention is
         required. The caller (e.g. ``Integrator``) maps this to an
         ``AtomicityViolation`` rather than compensating the ref.
         """
         with self._atomic_operation():
-            trial = self._require_trial(trial_id)
-            if trial.status != "success":
+            variant = self._require_variant(variant_id)
+            if variant.status != "success":
                 raise InvalidPrecondition(
-                    f"trial {trial_id!r} must be in 'success' to integrate, "
-                    f"not {trial.status!r}"
+                    f"variant {variant_id!r} must be in 'success' to integrate, "
+                    f"not {variant.status!r}"
                 )
-            if trial.trial_commit_sha is not None:
-                if trial.trial_commit_sha == trial_commit_sha:
+            if variant.variant_commit_sha is not None:
+                if variant.variant_commit_sha == variant_commit_sha:
                     return
                 raise InvalidPrecondition(
-                    f"trial {trial_id!r} is already integrated with a "
-                    f"different trial_commit_sha "
-                    f"({trial.trial_commit_sha!r} != {trial_commit_sha!r})"
+                    f"variant {variant_id!r} is already integrated with a "
+                    f"different variant_commit_sha "
+                    f"({variant.variant_commit_sha!r} != {variant_commit_sha!r})"
                 )
             tx = _Tx()
-            tx.trials[trial_id] = _validated_update(
-                trial, trial_commit_sha=trial_commit_sha
+            tx.variants[variant_id] = _validated_update(
+                variant, variant_commit_sha=variant_commit_sha
             )
             tx.events.append(
                 self._event(
-                    "trial.integrated",
-                    {"trial_id": trial_id, "trial_commit_sha": trial_commit_sha},
+                    "variant.integrated",
+                    {"variant_id": variant_id, "variant_commit_sha": variant_commit_sha},
                 )
             )
             self._apply_commit(tx)
@@ -936,11 +936,11 @@ class _StoreBase:
     # ------------------------------------------------------------------
 
     def _accept_plan(self, task: Task, submission: Submission) -> None:
-        assert isinstance(submission, PlanSubmission)
+        assert isinstance(submission, IdeateSubmission)
         reason = self._validate_plan_acceptance(submission)
         if reason is not None:
             raise IllegalTransition(
-                f"cannot accept plan {task.task_id!r}: {reason}"
+                f"cannot accept ideate {task.task_id!r}: {reason}"
             )
         now = self._ts()
         tx = _Tx()
@@ -961,76 +961,78 @@ class _StoreBase:
         )
         self._apply_commit(tx)
 
-    def _accept_implement(self, task: Task, submission: Submission) -> None:
-        assert isinstance(task, ImplementTask)
-        assert isinstance(submission, ImplementSubmission)
-        reason = self._validate_implement_acceptance(task, submission)
+    def _accept_execute(self, task: Task, submission: Submission) -> None:
+        assert isinstance(task, ExecuteTask)
+        assert isinstance(submission, ExecuteSubmission)
+        reason = self._validate_execute_acceptance(task, submission)
         if reason is not None:
             raise IllegalTransition(
-                f"cannot accept implement {task.task_id!r}: {reason}"
+                f"cannot accept execute {task.task_id!r}: {reason}"
             )
         assert submission.commit_sha is not None
-        proposal = self._require_proposal(task.payload.proposal_id)
-        trial = self._require_trial(submission.trial_id)
+        idea = self._require_idea(task.payload.idea_id)
+        variant = self._require_variant(submission.variant_id)
 
         now = self._ts()
         tx = _Tx()
         tx.tasks[task.task_id] = _validated_update(
             task, state="completed", claim=None, updated_at=now
         )
-        tx.proposals[task.payload.proposal_id] = _validated_update(proposal, state="completed")
-        tx.trials[trial.trial_id] = _validated_update(trial, commit_sha=submission.commit_sha)
+        tx.ideas[task.payload.idea_id] = _validated_update(idea, state="completed")
+        tx.variants[variant.variant_id] = _validated_update(
+            variant, commit_sha=submission.commit_sha
+        )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(
             self._event(
-                "proposal.completed",
-                {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
+                "idea.completed",
+                {"idea_id": task.payload.idea_id, "task_id": task.task_id},
             )
         )
         self._apply_commit(tx)
 
-    def _reject_implement(
+    def _reject_execute(
         self,
         task: Task,
         submission: Submission,
         reason: FailReason,
     ) -> None:
-        assert isinstance(task, ImplementTask)
-        proposal = self._require_proposal(task.payload.proposal_id)
-        trial_for_error: Trial | None = None
-        if isinstance(submission, ImplementSubmission):
-            # Only touch the trial if it was created under this very
-            # task's proposal — submission.trial_id is caller-supplied
-            # and could reference an unrelated trial.
-            trial = self._get_trial(submission.trial_id)
+        assert isinstance(task, ExecuteTask)
+        idea = self._require_idea(task.payload.idea_id)
+        trial_for_error: Variant | None = None
+        if isinstance(submission, ExecuteSubmission):
+            # Only touch the variant if it was created under this very
+            # task's idea — submission.variant_id is caller-supplied
+            # and could reference an unrelated variant.
+            variant = self._get_variant(submission.variant_id)
             if (
-                trial is not None
-                and trial.status == "starting"
-                and trial.proposal_id == task.payload.proposal_id
+                variant is not None
+                and variant.status == "starting"
+                and variant.idea_id == task.payload.idea_id
             ):
-                trial_for_error = trial
+                trial_for_error = variant
 
         now = self._ts()
         tx = _Tx()
         tx.tasks[task.task_id] = _validated_update(
             task, state="failed", claim=None, updated_at=now
         )
-        tx.proposals[task.payload.proposal_id] = _validated_update(proposal, state="completed")
+        tx.ideas[task.payload.idea_id] = _validated_update(idea, state="completed")
         tx.events.append(
             self._event("task.failed", {"task_id": task.task_id, "reason": reason})
         )
         tx.events.append(
             self._event(
-                "proposal.completed",
-                {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
+                "idea.completed",
+                {"idea_id": task.payload.idea_id, "task_id": task.task_id},
             )
         )
         if trial_for_error is not None:
-            tx.trials[trial_for_error.trial_id] = _validated_update(
+            tx.variants[trial_for_error.variant_id] = _validated_update(
                 trial_for_error, status="error", completed_at=now
             )
             tx.events.append(
-                self._event("trial.errored", {"trial_id": trial_for_error.trial_id})
+                self._event("variant.errored", {"variant_id": trial_for_error.variant_id})
             )
         self._apply_commit(tx)
 
@@ -1042,25 +1044,25 @@ class _StoreBase:
             raise IllegalTransition(
                 f"cannot accept evaluate {task.task_id!r}: {reason}"
             )
-        trial = self._require_trial(submission.trial_id)
+        variant = self._require_variant(submission.variant_id)
 
         now = self._ts()
         tx = _Tx()
         tx.tasks[task.task_id] = _validated_update(
             task, state="completed", claim=None, updated_at=now
         )
-        tx.trials[trial.trial_id] = _validated_update(
-            trial,
+        tx.variants[variant.variant_id] = _validated_update(
+            variant,
             status="success",
-            metrics=dict(submission.metrics) if submission.metrics else None,
+            evaluation=dict(submission.evaluation) if submission.evaluation else None,
             artifacts_uri=submission.artifacts_uri,
             completed_at=now,
         )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(
             self._event(
-                "trial.succeeded",
-                {"trial_id": trial.trial_id, "commit_sha": trial.commit_sha},
+                "variant.succeeded",
+                {"variant_id": variant.variant_id, "commit_sha": variant.commit_sha},
             )
         )
         self._apply_commit(tx)
@@ -1073,9 +1075,9 @@ class _StoreBase:
     ) -> None:
         assert isinstance(task, EvaluateTask)
         assert isinstance(submission, EvaluateSubmission)
-        # submission.trial_id is already bound to task.payload.trial_id
+        # submission.variant_id is already bound to task.payload.variant_id
         # by _validate_submission_ref_binding at submit time.
-        trial = self._require_trial(task.payload.trial_id)
+        variant = self._require_variant(task.payload.variant_id)
 
         now = self._ts()
         tx = _Tx()
@@ -1086,32 +1088,32 @@ class _StoreBase:
             self._event("task.failed", {"task_id": task.task_id, "reason": reason})
         )
 
-        # Trial-side effect depends on the submission status, not on
+        # Variant-side effect depends on the submission status, not on
         # the orchestrator's reason (03-roles.md §4.4):
-        #   • eval_error — trial stays in starting; evaluator-side
-        #     failure does not condemn the trial.
+        #   • eval_error — variant stays in starting; evaluator-side
+        #     failure does not condemn the variant.
         #   • success — reject can only happen via validation_error
-        #     (malformed success). Trial stays in starting: the
+        #     (malformed success). Variant stays in starting: the
         #     evaluator has not produced a verdict either way.
-        #   • error — trial MUST transition to error, because the
-        #     worker declared trial failure. If the payload is
+        #   • error — variant MUST transition to error, because the
+        #     worker declared variant failure. If the payload is
         #     malformed (reason=validation_error), drop the invalid
-        #     metrics/artifacts_uri but still record trial.errored.
+        #     metrics/artifacts_uri but still record variant.errored.
         if submission.status == "error":
-            if trial.status != "starting":
+            if variant.status != "starting":
                 raise IllegalTransition(
-                    f"cannot error trial {trial.trial_id!r} from status {trial.status!r}"
+                    f"cannot error variant {variant.variant_id!r} from status {variant.status!r}"
                 )
             update_kwargs: dict[str, Any] = {"status": "error", "completed_at": now}
             if reason != "validation_error":
-                if submission.metrics is not None:
-                    self._validate_metrics(submission.metrics)
-                    update_kwargs["metrics"] = dict(submission.metrics)
+                if submission.evaluation is not None:
+                    self._validate_evaluation(submission.evaluation)
+                    update_kwargs["evaluation"] = dict(submission.evaluation)
                 if submission.artifacts_uri is not None:
                     update_kwargs["artifacts_uri"] = submission.artifacts_uri
-            tx.trials[trial.trial_id] = _validated_update(trial, **update_kwargs)
-            tx.events.append(self._event("trial.errored", {"trial_id": trial.trial_id}))
-        # status in {"eval_error", "success"} — no trial-side writes.
+            tx.variants[variant.variant_id] = _validated_update(variant, **update_kwargs)
+            tx.events.append(self._event("variant.errored", {"variant_id": variant.variant_id}))
+        # status in {"eval_error", "success"} — no variant-side writes.
 
         self._apply_commit(tx)
 
@@ -1126,78 +1128,78 @@ class _StoreBase:
 
         Per ``04-task-protocol.md`` §4.1, the submission's result
         payload is scoped to the task it is being submitted against.
-        A plan submission's proposal_ids must reference existing
-        proposals (03-roles §2.4); an implement submission's
-        trial_id must refer to a trial under the task's proposal
-        (03-roles §3.4); an evaluate submission's trial_id must
-        equal the task payload's trial_id (03-roles §4.4).
+        A ideate submission's idea_ids must reference existing
+        ideas (03-roles §2.4); an execute submission's
+        variant_id must refer to a variant under the task's idea
+        (03-roles §3.4); an evaluate submission's variant_id must
+        equal the task payload's variant_id (03-roles §4.4).
         """
-        if isinstance(submission, PlanSubmission):
-            for pid in submission.proposal_ids:
-                proposal = self._get_proposal(pid)
-                if proposal is None:
+        if isinstance(submission, IdeateSubmission):
+            for pid in submission.idea_ids:
+                idea = self._get_idea(pid)
+                if idea is None:
                     raise IllegalTransition(
-                        f"plan submission references unknown proposal {pid!r}"
+                        f"ideate submission references unknown idea {pid!r}"
                     )
-                if proposal.state == "drafting":
+                if idea.state == "drafting":
                     raise IllegalTransition(
-                        f"plan submission references drafting proposal {pid!r}; "
-                        "planner MUST NOT submit while proposals are in drafting "
+                        f"ideate submission references drafting idea {pid!r}; "
+                        "ideator MUST NOT submit while ideas are in drafting "
                         "(03-roles.md §2.4)"
                     )
-        elif isinstance(submission, ImplementSubmission):
-            assert isinstance(task, ImplementTask)
-            trial = self._get_trial(submission.trial_id)
-            if trial is None:
+        elif isinstance(submission, ExecuteSubmission):
+            assert isinstance(task, ExecuteTask)
+            variant = self._get_variant(submission.variant_id)
+            if variant is None:
                 raise IllegalTransition(
-                    f"implement submission references unknown trial "
-                    f"{submission.trial_id!r}"
+                    f"execute submission references unknown variant "
+                    f"{submission.variant_id!r}"
                 )
-            if trial.proposal_id != task.payload.proposal_id:
+            if variant.idea_id != task.payload.idea_id:
                 raise IllegalTransition(
-                    f"implement submission trial_id={submission.trial_id!r} "
-                    f"belongs to proposal {trial.proposal_id!r}, not the "
-                    f"task's proposal {task.payload.proposal_id!r}"
+                    f"execute submission variant_id={submission.variant_id!r} "
+                    f"belongs to idea {variant.idea_id!r}, not the "
+                    f"task's idea {task.payload.idea_id!r}"
                 )
         elif isinstance(submission, EvaluateSubmission):
             assert isinstance(task, EvaluateTask)
-            if submission.trial_id != task.payload.trial_id:
+            if submission.variant_id != task.payload.variant_id:
                 raise IllegalTransition(
-                    f"evaluate submission trial_id={submission.trial_id!r} "
-                    f"does not match task's trial {task.payload.trial_id!r}"
+                    f"evaluate submission variant_id={submission.variant_id!r} "
+                    f"does not match task's variant {task.payload.variant_id!r}"
                 )
 
-    def _validate_plan_acceptance(self, submission: PlanSubmission) -> str | None:
-        for pid in submission.proposal_ids:
-            proposal = self._get_proposal(pid)
-            if proposal is None:
-                return f"proposal {pid!r} no longer exists"
-            if proposal.state == "drafting":
-                return f"proposal {pid!r} is still in drafting at accept time"
+    def _validate_plan_acceptance(self, submission: IdeateSubmission) -> str | None:
+        for pid in submission.idea_ids:
+            idea = self._get_idea(pid)
+            if idea is None:
+                return f"idea {pid!r} no longer exists"
+            if idea.state == "drafting":
+                return f"idea {pid!r} is still in drafting at accept time"
         return None
 
-    def _validate_implement_acceptance(
-        self, task: ImplementTask, submission: ImplementSubmission
+    def _validate_execute_acceptance(
+        self, task: ExecuteTask, submission: ExecuteSubmission
     ) -> str | None:
         if submission.commit_sha is None:
             return "success submission requires commit_sha (03-roles.md §3.4)"
-        trial = self._get_trial(submission.trial_id)
-        if trial is None:
-            return f"referenced trial {submission.trial_id!r} does not exist"
-        if trial.proposal_id != task.payload.proposal_id:
+        variant = self._get_variant(submission.variant_id)
+        if variant is None:
+            return f"referenced variant {submission.variant_id!r} does not exist"
+        if variant.idea_id != task.payload.idea_id:
             return (
-                f"referenced trial {submission.trial_id!r} belongs to a "
-                "different proposal"
+                f"referenced variant {submission.variant_id!r} belongs to a "
+                "different idea"
             )
-        if trial.status != "starting":
+        if variant.status != "starting":
             return (
-                f"referenced trial {submission.trial_id!r} is "
-                f"{trial.status!r}, not 'starting'"
+                f"referenced variant {submission.variant_id!r} is "
+                f"{variant.status!r}, not 'starting'"
             )
-        # Dry-run the trial write so an invalid commit_sha pattern
+        # Dry-run the variant write so an invalid commit_sha pattern
         # surfaces as validation_error instead of crashing accept.
         try:
-            _validated_update(trial, commit_sha=submission.commit_sha)
+            _validated_update(variant, commit_sha=submission.commit_sha)
         except ValidationError as exc:
             return f"invalid commit_sha: {exc.errors()[0]['msg']}"
         return None
@@ -1205,81 +1207,81 @@ class _StoreBase:
     def _validate_evaluate_acceptance(
         self, task: EvaluateTask, submission: EvaluateSubmission
     ) -> str | None:
-        if submission.trial_id != task.payload.trial_id:
-            return "submission trial_id does not match task's trial_id"
-        trial = self._get_trial(submission.trial_id)
-        if trial is None:
-            return f"trial {submission.trial_id!r} does not exist"
-        if trial.status != "starting":
-            return f"trial {submission.trial_id!r} is {trial.status!r}, not 'starting'"
-        if trial.commit_sha is None:
-            return f"trial {submission.trial_id!r} has no commit_sha"
-        if submission.metrics is None:
+        if submission.variant_id != task.payload.variant_id:
+            return "submission variant_id does not match task's variant_id"
+        variant = self._get_variant(submission.variant_id)
+        if variant is None:
+            return f"variant {submission.variant_id!r} does not exist"
+        if variant.status != "starting":
+            return f"variant {submission.variant_id!r} is {variant.status!r}, not 'starting'"
+        if variant.commit_sha is None:
+            return f"variant {submission.variant_id!r} has no commit_sha"
+        if submission.evaluation is None:
             return "success submission requires metrics (03-roles.md §4.4)"
         try:
-            self._validate_metrics(submission.metrics)
+            self._validate_evaluation(submission.evaluation)
         except InvalidPrecondition as exc:
             return str(exc)
-        # Dry-run the trial write so an invalid artifacts_uri (or
+        # Dry-run the variant write so an invalid artifacts_uri (or
         # any other field) surfaces as validation_error instead of
         # crashing accept.
         try:
             _validated_update(
-                trial,
+                variant,
                 status="success",
-                metrics=dict(submission.metrics),
+                evaluation=dict(submission.evaluation),
                 artifacts_uri=submission.artifacts_uri,
                 completed_at=self._ts(),
             )
         except ValidationError as exc:
-            return f"invalid trial update: {exc.errors()[0]['msg']}"
+            return f"invalid variant update: {exc.errors()[0]['msg']}"
         return None
 
     def _validate_evaluate_error(
         self, task: EvaluateTask, submission: EvaluateSubmission
     ) -> str | None:
         """Validate fields that a `status=error` evaluate submit would write."""
-        if submission.trial_id != task.payload.trial_id:
-            return "submission trial_id does not match task's trial_id"
-        trial = self._get_trial(submission.trial_id)
-        if trial is None:
-            return f"trial {submission.trial_id!r} does not exist"
-        if submission.metrics is not None:
+        if submission.variant_id != task.payload.variant_id:
+            return "submission variant_id does not match task's variant_id"
+        variant = self._get_variant(submission.variant_id)
+        if variant is None:
+            return f"variant {submission.variant_id!r} does not exist"
+        if submission.evaluation is not None:
             try:
-                self._validate_metrics(submission.metrics)
+                self._validate_evaluation(submission.evaluation)
             except InvalidPrecondition as exc:
                 return str(exc)
         try:
             _validated_update(
-                trial,
+                variant,
                 status="error",
-                metrics=dict(submission.metrics) if submission.metrics else None,
+                evaluation=dict(submission.evaluation) if submission.evaluation else None,
                 artifacts_uri=submission.artifacts_uri,
                 completed_at=self._ts(),
             )
         except ValidationError as exc:
-            return f"invalid trial update: {exc.errors()[0]['msg']}"
+            return f"invalid variant update: {exc.errors()[0]['msg']}"
         return None
 
-    def validate_metrics(self, metrics: dict[str, Any]) -> None:
-        """Validate metrics against the registered schema.
+    def validate_evaluation(self, evaluation: dict[str, Any]) -> None:
+        """Validate evaluation against the registered schema.
 
         Public entry point for both submit-time (``08-storage.md`` §4)
         and integration-time (``06-integrator.md`` §2) validation.
         Raises ``InvalidPrecondition`` on violation; no-op when the
-        store was constructed without a ``metrics_schema``.
+        store was constructed without an ``evaluation_schema``.
         """
-        self._validate_metrics(metrics)
+        self._validate_evaluation(evaluation)
 
-    def _validate_metrics(self, metrics: dict[str, Any]) -> None:
-        """Validate metrics against the registered schema (``08-storage.md`` §4)."""
-        if self._metrics_schema is None:
+    def _validate_evaluation(self, evaluation: dict[str, Any]) -> None:
+        """Validate evaluation against the registered schema (``08-storage.md`` §4)."""
+        if self._evaluation_schema is None:
             return
-        schema = self._metrics_schema.root
-        for key, value in metrics.items():
+        schema = self._evaluation_schema.root
+        for key, value in evaluation.items():
             if key not in schema:
                 raise InvalidPrecondition(
-                    f"metric key {key!r} is not in the experiment's metrics_schema"
+                    f"evaluation key {key!r} is not in the experiment's evaluation_schema"
                 )
             if value is None:
                 continue
@@ -1287,42 +1289,42 @@ class _StoreBase:
             # Reject bools for integer/real per spec §1.3 (bool is a separate domain).
             if isinstance(value, bool):
                 raise InvalidPrecondition(
-                    f"metric {key!r} is bool; declared type is {mtype!r}"
+                    f"evaluation key {key!r} is bool; declared type is {mtype!r}"
                 )
             expected = _METRIC_PY_TYPES[mtype]
             if not isinstance(value, expected):
                 raise InvalidPrecondition(
-                    f"metric {key!r} value {value!r} is not of declared type {mtype!r}"
+                    f"evaluation key {key!r} value {value!r} is not of declared type {mtype!r}"
                 )
             # Non-finite floats (NaN, +inf, -inf) fail JSON round-trip
             # and can't be stored in the event log or eval manifest. The
-            # ``real`` type in the metrics schema implies "finite IEEE
+            # ``real`` type in the evaluation schema implies "finite IEEE
             # 754 double" per the spec's JSON grounding.
             if mtype == "real" and not math.isfinite(value):
                 raise InvalidPrecondition(
-                    f"metric {key!r} value {value!r} is not finite"
+                    f"evaluation key {key!r} value {value!r} is not finite"
                 )
 
     # ------------------------------------------------------------------
     # Require-or-raise helpers
     # ------------------------------------------------------------------
 
-    def _find_starting_trial_for_implement_task(self, task: Task) -> Trial | None:
-        assert isinstance(task, ImplementTask)
-        for trial in self._iter_trials():
+    def _find_starting_variant_for_implement_task(self, task: Task) -> Variant | None:
+        assert isinstance(task, ExecuteTask)
+        for variant in self._iter_variants():
             if (
-                trial.proposal_id == task.payload.proposal_id
-                and trial.status == "starting"
+                variant.idea_id == task.payload.idea_id
+                and variant.status == "starting"
             ):
-                return trial
+                return variant
         return None
 
     def _require_submission_kind_matches(self, task: Task, submission: Submission) -> None:
         expected: type[Submission]
-        if task.kind == "plan":
-            expected = PlanSubmission
-        elif task.kind == "implement":
-            expected = ImplementSubmission
+        if task.kind == "ideate":
+            expected = IdeateSubmission
+        elif task.kind == "execute":
+            expected = ExecuteSubmission
         else:
             expected = EvaluateSubmission
         if not isinstance(submission, expected):
@@ -1341,17 +1343,17 @@ class _StoreBase:
             raise NotFound(f"task {task_id!r}")
         return task
 
-    def _require_proposal(self, proposal_id: str) -> Proposal:
-        proposal = self._get_proposal(proposal_id)
-        if proposal is None:
-            raise NotFound(f"proposal {proposal_id!r}")
-        return proposal
+    def _require_idea(self, idea_id: str) -> Idea:
+        idea = self._get_idea(idea_id)
+        if idea is None:
+            raise NotFound(f"idea {idea_id!r}")
+        return idea
 
-    def _require_trial(self, trial_id: str) -> Trial:
-        trial = self._get_trial(trial_id)
-        if trial is None:
-            raise NotFound(f"trial {trial_id!r}")
-        return trial
+    def _require_variant(self, variant_id: str) -> Variant:
+        variant = self._get_variant(variant_id)
+        if variant is None:
+            raise NotFound(f"variant {variant_id!r}")
+        return variant
 
     # ------------------------------------------------------------------
     # Event + timestamp helpers

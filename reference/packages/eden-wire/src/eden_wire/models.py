@@ -61,9 +61,9 @@ class ReclaimRequest(_WireBase):
 
 
 class IntegrateRequest(_WireBase):
-    """Body for ``POST /v0/experiments/{E}/trials/{T}/integrate``."""
+    """Body for ``POST /v0/experiments/{E}/variants/{T}/integrate``."""
 
-    trial_commit_sha: CommitSha
+    variant_commit_sha: CommitSha
 
 
 class EventsResponse(_WireBase):
@@ -80,10 +80,10 @@ class ValidateTerminalResponse(_WireBase):
     reason: str | None = None
 
 
-class ValidateMetricsRequest(_WireBase):
-    """Body for the ``/_reference/`` validate-metrics helper."""
+class ValidateEvaluationRequest(_WireBase):
+    """Body for the ``/_reference/`` validate-evaluation helper."""
 
-    metrics: dict[str, Any]
+    evaluation: dict[str, Any]
 
 
 __all__ = [
@@ -94,6 +94,6 @@ __all__ = [
     "ReclaimRequest",
     "RejectRequest",
     "SubmitRequest",
-    "ValidateMetricsRequest",
+    "ValidateEvaluationRequest",
     "ValidateTerminalResponse",
 ]

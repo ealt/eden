@@ -41,13 +41,13 @@ def build_store(
     if store_url == ":memory:":
         return InMemoryStore(
             experiment_id=experiment_id,
-            metrics_schema=config.metrics_schema,
+            evaluation_schema=config.evaluation_schema,
         )
     if store_url.startswith("postgresql://") or store_url.startswith("postgres://"):
         return PostgresStore(
             experiment_id=experiment_id,
             dsn=store_url,
-            metrics_schema=config.metrics_schema,
+            evaluation_schema=config.evaluation_schema,
         )
     if store_url.startswith("sqlite:///"):
         path = store_url[len("sqlite:///") :]
@@ -57,7 +57,7 @@ def build_store(
     return SqliteStore(
         experiment_id=experiment_id,
         path=path,
-        metrics_schema=config.metrics_schema,
+        evaluation_schema=config.evaluation_schema,
     )
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 10e end-to-end Compose drill — python driver.
 
-Drives a single planner walkthrough and a single admin-reclaim drill
+Drives a single ideator walkthrough and a single admin-reclaim drill
 against the live web-ui container, then exits zero on success or
 non-zero with a diagnostic on failure.
 
@@ -10,7 +10,7 @@ Run from ``e2e.sh``; expects these env vars:
 - ``EDEN_E2E_WEB_UI_URL`` — base URL of the web-ui (e.g.
   ``http://localhost:8090``)
 - ``EDEN_BASE_COMMIT_SHA`` — 40-hex SHA to use as ``parent_commits``
-  on the planner submit (read from setup-experiment's ``.env``)
+  on the ideator submit (read from setup-experiment's ``.env``)
 
 The flow is documented in
 ``docs/plans/eden-phase-10e-compose-e2e.md`` §C / §D.
@@ -63,7 +63,7 @@ def _form_post(
 def _wait_for_seeded_tasks(
     ui: httpx.Client, ids: tuple[str, ...], deadline_s: float
 ) -> None:
-    """Poll ``/planner/`` until all ``ids`` are visible.
+    """Poll ``/ideator/`` until all ``ids`` are visible.
 
     The orchestrator has no compose healthcheck so ``compose up --wait``
     can return before seeding completes. Polling avoids both an
@@ -72,7 +72,7 @@ def _wait_for_seeded_tasks(
     end = time.monotonic() + deadline_s
     last: httpx.Response | None = None
     while time.monotonic() < end:
-        resp = ui.get("/planner/")
+        resp = ui.get("/ideator/")
         last = resp
         if resp.status_code == 200 and all(tid in resp.text for tid in ids):
             return
@@ -84,33 +84,33 @@ def _wait_for_seeded_tasks(
     )
 
 
-def _planner_walkthrough(
+def _ideator_walkthrough(
     ui: httpx.Client, task_id: str, base_commit_sha: str
 ) -> None:
-    """Claim → draft → submit one plan task.
+    """Claim → draft → submit one ideate task.
 
-    The submit returns 200 with the rendered ``planner_submitted.html``
+    The submit returns 200 with the rendered ``ideator_submitted.html``
     template (NOT a 303 — see chunk-9b
-    ``reference/services/web-ui/src/eden_web_ui/routes/planner.py``).
+    ``reference/services/web-ui/src/eden_web_ui/routes/ideator.py``).
     """
-    # GET /planner/ to scrape CSRF for the claim form.
-    resp = ui.get("/planner/")
+    # GET /ideator/ to scrape CSRF for the claim form.
+    resp = ui.get("/ideator/")
     if resp.status_code != 200:
-        _fail("GET /planner/ failed", response=resp)
-    csrf = _scrape_csrf(resp.text, where="GET /planner/")
+        _fail("GET /ideator/ failed", response=resp)
+    csrf = _scrape_csrf(resp.text, where="GET /ideator/")
 
     # Claim.
-    resp = _form_post(ui, f"/planner/{task_id}/claim", [("csrf_token", csrf)])
+    resp = _form_post(ui, f"/ideator/{task_id}/claim", [("csrf_token", csrf)])
     if resp.status_code != 303:
         _fail(f"claim {task_id} did not 303", response=resp)
 
     # Draft form. Re-scrape CSRF — the draft renders its own form.
-    resp = ui.get(f"/planner/{task_id}/draft")
+    resp = ui.get(f"/ideator/{task_id}/draft")
     if resp.status_code != 200:
-        _fail(f"GET /planner/{task_id}/draft failed", response=resp)
-    csrf = _scrape_csrf(resp.text, where=f"GET /planner/{task_id}/draft")
+        _fail(f"GET /ideator/{task_id}/draft failed", response=resp)
+    csrf = _scrape_csrf(resp.text, where=f"GET /ideator/{task_id}/draft")
 
-    # Submit a single proposal row.
+    # Submit a single idea row.
     fields = [
         ("csrf_token", csrf),
         ("status", "success"),
@@ -119,7 +119,7 @@ def _planner_walkthrough(
         ("parent_commits", base_commit_sha),
         ("rationale", "## why\n\nphase 10e end-to-end drill.\n"),
     ]
-    resp = _form_post(ui, f"/planner/{task_id}/submit", fields)
+    resp = _form_post(ui, f"/ideator/{task_id}/submit", fields)
     if resp.status_code != 200:
         _fail(f"submit {task_id} returned non-200", response=resp)
     if "submitted" not in resp.text.lower():
@@ -129,18 +129,18 @@ def _planner_walkthrough(
 
 
 def _admin_reclaim_drill(ui: httpx.Client, task_id: str) -> None:
-    """Claim a plan task via web UI, do not submit, then admin-reclaim it.
+    """Claim a ideate task via web UI, do not submit, then admin-reclaim it.
 
     The admin reclaim redirect URL has a TRAILING SLASH before the
     query (``/admin/tasks/<id>/?reclaimed=ok``) — see chunk-9e
     ``reference/services/web-ui/src/eden_web_ui/routes/admin.py``.
     """
     # Claim.
-    resp = ui.get("/planner/")
+    resp = ui.get("/ideator/")
     if resp.status_code != 200:
-        _fail("GET /planner/ for admin drill failed", response=resp)
-    csrf = _scrape_csrf(resp.text, where="GET /planner/ (admin drill)")
-    resp = _form_post(ui, f"/planner/{task_id}/claim", [("csrf_token", csrf)])
+        _fail("GET /ideator/ for admin drill failed", response=resp)
+    csrf = _scrape_csrf(resp.text, where="GET /ideator/ (admin drill)")
+    resp = _form_post(ui, f"/ideator/{task_id}/claim", [("csrf_token", csrf)])
     if resp.status_code != 303:
         _fail(
             f"admin-drill claim {task_id} did not 303", response=resp
@@ -181,7 +181,7 @@ def _admin_reclaim_drill(ui: httpx.Client, task_id: str) -> None:
 
 
 def main() -> int:
-    """Drive the planner walkthrough and admin-reclaim drill end-to-end."""
+    """Drive the ideator walkthrough and admin-reclaim drill end-to-end."""
     web_url = os.environ.get("EDEN_E2E_WEB_UI_URL")
     base_sha = os.environ.get("EDEN_BASE_COMMIT_SHA")
     if not web_url:
@@ -194,33 +194,33 @@ def main() -> int:
     assert web_url is not None  # noqa: S101 — type narrowing only
     assert base_sha is not None  # noqa: S101 — type narrowing only
 
-    seeded_ids = tuple(f"plan-{i:04d}" for i in range(1, 5))
-    submit_id = "plan-0001"
-    reclaim_id = "plan-0002"
+    seeded_ids = tuple(f"ideate-{i:04d}" for i in range(1, 5))
+    submit_id = "ideate-0001"
+    reclaim_id = "ideate-0002"
 
     print(f"e2e_drive: connecting to {web_url}", flush=True)
     try:
         with httpx.Client(base_url=web_url, timeout=15.0) as ui:
-            # Sign in (anonymous stub) BEFORE polling — admin/planner
+            # Sign in (anonymous stub) BEFORE polling — admin/ideator
             # pages redirect to /signin without a session, so an
             # unauthenticated poll loop would just see 303s.
             resp = ui.post("/signin", follow_redirects=False)
             if resp.status_code != 303:
                 _fail("POST /signin did not 303", response=resp)
 
-            # Wait for the orchestrator's seed to land. Polls /planner/
-            # — both /planner/ and /admin/tasks/ are auth-gated, so
+            # Wait for the orchestrator's seed to land. Polls /ideator/
+            # — both /ideator/ and /admin/tasks/ are auth-gated, so
             # this only works after sign-in.
             _wait_for_seeded_tasks(ui, seeded_ids, deadline_s=30.0)
             print(
-                f"e2e_drive: all {len(seeded_ids)} seeded plan tasks "
+                f"e2e_drive: all {len(seeded_ids)} seeded ideate tasks "
                 "visible",
                 flush=True,
             )
 
-            _planner_walkthrough(ui, submit_id, base_commit_sha=base_sha)
+            _ideator_walkthrough(ui, submit_id, base_commit_sha=base_sha)
             print(
-                f"e2e_drive: planner walkthrough OK ({submit_id} submitted)",
+                f"e2e_drive: ideator walkthrough OK ({submit_id} submitted)",
                 flush=True,
             )
 

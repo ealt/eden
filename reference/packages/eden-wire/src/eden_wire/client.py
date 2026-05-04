@@ -6,7 +6,7 @@ conformance scenarios all work against it unchanged: structural
 Protocol conformance means "talks to a store" doesn't commit to a
 transport.
 
-Transport-indeterminate reconciliation on ``integrate_trial``
+Transport-indeterminate reconciliation on ``integrate_variant``
 follows ``spec/v0/07-wire-protocol.md`` §5 — read-back resolves to
 confirmed success, confirmed divergence (raise
 ``AtomicityViolation`` surfaced as ``InvalidPrecondition`` at the
@@ -29,21 +29,21 @@ import httpx
 from eden_contracts import (
     EvaluateTask,
     Event,
+    ExecuteTask,
     FailReason,
-    ImplementTask,
-    PlanTask,
-    Proposal,
+    Idea,
+    IdeateTask,
     ReclaimCause,
     Task,
     TaskAdapter,
     TaskClaim,
-    Trial,
+    Variant,
 )
 from eden_storage.errors import InvalidPrecondition
 from eden_storage.submissions import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     Submission,
 )
 
@@ -53,12 +53,12 @@ __all__ = ["IndeterminateIntegration", "StoreClient"]
 
 
 class IndeterminateIntegration(RuntimeError):
-    """An ``integrate_trial`` call's outcome cannot be determined.
+    """An ``integrate_variant`` call's outcome cannot be determined.
 
-    Raised by :meth:`StoreClient.integrate_trial` when a transport-
+    Raised by :meth:`StoreClient.integrate_variant` when a transport-
     indeterminate failure cannot be resolved by a read-back of the
-    trial (read-back itself fails, or shows no
-    ``trial_commit_sha``). The caller (typically
+    variant (read-back itself fails, or shows no
+    ``variant_commit_sha``). The caller (typically
     ``Integrator.integrate``) MUST NOT assume the server has not
     committed, and MUST NOT compensate the ref. Operator
     intervention is required.
@@ -147,13 +147,13 @@ class StoreClient:
         resp = self._request("GET", f"{self._base}/tasks/{task_id}")
         return TaskAdapter.validate_python(resp.json())
 
-    def read_proposal(self, proposal_id: str) -> Proposal:
-        resp = self._request("GET", f"{self._base}/proposals/{proposal_id}")
-        return Proposal.model_validate(resp.json())
+    def read_idea(self, idea_id: str) -> Idea:
+        resp = self._request("GET", f"{self._base}/ideas/{idea_id}")
+        return Idea.model_validate(resp.json())
 
-    def read_trial(self, trial_id: str) -> Trial:
-        resp = self._request("GET", f"{self._base}/trials/{trial_id}")
-        return Trial.model_validate(resp.json())
+    def read_variant(self, variant_id: str) -> Variant:
+        resp = self._request("GET", f"{self._base}/variants/{variant_id}")
+        return Variant.model_validate(resp.json())
 
     def read_submission(self, task_id: str) -> Submission | None:
         resp = self._request("GET", f"{self._base}/tasks/{task_id}/submission")
@@ -176,15 +176,15 @@ class StoreClient:
         resp = self._request("GET", f"{self._base}/tasks", params=params)
         return [TaskAdapter.validate_python(item) for item in resp.json()]
 
-    def list_proposals(self, *, state: str | None = None) -> list[Proposal]:
+    def list_ideas(self, *, state: str | None = None) -> list[Idea]:
         params = {"state": state} if state is not None else None
-        resp = self._request("GET", f"{self._base}/proposals", params=params)
-        return [Proposal.model_validate(item) for item in resp.json()]
+        resp = self._request("GET", f"{self._base}/ideas", params=params)
+        return [Idea.model_validate(item) for item in resp.json()]
 
-    def list_trials(self, *, status: str | None = None) -> list[Trial]:
+    def list_variants(self, *, status: str | None = None) -> list[Variant]:
         params = {"status": status} if status is not None else None
-        resp = self._request("GET", f"{self._base}/trials", params=params)
-        return [Trial.model_validate(item) for item in resp.json()]
+        resp = self._request("GET", f"{self._base}/variants", params=params)
+        return [Variant.model_validate(item) for item in resp.json()]
 
     def events(self) -> list[Event]:
         return self.replay()
@@ -226,11 +226,11 @@ class StoreClient:
         )
         return TaskAdapter.validate_python(resp.json())
 
-    def create_plan_task(self, task_id: str) -> PlanTask:
-        task = PlanTask.model_validate(
+    def create_ideate_task(self, task_id: str) -> IdeateTask:
+        task = IdeateTask.model_validate(
             {
                 "task_id": task_id,
-                "kind": "plan",
+                "kind": "ideate",
                 "state": "pending",
                 "created_at": _now(),
                 "updated_at": _now(),
@@ -238,25 +238,25 @@ class StoreClient:
             }
         )
         created = self.create_task(task)
-        assert isinstance(created, PlanTask)
+        assert isinstance(created, IdeateTask)
         return created
 
-    def create_implement_task(self, task_id: str, proposal_id: str) -> ImplementTask:
-        task = ImplementTask.model_validate(
+    def create_execute_task(self, task_id: str, idea_id: str) -> ExecuteTask:
+        task = ExecuteTask.model_validate(
             {
                 "task_id": task_id,
-                "kind": "implement",
+                "kind": "execute",
                 "state": "pending",
                 "created_at": _now(),
                 "updated_at": _now(),
-                "payload": {"proposal_id": proposal_id},
+                "payload": {"idea_id": idea_id},
             }
         )
         created = self.create_task(task)
-        assert isinstance(created, ImplementTask)
+        assert isinstance(created, ExecuteTask)
         return created
 
-    def create_evaluate_task(self, task_id: str, trial_id: str) -> EvaluateTask:
+    def create_evaluate_task(self, task_id: str, variant_id: str) -> EvaluateTask:
         task = EvaluateTask.model_validate(
             {
                 "task_id": task_id,
@@ -264,7 +264,7 @@ class StoreClient:
                 "state": "pending",
                 "created_at": _now(),
                 "updated_at": _now(),
-                "payload": {"trial_id": trial_id},
+                "payload": {"variant_id": variant_id},
             }
         )
         created = self.create_task(task)
@@ -320,30 +320,30 @@ class StoreClient:
         return body["decision"], body.get("reason")
 
     # ------------------------------------------------------------------
-    # Proposals / trials
+    # Ideas / variants
     # ------------------------------------------------------------------
 
-    def create_proposal(self, proposal: Proposal) -> None:
+    def create_idea(self, idea: Idea) -> None:
         self._request(
             "POST",
-            f"{self._base}/proposals",
-            json=proposal.model_dump(mode="json", exclude_none=True),
+            f"{self._base}/ideas",
+            json=idea.model_dump(mode="json", exclude_none=True),
         )
 
-    def mark_proposal_ready(self, proposal_id: str) -> None:
-        self._request("POST", f"{self._base}/proposals/{proposal_id}/mark-ready")
+    def mark_idea_ready(self, idea_id: str) -> None:
+        self._request("POST", f"{self._base}/ideas/{idea_id}/mark-ready")
 
-    def create_trial(self, trial: Trial) -> None:
+    def create_variant(self, variant: Variant) -> None:
         self._request(
             "POST",
-            f"{self._base}/trials",
-            json=trial.model_dump(mode="json", exclude_none=True),
+            f"{self._base}/variants",
+            json=variant.model_dump(mode="json", exclude_none=True),
         )
 
-    def declare_trial_eval_error(self, trial_id: str) -> None:
-        self._request("POST", f"{self._base}/trials/{trial_id}/declare-eval-error")
+    def declare_variant_eval_error(self, variant_id: str) -> None:
+        self._request("POST", f"{self._base}/variants/{variant_id}/declare-eval-error")
 
-    def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
+    def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
         """Integrator promotion with transport-indeterminate reconciliation.
 
         Implements the §5 three-outcome rule:
@@ -356,41 +356,41 @@ class StoreClient:
         - observed SHA absent, or read-back fails →
           ``IndeterminateIntegration``.
         """
-        path = f"{self._base}/trials/{trial_id}/integrate"
+        path = f"{self._base}/variants/{variant_id}/integrate"
         try:
-            self._request("POST", path, json={"trial_commit_sha": trial_commit_sha})
+            self._request("POST", path, json={"variant_commit_sha": variant_commit_sha})
             return
         except httpx.TransportError as exc:
             # httpx.ReadTimeout is a subclass of TransportError, so
             # this single clause catches all indeterminate transports.
             original = exc
 
-        trial = self._try_read_trial(trial_id)
-        if trial is None:
+        variant = self._try_read_variant(variant_id)
+        if variant is None:
             raise IndeterminateIntegration(
-                f"integrate_trial({trial_id!r}) transport failed "
+                f"integrate_variant({variant_id!r}) transport failed "
                 f"({type(original).__name__}) and read-back could not be "
                 f"completed; server-side outcome unknown"
             ) from original
-        observed = trial.trial_commit_sha
-        if observed == trial_commit_sha:
+        observed = variant.variant_commit_sha
+        if observed == variant_commit_sha:
             return  # confirmed success
         if observed is not None:
             raise InvalidPrecondition(
-                f"trial {trial_id!r} is already integrated with a different "
-                f"trial_commit_sha ({observed!r} != {trial_commit_sha!r})"
+                f"variant {variant_id!r} is already integrated with a different "
+                f"variant_commit_sha ({observed!r} != {variant_commit_sha!r})"
             ) from original
         raise IndeterminateIntegration(
-            f"integrate_trial({trial_id!r}) transport failed "
+            f"integrate_variant({variant_id!r}) transport failed "
             f"({type(original).__name__}); read-back shows no "
-            f"trial_commit_sha, but the original request may still be "
+            f"variant_commit_sha, but the original request may still be "
             f"in flight — compensation is unsafe"
         ) from original
 
-    def _try_read_trial(self, trial_id: str) -> Trial | None:
+    def _try_read_variant(self, variant_id: str) -> Variant | None:
         for _ in range(self._read_back_attempts):
             try:
-                return self.read_trial(trial_id)
+                return self.read_variant(variant_id)
             except Exception:
                 continue
         return None
@@ -399,26 +399,26 @@ class StoreClient:
     # Shared validators
     # ------------------------------------------------------------------
 
-    def validate_metrics(self, metrics: dict[str, Any]) -> None:
+    def validate_evaluation(self, evaluation: dict[str, Any]) -> None:
         self._request(
             "POST",
-            f"{self._ref_base}/validate/metrics",
-            json={"metrics": metrics},
+            f"{self._ref_base}/validate/evaluation",
+            json={"evaluation": evaluation},
         )
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, PlanSubmission):
+    if isinstance(submission, IdeateSubmission):
         return {
-            "kind": "plan",
+            "kind": "ideate",
             "status": submission.status,
-            "proposal_ids": list(submission.proposal_ids),
+            "idea_ids": list(submission.idea_ids),
         }
-    if isinstance(submission, ImplementSubmission):
+    if isinstance(submission, ExecuteSubmission):
         body: dict[str, Any] = {
-            "kind": "implement",
+            "kind": "execute",
             "status": submission.status,
-            "trial_id": submission.trial_id,
+            "variant_id": submission.variant_id,
         }
         if submission.commit_sha is not None:
             body["commit_sha"] = submission.commit_sha
@@ -427,10 +427,10 @@ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
         body = {
             "kind": "evaluate",
             "status": submission.status,
-            "trial_id": submission.trial_id,
+            "variant_id": submission.variant_id,
         }
-        if submission.metrics is not None:
-            body["metrics"] = submission.metrics
+        if submission.evaluation is not None:
+            body["evaluation"] = submission.evaluation
         if submission.artifacts_uri is not None:
             body["artifacts_uri"] = submission.artifacts_uri
         return body
@@ -438,22 +438,22 @@ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "plan":
-        return PlanSubmission(
+    if kind == "ideate":
+        return IdeateSubmission(
             status=payload["status"],
-            proposal_ids=tuple(payload.get("proposal_ids", ())),
+            idea_ids=tuple(payload.get("idea_ids", ())),
         )
-    if kind == "implement":
-        return ImplementSubmission(
+    if kind == "execute":
+        return ExecuteSubmission(
             status=payload["status"],
-            trial_id=payload["trial_id"],
+            variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
     if kind == "evaluate":
         return EvaluateSubmission(
             status=payload["status"],
-            trial_id=payload["trial_id"],
-            metrics=payload.get("metrics"),
+            variant_id=payload["variant_id"],
+            evaluation=payload.get("evaluation"),
             artifacts_uri=payload.get("artifacts_uri"),
         )
     raise ValueError(f"unknown submission kind: {kind!r}")

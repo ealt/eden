@@ -51,9 +51,9 @@ A task enters the system in the `pending` state. A conforming orchestrator MUST:
 
 - Populate `task_id`, `kind`, `state = "pending"`, `payload`, `created_at`, `updated_at` ([`02-data-model.md`](02-data-model.md) §3.1).
 - Ensure the payload satisfies the dispatch preconditions for the task's `kind`:
-  - `plan` — `payload.experiment_id` names an experiment the planner is authorized to work on.
-  - `implement` — `payload.proposal_id` names a proposal with `state == "ready"` at creation time. Creating the implement task and transitioning the proposal from `"ready"` to `"dispatched"` MUST be atomic; a proposal's `"dispatched"` state signals that exactly one implement task has been created for it.
-  - `evaluate` — `payload.trial_id` names a trial with `status == "starting"` and `commit_sha` set at creation time.
+  - `plan` — `payload.experiment_id` names an experiment the ideator is authorized to work on.
+  - `implement` — `payload.idea_id` names an idea with `state == "ready"` at creation time. Creating the execute task and transitioning the idea from `"ready"` to `"dispatched"` MUST be atomic; an idea's `"dispatched"` state signals that exactly one execute task has been created for it.
+  - `evaluate` — `payload.variant_id` names a variant with `status == "starting"` and `commit_sha` set at creation time.
 - Emit the corresponding `task.created` event ( [`05-event-protocol.md`](05-event-protocol.md)) atomically with the task insert.
 
 A worker MAY rely on these preconditions ([`03-roles.md`](03-roles.md) §1.1). A task created without them is a protocol violation by the orchestrator.
@@ -102,9 +102,9 @@ A resubmission is a second submit carrying the token recorded on the task's `cla
 When the token matches, the task store MUST handle the resubmission as follows:
 
 - If the resubmission's result payload is **content-equivalent** to the already-recorded payload, the task store MUST accept it and MUST NOT change the task's state or recorded result. "Content equivalence" means the normative fields identified per role agree:
-  - `plan` — the set of `proposal_ids` (compared as sets; order is not significant per [`03-roles.md`](03-roles.md) §2.4) and `status`.
-  - `implement` — `trial_id`, `status`, and `commit_sha` (when present).
-  - `evaluate` — `trial_id`, `status`, and `metrics` (compared as JSON values; key order does not matter).
+  - `plan` — the set of `idea_ids` (compared as sets; order is not significant per [`03-roles.md`](03-roles.md) §2.4) and `status`.
+  - `implement` — `variant_id`, `status`, and `commit_sha` (when present).
+  - `evaluate` — `variant_id`, `status`, and `metrics` (compared as JSON values; key order does not matter).
 - If the resubmission's result payload is **not** content-equivalent, the task store MUST reject it. The first submission's result is the committed result.
 
 This rule exists so that a worker may safely retry a submit after a network or process failure without risk of advancing state twice or corrupting the recorded result.
@@ -113,10 +113,10 @@ This rule exists so that a worker may safely retry a submit after a network or p
 
 A submitted task is processed by the orchestrator and transitions to a terminal state. The orchestrator MUST:
 
-- Transition `submitted → completed` when the submission's `status` is `"success"` and the result satisfies the role's success contract (e.g. an implementer submission carries a reachable `commit_sha`).
+- Transition `submitted → completed` when the submission's `status` is `"success"` and the result satisfies the role's success contract (e.g. an executor submission carries a reachable `commit_sha`).
 - Transition `submitted → failed` when either:
   - The result violates the role's success contract (malformed payload, missing required field, failed post-validation).
-  - The worker itself declared failure: - `plan` task, worker `status == "error"` → `failed`. - `implement` task, worker `status == "error"` → `failed`. - `evaluate` task, worker `status == "error"` → `failed` AND the referenced trial's `status` MUST be updated to `"error"`. - `evaluate` task, worker `status == "eval_error"` → `failed`, but the referenced trial's `status` MUST remain `"starting"` (the trial itself was not shown to be bad; only the evaluator-side attempt failed). A fresh `evaluate` task MAY be created for the same trial; the protocol does not mandate automatic retry. If the orchestrator's policy exhausts retries for this trial (or the operator abandons it), the orchestrator MUST transition the trial's `status` from `"starting"` to `"eval_error"`, at which point the trial status is terminal.
+  - The worker itself declared failure: - `ideate` task, worker `status == "error"` → `failed`. - `execute` task, worker `status == "error"` → `failed`. - `evaluate` task, worker `status == "error"` → `failed` AND the referenced variant's `status` MUST be updated to `"error"`. - `evaluate` task, worker `status == "eval_error"` → `failed`, but the referenced variant's `status` MUST remain `"starting"` (the variant itself was not shown to be bad; only the evaluator-side attempt failed). A fresh `evaluate` task MAY be created for the same variant; the protocol does not mandate automatic retry. If the orchestrator's policy exhausts retries for this variant (or the operator abandons it), the orchestrator MUST transition the variant's `status` from `"starting"` to `"eval_error"`, at which point the variant status is terminal.
 
 Every terminal transition produces exactly one state-change event in the log ([`05-event-protocol.md`](05-event-protocol.md)) and MUST clear the task's `claim` object ([`02-data-model.md`](02-data-model.md) §3.4). The orchestrator MAY implement the `claimed → submitted → completed` (or `failed`) sequence as two distinct persisted states or as a single store transaction whose event stream includes both transitions, but subscribers MUST observe both events in order.
 
@@ -147,7 +147,7 @@ Reclamation:
 3. Sets the task's `state` back to `pending`.
 4. Is accompanied by a `task.reclaimed` event in the event log ([`05-event-protocol.md`](05-event-protocol.md)), atomically with the state change.
 
-Any partial result a worker had assembled before reclamation is no longer observable through the task protocol. If the worker created store-resident objects (drafting proposals, starting trials), those objects persist per their own lifecycle and are subject to role-level cleanup rules; reclamation itself does not delete them.
+Any partial result a worker had assembled before reclamation is no longer observable through the task protocol. If the worker created store-resident objects (drafting ideas, starting variants), those objects persist per their own lifecycle and are subject to role-level cleanup rules; reclamation itself does not delete them.
 
 ### 5.3 Worker detection of reclamation
 
@@ -157,9 +157,9 @@ A worker that wishes to detect its own reclamation MAY observe its task's state 
 
 When a reclaimed task had created role-owned objects during its prior execution, the orchestrator MUST reconcile those objects as follows:
 
-- **Implement reclamation.** If the prior execution created a trial with `status == "starting"`, the orchestrator MUST transition that trial's `status` to `"error"` atomically with the reclaim event. A subsequent re-claim of the implement task produces a **new** trial; starting trials are never shared across implementer attempts.
-- **Plan reclamation.** If the prior execution persisted proposals in `"drafting"` state, those proposals remain in `"drafting"` and are not dispatched. Implementations MAY expose them to operators for inspection or removal; the task protocol does not mandate automatic cleanup.
-- **Evaluate reclamation.** The trial the task referenced is unchanged by reclamation (it was produced by the implementer, not the evaluator).
+- **Implement reclamation.** If the prior execution created a variant with `status == "starting"`, the orchestrator MUST transition that variant's `status` to `"error"` atomically with the reclaim event. A subsequent re-claim of the execute task produces a **new** variant; starting variants are never shared across executor attempts.
+- **Plan reclamation.** If the prior execution persisted ideas in `"drafting"` state, those ideas remain in `"drafting"` and are not dispatched. Implementations MAY expose them to operators for inspection or removal; the task protocol does not mandate automatic cleanup.
+- **Evaluate reclamation.** The variant the task referenced is unchanged by reclamation (it was produced by the executor, not the evaluator).
 
 ## 6. Ordering and concurrency
 
@@ -175,13 +175,13 @@ Distinct tasks MAY progress concurrently. The protocol imposes no global orderin
 
 A subscriber that reads the event log MUST be able to reconstruct every task's state-machine history exactly. Implementations MAY provide faster paths (direct task reads, push notifications) but MUST NOT let those paths expose states that the event log does not record.
 
-## 7. Proposal and trial lifecycle interactions
+## 7. Idea and variant lifecycle interactions
 
-The task state machine is not the only lifecycle in the system. Proposals ([`02-data-model.md`](02-data-model.md) §5.1) and trials ([`02-data-model.md`](02-data-model.md) §7) have their own state fields. The task protocol interacts with these lifecycles at the following points:
+The task state machine is not the only lifecycle in the system. Ideas ([`02-data-model.md`](02-data-model.md) §5.1) and variants ([`02-data-model.md`](02-data-model.md) §7) have their own state fields. The task protocol interacts with these lifecycles at the following points:
 
-- **Plan submit.** A successful plan-task submission MAY reference proposals that have been transitioned to `state == "ready"` by the planner ([`03-roles.md`](03-roles.md) §2.2). The task protocol does not itself transition proposal state; it treats the proposal as a value produced by the planner.
-- **Implement submit.** A successful implement-task submission requires a trial created and advanced by the implementer ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition of the implement task (whether `submitted → completed` or `submitted → failed`), the orchestrator MUST transition the referenced proposal's `state` from `"dispatched"` to `"completed"`, atomically with the task's terminal event. The proposal's `"completed"` state therefore means *"the implementer's attempt on this proposal has finished"*, not *"the attempt succeeded"*; the trial's `status` field records the outcome. A proposal in `"dispatched"` always names a non-terminal implement task; no proposal remains in `"dispatched"` after its implement task has reached a terminal state.
-- **Evaluate submit.** A successful evaluate-task submission populates the trial's `metrics`, `completed_at`, and (per worker-declared status) the trial's `status`. The integrator's subsequent promotion of the trial into the canonical lineage is out of this chapter's scope ([`06-integrator.md`](06-integrator.md)).
+- **Plan submit.** A successful ideate-task submission MAY reference ideas that have been transitioned to `state == "ready"` by the ideator ([`03-roles.md`](03-roles.md) §2.2). The task protocol does not itself transition idea state; it treats the idea as a value produced by the ideator.
+- **Implement submit.** A successful execute-task submission requires a variant created and advanced by the executor ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition of the execute task (whether `submitted → completed` or `submitted → failed`), the orchestrator MUST transition the referenced idea's `state` from `"dispatched"` to `"completed"`, atomically with the task's terminal event. The idea's `"completed"` state therefore means *"the executor's attempt on this idea has finished"*, not *"the attempt succeeded"*; the variant's `status` field records the outcome. An idea in `"dispatched"` always names a non-terminal execute task; no idea remains in `"dispatched"` after its execute task has reached a terminal state.
+- **Evaluate submit.** A successful evaluate-task submission populates the variant's `metrics`, `completed_at`, and (per worker-declared status) the variant's `status`. The integrator's subsequent promotion of the variant into the canonical lineage is out of this chapter's scope ([`06-integrator.md`](06-integrator.md)).
 
 ## 8. Implementation latitude
 

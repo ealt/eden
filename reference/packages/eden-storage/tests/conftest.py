@@ -168,6 +168,6 @@ def make_store(
 
 @pytest.fixture
 def ids() -> Iterator[str]:
-    """Monotonic ID allocator for tasks, proposals, trials."""
+    """Monotonic ID allocator for tasks, ideas, variants."""
     counter = itertools.count(1)
     return (f"id-{next(counter):04d}" for _ in iter(int, 1))

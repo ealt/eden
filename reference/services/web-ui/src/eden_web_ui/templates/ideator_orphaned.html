@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}EDEN — orphaned ideas{% endblock %}
+{% block main %}
+<h1>ideate submission failed</h1>
+<div class="banner banner-error">
+    <p>
+        Ideate task <code>{{ task_id }}</code> could not be submitted after retries.
+        The ideas below were created and marked <code>ready</code> but are
+        not referenced by any submitted ideate task.
+    </p>
+    {% if banner %}<p>error: <code>{{ banner }}</code></p>{% endif %}
+</div>
+<p>orphaned idea ids:</p>
+<ul>
+{% for pid in idea_ids %}<li><code>{{ pid }}</code></li>{% endfor %}
+</ul>
+<p>
+    Operator action: reclaim the ideate task (force the orchestrator to re-dispatch),
+    and decide whether to garbage-collect the orphaned ideas or let the
+    orchestrator dispatch execute tasks for them on the next iteration.
+</p>
+<p><a href="/ideator/">back to ideator</a></p>
+{% endblock %}

@@ -109,17 +109,17 @@ class WireClient:
             return base
         return f"{base}/{task_id}{suffix}"
 
-    def proposals_path(self, proposal_id: str | None = None, suffix: str = "") -> str:
-        base = f"{self.base_path}/proposals"
-        if proposal_id is None:
+    def proposals_path(self, idea_id: str | None = None, suffix: str = "") -> str:
+        base = f"{self.base_path}/ideas"
+        if idea_id is None:
             return base
-        return f"{base}/{proposal_id}{suffix}"
+        return f"{base}/{idea_id}{suffix}"
 
-    def trials_path(self, trial_id: str | None = None, suffix: str = "") -> str:
-        base = f"{self.base_path}/trials"
-        if trial_id is None:
+    def trials_path(self, variant_id: str | None = None, suffix: str = "") -> str:
+        base = f"{self.base_path}/variants"
+        if variant_id is None:
             return base
-        return f"{base}/{trial_id}{suffix}"
+        return f"{base}/{variant_id}{suffix}"
 
     def events_path(self, suffix: str = "") -> str:
         return f"{self.base_path}/events{suffix}"

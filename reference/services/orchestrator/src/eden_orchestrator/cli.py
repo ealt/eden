@@ -61,7 +61,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--repo-path",
         required=True,
         help=(
-            "Bare git repo that the Integrator writes trial/* refs into. "
+            "Bare git repo that the Integrator writes variant/* refs into. "
             "When --gitea-url is also set, this path becomes the local "
             "bare clone of the Gitea-hosted repo (created at startup if "
             "it doesn't already exist)."
@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, the integrator clones --repo-path "
             "from this URL at startup, fetches all heads + reconciles "
-            "remote orphan trial/* refs, and publishes new trial/* refs "
+            "remote orphan variant/* refs, and publishes new variant/* refs "
             "back to this remote."
         ),
     )
@@ -97,17 +97,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--plan-tasks",
+        "--ideate-tasks",
         required=True,
         help=(
-            "Either an integer N (creates plan-0001..plan-N) or a "
-            "comma-separated list of explicit plan task IDs."
+            "Either an integer N (creates ideate-0001..ideate-N) or a "
+            "comma-separated list of explicit ideate task IDs."
         ),
     )
     parser.add_argument(
-        "--implement-task-prefix",
+        "--execute-task-prefix",
         default="implement-",
-        help="Prefix for orchestrator-allocated implement task IDs (default: 'implement-').",
+        help="Prefix for orchestrator-allocated execute task IDs (default: 'implement-').",
     )
     parser.add_argument(
         "--evaluate-task-prefix",
@@ -138,11 +138,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _expand_plan_tasks(spec: str) -> list[str]:
-    """Parse --plan-tasks into a concrete list of IDs."""
+def _expand_ideate_tasks(spec: str) -> list[str]:
+    """Parse --ideate-tasks into a concrete list of IDs."""
     if spec.isdigit():
         n = int(spec)
-        return [f"plan-{i:04d}" for i in range(1, n + 1)]
+        return [f"ideate-{i:04d}" for i in range(1, n + 1)]
     return [s.strip() for s in spec.split(",") if s.strip()]
 
 
@@ -202,8 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         deadline_seconds=args.startup_timeout,
     )
 
-    plan_task_ids = _expand_plan_tasks(args.plan_tasks)
-    log.info("starting", plan_tasks=len(plan_task_ids), repo=args.repo_path)
+    ideate_task_ids = _expand_ideate_tasks(args.ideate_tasks)
+    log.info("starting", ideate_tasks=len(ideate_task_ids), repo=args.repo_path)
 
     with StoreClient(
         args.task_store_url,
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.gitea_url is not None:
             # §D.7c: store-authoritative reconciliation of remote
-            # orphan trial/* refs at startup.
+            # orphan variant/* refs at startup.
             try:
                 deleted = integrator.reconcile_remote_orphans()
                 if deleted:
@@ -233,8 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         run_orchestrator_loop(
             store=client,
             integrator=integrator,
-            plan_task_ids=plan_task_ids,
-            implement_task_prefix=args.implement_task_prefix,
+            ideate_task_ids=ideate_task_ids,
+            execute_task_prefix=args.execute_task_prefix,
             evaluate_task_prefix=args.evaluate_task_prefix,
             poll_interval=args.poll_interval,
             max_quiescent_iterations=args.max_quiescent_iterations,

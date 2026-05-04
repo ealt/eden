@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # Phase 10e end-to-end smoke for the EDEN reference Compose stack.
-# Beyond compose-smoke (headless 3-trial loop) and
+# Beyond compose-smoke (headless 3-variant loop) and
 # compose-smoke-subprocess (subprocess-mode loop), this drill exercises:
 #
-#   1. Web UI planner walkthrough (sign-in, claim, submit)
+#   1. Web UI ideator walkthrough (sign-in, claim, submit)
 #   2. Admin-reclaim drill (claim, do-not-submit, admin-reclaim)
-#   3. End-state assertions adjusted for EDEN_PLAN_TASKS=4
+#   3. End-state assertions adjusted for EDEN_IDEATE_TASKS=4
 #   4. Termination drill (compose stop --timeout 10; verify no SIGKILL)
 #
 # See docs/plans/eden-phase-10e-compose-e2e.md for the design rationale,
@@ -40,13 +40,13 @@ ENV_FILE="$(mktemp)"
 EXPERIMENT_ID="e2e-exp"
 
 # Stage 1's wait-list — deliberately omits gitea (deferred 10d
-# follow-up, not consumed by this drill) and planner-host (the whole
-# point of staging is to keep planner-host away from the tasks the
+# follow-up, not consumed by this drill) and ideator-host (the whole
+# point of staging is to keep ideator-host away from the tasks the
 # UI claims).
 STAGE1_SERVICES=(
     postgres blob-init
     task-store-server orchestrator
-    implementer-host evaluator-host web-ui
+    executor-host evaluator-host web-ui
 )
 
 cleanup() {
@@ -72,14 +72,14 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --experiment-id "$EXPERIMENT_ID" \
     --env-file "$ENV_FILE"
 
-# Override EDEN_PLAN_TASKS to 4 (default is 3). The four deterministic
-# IDs plan-0001..plan-0004 are seeded; the drill claims plan-0001 and
-# plan-0002, leaving plan-0003 and plan-0004 (plus reclaimed plan-0002)
-# for the headless planner-host stage 2 picks up.
-sed -i.bak 's/^EDEN_PLAN_TASKS=.*/EDEN_PLAN_TASKS=4/' "$ENV_FILE"
+# Override EDEN_IDEATE_TASKS to 4 (default is 3). The four deterministic
+# IDs ideate-0001..ideate-0004 are seeded; the drill claims ideate-0001 and
+# ideate-0002, leaving ideate-0003 and ideate-0004 (plus reclaimed ideate-0002)
+# for the headless ideator-host stage 2 picks up.
+sed -i.bak 's/^EDEN_IDEATE_TASKS=.*/EDEN_IDEATE_TASKS=4/' "$ENV_FILE"
 rm -f "${ENV_FILE}.bak"
 
-echo "--- stage 1: bring up everything except gitea + planner-host ---"
+echo "--- stage 1: bring up everything except gitea + ideator-host ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \
     --wait-timeout 120 \
     "${STAGE1_SERVICES[@]}"
@@ -95,7 +95,7 @@ test "$status" = "running" || {
     exit 1
 }
 
-# --- Run the python driver (planner walkthrough + admin reclaim) ---
+# --- Run the python driver (ideator walkthrough + admin reclaim) ---
 WEB_UI_HOST_PORT="$(grep -E '^WEB_UI_HOST_PORT=' "$ENV_FILE" | cut -d= -f2-)"
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$WEB_UI_HOST_PORT"
@@ -106,9 +106,9 @@ EDEN_E2E_WEB_UI_URL="http://localhost:${WEB_UI_HOST_PORT}" \
     EDEN_BASE_COMMIT_SHA="$EDEN_BASE_COMMIT_SHA" \
     python3 "${SCRIPT_DIR}/e2e_drive.py"
 
-echo "--- stage 2: bring up planner-host ---"
+echo "--- stage 2: bring up ideator-host ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" up -d \
-    --wait --wait-timeout 60 planner-host
+    --wait --wait-timeout 60 ideator-host
 
 echo "--- waiting for orchestrator to exit on quiescence ---"
 deadline=$((SECONDS + 240))
@@ -122,8 +122,8 @@ done
 test "$(docker inspect --format '{{.State.Status}}' eden-orchestrator)" = "exited" || {
     echo "orchestrator did not exit within 240s; current status: $status" >&2
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
-        logs --tail 60 orchestrator planner-host \
-        implementer-host evaluator-host >&2
+        logs --tail 60 orchestrator ideator-host \
+        executor-host evaluator-host >&2
     exit 1
 }
 test "$(docker inspect --format '{{.State.ExitCode}}' eden-orchestrator)" = "0" || {
@@ -146,10 +146,10 @@ EVENTS_JSON="$(
 
 TRIAL_INTEGRATED="$(
     echo "$EVENTS_JSON" \
-        | jq '(.events // .) | [.[] | select(.type == "trial.integrated")] | length'
+        | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
 test "$TRIAL_INTEGRATED" -ge 4 || {
-    echo "expected >= 4 trial.integrated events; got $TRIAL_INTEGRATED" >&2
+    echo "expected >= 4 variant.integrated events; got $TRIAL_INTEGRATED" >&2
     exit 1
 }
 TASK_COMPLETED="$(
@@ -164,11 +164,11 @@ PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("plan-"))
+              and (.data.task_id | startswith("ideate-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 4 || {
-    echo "expected >= 4 plan-task.completed events; got $PLAN_COMPLETED" >&2
+    echo "expected >= 4 ideate-task.completed events; got $PLAN_COMPLETED" >&2
     exit 1
 }
 RECLAIMED_OPERATOR="$(
@@ -188,8 +188,8 @@ docker compose -f compose.yaml --env-file "$ENV_FILE" stop --timeout 10
 
 # Iterate every container compose still knows about. With
 # eden-repo-init removed by `compose run --rm`, this naturally covers
-# postgres, blob-init, task-store-server, orchestrator, planner-host,
-# implementer-host, evaluator-host, and web-ui. (Gitea was never
+# postgres, blob-init, task-store-server, orchestrator, ideator-host,
+# executor-host, evaluator-host, and web-ui. (Gitea was never
 # brought up so it does not appear here — codex round-1 fix.)
 #
 # Use process substitution + while-read instead of `mapfile` so this

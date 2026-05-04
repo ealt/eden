@@ -2,7 +2,7 @@
 
 Reference storage backends for the EDEN protocol ([`spec/v0/08-storage.md`](../../../spec/v0/08-storage.md)).
 
-This package defines the [`Store`][store-protocol] structural interface — the union of the task store, event log, and proposal/trial persistence that chapter 8 §1, §1.7, and §2 specify — and ships two backends that satisfy it:
+This package defines the [`Store`][store-protocol] structural interface — the union of the task store, event log, and idea/variant persistence that chapter 8 §1, §1.7, and §2 specify — and ships two backends that satisfy it:
 
 - **`InMemoryStore`** (lives in [`eden-dispatch`](../eden-dispatch/), re-exported from here for convenience) — single-process, non-durable, suitable for tests and the Phase 5 dispatch loop.
 - **`SqliteStore`** — single-process, SQLite-backed, **durable** across process restarts. The smallest backend that satisfies chapter 8 §3 (durability, read-after-write, crash recovery).

@@ -3,7 +3,7 @@
 This module pins the task-side stores named in chapter 8
 ([`spec/v0/08-storage.md`](../../../../spec/v0/08-storage.md)) — task
 store (§1), event log reads (§2.1 ``replay`` + ``read_range``), and
-proposal/trial persistence (§1.7) — as a single Python `Protocol`.
+idea/variant persistence (§1.7) — as a single Python `Protocol`.
 A deployment MAY split the physical layout any way it likes (§7);
 the Protocol constrains the observable contract.
 
@@ -27,8 +27,8 @@ Why a single Protocol and not three:
   complexity with no normative benefit.
 - Every composite commit in
   [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
-  §2.2 spans more than one store (task + proposal, task + trial, task
-  + trial, etc.); a Protocol that straddles those stores is the
+  §2.2 spans more than one store (task + idea, task + variant, task
+  + variant, etc.); a Protocol that straddles those stores is the
   smallest surface that can express "these writes land together."
 
 The Protocol is structural (`runtime_checkable=False`): a conforming
@@ -45,14 +45,14 @@ from typing import Any, Protocol
 from eden_contracts import (
     EvaluateTask,
     Event,
+    ExecuteTask,
     FailReason,
-    ImplementTask,
-    PlanTask,
-    Proposal,
+    Idea,
+    IdeateTask,
     ReclaimCause,
     Task,
     TaskClaim,
-    Trial,
+    Variant,
 )
 
 from .submissions import Submission
@@ -61,7 +61,7 @@ __all__ = ["Store"]
 
 
 class Store(Protocol):
-    """Union of task store, event log, and proposal/trial persistence.
+    """Union of task store, event log, and idea/variant persistence.
 
     Every method is an atomic operation under chapter 8 §6: the
     state change it describes, any composite effects
@@ -98,12 +98,12 @@ class Store(Protocol):
         """Return the current task object, or raise ``NotFound``."""
         ...
 
-    def read_proposal(self, proposal_id: str) -> Proposal:
-        """Return the current proposal, or raise ``NotFound``."""
+    def read_idea(self, idea_id: str) -> Idea:
+        """Return the current idea, or raise ``NotFound``."""
         ...
 
-    def read_trial(self, trial_id: str) -> Trial:
-        """Return the current trial, or raise ``NotFound``."""
+    def read_variant(self, variant_id: str) -> Variant:
+        """Return the current variant, or raise ``NotFound``."""
         ...
 
     def read_submission(self, task_id: str) -> Submission | None:
@@ -122,12 +122,12 @@ class Store(Protocol):
         """
         ...
 
-    def list_proposals(self, *, state: str | None = None) -> list[Proposal]:
-        """Return proposals matching the optional ``state`` filter."""
+    def list_ideas(self, *, state: str | None = None) -> list[Idea]:
+        """Return ideas matching the optional ``state`` filter."""
         ...
 
-    def list_trials(self, *, status: str | None = None) -> list[Trial]:
-        """Return trials matching the optional ``status`` filter."""
+    def list_variants(self, *, status: str | None = None) -> list[Variant]:
+        """Return variants matching the optional ``status`` filter."""
         ...
 
     def events(self) -> list[Event]:
@@ -168,28 +168,28 @@ class Store(Protocol):
         """Atomically insert a fully-formed task + ``task.created`` event.
 
         Chapter 8 §1.1: accepts a task object with ``state == "pending"``
-        and an empty ``claim``. For ``implement`` tasks this is a
-        composite commit that also transitions the referenced proposal
+        and an empty ``claim``. For ``execute`` tasks this is a
+        composite commit that also transitions the referenced idea
         ``ready → dispatched`` (``05-event-protocol.md`` §2.2).
 
-        The typed helpers below (``create_plan_task``,
-        ``create_implement_task``, ``create_evaluate_task``) are
+        The typed helpers below (``create_ideate_task``,
+        ``create_execute_task``, ``create_evaluate_task``) are
         convenience constructors that build the task payload for the
         caller; they both route through the same commit path as
         ``create_task``.
         """
         ...
 
-    def create_plan_task(self, task_id: str) -> PlanTask:
-        """Atomically insert a ``plan`` task + ``task.created`` event."""
+    def create_ideate_task(self, task_id: str) -> IdeateTask:
+        """Atomically insert a ``ideate`` task + ``task.created`` event."""
         ...
 
-    def create_implement_task(self, task_id: str, proposal_id: str) -> ImplementTask:
-        """Create an ``implement`` task; composite-commits ``proposal.dispatched``."""
+    def create_execute_task(self, task_id: str, idea_id: str) -> ExecuteTask:
+        """Create an ``execute`` task; composite-commits ``idea.dispatched``."""
         ...
 
-    def create_evaluate_task(self, task_id: str, trial_id: str) -> EvaluateTask:
-        """Create an ``evaluate`` task against a starting trial with commit_sha."""
+    def create_evaluate_task(self, task_id: str, variant_id: str) -> EvaluateTask:
+        """Create an ``evaluate`` task against a starting variant with commit_sha."""
         ...
 
     # ------------------------------------------------------------------
@@ -234,39 +234,39 @@ class Store(Protocol):
         ...
 
     # ------------------------------------------------------------------
-    # Proposal store
+    # Idea store
     # ------------------------------------------------------------------
 
-    def create_proposal(self, proposal: Proposal) -> None:
-        """Persist a new ``drafting`` proposal; emits ``proposal.drafted``."""
+    def create_idea(self, idea: Idea) -> None:
+        """Persist a new ``drafting`` idea; emits ``idea.drafted``."""
         ...
 
-    def mark_proposal_ready(self, proposal_id: str) -> None:
-        """Atomically transition ``drafting → ready``; emits ``proposal.ready``."""
+    def mark_idea_ready(self, idea_id: str) -> None:
+        """Atomically transition ``drafting → ready``; emits ``idea.ready``."""
         ...
 
     # ------------------------------------------------------------------
-    # Trial store
+    # Variant store
     # ------------------------------------------------------------------
 
-    def create_trial(self, trial: Trial) -> None:
-        """Persist a new ``starting`` trial; emits ``trial.started``."""
+    def create_variant(self, variant: Variant) -> None:
+        """Persist a new ``starting`` variant; emits ``variant.started``."""
         ...
 
-    def declare_trial_eval_error(self, trial_id: str) -> None:
+    def declare_variant_eval_error(self, variant_id: str) -> None:
         """Retry-exhausted terminal ``starting → eval_error`` (``05-event-protocol.md`` §2.2)."""
         ...
 
-    def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
-        """Integrator promotion: write ``trial_commit_sha``; emits ``trial.integrated``."""
+    def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
+        """Integrator promotion: write ``variant_commit_sha``; emits ``variant.integrated``."""
         ...
 
     # ------------------------------------------------------------------
     # Shared validators
     # ------------------------------------------------------------------
 
-    def validate_metrics(self, metrics: dict[str, Any]) -> None:
-        """Validate metrics against the experiment's ``metrics_schema``.
+    def validate_evaluation(self, evaluation: dict[str, Any]) -> None:
+        """Validate metrics against the experiment's ``evaluation_schema``.
 
         Chapter 8 §4 (submit-time) and chapter 6 §2 (integration-time)
         both depend on this guard. Raises ``InvalidPrecondition`` on

@@ -78,21 +78,21 @@ button.danger { background: var(--error); }
     color: var(--error);
 }
 
-.proposal-form fieldset {
+.idea-form fieldset {
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 1rem;
     margin-bottom: 1rem;
 }
-.proposal-row { padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
-.proposal-row:last-child { border-bottom: none; }
-.proposal-row label {
+.idea-row { padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
+.idea-row:last-child { border-bottom: none; }
+.idea-row label {
     display: block;
     margin: 0.5rem 0;
     font-size: 0.95em;
 }
-.proposal-row input[type=text],
-.proposal-row textarea {
+.idea-row input[type=text],
+.idea-row textarea {
     width: 100%;
     border: 1px solid var(--border);
     border-radius: 4px;

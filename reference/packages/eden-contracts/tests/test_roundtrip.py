@@ -13,13 +13,13 @@ from typing import Any
 
 from eden_contracts import (
     REGISTERED_EVENT_TYPES,
+    EvaluationSchema,
     Event,
     ExperimentConfig,
-    MetricsSchema,
-    Proposal,
+    Idea,
     RegisteredEventAdapter,
     TaskAdapter,
-    Trial,
+    Variant,
 )
 
 from .cases import ALL_CASES
@@ -47,9 +47,9 @@ _MODEL_DUMPERS = {
         TaskAdapter.validate_python(d), mode="json", exclude_none=True
     ),
     "event": _dump_event,
-    "proposal": lambda d: Proposal.model_validate(d).model_dump(mode="json", exclude_none=True),
-    "trial": lambda d: Trial.model_validate(d).model_dump(mode="json", exclude_none=True),
-    "metrics-schema": lambda d: MetricsSchema.model_validate(d).model_dump(
+    "idea": lambda d: Idea.model_validate(d).model_dump(mode="json", exclude_none=True),
+    "variant": lambda d: Variant.model_validate(d).model_dump(mode="json", exclude_none=True),
+    "evaluation-schema": lambda d: EvaluationSchema.model_validate(d).model_dump(
         mode="json", exclude_none=True
     ),
 }

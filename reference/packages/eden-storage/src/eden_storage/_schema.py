@@ -27,7 +27,7 @@ _V1_STATEMENTS: list[str] = [
     """
     CREATE TABLE experiment (
         experiment_id TEXT NOT NULL PRIMARY KEY,
-        metrics_schema TEXT
+        evaluation_schema TEXT
     )
     """,
     """
@@ -48,21 +48,21 @@ _V1_STATEMENTS: list[str] = [
     )
     """,
     """
-    CREATE TABLE proposal (
-        proposal_id TEXT NOT NULL PRIMARY KEY,
+    CREATE TABLE idea (
+        idea_id TEXT NOT NULL PRIMARY KEY,
         state TEXT NOT NULL,
         data TEXT NOT NULL
     )
     """,
-    "CREATE INDEX proposal_by_state ON proposal(state)",
+    "CREATE INDEX idea_by_state ON idea(state)",
     """
-    CREATE TABLE trial (
-        trial_id TEXT NOT NULL PRIMARY KEY,
+    CREATE TABLE variant (
+        variant_id TEXT NOT NULL PRIMARY KEY,
         status TEXT NOT NULL,
         data TEXT NOT NULL
     )
     """,
-    "CREATE INDEX trial_by_status ON trial(status)",
+    "CREATE INDEX trial_by_status ON variant(status)",
     """
     CREATE TABLE event (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,

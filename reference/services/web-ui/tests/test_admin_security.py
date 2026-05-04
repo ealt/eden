@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 
 def _seed_plan_task(store: InMemoryStore, task_id: str = "plan-A") -> str:
-    store.create_plan_task(task_id)
+    store.create_ideate_task(task_id)
     return task_id
 
 
@@ -60,8 +60,8 @@ class TestUnauthenticatedAccess:
             "/admin/",
             "/admin/tasks/",
             "/admin/tasks/anything/",
-            "/admin/trials/",
-            "/admin/trials/anything/",
+            "/admin/variants/",
+            "/admin/variants/anything/",
             "/admin/events/",
             "/admin/work-refs/",
         ],
@@ -84,7 +84,7 @@ class TestUnauthenticatedAccess:
     def test_post_redirects_to_signin_before_csrf(
         self, client: TestClient, path: str, data: dict[str, str]
     ) -> None:
-        """Auth check fires *before* CSRF, matching planner / impl / evaluator."""
+        """Auth check fires *before* CSRF, matching ideator / impl / evaluator."""
         resp = client.post(path, data=data, follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/signin"
@@ -116,11 +116,11 @@ class TestRefNameRegex:
     @pytest.mark.parametrize(
         "ref_name",
         [
-            "refs/heads/trial/x",
+            "refs/heads/variant/x",
             "refs/tags/x",
             "HEAD",
             "../etc/passwd",
-            "refs/heads/work/../trial/x",
+            "refs/heads/work/../variant/x",
             "refs/heads/work/$(rm -rf /)",
             "",
             "refs/heads/work/",
@@ -165,15 +165,15 @@ class TestExpectedShaSourceServerSide:
         seed_evaluate_task(
             store,
             slug="t1",
-            trial_id="trial-S",
+            variant_id="variant-S",
             artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "s"),
         )
-        trial = store.read_trial("trial-S")
-        assert trial.branch is not None
-        assert trial.commit_sha is not None
-        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
-        store.declare_trial_eval_error("trial-S")
+        variant = store.read_variant("variant-S")
+        assert variant.branch is not None
+        assert variant.commit_sha is not None
+        bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
+        store.declare_variant_eval_error("variant-S")
 
         captured: dict[str, str | None] = {}
 
@@ -191,14 +191,14 @@ class TestExpectedShaSourceServerSide:
             "/admin/work-refs/delete",
             data={
                 "csrf_token": csrf,
-                "ref_name": f"refs/heads/{trial.branch}",
+                "ref_name": f"refs/heads/{variant.branch}",
                 "expected_old_sha": "0" * 40,  # wrong on purpose
             },
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "?deleted=ok" in resp.headers["location"]
-        assert captured["expected_old_sha"] == trial.commit_sha
+        assert captured["expected_old_sha"] == variant.commit_sha
 
 
 class TestArtifactRendering:
@@ -210,18 +210,18 @@ class TestArtifactRendering:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         seed_evaluate_task(
-            store, slug="t1", trial_id="trial-J", artifacts_dir=artifacts_dir
+            store, slug="t1", variant_id="variant-J", artifacts_dir=artifacts_dir
         )
-        # Forcibly install a malicious artifacts_uri on the trial. The
-        # admin trial detail page must not echo it as <a href=...>.
+        # Forcibly install a malicious artifacts_uri on the variant. The
+        # admin variant detail page must not echo it as <a href=...>.
 
         # Reach into in-memory store internals; this mirrors the
         # security-test pattern in chunks 9c/9d.
-        trial = store.read_trial("trial-J")
-        evil = trial.model_copy(update={"artifacts_uri": "javascript:alert(1)"})
-        store._trials[trial.trial_id] = evil
+        variant = store.read_variant("variant-J")
+        evil = variant.model_copy(update={"artifacts_uri": "javascript:alert(1)"})
+        store._variants[variant.variant_id] = evil
 
-        resp = signed_in_client.get("/admin/trials/trial-J/")
+        resp = signed_in_client.get("/admin/variants/variant-J/")
         assert resp.status_code == 200
         # The URI may render in <code>, but never as href="javascript:..."
         assert 'href="javascript:' not in resp.text

@@ -28,7 +28,7 @@ docker compose --env-file .env up -d --wait
 
 1. Generates or preserves: `POSTGRES_PASSWORD`, `EDEN_SHARED_TOKEN`,
    `EDEN_SESSION_SECRET`, `GITEA_SECRET_KEY`, `GITEA_INTERNAL_TOKEN`,
-   default ports, and `EDEN_PLAN_TASKS`. Re-runs preserve any
+   default ports, and `EDEN_IDEATE_TASKS`. Re-runs preserve any
    existing values from `.env`.
 2. Copies `<config.yaml>` to `reference/compose/experiment-config.yaml`
    so Compose mounts it into the task-store-server, evaluator-host,
@@ -38,7 +38,7 @@ docker compose --env-file .env up -d --wait
    one-shot service that initializes (or re-uses) the bare repo on
    the `eden-bare-repo` volume and prints the seed commit SHA.
 5. Writes the seed SHA into `.env` as `EDEN_BASE_COMMIT_SHA` so the
-   planner-host can thread it into `--base-commit-sha`.
+   ideator-host can thread it into `--base-commit-sha`.
 6. Prints a "next steps" message.
 
 ## Idempotency
@@ -70,4 +70,4 @@ Documented limits inherited from the chunk-10b/c roadmap-delta:
 - Workers do not push/pull from Gitea; they share a Compose volume
   for the bare repo. Gitea is idle.
 - No control-plane registration (Phase 12).
-- No experiment-specific implementer image (10d).
+- No experiment-specific executor image (10d).

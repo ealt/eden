@@ -24,8 +24,8 @@ from .protocol import Store
 from .sqlite import SqliteStore
 from .submissions import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
     Submission,
     submissions_equivalent,
 )
@@ -36,11 +36,11 @@ __all__ = [
     "DispatchError",
     "EvaluateSubmission",
     "IllegalTransition",
-    "ImplementSubmission",
+    "ExecuteSubmission",
     "InMemoryStore",
     "InvalidPrecondition",
     "NotFound",
-    "PlanSubmission",
+    "IdeateSubmission",
     "PostgresStore",
     "SqliteStore",
     "StorageError",

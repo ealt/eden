@@ -6,10 +6,10 @@ The normative clause in §3.4 stands on its own. This note explains why it reads
 
 ## Context
 
-§3.4 requires that the three artifacts produced by a successful promotion — the `trial/*` git ref, the `trial_commit_sha` field on the trial, and the `trial.integrated` event in the log — remain consistent with one another. The original text of the paragraph named four rules:
+§3.4 requires that the three artifacts produced by a successful promotion — the `variant/*` git ref, the `variant_commit_sha` field on the variant, and the `variant.integrated` event in the log — remain consistent with one another. The original text of the paragraph named four rules:
 
 1. On failure of any step, the integrator MUST roll back any already-performed step.
-2. A dangling `trial/*` ref with no field and no event is a protocol violation.
+2. A dangling `variant/*` ref with no field and no event is a protocol violation.
 3. Implementations MAY use store-level transactions, outbox patterns, compensating deletes, or any other mechanism.
 4. The observable invariant is that a reader of any one of the three artifacts MUST observe the other two.
 
@@ -28,7 +28,7 @@ This note explains why the drafters chose the post-promotion reading and tighten
 
 ### Option 1 — Post-promotion reading with compensating deletes *(chosen)*
 
-The integrator performs, in order: write the commit object (an orphan, content-addressed write visible only via the ref), create the `trial/*` ref via a compare-and-swap against the zero-oid, then call the store's atomic operation that writes `trial_commit_sha` and appends `trial.integrated` together. If the store operation raises, the integrator compensates by deleting the ref with an expected-old-sha precondition.
+The integrator performs, in order: write the commit object (an orphan, content-addressed write visible only via the ref), create the `variant/*` ref via a compare-and-swap against the zero-oid, then call the store's atomic operation that writes `variant_commit_sha` and appends `variant.integrated` together. If the store operation raises, the integrator compensates by deleting the ref with an expected-old-sha precondition.
 
 On success, all three artifacts exist when the promotion returns. On failure, the ref exists briefly and is then deleted; by the time the promotion returns, none of the three exist. A reader observing the repository after the promotion returns sees a consistent state. A reader that happens to walk refs during the ~microseconds or milliseconds the promotion is running MAY observe a ref that is about to be compensated away.
 
@@ -37,16 +37,16 @@ On success, all three artifacts exist when the promotion returns. On failure, th
 - Satisfies rule 3 literally by using a mechanism rule 3 explicitly names as permitted.
 - Implementable against the Phase 6 reference backends (in-memory and SQLite) without extending the `Store` protocol.
 - The chosen order matches what §3.4's rollback rule requires: the failure mode ("ref exists, field and event do not") is the single-artifact case that a compensating delete can trivially reverse. The alternate order (field and event written, ref missing) has no corresponding reversal, because the event log is append-only per chapter 5.
-- Compatible with the in-process reference impl's reader convention. Every in-repo consumer already treats `trial.trial_commit_sha is not None` as the integration marker — see `_promote_successful_trials` in the dispatch driver. Because the field is written last, an in-process reader never observes a field-set state where the ref or event is missing.
+- Compatible with the in-process reference impl's reader convention. Every in-repo consumer already treats `variant.variant_commit_sha is not None` as the integration marker — see `_promote_successful_variants` in the dispatch driver. Because the field is written last, an in-process reader never observes a field-set state where the ref or event is missing.
 
 **Cons:**
 
-- An external filesystem reader (for example, a human running `git log trial/*` in a terminal during an integrator call) MAY observe a `trial/*` ref that is about to be compensated away. After the promotion returns, a fresh read reflects the final state.
+- An external filesystem reader (for example, a human running `git log variant/*` in a terminal during an integrator call) MAY observe a `variant/*` ref that is about to be compensated away. After the promotion returns, a fresh read reflects the final state.
 - Requires the drafters to pick one reading of the normative text and codify it. §3.4 as originally written was ambiguous; this option requires tightening the prose.
 
 ### Option 2 — Outbox pattern in the store
 
-Extend the `Store` Protocol with three new operations: `begin_integration(trial_id, commit_sha)` records the intent in an outbox table; the integrator writes the git ref; then `commit_integration(trial_id)` atomically promotes the outbox row into the trial's `trial_commit_sha` field and the `trial.integrated` event, deleting the outbox row in the same transaction. If any step fails, `abandon_integration(trial_id)` clears the outbox row and the compensating ref-delete runs as in Option 1.
+Extend the `Store` Protocol with three new operations: `begin_integration(variant_id, commit_sha)` records the intent in an outbox table; the integrator writes the git ref; then `commit_integration(variant_id)` atomically promotes the outbox row into the variant's `variant_commit_sha` field and the `variant.integrated` event, deleting the outbox row in the same transaction. If any step fails, `abandon_integration(variant_id)` clears the outbox row and the compensating ref-delete runs as in Option 1.
 
 **Pros:**
 
@@ -93,23 +93,23 @@ The deciding factors:
 
 A conforming integrator MAY use compensating deletes against an external reader. The observable invariant applies to completed promotions. An implementor MAY choose an outbox or XA scheme instead if their target backend makes it cheap, but the protocol does not require one.
 
-Every in-repo consumer of the store (for example, a dispatch driver deciding which trials still need promotion) SHOULD consult `trial.trial_commit_sha` as the canonical integration marker rather than walking `trial/*` refs. This is not normative, but it is the convention the reference impl uses, and it gives in-process readers consistent observations even during a running promotion.
+Every in-repo consumer of the store (for example, a dispatch driver deciding which variants still need promotion) SHOULD consult `variant.variant_commit_sha` as the canonical integration marker rather than walking `variant/*` refs. This is not normative, but it is the convention the reference impl uses, and it gives in-process readers consistent observations even during a running promotion.
 
 ### For operators and external readers
 
-An operator running ad-hoc git commands against the repository during active experiments MAY transiently observe a `trial/*` ref that disappears a moment later. This can only happen on rollback and is rare in practice — rollbacks mean a store-side failure (typically a disk-full or IO-error condition). The final state is always consistent with the three-artifact invariant.
+An operator running ad-hoc git commands against the repository during active experiments MAY transiently observe a `variant/*` ref that disappears a moment later. This can only happen on rollback and is rare in practice — rollbacks mean a store-side failure (typically a disk-full or IO-error condition). The final state is always consistent with the three-artifact invariant.
 
 ### For future chapters
 
-Other chapters that cross-reference §3.4's atomicity contract inherit the post-promotion reading. If a future chapter needs stronger guarantees — for example, a cross-experiment index that walks `trial/*` refs across multiple repositories and cannot tolerate transient states — that chapter must specify the stronger requirement explicitly and §3.4 must be tightened in lockstep.
+Other chapters that cross-reference §3.4's atomicity contract inherit the post-promotion reading. If a future chapter needs stronger guarantees — for example, a cross-experiment index that walks `variant/*` refs across multiple repositories and cannot tolerate transient states — that chapter must specify the stronger requirement explicitly and §3.4 must be tightened in lockstep.
 
 ## Revisit triggers
 
 Reconsider this decision if any of the following become true:
 
-- **A protocol-owned reader is specified that walks `trial/*` refs directly** rather than consulting `trial_commit_sha`. Today no such reader exists; a future chapter that introduces one forces the stricter reading.
+- **A protocol-owned reader is specified that walks `variant/*` refs directly** rather than consulting `variant_commit_sha`. Today no such reader exists; a future chapter that introduces one forces the stricter reading.
 
-- **Cross-process readers with a conforming claim** start consuming the protocol. Phase 8's wire-protocol is the first point at which this becomes concrete. If the wire-protocol surface includes a direct `trial/*` ref enumeration, §3.4 may need tightening.
+- **Cross-process readers with a conforming claim** start consuming the protocol. Phase 8's wire-protocol is the first point at which this becomes concrete. If the wire-protocol surface includes a direct `variant/*` ref enumeration, §3.4 may need tightening.
 
 - **An XA-capable backend becomes the reference default.** If the reference impl migrates from SQLite to a backend that supports prepared transactions, Option 3 becomes feasible, and the cost argument against it no longer applies.
 

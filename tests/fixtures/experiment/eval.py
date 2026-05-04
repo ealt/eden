@@ -1,7 +1,7 @@
 """Deterministic evaluate_command for the fixture experiment.
 
 Short-lived per-task subprocess. Reads ``EDEN_TASK_JSON`` for the
-trial context (commit_sha + metrics_schema), emits a deterministic
+variant context (commit_sha + evaluation_schema), emits a deterministic
 metric value matching the ``ScriptedEvaluator`` shape, and writes
 the result to ``EDEN_OUTPUT``.
 """
@@ -34,15 +34,15 @@ def main() -> int:
     output_rel = os.environ.get("EDEN_OUTPUT", ".eden/eval-outcome.json")
     cwd = Path.cwd()
     task = json.loads((cwd / task_json_rel).read_text(encoding="utf-8"))
-    metrics_schema: dict[str, str] = task.get("metrics_schema") or {}
-    commit_sha = task.get("trial_commit_sha") or ""
-    metrics: dict[str, Any] = {
+    evaluation_schema: dict[str, str] = task.get("evaluation_schema") or {}
+    commit_sha = task.get("variant_commit_sha") or ""
+    evaluation: dict[str, Any] = {
         name: _value_for_kind(kind, commit_sha)
-        for name, kind in metrics_schema.items()
+        for name, kind in evaluation_schema.items()
     }
     outcome = {
         "status": "success",
-        "metrics": metrics,
+        "evaluation": evaluation,
     }
     (cwd / output_rel).write_text(json.dumps(outcome, sort_keys=True), encoding="utf-8")
     return 0

@@ -4,7 +4,7 @@
 
 `/Users/ericalt/Documents/eden` is the successor to `/Users/ericalt/Documents/direvo`. The predecessor has a working monolith at `direvo/src/eden/` and a design doc at `eden/docs/plans/eden-microservices-refactor.md`.
 
-**The reframe (critical):** EDEN is not a product-with-microservices. EDEN is a **protocol** for orchestrating directed code evolution — a specification that defines components, their responsibilities, the messages between them, and the invariants they must honor. This repo provides:
+**The reframe (critical):** EDEN is not a product-with-microservices. EDEN is a **protocol** for orchestrating directed evolution — a specification that defines components, their responsibilities, the messages between them, and the invariants they must honor. This repo provides:
 
 1. **The normative protocol specification** — versioned, formal, with machine-readable schemas for every wire format and state machine. This is the authoritative artifact; semantics live here, not in code.
 2. **A reference implementation** — one complete, working stack that conforms to the spec. Explicitly labeled as *one* valid implementation, not *the* implementation.
@@ -12,7 +12,7 @@
 
 Analogues: Language Server Protocol (spec + reference servers + clients), Model Context Protocol (spec repo + reference SDKs), OpenTelemetry (spec - reference SDKs per language), Kubernetes CRI/CNI/CSI (wire APIs + many interoperable implementations).
 
-Anyone should be able to implement their own orchestrator, planner host, evaluator, storage backend, git host, or UI in any language, and have it interoperate with other conforming components.
+Anyone should be able to implement their own orchestrator, ideator host, evaluator, storage backend, git host, or UI in any language, and have it interoperate with other conforming components.
 
 User decisions already captured:
 
@@ -51,8 +51,8 @@ eden/
 │   ├── services/
 │   │   ├── control-plane/.gitkeep
 │   │   ├── orchestrator/.gitkeep
-│   │   ├── planner/.gitkeep
-│   │   ├── implementer/.gitkeep
+│   │   ├── ideator/.gitkeep
+│   │   ├── executor/.gitkeep
 │   │   ├── evaluator/.gitkeep
 │   │   └── web-ui/.gitkeep
 │   ├── packages/
@@ -111,9 +111,9 @@ spec/v0/
     experiment-config.schema.json   # Phase 1
     task.schema.json                # Phase 1
     event.schema.json               # Phase 1
-    proposal.schema.json            # Phase 1
-    trial.schema.json               # Phase 1
-    metrics-schema.schema.json      # Phase 1 (meta-schema for per-experiment metrics)
+    idea.schema.json            # Phase 1
+    variant.schema.json               # Phase 1
+    evaluation-schema.schema.json      # Phase 1 (meta-schema for per-experiment metrics)
 
 reference/packages/eden-contracts/pyproject.toml   # Phase 3
 reference/packages/eden-contracts/...              # Phase 3
@@ -134,7 +134,7 @@ When chapters are eventually written (Phases 1, 2, 4, 11, 12): **normative langu
 
 - `04-task-protocol.md` (Phase 2) will define the task state machine, the claim-token rule, the submit-idempotency rule, and the wire format for task objects. It will **not** say "Postgres `tasks` table" — that's a reference-impl detail. It may say "a conforming task store MUST provide atomic claim with linearizable semantics" and leave the mechanism to the implementor.
 - `05-event-protocol.md` (Phase 4) will define the event object shape, the transactional invariant (event insert MUST be atomic with the state change it describes), and the delivery guarantees subscribers can rely on. Whether that's LISTEN/NOTIFY, Kafka, or a WebSocket is out of scope.
-- `06-integrator.md` (Phase 4) will pin git topology invariants: namespaces (`work/*`, `trial/*`, `main`), sole-integrator rule, squash rule, eval-manifest shape. Applies regardless of git host.
+- `06-integrator.md` (Phase 4) will pin git topology invariants: namespaces (`work/*`, `variant/*`, `main`), sole-integrator rule, squash rule, eval-manifest shape. Applies regardless of git host.
 
 Every wire-format object will eventually have a JSON Schema under `spec/v0/schemas/` (first ones land in Phase 1). The Markdown docs link to them. CI validates schemas from Phase 1 onward and enforces reference-impl Pydantic-model parity from Phase 3 onward.
 
@@ -162,11 +162,11 @@ Roadmap uses phases (the high-level arc, 0–13) containing numbered units (1a, 
 - **Phase 0 — Bootstrap.** *(This task.)* Single unit: 0a repo + scaffold + docs shell + GitHub.
 - **Phase 1 — Spec v0 core concepts + schemas + fixture migration.**
   - 1a `00-overview.md` + `01-concepts.md` + `02-data-model.md` prose.
-  - 1b JSON Schemas for config, task, event, proposal, trial, metrics-meta.
+  - 1b JSON Schemas for config, task, event, idea, variant, metrics-meta.
   - 1c Migrate `tests/fixtures/experiment/.eden/config.yaml` from direvo; assert schemas validate it.
   - *Chunk:* 1a+1b+1c one chunk — the prose, schemas, and fixture cross-constrain each other; splitting would produce inconsistency.
 - **Phase 2 — Spec v0: role contracts + task protocol.**
-  - 2a `03-roles.md` (planner / implementer / evaluator contracts).
+  - 2a `03-roles.md` (ideator / executor / evaluator contracts).
   - 2b `04-task-protocol.md` (state machine, claim token, idempotency, wire format).
   - *Chunk:* 2a+2b one chunk — roles reference task lifecycle and vice versa.
 - **Phase 3 — Reference contracts package (`eden-contracts`).**
@@ -189,17 +189,17 @@ Roadmap uses phases (the high-level arc, 0–13) containing numbered units (1a, 
   - *Chunk:* 6a+6b one chunk.
 - **Phase 7 — Reference git integrator (`eden-git`).**
   - 7a Port `git_manager.py` from direvo (worktree + branch ops).
-  - 7b Integrator flow: `work/*` → squash → `trial/*` + eval manifest.
+  - 7b Integrator flow: `work/*` → squash → `variant/*` + eval manifest.
   - *Chunks:* 7a one chunk (port is self-contained); 7b one chunk.
 - **Phase 8 — Cross-process reference.**
   - 8a Wire-protocol definition (HTTP + schemas) + orchestrator standalone consuming it.
-  - 8b Worker hosts (planner, implementer, evaluator) as standalone processes.
+  - 8b Worker hosts (ideator, executor, evaluator) as standalone processes.
   - 8c Cut-over: remove in-proc paths; only wire-protocol remains.
   - *Chunks:* 8a one chunk (protocol+first consumer coupled); 8b one chunk; 8c one chunk.
 - **Phase 9 — Reference Web UI.**
   - 9a Shell + auth stub + navigation + experiment list.
-  - 9b Planner module (claim / markdown form / submit).
-  - 9c Implementer module (claim / manifest / submit SHA).
+  - 9b Ideator module (claim / markdown form / submit).
+  - 9c Executor module (claim / manifest / submit SHA).
   - 9d Evaluator module (claim / metrics form / artifact upload).
   - 9e Observability views + admin-reclaim action.
   - *Chunks:* 9a+9b one chunk (first role establishes the pattern); 9c one; 9d one; 9e one.
@@ -207,7 +207,7 @@ Roadmap uses phases (the high-level arc, 0–13) containing numbered units (1a, 
   - 10a Infrastructure containers (Postgres, Gitea, blob volume) + Compose skeleton.
   - 10b Each reference service dockerized.
   - 10c Setup script (registers experiment end-to-end).
-  - 10d LLM worker hosts (planner context-accumulating, implementer sandbox-spawning).
+  - 10d LLM worker hosts (ideator context-accumulating, executor sandbox-spawning).
   - 10e End-to-end integration test in Compose.
   - *Chunks:* 10a one; 10b+10c one chunk; 10d one; 10e one.
 - **Phase 11 — Conformance suite v1.**
@@ -223,9 +223,9 @@ Each phase and unit lists its exit criterion and what it explicitly does *not* d
 
 ### F. Root docs
 
-- **`README.md`** — three-sentence elevator pitch + "EDEN is a protocol for directed-code-evolution orchestration; this repo ships the spec, a reference implementation, and a conformance suite. Anyone can build a conforming component in any language." Links to `spec/`, `reference/`, `conformance/`, `docs/roadmap.md`. Current status: "Phase 0 (bootstrap); nothing runnable yet."
+- **`README.md`** — three-sentence elevator pitch + "EDEN is a protocol for directed evolution orchestration; this repo ships the spec, a reference implementation, and a conformance suite. Anyone can build a conforming component in any language." Links to `spec/`, `reference/`, `conformance/`, `docs/roadmap.md`. Current status: "Phase 0 (bootstrap); nothing runnable yet."
 - **`AGENTS.md`** — agent-facing. Layout tour with the spec/reference/ conformance split made loud. Commands section lists only what currently works (markdownlint) and calls out what's planned (`uv sync`, `ruff`, `pyright`, `pytest`, schema validation — to be added in Phase 3+). Contribution conventions: **spec edits require extra care** (versioned, normative, reviewed); **reference edits are normal code changes**; **schema changes must update the spec and the Pydantic bindings in lockstep** (CI enforces this starting in Phase 3).
-- **`CONTRIBUTING.md`** — two-path structure mirroring the repo structure: "Contributing to the spec" (RFC discipline, change proposals, versioning) and "Contributing to the reference implementation" (standard code-review workflow).
+- **`CONTRIBUTING.md`** — two-path structure mirroring the repo structure: "Contributing to the spec" (RFC discipline, change ideas, versioning) and "Contributing to the reference implementation" (standard code-review workflow).
 - **`STYLE_GUIDE.md`** — ported from direvo.
 - **`CLAUDE.md`** — symlink to `AGENTS.md`.
 
@@ -268,7 +268,7 @@ Same as before:
 1. `git init -b main`
 2. Initial commit containing all of the above.
 3. `gh auth status`.
-4. `gh repo create eden --private --source . --remote origin --push \ --description "A protocol for directed code evolution orchestration"`.
+4. `gh repo create eden --private --source . --remote origin --push \ --description "A protocol for directed evolution orchestration"`.
 5. `gh repo edit --add-topic protocol --add-topic specification \ --add-topic directed-evolution --add-topic orchestration \ --add-topic ai --add-topic research-automation`.
 6. Wait for the first `docs-lint` run on `main` to complete (so the check name is registered in GitHub's status-check cache), **then** enable branch protection.
 7. Branch protection uses **classic branch protection** (not the newer repository rulesets — classic is better-documented for scripted setup and the two tools can coexist). Call:

@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from eden_contracts import MetricsSchema, ReclaimCause
+from eden_contracts import EvaluationSchema, ReclaimCause
 from eden_dispatch import (
     InMemoryStore,
     sweep_expired_claims,
@@ -22,7 +22,7 @@ from eden_dispatch import (
 def _make_store() -> InMemoryStore:
     return InMemoryStore(
         experiment_id="exp-sweep",
-        metrics_schema=MetricsSchema({"loss": "real"}),
+        evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
 
 
@@ -33,7 +33,7 @@ def _claim_with_expiry(
     worker_id: str,
     expires_at: datetime | None,
 ) -> None:
-    store.create_plan_task(task_id)
+    store.create_ideate_task(task_id)
     store.claim(task_id, worker_id=worker_id, expires_at=expires_at)
 
 
@@ -121,7 +121,7 @@ def test_only_claimed_tasks_are_inspected() -> None:
     """A pending task with no claim is not inspected (state filter honored)."""
     store = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
-    store.create_plan_task("t-pending")
+    store.create_ideate_task("t-pending")
     expired = now - timedelta(seconds=1)
     _claim_with_expiry(store, "t-claimed", worker_id="ui-1", expires_at=expired)
 

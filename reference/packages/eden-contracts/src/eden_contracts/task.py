@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from ._common import DateTimeStr, NotNone
 
-TaskKind = Literal["plan", "implement", "evaluate"]
+TaskKind = Literal["ideate", "execute", "evaluate"]
 TaskState = Literal["pending", "claimed", "submitted", "completed", "failed"]
 
 _CLAIM_STATES: frozenset[str] = frozenset({"claimed", "submitted"})
@@ -34,20 +34,20 @@ class TaskClaim(BaseModel):
     expires_at: Annotated[DateTimeStr | None, NotNone] = None
 
 
-class PlanPayload(BaseModel):
-    """Payload for ``kind=plan`` tasks."""
+class IdeatePayload(BaseModel):
+    """Payload for ``kind=ideate`` tasks."""
 
     model_config = ConfigDict(strict=True, extra="allow")
 
     experiment_id: Annotated[str, Field(min_length=1)]
 
 
-class ImplementPayload(BaseModel):
-    """Payload for ``kind=implement`` tasks."""
+class ExecutePayload(BaseModel):
+    """Payload for ``kind=execute`` tasks."""
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    proposal_id: Annotated[str, Field(min_length=1)]
+    idea_id: Annotated[str, Field(min_length=1)]
 
 
 class EvaluatePayload(BaseModel):
@@ -55,7 +55,7 @@ class EvaluatePayload(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    trial_id: Annotated[str, Field(min_length=1)]
+    variant_id: Annotated[str, Field(min_length=1)]
 
 
 class _TaskBase(BaseModel):
@@ -83,18 +83,18 @@ class _TaskBase(BaseModel):
         return self
 
 
-class PlanTask(_TaskBase):
-    """Task of kind ``plan``."""
+class IdeateTask(_TaskBase):
+    """Task of kind ``ideate``."""
 
-    kind: Literal["plan"]
-    payload: PlanPayload
+    kind: Literal["ideate"]
+    payload: IdeatePayload
 
 
-class ImplementTask(_TaskBase):
-    """Task of kind ``implement``."""
+class ExecuteTask(_TaskBase):
+    """Task of kind ``execute``."""
 
-    kind: Literal["implement"]
-    payload: ImplementPayload
+    kind: Literal["execute"]
+    payload: ExecutePayload
 
 
 class EvaluateTask(_TaskBase):
@@ -105,7 +105,7 @@ class EvaluateTask(_TaskBase):
 
 
 Task = Annotated[
-    PlanTask | ImplementTask | EvaluateTask,
+    IdeateTask | ExecuteTask | EvaluateTask,
     Field(discriminator="kind"),
 ]
 """Discriminated union keyed by ``kind`` — use :data:`TaskAdapter` to validate untyped input."""

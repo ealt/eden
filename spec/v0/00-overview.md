@@ -2,7 +2,7 @@
 
 **Version:** v0 (draft)
 
-EDEN is a protocol for orchestrating **directed code evolution**: the iterative, machine-driven generation, implementation, and evaluation of code changes against a declared objective. It specifies the components involved, the messages they exchange, and the invariants they must honor. It does not prescribe a language, transport, or storage technology — those are implementation concerns.
+EDEN is a protocol for orchestrating **directed evolution**: the iterative, machine-driven generation, implementation, and evaluation of code changes against a declared objective. It specifies the components involved, the messages they exchange, and the invariants they must honor. It does not prescribe a language, transport, or storage technology — those are implementation concerns.
 
 This document is the first chapter of the v0 specification. Later chapters refine each of the concepts introduced here; see [`README.md`](README.md) for the full chapter list and the phase in which each lands.
 
@@ -11,10 +11,10 @@ This document is the first chapter of the v0 specification. Later chapters refin
 The EDEN protocol defines:
 
 - The **roles** that participate in an EDEN experiment (Chapter [`03-roles.md`](03-roles.md)).
-- The **shared data model** — experiment configs, tasks, events, proposals, trials, and metrics schemas (Chapter [`02-data-model.md`](02-data-model.md) and the JSON Schemas in [`schemas/`](schemas/)).
+- The **shared data model** — experiment configs, tasks, events, ideas, variants, and metrics schemas (Chapter [`02-data-model.md`](02-data-model.md) and the JSON Schemas in [`schemas/`](schemas/)).
 - The **task protocol** — how work is claimed, executed, and submitted (Chapter [`04-task-protocol.md`](04-task-protocol.md)).
 - The **event protocol** — how state changes are observed by subscribers (Chapter [`05-event-protocol.md`](05-event-protocol.md)).
-- The **integrator contract** — how trial branches are promoted into a canonical lineage (Chapter [`06-integrator.md`](06-integrator.md)).
+- The **integrator contract** — how variant branches are promoted into a canonical lineage (Chapter [`06-integrator.md`](06-integrator.md)).
 - The **storage contract** — the durability and consistency guarantees a conforming task store, event log, and artifact store must provide (Chapter [`08-storage.md`](08-storage.md)).
 - The **conformance procedure** — how an independent implementation proves it conforms (Chapter [`09-conformance.md`](09-conformance.md)).
 
@@ -23,7 +23,7 @@ The EDEN protocol does **not** define:
 - Which language, runtime, or transport an implementation uses.
 - Which database, message bus, or object store backs a conforming service.
 - The UX of any human-facing tool.
-- The internal algorithms of a planner, implementer, or evaluator, beyond the contracts they expose at their role boundary.
+- The internal algorithms of an ideator, executor, or evaluator, beyond the contracts they expose at their role boundary.
 
 ## 2. Conformance
 
@@ -35,13 +35,13 @@ Normative requirements in this specification use the RFC 2119 keywords **MUST**,
 
 A single EDEN experiment involves several distinct components. Each can be implemented independently; each is evaluated against its own conformance class:
 
-- **Planner** — proposes trials.
-- **Implementer** — realizes a proposal as a working-tree change.
-- **Evaluator** — scores a realized proposal against the experiment's objective.
-- **Integrator** — promotes evaluated proposals into the canonical trial lineage.
+- **Ideator** — proposes variants.
+- **Executor** — realizes an idea as a working-tree change.
+- **Evaluator** — scores a realized idea against the experiment's objective.
+- **Integrator** — promotes evaluated ideas into the canonical variant lineage.
 - **Task store** — the durable queue that holds tasks between roles.
 - **Event log** — the durable record of state changes, read by subscribers.
-- **Artifact store** — the durable home for files produced during a trial (plans, code, evaluation outputs).
+- **Artifact store** — the durable home for files produced during a variant (plans, code, evaluation outputs).
 - **Orchestrator** — the component that dispatches tasks and advances the state machine.
 
 An implementation MAY conform to one or more classes. It need not conform to all.

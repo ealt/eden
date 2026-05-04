@@ -9,10 +9,10 @@ members = [
     "eden-contracts",
     "eden-dispatch",
     "eden-evaluator-host",
+    "eden-executor-host",
     "eden-git",
-    "eden-implementer-host",
+    "eden-ideator-host",
     "eden-orchestrator",
-    "eden-planner-host",
     "eden-service-common",
     "eden-storage",
     "eden-task-store-server",
@@ -208,10 +208,10 @@ dev = [
     { name = "eden-contracts" },
     { name = "eden-dispatch" },
     { name = "eden-evaluator-host" },
+    { name = "eden-executor-host" },
     { name = "eden-git" },
-    { name = "eden-implementer-host" },
+    { name = "eden-ideator-host" },
     { name = "eden-orchestrator" },
-    { name = "eden-planner-host" },
     { name = "eden-service-common" },
     { name = "eden-storage" },
     { name = "eden-task-store-server" },
@@ -233,10 +233,10 @@ dev = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-evaluator-host", editable = "reference/services/evaluator" },
+    { name = "eden-executor-host", editable = "reference/services/executor" },
     { name = "eden-git", editable = "reference/packages/eden-git" },
-    { name = "eden-implementer-host", editable = "reference/services/implementer" },
+    { name = "eden-ideator-host", editable = "reference/services/ideator" },
     { name = "eden-orchestrator", editable = "reference/services/orchestrator" },
-    { name = "eden-planner-host", editable = "reference/services/planner" },
     { name = "eden-service-common", editable = "reference/services/_common" },
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "eden-task-store-server", editable = "reference/services/task-store-server" },
@@ -329,6 +329,29 @@ requires-dist = [
 ]
 
 [[package]]
+name = "eden-executor-host"
+version = "0.0.1"
+source = { editable = "reference/services/executor" }
+dependencies = [
+    { name = "eden-contracts" },
+    { name = "eden-dispatch" },
+    { name = "eden-git" },
+    { name = "eden-service-common" },
+    { name = "eden-storage" },
+    { name = "eden-wire" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
+    { name = "eden-git", editable = "reference/packages/eden-git" },
+    { name = "eden-service-common", editable = "reference/services/_common" },
+    { name = "eden-storage", editable = "reference/packages/eden-storage" },
+    { name = "eden-wire", editable = "reference/packages/eden-wire" },
+]
+
+[[package]]
 name = "eden-git"
 version = "0.0.1"
 source = { editable = "reference/packages/eden-git" }
@@ -344,13 +367,12 @@ requires-dist = [
 ]
 
 [[package]]
-name = "eden-implementer-host"
+name = "eden-ideator-host"
 version = "0.0.1"
-source = { editable = "reference/services/implementer" }
+source = { editable = "reference/services/ideator" }
 dependencies = [
     { name = "eden-contracts" },
     { name = "eden-dispatch" },
-    { name = "eden-git" },
     { name = "eden-service-common" },
     { name = "eden-storage" },
     { name = "eden-wire" },
@@ -360,7 +382,6 @@ dependencies = [
 requires-dist = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
-    { name = "eden-git", editable = "reference/packages/eden-git" },
     { name = "eden-service-common", editable = "reference/services/_common" },
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "eden-wire", editable = "reference/packages/eden-wire" },
@@ -384,27 +405,6 @@ requires-dist = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-git", editable = "reference/packages/eden-git" },
-    { name = "eden-service-common", editable = "reference/services/_common" },
-    { name = "eden-storage", editable = "reference/packages/eden-storage" },
-    { name = "eden-wire", editable = "reference/packages/eden-wire" },
-]
-
-[[package]]
-name = "eden-planner-host"
-version = "0.0.1"
-source = { editable = "reference/services/planner" }
-dependencies = [
-    { name = "eden-contracts" },
-    { name = "eden-dispatch" },
-    { name = "eden-service-common" },
-    { name = "eden-storage" },
-    { name = "eden-wire" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
-    { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-service-common", editable = "reference/services/_common" },
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "eden-wire", editable = "reference/packages/eden-wire" },

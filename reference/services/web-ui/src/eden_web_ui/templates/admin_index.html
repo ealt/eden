@@ -39,7 +39,7 @@
 </section>
 
 <section>
-    <h2>trials by status</h2>
+    <h2>variants by status</h2>
     <table>
         <thead><tr>{% for s in trial_statuses %}<th>{{ s }}</th>{% endfor %}</tr></thead>
         <tbody>
@@ -47,7 +47,7 @@
             {% for s in trial_statuses %}
                 <td>
                 {% if trial_counts[s] %}
-                    <a href="/admin/trials/?status={{ s }}">{{ trial_counts[s] }}</a>
+                    <a href="/admin/variants/?status={{ s }}">{{ trial_counts[s] }}</a>
                 {% else %}
                     0
                 {% endif %}
@@ -56,7 +56,7 @@
             </tr>
         </tbody>
     </table>
-    <p><a href="/admin/trials/">all trials &raquo;</a></p>
+    <p><a href="/admin/variants/">all variants &raquo;</a></p>
 </section>
 
 <section>

@@ -55,7 +55,7 @@ services:
       GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
       GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
       GITEA__service__DISABLE_REGISTRATION: "true"
-      GITEA__metrics__ENABLED: "false"
+      GITEA__evaluation__ENABLED: "false"
       GITEA__log__LEVEL: Warn
     ports:
       - "${GITEA_HOST_PORT:-3001}:3000"
@@ -192,8 +192,8 @@ services:
       - ${GITEA_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
-      - --plan-tasks
-      - ${EDEN_PLAN_TASKS:-3}
+      - --ideate-tasks
+      - ${EDEN_IDEATE_TASKS:-3}
       # Compose-friendly quiescence: 30 iterations × 1s = 30s of
       # zero progress before the orchestrator declares the
       # experiment done. The default (3 × 0.1s = 0.3s) is tuned
@@ -210,12 +210,12 @@ services:
       - eden-orchestrator-repo:/var/lib/eden/repo
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
-  planner-host:
+  ideator-host:
     image: eden-reference:dev
     build:
       context: ../..
       dockerfile: reference/compose/Dockerfile
-    container_name: eden-planner-host
+    container_name: eden-ideator-host
     restart: unless-stopped
     depends_on:
       task-store-server:
@@ -223,7 +223,7 @@ services:
     command:
       - python
       - -m
-      - eden_planner_host
+      - eden_ideator_host
       - --task-store-url
       - http://task-store-server:8080
       - --experiment-id
@@ -231,18 +231,18 @@ services:
       - --shared-token
       - ${EDEN_SHARED_TOKEN:?}
       - --worker-id
-      - planner-1
+      - ideator-1
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --log-level
       - info
 
-  implementer-host:
+  executor-host:
     image: eden-reference:dev
     build:
       context: ../..
       dockerfile: reference/compose/Dockerfile
-    container_name: eden-implementer-host
+    container_name: eden-executor-host
     restart: unless-stopped
     depends_on:
       task-store-server:
@@ -250,7 +250,7 @@ services:
     command:
       - python
       - -m
-      - eden_implementer_host
+      - eden_executor_host
       - --task-store-url
       - http://task-store-server:8080
       - --experiment-id
@@ -258,7 +258,7 @@ services:
       - --shared-token
       - ${EDEN_SHARED_TOKEN:?}
       - --worker-id
-      - implementer-1
+      - executor-1
       - --repo-path
       - /var/lib/eden/repo
       - --gitea-url
@@ -268,7 +268,7 @@ services:
       - --log-level
       - info
     volumes:
-      - eden-implementer-repo:/var/lib/eden/repo
+      - eden-executor-repo:/var/lib/eden/repo
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   evaluator-host:
@@ -378,17 +378,17 @@ volumes:
   # eden-repo-init's seed-and-push uses its own ephemeral copy
   # under eden-repo-init-staging.
   #
-  # The eden-implementer-repo and eden-evaluator-repo volumes get
+  # The eden-executor-repo and eden-evaluator-repo volumes get
   # explicit `name:` so the docker-exec wrap's
-  # `--mount source=eden-implementer-repo` resolves to the SAME
+  # `--mount source=eden-executor-repo` resolves to the SAME
   # volume the worker host is reading from. (Same trap that bit
   # eden-bare-repo / eden-worktrees in sub-chunk A — compose's
   # default `<project>_<volume>` prefix doesn't match the wrap's
   # literal-name reference, leading docker daemon to silently
   # create a fresh empty volume.)
   eden-orchestrator-repo:
-  eden-implementer-repo:
-    name: eden-implementer-repo
+  eden-executor-repo:
+    name: eden-executor-repo
   eden-evaluator-repo:
     name: eden-evaluator-repo
   eden-web-ui-repo:

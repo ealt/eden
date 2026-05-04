@@ -29,10 +29,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "minimal",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         True,
@@ -40,10 +40,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "with_optional",
         {
-            "parallel_trials": 4,
-            "max_trials": 200,
+            "parallel_variants": 4,
+            "max_variants": 200,
             "max_wall_time": "30m",
-            "metrics_schema": {"loss": "real", "tokens": "integer", "note": "text"},
+            "evaluation_schema": {"loss": "real", "tokens": "integer", "note": "text"},
             "objective": {"expr": "loss", "direction": "minimize"},
             "convergence_window": 20,
             "target_condition": "loss < 0.01",
@@ -51,22 +51,22 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         True,
     ),
     Case(
-        "missing_parallel_trials",
+        "missing_parallel_variants",
         {
-            "max_trials": 50,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
     ),
     Case(
-        "parallel_trials_zero",
+        "parallel_variants_zero",
         {
-            "parallel_trials": 0,
-            "max_trials": 50,
+            "parallel_variants": 0,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
@@ -74,10 +74,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "wall_time_zero_prefix",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "0s",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
@@ -85,65 +85,65 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "wall_time_bad_unit",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4y",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
     ),
     Case(
-        "metrics_schema_empty",
+        "evaluation_schema_empty",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {},
+            "evaluation_schema": {},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
     ),
     Case(
-        "metrics_schema_reserved_key",
+        "evaluation_schema_reserved_key",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"trial_id": "text"},
-            "objective": {"expr": "trial_id", "direction": "maximize"},
+            "evaluation_schema": {"variant_id": "text"},
+            "objective": {"expr": "variant_id", "direction": "maximize"},
         },
         False,
     ),
     Case(
         "objective_invalid_direction",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "sideways"},
         },
         False,
     ),
     Case(
-        "parallel_trials_bool",
+        "parallel_variants_bool",
         {
-            "parallel_trials": True,
-            "max_trials": 50,
+            "parallel_variants": True,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
     ),
     Case(
-        "max_trials_string",
+        "max_variants_string",
         {
-            "parallel_trials": 2,
-            "max_trials": "50",
+            "parallel_variants": 2,
+            "max_variants": "50",
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         False,
@@ -151,10 +151,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "convergence_window_string",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "convergence_window": "3",
         },
@@ -163,10 +163,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "convergence_window_null",
         {
-            "parallel_trials": 2,
-            "max_trials": 50,
+            "parallel_variants": 2,
+            "max_variants": 50,
             "max_wall_time": "4h",
-            "metrics_schema": {"accuracy": "real"},
+            "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "convergence_window": None,
         },
@@ -186,7 +186,7 @@ TASK_CASES: list[Case] = [
         "plan_pending",
         {
             "task_id": "t-1",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -198,9 +198,9 @@ TASK_CASES: list[Case] = [
         "implement_claimed",
         {
             "task_id": "t-2",
-            "kind": "implement",
+            "kind": "execute",
             "state": "claimed",
-            "payload": {"proposal_id": "p-1"},
+            "payload": {"idea_id": "p-1"},
             "claim": _VALID_CLAIM,
             "created_at": _DT,
             "updated_at": _DT,
@@ -213,7 +213,7 @@ TASK_CASES: list[Case] = [
             "task_id": "t-3",
             "kind": "evaluate",
             "state": "submitted",
-            "payload": {"trial_id": "trial-1"},
+            "payload": {"variant_id": "variant-1"},
             "claim": {**_VALID_CLAIM, "expires_at": _DT2},
             "created_at": _DT,
             "updated_at": _DT2,
@@ -224,7 +224,7 @@ TASK_CASES: list[Case] = [
         "plan_completed_no_claim",
         {
             "task_id": "t-4",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "completed",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -236,7 +236,7 @@ TASK_CASES: list[Case] = [
         "plan_failed_no_claim",
         {
             "task_id": "t-5",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "failed",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -248,7 +248,7 @@ TASK_CASES: list[Case] = [
         "claimed_without_claim",
         {
             "task_id": "t-6",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "claimed",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -262,7 +262,7 @@ TASK_CASES: list[Case] = [
             "task_id": "t-7",
             "kind": "evaluate",
             "state": "submitted",
-            "payload": {"trial_id": "trial-1"},
+            "payload": {"variant_id": "variant-1"},
             "created_at": _DT,
             "updated_at": _DT,
         },
@@ -272,7 +272,7 @@ TASK_CASES: list[Case] = [
         "pending_with_claim",
         {
             "task_id": "t-8",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "claim": _VALID_CLAIM,
@@ -285,7 +285,7 @@ TASK_CASES: list[Case] = [
         "completed_with_claim",
         {
             "task_id": "t-9",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "completed",
             "payload": {"experiment_id": "exp-1"},
             "claim": _VALID_CLAIM,
@@ -298,7 +298,7 @@ TASK_CASES: list[Case] = [
         "plan_task_missing_experiment_id",
         {
             "task_id": "t-10",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {},
             "created_at": _DT,
@@ -307,10 +307,10 @@ TASK_CASES: list[Case] = [
         False,
     ),
     Case(
-        "implement_task_missing_proposal_id",
+        "implement_task_missing_idea_id",
         {
             "task_id": "t-11",
-            "kind": "implement",
+            "kind": "execute",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -334,7 +334,7 @@ TASK_CASES: list[Case] = [
         "invalid_state",
         {
             "task_id": "t-13",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "running",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -346,7 +346,7 @@ TASK_CASES: list[Case] = [
         "missing_updated_at",
         {
             "task_id": "t-14",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -357,7 +357,7 @@ TASK_CASES: list[Case] = [
         "claim_bad_datetime",
         {
             "task_id": "t-15",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "claimed",
             "payload": {"experiment_id": "exp-1"},
             "claim": {"token": "c", "worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
@@ -370,7 +370,7 @@ TASK_CASES: list[Case] = [
         "impossible_datetime",
         {
             "task_id": "t-16",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": "2026-99-99T12:00:00Z",
@@ -382,7 +382,7 @@ TASK_CASES: list[Case] = [
         "claim_null_on_pending",
         {
             "task_id": "t-17",
-            "kind": "plan",
+            "kind": "ideate",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "claim": None,
@@ -469,7 +469,7 @@ EVENT_CASES: list[Case] = [
             "type": "task.created",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"task_id": "t-1", "kind": "plan"},
+            "data": {"task_id": "t-1", "kind": "ideate"},
         },
         True,
     ),
@@ -583,71 +583,71 @@ EVENT_CASES: list[Case] = [
         },
         False,
     ),
-    # --- registered types: proposal.* ---
+    # --- registered types: idea.* ---
     Case(
-        "proposal_drafted_ok",
+        "idea_drafted_ok",
         {
             "event_id": "evt-pd-1",
-            "type": "proposal.drafted",
+            "type": "idea.drafted",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"proposal_id": "p-1"},
+            "data": {"idea_id": "p-1"},
         },
         True,
     ),
     Case(
-        "proposal_ready_ok",
+        "idea_ready_ok",
         {
             "event_id": "evt-pr-1",
-            "type": "proposal.ready",
+            "type": "idea.ready",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"proposal_id": "p-1"},
+            "data": {"idea_id": "p-1"},
         },
         True,
     ),
     Case(
-        "proposal_dispatched_ok",
+        "idea_dispatched_ok",
         {
             "event_id": "evt-pdi-1",
-            "type": "proposal.dispatched",
+            "type": "idea.dispatched",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"proposal_id": "p-1", "task_id": "t-1"},
+            "data": {"idea_id": "p-1", "task_id": "t-1"},
         },
         True,
     ),
     Case(
-        "proposal_dispatched_missing_task",
+        "idea_dispatched_missing_task",
         {
             "event_id": "evt-pdi-2",
-            "type": "proposal.dispatched",
+            "type": "idea.dispatched",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"proposal_id": "p-1"},
+            "data": {"idea_id": "p-1"},
         },
         False,
     ),
     Case(
-        "proposal_completed_ok",
+        "idea_completed_ok",
         {
             "event_id": "evt-pc-1",
-            "type": "proposal.completed",
+            "type": "idea.completed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"proposal_id": "p-1", "task_id": "t-1"},
+            "data": {"idea_id": "p-1", "task_id": "t-1"},
         },
         True,
     ),
-    # --- registered types: trial.* ---
+    # --- registered types: variant.* ---
     Case(
         "trial_started_ok",
         {
             "event_id": "evt-ts-100",
-            "type": "trial.started",
+            "type": "variant.started",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1", "proposal_id": "p-1"},
+            "data": {"variant_id": "variant-1", "idea_id": "p-1"},
         },
         True,
     ),
@@ -655,10 +655,10 @@ EVENT_CASES: list[Case] = [
         "trial_succeeded_ok",
         {
             "event_id": "evt-ts-200",
-            "type": "trial.succeeded",
+            "type": "variant.succeeded",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1", "commit_sha": _SHA1},
+            "data": {"variant_id": "variant-1", "commit_sha": _SHA1},
         },
         True,
     ),
@@ -666,10 +666,10 @@ EVENT_CASES: list[Case] = [
         "trial_succeeded_bad_sha",
         {
             "event_id": "evt-ts-201",
-            "type": "trial.succeeded",
+            "type": "variant.succeeded",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1", "commit_sha": "abc123"},
+            "data": {"variant_id": "variant-1", "commit_sha": "abc123"},
         },
         False,
     ),
@@ -677,10 +677,10 @@ EVENT_CASES: list[Case] = [
         "trial_errored_ok",
         {
             "event_id": "evt-te-1",
-            "type": "trial.errored",
+            "type": "variant.errored",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1"},
+            "data": {"variant_id": "variant-1"},
         },
         True,
     ),
@@ -688,10 +688,10 @@ EVENT_CASES: list[Case] = [
         "trial_eval_errored_ok",
         {
             "event_id": "evt-tee-1",
-            "type": "trial.eval_errored",
+            "type": "variant.eval_errored",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1"},
+            "data": {"variant_id": "variant-1"},
         },
         True,
     ),
@@ -699,10 +699,10 @@ EVENT_CASES: list[Case] = [
         "trial_integrated_ok",
         {
             "event_id": "evt-ti-1",
-            "type": "trial.integrated",
+            "type": "variant.integrated",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1", "trial_commit_sha": _SHA256},
+            "data": {"variant_id": "variant-1", "variant_commit_sha": _SHA256},
         },
         True,
     ),
@@ -710,10 +710,10 @@ EVENT_CASES: list[Case] = [
         "trial_integrated_missing_sha",
         {
             "event_id": "evt-ti-2",
-            "type": "trial.integrated",
+            "type": "variant.integrated",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"trial_id": "trial-1"},
+            "data": {"variant_id": "variant-1"},
         },
         False,
     ),
@@ -724,12 +724,12 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "drafting",
         {
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "experiment_id": "exp-1",
             "slug": "improve-tokenizer",
             "priority": 0.5,
             "parent_commits": [_SHA1],
-            "artifacts_uri": "s3://bucket/proposals/p-1/",
+            "artifacts_uri": "s3://bucket/ideas/p-1/",
             "state": "drafting",
             "created_at": _DT,
         },
@@ -738,7 +738,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "completed_sha256",
         {
-            "proposal_id": "p-2",
+            "idea_id": "p-2",
             "experiment_id": "exp-1",
             "slug": "x",
             "priority": -1.0,
@@ -752,7 +752,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "slug_uppercase",
         {
-            "proposal_id": "p-3",
+            "idea_id": "p-3",
             "experiment_id": "exp-1",
             "slug": "Improve-Tokenizer",
             "priority": 0.0,
@@ -766,7 +766,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "slug_leading_dash",
         {
-            "proposal_id": "p-4",
+            "idea_id": "p-4",
             "experiment_id": "exp-1",
             "slug": "-improve",
             "priority": 0.0,
@@ -780,7 +780,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "bad_state",
         {
-            "proposal_id": "p-5",
+            "idea_id": "p-5",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -794,7 +794,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "empty_parent_commits",
         {
-            "proposal_id": "p-6",
+            "idea_id": "p-6",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -808,7 +808,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "bad_commit_sha_length",
         {
-            "proposal_id": "p-7",
+            "idea_id": "p-7",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -822,7 +822,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "bad_commit_sha_uppercase",
         {
-            "proposal_id": "p-8",
+            "idea_id": "p-8",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -836,7 +836,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "priority_bool",
         {
-            "proposal_id": "p-9",
+            "idea_id": "p-9",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": True,
@@ -850,7 +850,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "priority_string",
         {
-            "proposal_id": "p-10",
+            "idea_id": "p-10",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": "1.5",
@@ -864,7 +864,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "artifacts_uri_no_scheme",
         {
-            "proposal_id": "p-11",
+            "idea_id": "p-11",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -878,7 +878,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "artifacts_uri_space_in_host",
         {
-            "proposal_id": "p-13",
+            "idea_id": "p-13",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -892,7 +892,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "artifacts_uri_bad_percent_encoding",
         {
-            "proposal_id": "p-14",
+            "idea_id": "p-14",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -906,7 +906,7 @@ PROPOSAL_CASES: list[Case] = [
     Case(
         "created_at_impossible",
         {
-            "proposal_id": "p-12",
+            "idea_id": "p-12",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -924,9 +924,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "starting_minimal",
         {
-            "trial_id": "trial-1",
+            "variant_id": "variant-1",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -936,17 +936,17 @@ TRIAL_CASES: list[Case] = [
     Case(
         "success_full",
         {
-            "trial_id": "trial-2",
+            "variant_id": "variant-2",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "success",
             "parent_commits": [_SHA1],
-            "branch": "work/trial-2",
+            "branch": "work/variant-2",
             "commit_sha": "b" * 40,
-            "trial_commit_sha": "c" * 40,
-            "artifacts_uri": "s3://bucket/trial-2",
+            "variant_commit_sha": "c" * 40,
+            "artifacts_uri": "s3://bucket/variant-2",
             "description": "improves accuracy",
-            "metrics": {"accuracy": 0.91, "tokens": 12345},
+            "evaluation": {"accuracy": 0.91, "tokens": 12345},
             "started_at": _DT,
             "completed_at": _DT2,
         },
@@ -955,9 +955,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "eval_error",
         {
-            "trial_id": "trial-3",
+            "variant_id": "variant-3",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "eval_error",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -967,9 +967,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "branch_not_work",
         {
-            "trial_id": "trial-4",
+            "variant_id": "variant-4",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "branch": "feature/foo",
@@ -980,9 +980,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "bad_status",
         {
-            "trial_id": "trial-5",
+            "variant_id": "variant-5",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "running",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -992,9 +992,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "bad_commit_sha",
         {
-            "trial_id": "trial-6",
+            "variant_id": "variant-6",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "commit_sha": "not-hex",
@@ -1005,9 +1005,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "empty_parent_commits",
         {
-            "trial_id": "trial-7",
+            "variant_id": "variant-7",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "starting",
             "parent_commits": [],
             "started_at": _DT,
@@ -1017,12 +1017,12 @@ TRIAL_CASES: list[Case] = [
     Case(
         "metrics_explicit_null",
         {
-            "trial_id": "trial-8",
+            "variant_id": "variant-8",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "starting",
             "parent_commits": [_SHA1],
-            "metrics": None,
+            "evaluation": None,
             "started_at": _DT,
         },
         False,
@@ -1030,9 +1030,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "artifacts_uri_no_scheme",
         {
-            "trial_id": "trial-9",
+            "variant_id": "variant-9",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "artifacts_uri": "not a uri",
@@ -1043,9 +1043,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "artifacts_uri_space_in_host",
         {
-            "trial_id": "trial-11",
+            "variant_id": "variant-11",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "artifacts_uri": "http://exa mple.com/path",
@@ -1056,9 +1056,9 @@ TRIAL_CASES: list[Case] = [
     Case(
         "completed_at_null",
         {
-            "trial_id": "trial-10",
+            "variant_id": "variant-10",
             "experiment_id": "exp-1",
-            "proposal_id": "p-1",
+            "idea_id": "p-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -1069,12 +1069,12 @@ TRIAL_CASES: list[Case] = [
 ]
 
 
-METRICS_SCHEMA_CASES: list[Case] = [
+EVALUATION_SCHEMA_CASES: list[Case] = [
     Case("one_real", {"accuracy": "real"}, True),
     Case("mixed", {"accuracy": "real", "tokens": "integer", "note": "text"}, True),
     Case("leading_underscore", {"_internal": "integer"}, True),
     Case("empty", {}, False),
-    Case("reserved_trial_id", {"trial_id": "text"}, False),
+    Case("reserved_variant_id", {"variant_id": "text"}, False),
     Case("reserved_completed_at", {"completed_at": "text"}, False),
     Case("invalid_type", {"x": "float"}, False),
     Case("numeric_first_char", {"1accuracy": "real"}, False),
@@ -1086,7 +1086,7 @@ ALL_CASES: dict[str, list[Case]] = {
     "experiment-config": EXPERIMENT_CONFIG_CASES,
     "task": TASK_CASES,
     "event": EVENT_CASES,
-    "proposal": PROPOSAL_CASES,
-    "trial": TRIAL_CASES,
-    "metrics-schema": METRICS_SCHEMA_CASES,
+    "idea": PROPOSAL_CASES,
+    "variant": TRIAL_CASES,
+    "evaluation-schema": EVALUATION_SCHEMA_CASES,
 }

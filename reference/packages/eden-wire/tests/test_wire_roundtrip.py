@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from eden_contracts import MetricsSchema, Proposal, Trial
+from eden_contracts import EvaluationSchema, Idea, Variant
 from eden_storage import InMemoryStore
 from eden_storage.errors import (
     AlreadyExists,
@@ -29,8 +29,8 @@ from eden_storage.errors import (
 )
 from eden_storage.submissions import (
     EvaluateSubmission,
-    ImplementSubmission,
-    PlanSubmission,
+    ExecuteSubmission,
+    IdeateSubmission,
 )
 from eden_wire import StoreClient, make_app
 from eden_wire.client import IndeterminateIntegration
@@ -44,8 +44,8 @@ SHORT_SUBSCRIBE_TIMEOUT = 0.2  # keep idle long-polls fast in tests
 
 @pytest.fixture
 def store() -> InMemoryStore:
-    schema = MetricsSchema.model_validate({"loss": "real", "acc": "real"})
-    return InMemoryStore(EXPERIMENT_ID, metrics_schema=schema)
+    schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
+    return InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
 
 
 @pytest.fixture
@@ -67,12 +67,12 @@ def store_client(client: Client) -> StoreClient:
     return StoreClient("http://wire.test", EXPERIMENT_ID, client=client)
 
 
-def _make_proposal_body(proposal_id: str) -> dict[str, Any]:
+def _make_idea_body(idea_id: str) -> dict[str, Any]:
     return {
-        "proposal_id": proposal_id,
+        "idea_id": idea_id,
         "experiment_id": EXPERIMENT_ID,
         "state": "drafting",
-        "slug": proposal_id,
+        "slug": idea_id,
         "parent_commits": ["a" * 40],
         "rationale": "test",
         "priority": 1.0,
@@ -82,65 +82,65 @@ def _make_proposal_body(proposal_id: str) -> dict[str, Any]:
     }
 
 
-def _make_trial_body(trial_id: str, proposal_id: str) -> dict[str, Any]:
+def _make_variant_body(variant_id: str, idea_id: str) -> dict[str, Any]:
     return {
-        "trial_id": trial_id,
+        "variant_id": variant_id,
         "experiment_id": EXPERIMENT_ID,
-        "proposal_id": proposal_id,
-        "branch": f"work/{trial_id}",
+        "idea_id": idea_id,
+        "branch": f"work/{variant_id}",
         "parent_commits": ["a" * 40],
         "status": "starting",
         "started_at": "2026-04-24T00:00:00Z",
     }
 
 
-def _run_trial_to_success(
+def _run_variant_to_success(
     store_client: StoreClient,
     *,
     task_prefix: str,
-    proposal_id: str,
-    trial_id: str,
+    idea_id: str,
+    variant_id: str,
 ) -> None:
-    """Drive a trial to ``status="success"`` via the real Store API.
+    """Drive a variant to ``status="success"`` via the real Store API.
 
-    This is the seed routine for integrate_trial tests. It goes
+    This is the seed routine for integrate_variant tests. It goes
     through the full plan → implement → evaluate → accept pipeline
     over HTTP, matching what the real dispatch driver would do.
     No internal-state mutation; no ``model_copy(update=...)``.
     """
-    # Plan phase — produces a ready proposal.
-    store_client.create_plan_task(f"{task_prefix}-plan")
-    claim = store_client.claim(f"{task_prefix}-plan", "planner")
-    store_client.create_proposal(Proposal.model_validate(_make_proposal_body(proposal_id)))
-    store_client.mark_proposal_ready(proposal_id)
+    # Plan phase — produces a ready idea.
+    store_client.create_ideate_task(f"{task_prefix}-plan")
+    claim = store_client.claim(f"{task_prefix}-plan", "ideator")
+    store_client.create_idea(Idea.model_validate(_make_idea_body(idea_id)))
+    store_client.mark_idea_ready(idea_id)
     store_client.submit(
         f"{task_prefix}-plan",
         claim.token,
-        PlanSubmission(status="success", proposal_ids=(proposal_id,)),
+        IdeateSubmission(status="success", idea_ids=(idea_id,)),
     )
     store_client.accept(f"{task_prefix}-plan")
 
-    # Implement phase — produces a trial with commit_sha.
-    store_client.create_implement_task(f"{task_prefix}-impl", proposal_id)
-    claim = store_client.claim(f"{task_prefix}-impl", "implementer")
-    store_client.create_trial(Trial.model_validate(_make_trial_body(trial_id, proposal_id)))
+    # Implement phase — produces a variant with commit_sha.
+    store_client.create_execute_task(f"{task_prefix}-impl", idea_id)
+    claim = store_client.claim(f"{task_prefix}-impl", "executor")
+    store_client.create_variant(Variant.model_validate(_make_variant_body(variant_id, idea_id)))
     store_client.submit(
         f"{task_prefix}-impl",
         claim.token,
-        ImplementSubmission(status="success", trial_id=trial_id, commit_sha="b" * 40),
+        ExecuteSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
     )
     store_client.accept(f"{task_prefix}-impl")
 
-    # Evaluate phase — transitions trial to success with metrics.
-    store_client.create_evaluate_task(f"{task_prefix}-eval", trial_id)
+    # Evaluate phase — transitions variant to success with metrics.
+    store_client.create_evaluate_task(f"{task_prefix}-eval", variant_id)
     claim = store_client.claim(f"{task_prefix}-eval", "evaluator")
     store_client.submit(
         f"{task_prefix}-eval",
         claim.token,
         EvaluateSubmission(
             status="success",
-            trial_id=trial_id,
-            metrics={"loss": 0.1, "acc": 0.9},
+            variant_id=variant_id,
+            evaluation={"loss": 0.1, "acc": 0.9},
             artifacts_uri="file:///tmp/artifacts",
         ),
     )
@@ -153,15 +153,15 @@ class TestFullExperiment:
     def test_plan_implement_evaluate_integrate(
         self, store_client: StoreClient
     ) -> None:
-        _run_trial_to_success(
-            store_client, task_prefix="t1", proposal_id="prop-1", trial_id="trial-1"
+        _run_variant_to_success(
+            store_client, task_prefix="t1", idea_id="prop-1", variant_id="variant-1"
         )
-        trial_commit_sha = "c" * 40
-        store_client.integrate_trial("trial-1", trial_commit_sha)
+        variant_commit_sha = "c" * 40
+        store_client.integrate_variant("variant-1", variant_commit_sha)
 
-        trials = store_client.list_trials(status="success")
-        assert len(trials) == 1
-        assert trials[0].trial_commit_sha == trial_commit_sha
+        variants = store_client.list_variants(status="success")
+        assert len(variants) == 1
+        assert variants[0].variant_commit_sha == variant_commit_sha
 
 
 class TestErrorEnvelopeRoundtrip:
@@ -172,47 +172,49 @@ class TestErrorEnvelopeRoundtrip:
             store_client.read_task("missing")
 
     def test_already_exists(self, store_client: StoreClient) -> None:
-        store_client.create_plan_task("dup")
+        store_client.create_ideate_task("dup")
         with pytest.raises(AlreadyExists):
-            store_client.create_plan_task("dup")
+            store_client.create_ideate_task("dup")
 
     def test_illegal_transition(self, store_client: StoreClient) -> None:
-        store_client.create_plan_task("p1")
+        store_client.create_ideate_task("p1")
         store_client.claim("p1", "w1")
         with pytest.raises(IllegalTransition):
             store_client.claim("p1", "w2")
 
     def test_wrong_token(self, store_client: StoreClient) -> None:
-        store_client.create_plan_task("p2")
+        store_client.create_ideate_task("p2")
         store_client.claim("p2", "w1")
         with pytest.raises(WrongToken):
             store_client.submit(
-                "p2", "not-the-token", PlanSubmission(status="success")
+                "p2", "not-the-token", IdeateSubmission(status="success")
             )
 
     def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
-        store_client.create_plan_task("p3")
+        store_client.create_ideate_task("p3")
         claim = store_client.claim("p3", "w1")
-        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("pr-a")))
-        store_client.mark_proposal_ready("pr-a")
-        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("pr-b")))
-        store_client.mark_proposal_ready("pr-b")
+        store_client.create_idea(Idea.model_validate(_make_idea_body("pr-a")))
+        store_client.mark_idea_ready("pr-a")
+        store_client.create_idea(Idea.model_validate(_make_idea_body("pr-b")))
+        store_client.mark_idea_ready("pr-b")
         store_client.submit(
-            "p3", claim.token, PlanSubmission(status="success", proposal_ids=("pr-a",))
+            "p3", claim.token, IdeateSubmission(status="success", idea_ids=("pr-a",))
         )
         with pytest.raises(ConflictingResubmission):
             store_client.submit(
-                "p3", claim.token, PlanSubmission(status="success", proposal_ids=("pr-b",))
+                "p3", claim.token, IdeateSubmission(status="success", idea_ids=("pr-b",))
             )
 
     def test_invalid_precondition(self, store_client: StoreClient) -> None:
-        """An integrate call against a non-success trial raises InvalidPrecondition."""
-        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("prop-x")))
-        store_client.mark_proposal_ready("prop-x")
-        store_client.create_trial(Trial.model_validate(_make_trial_body("t-starting", "prop-x")))
-        # Trial is still "starting"; integrate must refuse.
+        """An integrate call against a non-success variant raises InvalidPrecondition."""
+        store_client.create_idea(Idea.model_validate(_make_idea_body("prop-x")))
+        store_client.mark_idea_ready("prop-x")
+        store_client.create_variant(
+            Variant.model_validate(_make_variant_body("t-starting", "prop-x"))
+        )
+        # Variant is still "starting"; integrate must refuse.
         with pytest.raises(InvalidPrecondition):
-            store_client.integrate_trial("t-starting", "c" * 40)
+            store_client.integrate_variant("t-starting", "c" * 40)
 
 
 class TestExperimentIdHeader:
@@ -236,56 +238,56 @@ class TestResponseCodes:
     """Spec §2.4, §3, §4, §5: success status codes and bodies."""
 
     def test_submit_returns_200(self, client: Client, store_client: StoreClient) -> None:
-        store_client.create_plan_task("sc1")
+        store_client.create_ideate_task("sc1")
         claim = store_client.claim("sc1", "w")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/sc1/submit",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json={"token": claim.token, "payload": {"kind": "plan", "status": "success"}},
+            json={"token": claim.token, "payload": {"kind": "ideate", "status": "success"}},
         )
         assert resp.status_code == 200
 
     def test_integrate_returns_200(
         self, client: Client, store_client: StoreClient
     ) -> None:
-        _run_trial_to_success(
-            store_client, task_prefix="sc2", proposal_id="sc2-prop", trial_id="sc2-trial"
+        _run_variant_to_success(
+            store_client, task_prefix="sc2", idea_id="sc2-prop", variant_id="sc2-variant"
         )
         resp = client.post(
-            f"/v0/experiments/{EXPERIMENT_ID}/trials/sc2-trial/integrate",
+            f"/v0/experiments/{EXPERIMENT_ID}/variants/sc2-variant/integrate",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json={"trial_commit_sha": "c" * 40},
+            json={"variant_commit_sha": "c" * 40},
         )
         assert resp.status_code == 200
 
-    def test_create_proposal_returns_entity(
+    def test_create_idea_returns_entity(
         self, client: Client
     ) -> None:
         resp = client.post(
-            f"/v0/experiments/{EXPERIMENT_ID}/proposals",
+            f"/v0/experiments/{EXPERIMENT_ID}/ideas",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json=_make_proposal_body("body-prop"),
+            json=_make_idea_body("body-prop"),
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["proposal_id"] == "body-prop"
+        assert body["idea_id"] == "body-prop"
         assert body["state"] == "drafting"
 
-    def test_create_trial_returns_entity(
+    def test_create_variant_returns_entity(
         self, client: Client, store_client: StoreClient
     ) -> None:
-        store_client.create_proposal(
-            Proposal.model_validate(_make_proposal_body("ct-prop"))
+        store_client.create_idea(
+            Idea.model_validate(_make_idea_body("ct-prop"))
         )
-        store_client.mark_proposal_ready("ct-prop")
+        store_client.mark_idea_ready("ct-prop")
         resp = client.post(
-            f"/v0/experiments/{EXPERIMENT_ID}/trials",
+            f"/v0/experiments/{EXPERIMENT_ID}/variants",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json=_make_trial_body("ct-trial", "ct-prop"),
+            json=_make_variant_body("ct-variant", "ct-prop"),
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["trial_id"] == "ct-trial"
+        assert body["variant_id"] == "ct-variant"
         assert body["status"] == "starting"
 
 
@@ -295,24 +297,24 @@ class TestIntegrateIdempotency:
     def test_same_sha_idempotent(
         self, store: InMemoryStore, store_client: StoreClient
     ) -> None:
-        _run_trial_to_success(
-            store_client, task_prefix="idem", proposal_id="idem-prop", trial_id="idem-t"
+        _run_variant_to_success(
+            store_client, task_prefix="idem", idea_id="idem-prop", variant_id="idem-t"
         )
         sha = "c" * 40
-        store_client.integrate_trial("idem-t", sha)
-        store_client.integrate_trial("idem-t", sha)  # no-op
-        integrated_events = [e for e in store.events() if e.type == "trial.integrated"]
+        store_client.integrate_variant("idem-t", sha)
+        store_client.integrate_variant("idem-t", sha)  # no-op
+        integrated_events = [e for e in store.events() if e.type == "variant.integrated"]
         assert len(integrated_events) == 1
 
     def test_different_sha_rejected(
         self, store_client: StoreClient
     ) -> None:
-        _run_trial_to_success(
-            store_client, task_prefix="div", proposal_id="div-prop", trial_id="div-t"
+        _run_variant_to_success(
+            store_client, task_prefix="div", idea_id="div-prop", variant_id="div-t"
         )
-        store_client.integrate_trial("div-t", "c" * 40)
+        store_client.integrate_variant("div-t", "c" * 40)
         with pytest.raises(InvalidPrecondition):
-            store_client.integrate_trial("div-t", "d" * 40)
+            store_client.integrate_variant("div-t", "d" * 40)
 
 
 class TestSubscribe:
@@ -321,14 +323,14 @@ class TestSubscribe:
     def test_events_returns_immediately_when_present(
         self, store_client: StoreClient
     ) -> None:
-        store_client.create_plan_task("ev1")
+        store_client.create_ideate_task("ev1")
         events = store_client.read_range()
         assert len(events) >= 1
 
     def test_subscribe_returns_immediately_when_events_available(
         self, store_client: StoreClient
     ) -> None:
-        store_client.create_plan_task("ev2")
+        store_client.create_ideate_task("ev2")
         events = store_client.subscribe(cursor=0, timeout=SHORT_SUBSCRIBE_TIMEOUT)
         assert len(events) >= 1
 
@@ -337,7 +339,7 @@ class TestSubscribe:
     ) -> None:
         """When no events are available, subscribe returns empty after the
         configured timeout rather than hanging forever."""
-        store_client.create_plan_task("ev3")
+        store_client.create_ideate_task("ev3")
         initial = store_client.read_range()
         # All events consumed; a follow-up subscribe should long-poll then
         # return an empty batch after the timeout.
@@ -347,8 +349,8 @@ class TestSubscribe:
         assert tail == []
 
     def test_replay_from_zero(self, store_client: StoreClient) -> None:
-        store_client.create_plan_task("r1")
-        store_client.create_plan_task("r2")
+        store_client.create_ideate_task("r1")
+        store_client.create_ideate_task("r2")
         events = store_client.replay()
         assert len(events) == 2
         assert all(e.type == "task.created" for e in events)
@@ -439,24 +441,24 @@ class TestIndeterminateIntegration:
         )
         seed = TestClient(app, base_url="http://wire.test")
         seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
-        _run_trial_to_success(
-            seed_client, task_prefix="cs", proposal_id="cs-prop", trial_id="cs-t"
+        _run_variant_to_success(
+            seed_client, task_prefix="cs", idea_id="cs-prop", variant_id="cs-t"
         )
 
         flaky = Client(
             transport=_transport_that_loses(
                 app,
-                lose_path_substring="/trials/cs-t/integrate",
+                lose_path_substring="/variants/cs-t/integrate",
                 after_commit=True,
             ),
             base_url="http://wire.test",
         )
         with StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc:
-            flaky_sc.integrate_trial("cs-t", "c" * 40)  # MUST NOT raise
-        assert store.read_trial("cs-t").trial_commit_sha == "c" * 40
+            flaky_sc.integrate_variant("cs-t", "c" * 40)  # MUST NOT raise
+        assert store.read_variant("cs-t").variant_commit_sha == "c" * 40
 
     def test_indeterminate_when_no_sha(self, store: InMemoryStore) -> None:
-        """Server never committed; read-back shows trial_commit_sha=None →
+        """Server never committed; read-back shows variant_commit_sha=None →
         IndeterminateIntegration (must NOT compensate)."""
         app = make_app(
             store,
@@ -465,14 +467,14 @@ class TestIndeterminateIntegration:
         )
         seed = TestClient(app, base_url="http://wire.test")
         seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
-        _run_trial_to_success(
-            seed_client, task_prefix="ind", proposal_id="ind-prop", trial_id="ind-t"
+        _run_variant_to_success(
+            seed_client, task_prefix="ind", idea_id="ind-prop", variant_id="ind-t"
         )
 
         flaky = Client(
             transport=_transport_that_loses(
                 app,
-                lose_path_substring="/trials/ind-t/integrate",
+                lose_path_substring="/variants/ind-t/integrate",
                 after_commit=False,
             ),
             base_url="http://wire.test",
@@ -481,8 +483,8 @@ class TestIndeterminateIntegration:
             StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc,
             pytest.raises(IndeterminateIntegration),
         ):
-            flaky_sc.integrate_trial("ind-t", "c" * 40)
-        assert store.read_trial("ind-t").trial_commit_sha is None
+            flaky_sc.integrate_variant("ind-t", "c" * 40)
+        assert store.read_variant("ind-t").variant_commit_sha is None
 
     def test_confirmed_divergence(self, store: InMemoryStore) -> None:
         """Server committed a *different* SHA previously; transport fails on
@@ -495,15 +497,15 @@ class TestIndeterminateIntegration:
         )
         seed = TestClient(app, base_url="http://wire.test")
         seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
-        _run_trial_to_success(
-            seed_client, task_prefix="dv", proposal_id="dv-prop", trial_id="dv-t"
+        _run_variant_to_success(
+            seed_client, task_prefix="dv", idea_id="dv-prop", variant_id="dv-t"
         )
-        seed_client.integrate_trial("dv-t", "d" * 40)  # pre-commit a different SHA
+        seed_client.integrate_variant("dv-t", "d" * 40)  # pre-commit a different SHA
 
         flaky = Client(
             transport=_transport_that_loses(
                 app,
-                lose_path_substring="/trials/dv-t/integrate",
+                lose_path_substring="/variants/dv-t/integrate",
                 after_commit=False,
             ),
             base_url="http://wire.test",
@@ -512,9 +514,9 @@ class TestIndeterminateIntegration:
             StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc,
             pytest.raises(InvalidPrecondition),
         ):
-            flaky_sc.integrate_trial("dv-t", "c" * 40)
+            flaky_sc.integrate_variant("dv-t", "c" * 40)
         # The pre-existing SHA is untouched; the client did not compensate.
-        assert store.read_trial("dv-t").trial_commit_sha == "d" * 40
+        assert store.read_variant("dv-t").variant_commit_sha == "d" * 40
 
 
 def test_experiment_id_mismatch_error_type() -> None:
