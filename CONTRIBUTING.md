@@ -6,9 +6,9 @@ EDEN is a **protocol** for directed evolution orchestration. This repo contains 
 
 ## Current phase
 
-**Phase 4 complete.** Chapters 00–06 and 08 of spec/v0 are on the protected `main` alongside the Pydantic reference bindings in `reference/packages/eden-contracts` (now including a discriminated- union model for the 15 registered event types) and a full Python toolchain (uv workspace + ruff + pyright + pytest). CI runs six checks — `docs-lint`, `schema-validity`, `python-lint`, `python-typecheck`, `python-test`, and `schema-parity`. See [`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 5–13 work.
+**Phase 11 complete.** Chapters 00–09 of spec/v0 are on the protected `main`, alongside the full reference implementation (workspace under [`reference/`](reference/) — six services + five packages on a Compose stack with Postgres + Gitea) and the conformance suite at the **v1+roles+integrator** level (110 scenarios green). CI gates the reference impl on docs-lint, schema-validity, schema-parity, python-lint, python-typecheck, python-test, python-test-postgres, conformance, compose-smoke, compose-smoke-subprocess, compose-smoke-subprocess-docker, and compose-e2e. See [`AGENTS.md`](AGENTS.md) for the canonical "what's done" narrative and [`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 12–13 plan.
 
-If you want to contribute, the most useful next area is Phase 5 (the in-memory reference dispatch loop) and any gaps you spot in the spec or the contracts-package bindings.
+If you want to contribute, useful areas are: spec gaps surfaced by [`docs/conformance-coverage.md`](docs/conformance-coverage.md), follow-ups in [`MANUAL_UI_ISSUES.md`](MANUAL_UI_ISSUES.md), or scoping work for Phase 12 (multi-experiment / control plane).
 
 ## Contributing to the spec
 
@@ -37,10 +37,9 @@ Contributors touching the reference implementation need:
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (run `uv sync` at the repo root to install the workspace virtualenv)
-- (Phase 9+) Node.js 20+ for the reference web UI
-- (Phase 10+) Docker for the Compose stack
+- Docker (for the Compose stack and the docker-backed CI smoke jobs)
 
-Spec-only contributors need only the Node-based markdown linter; see [`AGENTS.md`](AGENTS.md#commands) for the exact pinned commands (version-matched to CI to avoid works-locally / fails-in-CI drift).
+The reference web UI is server-side Jinja with HTMX vendored under `reference/services/web-ui/src/eden_web_ui/static/` — there is **no** Node runtime requirement for the UI. Node is needed only for `npx markdownlint-cli2` (spec contributors); see [`AGENTS.md`](AGENTS.md#commands) for the exact pinned commands (version-matched to CI to avoid works-locally / fails-in-CI drift).
 
 ### Impl conventions
 
@@ -50,10 +49,11 @@ Spec-only contributors need only the Node-based markdown linter; see [`AGENTS.md
 
 ## Contributing to the conformance suite
 
-The conformance suite lands in Phase 11 and is not yet implementable. Once it exists:
+The conformance suite lives under [`conformance/`](conformance/) at the v1+roles+integrator level (chunk 11d).
 
-- Scenarios must be **implementation-agnostic** — they drive an implementation-under-test via its advertised protocol surface, not via language-specific hooks.
-- A scenario must cite the spec paragraph it validates.
+- Scenarios must be **implementation-agnostic** — they drive an implementation-under-test via its advertised protocol surface (the chapter-7 HTTP binding), not via language-specific hooks.
+- A scenario must cite the spec paragraph it validates. The first line of its docstring carries the citation in the form `spec/v0/<chapter>.md §<sec>`; [`conformance/src/conformance/tools/check_citations.py`](conformance/src/conformance/tools/check_citations.py) gates this in CI.
+- See [`docs/conformance-coverage.md`](docs/conformance-coverage.md) for the current MUST/SHOULD coverage matrix; new scenarios that close uncovered MUSTs are especially welcome.
 
 ## Questions
 

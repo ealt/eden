@@ -486,7 +486,7 @@ doc itself is a candidate for either updating or moving to
 
 ---
 
-## 17. Top-level `README.md` and `CONTRIBUTING.md` "phase" claims are
+## 17. ✅ Resolved. Top-level `README.md` and `CONTRIBUTING.md` "phase" claims are
 ~7 phases stale
 
 **What's there.** [`README.md`](README.md) line 20 ("Status" section) and
@@ -525,6 +525,13 @@ lead (or simply point at it). Drop the "Phase 5 is next" guidance.
 Remove the bogus Node prerequisite from CONTRIBUTING; if any Node
 pre-req remains relevant (markdownlint-cli2 for docs contributors), word
 it as such.
+
+**Resolved.** README.md "Status" and CONTRIBUTING.md "Current phase"
+sections rewritten to reflect Phase 11 completion + the next-phase
+landscape (Phase 12 / 13). Bogus Node-for-web-UI prereq removed;
+Node clarified as docs-lint-only. Routed contributors at the
+conformance-coverage matrix and MANUAL_UI_ISSUES instead of the
+no-longer-meaningful "Phase 5 is next" call to action.
 
 ---
 
