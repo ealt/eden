@@ -569,47 +569,39 @@ instead. Remove the export from
 
 ---
 
-## 19. Empty placeholder packages and test directories with no current
-consumer
+## 19. Empty placeholder packages and test directories — roadmap-tracked
+vs. abandoned scaffolding
 
-**What's there.** Five `.gitkeep`-only directories that look like real
-code/test homes but are placeholders:
+**Disambiguation pass** (refined after roadmap cross-reference):
 
-- [`reference/packages/eden-blob/`](reference/packages/eden-blob/) —
-  future artifact-store backend (chapter 8 §5). Not declared as a
-  workspace member in `pyproject.toml`.
-- [`reference/services/control-plane/`](reference/services/control-plane/)
-  — future control-plane service (Phase 12, deferred per AGENTS.md).
-  Not declared as a workspace member.
-- [`tests/integration/.gitkeep`](tests/integration/),
-  [`tests/unit/.gitkeep`](tests/unit/) — root-level test directories.
-  All actual tests live under per-package
-  `reference/{packages,services}/*/tests/` and `conformance/scenarios/`;
-  `pyproject.toml`'s `[tool.pytest.ini_options].testpaths` enumerates the
-  per-package paths and never visits these.
+| Path | Roadmap status | Triage |
+|---|---|---|
+| [`reference/packages/eden-blob/`](reference/packages/eden-blob/) | **Phase 13** — `S3/GCS blob backend` ([`docs/roadmap.md:252`](docs/roadmap.md)) | Roadmap-tracked. Add a one-line README pointing at the Phase-13 entry; do NOT delete. |
+| [`reference/services/control-plane/`](reference/services/control-plane/) | **Phase 12** — control plane service + lease data model ([`docs/roadmap.md:233`](docs/roadmap.md)) | Roadmap-tracked. Same posture: README pointing at Phase 12. |
+| [`tests/integration/.gitkeep`](tests/integration/) | **No roadmap mention.** Phase-0 scaffolding aspiration. | Abandoned. The actual test layout (per-package `reference/*/tests/` + `conformance/scenarios/`) made this dir obsolete; `pyproject.toml`'s `testpaths` never visits it. Safe to delete. |
+| [`tests/unit/.gitkeep`](tests/unit/) | Same as above. | Same as above. |
 
-**Why this matters.** Every one is a hint to a reader (or to a future
-Claude session searching the tree) that something lives there. Searching
-for "where do integration tests live?" lands on `tests/integration/`,
-which is empty — wastes time. New contributors might add a test there
-and have it never collected. The eden-blob and control-plane stubs
-encourage someone to start adding code to a directory whose final shape
-is unspecified.
+**Why this matters.** Conflating roadmap-tracked placeholders with
+abandoned scaffolding leads to wrong cleanup decisions. Deleting
+`eden-blob/` would orphan the Phase-13 plan's "where it lands";
+keeping `tests/integration/` invites contributors to add a test there
+that never runs.
 
-**Severity.** Cosmetic, but pure cruft (no current value).
+**Severity.** Cosmetic.
 
-**Resolution direction.** Two clean options:
+**Resolution direction.**
 
-1. **Delete.** Remove all five placeholder directories. When the
-   real work lands (Phase 12 control plane, future blob store), create
-   the directory then. The roadmap already names the work.
-2. **Document the placeholder.** Replace each `.gitkeep` with a
-   short README explaining the deferred work and pointing at the
-   roadmap entry that will populate the directory.
+1. `tests/integration/`, `tests/unit/` — delete the directories
+   outright. Document the per-package test layout in
+   `CONTRIBUTING.md` if it isn't already.
+2. `reference/packages/eden-blob/`, `reference/services/control-plane/`
+   — replace each `.gitkeep` with a one-paragraph README pointing at
+   the roadmap entry that will populate it. The directory then
+   advertises its own deferral instead of looking abandoned.
 
-Option 1 matches the AGENTS.md "no half-finished implementations"
-discipline; option 2 preserves discoverability at the cost of more
-prose to maintain.
+(Original #19 advised "delete or document" without separating the
+two cases; the roadmap cross-reference makes the right answer
+case-specific.)
 
 ---
 
@@ -632,26 +624,38 @@ the shared bare-repo + Gitea remote (chunk 10d follow-up B); the blob
 volume is an unused future-implementer placeholder paired with the
 empty `eden-blob` package (#19).
 
-**Adjacent typo.**
+**Adjacent typo — investigated and fixed inline.**
 [`reference/compose/Dockerfile:62`](reference/compose/Dockerfile)
-pre-creates `/var/lib/eden/blob` (singular) but the compose mount in
-`blob-init` is at `/var/lib/eden/blobs` (plural). The pre-created
-directory is never used.
+pre-created `/var/lib/eden/blob` (singular) — but the actual mount
+path that `blob-init` advertises (`compose.yaml:84`,
+`/var/lib/eden/blobs`, plural) is the path the eventual consumer will
+mount at. So the Dockerfile line was **latently wrong**: it
+pre-created a sibling of the real mount point with `eden:eden`
+ownership, while the real mount point doesn't exist in the image and
+would inherit root ownership from the docker volume driver on first
+mount — exactly the failure mode the comment block at
+`Dockerfile:57–61` says the pre-create exists to prevent.
 
-**Why this matters.** Same shape as #19: the stack carries a service
-+ volume + healthcheck dependency for a feature that doesn't exist
-yet. Every `compose up` waits on `blob-init` to exit successfully
-(see `depends_on: blob-init: condition: service_completed_successfully`
-on the postgres dependency). Removing the dead service would shorten
-bring-up; or land the consuming code and earn its keep.
+Currently harmless (no consumer), but it would have caused first-write
+failures the moment the first consumer landed — the time when nobody
+would think to check the Dockerfile. **Patched inline:** the
+Dockerfile now pre-creates `/var/lib/eden/blobs`. Same triage as #21:
+fix is one character, the bug is silent until it's not.
 
-**Severity.** Cosmetic; SHOULD-level if you count the bring-up
-dependency as wasted work.
+**Why the rest still matters.** Same shape as #19: the stack carries
+a service + volume + healthcheck dependency for a consumer that
+doesn't exist yet. Every `compose up` waits on `blob-init` to exit
+successfully (postgres + gitea both
+`depends_on: blob-init: condition: service_completed_successfully`).
+
+**Severity.** Latent bug fixed; the unconsumed plumbing itself is
+cosmetic / SHOULD-level.
 
 **Resolution direction.** Either (a) drop `blob-init`,
 `eden-blob-data`, and the `depends_on: blob-init` lines until a real
-consumer lands; or (b) ship the consumer (the deferred blob-store
-backend in `eden-blob`) and earn the plumbing.
+consumer lands (then revert the Dockerfile fix above too); or (b)
+defer cleanup to Phase 13, when the consumer ships per #19's
+roadmap-tracked posture and earns the plumbing.
 
 ---
 
@@ -766,6 +770,62 @@ and found no drift:
   don't appear in compose YAML (`EDEN_EXEC_MODE`,
   `GITEA_REMOTE_PASSWORD`) are consumed by the healthcheck shell
   scripts — not dead.
+
+---
+
+## 24. Scheduled work item — line-by-line MUST/SHOULD audit against
+the conformance suite
+
+**Why this is its own entry, not a "checked clean" line.** The
+audit's category I (spec MUST/SHOULD claims not covered by the
+conformance suite) is the highest-signal category but also the most
+expensive. The original audit punted on it with "highest-effort path
+forward, worth its own pass." That deferral is honest, but the gap
+compounds: every spec amendment that lands without a matching
+conformance assertion makes the eventual line-by-line audit larger
+and the gap-set fuzzier.
+
+**Scope of the work.**
+
+- Walk every `\bMUST\b` / `\bSHOULD\b` token in
+  [`spec/v0/01-concepts.md`](spec/v0/01-concepts.md) through
+  [`spec/v0/08-storage.md`](spec/v0/08-storage.md) (≈218 claims per
+  the original audit prompt's count).
+- For each, search [`conformance/scenarios/`](conformance/scenarios/)
+  for an assertion that exercises it. The
+  [`tools/check_citations.py`](conformance/src/conformance/tools/check_citations.py)
+  helper already enforces the inverse direction (every scenario
+  cites a real MUST); the work here is the forward direction
+  (every MUST is asserted somewhere).
+- Per chapter-9 §3, only MUSTs are normatively asserted; SHOULDs
+  are interop guidance. The audit should still note SHOULD gaps
+  (separate column) for visibility, but classify them differently.
+- Output: a coverage matrix (chapter × MUST/SHOULD × asserted-by /
+  uncovered) committed to the repo. Each uncovered MUST becomes
+  either a new conformance scenario, a new `MANUAL_UI_ISSUES.md`
+  entry, or a note explaining why it's untestable through the
+  black-box wire surface (chapter 9 §3 already exempts two such
+  invariants — atomicity-window and token-unforgeability).
+
+**Estimated effort.** Half-day for a thorough first pass; recurring
+~1–2h per spec amendment thereafter to keep the matrix current.
+
+**Why this entry exists vs. just doing the work now.** The audit
+session that filed #17–#23 had a fixed budget and chose breadth over
+depth. Scheduling this as its own work item is the alternative to
+letting the deferral drift. A future session that picks this up
+should produce the matrix as its first artifact, not a list of
+findings — that way the work is incremental and the next session
+after THAT inherits a partial matrix instead of starting from zero.
+
+**Severity.** None on its own — this is a process commitment, not a
+bug. The bugs it would surface have unknown severity until the audit
+runs.
+
+**Resolution direction.** Schedule explicitly. The matrix should
+live as a markdown table in `docs/conformance-coverage.md` (new) or
+appended to `spec/v0/09-conformance.md` as a non-normative §7
+"coverage matrix" (informative).
 
 ---
 
