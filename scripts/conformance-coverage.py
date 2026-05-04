@@ -14,6 +14,16 @@ but classifies them differently.
 Output: docs/conformance-coverage.md.
 
 Run: python3 scripts/conformance-coverage.py
+
+WARNING: this script OVERWRITES docs/conformance-coverage.md. The
+output ships with manual prose sections above the auto-generated
+tables ("How to read the gap list", "Per-claim assertion-coverage
+pilot — chapter 04"). Those sections are NOT regenerated; if you
+re-run this script, the prose layers must be re-spliced. The simplest
+discipline: keep both prose sections at the top of the rendered file,
+generate into a temp file, and merge by hand. A future cleanup could
+move the prose layers into this script as static templates if the
+overwrite cost becomes a real friction.
 """
 
 from __future__ import annotations
@@ -235,7 +245,7 @@ def main() -> int:
             if citing:
                 # Truncate long lists for readability.
                 if len(citing) > 4:
-                    cell = ", ".join(f"`{c}`" for c in citing[:3]) + f", _+{len(citing)-3} more_"
+                    cell = ", ".join(f"`{c}`" for c in citing[:3]) + f", *+{len(citing)-3} more*"
                 else:
                     cell = ", ".join(f"`{c}`" for c in citing)
             else:
@@ -246,6 +256,10 @@ def main() -> int:
         out.append("")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    # Strip the trailing empty line each section appends so the file ends with
+    # exactly one terminating newline (markdownlint MD012).
+    while out and out[-1] == "":
+        out.pop()
     OUT.write_text("\n".join(out) + "\n")
     print(f"wrote {OUT.relative_to(REPO_ROOT)}", file=sys.stderr)
     print(

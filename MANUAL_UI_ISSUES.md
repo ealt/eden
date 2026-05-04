@@ -830,25 +830,50 @@ and found no drift:
 ## 24. Scheduled work item — line-by-line MUST/SHOULD audit against
 the conformance suite
 
-**Status: first-pass matrix delivered.** [`docs/conformance-coverage.md`](docs/conformance-coverage.md)
+**Status: first-pass matrix delivered + chapter-04 per-claim pilot.**
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md)
 generated from [`scripts/conformance-coverage.py`](scripts/conformance-coverage.py).
-Headline: 322 MUST/MUST-NOT lines, 73 with at least one citing
-scenario, 141 with no citation (~23% line-coverage). The matrix
+Headline: 323 MUST/MUST-NOT lines, 73 with at least one citing
+scenario, 142 with no citation (~23% line-coverage). The matrix
 includes a "How to read the gap list" section that classifies the
-141 gaps into three kinds: structurally-coverage-immune chapters
+142 gaps into three kinds: structurally-coverage-immune chapters
 (chapter 00/01/09), citation gaps (chapter 08 storage MUSTs are
 asserted via wire chapters but not cited from 08), and
 schema-enforced MUSTs (data-shape rules the JSON Schema covers).
 
-**What's left — the assertion-coverage pass.** Today's matrix
-records *line-coverage* (does any scenario cite this line's
-section?). It does NOT record whether the cited scenario actually
-exercises this specific MUST — a section can have ten MUSTs and
-one scenario that cites it, and all ten line-counts as "covered".
-The natural next step is the per-claim breakdown the matrix's
-"future revision" table describes: tag each row with `(scenario)`
-/ `(schema)` / `(restatement)` / `(impl-only)`. That's a half-day
-of careful reading per chapter.
+**Chapter-04 per-claim pilot landed** (in the same matrix doc, new
+section above the auto-generated tables). Headline for chapter 04:
+27 MUST/MUST-NOT rows; 18 `(scenario)`, 2 `(consequence)` (chapter
+09 §3 black-box-impossible), 2 `(restatement)`, 5 `(uncovered)`.
+**Effective coverage 74%** for chapter 04 — much better than the
+auto-generator's 23% line-coverage suggests, because the line-coverage
+counts MAY rows and doesn't credit `(consequence)`. Two of the five
+`(uncovered)` rows are actually exercised by tests in
+`test_composite_commits.py` that cite `05-event-protocol.md §2.2`;
+intra-chapter ancestor-walk doesn't surface them. Three are real
+gaps. Methodology refinements that surfaced during the pilot:
+
+1. **Five tags, not four.** Added `(consequence)` for chapter 09 §3
+   black-box-impossible MUSTs (atomicity, unforgeability) where the
+   scenario asserts a testable proxy.
+2. **List-header lines are NOT independent MUSTs.** "X MUST be:"
+   followed by sub-bullets is one structural element, not two.
+3. **Cross-chapter coverage is real and structurally hidden.** The
+   intra-chapter ancestor-walk misses composite-commit citations.
+4. **Multi-MUST lines need finer claim-counting.** Multi-claim rows
+   tag-as-net but lose per-claim detail.
+
+**Time-to-tag and chapter projection.** Chapter 04 took ~30 minutes
+once test files were in cache. Total for remaining 7 chapters
+projects to ~3-4 hours, NOT half-a-day-per-chapter. The estimate held
+for the highest-density chapter; smaller chapters are quicker.
+
+**What's left — the per-chapter pass.** Apply the same per-claim
+breakdown to chapters 02 / 03 / 05 / 06 / 07 / 08 / 09. The
+recommendation in the pilot section: resolve cross-chapter
+composite-commit ancestry first (mechanical: either teach the
+generator or multi-cite the relevant tests), then proceed in order
+of MUST density.
 
 **Why this is its own entry, not a "checked clean" line.** The
 audit's category I (spec MUST/SHOULD claims not covered by the
