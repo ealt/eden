@@ -76,10 +76,10 @@ def _build_history(store: Store, *, limit: int = _HISTORY_LIMIT) -> list[dict]:
     """Pull the most recent completed variants from the event log.
 
     Returns at most ``limit`` entries, newest first. Each entry
-    carries the variant's ``variant_id``, ``status``, ``commit_sha``, and
-    ``metrics`` (from any ``variant.evaluated`` event), plus the
-    idea slug if the idea can be located. The set is small
-    by design — see §D.2 in the chunk plan.
+    carries the variant's ``variant_id``, ``status``, ``commit_sha``,
+    and ``metrics`` (read from the evaluator's submission for the
+    completing evaluate task), plus the idea slug if the idea can be
+    located. The set is small by design — see §D.2 in the chunk plan.
     """
     history: list[dict] = []
     seen: set[str] = set()

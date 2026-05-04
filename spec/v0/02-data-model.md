@@ -129,7 +129,7 @@ Every event MUST provide this envelope:
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `event_id` | yes | string | Unique identifier within the log. |
-| `type` | yes | string | A dotted type name, e.g. `task.claimed`, `variant.evaluated`. |
+| `type` | yes | string | A dotted type name, e.g. `task.claimed`, `variant.succeeded`. |
 | `occurred_at` | yes | timestamp | When the state change happened. |
 | `experiment_id` | yes | string | The experiment this event belongs to. |
 | `data` | yes | object | Type-specific payload (§4.2). |
