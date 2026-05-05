@@ -23,7 +23,7 @@ def _drive_some_events(client: WireClient) -> None:
     """Generate a representative set of events for envelope assertions."""
     tid = _seed.create_ideate_task(client)
     c = _seed.claim(client, tid)
-    _seed.submit_ideate(client, tid, token=c["token"])
+    _seed.submit_idea(client, tid, token=c["token"])
     _seed.accept(client, tid)
 
 

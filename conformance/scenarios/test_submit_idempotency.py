@@ -26,9 +26,9 @@ def test_resubmit_content_equivalent_returns_200(
     """spec/v0/04-task-protocol.md §4.2 — resubmit with identical payload is idempotent."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    r1 = _seed.submit_ideate(wire_client, tid, token=c["token"], idea_ids=[])
+    r1 = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[])
     assert r1.status_code == 200
-    r2 = _seed.submit_ideate(wire_client, tid, token=c["token"], idea_ids=[])
+    r2 = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[])
     assert r2.status_code == 200
     submitted = event_log.find_by_type(event_log.replay_all(), "task.submitted")
     submitted_for_task = [e for e in submitted if e["data"].get("task_id") == tid]
@@ -40,9 +40,9 @@ def test_resubmit_divergent_returns_409(wire_client: WireClient) -> None:
     pid_a, pid_b = _setup_idea_chain(wire_client)
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    r1 = _seed.submit_ideate(wire_client, tid, token=c["token"], idea_ids=[pid_a])
+    r1 = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_a])
     assert r1.status_code == 200
-    r2 = _seed.submit_ideate(wire_client, tid, token=c["token"], idea_ids=[pid_b])
+    r2 = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_b])
     assert r2.status_code == 409
     assert r2.json().get("type") == "eden://error/conflicting-resubmission"
 
@@ -52,11 +52,11 @@ def test_plan_idea_ids_compared_as_set(wire_client: WireClient) -> None:
     pid_a, pid_b = _setup_idea_chain(wire_client)
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    r1 = _seed.submit_ideate(
+    r1 = _seed.submit_idea(
         wire_client, tid, token=c["token"], idea_ids=[pid_a, pid_b]
     )
     assert r1.status_code == 200
-    r2 = _seed.submit_ideate(
+    r2 = _seed.submit_idea(
         wire_client, tid, token=c["token"], idea_ids=[pid_b, pid_a]
     )
     assert r2.status_code == 200
@@ -67,7 +67,7 @@ def test_evaluate_evaluation_compared_as_json(wire_client: WireClient) -> None:
     variant_id = _seed.drive_to_starting_variant(wire_client)
     eval_tid = _seed.create_evaluate_task(wire_client, variant_id=variant_id)
     c = _seed.claim(wire_client, eval_tid)
-    r1 = _seed.submit_evaluate(
+    r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -76,7 +76,7 @@ def test_evaluate_evaluation_compared_as_json(wire_client: WireClient) -> None:
     )
     assert r1.status_code == 200
     # Resubmit with reordered keys
-    r2 = _seed.submit_evaluate(
+    r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -95,8 +95,8 @@ def test_resubmit_after_terminal_rejected(wire_client: WireClient) -> None:
     """
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_ideate(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, token=c["token"])
     _seed.accept(wire_client, tid)
-    r = _seed.submit_ideate(wire_client, tid, token=c["token"])
+    r = _seed.submit_idea(wire_client, tid, token=c["token"])
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"

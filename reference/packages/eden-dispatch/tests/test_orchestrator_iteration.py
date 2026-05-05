@@ -169,7 +169,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     internal invariants hold.
     """
     now = _now_factory()
-    # Ideate task
+    # Ideate-task
     store.create_ideate_task("t-ideate-1")
     claim = store.claim("t-ideate-1", "ideator-1")
     idea = Idea(
@@ -188,7 +188,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
         "t-ideate-1", claim.token, IdeateSubmission(status="success", idea_ids=("p-1",))
     )
     store.accept("t-ideate-1")
-    # Execute task
+    # Execute-task
     store.create_execute_task("t-exec-1", "p-1")
     claim = store.claim("t-exec-1", "executor-1")
     variant = Variant(

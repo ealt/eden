@@ -123,6 +123,24 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Numbered task-ID prefixes from before the rename.
     ("plan-NNNN id",     re.compile(r"\bplan-\d{4,}\b")),
     ("implement-NNNN id",re.compile(r"\bimplement-\d{4,}\b")),
+    # Verb-as-noun-head: a renamed task-kind verb directly followed by
+    # an action noun reads awkwardly ("submit_ideate", "ideate
+    # reclamation"). Catch these so future commits can't reintroduce
+    # them. The clean form is either the artifact noun (`submit_idea`,
+    # `submit_evaluation`) or a hyphenated kind-modifier
+    # (`ideate-task reclamation`). The matched action-noun set covers
+    # the common cases without trapping legitimate uses of the verbs
+    # themselves (e.g., "ideate the next batch").
+    ("submit_<verb>",    re.compile(r"\bsubmit_(?:ideate|execute|evaluate)\b")),
+    ("verb noun-head", re.compile(
+        r"(?i)\b(?:plan|implement|ideate|execute|evaluate) "
+        r"(?:reclamation|submit|submission|dispatch|terminal|reject|accept)\b"
+    )),
+    # Bare task-kind in code-fence-ish position (e.g., `kind=implement`)
+    # — quoted forms are caught above; this catches the unquoted
+    # markdown / docstring shape.
+    ("kind=plan",        re.compile(r"\bkind\s*=\s*plan\b")),
+    ("kind=implement",   re.compile(r"\bkind\s*=\s*implement\b")),
 ]
 
 

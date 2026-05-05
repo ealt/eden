@@ -115,7 +115,7 @@ class TestImplementTerminalComposite:
     def test_reject_with_starting_variant_triples_composite(
         self, make_store: Callable[..., Store]
     ) -> None:
-        """Execute reject + variant.errored + idea.completed all commit together."""
+        """Execute-task reject + variant.errored + idea.completed all commit together."""
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execute_task("t-exec", "p1")

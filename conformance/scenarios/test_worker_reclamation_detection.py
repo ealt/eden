@@ -90,7 +90,7 @@ def test_worker_view_after_reclamation_invalidates_prior_token(
     # 4. Old token cannot complete the pre-reclaim work. Per §4.2,
     # a resubmit against a cleared-claim task MUST be rejected
     # regardless of the presented token.
-    submit_resp = _seed.submit_ideate(wire_client, tid, token=original_token)
+    submit_resp = _seed.submit_idea(wire_client, tid, token=original_token)
     assert submit_resp.status_code in (403, 409), (
         f"§5.3 violated: submit with invalidated token returned "
         f"{submit_resp.status_code} (expected 403 or 409)"
@@ -117,7 +117,7 @@ def test_worker_view_after_reclamation_invalidates_prior_token(
 
     # The old token MUST still be rejected even though the task is
     # now claimed by the same worker_id again.
-    post_reclaim_submit = _seed.submit_ideate(
+    post_reclaim_submit = _seed.submit_idea(
         wire_client, tid, token=original_token
     )
     assert post_reclaim_submit.status_code == 403, (

@@ -62,7 +62,7 @@ def test_implement_dispatch_atomic(
 def test_implement_terminal_completes_idea(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/05-event-protocol.md §2.2 — implement terminal + idea completed atomic.
+    """spec/v0/05-event-protocol.md §2.2 — execute-task terminal + idea-completed atomic.
 
     Asserts BOTH `task.completed` (on the execute task) AND
     `idea.completed` (on the referenced idea) appear; per
@@ -103,7 +103,7 @@ def test_implement_terminal_fails_idea(
     impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
     impl_claim = _seed.claim(wire_client, impl_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
-    _seed.submit_execute(
+    _seed.submit_execution(
         wire_client,
         impl_tid,
         token=impl_claim["token"],
@@ -158,7 +158,7 @@ def test_evaluate_terminal_error_emits_variant_errored(
     variant_id = _seed.drive_to_starting_variant(wire_client)
     eval_tid = _seed.create_evaluate_task(wire_client, variant_id=variant_id)
     eval_claim = _seed.claim(wire_client, eval_tid)
-    _seed.submit_evaluate(
+    _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=eval_claim["token"],
@@ -193,7 +193,7 @@ def test_evaluate_terminal_eval_error_keeps_variant_starting(
     variant_id = _seed.drive_to_starting_variant(wire_client)
     eval_tid = _seed.create_evaluate_task(wire_client, variant_id=variant_id)
     eval_claim = _seed.claim(wire_client, eval_tid)
-    _seed.submit_evaluate(
+    _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=eval_claim["token"],

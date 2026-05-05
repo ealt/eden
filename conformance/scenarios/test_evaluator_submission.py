@@ -28,7 +28,7 @@ def test_submit_with_mismatched_variant_id_rejected(wire_client: WireClient) -> 
     """
     eval_tid, _variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -53,7 +53,7 @@ def test_success_evaluation_outside_schema_must_not_complete_variant(
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -95,7 +95,7 @@ def test_success_metric_wrong_type_must_not_complete_variant(
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -141,7 +141,7 @@ def test_success_writes_variant_fields_post_accept(
     c = _seed.claim(wire_client, eval_tid)
     evaluation={"score": 0.75, "retries": 3}
     artifacts_uri = "file:///tmp/eden-conformance-success-artifacts"
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -182,7 +182,7 @@ def test_status_error_writes_variant_evaluation_and_artifacts(
     c = _seed.claim(wire_client, eval_tid)
     evaluation={"score": 0.0, "retries": 5}
     artifacts_uri = "file:///tmp/eden-conformance-error-artifacts"
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -214,7 +214,7 @@ def test_eval_error_keeps_variant_starting_and_does_not_graft_evaluation(
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -243,7 +243,7 @@ def test_retry_exhausted_eval_error_does_not_graft_prior_evaluation(
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -280,7 +280,7 @@ def test_resubmit_idempotent_under_role_rules(
     c = _seed.claim(wire_client, eval_tid)
     evaluation={"score": 0.9, "retries": 0}
     artifacts_uri = "file:///tmp/eden-conformance-idem-baseline"
-    r1 = _seed.submit_evaluate(
+    r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -289,7 +289,7 @@ def test_resubmit_idempotent_under_role_rules(
         artifacts_uri=artifacts_uri,
     )
     assert r1.status_code == 200, r1.text
-    r2 = _seed.submit_evaluate(
+    r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -324,7 +324,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
     evaluation={"score": 0.5, "retries": 1}
     first_uri = "file:///tmp/eden-conformance-first"
     second_uri = "file:///tmp/eden-conformance-second"
-    r1 = _seed.submit_evaluate(
+    r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -333,7 +333,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
         artifacts_uri=first_uri,
     )
     assert r1.status_code == 200, r1.text
-    r2 = _seed.submit_evaluate(
+    r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],

@@ -287,7 +287,7 @@ def seed_evaluate_task(
 
 
 def get_evaluate_submission(store: InMemoryStore, task_id: str):
-    """Read and type-narrow an evaluate submission for evaluator-module tests.
+    """Read and type-narrow an evaluate-task submission for evaluator-module tests.
 
     Pyright treats ``Store.read_submission`` as returning the
     ``Submission`` union; tests that need to access

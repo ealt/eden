@@ -242,7 +242,7 @@ class TestExperimentIdentityIsEnforced:
         first.close()
 
         second = SqliteStore("exp-a", path, token_factory=_token_seq())
-        # Drive a full variant to the point of an evaluate submit and
+        # Drive a full variant to the point of an evaluate-task submission and
         # assert the inherited schema rejects a wrong-type metric.
         second.create_idea(
             Idea(
@@ -397,7 +397,7 @@ class TestRunExperimentAcrossRestarts:
         # Run ideator + executor only; leave variant awaiting evaluation.
         first.create_ideate_task("t-ideate-01")
         ideator.run_pending(first)
-        # Finalize ideate submission manually (normally the orchestrator service does this).
+        # Finalize ideate-task submission manually (normally the orchestrator service does this).
         decision, _ = first.validate_terminal("t-ideate-01")
         assert decision == "accept"
         first.accept("t-ideate-01")

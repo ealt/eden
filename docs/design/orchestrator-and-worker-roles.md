@@ -57,7 +57,7 @@ Mapping examples:
 | "Any ideator" | ``null`` |
 | "Teammate Alice specifically" | ``alice`` |
 
-### 2. Ideate task creation: shared between auto-orchestrator and humans
+### 2. Ideate-task creation: shared between auto-orchestrator and humans
 
 Today the orchestrator pre-seeds N ideate tasks at startup and never
 creates more. This conflates "experiment planning capacity" with
@@ -149,7 +149,7 @@ If the auto-orchestrator was faster and already dispatched, operator
 uses ``reassign(task_id, new_target)`` instead.
 
 The pause is per-decision-type, not global. Humans pausing "evaluate
-dispatch" doesn't stop "execute dispatch" or integration.
+dispatch" doesn't stop "execute-task dispatch" or integration.
 
 ### 7. Task reassignment
 

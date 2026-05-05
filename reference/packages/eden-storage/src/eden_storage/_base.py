@@ -641,7 +641,7 @@ class _StoreBase:
         if isinstance(submission, IdeateSubmission):
             if submission.status != "success":
                 return None
-            return self._validate_plan_acceptance(submission)
+            return self._validate_ideate_acceptance(submission)
         if isinstance(submission, ExecuteSubmission):
             if submission.status != "success":
                 return None
@@ -715,7 +715,7 @@ class _StoreBase:
                     f"task {task_id!r} is submitted but has no recorded submission"
                 )
             if task.kind == "ideate":
-                self._accept_plan(task, submission)
+                self._accept_ideate(task, submission)
             elif task.kind == "execute":
                 self._accept_execute(task, submission)
             else:
@@ -740,7 +740,7 @@ class _StoreBase:
                     f"task {task_id!r} is submitted but has no recorded submission"
                 )
             if task.kind == "ideate":
-                self._reject_plan(task, reason)
+                self._reject_ideate(task, reason)
             elif task.kind == "execute":
                 self._reject_execute(task, submission, reason)
             else:
@@ -935,9 +935,9 @@ class _StoreBase:
     # Internal dispatch — accept/reject helpers
     # ------------------------------------------------------------------
 
-    def _accept_plan(self, task: Task, submission: Submission) -> None:
+    def _accept_ideate(self, task: Task, submission: Submission) -> None:
         assert isinstance(submission, IdeateSubmission)
-        reason = self._validate_plan_acceptance(submission)
+        reason = self._validate_ideate_acceptance(submission)
         if reason is not None:
             raise IllegalTransition(
                 f"cannot accept ideate {task.task_id!r}: {reason}"
@@ -950,7 +950,7 @@ class _StoreBase:
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         self._apply_commit(tx)
 
-    def _reject_plan(self, task: Task, reason: FailReason) -> None:
+    def _reject_ideate(self, task: Task, reason: FailReason) -> None:
         now = self._ts()
         tx = _Tx()
         tx.tasks[task.task_id] = _validated_update(
@@ -1128,10 +1128,10 @@ class _StoreBase:
 
         Per ``04-task-protocol.md`` §4.1, the submission's result
         payload is scoped to the task it is being submitted against.
-        A ideate submission's idea_ids must reference existing
-        ideas (03-roles §2.4); an execute submission's
+        An ideate-task submission's idea_ids must reference existing
+        ideas (03-roles §2.4); an execute-task submission's
         variant_id must refer to a variant under the task's idea
-        (03-roles §3.4); an evaluate submission's variant_id must
+        (03-roles §3.4); an evaluate-task submission's variant_id must
         equal the task payload's variant_id (03-roles §4.4).
         """
         if isinstance(submission, IdeateSubmission):
@@ -1139,11 +1139,11 @@ class _StoreBase:
                 idea = self._get_idea(pid)
                 if idea is None:
                     raise IllegalTransition(
-                        f"ideate submission references unknown idea {pid!r}"
+                        f"ideate-task submission references unknown idea {pid!r}"
                     )
                 if idea.state == "drafting":
                     raise IllegalTransition(
-                        f"ideate submission references drafting idea {pid!r}; "
+                        f"ideate-task submission references drafting idea {pid!r}; "
                         "ideator MUST NOT submit while ideas are in drafting "
                         "(03-roles.md §2.4)"
                     )
@@ -1152,12 +1152,12 @@ class _StoreBase:
             variant = self._get_variant(submission.variant_id)
             if variant is None:
                 raise IllegalTransition(
-                    f"execute submission references unknown variant "
+                    f"execute-task submission references unknown variant "
                     f"{submission.variant_id!r}"
                 )
             if variant.idea_id != task.payload.idea_id:
                 raise IllegalTransition(
-                    f"execute submission variant_id={submission.variant_id!r} "
+                    f"execute-task submission variant_id={submission.variant_id!r} "
                     f"belongs to idea {variant.idea_id!r}, not the "
                     f"task's idea {task.payload.idea_id!r}"
                 )
@@ -1165,11 +1165,11 @@ class _StoreBase:
             assert isinstance(task, EvaluateTask)
             if submission.variant_id != task.payload.variant_id:
                 raise IllegalTransition(
-                    f"evaluate submission variant_id={submission.variant_id!r} "
+                    f"evaluate-task submission variant_id={submission.variant_id!r} "
                     f"does not match task's variant {task.payload.variant_id!r}"
                 )
 
-    def _validate_plan_acceptance(self, submission: IdeateSubmission) -> str | None:
+    def _validate_ideate_acceptance(self, submission: IdeateSubmission) -> str | None:
         for pid in submission.idea_ids:
             idea = self._get_idea(pid)
             if idea is None:
@@ -1240,7 +1240,7 @@ class _StoreBase:
     def _validate_evaluate_error(
         self, task: EvaluateTask, submission: EvaluateSubmission
     ) -> str | None:
-        """Validate fields that a `status=error` evaluate submit would write."""
+        """Validate fields that a `status=error` evaluate-task submission would write."""
         if submission.variant_id != task.payload.variant_id:
             return "submission variant_id does not match task's variant_id"
         variant = self._get_variant(submission.variant_id)

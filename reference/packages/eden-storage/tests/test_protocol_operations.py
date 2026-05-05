@@ -90,7 +90,7 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
             started_at="2026-04-23T00:00:00.000Z",
         )
     )
-    # Set commit_sha via a round-trip through execute dispatch/accept
+    # Set commit_sha via a round-trip through execute-task dispatch/accept
     from eden_storage import ExecuteSubmission
 
     store.create_execute_task(f"t-bootstrap-{variant_id}", idea_id)

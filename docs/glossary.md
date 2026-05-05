@@ -117,9 +117,9 @@ machines, even when conceptually similar. Worth knowing the mapping:
 | Task | `state` | `pending` → `claimed` → `submitted` → `completed` (or `failed`) |
 | Idea | `state` | `drafting` → `ready` → `dispatched` → `completed` |
 | Variant | `status` | `starting` → `success` (or `error`, `eval_error`) |
-| Ideate submission | `status` | `success`, `error` |
-| Execute submission | `status` | `success`, `error` |
-| Evaluate submission | `status` | `success`, `error`, `eval_error` |
+| Ideate-task submission | `status` | `success`, `error` |
+| Execute-task submission | `status` | `success`, `error` |
+| Evaluate-task submission | `status` | `success`, `error`, `eval_error` |
 
 **state vs. status** is intentional: tasks/ideas use `state` (the
 protocol's lifecycle); variants and submissions use `status`

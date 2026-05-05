@@ -76,7 +76,7 @@ Lines emitted before `ready` are treated as debug-only and dropped.
 If `ready` is not received within the host's startup deadline, the
 host kills the subprocess.
 
-### 2.2 Ideate dispatch
+### 2.2 Ideate-task dispatch
 
 For each ideate task, the host writes one stdin line of the form:
 

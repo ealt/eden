@@ -14,7 +14,7 @@ next.
 
 Finalization honors ``04-task-protocol.md`` §4.3: a submission that
 declared ``success`` but does not satisfy the role's success contract,
-or a `status="error"` evaluate submission whose metrics/artifacts_uri
+or a `status="error"` evaluate-task submission whose metrics/artifacts_uri
 would fail validation, turns into ``task.failed`` with
 ``reason=validation_error``. The orchestrator asks the store via
 ``validate_terminal`` which terminal transition to issue — accept,

@@ -46,7 +46,7 @@ def test_task_submitted_carries_task_id(
     """spec/v0/05-event-protocol.md §3.1 — task.submitted data has task_id."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_ideate(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, token=c["token"])
     [event] = _by_type_for(event_log.replay_all(), "task.submitted", task_id=tid)
     assert event["data"]["task_id"] == tid
 
@@ -57,7 +57,7 @@ def test_task_completed_carries_task_id(
     """spec/v0/05-event-protocol.md §3.1 — task.completed data has task_id."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_ideate(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, token=c["token"])
     _seed.accept(wire_client, tid)
     [event] = _by_type_for(event_log.replay_all(), "task.completed", task_id=tid)
     assert event["data"]["task_id"] == tid
@@ -69,7 +69,7 @@ def test_task_failed_carries_reason(
     """spec/v0/05-event-protocol.md §3.1 — task.failed data has task_id, reason."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_ideate(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, token=c["token"])
     _seed.reject(wire_client, tid, reason="validation_error")
     [event] = _by_type_for(event_log.replay_all(), "task.failed", task_id=tid)
     assert event["data"]["task_id"] == tid
@@ -186,7 +186,7 @@ def test_variant_eval_errored_carries_variant_id(
     impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
     impl_claim = _seed.claim(wire_client, impl_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
-    _seed.submit_execute(
+    _seed.submit_execution(
         wire_client,
         impl_tid,
         token=impl_claim["token"],

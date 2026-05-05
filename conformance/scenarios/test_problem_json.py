@@ -51,7 +51,7 @@ def test_problem_json_403_wrong_token(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §7 — 403 wrong-token returns problem+json envelope."""
     tid = _seed.create_ideate_task(wire_client)
     _seed.claim(wire_client, tid)
-    r = _seed.submit_ideate(wire_client, tid, token="WRONG")
+    r = _seed.submit_idea(wire_client, tid, token="WRONG")
     assert r.status_code == 403
     _assert_content_type(r.headers)
     _assert_problem_envelope(403, r.json(), str(r.request.url))

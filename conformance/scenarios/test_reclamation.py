@@ -36,7 +36,7 @@ def test_reclaim_operator_from_submitted(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §5.1 — operator reclaim from submitted."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_ideate(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, token=c["token"])
     r = _seed.reclaim(wire_client, tid, cause="operator")
     assert 200 <= r.status_code < 300
     task = _seed.read_task(wire_client, tid)
@@ -57,7 +57,7 @@ def test_reclaim_expired_against_submitted_rejected(wire_client: WireClient) -> 
     """spec/v0/04-task-protocol.md §5.1 — automatic reclaim cannot apply to submitted."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid, expires_at="2000-01-01T00:00:00Z")
-    _seed.submit_ideate(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, token=c["token"])
     r = _seed.reclaim(wire_client, tid, cause="expired")
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/illegal-transition"

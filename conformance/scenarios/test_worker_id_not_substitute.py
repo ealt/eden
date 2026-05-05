@@ -77,7 +77,7 @@ def test_token_from_other_task_rejected_even_with_same_worker_id(
     assert claim_b["worker_id"] == same_worker_id
 
     # The probe: submit task B using task A's token.
-    resp = _seed.submit_ideate(wire_client, task_b, token=token_a)
+    resp = _seed.submit_idea(wire_client, task_b, token=token_a)
 
     assert resp.status_code == 403, (
         f"§3.2 line 74 violated: submit on task B with token from task A "
@@ -92,7 +92,7 @@ def test_token_from_other_task_rejected_even_with_same_worker_id(
 
     # Confirm the converse: token B against task B is honored. If
     # this fails the test environment is broken, not the IUT.
-    sanity = _seed.submit_ideate(wire_client, task_b, token=token_b)
+    sanity = _seed.submit_idea(wire_client, task_b, token=token_b)
     assert sanity.status_code == 200, (
         f"sanity check failed: token B on task B returned "
         f"{sanity.status_code} (expected 200). Body: {sanity.text}"

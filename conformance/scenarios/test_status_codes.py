@@ -68,7 +68,7 @@ def test_submit_wrong_token_returns_403(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.4 — wrong token returns 403 wrong-token."""
     tid = _seed.create_ideate_task(wire_client)
     _seed.claim(wire_client, tid)
-    r = _seed.submit_ideate(wire_client, tid, token="wrong")
+    r = _seed.submit_idea(wire_client, tid, token="wrong")
     assert r.status_code == 403
     assert r.json().get("type") == "eden://error/wrong-token"
 
@@ -81,8 +81,8 @@ def test_submit_divergent_returns_409(wire_client: WireClient) -> None:
     _seed.mark_idea_ready(wire_client, pid_b)
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_ideate(wire_client, tid, token=c["token"], idea_ids=[pid_a])
-    r = _seed.submit_ideate(wire_client, tid, token=c["token"], idea_ids=[pid_b])
+    _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_a])
+    r = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_b])
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/conflicting-resubmission"
 

@@ -111,7 +111,7 @@ def claim(
     return resp.json()
 
 
-def submit_ideate(
+def submit_idea(
     client: WireClient,
     task_id: str,
     *,
@@ -130,7 +130,7 @@ def submit_ideate(
     )
 
 
-def submit_execute(
+def submit_execution(
     client: WireClient,
     task_id: str,
     *,
@@ -152,7 +152,7 @@ def submit_execute(
     )
 
 
-def submit_evaluate(
+def submit_evaluation(
     client: WireClient,
     task_id: str,
     *,
@@ -301,7 +301,7 @@ def drive_to_starting_variant(
         idea_id=pid,
         status="starting",
     )
-    r = submit_execute(
+    r = submit_execution(
         client,
         impl_tid,
         token=impl_claim["token"],
@@ -349,7 +349,7 @@ def drive_to_error_variant(
         idea_id=pid,
         status="starting",
     )
-    r = submit_execute(
+    r = submit_execution(
         client,
         impl_tid,
         token=impl_claim["token"],
@@ -411,7 +411,7 @@ def drive_to_success_variant(
     )
     eval_tid = create_evaluate_task(client, variant_id=variant_id)
     eval_claim = claim(client, eval_tid, worker_id="eval-worker")
-    r = submit_evaluate(
+    r = submit_evaluation(
         client,
         eval_tid,
         token=eval_claim["token"],

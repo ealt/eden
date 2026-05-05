@@ -28,7 +28,7 @@ from eden_storage import IdeateSubmission, Store
 log = logging.getLogger(__name__)
 
 _HISTORY_LIMIT = 50
-"""Cap on completed-variant history attached to each ideate dispatch."""
+"""Cap on completed-variant history attached to each ideate-task dispatch."""
 
 
 WrapResult = tuple[str, Callable[[], None] | None, list[Callable[[], None]]]
@@ -151,7 +151,7 @@ class IdeatorSubprocess:
 
     def dispatch_plan(self, *, task: IdeateTask, history: list[dict], experiment_id: str,
                       objective: dict, evaluation_schema: dict) -> tuple[dict, list[dict]]:
-        """Send a ideate dispatch and collect ideas until terminator.
+        """Send a ideate-task dispatch and collect ideas until terminator.
 
         Returns a tuple ``(terminator_obj, idea_dicts)`` where
         ``terminator_obj`` is the parsed terminator line (event is
