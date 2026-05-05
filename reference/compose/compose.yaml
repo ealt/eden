@@ -208,7 +208,7 @@ services:
       - --poll-interval
       - "1.0"
       - --max-quiescent-iterations
-      - "36000"
+      - "30"
       - --log-level
       - info
     volumes:

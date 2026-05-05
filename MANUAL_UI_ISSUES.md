@@ -57,9 +57,20 @@ when Phase 12 lands.
   signal for "this experiment is done"; that's a state transition, not a
   process exit, and other experiments keep running.
 
-**Workaround applied in this worktree.** Bumped `--max-quiescent-iterations`
-to 36000 in `reference/compose/compose.yaml` (~10 hours at 1s poll). Crude
-but unblocks manual sessions today.
+**Workaround attempted in this worktree (and reverted).** The WIP commit
+on this branch bumped `--max-quiescent-iterations` to 36000 in
+`reference/compose/compose.yaml` (~10 hours at 1s poll) so manual-UI
+sessions wouldn't have the orchestrator quiesce-exit out from under
+them. That broke all four `compose-*` CI smoke jobs because their
+180s budget can't accommodate a 10-hour quiescence wait. Reverted
+to the original `30` (= 30s) value so smoke passes; the
+quiesce-exit-on-experiment-end design issue is still open and
+remains the substantive resolution direction above. A manual-UI
+operator who needs to keep the orchestrator alive past quiescence
+can override per-stack via `EDEN_MAX_QUIESCENT_ITERATIONS` (or by
+invoking the orchestrator service directly with a high value) —
+adding that env-var gate to compose.yaml is a small follow-up if
+the manual-UI workflow needs it routinely.
 
 ---
 
