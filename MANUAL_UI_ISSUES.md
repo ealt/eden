@@ -78,7 +78,7 @@ the operational escape hatch in the meantime.
 
 ---
 
-## 2. Ideator draft form loses typed state if you navigate after a validation error
+## 2. ✅ Resolved (commit c30cafa). Ideator draft form loses typed state if you navigate after a validation error
 
 **What happened.** Filled in ideas on the ideator page, hit submit
 without parent_commits SHA → got a validation error. Couldn't recover by
@@ -105,6 +105,15 @@ validation) rather than always rendering an empty row.
   away" warning. A banner would help.
 - Consider rendering the draft state in `localStorage` so an accidental
   refresh doesn't lose work even before the first submit.
+
+**Resolved (commit c30cafa).** Added a `_DRAFT_BUFFERS: dict[(csrf,
+task_id), list[row]]` keyed identically to `_CLAIMS` (so the buffer
+naturally dies with the session). Written on every POST that carries
+idea rows: `add_row` (both no-JS and HTMX paths) and `submit_plan`
+(validation-error re-render). Read by `GET /ideator/<task>/draft`
+when present. Cleared on successful submit and on `status=error`
+submit. The two adjacent fixes (warning banner / `localStorage`)
+remain open as smaller follow-ups.
 
 ---
 
@@ -180,7 +189,7 @@ fetch-on-server, paste SHA).
 
 ---
 
-## 6. Orchestrator crashes the whole process on a malformed variant
+## 6. ✅ Resolved (commit 17d35d7). Orchestrator crashes the whole process on a malformed variant
 
 **What happened.** Built a CLI execute-submit that POSTed `create_variant`
 without setting the `branch` field. The first such variant reached
@@ -218,9 +227,24 @@ one variant's brokenness doesn't take down the whole dispatcher.
 (now fixed). But the orchestrator's blast radius for any *future*
 malformed variant state is what makes this a real issue.
 
+**Resolved (commit 17d35d7).** Picked the "log + skip" candidate.
+`_promote_successful_variants` in
+[`reference/packages/eden-dispatch/src/eden_dispatch/driver.py`](reference/packages/eden-dispatch/src/eden_dispatch/driver.py)
+now wraps each `integrate_variant(variant.variant_id)` in a broad
+`try/except` that logs and continues. The malformed variant stays in
+`status=success` without a `variant_commit_sha` (operator can
+investigate via the admin UI); healthy variants in the same iteration
+still promote. Quiescence accounting only counts true forward motion,
+so a logged-and-skipped exception does NOT mask itself by faking
+progress. Two regression tests added in
+[`reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`](reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py).
+The two stronger candidates (server-side validity check at
+`create_variant`; surfacing as a recoverable variant state) remain
+open follow-ups.
+
 ---
 
-## 7. `_dispatch_evaluate` requires `variant.branch` indirectly via integration
+## 7. ✅ Resolved (commit 17d35d7, same root cause as #6). `_dispatch_evaluate` requires `variant.branch` indirectly via integration
 
 **What happened.** When the broken variant blocked integration, evaluate
 tasks for *other* variants were still dispatched correctly — confirmed by

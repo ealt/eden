@@ -252,3 +252,125 @@ def test_quiesced_store_returns_false() -> None:
         evaluate_task_id_factory=_eval_factory,
     )
     assert progress is False
+
+
+def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
+    """MANUAL_UI_ISSUES #6 / #7 — a malformed variant must not bring the orchestrator down.
+
+    Before the fix, a single ``success`` variant whose integration
+    callback raised (e.g. ``NotReadyForIntegration`` because
+    ``branch`` was missing on the variant record) would propagate up
+    through ``_promote_successful_variants`` →
+    ``run_orchestrator_iteration`` → the orchestrator's main loop and
+    crash the process. Combined with ``restart: on-failure``, this
+    produced a tight crash loop until an operator hand-patched the
+    bad variant.
+
+    The fix logs + skips per-variant exceptions. Healthy variants in
+    the same iteration must still promote.
+    """
+    import logging
+
+    store = _make_store()
+    bad_id = _drive_variant_to_success(store)
+    # Drive a second variant to success so we can confirm a healthy
+    # one in the same iteration still gets promoted.
+    now = _now_factory()
+    idea = Idea(
+        idea_id="p-good",
+        experiment_id=store.experiment_id,
+        slug="feat-good",
+        priority=1.0,
+        parent_commits=["a" * 40],
+        artifacts_uri="file:///tmp/artifacts",
+        state="drafting",
+        created_at=now(),
+    )
+    store.create_idea(idea)
+    store.mark_idea_ready("p-good")
+    store.create_execute_task("t-exec-good", "p-good")
+    claim = store.claim("t-exec-good", "executor-1")
+    good_variant = Variant(
+        variant_id="tr-good",
+        experiment_id=store.experiment_id,
+        idea_id="p-good",
+        status="starting",
+        parent_commits=["a" * 40],
+        branch="work/feat-good",
+        started_at=now(),
+    )
+    store.create_variant(good_variant)
+    store.submit(
+        "t-exec-good",
+        claim.token,
+        ExecuteSubmission(status="success", variant_id="tr-good", commit_sha="d" * 40),
+    )
+    store.accept("t-exec-good")
+    store.create_evaluate_task("t-eval-good", "tr-good")
+    eclaim = store.claim("t-eval-good", "evaluator-1")
+    store.submit(
+        "t-eval-good",
+        eclaim.token,
+        EvaluateSubmission(status="success", variant_id="tr-good", evaluation={"loss": 0.4}),
+    )
+    store.accept("t-eval-good")
+
+    promoted: list[str] = []
+
+    def integrate(variant_id: str) -> None:
+        if variant_id == bad_id:
+            raise RuntimeError(f"variant '{variant_id}' has no branch")
+        promoted.append(variant_id)
+        store.integrate_variant(variant_id, "c" * 40)
+
+    with caplog.at_level(logging.ERROR, logger="eden_dispatch.driver"):
+        # Must not raise.
+        progress = run_orchestrator_iteration(
+            store,
+            implement_task_id_factory=_impl_factory,
+            evaluate_task_id_factory=_eval_factory,
+            integrate_variant=integrate,
+        )
+
+    # The healthy variant promoted; progress reflects that.
+    assert progress is True
+    assert promoted == ["tr-good"]
+    assert store.read_variant("tr-good").variant_commit_sha == "c" * 40
+    # The bad variant is still success without an integration commit
+    # (operator can investigate via the admin UI).
+    bad = store.read_variant(bad_id)
+    assert bad.status == "success"
+    assert bad.variant_commit_sha is None
+    # The exception was logged.
+    assert any(
+        "integrate_variant raised" in r.message and bad_id in r.message
+        for r in caplog.records
+    )
+
+
+def test_only_malformed_variant_returns_false_progress(caplog) -> None:
+    """If the only success variant is malformed, the iteration reports no progress.
+
+    A logged-and-skipped exception MUST NOT count as a true forward
+    transition for quiescence accounting; otherwise a steady stream of
+    crashes-as-progress would mask the malformed variant from
+    operators relying on quiesce-exit timing.
+    """
+    import logging
+
+    store = _make_store()
+    bad_id = _drive_variant_to_success(store)
+
+    def integrate(variant_id: str) -> None:
+        raise RuntimeError(f"variant '{variant_id}' has no branch")
+
+    with caplog.at_level(logging.ERROR, logger="eden_dispatch.driver"):
+        progress = run_orchestrator_iteration(
+            store,
+            implement_task_id_factory=_impl_factory,
+            evaluate_task_id_factory=_eval_factory,
+            integrate_variant=integrate,
+        )
+
+    assert progress is False
+    assert store.read_variant(bad_id).variant_commit_sha is None

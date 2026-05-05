@@ -24,10 +24,13 @@ action.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from eden_contracts import EvaluateTask
 from eden_storage import Store
+
+_log = logging.getLogger(__name__)
 
 
 def run_orchestrator_iteration(
@@ -106,11 +109,34 @@ def _dispatch_evaluate_tasks(
 def _promote_successful_variants(
     store: Store, integrate_variant: Callable[[str], object]
 ) -> bool:
+    """Promote each ``success`` variant whose integration hasn't run yet.
+
+    Per-variant exceptions are caught, logged, and skipped so one
+    malformed variant cannot crash the orchestrator process. A variant
+    that raises (e.g. ``NotReadyForIntegration`` because ``branch`` is
+    missing) stays in ``status=success`` without a
+    ``variant_commit_sha`` — the operator can investigate it via the
+    admin UI without blocking promotion of healthy variants. Without
+    this guard a single bad variant + ``restart: on-failure`` produces
+    a tight crash loop that wedges the deployment.
+
+    Returns ``True`` if at least one variant was successfully
+    promoted; a per-variant exception does NOT count as progress, so
+    the orchestrator's quiescence accounting reflects only real
+    forward motion.
+    """
     progress = False
     for variant in store.list_variants(status="success"):
         if variant.variant_commit_sha is not None:
             continue
-        integrate_variant(variant.variant_id)
+        try:
+            integrate_variant(variant.variant_id)
+        except Exception:  # noqa: BLE001 — deliberately broad
+            _log.exception(
+                "integrate_variant raised for variant %s; skipping",
+                variant.variant_id,
+            )
+            continue
         progress = True
     return progress
 

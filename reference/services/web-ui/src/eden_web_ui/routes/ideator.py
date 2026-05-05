@@ -47,6 +47,15 @@ router = APIRouter(prefix="/ideator")
 # recovers stranded tasks (eden_dispatch.sweep_expired_claims).
 _CLAIMS: dict[tuple[str, str], str] = {}
 
+# In-memory mapping of (csrf_token, task_id) -> draft form rows. Holds
+# the most-recently-typed idea rows so a navigation away from the
+# claim/submit page (back button, refresh, nav click) doesn't lose the
+# user's input. Same key shape as _CLAIMS so the buffer naturally dies
+# with the session; cleared on successful submit / status=error
+# submit. Written on every POST that carries idea rows
+# (add_row + submit, including validation-error re-render).
+_DRAFT_BUFFERS: dict[tuple[str, str], list[dict[str, str]]] = {}
+
 
 def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
     return (session_csrf, task_id)
@@ -123,6 +132,8 @@ async def draft_form(
             status_code=303,
         )
     config = request.app.state.experiment_config
+    buffered = _DRAFT_BUFFERS.get(_claim_key(session.csrf, task_id))
+    form_state = buffered if buffered else [_empty_row()]
     return request.app.state.templates.TemplateResponse(
         request,
         "ideator_claim.html",
@@ -132,8 +143,8 @@ async def draft_form(
             "objective": config.objective,
             "evaluation_schema": config.evaluation_schema.root,
             "errors": None,
-            "form_state": [_empty_row()],
-            "row_indices": [0],
+            "form_state": form_state,
+            "row_indices": list(range(len(form_state))),
         },
     )
 
@@ -167,6 +178,17 @@ async def add_row(task_id: str, request: Request):
             request, "/ideator/?banner=claim+missing+from+session"
         )
 
+    slugs = [str(v) for v in form.getlist("slug")]
+    priorities = [str(v) for v in form.getlist("priority")]
+    parents = [str(v) for v in form.getlist("parent_commits")]
+    rationales = [str(v) for v in form.getlist("rationale")]
+    typed_state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+    # Persist typed input so a navigation away + return to GET /draft
+    # re-hydrates the form. Append the new empty row so the buffered
+    # row count matches what was just rendered.
+    state = typed_state + [_empty_row()]
+    _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = state
+
     if is_htmx_request(request):
         # The htmx-enhanced path: figure out where the new row goes
         # by counting existing rows in the form, then render only
@@ -185,12 +207,6 @@ async def add_row(task_id: str, request: Request):
         )
 
     config = request.app.state.experiment_config
-    slugs = [str(v) for v in form.getlist("slug")]
-    priorities = [str(v) for v in form.getlist("priority")]
-    parents = [str(v) for v in form.getlist("parent_commits")]
-    rationales = [str(v) for v in form.getlist("rationale")]
-    state = _form_state_from_inputs(slugs, priorities, parents, rationales)
-    state.append(_empty_row())
     return request.app.state.templates.TemplateResponse(
         request,
         "ideator_claim.html",
@@ -234,6 +250,7 @@ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | Redirect
         except DispatchError as exc:
             return _render_error(request, _wire_error_banner(exc))
         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+        _DRAFT_BUFFERS.pop(_claim_key(session.csrf, task_id), None)
         return _render_submitted(request, task_id, status="error", idea_ids=())
 
     slugs = [str(v) for v in form.getlist("slug")]
@@ -242,6 +259,10 @@ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | Redirect
     rationales = [str(v) for v in form.getlist("rationale")]
     drafts, errors = parse_idea_rows(slugs, priorities, parents, rationales)
     if errors:
+        form_state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+        # Buffer typed state so a navigation away + return to GET
+        # /draft re-hydrates the form (issue #2 in MANUAL_UI_ISSUES).
+        _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
         return request.app.state.templates.TemplateResponse(
             request,
             "ideator_claim.html",
@@ -251,7 +272,7 @@ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | Redirect
                 "objective": config.objective,
                 "evaluation_schema": config.evaluation_schema.root,
                 "errors": errors,
-                "form_state": _form_state_from_inputs(slugs, priorities, parents, rationales),
+                "form_state": form_state,
                 "row_indices": list(range(max(1, len(slugs) or 1))),
             },
             status_code=400,
@@ -300,6 +321,7 @@ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | Redirect
         return _render_orphaned(request, task_id, idea_ids, banner=banner)
 
     _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+    _DRAFT_BUFFERS.pop(_claim_key(session.csrf, task_id), None)
     return _render_submitted(
         request, task_id, status="success", idea_ids=tuple(idea_ids)
     )
