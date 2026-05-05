@@ -32,8 +32,8 @@ step is recommended as a follow-up audit per finding #24.
   - SHOULD NOT: 1
   - MAY: 100
 
-- MUST/MUST-NOT lines with at least one citing scenario: **73 / 323** (23% line-coverage)
-- MUST/MUST-NOT lines with NO citing scenario: **142**
+- MUST/MUST-NOT lines with at least one citing scenario: **75 / 323** (23% line-coverage)
+- MUST/MUST-NOT lines with NO citing scenario: **140**
 
 Line-coverage is a lower bound on assertion-coverage: many lines carry multiple distinct claims (e.g. a row that says "MUST X and MUST NOT Y" counts as one line). A future pass should split lines into individual claims before classifying gap level.
 
@@ -93,10 +93,10 @@ A fifth tag was added to the original four named in the auto-generated section a
 | §2 | 50 | MUST | A task enters `pending` with the listed required fields. | `(scenario)` | `test_create_task_pending` asserts state=="pending" and no claim. |
 | §2 | 55 | MUST | Execute-task creation + idea `ready→dispatched` MUST be atomic. | `(restatement)` | The cited `test_create_task_pending` only creates an ideate task; it doesn't exercise the execute-composite atomicity. The actual coverage lives in `test_composite_commits.py::test_implement_dispatch_atomic`, which cites `05-event-protocol.md §2.2` — chapter 04 §2 line 55's coverage hides because the matrix only walks within the cited chapter. **Cross-chapter ancestor walk would surface this.** |
 | §2 | 59 | MAY | (informative — a worker MAY rely on preconditions). | n/a | MAY, not a conformance contract. |
-| §3.1 | 65 | MUST | `pending → claimed` MUST be atomic with respect to competing claim attempts. | `(uncovered)` | No scenario cites §3.1. The atomicity claim is testable in principle (concurrent claim race) but no test drives it. **Real gap.** |
+| §3.1 | 65 | MUST | `pending → claimed` MUST be atomic with respect to competing claim attempts. | `(scenario)` | Closed by `test_claim_atomicity.py::test_concurrent_claim_at_most_one_succeeds` and `::test_concurrent_claim_yields_unique_winning_token` — N=8 threads at a barrier all POST /claim simultaneously; assert exactly one 200 success, all losers 409 illegal-transition, and the winning token matches the task's recorded claim. |
 | §3.2 | 71 | MUST | Token MUST be unique. | `(scenario)` | `test_token_unique_across_tasks` and `test_token_unique_across_reclaim_cycles` directly test cross-task and cross-cycle uniqueness. Note: line 71's "MUST be:" is a list-header; the testable bullet is uniqueness on line 72. |
 | §3.2 | 73 | MUST NOT | Token MUST NOT be forgeable. | `(consequence)` | Per chapter 09 §3 explicitly: "Black-box testing cannot prove the absence of a sufficiently-weak random source." The cited tests assert the testable consequence (uniqueness across observed claims). |
-| §3.2 | 74 | MUST NOT | `worker_id` MUST NOT be a substitute for the token in authorization. | `(restatement)` | The cited tests assert token uniqueness, not the authorization-by-token-not-worker-id rule. The actual rule is exercised by `test_wrong_token_rejected` (cited on line 80, not 74), which confirms wrong tokens are rejected. **Real gap if the worker_id-vs-token rule were violated independently of token rejection — but the rule's content makes that hard to violate alone.** |
+| §3.2 | 74 | MUST NOT | `worker_id` MUST NOT be a substitute for the token in authorization. | `(scenario)` | Closed by `test_worker_id_not_substitute.py::test_token_from_other_task_rejected_even_with_same_worker_id` — same worker holds claims on two tasks; submit on task B with task A's token (matching worker_id, mismatched token) MUST return 403 wrong-token. Catches the regression-shape "fall back to worker_id matching when token lookup mismatched". |
 | §3.2 | 76 | MAY | (informative — `expires_at` is OPTIONAL). | n/a | MAY. |
 | §3.3 | 80 | MUST | Every claim-holder op MUST present the current token. | `(scenario)` | `test_wrong_token_rejected` directly tests submit with wrong token returns 403 + `eden://error/wrong-token`. |
 | §3.4 | 84 | MUST | Claim attempt MUST be rejected against a non-pending task. | `(scenario)` | `test_no_reclaim_while_claimed` and `test_claim_rejected_when_not_pending` cover the claimed-state case; `test_terminal_completed_rejects_writes`/`test_terminal_failed_rejects_writes` cover the terminal-state case. |
@@ -112,7 +112,7 @@ A fifth tag was added to the original four named in the auto-generated section a
 | §5.1 | 137 | MAY, MUST NOT | Submitted state MAY only be reclaimed by operator; automatic reclaim MUST NOT apply to submitted. | `(scenario)` | `test_reclaim_expired_against_submitted_rejected` directly tests this. |
 | §5.1 | 139 | MUST NOT | Terminal task MUST NOT be reclaimed. | `(scenario)` | `test_terminal_rejects_reclaim` (in `test_task_lifecycle.py`) directly tests this; cites §5.1 ancestor-walk into §5. |
 | §5.2 | 145 | MUST | Reclamation invalidates the prior token; subsequent ops with it MUST be rejected. | `(scenario)` | `test_token_invalidated_by_reclaim` directly tests this. |
-| §5.3 | 154 | MUST, MUST NOT | Worker MUST discontinue work and MUST NOT submit if its token is invalidated. | `(uncovered)` | No scenario cites §5.3. This is a worker-side MUST, harder to test from the wire because the worker is the IUT-external party here. **Real gap of a different kind — needs a worker-IUT flavor of conformance to test.** |
+| §5.3 | 154 | MUST, MUST NOT | Worker MUST discontinue work and MUST NOT submit if its token is invalidated. | `(scenario)` | Closed (wire-observable consequences) by `test_worker_reclamation_detection.py::test_worker_view_after_reclamation_invalidates_prior_token` — claim → operator-reclaim → assert read_task shows pending+no-claim → assert old token rejected on submit (with cleared claim, distinct from `test_token_invalidated_by_reclaim`'s post-re-claim case) → assert fresh claim issues different token, old token still rejected. The strictly worker-side half ("MUST discontinue") remains structurally untestable from a wire-only IUT; this scenario binds the testable detection-and-rejection consequences §5.3 names. |
 | §5.4 | 158 | MUST | Orchestrator MUST reconcile role-owned objects per §5.4 rules. | `(scenario)` | `test_implement_reclaim_sets_starting_variant_to_error` directly tests the implement case (the only normative §5.4 case; plan and evaluate cases are MAY/no-op). |
 | §5.4 | 160 | MUST | Implement reclamation MUST transition starting variant to error atomically. | `(scenario)` | Same test as above — asserts both the variant-status transition AND the `variant.errored` event in the same composite commit. |
 | §5.4 | 161 | MAY | (informative — plan reclamation leaves drafting proposals as-is). | n/a | MAY. |
@@ -124,14 +124,18 @@ A fifth tag was added to the original four named in the auto-generated section a
 
 ### Per-tag counts (chapter 04, MUST/MUST-NOT rows only — MAY rows excluded)
 
-- `(scenario)`: **18** rows fully covered.
+After landing the three new chapter-04 gap-closing scenarios
+(test_claim_atomicity.py, test_worker_reclamation_detection.py,
+test_worker_id_not_substitute.py):
+
+- `(scenario)`: **21** rows fully covered (was 18; +3 from the new scenarios).
 - `(consequence)`: **2** rows covered as testable proxy (chapter 09 §3 black-box-impossible).
-- `(restatement)`: **2** rows where citation lands but assertion doesn't exercise the MUST.
-- `(uncovered)`: **5** rows with no citation.
+- `(restatement)`: **1** row where citation lands but assertion doesn't exercise the MUST (was 2; §3.2 line 74 promoted).
+- `(uncovered)`: **3** rows with no citation (was 5; §3.1 + §5.3 promoted).
 - `(schema)`: 0.
 - `(impl-only)`: 0.
 
-**Effective coverage** (`scenario` + `consequence`): 20 / 27 ≈ **74%** for chapter 04 — much higher than the matrix's auto-generated 23% line-coverage suggests, because the auto-count includes all chapter 04 rows (not filtering MAY) and doesn't credit `(consequence)` rows.
+**Effective coverage** (`scenario` + `consequence`): 23 / 27 ≈ **85%** for chapter 04 (was 74% before the gap-closing scenarios). The remaining 4 non-fully-covered rows are: §2 line 55 (cross-chapter-hidden, mechanical fix in the recommendation below), §6.1 + §6.3 (per-task serialization MUSTs that overlap with §1.3's `(consequence)`-tagged regression test), and §7 line 183 (cross-chapter-hidden, same mechanical fix).
 
 ### Cross-chapter coverage gaps surfaced (mechanical fixes)
 
@@ -142,11 +146,30 @@ Two of the five `(uncovered)` rows are actually covered by scenarios that cite a
 
 **Fix:** add a cross-chapter ancestor table to `scripts/conformance-coverage.py` that knows about composite-commit relationships (e.g. `04-task-protocol §2.55 ⇔ 05-event-protocol §2.2`). Or add per-test multi-citation in docstrings (e.g. `spec/v0/04-task-protocol.md §2; spec/v0/05-event-protocol.md §2.2`). The latter is mechanical.
 
-### Genuine gaps (3 rows; the other 4 are mechanical or covered by proxy)
+### Genuine gaps — all 3 named by the original pilot are now closed
 
-- §3.1 line 65: pending→claimed atomicity under concurrent claim attempts. Untested. Could be closed by a concurrent-claim race scenario.
-- §5.3 line 154: worker MUST detect reclamation. Worker-side MUST; hard to test from a wire-only IUT. Probably requires "worker-IUT flavor of conformance" or a mock-worker harness.
-- §3.2 line 74: `worker_id` MUST NOT substitute for token in authorization. The MUST is hard to violate independently of token-rejection (which IS tested), but a malicious IUT could conceivably accept an op authenticated only by `worker_id` match without checking the token. Closing this requires a test that submits with the correct `worker_id` but a wrong/missing token.
+All three genuine gaps the pilot named have new scenarios landing
+in this same PR:
+
+- §3.1 line 65 → `test_claim_atomicity.py` (concurrent-claim race).
+- §5.3 line 154 → `test_worker_reclamation_detection.py` (composite
+  detection-and-rejection chain; the worker-side "MUST
+  discontinue" half remains structurally wire-untestable per
+  chapter 09 §6, but the testable consequences §5.3 names are
+  now bound into one scenario).
+- §3.2 line 74 → `test_worker_id_not_substitute.py` (token from
+  task A rejected on task B even when same worker_id holds both).
+
+The remaining `(uncovered)` rows (§6.1, §6.3, §7 line 183) are not
+real-gap-shaped:
+
+- §6.1 + §6.3 overlap with §1.3's `(consequence)` regression test.
+  Closing them would mean a §6.1/§6.3 citation on the existing
+  `test_atomicity.py` test — mechanical, but the assertion is the
+  same regression-style proof of what black-box can't certify.
+- §7 line 183 is cross-chapter-hidden under
+  `05-event-protocol.md §2.2`'s composite-commit umbrella; the
+  recommendation below covers the mechanical fix.
 
 ### Methodology refinements surfaced during the pilot
 
@@ -255,8 +278,6 @@ Each row is a line in the spec that contains a MUST or MUST NOT and has no scena
 | `03-roles.md` | §4.3 | 137 | The evaluator reads the repository at the variant's worker-branch tip but MUST NOT push, rewrite, or delete that branch, and MUST NOT write to the canonical variant lineage. Any side effects of evaluation (test caches, … |
 | `03-roles.md` | §5.1 | 170 | The integrator is the **sole writer** of the canonical variant lineage (`variant/*` branches, `variant_commit_sha` fields on variants). Every other role MUST treat `variant/*` as read-only and MUST NOT set or modify a v… |
 | `03-roles.md` | §5.4 | 182 | Evaluation and integration are separate roles because a successful evaluation is a necessary but not sufficient condition for promoting a variant: the integrator applies experiment-level policy (squash shape, conflict r… |
-| `04-task-protocol.md` | §3.1 | 65 | The `pending → claimed` transition MUST be atomic with respect to competing claim attempts: at most one worker MAY succeed for any given task. A conforming task store MUST provide this guarantee as part of its durabilit… |
-| `04-task-protocol.md` | §5.3 | 154 | A worker that wishes to detect its own reclamation MAY observe its task's state or subscribe to events. If a worker discovers its token has been invalidated, it MUST discontinue work on the task and MUST NOT submit ([`0… |
 | `04-task-protocol.md` | §6.1 | 168 | All transitions on a single task MUST be serialized: the observable history of a task is a total order. A conforming task store MUST NOT expose a state to readers that has not yet been accompanied by its event. |
 | `04-task-protocol.md` | §6.3 | 176 | A subscriber that reads the event log MUST be able to reconstruct every task's state-machine history exactly. Implementations MAY provide faster paths (direct task reads, push notifications) but MUST NOT let those paths… |
 | `04-task-protocol.md` | §7 | 183 | **Implement submit.** A successful execute-task submission requires a variant created and advanced by the executor ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition of the execute task (whether `submitted … |
@@ -465,11 +486,11 @@ Within each chapter, lines are listed in order. The 'covered by' column lists `s
 | §2 | 50 | MUST | A task enters the system in the `pending` state. A conforming orchestrator MUST: | `test_task_lifecycle.py::test_create_task_pending` |
 | §2 | 55 | MUST | `implement` — `payload.idea_id` names an idea with `state == "ready"` at creation time. Creating the execute task and transitioning the idea from `"ready"` to `"dispatched"` MUST be atomic; an idea's `"dispatched"` stat… | `test_task_lifecycle.py::test_create_task_pending` |
 | §2 | 59 | MAY | A worker MAY rely on these preconditions ([`03-roles.md`](03-roles.md) §1.1). A task created without them is a protocol violation by the orchestrator. | `test_task_lifecycle.py::test_create_task_pending` |
-| §3.1 | 65 | MAY, MUST | The `pending → claimed` transition MUST be atomic with respect to competing claim attempts: at most one worker MAY succeed for any given task. A conforming task store MUST provide this guarantee as part of its durabilit… |  |
-| §3.2 | 71 | MUST | `token` — an opaque value that MUST be: | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks` |
-| §3.2 | 73 | MUST NOT | **unforgeable** — a worker that did not receive the token MUST NOT be able to construct a byte-equal value with practical effort. Implementations commonly use a cryptographically random value; the protocol does not mand… | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks` |
-| §3.2 | 74 | MAY, MUST NOT | `worker_id` — an identifier the worker supplies at claim time. The task store MAY record it for audit but MUST NOT use it as a substitute for the token when authorizing subsequent operations. | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks` |
-| §3.2 | 76 | MAY | `expires_at` — OPTIONAL. If present, the task store MAY reclaim the task when the current time exceeds this value (§5). | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks` |
+| §3.1 | 65 | MAY, MUST | The `pending → claimed` transition MUST be atomic with respect to competing claim attempts: at most one worker MAY succeed for any given task. A conforming task store MUST provide this guarantee as part of its durabilit… | `test_claim_atomicity.py::test_concurrent_claim_at_most_one_succeeds`, `test_claim_atomicity.py::test_concurrent_claim_yields_unique_winning_token` |
+| §3.2 | 71 | MUST | `token` — an opaque value that MUST be: | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks`, `test_worker_id_not_substitute.py::test_token_from_other_task_rejected_even_with_same_worker_id` |
+| §3.2 | 73 | MUST NOT | **unforgeable** — a worker that did not receive the token MUST NOT be able to construct a byte-equal value with practical effort. Implementations commonly use a cryptographically random value; the protocol does not mand… | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks`, `test_worker_id_not_substitute.py::test_token_from_other_task_rejected_even_with_same_worker_id` |
+| §3.2 | 74 | MAY, MUST NOT | `worker_id` — an identifier the worker supplies at claim time. The task store MAY record it for audit but MUST NOT use it as a substitute for the token when authorizing subsequent operations. | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks`, `test_worker_id_not_substitute.py::test_token_from_other_task_rejected_even_with_same_worker_id` |
+| §3.2 | 76 | MAY | `expires_at` — OPTIONAL. If present, the task store MAY reclaim the task when the current time exceeds this value (§5). | `test_claim_tokens.py::test_token_unique_across_reclaim_cycles`, `test_claim_tokens.py::test_token_unique_across_tasks`, `test_worker_id_not_substitute.py::test_token_from_other_task_rejected_even_with_same_worker_id` |
 | §3.3 | 80 | MUST | Every subsequent operation on a claimed task (progress update, submit, release) MUST present the current claim token. The task store MUST reject any such operation whose token does not match the token currently recorded… | `test_claim_tokens.py::test_wrong_token_rejected` |
 | §3.4 | 84 | MUST | A conforming task store MUST reject a claim attempt against a task whose `state` is not `pending`. In particular, a claimed task cannot be "re-claimed" by a different worker; the prior claim must first be released (by s… | `test_claim_tokens.py::test_no_reclaim_while_claimed`, `test_task_lifecycle.py::test_claim_rejected_when_not_pending` |
 | §4.2 | 100 | MUST | A resubmission is a second submit carrying the token recorded on the task's `claim` object (which is retained through `submitted` per [`02-data-model.md`](02-data-model.md) §3.4). A resubmit against a task whose claim h… | `test_submit_idempotency.py::test_evaluate_evaluation_compared_as_json`, `test_submit_idempotency.py::test_plan_idea_ids_compared_as_set`, `test_submit_idempotency.py::test_resubmit_content_equivalent_returns_200`, `test_submit_idempotency.py::test_resubmit_divergent_returns_409` |
@@ -484,7 +505,7 @@ Within each chapter, lines are listed in order. The 'covered by' column lists `s
 | §5.1 | 137 | MAY, MUST NOT | A task in `submitted` state MAY be reclaimed **only** by an explicit operator action; automatic reclaim (expires_at, health policy) MUST NOT apply to `submitted` tasks. After submit the worker's reachability is no longe… | `test_reclamation.py::test_reclaim_expired_against_submitted_rejected`, `test_reclamation.py::test_reclaim_expired_from_claimed`, `test_reclamation.py::test_reclaim_operator_from_claimed`, *+2 more* |
 | §5.1 | 139 | MUST NOT | A task store MUST NOT reclaim a task in a terminal state. | `test_reclamation.py::test_reclaim_expired_against_submitted_rejected`, `test_reclamation.py::test_reclaim_expired_from_claimed`, `test_reclamation.py::test_reclaim_operator_from_claimed`, *+2 more* |
 | §5.2 | 145 | MUST | 1. Invalidates the prior claim token. Subsequent operations presenting it MUST be rejected. | `test_claim_tokens.py::test_token_invalidated_by_reclaim` |
-| §5.3 | 154 | MAY, MUST, MUST NOT | A worker that wishes to detect its own reclamation MAY observe its task's state or subscribe to events. If a worker discovers its token has been invalidated, it MUST discontinue work on the task and MUST NOT submit ([`0… |  |
+| §5.3 | 154 | MAY, MUST, MUST NOT | A worker that wishes to detect its own reclamation MAY observe its task's state or subscribe to events. If a worker discovers its token has been invalidated, it MUST discontinue work on the task and MUST NOT submit ([`0… | `test_worker_reclamation_detection.py::test_worker_view_after_reclamation_invalidates_prior_token` |
 | §5.4 | 158 | MUST | When a reclaimed task had created role-owned objects during its prior execution, the orchestrator MUST reconcile those objects as follows: | `test_reclamation.py::test_implement_reclaim_sets_starting_variant_to_error` |
 | §5.4 | 160 | MUST | **Implement reclamation.** If the prior execution created a variant with `status == "starting"`, the orchestrator MUST transition that variant's `status` to `"error"` atomically with the reclaim event. A subsequent re-c… | `test_reclamation.py::test_implement_reclaim_sets_starting_variant_to_error` |
 | §5.4 | 161 | MAY | **Plan reclamation.** If the prior execution persisted ideas in `"drafting"` state, those ideas remain in `"drafting"` and are not dispatched. Implementations MAY expose them to operators for inspection or removal; the … | `test_reclamation.py::test_implement_reclaim_sets_starting_variant_to_error` |
