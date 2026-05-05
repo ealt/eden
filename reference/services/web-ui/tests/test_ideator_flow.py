@@ -753,3 +753,123 @@ class TestStrandedClaim:
         )
         assert n == 1
         assert store.read_task("t-strand").state == "pending"
+
+
+class TestDraftBufferReHydration:
+    """MANUAL_UI_ISSUES #2 — typed draft input survives navigation.
+
+    Before the fix, a user who hit a validation error and then
+    navigated away (back / refresh / nav click) and returned to
+    GET /ideator/<task>/draft saw an empty form. The claim was
+    still active in ``_CLAIMS`` but the typed values were gone.
+    The fix buffers form_state on every POST that carries idea
+    rows; the GET handler re-hydrates from that buffer.
+    """
+
+    def test_validation_error_then_get_re_renders_typed_input(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        store.create_ideate_task("t-rehydrate")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/ideator/t-rehydrate/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        # Submit something that fails validation (bad priority, bad SHA).
+        bad = signed_in_client.post(
+            "/ideator/t-rehydrate/submit",
+            data={
+                "csrf_token": token,
+                "status": "success",
+                "slug": "feat-keep-me",
+                "priority": "not-a-number",
+                "parent_commits": "not-a-sha",
+                "rationale": "## why\n\nrationale text",
+            },
+        )
+        assert bad.status_code == 400
+        # Sanity: the immediate re-render preserves input.
+        assert "feat-keep-me" in bad.text
+
+        # Simulate the user navigating away and coming back via GET.
+        resp = signed_in_client.get("/ideator/t-rehydrate/draft")
+        assert resp.status_code == 200
+        # Typed values must come back instead of an empty form.
+        assert "feat-keep-me" in resp.text
+        assert "not-a-number" in resp.text
+        assert "not-a-sha" in resp.text
+        assert "rationale text" in resp.text
+
+    def test_add_row_buffers_typed_state_for_subsequent_get(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        store.create_ideate_task("t-add-buf")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/ideator/t-add-buf/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        # User typed one row, clicked "add row" (no-JS path).
+        resp = signed_in_client.post(
+            "/ideator/t-add-buf/add_row",
+            data={
+                "csrf_token": token,
+                "slug": "first-feature",
+                "priority": "2.0",
+                "parent_commits": "a" * 40,
+                "rationale": "first idea rationale",
+            },
+        )
+        assert resp.status_code == 200
+        # User then refreshes / navigates back to the draft URL.
+        get_resp = signed_in_client.get("/ideator/t-add-buf/draft")
+        assert get_resp.status_code == 200
+        assert "first-feature" in get_resp.text
+        assert "first idea rationale" in get_resp.text
+
+    def test_buffer_cleared_after_successful_submit(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        store.create_ideate_task("t-clear-buf")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/ideator/t-clear-buf/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        # Trigger a buffer write via add_row so the buffer is non-empty.
+        signed_in_client.post(
+            "/ideator/t-clear-buf/add_row",
+            data={
+                "csrf_token": token,
+                "slug": "before-success",
+                "priority": "1.0",
+                "parent_commits": "a" * 40,
+                "rationale": "before success",
+            },
+        )
+        # Successful submit clears the buffer. The simplest probe: a
+        # fresh ideate task on the same session must NOT inherit the
+        # prior buffer's state when GET'd.
+        ok = signed_in_client.post(
+            "/ideator/t-clear-buf/submit",
+            data={
+                "csrf_token": token,
+                "status": "success",
+                "slug": "before-success",
+                "priority": "1.0",
+                "parent_commits": "a" * 40,
+                "rationale": "before success",
+            },
+        )
+        assert ok.status_code == 200
+        # Re-claim the same task_id is not allowed (terminal); but
+        # we can directly check the module-level buffer dict to
+        # confirm the per-(session,task) entry is gone.
+        from eden_web_ui.routes.ideator import _DRAFT_BUFFERS
+
+        # Find any entry whose task_id is t-clear-buf.
+        leftover = [k for k in _DRAFT_BUFFERS if k[1] == "t-clear-buf"]
+        assert leftover == []
