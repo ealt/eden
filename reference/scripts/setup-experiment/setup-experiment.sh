@@ -32,6 +32,7 @@ Usage:
                       [--experiment-dir <path>]
                       [--ideas-per-ideation <N>]
                       [--exec-mode {host,docker}]
+                      [--seed-from <host-dir>]
 
 Generates `reference/compose/.env` and copies <config.yaml> to
 `reference/compose/experiment-config.yaml`, then seeds the bare
@@ -67,6 +68,7 @@ ARG_POSTGRES_PASSWORD=""
 ARG_EXPERIMENT_DIR=""
 ARG_PROPOSALS_PER_PLAN=""
 ARG_EXEC_MODE="host"
+ARG_SEED_FROM=""
 
 require_value() {
     # Validate that a flag's value is present, since `set -u` would
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
         --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
         --ideas-per-ideation)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
         --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
+        --seed-from)            require_value "$1" "$#"; ARG_SEED_FROM="$2";         shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         --*)                    echo "unknown flag: $1" >&2; usage; exit 2 ;;
         *)
@@ -422,14 +425,31 @@ echo "--- seeding bare-repo volume + pushing seed to gitea ---" >&2
 # below). The `--no-deps` ensures we don't accidentally start
 # unrelated services for the seed step.
 GITEA_REMOTE_URL_SHELL="http://gitea:3000/eden/${EXPERIMENT_ID}.git"
+SEED_FROM_ABS=""
+SEED_FROM_MOUNT_ARGS=()
+SEED_FROM_PYTHON_ARGS=()
+if [[ -n "$ARG_SEED_FROM" ]]; then
+    if [[ ! -d "$ARG_SEED_FROM" ]]; then
+        echo "--seed-from path is not a directory: $ARG_SEED_FROM" >&2
+        exit 2
+    fi
+    SEED_FROM_ABS="$(cd "$ARG_SEED_FROM" && pwd)"
+    SEED_FROM_MOUNT_ARGS=(-v "${SEED_FROM_ABS}:/seed:ro")
+    SEED_FROM_PYTHON_ARGS=(--seed-from /seed)
+    echo "--- seeding from host directory: ${SEED_FROM_ABS} ---" >&2
+fi
+# `${arr[@]+"${arr[@]}"}` is the bash-3.2-safe expansion for arrays
+# that may be empty under `set -u`.
 SEED_OUTPUT="$(cd "$COMPOSE_DIR" && \
     docker compose --env-file "$ENV_FILE" run --rm --no-deps \
         -v "${HELPER_PATH}:/etc/eden/credential-helper.sh:ro" \
+        ${SEED_FROM_MOUNT_ARGS[@]+"${SEED_FROM_MOUNT_ARGS[@]}"} \
         eden-repo-init \
         python -m eden_service_common.repo_init \
             --repo-path /var/lib/eden/repo \
             --push-to "${GITEA_REMOTE_URL_SHELL}" \
-            --credential-helper /etc/eden/credential-helper.sh)"
+            --credential-helper /etc/eden/credential-helper.sh \
+            ${SEED_FROM_PYTHON_ARGS[@]+"${SEED_FROM_PYTHON_ARGS[@]}"})"
 SEED_SHA="$(echo "$SEED_OUTPUT" | sed -nE 's/^EDEN_REPO_(SEEDED|ALREADY_SEEDED) sha=([0-9a-f]{40})$/\2/p' | head -n1)"
 if [[ -z "$SEED_SHA" ]]; then
     echo "failed to parse seed SHA from eden-repo-init output:" >&2

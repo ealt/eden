@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN experiment config",
-  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, evaluation schema, concurrency bound, termination bounds. Role bindings (how the ideator, executor, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and land under additional properties until the role-binding chapter is written in Phase 2.",
+  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, evaluation schema, concurrency bound, termination bounds. Role bindings (how the ideator, executor, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and travel under additional properties; chapter 03 defines the role contracts but explicitly defers a normative role-binding representation to a future v0 addition or a v1 chapter (see 03-roles.md §6).",
   "type": "object",
   "required": [
     "parallel_variants",

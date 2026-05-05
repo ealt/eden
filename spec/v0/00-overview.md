@@ -31,26 +31,23 @@ The EDEN protocol does **not** define:
 
 Normative requirements in this specification use the RFC 2119 keywords **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**. Prose that does not use one of these keywords is informative.
 
-### 2.2 Conformance classes
+### 2.2 The unit of conformance
 
-A single EDEN experiment involves several distinct components. Each can be implemented independently; each is evaluated against its own conformance class:
+Conformance is judged at the **whole implementation under test (IUT)** level: an IUT is a server that exposes the chapter-7 HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md)) and honors the normative semantics of the chapters that bind to it. The protocol's role names (ideator, executor, evaluator, integrator) and store names (task store, event log, artifact store) introduced in [`01-concepts.md`](01-concepts.md) are *parts of the protocol*; they are not independent conformance units. An IUT that exposes the chapter-7 endpoints internally implements all of them — though deployments are free to back individual parts with separate processes, services, or technologies.
 
-- **Ideator** — proposes variants.
-- **Executor** — realizes an idea as a working-tree change.
-- **Evaluator** — scores a realized idea against the experiment's objective.
-- **Integrator** — promotes evaluated ideas into the canonical variant lineage.
-- **Task store** — the durable queue that holds tasks between roles.
-- **Event log** — the durable record of state changes, read by subscribers.
-- **Artifact store** — the durable home for files produced during a variant (plans, code, evaluation outputs).
-- **Orchestrator** — the component that dispatches tasks and advances the state machine.
+This framing follows from the chapter-7 binding being the only contract a black-box conformance harness can rely on ([`09-conformance.md`](09-conformance.md) §6). A future spec lineage that introduces a second binding (e.g. a transport-neutral semantic layer) will gain finer-grained conformance units; v0 has one binding, so it has one IUT shape.
 
-An implementation MAY conform to one or more classes. It need not conform to all.
+### 2.3 Conformance levels
 
-### 2.3 What "conforming" means
+Conformance is verified by passing the suite under [`conformance/`](../../conformance/) in this repo. The suite is delivered in three additive **levels**, each adding scenarios on top of the prior level:
 
-An implementation conforms to a class iff it passes every scenario in [`09-conformance.md`](09-conformance.md) that targets that class. The conformance suite is black-box: it drives an implementation through its advertised protocol surface and observes the results. An implementation that passes is conforming regardless of how it is built.
+- **v1** — task-store and event-log MUSTs.
+- **v1+roles** — adds the per-role submission contracts.
+- **v1+roles+integrator** — adds the wire-observable projection of the integrator atomicity ladder.
 
-The reference implementation in [`../../reference/`](../../reference/) is **one** conforming implementation. It has no privileged status; a third-party implementation that passes the conformance suite is equally valid.
+An IUT **MUST qualify its conformance claim with the level it passes** (e.g. "v1 conformant", "v1+roles+integrator conformant"). The full per-level scope, the assertion vocabulary the suite asserts (MUSTs only, not SHOULDs), and the per-level scenario index live in [`09-conformance.md`](09-conformance.md). Where this overview and chapter 09 disagree, chapter 09 wins: this section is conceptual; chapter 09 is normative.
+
+The reference implementation in [`../../reference/`](../../reference/) demonstrates conformance at the highest currently-shipped level. It has no privileged status; a third-party IUT that passes the suite at the same level is equally valid.
 
 ## 3. Versioning
 

@@ -17,7 +17,7 @@ EDEN is not a single system. It is a specification that defines the roles (ideat
 
 ## Status
 
-**Phase 4 complete.** The spec now covers the full v0 cross- component contract: three new chapters — `05-event-protocol.md` (event registry, transactional invariant, delivery guarantees), `06-integrator.md` (git topology, squash rule, eval manifest), and `08-storage.md` (task store / event log / artifact store contracts) — plus a refined `event.schema.json` that pins per-type `data` payload shapes for all 15 registered event types. The `eden-contracts` package gained a discriminated-union `RegisteredEvent` model and round-trip coverage for every registered type; schema-parity and round-trip CI remain green. The spec now covers chapters 00–06 and 08 (control plane lands in Phase 12, conformance in Phase 11). Phase 5 is next: the first executable reference implementation — an in-memory dispatch loop proving the state machines are implementable. See [`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
+**Phase 11 complete.** The v0 spec covers chapters 00–09 (`spec/v0/`); the reference implementation under [`reference/`](reference/) ships the full set of services (task-store-server, orchestrator, planner / implementer / evaluator hosts, web UI) on a Compose stack with Postgres + Gitea; and the conformance suite under [`conformance/`](conformance/) is at the **v1+roles+integrator** level (110 scenarios green against the reference impl). Phase 12 (multi-experiment / control plane / leases) and Phase 13 (Kubernetes + S3 blob backend) are the remaining build-up phases. See [`AGENTS.md`](AGENTS.md) for the current-phase narrative and [`docs/roadmap.md`](docs/roadmap.md) for the per-phase plan.
 
 ## Contributing
 

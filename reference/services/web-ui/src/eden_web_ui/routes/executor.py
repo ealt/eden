@@ -21,6 +21,7 @@ variant_id is generated server-side at claim time and stored in
 
 from __future__ import annotations
 
+import contextlib
 import time
 import uuid
 from collections.abc import Callable
@@ -222,6 +223,16 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     if draft.status == "success":
         assert draft.commit_sha is not None
         # §C reachability: commit must exist and descend from every parent.
+        # Fetch from origin first so a freshly-pushed implementer commit is
+        # visible — the local clone otherwise only refreshes at startup
+        # (Phase 10d follow-up B). Same posture as the integrator's
+        # per-promote fetch.
+        if _repo_has_origin(repo):
+            # Fetch failure shouldn't block submit — fall through to
+            # commit_exists, which will surface a clear error if the
+            # commit really isn't local.
+            with contextlib.suppress(Exception):
+                repo.fetch_all_heads()
         if not repo.commit_exists(draft.commit_sha):
             errors.add(
                 0,
@@ -341,7 +352,6 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                 # work/* the orchestrator can never integrate. The
                 # next host startup's fetch_all_heads --prune is the
                 # backstop if delete_ref itself fails here.
-                import contextlib
                 with contextlib.suppress(Exception):
                     repo.delete_ref(
                         f"refs/heads/{branch}",
@@ -527,6 +537,7 @@ def _render_draft(
     rationale = read_idea_rationale(idea, artifacts_dir)
     branch = _branch_name(idea.slug, variant_id)
     repo_path = getattr(request.app.state.repo, "path", None)
+    clone_url = getattr(request.app.state, "clone_url", None)
     return request.app.state.templates.TemplateResponse(
         request,
         "executor_claim.html",
@@ -537,6 +548,7 @@ def _render_draft(
             "rationale": rationale,
             "branch": branch,
             "repo_path": repo_path,
+            "clone_url": clone_url,
             "form_state": form_state,
             "errors": errors,
         },

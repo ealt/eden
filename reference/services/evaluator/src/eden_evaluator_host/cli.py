@@ -14,6 +14,7 @@ from eden_service_common import (
     configure_logging,
     get_logger,
     install_stop_handlers,
+    load_experiment_config,
     parse_env_file,
     parse_log_level,
     reap_orphaned_containers,
@@ -21,7 +22,6 @@ from eden_service_common import (
     resolve_exec_args,
     wait_for_task_store,
 )
-from eden_task_store_server import load_experiment_config
 from eden_wire import StoreClient
 
 from .host import run_evaluator_loop

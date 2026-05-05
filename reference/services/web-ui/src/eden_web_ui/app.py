@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import admin as admin_routes
+from .routes import artifacts as artifacts_routes
 from .routes import auth as auth_routes
 from .routes import evaluator as evaluator_routes
 from .routes import executor as executor_routes
@@ -52,6 +53,7 @@ def make_app(
     secure_cookies: bool = False,
     now: Callable[[], datetime] | None = None,
     repo: GitRepo | None = None,
+    clone_url: str | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -81,12 +83,14 @@ def make_app(
     app.state.now = now or _now_factory()
     app.state.templates = templates
     app.state.repo = repo
+    app.state.clone_url = clone_url
 
     app.include_router(index_routes.router)
     app.include_router(auth_routes.router)
     app.include_router(ideator_routes.router)
     app.include_router(evaluator_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(artifacts_routes.router)
     if repo is not None:
         app.include_router(executor_routes.router)
 

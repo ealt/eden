@@ -6,20 +6,16 @@ booting uvicorn.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
 from eden_contracts import ExperimentConfig
+from eden_service_common import load_experiment_config
 from eden_storage import InMemoryStore, PostgresStore, SqliteStore, Store
 from eden_wire import make_app
 from fastapi import FastAPI
 
-
-def load_experiment_config(path: str | Path) -> ExperimentConfig:
-    """Parse an experiment YAML file into an :class:`ExperimentConfig`."""
-    with Path(path).open() as f:
-        data = yaml.safe_load(f)
-    return ExperimentConfig.model_validate(data)
+# Re-exported so callers that previously imported ``load_experiment_config``
+# from this module continue to work; eden_service_common is the single
+# source of truth.
+__all__ = ["build_app", "build_store", "load_experiment_config"]
 
 
 def build_store(

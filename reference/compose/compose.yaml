@@ -141,6 +141,11 @@ services:
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
+    ports:
+      # Exposed on the host for manual-UI tooling (scripts under
+      # reference/scripts/manual-ui/ and the eden-manual-* skills).
+      # Bearer-token protected; safe enough for local dev.
+      - "${TASK_STORE_HOST_PORT:-8080}:8080"
     healthcheck:
       # Authenticated GET against an experiment-scoped endpoint
       # confirms both that the process is up and that auth wiring
@@ -333,6 +338,8 @@ services:
       - ${GITEA_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
+      - --clone-url
+      - ${GITEA_CLONE_URL_HOST:-http://localhost:${GITEA_HOST_PORT:-3001}/eden/${EDEN_EXPERIMENT_ID:?}.git}
       - --worker-id
       - web-ui-1
       - --host

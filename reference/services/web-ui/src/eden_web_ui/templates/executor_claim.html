@@ -23,8 +23,10 @@
                 <th>artifacts_uri</th>
                 <td>
                     {% set scheme = idea.artifacts_uri.split(":", 1)[0] | lower %}
-                    {% if scheme in ("http", "https", "file") %}
-                    <a href="{{ idea.artifacts_uri }}"><code>{{ idea.artifacts_uri }}</code></a>
+                    {% if scheme == "file" %}
+                    <a href="/artifacts?uri={{ idea.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
+                    {% elif scheme in ("http", "https") %}
+                    <a href="{{ idea.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
                     {% else %}
                     <code>{{ idea.artifacts_uri }}</code>
                     <span class="field-error">(unrenderable scheme)</span>
@@ -44,11 +46,24 @@
 <section class="instructions">
     <h2>instructions</h2>
     <ol>
+        {% if clone_url %}
+        <li>Clone the central repo and check out the parent commit:
+            <pre><code>git clone {{ clone_url }} my-checkout
+cd my-checkout
+git checkout {{ idea.parent_commits[0] }}</code></pre>
+            HTTP Basic credentials live in <code>reference/compose/.env</code> as <code>GITEA_REMOTE_PASSWORD</code> (username <code>eden</code>).</li>
+        <li>Make your changes, commit, and push your branch back to the central repo:
+            <pre><code>git checkout -b my-work
+# (edit, stage, commit)
+git push origin my-work</code></pre></li>
+        <li>Paste the resulting commit SHA below and submit. The UI fetches from origin on submit, then creates the canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit.</li>
+        {% else %}
         <li>Do your work in your own checkout, with parents matching <code>parent_commits</code> above.</li>
         <li>Push your tip commit (any branch name works) to the bare repo at
             {% if repo_path %}<code>{{ repo_path }}</code>{% else %}the configured bare repo{% endif %}.
             The UI will create a canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit when you submit.</li>
         <li>Paste the resulting commit SHA below and submit.</li>
+        {% endif %}
     </ol>
 </section>
 

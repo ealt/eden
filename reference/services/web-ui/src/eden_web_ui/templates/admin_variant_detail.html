@@ -26,7 +26,16 @@
 {% if variant.artifacts_uri %}
 <section>
     <h2>artifacts</h2>
-    <p><code>{{ variant.artifacts_uri }}</code></p>
+    <p>
+        {% set scheme = variant.artifacts_uri.split(":", 1)[0] | lower %}
+        {% if scheme == "file" %}
+        <a href="/artifacts?uri={{ variant.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ variant.artifacts_uri }}</code></a>
+        {% elif scheme in ("http", "https") %}
+        <a href="{{ variant.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ variant.artifacts_uri }}</code></a>
+        {% else %}
+        <code>{{ variant.artifacts_uri }}</code>
+        {% endif %}
+    </p>
     {% if variant_artifact_inline %}
     <pre>{{ variant_artifact_inline }}</pre>
     {% else %}

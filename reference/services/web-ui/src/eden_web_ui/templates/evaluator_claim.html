@@ -30,9 +30,11 @@
     {% if variant.artifacts_uri %}
     <h3>variant artifact</h3>
     <p>
-        {% set trial_scheme = variant.artifacts_uri.split(":", 1)[0] | lower %}
-        {% if trial_scheme in ("http", "https", "file") %}
-        <a href="{{ variant.artifacts_uri }}"><code>{{ variant.artifacts_uri }}</code></a>
+        {% set variant_scheme = variant.artifacts_uri.split(":", 1)[0] | lower %}
+        {% if variant_scheme == "file" %}
+        <a href="/artifacts?uri={{ variant.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ variant.artifacts_uri }}</code></a>
+        {% elif variant_scheme in ("http", "https") %}
+        <a href="{{ variant.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ variant.artifacts_uri }}</code></a>
         {% else %}
         <code>{{ variant.artifacts_uri }}</code>
         <span class="field-error">(unrenderable scheme)</span>
@@ -55,8 +57,10 @@
                 <th>artifacts_uri</th>
                 <td>
                     {% set scheme = idea.artifacts_uri.split(":", 1)[0] | lower %}
-                    {% if scheme in ("http", "https", "file") %}
-                    <a href="{{ idea.artifacts_uri }}"><code>{{ idea.artifacts_uri }}</code></a>
+                    {% if scheme == "file" %}
+                    <a href="/artifacts?uri={{ idea.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
+                    {% elif scheme in ("http", "https") %}
+                    <a href="{{ idea.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
                     {% else %}
                     <code>{{ idea.artifacts_uri }}</code>
                     <span class="field-error">(unrenderable scheme)</span>

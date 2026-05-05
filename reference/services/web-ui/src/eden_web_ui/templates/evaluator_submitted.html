@@ -16,7 +16,16 @@
     </dd>
     {% endif %}
     {% if artifacts_uri %}
-    <dt>artifacts_uri</dt><dd><code>{{ artifacts_uri }}</code></dd>
+    <dt>artifacts_uri</dt><dd>
+        {% set scheme = artifacts_uri.split(":", 1)[0] | lower %}
+        {% if scheme == "file" %}
+        <a href="/artifacts?uri={{ artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ artifacts_uri }}</code></a>
+        {% elif scheme in ("http", "https") %}
+        <a href="{{ artifacts_uri }}" target="_blank" rel="noopener"><code>{{ artifacts_uri }}</code></a>
+        {% else %}
+        <code>{{ artifacts_uri }}</code>
+        {% endif %}
+    </dd>
     {% endif %}
 </dl>
 <p><a href="/evaluator/">back to evaluator list</a></p>
