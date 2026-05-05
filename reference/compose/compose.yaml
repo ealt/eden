@@ -201,14 +201,15 @@ services:
       - ${EDEN_IDEATE_TASKS:-3}
       # Compose-friendly quiescence: 30 iterations × 1s = 30s of
       # zero progress before the orchestrator declares the
-      # experiment done. The default (3 × 0.1s = 0.3s) is tuned
-      # for the in-process e2e tests where workers start
-      # immediately; in Compose the worker hosts take longer to
-      # bind and start polling.
+      # experiment done. Tuned for the smoke tests where worker
+      # hosts auto-claim within milliseconds. Manual-UI sessions
+      # (a human at the keyboard) want a much higher value — set
+      # EDEN_MAX_QUIESCENT_ITERATIONS in .env to override. See
+      # MANUAL_UI_ISSUES.md #1 for the design discussion.
       - --poll-interval
       - "1.0"
       - --max-quiescent-iterations
-      - "30"
+      - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
       - --log-level
       - info
     volumes:
