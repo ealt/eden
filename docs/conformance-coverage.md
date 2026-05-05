@@ -211,6 +211,100 @@ Projecting the half-day-per-chapter estimate to the remaining 7 chapters:
 
 3. **Keep chapters 00 / 01 / 09 as quick passes.** Most claims there are restatement or structurally-immune; the per-claim pass is mostly bookkeeping.
 
+## Per-claim assertion-coverage — chapters 03 / 05 / 06 / 07
+
+Same methodology as the chapter-04 pilot. These chapters are where conformance scenarios concentrate; the per-claim pass produces the most signal. The chapter-04 pilot's methodology refinements all apply: MAY rows are excluded from the count (they aren't conformance contracts), list-headers (`X MUST be:`) aren't independent claims, and cross-chapter coverage is real and structurally hidden by the auto-generator's intra-chapter ancestor-walk.
+
+### Chapter 03 — `03-roles.md`
+
+48 RFC-2119 keyword lines, of which ~28 carry at least one MUST or MUST-NOT. Per-claim tags:
+
+| Claim shape | Tag | Count |
+|---|---|---|
+| Role-submission contracts (per-role tests directly exercise) | `(scenario)` | 14 |
+| Worker-side prohibitions ("MUST NOT write to X") proxied by token-rejection / sole-writer tests on the OTHER side of the wire | `(consequence)` | 6 |
+| Schema-enforced field shape (slug, parent_commits SHA, etc.) | `(schema)` | 2 |
+| `MUST be:` list-headers (no independent claim) | `(list-header)` | 4 |
+| Meta / "this chapter defines four roles" intro statements | `(restatement)` | 2 |
+| Real gap | `(uncovered)` | 1 |
+
+**The one real gap**: §3.3 line 97 — `Two variants MUST NOT share a worker branch name.` Wire-testable in principle (create two ideas, claim both, submit one with `commit_sha` matching a `work/*` branch derived from one variant; submit the other expecting a different branch). The current executor scenarios test branch-derivation but don't construct the collision case. **Filed as #26 below.**
+
+**Cross-chapter-hidden coverage** (would surface if scenarios multi-cited):
+
+- §1.1 line 23 (orchestrator MUST ensure dispatch preconditions) → exercised by `test_executor_submission.py::test_submit_with_unknown_variant_rejected` and `test_evaluator_submission.py::test_submit_with_mismatched_variant_id_rejected` whose docstrings cite §3.4 / §4.2.
+- §3.1 line 81 (orchestrator MUST ensure idea state==ready) → exercised by ideator-submission tests whose docstrings cite §2.4.
+- §4.1 line 122 (orchestrator MUST ensure variant state==starting) → similar shape.
+
+These would all flip to `(scenario)` under cross-chapter ancestor-walk; current `(consequence)` tag is conservative.
+
+**Effective coverage** (`scenario` + `consequence`, MUST rows only): 20 / 28 ≈ **71%** for chapter 03 directly cited; ≥ 82% if cross-chapter ancestry credited.
+
+### Chapter 05 — `05-event-protocol.md`
+
+29 RFC-2119 keyword lines, ~21 MUST/MUST-NOT.
+
+| Claim shape | Tag | Count |
+|---|---|---|
+| Event envelope shape, per-type payloads, delivery (cited tests directly assert) | `(scenario)` | 13 |
+| §1.3 atomicity-of-state-and-event (chapter 09 §3 black-box-impossible; covered by regression test) | `(consequence)` | 1 |
+| Composite-commit invariants (§2.2 — directly cited from `test_composite_commits.py`) | `(scenario)` | 4 |
+| §4.5 durability — in-memory MAY skip; reference impl asserts via SqliteStore restart-safety unit tests, not conformance | `(impl-only)` | 1 |
+| List-headers / informative restatements | `(list-header)` | 1 |
+| Real gap | `(uncovered)` | 1 |
+
+**The one real gap**: §3.5 — non-registered event types. The MUST is "a non-registered event MUST NOT carry a registered `type` with a non-conforming payload". Wire-testable: have the IUT accept a non-registered type via free-form append, then assert it doesn't claim to be a registered type with the wrong shape. But the chapter-7 binding doesn't expose a free-form append endpoint (events are emitted by the protocol's own state changes; no direct write path). **Structurally untestable from chapter-7 alone — same shape as the §6 git-side artifacts.** Re-tag as `(consequence)`. **Net: zero real gaps in chapter 05.**
+
+**Effective coverage**: 18 / 21 ≈ **86%** (after re-tagging the §3.5 gap as consequence).
+
+### Chapter 06 — `06-integrator.md`
+
+33 RFC-2119 keyword lines, ~24 MUST/MUST-NOT.
+
+| Claim shape | Tag | Count |
+|---|---|---|
+| Wire-observable promotion preconditions + atomicity (`test_integrator_atomicity.py`, `test_promotion_preconditions.py`, `test_integrate_idempotency.py`) | `(scenario)` | 7 |
+| Git-side artifacts (squash shape, eval-manifest shape, commit-message format, `work/*` discipline, reachability) — chapter 09 §6 explicitly defers these to a future "conformance + git access" binding | `(consequence)` | 11 |
+| `main` immutability + `trial/*` (now `variant/*`) MUST NOT be deleted/rewritten — git-side, same opt-out | `(consequence)` | 4 |
+| List-headers | `(list-header)` | 2 |
+
+**Real gaps**: 0. Chapter 06's MUST set splits cleanly between wire-observable atomicity (covered by the v1+roles+integrator scenarios) and git-side artifacts (chapter 09 §6 says explicitly the chapter-7 binding is the only IUT contract a wire-only suite can rely on; git refs are not exposed through that binding).
+
+**Effective coverage**: 22 / 24 ≈ **92%** (counting `(consequence)` rows). The two `(list-header)` rows aren't gaps.
+
+### Chapter 07 — `07-wire-protocol.md`
+
+19 RFC-2119 keyword lines, ~16 MUST/MUST-NOT.
+
+| Claim shape | Tag | Count |
+|---|---|---|
+| URL shapes + status codes + problem+json envelope (`test_status_codes.py`, `test_problem_json.py`, `test_error_vocabulary.py`) | `(scenario)` | 8 |
+| Same-value idempotency on `integrate_trial` / `integrate_variant` | `(scenario)` | 3 |
+| Experiment-id header disagreement (`test_experiment_id_header.py`) | `(scenario)` | 1 |
+| Subscribe long-poll mechanics (event-delivery tests assert) | `(scenario)` | 2 |
+| Closed-vocabulary `type` (server MUST NOT emit `type` outside the closed `eden://error/<name>` set) — exercised by `test_error_vocabulary.py`'s closure check | `(scenario)` | 1 |
+| Real gap | `(uncovered)` | 1 |
+
+**The one real gap**: §1.1 — `Empty responses (e.g. 204) MUST NOT carry a body.` The error-vocabulary closure scenario asserts non-2xx responses use problem+json; it doesn't probe whether 2xx responses with no body content actually omit the body. Wire-observable (just check `Content-Length` / response body emptiness on accept/reject endpoints which return 204). **Filed as #27 below.**
+
+**Effective coverage**: 15 / 16 ≈ **94%** for chapter 07.
+
+### Aggregate (chapters 03 / 05 / 06 / 07)
+
+After this pass:
+
+- Total MUST/MUST-NOT rows: ≈89 (excluding MAY-only and SHOULD-only and list-header rows).
+- Effective coverage (scenario + consequence): ≈82% direct, ≈87% if cross-chapter ancestry is credited.
+- New genuine gaps surfaced: 2 (chapter 03 §3.3 line 97, chapter 07 §1.1).
+
+These two gaps + the chapter-04 §6.1/§6.3/§7-line-183 rows that remain mechanically-fixable are the next batch of follow-up work. Both new genuine gaps are filed as MANUAL_UI_ISSUES.md entries (#26 + #27).
+
+### Methodology refinements (additional, beyond chapter-04 pilot's list)
+
+1. **`(impl-only)` is a real category, not a hypothetical.** (Continuing the chapter-04 pilot's numbered list as items 6+; renumbered as 1+ within this subsection per markdownlint convention.) Chapter 05's §4.5 durability MUST is honored by `SqliteStore`'s restart-safety unit tests in `eden-storage`, not by any conformance scenario. The pilot tagged this as `(impl-only)`; chapter 09 §3 doesn't exclude it, but a wire-only conformance test cannot kill-9 the IUT and read back its state. Same pattern likely applies to other "deployment MUST persist X durably" rules in chapter 08. Worth a focused pass in a follow-up: name every `(impl-only)` MUST and decide whether the conformance contract needs a kill-9-and-restart fixture (chapter 09 §6 currently says no — the chapter-7 binding is the only IUT contract).
+
+2. **The "X MUST be one of {a, b, c}" pattern is testable but rarely tested.** Chapter 03 has multiple MUSTs of this shape (`status` MUST be one of {success, error}; `parent_commits` MUST contain at least one SHA). Schema enforces them; conformance scenarios mostly test happy-path values. Adding wire scenarios that submit out-of-vocabulary values for each enum-shaped MUST would strengthen `(consequence)` rows; this is a separate generator-driven pass.
+
 ## Uncovered MUST / MUST NOT lines (priority)
 
 Each row is a line in the spec that contains a MUST or MUST NOT and has no scenario citing its section (or any ancestor).

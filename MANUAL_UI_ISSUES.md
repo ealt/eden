@@ -1081,6 +1081,86 @@ Verified: `python3 scripts/spec-xref-check.py` reports all 334
 §-references resolve (was 333; the rewrite added one §6 link).
 markdownlint-cli2 clean.
 
+---
+
+## 26. Worker-branch uniqueness MUST has no scenario
+
+**Surfaced by** the chapter-03 per-claim pass (#24's chapters-03/05/06/07
+extension). [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §3.3 line 97:
+
+> The `work/*` branch MUST be unique to this variant. Two variants
+> MUST NOT share a worker branch name.
+
+Wire-testable in principle: drive two execute submissions whose
+combined effect would produce a `refs/heads/work/<slug>-<variant>`
+collision (e.g. same idea slug + colliding `variant_id` choice).
+The IUT MUST reject the second; the first MUST succeed; the
+recorded `work/*` ref count MUST be 2 distinct refs (not 1
+overwritten).
+
+**Severity.** SHOULD-level coverage gap. The MUST is testable but
+the construction is awkward (executor scenarios all derive
+unique work-branch names from fresh-uuid `variant_id` values; you
+have to deliberately pick colliding ones). The reference impl
+honors the rule because variant_id is freshly UUID-generated, so
+collision is statistically impossible without explicit construction.
+A malicious or buggy IUT that derived work-branch names from
+something else (e.g. idea slug alone) would not be caught by the
+existing scenarios.
+
+**Resolution direction.** New scenario in
+`conformance/scenarios/test_worker_branch_uniqueness.py` (or in
+`test_executor_submission.py` as a sibling case). Construction:
+two ideas with the same slug → submit two executes with
+deliberately-equal `variant_id` choices that would derive the
+same work-branch name. The first succeeds; the second MUST be
+rejected. Citation: `spec/v0/03-roles.md §3.3`. Group:
+`Executor submission` per chapter 09 §5.
+
+**Found while.** Chapter-03 per-claim pass following the chunk-04
+methodology. Effective coverage for chapter 03 is 71% direct /
+≥82% with cross-chapter ancestry; this gap is the only genuine
+chapter-03 row that isn't either covered, list-header, or
+structurally untestable.
+
+---
+
+## 27. Empty 2xx responses MUST omit the body — no scenario
+
+**Surfaced by** the chapter-07 per-claim pass.
+[`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) §1.1:
+
+> Empty responses (e.g. 204) MUST NOT carry a body.
+
+The error-vocabulary closure scenario (`test_error_vocabulary.py`)
+asserts non-2xx responses use problem+json with the closed `type`
+vocabulary; it doesn't probe whether 2xx responses with no body
+content actually omit the body. The chapter-07 binding has at
+least one endpoint that returns 204 (the integrate-trial /
+integrate-variant accept response per
+[`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) §5).
+
+**Wire-testable.** Trivial: drive an accept/reject endpoint that
+emits 204; assert `Content-Length: 0` (or the response body is
+empty bytes). A regression that emitted `null` or `{}` as the
+"empty body" payload would fail.
+
+**Severity.** Cosmetic but catches a real spec-vs-wire-output
+divergence shape. Some HTTP frameworks default to emitting
+`null` as a JSON-encoded empty body; the spec's MUST NOT is
+specifically there to keep the binding `Content-Length: 0`.
+
+**Resolution direction.** New scenario, probably in
+`test_status_codes.py` since that file already covers 204
+endpoint statuses. Citation: `spec/v0/07-wire-protocol.md §1.1`.
+Group: `Status codes`.
+
+**Found while.** Chapter-07 per-claim pass; the only genuine
+gap in chapter 07 (the rest of the chapter is well-covered at
+94% effective coverage).
+
+---
+
 - Should the executor page show `EDEN_BASE_COMMIT_SHA` as the
   default-implicit parent for first-round variants?
 - Is there a pattern for "infra services that should never quiesce-exit"
