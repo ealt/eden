@@ -40,7 +40,7 @@ def run_executor_loop(
         implement_fn=make_implement_fn(
             repo_path=repo_path, fail_every=fail_every
         ),
-        trial_id_factory=_variant_id,
+        variant_id_factory=_variant_id,
         now=_now_iso,
     )
     while not stop.is_set():

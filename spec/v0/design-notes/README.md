@@ -4,7 +4,7 @@ This directory holds **non-normative** design notes adjacent to the `spec/v0/` c
 
 Design notes are not part of the normative contract. A conforming implementation needs only to satisfy the chapters in `spec/v0/`. Design notes exist so that:
 
-- Future implementors can understand *why* a clause reads the way it does, beyond what the clause itself states.
+- Future readers and implementations can understand *why* a clause reads the way it does, beyond what the clause itself states.
 - Future editors of the spec can evolve it with full knowledge of what the prior decision was and what was considered but rejected, rather than re-litigating the same tradeoffs from scratch.
 - Reviewers of substantive spec changes can check whether a proposed change invalidates assumptions recorded here.
 
@@ -20,7 +20,7 @@ Not every design decision needs a note. Add one when:
 
 - The normative text is terse in a way that leaves a genuine ambiguity, and the drafters chose a specific reading.
 - Multiple plausible mechanisms existed, and the choice was made on tradeoffs rather than correctness.
-- Future implementors are likely to ask "why this and not that?" and re-deriving the answer from the chapter alone is expensive.
+- Future readers are likely to ask "why this and not that?" and re-deriving the answer from the chapter alone is expensive.
 
 A passing codex-review finding or a recurring question in reviews is usually a signal that a design note would help.
 
@@ -33,7 +33,7 @@ Each note has:
 - A short **context** section summarizing the normative text it addresses and what the ambiguity or tradeoff is.
 - An **options considered** section enumerating the candidate designs, with the tradeoffs that led to acceptance or rejection.
 - A **decision** section naming the chosen path and its justification.
-- A **consequences** section describing what implementors and readers should expect, and anything that an operator might observe.
+- A **consequences** section describing what implementations and readers should expect, and anything that an operator might observe.
 - A **revisit triggers** section listing the conditions that would warrant revisiting the decision in a future spec revision.
 
 There is no required front-matter or template beyond this. The goal is durable context, not structural boilerplate.

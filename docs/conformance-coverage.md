@@ -115,11 +115,11 @@ A fifth tag was added to the original four named in the auto-generated section a
 | §5.3 | 154 | MUST, MUST NOT | Worker MUST discontinue work and MUST NOT submit if its token is invalidated. | `(scenario)` | Closed (wire-observable consequences) by `test_worker_reclamation_detection.py::test_worker_view_after_reclamation_invalidates_prior_token` — claim → operator-reclaim → assert read_task shows pending+no-claim → assert old token rejected on submit (with cleared claim, distinct from `test_token_invalidated_by_reclaim`'s post-re-claim case) → assert fresh claim issues different token, old token still rejected. The strictly worker-side half ("MUST discontinue") remains structurally untestable from a wire-only IUT; this scenario binds the testable detection-and-rejection consequences §5.3 names. |
 | §5.4 | 158 | MUST | Orchestrator MUST reconcile role-owned objects per §5.4 rules. | `(scenario)` | `test_implement_reclaim_sets_starting_variant_to_error` directly tests the implement case (the only normative §5.4 case; plan and evaluate cases are MAY/no-op). |
 | §5.4 | 160 | MUST | Implement reclamation MUST transition starting variant to error atomically. | `(scenario)` | Same test as above — asserts both the variant-status transition AND the `variant.errored` event in the same composite commit. |
-| §5.4 | 161 | MAY | (informative — plan reclamation leaves drafting proposals as-is). | n/a | MAY. |
+| §5.4 | 161 | MAY | (informative — ideate reclamation leaves drafting ideas as-is). | n/a | MAY. |
 | §6.1 | 168 | MUST, MUST NOT | All transitions on a single task MUST be serialized; state MUST NOT be exposed without its event. | `(uncovered)` | No scenario cites §6.1. Per-task serialization is implicit in the lifecycle tests but not directly asserted. The "no state without event" half overlaps with §1.3's `(consequence)` regression test. **Mostly redundant with §1.3 in practice; could be left uncovered.** |
 | §6.2 | 172 | MAY | (informative — distinct tasks MAY progress concurrently). | n/a | MAY. |
 | §6.3 | 176 | MAY, MUST, MUST NOT | Subscriber MUST be able to reconstruct every task's history; faster paths MUST NOT expose unrecorded states. | `(uncovered)` | No scenario cites §6.3. The reconstruct-history half is implicit in `test_event_delivery.py` (which cites §4 of chapter 05); the "faster paths MUST NOT expose" half is hard to test black-box. **Could close the reconstruct half by adding a §6.3 citation to one of the event-delivery tests.** |
-| §7 | 182 | MAY | (informative — plan submit MAY reference proposals in ready). | n/a | MAY. |
+| §7 | 182 | MAY | (informative — ideate submit MAY reference ideas in ready). | n/a | MAY. |
 | §7 | 183 | MUST | Implement-task terminal transition MUST atomically transition referenced idea `dispatched → completed`. | `(uncovered)` | No scenario cites §7 line 183 directly, but `test_composite_commits.py::test_implement_terminal_completes_idea` and `::test_implement_terminal_fails_idea` exercise this exact composite commit — both cite `05-event-protocol.md §2.2`. **Cross-chapter ancestor walk would surface this; same gap shape as §2 line 55.** |
 
 ### Per-tag counts (chapter 04, MUST/MUST-NOT rows only — MAY rows excluded)
@@ -265,7 +265,7 @@ These would all flip to `(scenario)` under cross-chapter ancestor-walk; current 
 |---|---|---|
 | Wire-observable promotion preconditions + atomicity (`test_integrator_atomicity.py`, `test_promotion_preconditions.py`, `test_integrate_idempotency.py`) | `(scenario)` | 7 |
 | Git-side artifacts (squash shape, eval-manifest shape, commit-message format, `work/*` discipline, reachability) — chapter 09 §6 explicitly defers these to a future "conformance + git access" binding | `(consequence)` | 11 |
-| `main` immutability + `trial/*` (now `variant/*`) MUST NOT be deleted/rewritten — git-side, same opt-out | `(consequence)` | 4 |
+| `main` immutability + `variant/*` MUST NOT be deleted/rewritten — git-side, same opt-out | `(consequence)` | 4 |
 | List-headers | `(list-header)` | 2 |
 
 **Real gaps**: 0. Chapter 06's MUST set splits cleanly between wire-observable atomicity (covered by the v1+roles+integrator scenarios) and git-side artifacts (chapter 09 §6 says explicitly the chapter-7 binding is the only IUT contract a wire-only suite can rely on; git refs are not exposed through that binding).
@@ -279,7 +279,7 @@ These would all flip to `(scenario)` under cross-chapter ancestor-walk; current 
 | Claim shape | Tag | Count |
 |---|---|---|
 | URL shapes + status codes + problem+json envelope (`test_status_codes.py`, `test_problem_json.py`, `test_error_vocabulary.py`) | `(scenario)` | 8 |
-| Same-value idempotency on `integrate_trial` / `integrate_variant` | `(scenario)` | 3 |
+| Same-value idempotency on `integrate_variant` | `(scenario)` | 3 |
 | Experiment-id header disagreement (`test_experiment_id_header.py`) | `(scenario)` | 1 |
 | Subscribe long-poll mechanics (event-delivery tests assert) | `(scenario)` | 2 |
 | Closed-vocabulary `type` (server MUST NOT emit `type` outside the closed `eden://error/<name>` set) — exercised by `test_error_vocabulary.py`'s closure check | `(scenario)` | 1 |
@@ -336,8 +336,8 @@ Each row is a line in the spec that contains a MUST or MUST NOT and has no scena
 | `02-data-model.md` | §2.2 | 63 | The expression language is implementation-defined but MUST treat metric field names as the free variables. A conforming orchestrator MUST reject an objective expression that references a name absent from `evaluation_sch… |
 | `02-data-model.md` | §2.4 | 74 | Implementations MAY define additional top-level fields for role binding and implementation-specific tuning. The experiment-config schema does not restrict unknown top-level fields; a conforming orchestrator MUST NOT rej… |
 | `02-data-model.md` | §3.2 | 98 | The `state` field MUST be one of `"pending"`, `"claimed"`, `"submitted"`, `"completed"`, `"failed"`. The legal transitions between these states are defined in [`04-task-protocol.md`](04-task-protocol.md). The data model… |
-| `02-data-model.md` | §3.3 | 104 | `"plan"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints. |
-| `02-data-model.md` | §3.3 | 105 | `"implement"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch. |
+| `02-data-model.md` | §3.3 | 104 | `"ideate"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints. |
+| `02-data-model.md` | §3.3 | 105 | `"execute"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch. |
 | `02-data-model.md` | §3.3 | 106 | `"evaluate"` — MUST contain `variant_id` (string) referring to a variant with `status == "starting"` and a `commit_sha` set. |
 | `02-data-model.md` | §4.1 | 127 | Every event MUST provide this envelope: |
 | `02-data-model.md` | §4.3 | 143 | Events within a single experiment MUST form a total order consistent with causality: if event B describes a state change that depended on a state recorded by event A, A MUST precede B in the log. The ordering mechanism … |
@@ -499,8 +499,8 @@ Within each chapter, lines are listed in order. The 'covered by' column lists `s
 | §2.4 | 74 | MAY, MUST NOT | Implementations MAY define additional top-level fields for role binding and implementation-specific tuning. The experiment-config schema does not restrict unknown top-level fields; a conforming orchestrator MUST NOT rej… |  |
 | §2.4 | 76 | SHOULD | An implementation SHOULD document which additional top-level fields it consumes. |  |
 | §3.2 | 98 | MUST | The `state` field MUST be one of `"pending"`, `"claimed"`, `"submitted"`, `"completed"`, `"failed"`. The legal transitions between these states are defined in [`04-task-protocol.md`](04-task-protocol.md). The data model… |  |
-| §3.3 | 104 | MAY, MUST | `"plan"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints. |  |
-| §3.3 | 105 | MUST | `"implement"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch. |  |
+| §3.3 | 104 | MAY, MUST | `"ideate"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints. |  |
+| §3.3 | 105 | MUST | `"execute"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch. |  |
 | §3.3 | 106 | MUST | `"evaluate"` — MUST contain `variant_id` (string) referring to a variant with `status == "starting"` and a `commit_sha` set. |  |
 | §3.4 | 115 | MAY | `expires_at` | `test_claim_tokens.py::test_token_present_on_claim` |
 | §3.4 | 117 | MUST, MUST NOT | The `claim` field MUST be present when `state ∈ {"claimed", "submitted"}` and MUST NOT be present for any other state. The claim is retained through `"submitted"` so that the task protocol can authorize resubmission by … | `test_claim_tokens.py::test_token_present_on_claim` |

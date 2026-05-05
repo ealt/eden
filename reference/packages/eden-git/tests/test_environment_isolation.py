@@ -325,11 +325,11 @@ class TestWriteTreeWithFileEdgeCases:
                 )
             ]
         )
-        trials_tree = repo.write_tree_from_entries(
+        variants_tree = repo.write_tree_from_entries(
             [TreeEntry(mode="040000", type="tree", sha=inner_tree, path="t1")]
         )
         eden_tree = repo.write_tree_from_entries(
-            [TreeEntry(mode="040000", type="tree", sha=trials_tree, path="variants")]
+            [TreeEntry(mode="040000", type="tree", sha=variants_tree, path="variants")]
         )
         root_tree = repo.write_tree_from_entries(
             [

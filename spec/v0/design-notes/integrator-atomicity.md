@@ -51,7 +51,7 @@ Extend the `Store` Protocol with three new operations: `begin_integration(varian
 **Pros:**
 
 - Improves restart-safety: if the integrator process crashes mid-promotion, a replay can inspect the outbox to determine whether the promotion had been committed or not.
-- Follows a widely-used industry pattern (transactional outbox) that future implementors will recognize.
+- Follows a widely-used industry pattern (transactional outbox) that future implementations will recognize.
 
 **Cons:**
 
@@ -85,13 +85,13 @@ The deciding factors:
 
 - **Reference impl scope.** Option 2 triples the implementation scope without closing the window it purports to close. Option 3 is infeasible for the reference impl's chosen backends. Option 1 fits within Phase 7b's scope.
 
-- **Observable-invariant clarity.** Making the reading explicit in the chapter text — as the tightening at the end of §3.4 now does — removes the ambiguity for future implementors without expanding the protocol surface.
+- **Observable-invariant clarity.** Making the reading explicit in the chapter text — as the tightening at the end of §3.4 now does — removes the ambiguity for future readers without expanding the protocol surface.
 
 ## Consequences
 
-### For implementors
+### For implementations
 
-A conforming integrator MAY use compensating deletes against an external reader. The observable invariant applies to completed promotions. An implementor MAY choose an outbox or XA scheme instead if their target backend makes it cheap, but the protocol does not require one.
+A conforming integrator MAY use compensating deletes against an external reader. The observable invariant applies to completed promotions. A conforming implementation MAY choose an outbox or XA scheme instead if its target backend makes it cheap, but the protocol does not require one.
 
 Every in-repo consumer of the store (for example, a dispatch driver deciding which variants still need promotion) SHOULD consult `variant.variant_commit_sha` as the canonical integration marker rather than walking `variant/*` refs. This is not normative, but it is the convention the reference impl uses, and it gives in-process readers consistent observations even during a running promotion.
 

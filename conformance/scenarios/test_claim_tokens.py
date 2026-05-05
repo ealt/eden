@@ -40,7 +40,7 @@ def test_wrong_token_rejected(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §3.3 — submit with wrong token returns 403 wrong-token."""
     tid = _seed.create_ideate_task(wire_client)
     _seed.claim(wire_client, tid)
-    r = _seed.submit_plan(wire_client, tid, token="not-the-real-token")
+    r = _seed.submit_ideate(wire_client, tid, token="not-the-real-token")
     assert r.status_code == 403, f"Expected 403 wrong-token, got {r.status_code}"
     assert r.json().get("type") == "eden://error/wrong-token"
 
@@ -53,7 +53,7 @@ def test_token_invalidated_by_reclaim(wire_client: WireClient) -> None:
     # Re-claim so the task is in `claimed` state again (otherwise submit
     # would be rejected as illegal-transition rather than wrong-token).
     _seed.claim(wire_client, tid, worker_id="w-fresh")
-    r = _seed.submit_plan(wire_client, tid, token=c["token"])
+    r = _seed.submit_ideate(wire_client, tid, token=c["token"])
     assert r.status_code == 403
     assert r.json().get("type") == "eden://error/wrong-token"
 

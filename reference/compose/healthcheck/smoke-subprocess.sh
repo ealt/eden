@@ -105,12 +105,12 @@ EVENTS_JSON="$(
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
 )"
-TRIAL_INTEGRATED="$(
+VARIANT_INTEGRATED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
-test "$TRIAL_INTEGRATED" -ge 3 || {
-    echo "expected >= 3 variant.integrated events; got $TRIAL_INTEGRATED" >&2
+test "$VARIANT_INTEGRATED" -ge 3 || {
+    echo "expected >= 3 variant.integrated events; got $VARIANT_INTEGRATED" >&2
     exit 1
 }
 TASK_COMPLETED="$(

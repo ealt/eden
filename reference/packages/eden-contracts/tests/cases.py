@@ -641,7 +641,7 @@ EVENT_CASES: list[Case] = [
     ),
     # --- registered types: variant.* ---
     Case(
-        "trial_started_ok",
+        "variant_started_ok",
         {
             "event_id": "evt-ts-100",
             "type": "variant.started",
@@ -652,7 +652,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_succeeded_ok",
+        "variant_succeeded_ok",
         {
             "event_id": "evt-ts-200",
             "type": "variant.succeeded",
@@ -663,7 +663,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_succeeded_bad_sha",
+        "variant_succeeded_bad_sha",
         {
             "event_id": "evt-ts-201",
             "type": "variant.succeeded",
@@ -674,7 +674,7 @@ EVENT_CASES: list[Case] = [
         False,
     ),
     Case(
-        "trial_errored_ok",
+        "variant_errored_ok",
         {
             "event_id": "evt-te-1",
             "type": "variant.errored",
@@ -685,7 +685,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_eval_errored_ok",
+        "variant_eval_errored_ok",
         {
             "event_id": "evt-tee-1",
             "type": "variant.eval_errored",
@@ -696,7 +696,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_integrated_ok",
+        "variant_integrated_ok",
         {
             "event_id": "evt-ti-1",
             "type": "variant.integrated",
@@ -707,7 +707,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_integrated_missing_sha",
+        "variant_integrated_missing_sha",
         {
             "event_id": "evt-ti-2",
             "type": "variant.integrated",
@@ -720,7 +720,7 @@ EVENT_CASES: list[Case] = [
 ]
 
 
-PROPOSAL_CASES: list[Case] = [
+IDEA_CASES: list[Case] = [
     Case(
         "drafting",
         {
@@ -920,7 +920,7 @@ PROPOSAL_CASES: list[Case] = [
 ]
 
 
-TRIAL_CASES: list[Case] = [
+VARIANT_CASES: list[Case] = [
     Case(
         "starting_minimal",
         {
@@ -1086,7 +1086,7 @@ ALL_CASES: dict[str, list[Case]] = {
     "experiment-config": EXPERIMENT_CONFIG_CASES,
     "task": TASK_CASES,
     "event": EVENT_CASES,
-    "idea": PROPOSAL_CASES,
-    "variant": TRIAL_CASES,
+    "idea": IDEA_CASES,
+    "variant": VARIANT_CASES,
     "evaluation-schema": EVALUATION_SCHEMA_CASES,
 }

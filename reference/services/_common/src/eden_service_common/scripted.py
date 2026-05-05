@@ -90,7 +90,7 @@ def make_implement_fn(
             return ExecuteOutcome(status="error")
 
         repo = GitRepo(repo_path)
-        variant_id = task.task_id.replace("implement-", "variant-")
+        variant_id = task.task_id.replace("execute-", "variant-")
         payload = f"variant={variant_id!r} slug={idea.slug!r}\n".encode()
         blob = repo.write_blob(payload)
         tree = repo.write_tree_from_entries(

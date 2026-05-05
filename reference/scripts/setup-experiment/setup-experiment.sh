@@ -66,7 +66,7 @@ EXPERIMENT_ID=""
 ARG_SHARED_TOKEN=""
 ARG_POSTGRES_PASSWORD=""
 ARG_EXPERIMENT_DIR=""
-ARG_PROPOSALS_PER_PLAN=""
+ARG_IDEAS_PER_IDEATION=""
 ARG_EXEC_MODE="host"
 ARG_SEED_FROM=""
 
@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
         --postgres-password)    require_value "$1" "$#"; ARG_POSTGRES_PASSWORD="$2"; shift 2 ;;
         --env-file)             require_value "$1" "$#"; ENV_FILE="$2";              shift 2 ;;
         --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
-        --ideas-per-ideation)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
+        --ideas-per-ideation)   require_value "$1" "$#"; ARG_IDEAS_PER_IDEATION="$2"; shift 2 ;;
         --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
         --seed-from)            require_value "$1" "$#"; ARG_SEED_FROM="$2";         shift 2 ;;
         -h|--help)              usage; exit 0 ;;
@@ -209,8 +209,8 @@ else
         EDEN_EXPERIMENT_DIR_HOST="$(cd "$parent" && pwd)"
     fi
 fi
-EXISTING_PROPOSALS_PER_PLAN="$(read_env_key EDEN_IDEAS_PER_IDEATION "$ENV_FILE")"
-EDEN_IDEAS_PER_IDEATION="${ARG_PROPOSALS_PER_PLAN:-${EXISTING_PROPOSALS_PER_PLAN:-1}}"
+EXISTING_IDEAS_PER_IDEATION="$(read_env_key EDEN_IDEAS_PER_IDEATION "$ENV_FILE")"
+EDEN_IDEAS_PER_IDEATION="${ARG_IDEAS_PER_IDEATION:-${EXISTING_IDEAS_PER_IDEATION:-1}}"
 
 # --- Phase 10d follow-up A: --exec-mode docker resolution ---
 # All four are written to .env unconditionally; the compose overlay's

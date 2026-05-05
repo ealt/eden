@@ -106,7 +106,7 @@ def test_success_path_creates_variant_and_ref(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execute-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -136,7 +136,7 @@ def test_subprocess_nonzero_exit_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execute-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -162,7 +162,7 @@ def test_missing_outcome_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execute-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -193,7 +193,7 @@ def test_invalid_commit_sha_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execute-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -220,7 +220,7 @@ def test_subprocess_timeout_routes_to_error(tmp_path: Path) -> None:
     start = time.monotonic()
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execute-1",
         task=task,
         config=config,
         host_subdir=host_subdir,

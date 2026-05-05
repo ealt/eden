@@ -117,12 +117,12 @@ EVENTS_JSON="$(
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
 )"
-TRIAL_INTEGRATED="$(
+VARIANT_INTEGRATED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
-test "$TRIAL_INTEGRATED" -ge 3 || {
-    echo "expected >= 3 variant.integrated events; got $TRIAL_INTEGRATED" >&2
+test "$VARIANT_INTEGRATED" -ge 3 || {
+    echo "expected >= 3 variant.integrated events; got $VARIANT_INTEGRATED" >&2
     echo "--- ideator-host logs ---" >&2
     docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
         --env-file "$ENV_FILE" logs --tail 80 ideator-host >&2 || true
@@ -183,9 +183,9 @@ echo "--- stopping worker hosts and asserting no ideator sibling remains ---"
 docker compose -f compose.yaml -f compose.subprocess.yaml \
     --env-file "$ENV_FILE" stop --timeout 15 >/dev/null
 
-PLANNER_LEFTOVER="$(docker ps -aq --filter label=eden.role=ideator 2>/dev/null | wc -l | tr -d ' ')"
-test "$PLANNER_LEFTOVER" -eq 0 || {
-    echo "ideator sibling container survived compose stop (count=$PLANNER_LEFTOVER)" >&2
+IDEATOR_LEFTOVER="$(docker ps -aq --filter label=eden.role=ideator 2>/dev/null | wc -l | tr -d ' ')"
+test "$IDEATOR_LEFTOVER" -eq 0 || {
+    echo "ideator sibling container survived compose stop (count=$IDEATOR_LEFTOVER)" >&2
     docker ps -a --filter label=eden.role=ideator >&2
     exit 1
 }

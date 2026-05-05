@@ -999,7 +999,7 @@ class _StoreBase:
     ) -> None:
         assert isinstance(task, ExecuteTask)
         idea = self._require_idea(task.payload.idea_id)
-        trial_for_error: Variant | None = None
+        variant_for_error: Variant | None = None
         if isinstance(submission, ExecuteSubmission):
             # Only touch the variant if it was created under this very
             # task's idea — submission.variant_id is caller-supplied
@@ -1010,7 +1010,7 @@ class _StoreBase:
                 and variant.status == "starting"
                 and variant.idea_id == task.payload.idea_id
             ):
-                trial_for_error = variant
+                variant_for_error = variant
 
         now = self._ts()
         tx = _Tx()
@@ -1027,12 +1027,12 @@ class _StoreBase:
                 {"idea_id": task.payload.idea_id, "task_id": task.task_id},
             )
         )
-        if trial_for_error is not None:
-            tx.variants[trial_for_error.variant_id] = _validated_update(
-                trial_for_error, status="error", completed_at=now
+        if variant_for_error is not None:
+            tx.variants[variant_for_error.variant_id] = _validated_update(
+                variant_for_error, status="error", completed_at=now
             )
             tx.events.append(
-                self._event("variant.errored", {"variant_id": trial_for_error.variant_id})
+                self._event("variant.errored", {"variant_id": variant_for_error.variant_id})
             )
         self._apply_commit(tx)
 

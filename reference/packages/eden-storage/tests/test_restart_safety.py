@@ -390,7 +390,7 @@ class TestRunExperimentAcrossRestarts:
             "ideator-1", plan_fn, idea_id_factory=lambda: next(idea_ids), now=now
         )
         executor = ScriptedExecutor(
-            "impl-1", impl_fn, trial_id_factory=lambda: next(variant_ids), now=now
+            "execute-1", impl_fn, variant_id_factory=lambda: next(variant_ids), now=now
         )
 
         first = SqliteStore("exp-r", path, token_factory=token_factory)

@@ -34,7 +34,7 @@ _TRIAL_DETAIL_EVENT_CAP = 50
 
 _KIND_VALUES = ("ideate", "execute", "evaluate")
 _STATE_VALUES = ("pending", "claimed", "submitted", "completed", "failed")
-_TRIAL_STATUS_VALUES = ("starting", "success", "error", "eval_error")
+_VARIANT_STATUS_VALUES = ("starting", "success", "error", "eval_error")
 
 # Closed allowlist: ?error=… and ?reclaimed=… banner copy. Keys
 # match the querystring values; values are (level, message).
@@ -156,10 +156,10 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
         if _claim_expired(t, now):
             expired_count += 1
 
-    trial_counts = {status: 0 for status in _TRIAL_STATUS_VALUES}
+    variant_counts = {status: 0 for status in _VARIANT_STATUS_VALUES}
     for tr in variants:
-        if tr.status in trial_counts:
-            trial_counts[tr.status] += 1
+        if tr.status in variant_counts:
+            variant_counts[tr.status] += 1
 
     # Three distinct states for ``work_ref_count`` so the dashboard
     # template can disambiguate them (plan §G + finding 4 from the
@@ -184,8 +184,8 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
             "cross_tab": cross_tab,
             "kinds": _KIND_VALUES,
             "states": _STATE_VALUES,
-            "trial_counts": trial_counts,
-            "trial_statuses": _TRIAL_STATUS_VALUES,
+            "variant_counts": variant_counts,
+            "variant_statuses": _VARIANT_STATUS_VALUES,
             "event_total": len(events_full),
             "work_ref_count": work_ref_count,
             "work_ref_error": work_ref_error,
@@ -340,13 +340,13 @@ async def task_reclaim(
 
 
 @router.get("/variants/", response_class=HTMLResponse, response_model=None)
-async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
+async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
 
-    status = _coerce_filter(request.query_params.get("status"), _TRIAL_STATUS_VALUES)
+    status = _coerce_filter(request.query_params.get("status"), _VARIANT_STATUS_VALUES)
     if status == _INVALID_FILTER:
         return request.app.state.templates.TemplateResponse(
             request,
@@ -355,7 +355,7 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
                 "session": session,
                 "rows": [],
                 "selected_status": request.query_params.get("status", "*"),
-                "trial_statuses": _TRIAL_STATUS_VALUES,
+                "variant_statuses": _VARIANT_STATUS_VALUES,
             },
         )
 
@@ -396,7 +396,7 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
             "session": session,
             "rows": rows,
             "selected_status": status or "*",
-            "trial_statuses": _TRIAL_STATUS_VALUES,
+            "variant_statuses": _VARIANT_STATUS_VALUES,
         },
     )
 
@@ -404,7 +404,7 @@ async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
 @router.get(
     "/variants/{variant_id}/", response_class=HTMLResponse, response_model=None
 )
-async def trial_detail(
+async def variant_detail(
     variant_id: str, request: Request
 ) -> HTMLResponse | RedirectResponse:
     session = get_session(request)

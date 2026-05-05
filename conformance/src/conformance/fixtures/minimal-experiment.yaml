@@ -1,5 +1,3 @@
-planner_root: "./ideator"
-workspace: "./workspace"
 parallel_variants: 1
 ideate_command: "true"
 execute_command: "true"

@@ -9,7 +9,7 @@ Phase 12's scope:
 
 - Control plane service + lease data model.
 - Multi-replica orchestrator; lease-holder fail-over chaos test.
-- Cross-experiment views in the shared planner.
+- Cross-experiment views in the shared ideator.
 - Experiment switcher in the Web UI.
 - Multi-experiment conformance scenarios.
 

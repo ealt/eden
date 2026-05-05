@@ -223,7 +223,7 @@ async def add_row(task_id: str, request: Request):
 
 
 @router.post("/{task_id}/submit", response_model=None)
-async def submit_plan(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+async def submit_ideate(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)

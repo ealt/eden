@@ -242,7 +242,7 @@ class TestArtifactRendering:
     ) -> None:
         eval_id, _, _ = seed_evaluate_task(
             store,
-            trial_description="<script>alert('xss')</script>",
+            variant_description="<script>alert('xss')</script>",
         )
         csrf = get_csrf(signed_in_client)
         _post_form(

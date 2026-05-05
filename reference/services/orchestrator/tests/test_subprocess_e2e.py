@@ -149,7 +149,7 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
 
     ideator_env_file = tmp_path / "ideator.env"
     ideator_env_file.write_text(
-        f"EDEN_BASE_COMMIT_SHA={base_sha}\nEDEN_PROPOSALS_PER_PLAN=1\n",
+        f"EDEN_BASE_COMMIT_SHA={base_sha}\nEDEN_IDEAS_PER_IDEATION=1\n",
         encoding="utf-8",
     )
 

@@ -211,8 +211,8 @@ class TestCommitAndRefs:
         repo.create_ref("refs/heads/variant/t1-demo", seed)
         repo.create_ref("refs/heads/variant/t2-demo", seed)
         repo.create_ref("refs/heads/work/t1-impl", seed)
-        trial_refs = dict(repo.list_refs("refs/heads/variant/*"))
-        assert set(trial_refs) == {
+        variant_refs = dict(repo.list_refs("refs/heads/variant/*"))
+        assert set(variant_refs) == {
             "refs/heads/variant/t1-demo",
             "refs/heads/variant/t2-demo",
         }

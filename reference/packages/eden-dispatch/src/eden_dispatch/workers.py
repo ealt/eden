@@ -160,12 +160,12 @@ class ScriptedExecutor:
         worker_id: str,
         implement_fn: ImplementFn,
         *,
-        trial_id_factory: Callable[[], str],
+        variant_id_factory: Callable[[], str],
         now: Callable[[], str],
     ) -> None:
         self._worker_id = worker_id
         self._implement_fn = implement_fn
-        self._variant_id_factory = trial_id_factory
+        self._variant_id_factory = variant_id_factory
         self._now = now
 
     @property
@@ -203,7 +203,7 @@ class ScriptedExecutor:
         variant_id = self._variant_id_factory()
         outcome = self._implement_fn(task, idea)
         branch = outcome.branch or f"work/{idea.slug}-{variant_id}"
-        trial_kwargs: dict[str, Any] = {
+        variant_kwargs: dict[str, Any] = {
             "variant_id": variant_id,
             "experiment_id": store.experiment_id,
             "idea_id": idea.idea_id,
@@ -213,8 +213,8 @@ class ScriptedExecutor:
             "started_at": self._now(),
         }
         if outcome.description is not None:
-            trial_kwargs["description"] = outcome.description
-        variant = Variant(**trial_kwargs)
+            variant_kwargs["description"] = outcome.description
+        variant = Variant(**variant_kwargs)
         store.create_variant(variant)
         store.submit(
             task.task_id,

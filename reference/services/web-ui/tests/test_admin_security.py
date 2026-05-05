@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _seed_plan_task(store: InMemoryStore, task_id: str = "plan-A") -> str:
+def _seed_ideate_task(store: InMemoryStore, task_id: str = "ideate-A") -> str:
     store.create_ideate_task(task_id)
     return task_id
 
@@ -94,9 +94,9 @@ class TestErrorEcho:
     def test_unknown_error_value_does_not_render_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_plan_task(store, "plan-A")
+        _seed_ideate_task(store, "ideate-A")
         resp = signed_in_client.get(
-            "/admin/tasks/plan-A/?error=<script>alert(1)</script>"
+            "/admin/tasks/ideate-A/?error=<script>alert(1)</script>"
         )
         assert resp.status_code == 200
         assert "<script>alert(1)</script>" not in resp.text
@@ -105,8 +105,8 @@ class TestErrorEcho:
     def test_unknown_reclaimed_value_does_not_render_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_plan_task(store, "plan-A")
-        resp = signed_in_client.get("/admin/tasks/plan-A/?reclaimed=garbage")
+        _seed_ideate_task(store, "ideate-A")
+        resp = signed_in_client.get("/admin/tasks/ideate-A/?reclaimed=garbage")
         assert resp.status_code == 200
         # No banner means none of the canonical banner copy is in the response.
         assert "task reclaimed" not in resp.text

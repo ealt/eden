@@ -40,7 +40,7 @@ def test_claimed_to_submitted(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.1 — `submit` transitions claimed → submitted."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    r = _seed.submit_plan(wire_client, tid, token=c["token"])
+    r = _seed.submit_ideate(wire_client, tid, token=c["token"])
     assert r.status_code == 200
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "submitted"
@@ -50,7 +50,7 @@ def test_submitted_to_completed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.3 — `accept` transitions submitted → completed."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_plan(wire_client, tid, token=c["token"])
+    _seed.submit_ideate(wire_client, tid, token=c["token"])
     r = _seed.accept(wire_client, tid)
     assert _is_2xx(r.status_code), r.status_code
     task = _seed.read_task(wire_client, tid)
@@ -61,7 +61,7 @@ def test_submitted_to_failed_via_reject(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.3 — `reject` transitions submitted → failed."""
     tid = _seed.create_ideate_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_plan(wire_client, tid, token=c["token"])
+    _seed.submit_ideate(wire_client, tid, token=c["token"])
     r = _seed.reject(wire_client, tid, reason="validation_error")
     assert _is_2xx(r.status_code), r.status_code
     task = _seed.read_task(wire_client, tid)
@@ -71,7 +71,7 @@ def test_submitted_to_failed_via_reject(wire_client: WireClient) -> None:
 def _terminalize_completed(client: WireClient) -> tuple[str, str]:
     tid = _seed.create_ideate_task(client)
     c = _seed.claim(client, tid)
-    _seed.submit_plan(client, tid, token=c["token"])
+    _seed.submit_ideate(client, tid, token=c["token"])
     _seed.accept(client, tid)
     return tid, c["token"]
 
@@ -79,7 +79,7 @@ def _terminalize_completed(client: WireClient) -> tuple[str, str]:
 def _terminalize_failed(client: WireClient) -> tuple[str, str]:
     tid = _seed.create_ideate_task(client)
     c = _seed.claim(client, tid)
-    _seed.submit_plan(client, tid, token=c["token"])
+    _seed.submit_ideate(client, tid, token=c["token"])
     _seed.reject(client, tid, reason="validation_error")
     return tid, c["token"]
 
@@ -92,7 +92,7 @@ def test_terminal_completed_rejects_writes(wire_client: WireClient) -> None:
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
     # Re-submit
-    r = _seed.submit_plan(wire_client, tid, token=token)
+    r = _seed.submit_ideate(wire_client, tid, token=token)
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
     # Re-accept / re-reject
@@ -117,7 +117,7 @@ def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
     # Re-submit
-    r = _seed.submit_plan(wire_client, tid, token=token)
+    r = _seed.submit_ideate(wire_client, tid, token=token)
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
     # Accept / reject

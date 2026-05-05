@@ -45,7 +45,7 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     store.create_idea(idea)
     store.mark_idea_ready("idea-x1")
     store.create_execute_task("execute-1", "idea-x1")
-    claim = store.claim("execute-1", "impl-1")
+    claim = store.claim("execute-1", "execute-1")
     variant = Variant(
         variant_id="variant-t1",
         experiment_id=EXPERIMENT_ID,

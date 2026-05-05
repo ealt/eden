@@ -106,8 +106,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--execute-task-prefix",
-        default="implement-",
-        help="Prefix for orchestrator-allocated execute task IDs (default: 'implement-').",
+        default="execute-",
+        help="Prefix for orchestrator-allocated execute task IDs (default: 'execute-').",
     )
     parser.add_argument(
         "--evaluate-task-prefix",

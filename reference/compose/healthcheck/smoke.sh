@@ -153,12 +153,12 @@ EVENTS_JSON="$(
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
 )"
-TRIAL_INTEGRATED="$(
+VARIANT_INTEGRATED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
-test "$TRIAL_INTEGRATED" -ge 3 || {
-    echo "expected >= 3 variant.integrated events; got $TRIAL_INTEGRATED" >&2
+test "$VARIANT_INTEGRATED" -ge 3 || {
+    echo "expected >= 3 variant.integrated events; got $VARIANT_INTEGRATED" >&2
     exit 1
 }
 
@@ -194,7 +194,7 @@ echo "--- asserting variant/* refs published to gitea ---"
 # Phase 10d follow-up B §D.6: variant/* refs must be visible on the
 # Gitea remote after integration. Each `variant.integrated` event
 # corresponds to a published ref.
-TRIAL_REMOTE_REFS="$(
+VARIANT_REMOTE_REFS="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         run --rm --no-deps \
         --entrypoint sh \
@@ -202,8 +202,8 @@ TRIAL_REMOTE_REFS="$(
         -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git 'refs/heads/variant/*' | wc -l" \
         | tr -d '[:space:]'
 )"
-test "$TRIAL_REMOTE_REFS" -ge 3 || {
-    echo "expected >= 3 variant/* refs on gitea; got $TRIAL_REMOTE_REFS" >&2
+test "$VARIANT_REMOTE_REFS" -ge 3 || {
+    echo "expected >= 3 variant/* refs on gitea; got $VARIANT_REMOTE_REFS" >&2
     exit 1
 }
 

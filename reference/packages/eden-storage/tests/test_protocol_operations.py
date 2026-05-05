@@ -94,7 +94,7 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
     from eden_storage import ExecuteSubmission
 
     store.create_execute_task(f"t-bootstrap-{variant_id}", idea_id)
-    c = store.claim(f"t-bootstrap-{variant_id}", "impl-bootstrap")
+    c = store.claim(f"t-bootstrap-{variant_id}", "execute-bootstrap")
     store.submit(
         f"t-bootstrap-{variant_id}",
         c.token,

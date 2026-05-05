@@ -215,8 +215,8 @@ def seed_evaluate_task(
     variant_id: str = "variant-eval",
     artifacts_dir: Path | None = None,
     artifact_text: str = "rationale",
-    trial_artifact_path: Path | None = None,
-    trial_description: str | None = None,
+    variant_artifact_path: Path | None = None,
+    variant_description: str | None = None,
     commit_sha: str = "b" * 40,
 ) -> tuple[str, str, str]:
     """Seed a starting variant (with commit_sha) + a pending evaluate task.
@@ -259,7 +259,7 @@ def seed_evaluate_task(
 
     from typing import Any
 
-    trial_kwargs: dict[str, Any] = {
+    variant_kwargs: dict[str, Any] = {
         "variant_id": variant_id,
         "experiment_id": store.experiment_id,
         "idea_id": idea_id,
@@ -268,11 +268,11 @@ def seed_evaluate_task(
         "branch": f"work/{slug}-{variant_id}",
         "started_at": "2026-04-24T12:00:00Z",
     }
-    if trial_description is not None:
-        trial_kwargs["description"] = trial_description
-    if trial_artifact_path is not None:
-        trial_kwargs["artifacts_uri"] = f"file://{trial_artifact_path.resolve()}"
-    store.create_variant(Variant(**trial_kwargs))
+    if variant_description is not None:
+        variant_kwargs["description"] = variant_description
+    if variant_artifact_path is not None:
+        variant_kwargs["artifacts_uri"] = f"file://{variant_artifact_path.resolve()}"
+    store.create_variant(Variant(**variant_kwargs))
 
     store.submit(
         impl_task_id,

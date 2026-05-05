@@ -86,7 +86,7 @@ A task is a work item. It is persisted in the task store and advances through a 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `task_id` | yes | string | Unique identifier. |
-| `kind` | yes | string | One of `"plan"`, `"implement"`, `"evaluate"`. |
+| `kind` | yes | string | One of `"ideate"`, `"execute"`, `"evaluate"`. |
 | `state` | yes | string | See §3.2. |
 | `payload` | yes | object | Kind-specific payload (§3.3). |
 | `claim` | no | object | Present iff the task is currently claimed (§3.4). |
@@ -101,8 +101,8 @@ The `state` field MUST be one of `"pending"`, `"claimed"`, `"submitted"`, `"comp
 
 The `payload` object's shape depends on `kind`.
 
-- `"plan"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints.
-- `"implement"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch.
+- `"ideate"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints.
+- `"execute"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch.
 - `"evaluate"` — MUST contain `variant_id` (string) referring to a variant with `status == "starting"` and a `commit_sha` set.
 
 ### 3.4 Claim object

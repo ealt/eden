@@ -35,7 +35,7 @@ def create_ideate_task(
     payload: dict[str, Any] | None = None,
 ) -> str:
     """POST /tasks for a `ideate` task. Returns the task_id."""
-    tid = task_id or fresh_task_id("plan")
+    tid = task_id or fresh_task_id("ideate")
     body = {
         "task_id": tid,
         "kind": "ideate",
@@ -81,7 +81,7 @@ def create_execute_task(
     The composite-commit invariant ([`05-event-protocol.md`](05-event-protocol.md) §2.2)
     flips the idea `ready → dispatched` atomically with this insert.
     """
-    tid = task_id or fresh_task_id("impl")
+    tid = task_id or fresh_task_id("execute")
     body = {
         "task_id": tid,
         "kind": "execute",
@@ -111,7 +111,7 @@ def claim(
     return resp.json()
 
 
-def submit_plan(
+def submit_ideate(
     client: WireClient,
     task_id: str,
     *,
@@ -130,7 +130,7 @@ def submit_plan(
     )
 
 
-def submit_implement(
+def submit_execute(
     client: WireClient,
     task_id: str,
     *,
@@ -219,13 +219,13 @@ def create_idea(
         "created_at": _NOW,
         "updated_at": _NOW,
     }
-    resp = client.post(client.proposals_path(), json=body)
+    resp = client.post(client.ideas_path(), json=body)
     resp.raise_for_status()
     return pid
 
 
 def mark_idea_ready(client: WireClient, idea_id: str) -> Any:
-    return client.post(client.proposals_path(idea_id, "/mark-ready"))
+    return client.post(client.ideas_path(idea_id, "/mark-ready"))
 
 
 def create_variant(
@@ -251,7 +251,7 @@ def create_variant(
         body["branch"] = branch
     if commit_sha is not None:
         body["commit_sha"] = commit_sha
-    resp = client.post(client.trials_path(), json=body)
+    resp = client.post(client.variants_path(), json=body)
     resp.raise_for_status()
     return tid
 
@@ -263,13 +263,13 @@ def integrate_variant(
     variant_commit_sha: str,
 ) -> Any:
     return client.post(
-        client.trials_path(variant_id, "/integrate"),
+        client.variants_path(variant_id, "/integrate"),
         json={"variant_commit_sha": variant_commit_sha},
     )
 
 
 def declare_variant_eval_error(client: WireClient, variant_id: str) -> Any:
-    return client.post(client.trials_path(variant_id, "/declare-eval-error"))
+    return client.post(client.variants_path(variant_id, "/declare-eval-error"))
 
 
 def read_task(client: WireClient, task_id: str) -> dict[str, Any]:
@@ -301,7 +301,7 @@ def drive_to_starting_variant(
         idea_id=pid,
         status="starting",
     )
-    r = submit_implement(
+    r = submit_execute(
         client,
         impl_tid,
         token=impl_claim["token"],
@@ -349,7 +349,7 @@ def drive_to_error_variant(
         idea_id=pid,
         status="starting",
     )
-    r = submit_implement(
+    r = submit_execute(
         client,
         impl_tid,
         token=impl_claim["token"],
@@ -430,12 +430,12 @@ def drive_to_success_variant(
 
 
 def read_idea(client: WireClient, idea_id: str) -> dict[str, Any]:
-    resp = client.get(client.proposals_path(idea_id))
+    resp = client.get(client.ideas_path(idea_id))
     resp.raise_for_status()
     return resp.json()
 
 
 def read_variant(client: WireClient, variant_id: str) -> dict[str, Any]:
-    resp = client.get(client.trials_path(variant_id))
+    resp = client.get(client.variants_path(variant_id))
     resp.raise_for_status()
     return resp.json()

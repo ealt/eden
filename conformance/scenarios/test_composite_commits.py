@@ -75,7 +75,7 @@ def test_implement_terminal_completes_idea(
     impl_completed = [
         e
         for e in event_log.find_by_type(events, "task.completed")
-        if e["data"].get("task_id", "").startswith("impl-")
+        if e["data"].get("task_id", "").startswith("execute-")
     ]
     completed_props = [
         e
@@ -103,7 +103,7 @@ def test_implement_terminal_fails_idea(
     impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
     impl_claim = _seed.claim(wire_client, impl_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
-    _seed.submit_implement(
+    _seed.submit_execute(
         wire_client,
         impl_tid,
         token=impl_claim["token"],
