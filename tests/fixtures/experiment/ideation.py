@@ -2,8 +2,8 @@
 
 Long-running JSON-line worker that exercises the Phase 10d ideator
 subprocess protocol (``docs/plans/eden-phase-10d-llm-worker-hosts.md``
-§D.2). For each ``ideate`` dispatch line on stdin, emits one or more
-``idea`` lines followed by a ``ideation-done`` terminator, all
+§D.2). For each ``ideation`` dispatch line on stdin, emits one or more
+``idea`` lines followed by an ``ideation-done`` terminator, all
 scoped to the dispatch's ``task_id``.
 
 Knobs:

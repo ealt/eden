@@ -347,9 +347,9 @@ class _StoreBase:
         """Spec-literal ``create_task`` per chapter 8 §1.1.
 
         Inserts a fully-formed task object in ``state="pending"``.
-        For ``execute`` tasks the composite-commit from
+        For ``execution`` tasks the composite-commit from
         ``05-event-protocol.md`` §2.2 also transitions the referenced
-        idea from ``ready`` to ``dispatched``; for ``evaluate``
+        idea from ``ready`` to ``dispatched``; for ``evaluation``
         tasks the referenced variant's ``starting``/``commit_sha``
         precondition is enforced.
 
@@ -442,7 +442,7 @@ class _StoreBase:
             return _deep(task)
 
     def create_ideation_task(self, task_id: str) -> IdeationTask:
-        """Create a ``ideate`` task. Emits ``task.created`` atomically."""
+        """Create an ``ideation`` task. Emits ``task.created`` atomically."""
         with self._atomic_operation():
             self._require_no_task(task_id)
             now = self._ts()
@@ -461,7 +461,7 @@ class _StoreBase:
             return _deep(task)
 
     def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
-        """Create an ``execute`` task; composite-commits ``idea.dispatched``.
+        """Create an ``execution`` task; composite-commits ``idea.dispatched``.
 
         Per ``05-event-protocol.md`` §2.2: creating the execution task
         and transitioning the referenced idea from ``ready`` to
@@ -502,7 +502,7 @@ class _StoreBase:
             return _deep(task)
 
     def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
-        """Create an ``evaluate`` task against a starting variant with ``commit_sha``."""
+        """Create an ``evaluation`` task against a starting variant with ``commit_sha``."""
         with self._atomic_operation():
             self._require_no_task(task_id)
             variant = self._get_variant(variant_id)
@@ -752,7 +752,7 @@ class _StoreBase:
         Automatic causes (``expired``, ``health_policy``) are rejected
         against ``submitted`` tasks per ``04-task-protocol.md`` §5.1;
         only ``operator`` reclaim is permitted from ``submitted``. If
-        the reclaimed task is an ``execute`` whose prior execution
+        the reclaimed task is an ``execution`` whose prior worker run
         left a variant in ``starting``, the variant transitions to
         ``error`` atomically with the reclaim
         (``05-event-protocol.md`` §2.2).

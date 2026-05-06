@@ -135,6 +135,22 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ('"implement" string', re.compile(r'"implement"')),
     ('"ideate" string',    re.compile(r'"ideate"')),
     ('"execute" string',   re.compile(r'"execute"')),
+    # Backticked task-kind values in spec/docstring prose. Earlier
+    # rename passes used \b-anchored regex which doesn't fire on
+    # backticked tokens (the backtick is a word boundary but the
+    # literal pattern then needs the kind value as a standalone
+    # word, which it is — yet `\bplan\b` matched `plan_command` /
+    # `parallel_trials` snake_case compounds and was patched around
+    # rather than tightened). This pattern catches the
+    # backticked-prose form: "for ``execute`` tasks" / "create an
+    # ``evaluate`` task" / "kind (one of `plan`, `implement`,
+    # `evaluate`)". The (single|double) backtick alternation handles
+    # both spec-prose (`X`) and Python-docstring-prose (``X``).
+    ("`plan` backticked",      re.compile(r"`{1,2}plan`{1,2}")),
+    ("`implement` backticked", re.compile(r"`{1,2}implement`{1,2}")),
+    ("`ideate` backticked",    re.compile(r"`{1,2}ideate`{1,2}")),
+    ("`execute` backticked",   re.compile(r"`{1,2}execute`{1,2}")),
+    ("`evaluate` backticked",  re.compile(r"`{1,2}evaluate`{1,2}")),
     # Numbered task-ID prefixes from before each rename.
     ("plan-NNNN id",     re.compile(r"\bplan-\d{4,}\b")),
     ("implement-NNNN id",re.compile(r"\bimplement-\d{4,}\b")),

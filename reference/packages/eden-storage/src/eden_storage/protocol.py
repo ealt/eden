@@ -168,7 +168,7 @@ class Store(Protocol):
         """Atomically insert a fully-formed task + ``task.created`` event.
 
         Chapter 8 §1.1: accepts a task object with ``state == "pending"``
-        and an empty ``claim``. For ``execute`` tasks this is a
+        and an empty ``claim``. For ``execution`` tasks this is a
         composite commit that also transitions the referenced idea
         ``ready → dispatched`` (``05-event-protocol.md`` §2.2).
 
@@ -181,15 +181,15 @@ class Store(Protocol):
         ...
 
     def create_ideation_task(self, task_id: str) -> IdeationTask:
-        """Atomically insert a ``ideate`` task + ``task.created`` event."""
+        """Atomically insert an ``ideation`` task + ``task.created`` event."""
         ...
 
     def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
-        """Create an ``execute`` task; composite-commits ``idea.dispatched``."""
+        """Create an ``execution`` task; composite-commits ``idea.dispatched``."""
         ...
 
     def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
-        """Create an ``evaluate`` task against a starting variant with commit_sha."""
+        """Create an ``evaluation`` task against a starting variant with commit_sha."""
         ...
 
     # ------------------------------------------------------------------

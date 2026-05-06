@@ -44,7 +44,7 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 
 ### 2.2 List and read
 
-- `GET /v0/experiments/{E}/tasks` returns an array of tasks matching optional query parameters `kind` (one of `plan`, `implement`, `evaluate`) and `state` (one of the five task states). Ordering is implementation-defined per [`08-storage.md`](08-storage.md) §1.1.
+- `GET /v0/experiments/{E}/tasks` returns an array of tasks matching optional query parameters `kind` (one of `ideation`, `execution`, `evaluation`) and `state` (one of the five task states). Ordering is implementation-defined per [`08-storage.md`](08-storage.md) §1.1.
 - `GET /v0/experiments/{E}/tasks/{T}` returns the task object with id `T`, or 404 `eden://error/not-found`.
 
 ### 2.3 Claim

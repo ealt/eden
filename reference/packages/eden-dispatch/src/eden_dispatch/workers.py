@@ -69,7 +69,7 @@ EvaluateFn = Callable[[EvaluationTask, Variant], EvaluationOutcome]
 class ScriptedIdeator:
     """Poll-and-run ideator worker.
 
-    Discovers pending ``ideate`` tasks, claims each in turn, drafts its
+    Discovers pending ``ideation`` tasks, claims each in turn, drafts its
     scripted ideas (one by one, marking each ``ready`` before
     submitting), and submits with ``status=success``. Multi-idea
     drafting per plan is supported; zero-idea plans also submit
@@ -148,7 +148,7 @@ class ScriptedIdeator:
 class ScriptedExecutor:
     """Poll-and-run executor worker.
 
-    Discovers pending ``execute`` tasks, reads the referenced
+    Discovers pending ``execution`` tasks, reads the referenced
     idea, creates a ``starting`` variant on a scripted ``work/*``
     branch, and submits with the scripted outcome. A successful
     outcome carries ``commit_sha``; an errored outcome submits with
@@ -230,7 +230,7 @@ class ScriptedExecutor:
 class ScriptedEvaluator:
     """Poll-and-run evaluator worker.
 
-    Discovers pending ``evaluate`` tasks, reads the referenced variant,
+    Discovers pending ``evaluation`` tasks, reads the referenced variant,
     runs its scripted evaluation, and submits. ``success`` and
     ``error`` write metrics on the variant via the orchestrator's
     terminal transition; ``evaluation_error`` leaves the variant in
