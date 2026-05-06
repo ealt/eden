@@ -69,15 +69,15 @@ def test_reopen_on_non_default_schema_does_not_re_run_migrations(
     """
     evaluation=EvaluationSchema.model_validate({"score": "real"})
     store = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
-    store.create_ideate_task("ideate-0001")
+    store.create_ideation_task("ideation-0001")
     store.close()
 
     # Reopen — must succeed and see the persisted task.
     reopened = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
     try:
-        task = reopened.read_task("ideate-0001")
+        task = reopened.read_task("ideation-0001")
         assert task is not None
-        assert task.task_id == "ideate-0001"
+        assert task.task_id == "ideation-0001"
     finally:
         reopened.close()
 
@@ -141,7 +141,7 @@ def test_event_id_counter_resumes_across_reopen(schema_dsn: str) -> None:
     """
     evaluation=EvaluationSchema.model_validate({"score": "real"})
     store = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
-    store.create_ideate_task("ideate-0001")
+    store.create_ideation_task("ideation-0001")
     first_event_count = len(list(store.events()))
     store.close()
 
@@ -151,7 +151,7 @@ def test_event_id_counter_resumes_across_reopen(schema_dsn: str) -> None:
         # the counter restarted from 1, the second store would
         # collide on `evt-000001` (which the first store already
         # used).
-        reopened.create_ideate_task("ideate-0002")
+        reopened.create_ideation_task("ideation-0002")
         all_events = list(reopened.events())
         assert len(all_events) > first_event_count
     finally:

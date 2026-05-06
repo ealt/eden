@@ -30,9 +30,9 @@ from eden_dispatch import sweep_expired_claims
 from eden_git import GitRepo
 from eden_storage import (
     ConflictingResubmission,
-    ExecuteSubmission,
     IllegalTransition,
     InMemoryStore,
+    VariantSubmission,
     WrongToken,
 )
 from eden_web_ui.routes import executor as executor_routes
@@ -476,9 +476,9 @@ class TestStoreInvariantViolation:
         assert "store invariant violation" in resp.text
 
 
-def _build_submission(child_sha: str) -> ExecuteSubmission:
+def _build_submission(child_sha: str) -> VariantSubmission:
     """Helper used by future tests; kept for readability of the submission shape."""
-    return ExecuteSubmission(
+    return VariantSubmission(
         status="success", variant_id="variant-x", commit_sha=child_sha
     )
 
@@ -582,22 +582,22 @@ class TestPhase3IllegalTransitionReadback:
         monkeypatch,
     ) -> None:
         """IllegalTransition + read-back finds a different submission → conflict."""
-        from eden_contracts import ExecutePayload, ExecuteTask
+        from eden_contracts import ExecutionPayload, ExecutionTask
 
         task_id, child_sha = _claim_and_prep(
             signed_in_impl_client, store, bare_repo, base_sha, slug="itc"
         )
-        synthetic_task = ExecuteTask(
+        synthetic_task = ExecutionTask(
             task_id=task_id,
-            kind="execute",
+            kind="execution",
             state="completed",
-            payload=ExecutePayload(idea_id="idea-itc"),
+            payload=ExecutionPayload(idea_id="idea-itc"),
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T13:00:00.000Z",
         )
         # A different worker's submission would have a different
         # variant_id; equivalence keys off (status, variant_id, commit_sha).
-        non_equiv_prior = ExecuteSubmission(
+        non_equiv_prior = VariantSubmission(
             status="success",
             variant_id="variant-other-worker",
             commit_sha=child_sha,

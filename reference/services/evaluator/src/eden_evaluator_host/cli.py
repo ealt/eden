@@ -90,9 +90,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--worktrees-dir",
         default="/var/lib/eden/worktrees",
     )
-    parser.add_argument("--evaluate-task-deadline", type=float, default=300.0)
-    parser.add_argument("--evaluate-shutdown-deadline", type=float, default=10.0)
-    parser.add_argument("--evaluate-env-file", default=None)
+    parser.add_argument("--evaluation-task-deadline", type=float, default=300.0)
+    parser.add_argument("--evaluation-shutdown-deadline", type=float, default=10.0)
+    parser.add_argument("--evaluation-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     add_exec_arguments(parser)
@@ -174,10 +174,10 @@ def main(argv: list[str] | None = None) -> int:
                 stop=stop,
             )
         else:
-            command = require_command(config, "evaluate_command")
+            command = require_command(config, "evaluation_command")
             env = {}
-            if args.evaluate_env_file:
-                env.update(parse_env_file(args.evaluate_env_file))
+            if args.evaluation_env_file:
+                env.update(parse_env_file(args.evaluation_env_file))
             try:
                 exec_args = resolve_exec_args(args)
             except ValueError as exc:
@@ -191,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                 env=env,
                 repo_path=Path(args.repo_path).resolve(),
                 worktrees_root=Path(args.worktrees_dir),
-                task_deadline=args.evaluate_task_deadline,
-                shutdown_deadline=args.evaluate_shutdown_deadline,
+                task_deadline=args.evaluation_task_deadline,
+                shutdown_deadline=args.evaluation_shutdown_deadline,
                 exec_mode=exec_args.mode,
                 exec_image=exec_args.image,
                 exec_volumes=tuple(exec_args.volumes),

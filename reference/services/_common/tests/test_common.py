@@ -34,42 +34,42 @@ def test_seed_bare_repo_produces_resolvable_head(tmp_path: Path) -> None:
 _TS = "2026-04-01T00:00:00Z"
 
 
-def _make_plan_task(task_id: str = "ideate-1") -> Any:
-    from eden_contracts import IdeatePayload, IdeateTask
+def _make_plan_task(task_id: str = "ideation-1") -> Any:
+    from eden_contracts import IdeationPayload, IdeationTask
 
-    return IdeateTask(
+    return IdeationTask(
         task_id=task_id,
-        kind="ideate",
+        kind="ideation",
         state="pending",
         created_at=_TS,
         updated_at=_TS,
-        payload=IdeatePayload(experiment_id="exp"),
+        payload=IdeationPayload(experiment_id="exp"),
     )
 
 
-def _make_impl_task(task_id: str = "execute-1") -> Any:
-    from eden_contracts import ExecutePayload, ExecuteTask
+def _make_impl_task(task_id: str = "execution-1") -> Any:
+    from eden_contracts import ExecutionPayload, ExecutionTask
 
-    return ExecuteTask(
+    return ExecutionTask(
         task_id=task_id,
-        kind="execute",
+        kind="execution",
         state="pending",
         created_at=_TS,
         updated_at=_TS,
-        payload=ExecutePayload(idea_id="p-1"),
+        payload=ExecutionPayload(idea_id="p-1"),
     )
 
 
 def _make_eval_task(task_id: str = "evaluate-1") -> Any:
-    from eden_contracts import EvaluatePayload, EvaluateTask
+    from eden_contracts import EvaluationPayload, EvaluationTask
 
-    return EvaluateTask(
+    return EvaluationTask(
         task_id=task_id,
-        kind="evaluate",
+        kind="evaluation",
         state="pending",
         created_at=_TS,
         updated_at=_TS,
-        payload=EvaluatePayload(variant_id="tr-1"),
+        payload=EvaluationPayload(variant_id="tr-1"),
     )
 
 
@@ -80,7 +80,7 @@ def test_make_plan_fn_emits_ideas_with_base_commit_parent() -> None:
     assert len(out) == 2
     for tpl in out:
         assert tpl.parent_commits == (base,)
-        assert tpl.slug.startswith("ideate-1-p")
+        assert tpl.slug.startswith("ideation-1-p")
 
 
 def test_make_implement_fn_writes_real_commit(tmp_path: Path) -> None:

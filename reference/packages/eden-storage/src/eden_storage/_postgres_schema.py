@@ -57,7 +57,7 @@ _V1_STATEMENTS: list[str] = [
         data text NOT NULL
     )
     """,
-    "CREATE INDEX trial_by_status ON variant(status)",
+    "CREATE INDEX variant_by_status ON variant(status)",
     """
     CREATE TABLE event (
         seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -1,4 +1,4 @@
-"""Deterministic evaluate_command for the fixture experiment.
+"""Deterministic evaluation_command for the fixture experiment.
 
 Short-lived per-task subprocess. Reads ``EDEN_TASK_JSON`` for the
 variant context (commit_sha + evaluation_schema), emits a deterministic

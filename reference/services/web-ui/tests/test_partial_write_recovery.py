@@ -41,7 +41,7 @@ def _post_form(
 def _claim_and_form(
     client: TestClient, store: InMemoryStore, task_id: str
 ) -> dict[str, str]:
-    store.create_ideate_task(task_id)
+    store.create_ideation_task(task_id)
     csrf = get_csrf(client)
     resp = client.post(
         f"/ideator/{task_id}/claim",

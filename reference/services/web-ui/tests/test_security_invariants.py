@@ -81,7 +81,7 @@ class TestBearerLeak:
         # app.state.* into a template, this would catch it.
         app.state.shared_token = SHARED_TOKEN
 
-        store.create_ideate_task("t-leak")
+        store.create_ideation_task("t-leak")
         with TestClient(app) as c, caplog.at_level(logging.DEBUG):
             c.post("/signin", follow_redirects=False)
             for path in ("/", "/ideator/", "/signin"):
@@ -109,7 +109,7 @@ class TestCSRF:
     def test_submit_without_csrf_rejected(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-1")
+        store.create_ideation_task("t-1")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-1/claim",

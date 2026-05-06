@@ -25,6 +25,20 @@ jobs:
         run: |
           markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"
 
+  rename-discipline:
+    name: rename-discipline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check for pre-rename EDEN vocabulary
+        run: python3 scripts/check-rename-discipline.py
+
   schema-validity:
     name: schema-validity
     runs-on: ubuntu-latest

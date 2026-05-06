@@ -27,13 +27,13 @@ from eden_dispatch import (
     ScriptedExecutor,
     ScriptedIdeator,
 )
-from eden_dispatch.workers import EvaluateOutcome, ExecuteOutcome, IdeaTemplate
+from eden_dispatch.workers import EvaluationOutcome, ExecutionOutcome, IdeaTemplate
 from eden_storage import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     InvalidPrecondition,
     SqliteStore,
+    VariantSubmission,
 )
 
 
@@ -61,7 +61,7 @@ class TestStateSurvivesReopen:
             )
         )
         first.mark_idea_ready("p1")
-        first.create_execute_task("t-exec", "p1")
+        first.create_execution_task("t-exec", "p1")
         claim = first.claim("t-exec", "executor-w")
         first.create_variant(
             Variant(
@@ -77,7 +77,7 @@ class TestStateSurvivesReopen:
         first.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         first.accept("t-exec")
         first_events = first.events()
@@ -97,7 +97,7 @@ class TestStateSurvivesReopen:
     ) -> None:
         path = tmp_path / "eden.db"
         first = SqliteStore("exp-r", path, token_factory=_token_seq())
-        first.create_ideate_task("t-ideate")
+        first.create_ideation_task("t-ideate")
         claim = first.claim("t-ideate", "ideator-w")
         first.close()
 
@@ -107,7 +107,7 @@ class TestStateSurvivesReopen:
         assert task.claim is not None
         assert task.claim.token == claim.token
         # The persisted token authorizes a fresh submit on the reopened store.
-        second.submit("t-ideate", claim.token, IdeateSubmission(status="success"))
+        second.submit("t-ideate", claim.token, IdeaSubmission(status="success"))
         assert second.read_task("t-ideate").state == "submitted"
         second.close()
 
@@ -115,13 +115,13 @@ class TestStateSurvivesReopen:
         """§2.2 single total order; §4.4 full replay from first event."""
         path = tmp_path / "eden.db"
         first = SqliteStore("exp-r", path, token_factory=_token_seq())
-        first.create_ideate_task("t1")
-        first.create_ideate_task("t2")
+        first.create_ideation_task("t1")
+        first.create_ideation_task("t2")
         before = [e.event_id for e in first.events()]
         first.close()
 
         second = SqliteStore("exp-r", path)
-        second.create_ideate_task("t3")
+        second.create_ideation_task("t3")
         after = [e.event_id for e in second.events()]
         assert after[: len(before)] == before
         assert len(after) == len(before) + 1
@@ -207,7 +207,7 @@ class TestExperimentIdentityIsEnforced:
                 "exp-r",
                 '{"event_id":"evt-1000500","type":"task.created",'
                 '"occurred_at":"2026-04-23T00:00:00.000Z",'
-                '"experiment_id":"exp-r","data":{"task_id":"synthetic","kind": "ideate"}}',
+                '"experiment_id":"exp-r","data":{"task_id":"synthetic","kind": "ideation"}}',
             ),
         )
         conn.commit()
@@ -216,7 +216,7 @@ class TestExperimentIdentityIsEnforced:
         # Reopen with the default factory; subsequent event must not
         # collide with the synthetic one.
         second = SqliteStore("exp-r", path)
-        second.create_ideate_task("t-new")
+        second.create_ideation_task("t-new")
         # The newly-appended event must come after the synthetic one.
         events = second.events()
         assert len(events) == 2
@@ -242,7 +242,7 @@ class TestExperimentIdentityIsEnforced:
         first.close()
 
         second = SqliteStore("exp-a", path, token_factory=_token_seq())
-        # Drive a full variant to the point of an evaluate submit and
+        # Drive a full variant to the point of an evaluate-task submission and
         # assert the inherited schema rejects a wrong-type metric.
         second.create_idea(
             Idea(
@@ -257,7 +257,7 @@ class TestExperimentIdentityIsEnforced:
             )
         )
         second.mark_idea_ready("p1")
-        second.create_execute_task("t-exec", "p1")
+        second.create_execution_task("t-exec", "p1")
         c = second.claim("t-exec", "executor-w")
         second.create_variant(
             Variant(
@@ -273,15 +273,15 @@ class TestExperimentIdentityIsEnforced:
         second.submit(
             "t-exec",
             c.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         second.accept("t-exec")
-        second.create_evaluate_task("t-eval", "tr-1")
+        second.create_evaluation_task("t-eval", "tr-1")
         ec = second.claim("t-eval", "eval-w")
         second.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id="tr-1",
                 evaluation={"score": "not-an-int"},
@@ -301,7 +301,7 @@ class TestCrashRecoveryRollsBackPartialWrites:
         """A failure inside ``_apply_commit`` MUST leave nothing persisted.
 
         We monkey-patch ``_insert_event`` to raise on the second event
-        of a composite commit (``create_execute_task`` emits two
+        of a composite commit (``create_execution_task`` emits two
         events: ``task.created`` + ``idea.dispatched``). If
         rollback works, a reopened store sees neither the task
         row nor the idea state change — everything stays at the
@@ -335,7 +335,7 @@ class TestCrashRecoveryRollsBackPartialWrites:
 
         first._insert_event = boom  # noqa: SLF001
         with pytest.raises(RuntimeError, match="simulated"):
-            first.create_execute_task("t-exec", "p1")
+            first.create_execution_task("t-exec", "p1")
         first._insert_event = original  # noqa: SLF001
         first.close()
 
@@ -374,10 +374,10 @@ class TestRunExperimentAcrossRestarts:
             ]
 
         def impl_fn(_task, _idea):
-            return ExecuteOutcome(status="success", commit_sha=next(commit_shas))
+            return ExecutionOutcome(status="success", commit_sha=next(commit_shas))
 
         def eval_fn(_task, _trial):
-            return EvaluateOutcome(status="success", evaluation={"score": 1.0})
+            return EvaluationOutcome(status="success", evaluation={"score": 1.0})
 
         def _now_factory():
             import itertools
@@ -390,19 +390,19 @@ class TestRunExperimentAcrossRestarts:
             "ideator-1", plan_fn, idea_id_factory=lambda: next(idea_ids), now=now
         )
         executor = ScriptedExecutor(
-            "impl-1", impl_fn, trial_id_factory=lambda: next(variant_ids), now=now
+            "execution-1", impl_fn, variant_id_factory=lambda: next(variant_ids), now=now
         )
 
         first = SqliteStore("exp-r", path, token_factory=token_factory)
         # Run ideator + executor only; leave variant awaiting evaluation.
-        first.create_ideate_task("t-ideate-01")
+        first.create_ideation_task("t-ideate-01")
         ideator.run_pending(first)
-        # Finalize ideate submission manually (normally the orchestrator service does this).
+        # Finalize ideate-task submission manually (normally the orchestrator service does this).
         decision, _ = first.validate_terminal("t-ideate-01")
         assert decision == "accept"
         first.accept("t-ideate-01")
         # Dispatch implement
-        first.create_execute_task(next(impl_task_ids), "p-01")
+        first.create_execution_task(next(impl_task_ids), "p-01")
         executor.run_pending(first)
         decision, _ = first.validate_terminal("t-exec-01")
         assert decision == "accept"
@@ -412,7 +412,7 @@ class TestRunExperimentAcrossRestarts:
         # Reopen; finish the experiment with a fresh evaluator.
         evaluator = ScriptedEvaluator("eval-1", eval_fn)
         second = SqliteStore("exp-r", path, token_factory=token_factory)
-        second.create_evaluate_task(next(eval_task_ids), "tr-01")
+        second.create_evaluation_task(next(eval_task_ids), "tr-01")
         evaluator.run_pending(second)
         decision, _ = second.validate_terminal("t-eval-01")
         assert decision == "accept"
@@ -444,7 +444,7 @@ class TestEventLogRetention:
         path = tmp_path / "eden.db"
         first = SqliteStore("exp-r", path, token_factory=_token_seq())
         for i in range(5):
-            first.create_ideate_task(f"t-{i:02d}")
+            first.create_ideation_task(f"t-{i:02d}")
         seen = [(e.event_id, e.type) for e in first.events()]
         first.close()
 

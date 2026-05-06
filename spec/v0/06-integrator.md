@@ -1,6 +1,6 @@
 # Integrator
 
-This chapter specifies the integrator role in full: the git topology it operates on, the promotion trigger, the squash rule, the eval-manifest shape, and the invariants it preserves across the canonical variant lineage.
+This chapter specifies the integrator role in full: the git topology it operates on, the promotion trigger, the squash rule, the evaluation-manifest shape, and the invariants it preserves across the canonical variant lineage.
 
 The integrator is introduced in [`03-roles.md`](03-roles.md) §5, which pins its boundary rules — exclusive authority over `variant/*`, exclusive authority over `variant_commit_sha`. This chapter specifies what the integrator *produces* inside those boundaries.
 
@@ -44,7 +44,7 @@ The integrator promotes a variant iff:
 
 The mechanism by which the integrator observes the trigger — subscribing to `variant.succeeded` events, polling the variant store, or receiving a dispatch call — is a binding concern and is not pinned. [`03-roles.md`](03-roles.md) §5.2.
 
-A conforming integrator MUST NOT promote variants in any other status. In particular, `error`, `eval_error`, and `starting` variants MUST NOT receive a `variant/*` commit.
+A conforming integrator MUST NOT promote variants in any other status. In particular, `error`, `evaluation_error`, and `starting` variants MUST NOT receive a `variant/*` commit.
 
 The integrator MUST NOT promote a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §7.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
 
@@ -64,15 +64,15 @@ where `<variant_id>` is the variant's `variant_id` ([`02-data-model.md`](02-data
 
 ### 3.2 Squash rule
 
-The variant's worker branch MAY contain multiple commits (executor step-by-step work, partial progress, iterated attempts). The canonical variant commit MUST be a **single commit** whose tree is the worker branch's tip tree plus exactly the eval-manifest file.
+The variant's worker branch MAY contain multiple commits (executor step-by-step work, partial progress, iterated attempts). The canonical variant commit MUST be a **single commit** whose tree is the worker branch's tip tree plus exactly the evaluation-manifest file.
 
 Concretely: the integrator MUST produce a commit `T` with:
 
-- `tree(T)` equal to `tree(commit_sha)` with exactly one path added: the eval-manifest file at the path given in §4.1. The added file's bytes MUST be the manifest defined by §4.2. `commit_sha` is the variant's recorded worker-branch tip. No other path — not a file, not a directory entry — MAY be added, removed, or modified in the squash.
+- `tree(T)` equal to `tree(commit_sha)` with exactly one path added: the evaluation-manifest file at the path given in §4.1. The added file's bytes MUST be the manifest defined by §4.2. `commit_sha` is the variant's recorded worker-branch tip. No other path — not a file, not a directory entry — MAY be added, removed, or modified in the squash.
 - `parents(T) == <parent_commits>` of the variant, in the order recorded on the variant ([`02-data-model.md`](02-data-model.md) §7.1 inherits from the idea, §5.1).
 - A commit message whose first line (subject) records the variant identity in a machine-parseable form. §3.3 pins the format.
 
-The executor is not required to carry the eval manifest in its worker branch; the manifest is exclusively the integrator's write. If a worker branch incidentally contains a file at the eval-manifest path (e.g. an executor mistake), the integrator MUST reject the variant rather than silently overwrite the file. Rejection produces no `variant/*` commit and no `variant.integrated` event; the orchestrator MAY transition the variant via normal channels.
+The executor is not required to carry the evaluation manifest in its worker branch; the manifest is exclusively the integrator's write. If a worker branch incidentally contains a file at the evaluation-manifest path (e.g. an executor mistake), the integrator MUST reject the variant rather than silently overwrite the file. Rejection produces no `variant/*` commit and no `variant.integrated` event; the orchestrator MAY transition the variant via normal channels.
 
 The squash is a single merge-commit-shaped object (parents may be one or many, per the idea's `parent_commits`); intermediate work-branch commits MUST NOT appear in `T`'s ancestor chain along a first-parent path when read from `variant/*`. Readers of the canonical lineage see one commit per variant, not the worker's intermediate history.
 
@@ -101,19 +101,19 @@ This invariant applies to completed promotions: once a promotion has returned �
 
 See [`design-notes/integrator-atomicity.md`](design-notes/integrator-atomicity.md) for the rationale behind this reading, the alternatives considered, and the conditions under which a future revision of this chapter might tighten the invariant.
 
-## 4. Eval manifest
+## 4. Evaluation manifest
 
-Each `variant/*` commit MUST carry an **eval manifest** at a fixed path inside its tree. The manifest is the canonical, git-embedded record of the variant's evaluator outputs: what was measured, which worker commit was measured, where the supporting artifacts live.
+Each `variant/*` commit MUST carry an **evaluation manifest** at a fixed path inside its tree. The manifest is the canonical, git-embedded record of the variant's evaluator outputs: what was measured, which worker commit was measured, where the supporting artifacts live.
 
 ### 4.1 Path
 
-The eval manifest is a JSON file at:
+The evaluation manifest is a JSON file at:
 
 ```text
-.eden/variants/<variant_id>/eval.json
+.eden/variants/<variant_id>/evaluation.json
 ```
 
-relative to the root of the committed tree. The `<variant_id>` component matches the variant's `variant_id`. An integrator MUST NOT add any file under `.eden/variants/<other_variant_id>/` to a variant's commit; each `variant/*` commit carries exactly one eval-manifest path, corresponding to its own variant.
+relative to the root of the committed tree. The `<variant_id>` component matches the variant's `variant_id`. An integrator MUST NOT add any file under `.eden/variants/<other_variant_id>/` to a variant's commit; each `variant/*` commit carries exactly one evaluation-manifest path, corresponding to its own variant.
 
 ### 4.2 Shape
 
@@ -170,13 +170,13 @@ Keys are operator-chosen short labels (e.g. `"log"`, `"output.csv"`) and MUST be
 
 ### 4.5 Manifest immutability
 
-Because the eval manifest lives inside the `variant/*` commit's tree, it inherits the immutability of the `variant/*` branch (§1.2): once written, it MUST NOT be rewritten. A conforming implementation that discovers a manifest error after the fact MAY record corrective state outside git (operator-level event, separate annotation store) but MUST NOT mutate the `variant/*` commit.
+Because the evaluation manifest lives inside the `variant/*` commit's tree, it inherits the immutability of the `variant/*` branch (§1.2): once written, it MUST NOT be rewritten. A conforming implementation that discovers a manifest error after the fact MAY record corrective state outside git (operator-level event, separate annotation store) but MUST NOT mutate the `variant/*` commit.
 
 ## 5. Failure modes
 
 ### 5.1 Evaluation-schema violation at promotion time
 
-If the integrator re-validates metrics (per §2) and finds them in violation of the experiment's `evaluation_schema`, the integrator MUST NOT produce a `variant/*` commit, MUST NOT write `variant_commit_sha`, and MUST NOT append `variant.integrated`. It MUST surface the problem through an implementation-defined operator channel; since the variant's `status` was written to `success` by the orchestrator at the evaluate terminal, the promotion-side rejection is a protocol-level drift between the two that an operator MUST resolve. A conforming orchestrator makes this case rare by enforcing schema conformance at the evaluate terminal.
+If the integrator re-validates the evaluation (per §2) and finds it in violation of the experiment's `evaluation_schema`, the integrator MUST NOT produce a `variant/*` commit, MUST NOT write `variant_commit_sha`, and MUST NOT append `variant.integrated`. It MUST surface the problem through an implementation-defined operator channel; since the variant's `status` was written to `success` by the orchestrator at the evaluate-task terminal, the promotion-side rejection is a protocol-level drift between the two that an operator MUST resolve. A conforming orchestrator makes this case rare by enforcing schema conformance at the evaluate-task terminal.
 
 ### 5.2 Partial git write
 
@@ -186,7 +186,7 @@ If the underlying git ref write appears to succeed but later fails durability (c
 
 If the integrator is invoked twice for the same variant (replay of a `variant.succeeded` event, operator retry), it MUST be idempotent:
 
-- If the variant already has `variant_commit_sha` set and that SHA resolves to a `variant/*` commit whose tree satisfies §3.2 (the worker-tip tree with exactly the eval-manifest path added, no other path changes) and whose eval manifest matches §4, the second invocation MUST be a no-op (no new ref, no new event).
+- If the variant already has `variant_commit_sha` set and that SHA resolves to a `variant/*` commit whose tree satisfies §3.2 (the worker-tip tree with exactly the evaluation-manifest path added, no other path changes) and whose evaluation manifest matches §4, the second invocation MUST be a no-op (no new ref, no new event).
 - If the variant already has `variant_commit_sha` set but the recorded SHA does not resolve or disagrees with the variant, the state is corrupt; the integrator MUST NOT silently overwrite. An operator channel per §5.1 applies.
 
 ## 6. Implementation latitude
@@ -201,7 +201,7 @@ The protocol leaves to implementations:
 What the protocol does **not** leave to implementations:
 
 - The three-namespace topology and sole-integrator rule (§1).
-- The single-commit squash shape and the tree rule in §3.2 (worker-tip tree plus exactly the eval-manifest path, no other path changes).
+- The single-commit squash shape and the tree rule in §3.2 (worker-tip tree plus exactly the evaluation-manifest path, no other path changes).
 - The commit-message format (§3.3).
-- The eval-manifest path and required fields (§4).
+- The evaluation-manifest path and required fields (§4).
 - The atomic-three invariant (§3.4).

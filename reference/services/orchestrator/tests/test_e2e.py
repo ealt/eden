@@ -213,7 +213,7 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             token,
             "--repo-path",
             str(bare_repo),
-            "--ideate-tasks",
+            "--ideation-tasks",
             "ideate-1,plan-2,plan-3",
         ],
         orchestrator_log,
@@ -275,8 +275,8 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
                 ref = f"refs/heads/variant/{variant.variant_id}-{slug}"
                 assert repo.resolve_ref(ref) == variant.variant_commit_sha
 
-            # Every plan/implement/evaluate task terminal.
-            for kind in ("ideate", "execute", "evaluate"):
+            # Every plan/implement/evaluation task terminal.
+            for kind in ("ideation", "execution", "evaluation"):
                 tasks = store.list_tasks(kind=kind)
                 completed = [t for t in tasks if t.state == "completed"]
                 assert len(completed) == 3, (
@@ -310,7 +310,7 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             # in Phase 8c.
             lifecycle = _reconstruct_lifecycle(events)
             # 3 plan + 3 implement + 3 evaluate = 9 tasks; the
-            # `--ideate-tasks` flag above seeds three plan IDs, each of
+            # `--ideation-tasks` flag above seeds three plan IDs, each of
             # which becomes one idea → one variant.
             assert len(lifecycle["tasks"]) == 9
             assert set(lifecycle["tasks"].values()) == {"completed"}
@@ -365,6 +365,6 @@ def _reconstruct_lifecycle(events) -> dict:  # noqa: ANN001 - sequence of EventR
             variants[data["variant_id"]] = "success"
         elif t == "variant.errored":
             variants[data["variant_id"]] = "error"
-        elif t == "variant.eval_errored":
-            variants[data["variant_id"]] = "eval_error"
+        elif t == "variant.evaluation_errored":
+            variants[data["variant_id"]] = "evaluation_error"
     return {"tasks": tasks, "ideas": ideas, "variants": variants}

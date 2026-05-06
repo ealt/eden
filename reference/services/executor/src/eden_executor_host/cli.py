@@ -86,9 +86,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="/var/lib/eden/worktrees",
         help="Root directory for per-task worktrees (host subdir created underneath).",
     )
-    parser.add_argument("--execute-task-deadline", type=float, default=600.0)
-    parser.add_argument("--execute-shutdown-deadline", type=float, default=10.0)
-    parser.add_argument("--execute-env-file", default=None)
+    parser.add_argument("--execution-task-deadline", type=float, default=600.0)
+    parser.add_argument("--execution-shutdown-deadline", type=float, default=10.0)
+    parser.add_argument("--execution-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     add_exec_arguments(parser)
@@ -173,10 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             config = load_experiment_config(args.experiment_config)
-            command = require_command(config, "execute_command")
+            command = require_command(config, "execution_command")
             env = {}
-            if args.execute_env_file:
-                env.update(parse_env_file(args.execute_env_file))
+            if args.execution_env_file:
+                env.update(parse_env_file(args.execution_env_file))
             try:
                 exec_args = resolve_exec_args(args)
             except ValueError as exc:
@@ -190,8 +190,8 @@ def main(argv: list[str] | None = None) -> int:
                 env=env,
                 repo_path=Path(args.repo_path).resolve(),
                 worktrees_root=Path(args.worktrees_dir),
-                task_deadline=args.execute_task_deadline,
-                shutdown_deadline=args.execute_shutdown_deadline,
+                task_deadline=args.execution_task_deadline,
+                shutdown_deadline=args.execution_shutdown_deadline,
                 exec_mode=exec_args.mode,
                 exec_image=exec_args.image,
                 exec_volumes=tuple(exec_args.volumes),

@@ -57,23 +57,23 @@ Mapping examples:
 | "Any ideator" | ``null`` |
 | "Teammate Alice specifically" | ``alice`` |
 
-### 2. Ideate task creation: shared between auto-orchestrator and humans
+### 2. Ideate-task creation: shared between auto-orchestrator and humans
 
-Today the orchestrator pre-seeds N ideate tasks at startup and never
+Today the orchestrator pre-seeds N ideation tasks at startup and never
 creates more. This conflates "experiment planning capacity" with
 "static budget at t=0". Replace with:
 
-- The auto-orchestrator continuously creates ideate tasks per a
-  configurable policy (e.g., "maintain M pending ideate tasks at a
+- The auto-orchestrator continuously creates ideation tasks per a
+  configurable policy (e.g., "maintain M pending ideation tasks at a
   time", "create one per integrated variant", "create one per fixed
   interval"). The policy is a deployment concern; default for
   validation runs is "maintain 3 pending".
-- Humans (and other privileged callers) can also create ideate tasks
+- Humans (and other privileged callers) can also create ideation tasks
   directly via ``create_task``, with whatever ``target`` they want.
 - Both paths use the same underlying wire op
   (``POST /v0/experiments/<id>/tasks`` already exists from chapter 7).
 
-When a human creates a ideate task targeted at themselves, no other
+When a human creates a ideation task targeted at themselves, no other
 worker can claim it — the contention with the auto-orchestrator
 disappears. When a human creates one targeted broadly (e.g., at
 ``humans``), the routing intent is explicit.
@@ -82,7 +82,7 @@ disappears. When a human creates one targeted broadly (e.g., at
 
 The idea carries an optional ``intended_executor: worker_id |
 group_id | null``. When the orchestrator (auto or human) creates the
-execute task derived from this idea, that hint becomes the
+execution task derived from this idea, that hint becomes the
 created task's ``target``. ``null`` means "no preference; orchestrator
 default policy applies".
 
@@ -142,14 +142,14 @@ The UI exposes a per-decision-type toggle. Operator workflow:
 2. Operator wants to manually assign an evaluator. They flip "evaluate
    dispatch" to ``manual`` *before* the auto-orchestrator runs (or
    after, see below).
-3. Operator creates the evaluate task with the desired ``target``.
+3. Operator creates the evaluation task with the desired ``target``.
 4. Operator flips back to ``auto``.
 
 If the auto-orchestrator was faster and already dispatched, operator
 uses ``reassign(task_id, new_target)`` instead.
 
 The pause is per-decision-type, not global. Humans pausing "evaluate
-dispatch" doesn't stop "execute dispatch" or integration.
+dispatch" doesn't stop "execute-task dispatch" or integration.
 
 ### 7. Task reassignment
 
@@ -296,12 +296,12 @@ library don't need to set them. Schema's permissive
 **Termination state.** Once the policy says terminate:
 
 - Orchestrator stops dispatching new tasks (no new execute /
-  evaluate task creation).
+  evaluation task creation).
 - In-flight tasks complete or time out per existing semantics.
 - ``experiment.terminated`` event emitted with the policy's reason
   string.
-- Experiment transitions to ``terminated`` state. New ideate tasks
-  cannot be created (so #2's "humans can create ideate tasks" stops
+- Experiment transitions to ``terminated`` state. New ideation tasks
+  cannot be created (so #2's "humans can create ideation tasks" stops
   applying).
 
 **Resumability** is a separate concern: in v0, ``terminated`` is
@@ -317,10 +317,10 @@ decision driven by humans.
 
 The auto-orchestrator process changes:
 
-- It no longer pre-seeds ideate tasks; instead it runs a continuous
+- It no longer pre-seeds ideation tasks; instead it runs a continuous
   policy.
 - It no longer "exits on quiescence" (issue #1) — there is no
-  experiment-level quiescence to detect, since new ideate tasks may
+  experiment-level quiescence to detect, since new ideation tasks may
   arrive at any time.
 - Its decisions respect the per-decision-type ``dispatch_mode`` flags.
 

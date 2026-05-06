@@ -17,7 +17,7 @@ EDEN is not a single system. It is a specification that defines the roles (ideat
 
 ## Status
 
-**Phase 11 complete.** The v0 spec covers chapters 00–09 (`spec/v0/`); the reference implementation under [`reference/`](reference/) ships the full set of services (task-store-server, orchestrator, planner / implementer / evaluator hosts, web UI) on a Compose stack with Postgres + Gitea; and the conformance suite under [`conformance/`](conformance/) is at the **v1+roles+integrator** level (110 scenarios green against the reference impl). Phase 12 (multi-experiment / control plane / leases) and Phase 13 (Kubernetes + S3 blob backend) are the remaining build-up phases. See [`AGENTS.md`](AGENTS.md) for the current-phase narrative and [`docs/roadmap.md`](docs/roadmap.md) for the per-phase plan.
+**Phase 11 complete.** The v0 spec covers chapters 00–09 (`spec/v0/`); the reference implementation under [`reference/`](reference/) ships the full set of services (task-store-server, orchestrator, ideator / executor / evaluator hosts, web UI) on a Compose stack with Postgres + Gitea; and the conformance suite under [`conformance/`](conformance/) is at the **v1+roles+integrator** level (110 scenarios green against the reference impl). Phase 12 (multi-experiment / control plane / leases) and Phase 13 (Kubernetes + S3 blob backend) are the remaining build-up phases. See [`AGENTS.md`](AGENTS.md) for the current-phase narrative and [`docs/roadmap.md`](docs/roadmap.md) for the per-phase plan.
 
 ## Contributing
 

@@ -19,7 +19,7 @@ from ._common import CommitSha, DateTimeStr
 
 EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
-TaskKind = Literal["ideate", "execute", "evaluate"]
+TaskKind = Literal["ideation", "execution", "evaluation"]
 FailReason = Literal["worker_error", "validation_error", "policy_limit"]
 ReclaimCause = Literal["expired", "operator", "health_policy"]
 
@@ -143,14 +143,14 @@ class _IdeaAndTaskData(BaseModel):
 
 
 class IdeaDispatchedEvent(_RegisteredEventBase):
-    """``idea.dispatched`` — ``ready → dispatched`` with its execute task."""
+    """``idea.dispatched`` — ``ready → dispatched`` with its execution task."""
 
     type: Literal["idea.dispatched"]
     data: _IdeaAndTaskData
 
 
 class IdeaCompletedEvent(_RegisteredEventBase):
-    """``idea.completed`` — ``dispatched → completed`` with its execute task."""
+    """``idea.completed`` — ``dispatched → completed`` with its execution task."""
 
     type: Literal["idea.completed"]
     data: _IdeaAndTaskData
@@ -194,10 +194,10 @@ class VariantErroredEvent(_RegisteredEventBase):
     data: _VariantIdOnlyData
 
 
-class VariantEvalErroredEvent(_RegisteredEventBase):
-    """``variant.eval_errored`` — ``starting → eval_error`` (retry-exhausted)."""
+class VariantEvaluationErroredEvent(_RegisteredEventBase):
+    """``variant.evaluation_errored`` — ``starting → evaluation_error`` (retry-exhausted)."""
 
-    type: Literal["variant.eval_errored"]
+    type: Literal["variant.evaluation_errored"]
     data: _VariantIdOnlyData
 
 
@@ -228,7 +228,7 @@ RegisteredEvent = Annotated[
     | VariantStartedEvent
     | VariantSucceededEvent
     | VariantErroredEvent
-    | VariantEvalErroredEvent
+    | VariantEvaluationErroredEvent
     | VariantIntegratedEvent,
     Field(discriminator="type"),
 ]
@@ -252,7 +252,7 @@ REGISTERED_EVENT_TYPES: frozenset[str] = frozenset(
         "variant.started",
         "variant.succeeded",
         "variant.errored",
-        "variant.eval_errored",
+        "variant.evaluation_errored",
         "variant.integrated",
     }
 )

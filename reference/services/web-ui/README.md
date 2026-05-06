@@ -144,7 +144,7 @@ story.
 4. **Phase 1 — `store.create_variant`** with `status="starting"`,
    no `commit_sha`. The orchestrator's `accept` handler is what
    writes `commit_sha` onto the variant later, per
-   `eden_storage._base._accept_execute`. This ordering honors
+   `eden_storage._base._accept_execution`. This ordering honors
    `03-roles.md` §3.2 step 1 ("variant persisted before observable
    repo writes").
 5. **Phase 2 — `repo.create_ref`** (status=success only): writes
@@ -213,7 +213,7 @@ The draft page surfaces:
   `MetricType` (`<input type="number" step="1">` for `integer`,
   `step="any"` for `real`, plain text otherwise).
 - **Submission status**: radio for `success` / `error` /
-  `eval_error` per §4.4.
+  `evaluation_error` per §4.4.
 - **Optional `artifacts_uri`** text input (the operator's URI for
   their eval logs / outputs, uploaded out-of-band).
 
@@ -221,7 +221,7 @@ The draft page surfaces:
 
 1. **Validate** the form. `parse_evaluate_form` returns `(None,
    errors)` on:
-   - `status` outside `{"success", "error", "eval_error"}`.
+   - `status` outside `{"success", "error", "evaluation_error"}`.
    - Per-metric type drift (integer accepts `1.0` per
      `02-data-model.md` §1.3 but rejects `1.5`; real rejects
      `nan`/`±inf`; text must be non-empty after strip).
@@ -245,7 +245,7 @@ The draft page surfaces:
    - Other transport-shaped exceptions → retry with backoff
      `(0.05, 0.2, 0.5)`; on exhaustion, jump to read-back.
 3. **Read-back**. `read_task` + `read_submission` +
-   `submissions_equivalent`. For `EvaluateSubmission`,
+   `submissions_equivalent`. For `EvaluationSubmission`,
    equivalence is `status + variant_id + metrics` per chapter 04
    §4.2 — `artifacts_uri` is **not** part of equivalence (the
    first submission's value wins).

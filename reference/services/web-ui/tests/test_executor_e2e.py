@@ -1,7 +1,7 @@
 """Real-subprocess end-to-end test for the executor module.
 
 Forks task-store-server + web-ui (with ``--repo-path`` set), seeds
-a ready idea + pending execute task via ``StoreClient``,
+a ready idea + pending execution task via ``StoreClient``,
 writes a child commit into the bare repo, and drives the full
 claim → draft → submit flow over real HTTP. Asserts the resulting
 task / variant / ref state via a separate ``StoreClient`` and
@@ -223,7 +223,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed idea + execute task via wire client.
+        # Seed idea + execution task via wire client.
         from eden_wire import StoreClient
 
         seed = StoreClient(
@@ -246,7 +246,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             )
             seed.create_idea(idea)
             seed.mark_idea_ready("p-impl")
-            seed.create_execute_task("t-exec-1", "p-impl")
+            seed.create_execution_task("t-exec-1", "p-impl")
         finally:
             seed.close()
 

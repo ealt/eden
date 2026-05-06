@@ -382,10 +382,10 @@ def test_reconcile_remote_orphans_deletes_orphan_with_no_store_record(
     """An orphan remote variant/* with no Store.read_variant → deleted."""
     store, remote, clone, base = _setup(tmp_path)
     # Forge an orphan: a commit whose tree contains
-    # .eden/variants/orphan-variant-id/eval.json, pushed to a variant/* ref,
+    # .eden/variants/orphan-variant-id/evaluation.json, pushed to a variant/* ref,
     # with NO matching variant in the store.
     blob = clone.write_blob(b'{"variant_id": "orphan-variant-id"}\n')
-    eval_path = ".eden/variants/orphan-variant-id/eval.json"
+    eval_path = ".eden/variants/orphan-variant-id/evaluation.json"
     worker_blob = clone.write_blob(b"worker\n")
     worker_tree = clone.write_tree_from_entries(
         [TreeEntry(mode="100644", type="blob", sha=worker_blob, path="WORK")]
@@ -429,7 +429,7 @@ def test_reconcile_remote_orphans_leaves_valid_integrated_refs(
 
 
 def test_reconcile_skips_malformed_variant_commits(tmp_path: Path) -> None:
-    """A remote variant/* whose tree lacks .eden/variants/<id>/eval.json
+    """A remote variant/* whose tree lacks .eden/variants/<id>/evaluation.json
     is left alone (fail closed; the operator decides)."""
     store, remote, clone, base = _setup(tmp_path)
     # Forge a malformed "variant" commit whose tree has no .eden/variants/.

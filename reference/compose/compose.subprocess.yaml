@@ -15,8 +15,8 @@
 # socket gets mounted into worker hosts, so plain subprocess mode
 # keeps the soft-isolation security posture chunk 10d shipped.
 #
-# When this overlay is active, the orchestrator's `--ideate-tasks`
-# value must still be a comma-separated list of ideate task ids
+# When this overlay is active, the orchestrator's `--ideation-tasks`
+# value must still be a comma-separated list of ideation task ids
 # (e.g. plan-1,plan-2,plan-3); that flag is unchanged.
 
 name: eden-reference
@@ -43,7 +43,7 @@ services:
       - /etc/eden/experiment-dir
       - --artifacts-dir
       - /var/lib/eden/artifacts
-      - --ideate-env-file
+      - --ideation-env-file
       - /etc/eden/ideator.env
       - --log-level
       - info
@@ -86,7 +86,7 @@ services:
       - /etc/eden/experiment-dir
       - --worktrees-dir
       - /var/lib/eden/worktrees
-      - --execute-env-file
+      - --execution-env-file
       - /etc/eden/execute.env
       - --log-level
       - info
@@ -140,15 +140,15 @@ services:
       - /etc/eden/credential-helper.sh
       - --worktrees-dir
       - /var/lib/eden/worktrees
-      - --evaluate-env-file
-      - /etc/eden/evaluate.env
+      - --evaluation-env-file
+      - /etc/eden/evaluation.env
       - --log-level
       - info
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
-      - source: eden-evaluate-env
-        target: /etc/eden/evaluate.env
+      - source: eden-evaluation-env
+        target: /etc/eden/evaluation.env
     volumes:
       # Phase 10d follow-up B: per-service clone (was eden-bare-repo).
       # The host clones from gitea on first run via --gitea-url.
@@ -168,12 +168,12 @@ configs:
   # Executor / evaluator env files default to empty bodies so the
   # `--*-env-file` flags resolve against a real path. Operators
   # extend these (typically with API keys for an LLM-driven
-  # execute_command / evaluate_command) by editing the overlay or
+  # execution_command / evaluation_command) by editing the overlay or
   # mounting a different source.
   eden-execute-env:
     content: |
       # executor subprocess env — extend with API keys etc.
-  eden-evaluate-env:
+  eden-evaluation-env:
     content: |
       # evaluator subprocess env — extend with API keys etc.
 

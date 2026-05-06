@@ -7,7 +7,7 @@ set -euo pipefail
 #
 #   1. Web UI ideator walkthrough (sign-in, claim, submit)
 #   2. Admin-reclaim drill (claim, do-not-submit, admin-reclaim)
-#   3. End-state assertions adjusted for EDEN_IDEATE_TASKS=4
+#   3. End-state assertions adjusted for EDEN_IDEATION_TASKS=4
 #   4. Termination drill (compose stop --timeout 10; verify no SIGKILL)
 #
 # See docs/plans/eden-phase-10e-compose-e2e.md for the design rationale,
@@ -72,11 +72,11 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --experiment-id "$EXPERIMENT_ID" \
     --env-file "$ENV_FILE"
 
-# Override EDEN_IDEATE_TASKS to 4 (default is 3). The four deterministic
-# IDs ideate-0001..ideate-0004 are seeded; the drill claims ideate-0001 and
-# ideate-0002, leaving ideate-0003 and ideate-0004 (plus reclaimed ideate-0002)
+# Override EDEN_IDEATION_TASKS to 4 (default is 3). The four deterministic
+# IDs ideation-0001..ideation-0004 are seeded; the drill claims ideation-0001 and
+# ideation-0002, leaving ideation-0003 and ideation-0004 (plus reclaimed ideation-0002)
 # for the headless ideator-host stage 2 picks up.
-sed -i.bak 's/^EDEN_IDEATE_TASKS=.*/EDEN_IDEATE_TASKS=4/' "$ENV_FILE"
+sed -i.bak 's/^EDEN_IDEATION_TASKS=.*/EDEN_IDEATION_TASKS=4/' "$ENV_FILE"
 rm -f "${ENV_FILE}.bak"
 
 echo "--- stage 1: bring up everything except gitea + ideator-host ---"
@@ -144,12 +144,12 @@ EVENTS_JSON="$(
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
 )"
 
-TRIAL_INTEGRATED="$(
+VARIANT_INTEGRATED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(.type == "variant.integrated")] | length'
 )"
-test "$TRIAL_INTEGRATED" -ge 4 || {
-    echo "expected >= 4 variant.integrated events; got $TRIAL_INTEGRATED" >&2
+test "$VARIANT_INTEGRATED" -ge 4 || {
+    echo "expected >= 4 variant.integrated events; got $VARIANT_INTEGRATED" >&2
     exit 1
 }
 TASK_COMPLETED="$(
@@ -164,7 +164,7 @@ PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("ideate-"))
+              and (.data.task_id | startswith("ideation-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 4 || {

@@ -16,7 +16,7 @@ Pydantic v2 bindings for the EDEN protocol wire formats. These models are **refe
 |---|---|
 | `ExperimentConfig`, `ObjectiveSpec` | `experiment-config.schema.json` |
 | `EvaluationSchema` | `evaluation-schema.schema.json` |
-| `Task` (discriminated: `IdeateTask` / `ExecuteTask` / `EvaluateTask`), `TaskClaim`, `IdeatePayload`, `ExecutePayload`, `EvaluatePayload` | `task.schema.json` |
+| `Task` (discriminated: `IdeationTask` / `ExecutionTask` / `EvaluationTask`), `TaskClaim`, `IdeationPayload`, `ExecutionPayload`, `EvaluationPayload` | `task.schema.json` |
 | `Event` | `event.schema.json` |
 | `Idea` | `idea.schema.json` |
 | `Variant` | `variant.schema.json` |
@@ -30,7 +30,7 @@ from eden_contracts import TaskAdapter, ExperimentConfig
 
 task = TaskAdapter.validate_python({
     "task_id": "t-1",
-    "kind": "ideate",
+    "kind": "ideation",
     "state": "pending",
     "payload": {"experiment_id": "exp-1"},
     "created_at": "2026-04-23T12:00:00Z",

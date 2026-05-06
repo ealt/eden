@@ -19,7 +19,7 @@ def run_evaluator_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for pending evaluate tasks and drive each through the scripted profile.
+    """Poll for pending evaluation tasks and drive each through the scripted profile.
 
     Returns only when ``stop`` is set.
     """

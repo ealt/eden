@@ -18,17 +18,17 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from eden_contracts import (
-    EvaluateTask,
-    ExecuteTask,
+    EvaluationTask,
+    ExecutionTask,
     Idea,
-    IdeateTask,
+    IdeationTask,
     Variant,
 )
 from eden_storage import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     Store,
+    VariantSubmission,
 )
 
 
@@ -43,7 +43,7 @@ class IdeaTemplate:
 
 
 @dataclass(frozen=True)
-class ExecuteOutcome:
+class ExecutionOutcome:
     """Stand-in for the executor's output."""
 
     status: Literal["success", "error"]
@@ -53,17 +53,17 @@ class ExecuteOutcome:
 
 
 @dataclass(frozen=True)
-class EvaluateOutcome:
+class EvaluationOutcome:
     """Stand-in for the evaluator's output."""
 
-    status: Literal["success", "error", "eval_error"]
+    status: Literal["success", "error", "evaluation_error"]
     evaluation: dict[str, Any] | None = None
     artifacts_uri: str | None = None
 
 
-PlanFn = Callable[[IdeateTask], list[IdeaTemplate]]
-ImplementFn = Callable[[ExecuteTask, Idea], ExecuteOutcome]
-EvaluateFn = Callable[[EvaluateTask, Variant], EvaluateOutcome]
+PlanFn = Callable[[IdeationTask], list[IdeaTemplate]]
+ImplementFn = Callable[[ExecutionTask, Idea], ExecutionOutcome]
+EvaluateFn = Callable[[EvaluationTask, Variant], EvaluationOutcome]
 
 
 class ScriptedIdeator:
@@ -100,7 +100,7 @@ class ScriptedIdeator:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending ideate task. Returns count processed.
+        """Claim and process every pending ideation task. Returns count processed.
 
         If ``stop`` is provided, it is consulted before each task; the loop
         returns early when it returns ``True``. This lets a host running
@@ -111,15 +111,15 @@ class ScriptedIdeator:
         while True:
             if stop is not None and stop():
                 return count
-            pending = store.list_tasks(kind="ideate", state="pending")
+            pending = store.list_tasks(kind="ideation", state="pending")
             if not pending:
                 return count
             task = pending[0]
-            assert isinstance(task, IdeateTask)
+            assert isinstance(task, IdeationTask)
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: Store, task: IdeateTask) -> None:
+    def _handle(self, store: Store, task: IdeationTask) -> None:
         claim = store.claim(task.task_id, self._worker_id)
         templates = self._plan_fn(task)
         idea_ids: list[str] = []
@@ -141,7 +141,7 @@ class ScriptedIdeator:
         store.submit(
             task.task_id,
             claim.token,
-            IdeateSubmission(status="success", idea_ids=tuple(idea_ids)),
+            IdeaSubmission(status="success", idea_ids=tuple(idea_ids)),
         )
 
 
@@ -160,12 +160,12 @@ class ScriptedExecutor:
         worker_id: str,
         implement_fn: ImplementFn,
         *,
-        trial_id_factory: Callable[[], str],
+        variant_id_factory: Callable[[], str],
         now: Callable[[], str],
     ) -> None:
         self._worker_id = worker_id
         self._implement_fn = implement_fn
-        self._variant_id_factory = trial_id_factory
+        self._variant_id_factory = variant_id_factory
         self._now = now
 
     @property
@@ -179,7 +179,7 @@ class ScriptedExecutor:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending execute task. Returns count processed.
+        """Claim and process every pending execution task. Returns count processed.
 
         ``stop`` lets a host break mid-drain on SIGTERM. See
         :meth:`ScriptedIdeator.run_pending`.
@@ -188,22 +188,22 @@ class ScriptedExecutor:
         while True:
             if stop is not None and stop():
                 return count
-            pending = store.list_tasks(kind="execute", state="pending")
+            pending = store.list_tasks(kind="execution", state="pending")
             if not pending:
                 return count
             task = pending[0]
-            assert isinstance(task, ExecuteTask)
+            assert isinstance(task, ExecutionTask)
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: Store, task: ExecuteTask) -> None:
+    def _handle(self, store: Store, task: ExecutionTask) -> None:
         idea = store.read_idea(task.payload.idea_id)
         claim = store.claim(task.task_id, self._worker_id)
 
         variant_id = self._variant_id_factory()
         outcome = self._implement_fn(task, idea)
         branch = outcome.branch or f"work/{idea.slug}-{variant_id}"
-        trial_kwargs: dict[str, Any] = {
+        variant_kwargs: dict[str, Any] = {
             "variant_id": variant_id,
             "experiment_id": store.experiment_id,
             "idea_id": idea.idea_id,
@@ -213,13 +213,13 @@ class ScriptedExecutor:
             "started_at": self._now(),
         }
         if outcome.description is not None:
-            trial_kwargs["description"] = outcome.description
-        variant = Variant(**trial_kwargs)
+            variant_kwargs["description"] = outcome.description
+        variant = Variant(**variant_kwargs)
         store.create_variant(variant)
         store.submit(
             task.task_id,
             claim.token,
-            ExecuteSubmission(
+            VariantSubmission(
                 status=outcome.status,
                 variant_id=variant_id,
                 commit_sha=outcome.commit_sha,
@@ -233,7 +233,7 @@ class ScriptedEvaluator:
     Discovers pending ``evaluate`` tasks, reads the referenced variant,
     runs its scripted evaluation, and submits. ``success`` and
     ``error`` write metrics on the variant via the orchestrator's
-    terminal transition; ``eval_error`` leaves the variant in
+    terminal transition; ``evaluation_error`` leaves the variant in
     ``starting`` per ``03-roles.md`` §4.4.
     """
 
@@ -256,7 +256,7 @@ class ScriptedEvaluator:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending evaluate task. Returns count processed.
+        """Claim and process every pending evaluation task. Returns count processed.
 
         ``stop`` lets a host break mid-drain on SIGTERM. See
         :meth:`ScriptedIdeator.run_pending`.
@@ -265,22 +265,22 @@ class ScriptedEvaluator:
         while True:
             if stop is not None and stop():
                 return count
-            pending = store.list_tasks(kind="evaluate", state="pending")
+            pending = store.list_tasks(kind="evaluation", state="pending")
             if not pending:
                 return count
             task = pending[0]
-            assert isinstance(task, EvaluateTask)
+            assert isinstance(task, EvaluationTask)
             self._handle(store, task)
             count += 1
 
-    def _handle(self, store: Store, task: EvaluateTask) -> None:
+    def _handle(self, store: Store, task: EvaluationTask) -> None:
         variant = store.read_variant(task.payload.variant_id)
         claim = store.claim(task.task_id, self._worker_id)
         outcome = self._evaluate_fn(task, variant)
         store.submit(
             task.task_id,
             claim.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status=outcome.status,
                 variant_id=variant.variant_id,
                 evaluation=outcome.evaluation,

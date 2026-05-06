@@ -179,7 +179,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_ideate_task("t-ideate-1")
+            seed.create_ideation_task("t-ideate-1")
         finally:
             seed.close()
 

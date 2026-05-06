@@ -87,7 +87,7 @@ def _wait_for_seeded_tasks(
 def _ideator_walkthrough(
     ui: httpx.Client, task_id: str, base_commit_sha: str
 ) -> None:
-    """Claim → draft → submit one ideate task.
+    """Claim → draft → submit one ideation task.
 
     The submit returns 200 with the rendered ``ideator_submitted.html``
     template (NOT a 303 — see chunk-9b
@@ -129,7 +129,7 @@ def _ideator_walkthrough(
 
 
 def _admin_reclaim_drill(ui: httpx.Client, task_id: str) -> None:
-    """Claim a ideate task via web UI, do not submit, then admin-reclaim it.
+    """Claim a ideation task via web UI, do not submit, then admin-reclaim it.
 
     The admin reclaim redirect URL has a TRAILING SLASH before the
     query (``/admin/tasks/<id>/?reclaimed=ok``) — see chunk-9e
@@ -194,9 +194,9 @@ def main() -> int:
     assert web_url is not None  # noqa: S101 — type narrowing only
     assert base_sha is not None  # noqa: S101 — type narrowing only
 
-    seeded_ids = tuple(f"ideate-{i:04d}" for i in range(1, 5))
-    submit_id = "ideate-0001"
-    reclaim_id = "ideate-0002"
+    seeded_ids = tuple(f"ideation-{i:04d}" for i in range(1, 5))
+    submit_id = "ideation-0001"
+    reclaim_id = "ideation-0002"
 
     print(f"e2e_drive: connecting to {web_url}", flush=True)
     try:
@@ -213,7 +213,7 @@ def main() -> int:
             # this only works after sign-in.
             _wait_for_seeded_tasks(ui, seeded_ids, deadline_s=30.0)
             print(
-                f"e2e_drive: all {len(seeded_ids)} seeded ideate tasks "
+                f"e2e_drive: all {len(seeded_ids)} seeded ideation tasks "
                 "visible",
                 flush=True,
             )

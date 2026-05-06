@@ -44,11 +44,11 @@ The event log is the normative observability channel ([`04-task-protocol.md`](04
 
 Several transitions span multiple entities and MUST commit together:
 
-- **Implement dispatch** — creating a `task` with `kind=implement` and transitioning its referenced `idea` from `ready` to `dispatched` ([`04-task-protocol.md`](04-task-protocol.md) §2). Events: `task.created` + `idea.dispatched`, in one atomic commit.
-- **Implement terminal** — the `execute` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §7). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
-- **Evaluate terminal (`success`/`error`)** — the `evaluate` task's terminal transition plus writes to the variant's `status`, `metrics`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
-- **Implement reclaim with in-flight variant** — reclamation of an `execute` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
-- **Retry-exhausted `eval_error` terminal** — the orchestrator's transition of a variant from `starting` to `eval_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.eval_errored` atomically.
+- **Execute-task dispatch** — creating a `task` with `kind=execution` and transitioning its referenced `idea` from `ready` to `dispatched` ([`04-task-protocol.md`](04-task-protocol.md) §2). Events: `task.created` + `idea.dispatched`, in one atomic commit.
+- **Execute-task terminal** — the `execution` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §7). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
+- **Evaluate-task terminal (`success`/`error`)** — the `evaluation` task's terminal transition plus writes to the variant's `status`, `evaluation`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
+- **Execute-task reclaim with in-flight variant** — reclamation of an `execution` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
+- **Retry-exhausted `evaluation_error` terminal** — the orchestrator's transition of a variant from `starting` to `evaluation_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.evaluation_errored` atomically.
 - **Variant promotion** — the integrator's write of a `variant/*` commit and the `variant_commit_sha` field on the variant ([`06-integrator.md`](06-integrator.md)). Event: `variant.integrated`.
 
 A subscriber processing any of these composite events MUST therefore either observe the full set or observe none; partial visibility is a protocol violation.
@@ -85,7 +85,7 @@ Produced atomically with the transitions defined in [`04-task-protocol.md`](04-t
 Payload field definitions:
 
 - `task_id` — the `task_id` of the transitioning task.
-- `kind` — the task's `kind` ([`02-data-model.md`](02-data-model.md) §3.1); one of `plan`, `implement`, `evaluate`.
+- `kind` — the task's `kind` ([`02-data-model.md`](02-data-model.md) §3.1); one of `ideation`, `execution`, `evaluation`.
 - `worker_id` — the `claim.worker_id` recorded on the successful claim ([`04-task-protocol.md`](04-task-protocol.md) §3.2).
 - `reason` — one of the strings `"worker_error"` (the worker's submission declared failure), `"validation_error"` (the orchestrator rejected the result as malformed or non-conforming), or `"policy_limit"` (a policy such as retry budget caused the failure). The literal set is closed for v0; an implementation that needs finer granularity MAY add a separate operator-level event under its own type (§3.5).
 - `cause` — one of `"expired"` (claim `expires_at` passed), `"operator"` (explicit operator action), or `"health_policy"` (task store health policy declared the worker unreachable). The literal set is closed for v0 on the same terms as `reason`.
@@ -106,7 +106,7 @@ Produced atomically with the idea `state` transitions defined in [`02-data-model
 Payload field definitions:
 
 - `idea_id` — the `idea_id` of the transitioning idea.
-- `task_id` — for `idea.dispatched`, the `task_id` of the `execute` task created by the same commit (§2.2). For `idea.completed`, the `task_id` of the `execute` task whose terminal transition is being recorded.
+- `task_id` — for `idea.dispatched`, the `task_id` of the `execution` task created by the same commit (§2.2). For `idea.completed`, the `task_id` of the `execution` task whose terminal transition is being recorded.
 
 ### 3.3 Variant events
 
@@ -117,7 +117,7 @@ Produced atomically with variant `status` transitions and with the integrator's 
 | `variant.started` | — → `starting` | `variant_id`, `idea_id` |
 | `variant.succeeded` | `starting` → `success` | `variant_id`, `commit_sha` |
 | `variant.errored` | `starting` → `error` | `variant_id` |
-| `variant.eval_errored` | `starting` → `eval_error` | `variant_id` |
+| `variant.evaluation_errored` | `starting` → `evaluation_error` | `variant_id` |
 | `variant.integrated` | — (integrator writes `variant_commit_sha`) | `variant_id`, `variant_commit_sha` |
 
 Payload field definitions:

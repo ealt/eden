@@ -66,7 +66,7 @@ EXPERIMENT_ID=""
 ARG_SHARED_TOKEN=""
 ARG_POSTGRES_PASSWORD=""
 ARG_EXPERIMENT_DIR=""
-ARG_PROPOSALS_PER_PLAN=""
+ARG_IDEAS_PER_IDEATION=""
 ARG_EXEC_MODE="host"
 ARG_SEED_FROM=""
 
@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
         --postgres-password)    require_value "$1" "$#"; ARG_POSTGRES_PASSWORD="$2"; shift 2 ;;
         --env-file)             require_value "$1" "$#"; ENV_FILE="$2";              shift 2 ;;
         --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
-        --ideas-per-ideation)   require_value "$1" "$#"; ARG_PROPOSALS_PER_PLAN="$2"; shift 2 ;;
+        --ideas-per-ideation)   require_value "$1" "$#"; ARG_IDEAS_PER_IDEATION="$2"; shift 2 ;;
         --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
         --seed-from)            require_value "$1" "$#"; ARG_SEED_FROM="$2";         shift 2 ;;
         -h|--help)              usage; exit 0 ;;
@@ -192,8 +192,8 @@ GITEA_SSH_HOST_PORT="${EXISTING_GITEA_SSH_HOST_PORT:-2222}"
 EXISTING_WEB_UI_HOST_PORT="$(read_env_key WEB_UI_HOST_PORT "$ENV_FILE")"
 WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
 
-EXISTING_PLAN_TASKS="$(read_env_key EDEN_IDEATE_TASKS "$ENV_FILE")"
-EDEN_IDEATE_TASKS="${EXISTING_PLAN_TASKS:-3}"
+EXISTING_PLAN_TASKS="$(read_env_key EDEN_IDEATION_TASKS "$ENV_FILE")"
+EDEN_IDEATION_TASKS="${EXISTING_PLAN_TASKS:-3}"
 
 # 10d subprocess overlay: experiment-dir bind-mount source. Default
 # is the directory containing the experiment config's `.eden`
@@ -209,8 +209,8 @@ else
         EDEN_EXPERIMENT_DIR_HOST="$(cd "$parent" && pwd)"
     fi
 fi
-EXISTING_PROPOSALS_PER_PLAN="$(read_env_key EDEN_IDEAS_PER_IDEATION "$ENV_FILE")"
-EDEN_IDEAS_PER_IDEATION="${ARG_PROPOSALS_PER_PLAN:-${EXISTING_PROPOSALS_PER_PLAN:-1}}"
+EXISTING_IDEAS_PER_IDEATION="$(read_env_key EDEN_IDEAS_PER_IDEATION "$ENV_FILE")"
+EDEN_IDEAS_PER_IDEATION="${ARG_IDEAS_PER_IDEATION:-${EXISTING_IDEAS_PER_IDEATION:-1}}"
 
 # --- Phase 10d follow-up A: --exec-mode docker resolution ---
 # All four are written to .env unconditionally; the compose overlay's
@@ -313,7 +313,7 @@ EDEN_EXPERIMENT_ID=${EXPERIMENT_ID}
 EDEN_SHARED_TOKEN=${EDEN_SHARED_TOKEN}
 EDEN_SESSION_SECRET=${EDEN_SESSION_SECRET}
 EDEN_STORE_URL=${EDEN_STORE_URL}
-EDEN_IDEATE_TASKS=${EDEN_IDEATE_TASKS}
+EDEN_IDEATION_TASKS=${EDEN_IDEATION_TASKS}
 WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 
 # --- 10d subprocess overlay (only used by compose.subprocess.yaml) ---

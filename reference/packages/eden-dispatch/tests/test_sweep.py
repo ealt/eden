@@ -33,7 +33,7 @@ def _claim_with_expiry(
     worker_id: str,
     expires_at: datetime | None,
 ) -> None:
-    store.create_ideate_task(task_id)
+    store.create_ideation_task(task_id)
     store.claim(task_id, worker_id=worker_id, expires_at=expires_at)
 
 
@@ -121,7 +121,7 @@ def test_only_claimed_tasks_are_inspected() -> None:
     """A pending task with no claim is not inspected (state filter honored)."""
     store = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
-    store.create_ideate_task("t-pending")
+    store.create_ideation_task("t-pending")
     expired = now - timedelta(seconds=1)
     _claim_with_expiry(store, "t-claimed", worker_id="ui-1", expires_at=expired)
 

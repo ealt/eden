@@ -23,7 +23,7 @@ User decisions already captured:
 ## Core Design Decisions
 
 - **Spec-first, impl-second.** Every cross-component boundary is defined first in `spec/` (human-readable normative text + JSON Schema + state machine) before any code for it is written in `reference/`. When they disagree, the spec wins and the impl gets a bug.
-- **Wire protocols as the contract**, not Python types. Components communicate over documented message formats (JSON over HTTP for control calls, SQL or JSON over some transport for tasks/events — to be pinned in Phase 1). Python bindings in `reference/packages/eden-contracts/` are generated from / aligned with the JSON Schemas and exist as a convenience for Python implementors, **not** as the source of truth.
+- **Wire protocols as the contract**, not Python types. Components communicate over documented message formats (JSON over HTTP for control calls, SQL or JSON over some transport for tasks/events — to be pinned in Phase 1). Python bindings in `reference/packages/eden-contracts/` are generated from / aligned with the JSON Schemas and exist as a convenience for Python implementations, **not** as the source of truth.
 - **Single repo, clear boundaries.** `spec/`, `reference/`, `conformance/`, `docs/` at top level. Can split into separate repos later if needed (MCP/LSP pattern), but day 0 discipline is structural, not geographical.
 - **Versioned spec.** `spec/v0/…` from day 0. Breaking changes go to `v1/`, not mutated in place. Reference impl declares which spec version it targets.
 - **No Python toolchain at bootstrap.** Phase 0 creates zero `.py` files, so no `pyproject.toml`, no `.python-version`, no uv workspace, no ruff/pyright config. These land in **Phase 3** when the first reference package (`eden-contracts`) gets actual code. This avoids CI gates that can't meaningfully run yet (pytest on no tests exits non-zero; ruff/pyright on an empty tree is a no-signal green that creates false confidence).
@@ -132,7 +132,7 @@ pyproject.toml           # Phase 3 (uv workspace root lands with first member)
 
 When chapters are eventually written (Phases 1, 2, 4, 11, 12): **normative language** (MUST / SHOULD / MAY per RFC 2119), numbered sections, explicit cross-references, and *no* references to specific technology choices. Example boundaries:
 
-- `04-task-protocol.md` (Phase 2) will define the task state machine, the claim-token rule, the submit-idempotency rule, and the wire format for task objects. It will **not** say "Postgres `tasks` table" — that's a reference-impl detail. It may say "a conforming task store MUST provide atomic claim with linearizable semantics" and leave the mechanism to the implementor.
+- `04-task-protocol.md` (Phase 2) will define the task state machine, the claim-token rule, the submit-idempotency rule, and the wire format for task objects. It will **not** say "Postgres `tasks` table" — that's a reference-impl detail. It may say "a conforming task store MUST provide atomic claim with linearizable semantics" and leave the mechanism to the implementation.
 - `05-event-protocol.md` (Phase 4) will define the event object shape, the transactional invariant (event insert MUST be atomic with the state change it describes), and the delivery guarantees subscribers can rely on. Whether that's LISTEN/NOTIFY, Kafka, or a WebSocket is out of scope.
 - `06-integrator.md` (Phase 4) will pin git topology invariants: namespaces (`work/*`, `variant/*`, `main`), sole-integrator rule, squash rule, eval-manifest shape. Applies regardless of git host.
 

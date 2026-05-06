@@ -35,7 +35,7 @@
     "ideaId": {"type": "string", "minLength": 1},
     "variantId": {"type": "string", "minLength": 1},
     "workerId": {"type": "string", "minLength": 1},
-    "taskKind": {"type": "string", "enum": ["ideate", "execute", "evaluate"]},
+    "taskKind": {"type": "string", "enum": ["ideation", "execution", "evaluation"]},
     "commitSha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
     "failReason": {"type": "string", "enum": ["worker_error", "validation_error", "policy_limit"]},
     "reclaimCause": {"type": "string", "enum": ["expired", "operator", "health_policy"]}
@@ -232,7 +232,7 @@
       }
     },
     {
-      "if": {"properties": {"type": {"const": "variant.eval_errored"}}, "required": ["type"]},
+      "if": {"properties": {"type": {"const": "variant.evaluation_errored"}}, "required": ["type"]},
       "then": {
         "properties": {
           "data": {

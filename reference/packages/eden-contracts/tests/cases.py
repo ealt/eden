@@ -186,7 +186,7 @@ TASK_CASES: list[Case] = [
         "plan_pending",
         {
             "task_id": "t-1",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -198,7 +198,7 @@ TASK_CASES: list[Case] = [
         "implement_claimed",
         {
             "task_id": "t-2",
-            "kind": "execute",
+            "kind": "execution",
             "state": "claimed",
             "payload": {"idea_id": "p-1"},
             "claim": _VALID_CLAIM,
@@ -211,7 +211,7 @@ TASK_CASES: list[Case] = [
         "evaluate_submitted",
         {
             "task_id": "t-3",
-            "kind": "evaluate",
+            "kind": "evaluation",
             "state": "submitted",
             "payload": {"variant_id": "variant-1"},
             "claim": {**_VALID_CLAIM, "expires_at": _DT2},
@@ -224,7 +224,7 @@ TASK_CASES: list[Case] = [
         "plan_completed_no_claim",
         {
             "task_id": "t-4",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "completed",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -236,7 +236,7 @@ TASK_CASES: list[Case] = [
         "plan_failed_no_claim",
         {
             "task_id": "t-5",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "failed",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -248,7 +248,7 @@ TASK_CASES: list[Case] = [
         "claimed_without_claim",
         {
             "task_id": "t-6",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "claimed",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -260,7 +260,7 @@ TASK_CASES: list[Case] = [
         "submitted_without_claim",
         {
             "task_id": "t-7",
-            "kind": "evaluate",
+            "kind": "evaluation",
             "state": "submitted",
             "payload": {"variant_id": "variant-1"},
             "created_at": _DT,
@@ -272,7 +272,7 @@ TASK_CASES: list[Case] = [
         "pending_with_claim",
         {
             "task_id": "t-8",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "claim": _VALID_CLAIM,
@@ -285,7 +285,7 @@ TASK_CASES: list[Case] = [
         "completed_with_claim",
         {
             "task_id": "t-9",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "completed",
             "payload": {"experiment_id": "exp-1"},
             "claim": _VALID_CLAIM,
@@ -298,7 +298,7 @@ TASK_CASES: list[Case] = [
         "plan_task_missing_experiment_id",
         {
             "task_id": "t-10",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "pending",
             "payload": {},
             "created_at": _DT,
@@ -310,7 +310,7 @@ TASK_CASES: list[Case] = [
         "implement_task_missing_idea_id",
         {
             "task_id": "t-11",
-            "kind": "execute",
+            "kind": "execution",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -334,7 +334,7 @@ TASK_CASES: list[Case] = [
         "invalid_state",
         {
             "task_id": "t-13",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "running",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -346,7 +346,7 @@ TASK_CASES: list[Case] = [
         "missing_updated_at",
         {
             "task_id": "t-14",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": _DT,
@@ -357,7 +357,7 @@ TASK_CASES: list[Case] = [
         "claim_bad_datetime",
         {
             "task_id": "t-15",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "claimed",
             "payload": {"experiment_id": "exp-1"},
             "claim": {"token": "c", "worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
@@ -370,7 +370,7 @@ TASK_CASES: list[Case] = [
         "impossible_datetime",
         {
             "task_id": "t-16",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "created_at": "2026-99-99T12:00:00Z",
@@ -382,7 +382,7 @@ TASK_CASES: list[Case] = [
         "claim_null_on_pending",
         {
             "task_id": "t-17",
-            "kind": "ideate",
+            "kind": "ideation",
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "claim": None,
@@ -469,7 +469,7 @@ EVENT_CASES: list[Case] = [
             "type": "task.created",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"task_id": "t-1", "kind": "ideate"},
+            "data": {"task_id": "t-1", "kind": "ideation"},
         },
         True,
     ),
@@ -641,7 +641,7 @@ EVENT_CASES: list[Case] = [
     ),
     # --- registered types: variant.* ---
     Case(
-        "trial_started_ok",
+        "variant_started_ok",
         {
             "event_id": "evt-ts-100",
             "type": "variant.started",
@@ -652,7 +652,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_succeeded_ok",
+        "variant_succeeded_ok",
         {
             "event_id": "evt-ts-200",
             "type": "variant.succeeded",
@@ -663,7 +663,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_succeeded_bad_sha",
+        "variant_succeeded_bad_sha",
         {
             "event_id": "evt-ts-201",
             "type": "variant.succeeded",
@@ -674,7 +674,7 @@ EVENT_CASES: list[Case] = [
         False,
     ),
     Case(
-        "trial_errored_ok",
+        "variant_errored_ok",
         {
             "event_id": "evt-te-1",
             "type": "variant.errored",
@@ -685,10 +685,10 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_eval_errored_ok",
+        "variant_eval_errored_ok",
         {
             "event_id": "evt-tee-1",
-            "type": "variant.eval_errored",
+            "type": "variant.evaluation_errored",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
             "data": {"variant_id": "variant-1"},
@@ -696,7 +696,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_integrated_ok",
+        "variant_integrated_ok",
         {
             "event_id": "evt-ti-1",
             "type": "variant.integrated",
@@ -707,7 +707,7 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "trial_integrated_missing_sha",
+        "variant_integrated_missing_sha",
         {
             "event_id": "evt-ti-2",
             "type": "variant.integrated",
@@ -720,7 +720,7 @@ EVENT_CASES: list[Case] = [
 ]
 
 
-PROPOSAL_CASES: list[Case] = [
+IDEA_CASES: list[Case] = [
     Case(
         "drafting",
         {
@@ -920,7 +920,7 @@ PROPOSAL_CASES: list[Case] = [
 ]
 
 
-TRIAL_CASES: list[Case] = [
+VARIANT_CASES: list[Case] = [
     Case(
         "starting_minimal",
         {
@@ -953,12 +953,12 @@ TRIAL_CASES: list[Case] = [
         True,
     ),
     Case(
-        "eval_error",
+        "evaluation_error",
         {
             "variant_id": "variant-3",
             "experiment_id": "exp-1",
             "idea_id": "p-1",
-            "status": "eval_error",
+            "status": "evaluation_error",
             "parent_commits": [_SHA1],
             "started_at": _DT,
         },
@@ -1086,7 +1086,7 @@ ALL_CASES: dict[str, list[Case]] = {
     "experiment-config": EXPERIMENT_CONFIG_CASES,
     "task": TASK_CASES,
     "event": EVENT_CASES,
-    "idea": PROPOSAL_CASES,
-    "variant": TRIAL_CASES,
+    "idea": IDEA_CASES,
+    "variant": VARIANT_CASES,
     "evaluation-schema": EVALUATION_SCHEMA_CASES,
 }

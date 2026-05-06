@@ -2,8 +2,8 @@
 
 Forks task-store-server + web-ui (no ``--repo-path`` needed; the
 evaluator never touches a repo through the UI), seeds a ready
-idea + execute task and drives it through to ``starting``
-with a ``commit_sha`` set so an evaluate task can be created. Then
+idea + execution task and drives it through to ``starting``
+with a ``commit_sha`` set so an evaluation task can be created. Then
 drives the full claim → draft → submit flow over real HTTP.
 Asserts the resulting task / submission state via a separate
 ``StoreClient`` against the same SQLite database.
@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 import httpx
 import pytest
 from eden_contracts import EvaluationSchema, Idea
-from eden_storage import EvaluateSubmission, ExecuteSubmission, SqliteStore
+from eden_storage import EvaluationSubmission, SqliteStore, VariantSubmission
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -175,8 +175,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed: ready idea + execute task; drive it to a
-        # starting variant with commit_sha so the evaluate task can be
+        # Seed: ready idea + execution task; drive it to a
+        # starting variant with commit_sha so the evaluation task can be
         # created.
         from eden_wire import StoreClient
 
@@ -200,7 +200,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             )
             seed.create_idea(idea)
             seed.mark_idea_ready("p-eval")
-            seed.create_execute_task("t-exec-1", "p-eval")
+            seed.create_execution_task("t-exec-1", "p-eval")
             # Drive to starting variant with commit_sha.
             from eden_contracts import Variant
 
@@ -218,12 +218,12 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             seed.submit(
                 "t-exec-1",
                 claim.token,
-                ExecuteSubmission(
+                VariantSubmission(
                     status="success", variant_id="tr-1", commit_sha="b" * 40
                 ),
             )
             seed.accept("t-exec-1")
-            seed.create_evaluate_task("t-eval-1", "tr-1")
+            seed.create_evaluation_task("t-eval-1", "tr-1")
         finally:
             seed.close()
 
@@ -282,7 +282,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             task = store.read_task("t-eval-1")
             assert task.state == "submitted"
             recorded = store.read_submission("t-eval-1")
-            assert isinstance(recorded, EvaluateSubmission)
+            assert isinstance(recorded, EvaluationSubmission)
             assert recorded.status == "success"
             assert recorded.variant_id == "tr-1"
             assert recorded.evaluation == {"score": 0.875}

@@ -105,7 +105,7 @@ class TestClaimResponseParity:
 
 class TestSubmitRequestParity:
     def test_accept(self) -> None:
-        model = SubmitRequest(token="tok", payload={"kind": "ideate", "status": "success"})
+        model = SubmitRequest(token="tok", payload={"kind": "ideation", "status": "success"})
         _validate_against(
             "submit-request.schema.json",
             model.model_dump(mode="json", exclude_none=True),

@@ -1,7 +1,7 @@
 """Experiment-config loading for the worker hosts.
 
-Each subprocess-mode host reads ``ideate_command`` /
-``execute_command`` / ``evaluate_command`` from the same
+Each subprocess-mode host reads ``ideation_command`` /
+``execution_command`` / ``evaluation_command`` from the same
 experiment-config YAML the task-store-server consumes. The
 ``ExperimentConfig`` model accepts these as extra fields
 (``model_config = ConfigDict(extra='allow')``), which puts them in

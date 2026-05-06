@@ -62,7 +62,7 @@ _V1_STATEMENTS: list[str] = [
         data TEXT NOT NULL
     )
     """,
-    "CREATE INDEX trial_by_status ON variant(status)",
+    "CREATE INDEX variant_by_status ON variant(status)",
     """
     CREATE TABLE event (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,

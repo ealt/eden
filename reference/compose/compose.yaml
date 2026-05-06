@@ -197,8 +197,8 @@ services:
       - ${GITEA_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
-      - --ideate-tasks
-      - ${EDEN_IDEATE_TASKS:-3}
+      - --ideation-tasks
+      - ${EDEN_IDEATION_TASKS:-3}
       # Compose-friendly quiescence: 30 iterations × 1s = 30s of
       # zero progress before the orchestrator declares the
       # experiment done. Tuned for the smoke tests where worker

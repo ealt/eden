@@ -47,7 +47,7 @@ def test_integrate_against_error_variant_rejected(
 ) -> None:
     """spec/v0/06-integrator.md §2 — `error` variant MUST NOT be promoted.
 
-    §2 says "variants in `error`, `eval_error`, and `starting` MUST NOT
+    §2 says "variants in `error`, `evaluation_error`, and `starting` MUST NOT
     receive a `variant/*` commit." Wire-projection: ``integrate_variant``
     against an errored variant returns 409 ``invalid-precondition``,
     leaves no ``variant_commit_sha`` on the variant, and emits no
@@ -64,16 +64,16 @@ def test_integrate_against_error_variant_rejected(
 def test_integrate_against_eval_error_variant_rejected(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/06-integrator.md §2 — `eval_error` variant MUST NOT be promoted.
+    """spec/v0/06-integrator.md §2 — `evaluation_error` variant MUST NOT be promoted.
 
     Same MUST as the `error` case, different status. The §2 status
     vocabulary ban applies to all three non-`success` states; the
     existing v1 ``test_integrate_against_non_success_variant_returns_409``
-    covers `starting`, this test covers `eval_error`, and the sibling
+    covers `starting`, this test covers `evaluation_error`, and the sibling
     ``test_integrate_against_error_variant_rejected`` covers `error`.
     Together they exercise the full status precondition surface.
     """
-    variant_id = _seed.drive_to_eval_error_variant(wire_client)
+    variant_id = _seed.drive_to_evaluation_error_variant(wire_client)
     r = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha="e" * 40)
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/invalid-precondition"

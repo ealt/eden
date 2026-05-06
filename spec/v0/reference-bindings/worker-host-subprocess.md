@@ -20,9 +20,9 @@ deliberately different conventions.
 Each role's host invokes a command string from the experiment-config
 YAML:
 
-- ideator: `ideate_command`
-- executor: `execute_command`
-- evaluator: `evaluate_command`
+- ideator: `ideation_command`
+- executor: `execution_command`
+- evaluator: `evaluation_command`
 
 All three keys are accepted as additional properties on the
 [`experiment-config.schema.json`](../schemas/experiment-config.schema.json)
@@ -30,7 +30,7 @@ schema (the schema does not pin them; user-supplied tooling may
 ignore or repurpose them).
 
 The host invokes the command via `shell=True` so user expressions
-like `python3 ${EDEN_EXPERIMENT_DIR}/ideate.py` expand against the
+like `python3 ${EDEN_EXPERIMENT_DIR}/ideation.py` expand against the
 host-supplied environment.
 
 ### 1.1 Environment supplied to every subprocess
@@ -56,9 +56,9 @@ User-supplied env from a `--*-env-file` flag is also injected
 ## 2. Ideator subprocess: long-running JSON-line protocol
 
 The ideator subprocess is launched **once per host** and serves
-every ideate task that arrives during the host's lifetime. The
+every ideation task that arrives during the host's lifetime. The
 intent is that user code can hold accumulating session state (e.g.
-a running LLM conversation) across ideate tasks.
+a running LLM conversation) across ideation tasks.
 
 Wire format: one JSON object per line, on both stdin and stdout.
 
@@ -76,12 +76,12 @@ Lines emitted before `ready` are treated as debug-only and dropped.
 If `ready` is not received within the host's startup deadline, the
 host kills the subprocess.
 
-### 2.2 Ideate dispatch
+### 2.2 Ideate-task dispatch
 
-For each ideate task, the host writes one stdin line of the form:
+For each ideation task, the host writes one stdin line of the form:
 
 ```json
-{"event": "ideate", "task_id": "ideate-…", "experiment_id": "exp-1",
+{"event": "ideation", "task_id": "ideate-…", "experiment_id": "exp-1",
  "objective": {"expr": "score", "direction": "maximize"},
  "evaluation_schema": {"score": "real"},
  "history": [
@@ -97,7 +97,7 @@ results, newest first, capped at 50 entries by the reference host.
 ### 2.3 Worker response
 
 The subprocess writes any number of `idea` lines followed by
-exactly one terminator (`ideate-done` or `ideate-error`). All lines
+exactly one terminator (`ideation-done` or `ideation-error`). All lines
 MUST carry the same `task_id` as the dispatch.
 
 ```json
@@ -105,7 +105,7 @@ MUST carry the same `task_id` as the dispatch.
  "slug": "p0", "priority": 1.0,
  "parent_commits": ["abc…"],
  "rationale": "free-form markdown text"}
-{"event": "ideate-done", "task_id": "ideate-…"}
+{"event": "ideation-done", "task_id": "ideate-…"}
 ```
 
 If `rationale` is present, the host writes it to
@@ -114,7 +114,7 @@ resulting `file://` URI as the idea's `artifacts_uri`. If
 `rationale` is absent, the subprocess MUST set `artifacts_uri`
 explicitly.
 
-An `ideate-error` terminator submits a chapter-3 `IdeateSubmission`
+An `ideation-error` terminator submits a chapter-3 `IdeaSubmission`
 with `status="error"`.
 
 ### 2.4 Error handling
@@ -155,7 +155,7 @@ repository write becomes observable. The reference flow is:
    }
    ```
 
-6. Spawn `execute_command` with cwd = worktree.
+6. Spawn `execution_command` with cwd = worktree.
 7. Read `<wt>/.eden/outcome.json`:
 
    ```json
@@ -175,8 +175,8 @@ repository write becomes observable. The reference flow is:
 
 All four of (subprocess exit-nonzero, missing outcome.json,
 malformed outcome, `outcome.status != "success"`) terminalize as
-`ExecuteSubmission(status="error", variant_id=…)`. The
-`Store._reject_execute` path composite-commits the variant to
+`VariantSubmission(status="error", variant_id=…)`. The
+`Store._reject_execution` path composite-commits the variant to
 `error` atomically with the task transition. The user-supplied
 `description` field on `outcome.json` is logged for diagnostics
 but **not** propagated to the wire (the submission dataclass has
@@ -199,7 +199,7 @@ no free-form field; see §5).
    }
    ```
 
-3. Run `evaluate_command` with cwd = worktree.
+3. Run `evaluation_command` with cwd = worktree.
 4. Read outcome:
 
    ```json
@@ -207,10 +207,10 @@ no free-form field; see §5).
     "artifacts_uri": "file:///…"}
    ```
 
-   or `{"status": "error" | "eval_error"}`.
+   or `{"status": "error" | "evaluation_error"}`.
 5. Validate evaluation against `evaluation_schema` via
    `Store.validate_evaluation`. Validation failures route to
-   `eval_error`.
+   `evaluation_error`.
 6. `Store.submit(...)`. Cleanup worktree.
 
 ## 5. Failure-context surface
@@ -288,7 +288,7 @@ the DooD socket mount documented in §8.
 |---|---|---|
 | Orchestrator/integrator | fetch_all_heads at startup; ls_remote at orphan-reconciliation | local create_ref → push_ref → integrate_variant → on store fail compensating delete_remote_ref |
 | Executor | local create_ref → push_ref of `work/*` after the user `*_command` produces a commit | rolls back local on push failure + submits status=error |
-| Evaluator | fetch_ref of `variant.branch` before `git worktree add`; eval_error on transport failure | never pushes |
+| Evaluator | fetch_ref of `variant.branch` before `git worktree add`; evaluation_error on transport failure | never pushes |
 | Web-ui executor | same as executor | same as executor |
 
 ### 7.3 Integrator atomicity ladder (chapter 6 §3.4)
@@ -321,7 +321,7 @@ consumers.
 `Integrator.reconcile_remote_orphans()` runs at orchestrator
 startup. It walks `refs/heads/variant/*` on Gitea via `ls-remote`,
 recovers the `variant_id` from each commit's
-`.eden/variants/<variant_id>/eval.json` tree path
+`.eden/variants/<variant_id>/evaluation.json` tree path
 (spec-authoritative — chapter 6 §3.2), and for each calls
 `Store.read_variant(variant_id)`. If the variant has no
 `variant_commit_sha`, the integrator deletes the remote ref.

@@ -2,10 +2,10 @@
 
 Runs a single long-running subprocess for the ideator role and
 exchanges JSON-line messages with it. The subprocess emits
-``{"event": "ready"}`` once on startup, then for each ideate task the
-host writes a ``{"event": "ideate", ...}`` line on stdin and reads
+``{"event": "ready"}`` once on startup, then for each ideation task the
+host writes a ``{"event": "ideation", ...}`` line on stdin and reads
 ``{"event": "idea", ...}`` lines back, terminated by either
-``{"event": "ideate-done", ...}`` or ``{"event": "ideate-error", ...}``.
+``{"event": "ideation-done", ...}`` or ``{"event": "ideation-error", ...}``.
 
 See ``docs/plans/eden-phase-10d-llm-worker-hosts.md`` §D.2 for the
 wire format.
@@ -21,14 +21,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eden_contracts import Idea, IdeateTask
+from eden_contracts import Idea, IdeationTask
 from eden_service_common import Subprocess, parse_json_line, spawn
-from eden_storage import IdeateSubmission, Store
+from eden_storage import IdeaSubmission, Store
 
 log = logging.getLogger(__name__)
 
 _HISTORY_LIMIT = 50
-"""Cap on completed-variant history attached to each ideate dispatch."""
+"""Cap on completed-variant history attached to each ideate-task dispatch."""
 
 
 WrapResult = tuple[str, Callable[[], None] | None, list[Callable[[], None]]]
@@ -78,7 +78,7 @@ def _build_history(store: Store, *, limit: int = _HISTORY_LIMIT) -> list[dict]:
     Returns at most ``limit`` entries, newest first. Each entry
     carries the variant's ``variant_id``, ``status``, ``commit_sha``,
     and ``metrics`` (read from the evaluator's submission for the
-    completing evaluate task), plus the idea slug if the idea can be
+    completing evaluation task), plus the idea slug if the idea can be
     located. The set is small by design — see §D.2 in the chunk plan.
     """
     history: list[dict] = []
@@ -97,8 +97,8 @@ def _build_history(store: Store, *, limit: int = _HISTORY_LIMIT) -> list[dict]:
             continue
         if sub is None:
             continue
-        from eden_storage import EvaluateSubmission  # local — avoid cycle at import
-        if not isinstance(sub, EvaluateSubmission):
+        from eden_storage import EvaluationSubmission  # local — avoid cycle at import
+        if not isinstance(sub, EvaluationSubmission):
             continue
         if sub.variant_id in seen:
             continue
@@ -149,13 +149,13 @@ class IdeatorSubprocess:
                 return
             log.debug("ideator_pre_ready_event", extra={"line": line})
 
-    def dispatch_plan(self, *, task: IdeateTask, history: list[dict], experiment_id: str,
+    def dispatch_plan(self, *, task: IdeationTask, history: list[dict], experiment_id: str,
                       objective: dict, evaluation_schema: dict) -> tuple[dict, list[dict]]:
-        """Send a ideate dispatch and collect ideas until terminator.
+        """Send a ideate-task dispatch and collect ideas until terminator.
 
         Returns a tuple ``(terminator_obj, idea_dicts)`` where
         ``terminator_obj`` is the parsed terminator line (event is
-        ``"ideate-done"`` or ``"ideate-error"``; ``plan-error`` may carry
+        ``"ideation-done"`` or ``"ideation-error"``; ``plan-error`` may carry
         a ``reason`` field for diagnostics) and ``idea_dicts`` is
         the list of idea records.
 
@@ -164,7 +164,7 @@ class IdeatorSubprocess:
         EOF.
         """
         dispatch = {
-            "event": "ideate",
+            "event": "ideation",
             "task_id": task.task_id,
             "experiment_id": experiment_id,
             "objective": objective,
@@ -172,7 +172,7 @@ class IdeatorSubprocess:
             "history": history,
         }
         import json
-        # Tag stderr forwarding with the active ideate task so the
+        # Tag stderr forwarding with the active ideation task so the
         # long-running ideator subprocess's diagnostic lines are
         # attributable to the dispatch they were emitted under.
         self._sub.set_current_task(task.task_id)
@@ -196,9 +196,9 @@ class IdeatorSubprocess:
             if event == "idea":
                 ideas.append(obj)
                 continue
-            if event == "ideate-done":
+            if event == "ideation-done":
                 return obj, ideas
-            if event == "ideate-error":
+            if event == "ideation-error":
                 return obj, ideas
             raise ProtocolViolation(f"ideator emitted unknown event {event!r}")
 
@@ -233,7 +233,7 @@ def start_ideator_subprocess(config: IdeatorSubprocessConfig) -> IdeatorSubproce
 def _persist_ideas(
     store: Store,
     *,
-    task: IdeateTask,
+    task: IdeationTask,
     ideas: list[dict],
     artifacts_dir: Path,
 ) -> list[str]:
@@ -295,7 +295,7 @@ def _write_rationale(
 def handle_plan_task(
     *,
     store: Store,
-    task: IdeateTask,
+    task: IdeationTask,
     worker_id: str,
     ideator: IdeatorSubprocess,
     experiment_id: str,
@@ -303,7 +303,7 @@ def handle_plan_task(
     evaluation_schema: dict,
     artifacts_dir: Path,
 ) -> None:
-    """Drive one ideate task through the subprocess: claim → dispatch → submit."""
+    """Drive one ideation task through the subprocess: claim → dispatch → submit."""
     claim = store.claim(task.task_id, worker_id)
     history = _build_history(store)
     try:
@@ -319,9 +319,9 @@ def handle_plan_task(
             "ideator_dispatch_failed",
             extra={"task_id": task.task_id, "error": str(exc)},
         )
-        store.submit(task.task_id, claim.token, IdeateSubmission(status="error"))
+        store.submit(task.task_id, claim.token, IdeaSubmission(status="error"))
         raise
-    if terminator.get("event") == "ideate-error":
+    if terminator.get("event") == "ideation-error":
         log.warning(
             "ideator_ideate_error",
             extra={
@@ -330,7 +330,7 @@ def handle_plan_task(
                 "ideas_seen": len(ideas),
             },
         )
-        store.submit(task.task_id, claim.token, IdeateSubmission(status="error"))
+        store.submit(task.task_id, claim.token, IdeaSubmission(status="error"))
         return
     try:
         ids = _persist_ideas(
@@ -341,12 +341,12 @@ def handle_plan_task(
             "ideator_idea_invalid",
             extra={"task_id": task.task_id, "error": str(exc)},
         )
-        store.submit(task.task_id, claim.token, IdeateSubmission(status="error"))
+        store.submit(task.task_id, claim.token, IdeaSubmission(status="error"))
         return
     store.submit(
         task.task_id,
         claim.token,
-        IdeateSubmission(status="success", idea_ids=tuple(ids)),
+        IdeaSubmission(status="success", idea_ids=tuple(ids)),
     )
 
 

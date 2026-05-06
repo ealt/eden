@@ -43,12 +43,12 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from eden_contracts import (
-    EvaluateTask,
+    EvaluationTask,
     Event,
-    ExecuteTask,
+    ExecutionTask,
     FailReason,
     Idea,
-    IdeateTask,
+    IdeationTask,
     ReclaimCause,
     Task,
     TaskClaim,
@@ -172,23 +172,23 @@ class Store(Protocol):
         composite commit that also transitions the referenced idea
         ``ready → dispatched`` (``05-event-protocol.md`` §2.2).
 
-        The typed helpers below (``create_ideate_task``,
-        ``create_execute_task``, ``create_evaluate_task``) are
+        The typed helpers below (``create_ideation_task``,
+        ``create_execution_task``, ``create_evaluation_task``) are
         convenience constructors that build the task payload for the
         caller; they both route through the same commit path as
         ``create_task``.
         """
         ...
 
-    def create_ideate_task(self, task_id: str) -> IdeateTask:
+    def create_ideation_task(self, task_id: str) -> IdeationTask:
         """Atomically insert a ``ideate`` task + ``task.created`` event."""
         ...
 
-    def create_execute_task(self, task_id: str, idea_id: str) -> ExecuteTask:
+    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
         """Create an ``execute`` task; composite-commits ``idea.dispatched``."""
         ...
 
-    def create_evaluate_task(self, task_id: str, variant_id: str) -> EvaluateTask:
+    def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
         """Create an ``evaluate`` task against a starting variant with commit_sha."""
         ...
 
@@ -253,8 +253,8 @@ class Store(Protocol):
         """Persist a new ``starting`` variant; emits ``variant.started``."""
         ...
 
-    def declare_variant_eval_error(self, variant_id: str) -> None:
-        """Retry-exhausted terminal ``starting → eval_error`` (``05-event-protocol.md`` §2.2)."""
+    def declare_variant_evaluation_error(self, variant_id: str) -> None:
+        """Retry-exhausted: ``starting → evaluation_error`` (``05-event-protocol.md`` §2.2)."""
         ...
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:

@@ -35,7 +35,7 @@ class TestHappyPath:
     def test_claim_draft_submit_completes_task(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-1")
+        store.create_ideation_task("t-1")
         token = get_csrf(signed_in_client)
 
         resp = signed_in_client.post(
@@ -62,7 +62,7 @@ class TestHappyPath:
     def test_submit_error_path_writes_no_ideas(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-err")
+        store.create_ideation_task("t-err")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-err/claim",
@@ -82,7 +82,7 @@ class TestValidationRecovery:
     def test_invalid_form_re_renders_with_errors_and_input_preserved(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-bad")
+        store.create_ideation_task("t-bad")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-bad/claim",
@@ -119,7 +119,7 @@ class TestMultiRow:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """No-JS path: add_row returns the full draft page with one more row."""
-        store.create_ideate_task("t-add")
+        store.create_ideation_task("t-add")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-add/claim",
@@ -157,7 +157,7 @@ class TestMultiRow:
         container. Returning ``HX-Redirect`` instead makes htmx
         do a real navigation.
         """
-        store.create_ideate_task("t-noses")
+        store.create_ideation_task("t-noses")
         resp = client.post(
             "/ideator/t-noses/add_row",
             data={"slug": "x"},
@@ -174,7 +174,7 @@ class TestMultiRow:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """HTMX request without an active claim must HX-Redirect to /ideator/."""
-        store.create_ideate_task("t-noclaim")
+        store.create_ideation_task("t-noclaim")
         token = get_csrf(signed_in_client)
         # Note: we never call /ideator/{id}/claim, so the in-memory
         # _CLAIMS dict has no entry for this (csrf, task) pair.
@@ -192,7 +192,7 @@ class TestMultiRow:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """HTMX add_row with bad CSRF must NOT have its body swapped into the page."""
-        store.create_ideate_task("t-csrf")
+        store.create_ideation_task("t-csrf")
         token = get_csrf(signed_in_client)
         # Claim first so the missing-claim branch isn't what fires.
         signed_in_client.post(
@@ -215,7 +215,7 @@ class TestMultiRow:
         self, client: TestClient, store: InMemoryStore
     ) -> None:
         """The no-JS path keeps the conventional 303-to-/signin behavior."""
-        store.create_ideate_task("t-nojs")
+        store.create_ideation_task("t-nojs")
         resp = client.post(
             "/ideator/t-nojs/add_row",
             data={"slug": "x"},
@@ -228,7 +228,7 @@ class TestMultiRow:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """JS path: add_row with HX-Request: true returns only the row partial."""
-        store.create_ideate_task("t-htmx")
+        store.create_ideation_task("t-htmx")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-htmx/claim",
@@ -264,7 +264,7 @@ class TestMultiRow:
         """Submitting with a trailing blank row only persists the filled rows."""
         from urllib.parse import urlencode
 
-        store.create_ideate_task("t-skip")
+        store.create_ideation_task("t-skip")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-skip/claim",
@@ -301,7 +301,7 @@ class TestMultiRow:
         store: InMemoryStore,
     ) -> None:
         """If every row is blank, submit re-renders with a form-level error."""
-        store.create_ideate_task("t-all-blank")
+        store.create_ideation_task("t-all-blank")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-all-blank/claim",
@@ -328,7 +328,7 @@ class TestPerSessionClaimIsolation:
         self, app, store: InMemoryStore
     ) -> None:
         """Two browser sessions with the same worker_id must not share claims."""
-        store.create_ideate_task("t-iso")
+        store.create_ideation_task("t-iso")
         with TestClient(app) as a:
             a.post("/signin", follow_redirects=False)
             csrf_a = get_csrf(a)
@@ -363,14 +363,14 @@ class TestDefinitiveSubmitErrors:
     work product (the ideas themselves) is what needs recovery,
     not the form inputs. The orphan page lists the orphaned
     idea IDs and surfaces the canonical error type so an
-    operator can decide whether to reclaim the ideate task or
+    operator can decide whether to reclaim the ideation task or
     garbage-collect.
     """
 
     def _setup_claim(
         self, client: TestClient, store: InMemoryStore, task_id: str
     ) -> str:
-        store.create_ideate_task(task_id)
+        store.create_ideation_task(task_id)
         token = get_csrf(client)
         resp = client.post(
             f"/ideator/{task_id}/claim",
@@ -493,7 +493,7 @@ class TestIllegalTransitionReadback:
     def _setup_claim(
         self, client: TestClient, store: InMemoryStore, task_id: str
     ) -> str:
-        store.create_ideate_task(task_id)
+        store.create_ideation_task(task_id)
         token = get_csrf(client)
         resp = client.post(
             f"/ideator/{task_id}/claim",
@@ -551,19 +551,19 @@ class TestIllegalTransitionReadback:
         monkeypatch,
     ) -> None:
         """Different submission won the race; read-back finds non-equivalent."""
-        from eden_contracts import IdeatePayload, IdeateTask
-        from eden_storage import IdeateSubmission, IllegalTransition
+        from eden_contracts import IdeationPayload, IdeationTask
+        from eden_storage import IdeaSubmission, IllegalTransition
 
         csrf = self._setup_claim(signed_in_client, store, "t-itc")
-        synthetic_task = IdeateTask(
+        synthetic_task = IdeationTask(
             task_id="t-itc",
-            kind="ideate",
+            kind="ideation",
             state="completed",
-            payload=IdeatePayload(experiment_id=store.experiment_id),
+            payload=IdeationPayload(experiment_id=store.experiment_id),
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T13:00:00.000Z",
         )
-        non_equiv_prior = IdeateSubmission(
+        non_equiv_prior = IdeaSubmission(
             status="success", idea_ids=("idea-other-worker",)
         )
 
@@ -585,15 +585,15 @@ class TestIllegalTransitionReadback:
         monkeypatch,
     ) -> None:
         """`read_submission() is None` on a terminal task is invariant violation, not conflict."""
-        from eden_contracts import IdeatePayload, IdeateTask
+        from eden_contracts import IdeationPayload, IdeationTask
         from eden_storage import IllegalTransition
 
         csrf = self._setup_claim(signed_in_client, store, "t-inv")
-        synthetic_task = IdeateTask(
+        synthetic_task = IdeationTask(
             task_id="t-inv",
-            kind="ideate",
+            kind="ideation",
             state="completed",
-            payload=IdeatePayload(experiment_id=store.experiment_id),
+            payload=IdeationPayload(experiment_id=store.experiment_id),
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T13:00:00.000Z",
         )
@@ -668,7 +668,7 @@ class TestRetryBeforeOrphan:
         monkeypatch,
     ) -> None:
         """Raw transport exceptions (httpx-style, not DispatchError) are retried."""
-        store.create_ideate_task("t-trans")
+        store.create_ideation_task("t-trans")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-trans/claim",
@@ -738,7 +738,7 @@ class TestStrandedClaim:
         )
         with TestClient(app) as c:
             c.post("/signin", follow_redirects=False)
-            store.create_ideate_task("t-strand")
+            store.create_ideation_task("t-strand")
             csrf = get_csrf(c)
             c.post(
                 "/ideator/t-strand/claim",
@@ -769,7 +769,7 @@ class TestDraftBufferReHydration:
     def test_validation_error_then_get_re_renders_typed_input(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-rehydrate")
+        store.create_ideation_task("t-rehydrate")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-rehydrate/claim",
@@ -804,7 +804,7 @@ class TestDraftBufferReHydration:
     def test_add_row_buffers_typed_state_for_subsequent_get(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-add-buf")
+        store.create_ideation_task("t-add-buf")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-add-buf/claim",
@@ -832,7 +832,7 @@ class TestDraftBufferReHydration:
     def test_buffer_cleared_after_successful_submit(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.create_ideate_task("t-clear-buf")
+        store.create_ideation_task("t-clear-buf")
         token = get_csrf(signed_in_client)
         signed_in_client.post(
             "/ideator/t-clear-buf/claim",
@@ -851,7 +851,7 @@ class TestDraftBufferReHydration:
             },
         )
         # Successful submit clears the buffer. The simplest probe: a
-        # fresh ideate task on the same session must NOT inherit the
+        # fresh ideation task on the same session must NOT inherit the
         # prior buffer's state when GET'd.
         ok = signed_in_client.post(
             "/ideator/t-clear-buf/submit",

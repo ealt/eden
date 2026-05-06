@@ -31,7 +31,7 @@ def run_executor_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for pending execute tasks and drive each through the scripted profile.
+    """Poll for pending execution tasks and drive each through the scripted profile.
 
     Returns only when ``stop`` is set.
     """
@@ -40,7 +40,7 @@ def run_executor_loop(
         implement_fn=make_implement_fn(
             repo_path=repo_path, fail_every=fail_every
         ),
-        trial_id_factory=_variant_id,
+        variant_id_factory=_variant_id,
         now=_now_iso,
     )
     while not stop.is_set():

@@ -14,8 +14,8 @@ from eden_storage import InMemoryStore
 from fastapi.testclient import TestClient
 
 
-def _seed_plan_task(store: InMemoryStore, task_id: str = "plan-A") -> str:
-    store.create_ideate_task(task_id)
+def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> str:
+    store.create_ideation_task(task_id)
     return task_id
 
 
@@ -23,7 +23,7 @@ class TestAdminReclaimIdeatorClaim:
     def test_claim_then_admin_reclaim_round_trip(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        task_id = _seed_plan_task(store, "plan-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         # Claim via the ideator module.
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -70,7 +70,7 @@ class TestAdminVariantDetailFromEvaluatorFlow:
         assert resp.status_code == 200
         assert "variant-F" in resp.text
         assert "idea-flow" in resp.text
-        # Execute task events for the parent idea should be in the
+        # Execute-task events for the parent idea should be in the
         # related-events table.
         assert "task.created" in resp.text
 

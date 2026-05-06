@@ -1,6 +1,6 @@
 # eden-ideator-host
 
-Reference ideator worker: polls a task-store-server for pending `ideate` tasks, claims each in turn, drafts ideas using the canonical Phase 8b scripted profile, and submits.
+Reference ideator worker: polls a task-store-server for pending `ideation` tasks, claims each in turn, drafts ideas using the canonical Phase 8b scripted profile, and submits.
 
 Ideas carry `parent_commits=(--base-commit-sha,)` so the Integrator's reachability check has a real parent to verify against.
 
@@ -22,16 +22,16 @@ Pass `--mode subprocess` plus `--experiment-config <path>`,
 `--experiment-dir <path>`, and `--artifacts-dir <path>` to invoke a
 user-supplied long-running ideator command instead of the scripted
 profile. The command string is read from the experiment-config
-YAML's `ideate_command` key. The subprocess exchanges JSON-line
+YAML's `ideation_command` key. The subprocess exchanges JSON-line
 messages with the host per the
 [reference binding](../../../spec/v0/reference-bindings/worker-host-subprocess.md):
 
 1. Subprocess emits `{"event": "ready"}` once on startup.
-2. For each ideate task, host writes a `{"event": "ideate", ...}` line
+2. For each ideation task, host writes a `{"event": "ideation", ...}` line
    on stdin; subprocess emits any number of `idea` lines and
-   then `{"event": "ideate-done", "task_id": …}` (or `plan-error`).
+   then `{"event": "ideation-done", "task_id": …}` (or `plan-error`).
 3. cwd = the experiment directory; env carries
    `EDEN_EXPERIMENT_DIR`.
 
-Use `--ideate-env-file path/to/env` to inject `ANTHROPIC_API_KEY` and
+Use `--ideation-env-file path/to/env` to inject `ANTHROPIC_API_KEY` and
 similar.

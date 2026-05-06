@@ -176,7 +176,7 @@ def seed_implement_task(
     artifacts_dir: Path | None = None,
     artifact_text: str = "rationale",
 ) -> tuple[str, str]:
-    """Seed a ready idea + pending execute task; return (task_id, idea_id).
+    """Seed a ready idea + pending execution task; return (task_id, idea_id).
 
     Builds a `file://` artifacts_uri inside ``artifacts_dir`` so the
     rationale renders inline in tests that need it. Pass
@@ -204,7 +204,7 @@ def seed_implement_task(
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     task_id = f"execute-{slug}"
-    store.create_execute_task(task_id, idea_id)
+    store.create_execution_task(task_id, idea_id)
     return task_id, idea_id
 
 
@@ -215,15 +215,15 @@ def seed_evaluate_task(
     variant_id: str = "variant-eval",
     artifacts_dir: Path | None = None,
     artifact_text: str = "rationale",
-    trial_artifact_path: Path | None = None,
-    trial_description: str | None = None,
+    variant_artifact_path: Path | None = None,
+    variant_description: str | None = None,
     commit_sha: str = "b" * 40,
 ) -> tuple[str, str, str]:
-    """Seed a starting variant (with commit_sha) + a pending evaluate task.
+    """Seed a starting variant (with commit_sha) + a pending evaluation task.
 
     Drives the executor-accept flow so the variant is in
     ``starting`` with ``commit_sha`` set, the prerequisite for
-    ``create_evaluate_task`` per chapter 04 §3.1. The fixture
+    ``create_evaluation_task`` per chapter 04 §3.1. The fixture
     returns ``(eval_task_id, variant_id, idea_id)``.
 
     Variant-side context (``description`` / ``artifacts_uri``) is
@@ -232,7 +232,7 @@ def seed_evaluate_task(
     surfaces them on the draft page.
     """
     from eden_contracts import Idea, Variant
-    from eden_storage import ExecuteSubmission
+    from eden_storage import VariantSubmission
 
     idea_id = f"idea-{slug}"
     if artifacts_dir is not None:
@@ -254,12 +254,12 @@ def seed_evaluate_task(
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     impl_task_id = f"execute-{slug}"
-    store.create_execute_task(impl_task_id, idea_id)
+    store.create_execution_task(impl_task_id, idea_id)
     impl_claim = store.claim(impl_task_id, "executor-w")
 
     from typing import Any
 
-    trial_kwargs: dict[str, Any] = {
+    variant_kwargs: dict[str, Any] = {
         "variant_id": variant_id,
         "experiment_id": store.experiment_id,
         "idea_id": idea_id,
@@ -268,36 +268,36 @@ def seed_evaluate_task(
         "branch": f"work/{slug}-{variant_id}",
         "started_at": "2026-04-24T12:00:00Z",
     }
-    if trial_description is not None:
-        trial_kwargs["description"] = trial_description
-    if trial_artifact_path is not None:
-        trial_kwargs["artifacts_uri"] = f"file://{trial_artifact_path.resolve()}"
-    store.create_variant(Variant(**trial_kwargs))
+    if variant_description is not None:
+        variant_kwargs["description"] = variant_description
+    if variant_artifact_path is not None:
+        variant_kwargs["artifacts_uri"] = f"file://{variant_artifact_path.resolve()}"
+    store.create_variant(Variant(**variant_kwargs))
 
     store.submit(
         impl_task_id,
         impl_claim.token,
-        ExecuteSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
+        VariantSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
     )
     store.accept(impl_task_id)
 
     eval_task_id = f"evaluate-{slug}"
-    store.create_evaluate_task(eval_task_id, variant_id)
+    store.create_evaluation_task(eval_task_id, variant_id)
     return eval_task_id, variant_id, idea_id
 
 
 def get_evaluate_submission(store: InMemoryStore, task_id: str):
-    """Read and type-narrow an evaluate submission for evaluator-module tests.
+    """Read and type-narrow an evaluate-task submission for evaluator-module tests.
 
     Pyright treats ``Store.read_submission`` as returning the
     ``Submission`` union; tests that need to access
-    ``EvaluateSubmission``-specific fields use this helper to
+    ``EvaluationSubmission``-specific fields use this helper to
     narrow.
     """
-    from eden_storage import EvaluateSubmission
+    from eden_storage import EvaluationSubmission
 
     sub = store.read_submission(task_id)
-    assert isinstance(sub, EvaluateSubmission)
+    assert isinstance(sub, EvaluationSubmission)
     return sub
 
 

@@ -108,7 +108,7 @@ class TestHappyPath:
         # _CLAIMS is empty (entry popped on success).
         assert executor_routes._CLAIMS == {}
         # Calling accept() now writes commit_sha onto the variant per
-        # _accept_execute.
+        # _accept_execution.
         store.accept(task_id)
         variant = store.read_variant(variant.variant_id)
         assert variant.commit_sha == child_sha

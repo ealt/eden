@@ -7,7 +7,7 @@ Composes the ``GitRepo`` subprocess wrapper with the Phase 6
 - re-validates the variant against the §2 promotion preconditions,
 - re-checks §1.4 reachability via git,
 - builds the §3.2 single-commit squash (worker-tip tree plus exactly
-  the eval manifest at ``.eden/variants/<variant_id>/eval.json``),
+  the evaluation manifest at ``.eden/variants/<variant_id>/evaluation.json``),
 - commits under the §3.3 subject line ``variant: <variant_id> <slug>``,
 - creates the ``refs/heads/variant/<variant_id>-<slug>`` ref via CAS,
 - writes ``variant_commit_sha`` and appends ``variant.integrated`` via
@@ -56,7 +56,7 @@ class ReachabilityViolation(IntegratorError):
 
 
 class EvalManifestPathCollision(IntegratorError):
-    """Worker tree already carries a file at ``.eden/variants/<id>/eval.json`` (§3.2)."""
+    """Worker tree already carries a file at ``.eden/variants/<id>/evaluation.json`` (§3.2)."""
 
 
 class CorruptIntegrationState(IntegratorError):
@@ -586,7 +586,7 @@ class Integrator:
         """Recover the variant_id from a remote variant-commit's tree.
 
         Per chapter 6 §3.2 the squash commit's tree must contain
-        exactly one ``.eden/variants/<variant_id>/eval.json`` entry. The
+        exactly one ``.eden/variants/<variant_id>/evaluation.json`` entry. The
         spec treats variant_id as opaque (chapter 2 §1.3), so ref-name
         parsing is NOT used.
 
@@ -675,7 +675,7 @@ def _has_origin(repo: GitRepo) -> bool:
 
 
 def _manifest_path(variant_id: str) -> str:
-    return f".eden/variants/{variant_id}/eval.json"
+    return f".eden/variants/{variant_id}/evaluation.json"
 
 
 def _default_clock() -> datetime:

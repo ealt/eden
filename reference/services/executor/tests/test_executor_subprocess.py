@@ -6,7 +6,7 @@ import textwrap
 import time
 from pathlib import Path
 
-from eden_contracts import EvaluationSchema, ExecuteTask, Idea
+from eden_contracts import EvaluationSchema, ExecutionTask, Idea
 from eden_executor_host.subprocess_mode import (
     ExecutorSubprocessConfig,
     _handle_one,
@@ -14,7 +14,7 @@ from eden_executor_host.subprocess_mode import (
 )
 from eden_git import GitRepo
 from eden_service_common import seed_bare_repo
-from eden_storage import ExecuteSubmission, InMemoryStore
+from eden_storage import InMemoryStore, VariantSubmission
 
 EXPERIMENT_ID = "exp-1"
 
@@ -43,7 +43,7 @@ def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
     )
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
-    store.create_execute_task("execute-1", idea_id)
+    store.create_execution_task("execution-1", idea_id)
     return store, str(repo_path), seed_sha
 
 
@@ -101,18 +101,18 @@ def test_success_path_creates_variant_and_ref(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="execute", state="pending")[0]
-    assert isinstance(task_raw, ExecuteTask)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execution-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
     )
-    submission = store.read_submission("execute-1")
-    assert isinstance(submission, ExecuteSubmission)
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
     assert submission.status == "success"
     assert submission.commit_sha is not None
     repo = GitRepo(repo_path)
@@ -131,18 +131,18 @@ def test_subprocess_nonzero_exit_routes_to_error(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="execute", state="pending")[0]
-    assert isinstance(task_raw, ExecuteTask)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execution-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
     )
-    submission = store.read_submission("execute-1")
-    assert isinstance(submission, ExecuteSubmission)
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
     assert submission.status == "error"
     assert submission.commit_sha is None
 
@@ -157,18 +157,18 @@ def test_missing_outcome_routes_to_error(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="execute", state="pending")[0]
-    assert isinstance(task_raw, ExecuteTask)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execution-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
     )
-    submission = store.read_submission("execute-1")
-    assert isinstance(submission, ExecuteSubmission)
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
     assert submission.status == "error"
 
 
@@ -188,18 +188,18 @@ def test_invalid_commit_sha_routes_to_error(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="execute", state="pending")[0]
-    assert isinstance(task_raw, ExecuteTask)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execution-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
     )
-    submission = store.read_submission("execute-1")
-    assert isinstance(submission, ExecuteSubmission)
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
     assert submission.status == "error"
 
 
@@ -214,19 +214,19 @@ def test_subprocess_timeout_routes_to_error(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="execute", state="pending")[0]
-    assert isinstance(task_raw, ExecuteTask)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
     task = task_raw
     start = time.monotonic()
     _handle_one(
         store=store,
-        worker_id="impl-1",
+        worker_id="execution-1",
         task=task,
         config=config,
         host_subdir=host_subdir,
     )
     elapsed = time.monotonic() - start
     assert elapsed < 10
-    submission = store.read_submission("execute-1")
-    assert isinstance(submission, ExecuteSubmission)
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
     assert submission.status == "error"

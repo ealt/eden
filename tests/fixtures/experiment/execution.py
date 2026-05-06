@@ -1,4 +1,4 @@
-r"""Deterministic execute_command for the fixture experiment.
+r"""Deterministic execution_command for the fixture experiment.
 
 Short-lived per-task subprocess. Reads ``EDEN_TASK_JSON`` for the
 idea context, writes a deterministic blob into the worktree,
@@ -35,7 +35,7 @@ def _git(*args: str, cwd: Path) -> str:
         # what actually broke; otherwise check=True's
         # CalledProcessError swallows it.
         print(
-            f"execute.py: git {' '.join(args)} failed (rc={result.returncode}); "
+            f"execution.py: git {' '.join(args)} failed (rc={result.returncode}); "
             f"stdout={result.stdout!r}; stderr={result.stderr!r}",
             file=sys.stderr,
         )
@@ -78,7 +78,7 @@ def main() -> int:
         "commit_sha": commit_sha,
     }
     (cwd / output_rel).write_text(json.dumps(outcome, sort_keys=True), encoding="utf-8")
-    print(f"execute.py: wrote {commit_sha}", file=sys.stderr)
+    print(f"execution.py: wrote {commit_sha}", file=sys.stderr)
     return 0
 
 

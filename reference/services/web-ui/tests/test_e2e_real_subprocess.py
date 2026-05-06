@@ -111,7 +111,7 @@ def _dump_logs(procs_logs: dict[str, tuple[subprocess.Popen, Path]]) -> str:
 
 @pytest.mark.e2e
 def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
-    """Sign in, claim a ideate task, draft + submit, verify state in the store."""
+    """Sign in, claim a ideation task, draft + submit, verify state in the store."""
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
     experiment_id = "exp-web-ui-e2e"
@@ -179,7 +179,7 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed one ideate task via the wire StoreClient.
+        # Seed one ideation task via the wire StoreClient.
         from eden_wire import StoreClient
 
         seed = StoreClient(
@@ -188,7 +188,7 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_ideate_task("t-ui-1")
+            seed.create_ideation_task("t-ui-1")
         finally:
             seed.close()
 
@@ -278,7 +278,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     orchestrator) and proves the operational path the plan
     promised: the orchestrator's per-iteration sweep is what
     actually reclaims an abandoned claim. The orchestrator is
-    launched with no ideate tasks so it does the sweep, sees no
+    launched with no ideation tasks so it does the sweep, sees no
     other progress, and quiesces.
     """
     from eden_service_common import seed_bare_repo
@@ -358,7 +358,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed one ideate task via the wire StoreClient.
+        # Seed one ideation task via the wire StoreClient.
         from eden_wire import StoreClient
 
         seed = StoreClient(
@@ -367,7 +367,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_ideate_task("t-strand")
+            seed.create_ideation_task("t-strand")
         finally:
             seed.close()
 
@@ -390,7 +390,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         # sweep_expired_claims call will reclaim.
         time.sleep(2.0)
 
-        # Now spawn the orchestrator with NO ideate tasks; its loop runs
+        # Now spawn the orchestrator with NO ideation tasks; its loop runs
         # sweep_expired_claims once per iteration, sees no other
         # progress, and quiesces.
         orchestrator_log = logs_dir / "orchestrator.log"
@@ -405,7 +405,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 token,
                 "--repo-path",
                 str(bare_repo),
-                "--ideate-tasks",
+                "--ideation-tasks",
                 "",
                 "--max-quiescent-iterations",
                 "2",

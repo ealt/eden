@@ -1,7 +1,7 @@
 """Executor-module routes.
 
 Implements the spec-to-code map pinned in §C of the Phase 9c plan.
-The flow is: list pending execute tasks → claim with TTL +
+The flow is: list pending execution tasks → claim with TTL +
 server-owned variant_id → render draft form (read-only idea
 context, optional inline rationale) → submit, which runs
 
@@ -32,9 +32,9 @@ from eden_contracts import Idea, Variant
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
-    ExecuteSubmission,
     IllegalTransition,
     InvalidPrecondition,
+    VariantSubmission,
     WrongToken,
 )
 from eden_storage.submissions import submissions_equivalent
@@ -91,7 +91,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
-    pending = store.list_tasks(kind="execute", state="pending")
+    pending = store.list_tasks(kind="execution", state="pending")
     config = request.app.state.experiment_config
     return request.app.state.templates.TemplateResponse(
         request,
@@ -223,7 +223,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     if draft.status == "success":
         assert draft.commit_sha is not None
         # §C reachability: commit must exist and descend from every parent.
-        # Fetch from origin first so a freshly-pushed implementer commit is
+        # Fetch from origin first so a freshly-pushed executor commit is
         # visible — the local clone otherwise only refreshes at startup
         # (Phase 10d follow-up B). Same posture as the integrator's
         # per-promote fetch.
@@ -291,7 +291,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     started_at = _iso(now())
 
     # Phase 1: create_variant as starting.
-    trial_kwargs: dict[str, Any] = {
+    variant_kwargs: dict[str, Any] = {
         "variant_id": variant_id,
         "experiment_id": request.app.state.experiment_id,
         "idea_id": idea.idea_id,
@@ -301,8 +301,8 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         "started_at": started_at,
     }
     if draft.description is not None:
-        trial_kwargs["description"] = draft.description
-    variant = Variant(**trial_kwargs)
+        variant_kwargs["description"] = draft.description
+    variant = Variant(**variant_kwargs)
     try:
         store.create_variant(variant)
     except DispatchError as exc:
@@ -368,7 +368,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                 )
 
     # Phase 3: submit, with retry-before-orphan + read-back.
-    submission = ExecuteSubmission(
+    submission = VariantSubmission(
         status=draft.status,
         variant_id=variant_id,
         commit_sha=draft.commit_sha if draft.status == "success" else None,
@@ -405,7 +405,7 @@ def _retry_submit_with_readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: ExecuteSubmission,
+    submission: VariantSubmission,
 ) -> tuple[str, str | None]:
     """Submit with retry, then reconcile via committed-state read-back.
 
@@ -483,7 +483,7 @@ def _readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: ExecuteSubmission,
+    submission: VariantSubmission,
     last_exc: BaseException | None,
 ) -> tuple[str, str | None]:
     last_name = last_exc.__class__.__name__ if last_exc else "unknown"

@@ -45,10 +45,10 @@ from . import _postgres_schema
 from ._base import _StoreBase, _Tx
 from .errors import InvalidPrecondition
 from .submissions import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     Submission,
+    VariantSubmission,
 )
 
 
@@ -58,21 +58,21 @@ def _serialize_model(model: Any) -> str:
 
 def _submission_to_row(submission: Submission) -> tuple[str, str]:
     """Return ``(kind, json_data)`` for a submission. Mirrors sqlite.py."""
-    if isinstance(submission, IdeateSubmission):
+    if isinstance(submission, IdeaSubmission):
         payload: dict[str, Any] = {
             "status": submission.status,
             "idea_ids": list(submission.idea_ids),
         }
-        return ("ideate", json.dumps(payload))
-    if isinstance(submission, ExecuteSubmission):
+        return ("ideation", json.dumps(payload))
+    if isinstance(submission, VariantSubmission):
         payload = {
             "status": submission.status,
             "variant_id": submission.variant_id,
         }
         if submission.commit_sha is not None:
             payload["commit_sha"] = submission.commit_sha
-        return ("execute", json.dumps(payload))
-    if isinstance(submission, EvaluateSubmission):
+        return ("execution", json.dumps(payload))
+    if isinstance(submission, EvaluationSubmission):
         payload = {
             "status": submission.status,
             "variant_id": submission.variant_id,
@@ -81,25 +81,25 @@ def _submission_to_row(submission: Submission) -> tuple[str, str]:
             payload["evaluation"] = submission.evaluation
         if submission.artifacts_uri is not None:
             payload["artifacts_uri"] = submission.artifacts_uri
-        return ("evaluate", json.dumps(payload))
+        return ("evaluation", json.dumps(payload))
     raise TypeError(f"unknown submission type {type(submission).__name__}")
 
 
 def _submission_from_row(kind: str, data: str) -> Submission:
     payload = json.loads(data)
-    if kind == "ideate":
-        return IdeateSubmission(
+    if kind == "ideation":
+        return IdeaSubmission(
             status=payload["status"],
             idea_ids=tuple(payload.get("idea_ids") or ()),
         )
-    if kind == "execute":
-        return ExecuteSubmission(
+    if kind == "execution":
+        return VariantSubmission(
             status=payload["status"],
             variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
-    if kind == "evaluate":
-        return EvaluateSubmission(
+    if kind == "evaluation":
+        return EvaluationSubmission(
             status=payload["status"],
             variant_id=payload["variant_id"],
             evaluation=payload.get("evaluation"),

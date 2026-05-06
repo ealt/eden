@@ -82,7 +82,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Bare git repo the executor host writes work/* refs into. "
             "Optional: when set, the executor module is registered "
-            "and the user can claim execute tasks via the UI; when "
+            "and the user can claim execution tasks via the UI; when "
             "omitted, the executor module is not available and the "
             "/executor/* routes return 404."
         ),
@@ -111,7 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Optional host-accessible URL of the central git remote "
-            "to surface in the implementer UI (e.g., "
+            "to surface in the executor UI (e.g., "
             "http://localhost:3001/eden/<exp-id>.git when running in "
             "Compose). Distinct from --gitea-url, which is the "
             "in-network URL the web-ui itself uses. Purely "

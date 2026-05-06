@@ -4,9 +4,9 @@ Ideator form input arrives as a list of repeated field rows (one per
 idea); we parse it into ``IdeaDraft`` objects plus the
 ideator-level status. Executor form input is single-row (one
 variant per task); we parse it into a single ``ImplementDraft``.
-Evaluator form input is single-row (one evaluate task → one
+Evaluator form input is single-row (one evaluation task → one
 submission) with one input per declared metric; we parse it into a
-single ``EvaluateDraft``. Validation errors are accumulated
+single ``EvaluationDraft``. Validation errors are accumulated
 field-by-field so forms re-render with the user's input intact.
 """
 
@@ -135,7 +135,7 @@ class ImplementDraft:
     The route handler combines this with the server-owned
     ``variant_id`` (from ``_CLAIMS``) and the idea's
     ``parent_commits`` to construct the ``Variant`` and
-    ``ExecuteSubmission`` objects.
+    ``VariantSubmission`` objects.
     """
 
     status: Literal["success", "error"]
@@ -192,19 +192,19 @@ def parse_implement_form(
 
 
 @dataclass(frozen=True)
-class EvaluateDraft:
+class EvaluationDraft:
     """Validated evaluator-form input for one variant.
 
     The route handler combines this with the server-pinned
     ``variant_id`` (read from ``task.payload.variant_id`` at claim time
     and stashed in ``_CLAIMS``) to construct the
-    ``EvaluateSubmission`` object. There is no ``description``
+    ``EvaluationSubmission`` object. There is no ``description``
     field — the evaluator's submission shape per
     ``spec/v0/03-roles.md`` §4.4 does not carry one; the operator's
     free-form notes belong with their own diagnostic artifacts.
     """
 
-    status: Literal["success", "error", "eval_error"]
+    status: Literal["success", "error", "evaluation_error"]
     evaluation: dict[str, int | float | str]
     artifacts_uri: str | None
 
@@ -266,13 +266,13 @@ def parse_evaluate_form(
     status_raw: str,
     metric_inputs: Mapping[str, str],
     artifacts_uri_raw: str,
-) -> tuple[EvaluateDraft | None, FormErrors]:
+) -> tuple[EvaluationDraft | None, FormErrors]:
     """Parse the evaluator draft form into a validated draft.
 
     Returns ``(None, errors)`` if validation fails, otherwise
     ``(draft, FormErrors())``.
 
-    - ``status`` must be one of ``success``, ``error``, ``eval_error``.
+    - ``status`` must be one of ``success``, ``error``, ``evaluation_error``.
     - For each metric in ``evaluation_schema.root``: the raw form value
       is parsed per :func:`_parse_metric_value`; an empty/whitespace
       input is treated as "metric omitted" (not an error). Per-metric
@@ -286,8 +286,8 @@ def parse_evaluate_form(
     """
     errors = FormErrors()
     status = status_raw.strip().lower()
-    if status not in ("success", "error", "eval_error"):
-        errors.add(0, "status", "status must be one of: success, error, eval_error")
+    if status not in ("success", "error", "evaluation_error"):
+        errors.add(0, "status", "status must be one of: success, error, evaluation_error")
         return None, errors
 
     schema = evaluation_schema.root
@@ -322,7 +322,7 @@ def parse_evaluate_form(
     artifacts_uri = artifacts_uri_raw.strip() or None
 
     return (
-        EvaluateDraft(
+        EvaluationDraft(
             status=status,
             evaluation=evaluation,
             artifacts_uri=artifacts_uri,

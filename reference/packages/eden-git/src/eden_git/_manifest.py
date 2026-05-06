@@ -1,7 +1,7 @@
 """Eval-manifest builder for ``spec/v0/06-integrator.md`` §4.2.
 
-The integrator writes one eval-manifest file per ``variant/*`` commit
-at ``.eden/variants/<variant_id>/eval.json``. This module produces the
+The integrator writes one evaluation-manifest file per ``variant/*`` commit
+at ``.eden/variants/<variant_id>/evaluation.json``. This module produces the
 manifest bytes from a ``Variant`` object.
 
 Required-field values come directly from the variant per §4.2; the
@@ -28,7 +28,7 @@ class ManifestFieldMissing(ValueError):
 
 
 def build_manifest(variant: Variant) -> bytes:
-    """Serialize ``variant`` as the §4.2 eval manifest.
+    """Serialize ``variant`` as the §4.2 evaluation manifest.
 
     The output is UTF-8 JSON with ``sort_keys=True``, ``indent=2``,
     and a trailing newline. Required-field absences raise
@@ -56,7 +56,7 @@ def build_manifest(variant: Variant) -> bytes:
         payload["description"] = variant.description
 
     # allow_nan=False rejects NaN / +-inf — those are not valid JSON and
-    # the spec requires eval.json to be a JSON file. Defense in depth
+    # the spec requires evaluation.json to be a JSON file. Defense in depth
     # behind Store.validate_evaluation's finite-float check.
     serialized = json.dumps(
         payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False

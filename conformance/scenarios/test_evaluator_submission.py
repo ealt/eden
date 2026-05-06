@@ -15,7 +15,7 @@ CONFORMANCE_GROUP = 'Evaluator submission'
 def _drive_to_starting_variant(client: WireClient) -> tuple[str, str]:
     """Return (eval_task_id, variant_id) for a freshly-prepared evaluator scenario."""
     variant_id = _seed.drive_to_starting_variant(client)
-    eval_tid = _seed.create_evaluate_task(client, variant_id=variant_id)
+    eval_tid = _seed.create_evaluation_task(client, variant_id=variant_id)
     return eval_tid, variant_id
 
 
@@ -28,7 +28,7 @@ def test_submit_with_mismatched_variant_id_rejected(wire_client: WireClient) -> 
     """
     eval_tid, _variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -53,7 +53,7 @@ def test_success_evaluation_outside_schema_must_not_complete_variant(
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -95,7 +95,7 @@ def test_success_metric_wrong_type_must_not_complete_variant(
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -141,7 +141,7 @@ def test_success_writes_variant_fields_post_accept(
     c = _seed.claim(wire_client, eval_tid)
     evaluation={"score": 0.75, "retries": 3}
     artifacts_uri = "file:///tmp/eden-conformance-success-artifacts"
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -171,7 +171,7 @@ def test_status_error_writes_variant_evaluation_and_artifacts(
     """spec/v0/03-roles.md §4.4 — status=error MUST write variant metrics + artifacts_uri.
 
     "metrics — set to the submission's `metrics` when status ∈
-    {'success', 'error'}." Distinct from the eval_error case (which
+    {'success', 'error'}." Distinct from the evaluation_error case (which
     discards metrics): the §4.4 variant-side write rule is per-status,
     and the error path keeps the metrics around because the variant
     DID run; only the run failed. The reject reason is
@@ -182,7 +182,7 @@ def test_status_error_writes_variant_evaluation_and_artifacts(
     c = _seed.claim(wire_client, eval_tid)
     evaluation={"score": 0.0, "retries": 5}
     artifacts_uri = "file:///tmp/eden-conformance-error-artifacts"
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -204,22 +204,22 @@ def test_status_error_writes_variant_evaluation_and_artifacts(
 def test_eval_error_keeps_variant_starting_and_does_not_graft_evaluation(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/03-roles.md §4.4 — eval_error MUST keep variant in starting; metrics discarded.
+    """spec/v0/03-roles.md §4.4 — evaluation_error MUST keep variant in starting; metrics discarded.
 
-    "When status == eval_error, the orchestrator MUST NOT write
+    "When status == evaluation_error, the orchestrator MUST NOT write
     metrics on the variant; any submission-carried metrics is
-    discarded." Observed: after submitting eval_error with metrics
+    discarded." Observed: after submitting evaluation_error with metrics
     and rejecting the task, the variant stays in `starting` and its
     `metrics` field is unset.
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
         variant_id=variant_id,
-        status="eval_error",
+        status="evaluation_error",
         evaluation={"score": 0.5, "retries": 1},
     )
     assert r.status_code == 200, r.text
@@ -234,31 +234,31 @@ def test_eval_error_keeps_variant_starting_and_does_not_graft_evaluation(
 def test_retry_exhausted_eval_error_does_not_graft_prior_evaluation(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/03-roles.md §4.4 — retry-exhausted eval_error terminal MUST NOT graft prior metrics.
+    """spec/v0/03-roles.md §4.4 — retry-exhausted evaluation_error MUST NOT graft prior metrics.
 
-    "On the retry-exhausted eval_error terminal transition itself,
+    "On the retry-exhausted evaluation_error terminal transition itself,
     the orchestrator MUST NOT graft metrics or artifacts from any
-    prior eval_error submission onto the variant; the variant's metrics
+    prior evaluation_error submission onto the variant; the variant's metrics
     and artifacts_uri fields remain unset."
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
-    r = _seed.submit_evaluate(
+    r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
         variant_id=variant_id,
-        status="eval_error",
+        status="evaluation_error",
         evaluation={"score": 0.25, "retries": 7},
     )
     assert r.status_code == 200, r.text
     rejected = _seed.reject(wire_client, eval_tid, reason="worker_error")
     assert 200 <= rejected.status_code < 300, rejected.text
     # Now the orchestrator decides the retry budget is exhausted.
-    decl = _seed.declare_variant_eval_error(wire_client, variant_id)
+    decl = _seed.declare_variant_evaluation_error(wire_client, variant_id)
     assert 200 <= decl.status_code < 300, decl.text
     variant = _seed.read_variant(wire_client, variant_id)
-    assert variant["status"] == "eval_error"
+    assert variant["status"] == "evaluation_error"
     assert variant.get("metrics") is None, variant
     assert variant.get("artifacts_uri") is None, variant
 
@@ -280,7 +280,7 @@ def test_resubmit_idempotent_under_role_rules(
     c = _seed.claim(wire_client, eval_tid)
     evaluation={"score": 0.9, "retries": 0}
     artifacts_uri = "file:///tmp/eden-conformance-idem-baseline"
-    r1 = _seed.submit_evaluate(
+    r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -289,7 +289,7 @@ def test_resubmit_idempotent_under_role_rules(
         artifacts_uri=artifacts_uri,
     )
     assert r1.status_code == 200, r1.text
-    r2 = _seed.submit_evaluate(
+    r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -324,7 +324,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
     evaluation={"score": 0.5, "retries": 1}
     first_uri = "file:///tmp/eden-conformance-first"
     second_uri = "file:///tmp/eden-conformance-second"
-    r1 = _seed.submit_evaluate(
+    r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],
@@ -333,7 +333,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
         artifacts_uri=first_uri,
     )
     assert r1.status_code == 200, r1.text
-    r2 = _seed.submit_evaluate(
+    r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
         token=c["token"],

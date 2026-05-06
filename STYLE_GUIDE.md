@@ -28,7 +28,7 @@ Most of this guide applies to **Python code** that will live in `reference/` fro
 | Constants | `UPPER_SNAKE_CASE` | `MAX_CLAIM_LEASE_S` |
 | Booleans | prefix with `is`, `has`, `should`, `can` | `is_idempotent` |
 
-Related config fields that serve parallel roles use consistent grammatical form — e.g., all imperative verbs: `ideate_command`, `execute_command`, `evaluate_command` — not a mix of verb/noun.
+Related config fields that serve parallel roles use consistent grammatical form — e.g., all imperative verbs: `ideation_command`, `execution_command`, `evaluation_command` — not a mix of verb/noun.
 
 ### Type annotations
 

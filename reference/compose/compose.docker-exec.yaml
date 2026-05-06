@@ -49,7 +49,7 @@ services:
       - /etc/eden/experiment-dir
       - --artifacts-dir
       - /var/lib/eden/artifacts
-      - --ideate-env-file
+      - --ideation-env-file
       - /etc/eden/ideator.env
       - --exec-mode
       - docker
@@ -101,7 +101,7 @@ services:
       - /etc/eden/experiment-dir
       - --worktrees-dir
       - /var/lib/eden/worktrees
-      - --execute-env-file
+      - --execution-env-file
       - /etc/eden/execute.env
       - --exec-mode
       - docker
@@ -159,8 +159,8 @@ services:
       - /etc/eden/credential-helper.sh
       - --worktrees-dir
       - /var/lib/eden/worktrees
-      - --evaluate-env-file
-      - /etc/eden/evaluate.env
+      - --evaluation-env-file
+      - /etc/eden/evaluation.env
       - --exec-mode
       - docker
       - --exec-image
