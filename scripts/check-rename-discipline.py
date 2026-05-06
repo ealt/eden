@@ -37,15 +37,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # Files explicitly allowed to contain pre-rename vocabulary. These
-# are intentional historical references that survive the rename:
+# are intentional historical references whose entire purpose is to
+# preserve the old vocabulary verbatim:
 #
-# - Plan / review docs from before the rename.
+# - Archived docs and pre-rename plan / review records.
 # - The rename plan itself.
-# - Glossary explanatory text and fixture-history prose.
-# - AGENTS.md / CLAUDE.md, which cite past rename mistakes as
-#   lessons-learned.
-# - Phase plan and review records (untouched by the rename pass per
-#   the plan's "Tricky areas" section).
+# - The fixture-history prose explaining what the fixture used to
+#   look like before the rename.
+# - This file: the script's own pattern definitions reference the
+#   old names by necessity.
+#
+# AGENTS.md / CLAUDE.md are NOT allowlisted. They are
+# active project documentation and MUST stay current with the
+# vocabulary; phase narratives there should be updated when names
+# change. The only legitimate references to old vocab in AGENTS.md
+# are explicit lesson-learned citations (e.g., "the
+# `EDEN_PLAN_TASKS → EDEN_IDEATE_TASKS` mistake taught us X"), and
+# those should be kept inside backtick-fenced code spans so they
+# read as quoted citations rather than live references. The
+# guardrail's pattern set already exempts most code-fenced content;
+# if a citation trips the guardrail, the right fix is usually to
+# tighten the prose around the quoted token, not to allowlist the
+# file.
 #
 # Adding a path here is a deliberate act: it carves out an exception.
 ALLOWLIST_PATHS: tuple[str, ...] = (
@@ -56,8 +69,6 @@ ALLOWLIST_PATHS: tuple[str, ...] = (
     "docs/plans/eden-protocol-bootstrap.md",
     "MANUAL_UI_ISSUES.md",
     "tests/fixtures/experiment/README.md",
-    "AGENTS.md",
-    "CLAUDE.md",
     "scripts/check-rename-discipline.py",  # this file documents the names
 )
 
