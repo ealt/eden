@@ -1,6 +1,6 @@
 # eden-evaluator-host
 
-Reference evaluator worker: claims pending `evaluate` tasks, emits deterministic metrics matching the experiment's `evaluation_schema`, and submits.
+Reference evaluator worker: claims pending `evaluation` tasks, emits deterministic metrics matching the experiment's `evaluation_schema`, and submits.
 
 ## Run
 

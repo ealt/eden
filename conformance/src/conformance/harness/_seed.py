@@ -55,7 +55,7 @@ def create_evaluation_task(
     variant_id: str,
     task_id: str | None = None,
 ) -> str:
-    """POST /tasks for an `evaluate` task referencing the given variant."""
+    """POST /tasks for an `evaluation` task referencing the given variant."""
     tid = task_id or fresh_task_id("eval")
     body = {
         "task_id": tid,
