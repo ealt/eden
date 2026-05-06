@@ -703,7 +703,7 @@ def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]
             entry["reason"] = (
                 f"variant is {variant.status}"
                 + (
-                    " (integrator has not yet promoted)"
+                    " (integrator has not yet integrated)"
                     if variant.status == "success" and variant.variant_commit_sha is None
                     else ""
                 )

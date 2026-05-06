@@ -344,7 +344,7 @@ class StoreClient:
         self._request("POST", f"{self._base}/variants/{variant_id}/declare-evaluation-error")
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
-        """Integrator promotion with transport-indeterminate reconciliation.
+        """Integrator integration with transport-indeterminate reconciliation.
 
         Implements the §5 three-outcome rule:
 

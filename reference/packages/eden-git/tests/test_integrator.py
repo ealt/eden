@@ -546,7 +546,7 @@ class TestManifestPathCollision:
 
 
 # ----------------------------------------------------------------------
-# Promotion preconditions (§2)
+# Integration preconditions (§2)
 # ----------------------------------------------------------------------
 
 
@@ -627,7 +627,7 @@ class TestPromotionPreconditions:
 
 
 class TestMetricsRevalidation:
-    def test_invalid_evaluation_at_promotion_rejected(
+    def test_invalid_evaluation_at_integration_rejected(
         self,
         repo: GitRepo,
         seed_sha: str,
@@ -851,7 +851,7 @@ def _raw_commit(repo: GitRepo, sha: str) -> str:
 
 
 class TestReplayAfterWorkerPruned:
-    """§1.3 permits deleting work/* after promotion. Once the worker
+    """§1.3 permits deleting work/* after integration. Once the worker
     commit is pruned, §5.3 replay cannot re-verify the §3.2 tree
     shape, and the integrator must surface this rather than silently
     no-op-ing — otherwise a corrupted variant/* commit with a matching

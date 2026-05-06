@@ -63,7 +63,7 @@ artifact bytes. By chapter:
 | 02 (data model) | The experiment record (id, config) |
 | 04 (task protocol) | All tasks, every state |
 | 05 (event protocol) | The full event log |
-| 06 (integrator) | All variants, including ``variant_commit_sha`` for promoted ones |
+| 06 (integrator) | All variants, including ``variant_commit_sha`` for integrated ones |
 | chapter 02 §1 (ideas) | All ideas |
 | 02 §2.4 (submissions) | All submissions, both ``read_submission``-able and historical |
 | git repo | All refs + reachable objects (seed, ``work/*``, ``variant/*``, anything else) |
@@ -188,7 +188,7 @@ Specifically, after import:
 
 A conforming implementation's ``import`` MUST produce a state from
 which the experiment can resume — workers can claim, the orchestrator
-can dispatch, the integrator can promote. ``export`` immediately
+can dispatch, the integrator can integrate. ``export`` immediately
 followed by ``import`` is a no-op modulo URI rewrites and event-id
 reassignment.
 
