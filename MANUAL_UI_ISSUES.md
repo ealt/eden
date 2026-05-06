@@ -1,12 +1,33 @@
-# Manual UI session — issues found
+# Manual UI session — audit notes
 
-Local scratchpad. Each entry is a candidate GitHub issue; convert when ready.
-Worktree: `/Users/ericalt/Documents/eden-worktrees/test-main` (detached at
-`2e7c4eb`, manual-ui-1 experiment).
+Analysis substrate from a manual UI walkthrough of the reference stack
+(worktree `/Users/ericalt/Documents/eden-worktrees/test-main`, detached
+at `2e7c4eb`, manual-ui-1 experiment). Each section is an observation;
+trackable units of work have been promoted to GitHub issues, the bigger
+design questions roll into Phase 12 chunk plans, and the conformance
+items live in the #24 / #26 / #27 stream.
+
+**Disposition map** (open items only — see each section's `Status:` line for current state):
+
+| § | State | Tracker |
+|---|---|---|
+| 1 | open, design-bearing | Folds into Phase 12a-2 (orchestrator-as-role) |
+| 3 | open, fixable | [#52](https://github.com/ealt/eden/issues/52) |
+| 4 | open, fixable | [#53](https://github.com/ealt/eden/issues/53) |
+| 5 | open, fixable | [#54](https://github.com/ealt/eden/issues/54) |
+| 8 | open, fixable | [#55](https://github.com/ealt/eden/issues/55) |
+| 14 | open, design-bearing | Folds into Phase 12a-3 (lifecycle policy) |
+| 15 | open, fixable | [#56](https://github.com/ealt/eden/issues/56) |
+| 20 | partially resolved (Dockerfile typo); plumbing held for Phase 13 | Phase 13 |
+| 24 | rolling | Conformance audit stream (chunks landed in PRs #44 / #49) |
+| 26 | open conformance gap | Conformance stream |
+| 27 | open conformance gap | Conformance stream |
 
 ---
 
 ## 1. Orchestrator should be persistent infra, not bound to one experiment's lifetime
+
+**Status: open, design-bearing — folds into Phase 12a-2 (orchestrator-as-role). Short-term escape hatch landed via PR #47 (`EDEN_MAX_QUIESCENT_ITERATIONS` env-var gate); structural fix waits on 12a-2.**
 
 **Owner's mental model.** The orchestrator is a piece of infrastructure
 that runs experiments — many of them, concurrently or sequentially. One
@@ -119,6 +140,8 @@ remain open as smaller follow-ups.
 
 ## 3. Ideator form gives no hint where to find a valid commit SHA
 
+**Status: open, tracked in [#52](https://github.com/ealt/eden/issues/52).**
+
 **What happened.** Faced the `parent_commits` field on the very first plan
 draft and had no idea what to put there. The setup-experiment script printed
 the seed SHA at install time, but that's gone from the terminal by the time
@@ -139,6 +162,8 @@ Both are available without new wire endpoints.
 ---
 
 ## 4. Executor submit doesn't fetch from origin before commit_exists check
+
+**Status: open, tracked in [#53](https://github.com/ealt/eden/issues/53).**
 
 **What happened.** Played the executor role: cloned from gitea, made
 changes, pushed `my-work` branch back to gitea, pasted the resulting SHA
@@ -170,6 +195,8 @@ submit is the matching gap.
 ---
 
 ## 5. Executor page tells you to push to a container path
+
+**Status: open, tracked in [#54](https://github.com/ealt/eden/issues/54).**
 
 **What happened.** Executor page instructions say:
 
@@ -260,6 +287,8 @@ the impact of #6 isn't "everything stops"; it's "everything proceeds at
 ---
 
 ## 8. `compose down -v` doesn't remove `eden-repo-init-staging`
+
+**Status: open, tracked in [#55](https://github.com/ealt/eden/issues/55).**
 
 **What happened.** Tearing down the manual-ui-1 stack with `docker compose
 --env-file .env down -v` correctly wiped the postgres / gitea / artifacts
@@ -377,6 +406,8 @@ intentional drift per the same §2.4.
 
 ## 14. Spec-impl drift: termination fields are spec'd but unenforced
 
+**Status: open, design-bearing — folds into Phase 12a-3 (lifecycle policy). The `max_trials` / `max_wall_time` / `convergence_window` / `target_condition` fields are explicitly named for removal in the 12a-3 scope.**
+
 **Triggered by** the dead-key audit prompted by #13. While confirming
 that `planner_root` / `workspace` are dead, found a much bigger gap:
 **four spec'd experiment-config fields have no consumer in any
@@ -473,6 +504,8 @@ that aligns with the design doc. Latter is preferred per design.
 
 ## 15. Idea `priority` field is unused for dispatch ordering
 
+**Status: open, tracked in [#56](https://github.com/ealt/eden/issues/56).**
+
 **Spec text** ([`spec/v0/02-data-model.md`](spec/v0/02-data-model.md)
 §5.1 line 158, [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §2.4 line
 67 / §2.3 line 61):
@@ -508,7 +541,7 @@ the impl actually delivers.
 
 ---
 
-## 16. `.env.example` is severely out-of-date and gate-keeps the wrong information
+## 16. ✅ Resolved (during initial audit). `.env.example` is severely out-of-date and gate-keeps the wrong information
 
 **What's there.** [`reference/compose/.env.example`](reference/compose/.env.example)
 documents 7 environment variables (postgres + gitea ports/secrets).
