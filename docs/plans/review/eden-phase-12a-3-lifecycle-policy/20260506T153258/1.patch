@@ -1,0 +1,138 @@
+--- docs/plans/review/eden-phase-12a-3-lifecycle-policy/20260506T153258/0.md	2026-05-06 15:32:58
++++ docs/plans/eden-phase-12a-3-lifecycle-policy.md	2026-05-06 15:37:41
+@@ -193,20 +193,28 @@
+ >
+ > The orchestrator runs five decision types per iteration. The
+ > "termination" decision is consulted **first**; if it returns
+-> `Terminate`, none of the other four run in this iteration or any
+-> subsequent one.
++> `Terminate`, the orchestrator stops creating new tasks but MUST
++> continue integrating any `status == "success"` variants whose
++> `variant_commit_sha` is unset (per §3 integrator contract).
++> Integration continues until no such variants remain, at which
++> point the orchestrator's loop has no remaining work and the
++> deployment may shut it down.
+ >
+ > **Termination decision** (`dispatch_mode.termination`).
+ > Before each iteration, the orchestrator MAY consult a
+ > deployment-supplied termination policy. The policy is invoked
+ > with a read-only view of experiment state and returns one of:
+ >
+-> - `Continue` — proceed to the four operational decisions below
++> - `Continue` — proceed to all five operational decisions below
+ >   for this iteration.
+ > - `Terminate(reason: str)` — emit `experiment.terminated` with
+ >   the policy's reason, atomically transition the experiment's
+->   `state` from `"running"` to `"terminated"`, and stop running
+->   operational decisions in this and all subsequent iterations.
++>   `state` from `"running"` to `"terminated"`. From the next
++>   iteration onward (and in the rest of this iteration after the
++>   transition fires), only the **integration** decision continues
++>   to run; the other three operational decisions
++>   (`ideation_creation`, `execution_dispatch`,
++>   `evaluation_dispatch`) MUST NOT run.
+ >
+ > The policy is invoked only when `dispatch_mode.termination ==
+ > "auto"`. When `"manual"`, the orchestrator runs operational
+@@ -214,9 +222,16 @@
+ > `terminated` experiment is absorbing in v0 — there is no
+ > `terminated → running` transition.
+ >
++> Why integration continues post-termination: the §3 integrator
++> contract requires every `status == "success"` variant without
++> `variant_commit_sha` to be eventually integrated. Stranding a
++> success variant unintegrated would violate the canonical
++> lineage invariant. Termination stops *new work*; it does not
++> abandon *committed work in flight*.
++>
+ > The four operational decisions (ideation_creation,
+ > execution_dispatch, evaluation_dispatch, integration) are
+-> unchanged from 12a-2 §6.2.
++> otherwise unchanged from 12a-2 §6.2.
+ 
+ ### 3.2 Spec chapter 02 — `experiment.state` field
+ 
+@@ -231,7 +246,7 @@
+ > | Value | Meaning |
+ > |---|---|
+ > | `"running"` | Default at creation. The orchestrator MAY make any decision per chapter 03 §6.2. |
+-> | `"terminated"` | The orchestrator MUST NOT create any new tasks. In-flight tasks complete or are reclaimed per the normal task-lifecycle. New ideation tasks (operator-driven per 12a-2 §3 Decision 8) MUST be rejected with `eden://error/illegal-transition`. |
++> | `"terminated"` | The Store MUST reject all task-creation ops (`create_ideation_task`, `create_execution_task`, `create_evaluation_task`) with `eden://error/illegal-transition`. In-flight tasks complete or are reclaimed per the normal task-lifecycle. The orchestrator's integration decision (§6.2 decision-type 4) continues to run until no `status == "success"` variants without `variant_commit_sha` remain. Once integration drains, the orchestrator's loop has no remaining work; the deployment may stop the orchestrator container. |
+ >
+ > Transition: `running → terminated` is one-way; emitted with an
+ > `experiment.terminated` event carrying a `reason: str`.
+@@ -328,15 +343,30 @@
+ Each orchestrator iteration runs:
+ 
+ ```text
+-1. Read experiment.state. If "terminated", return immediately
+-   without running any decisions.
++1. Read experiment.state.
++   - If "running": proceed to step 2.
++   - If "terminated": SKIP step 2 (no policy consultation;
++     terminated is absorbing) and proceed to step 4 with only
++     the integration decision enabled.
+ 2. Read dispatch_mode (12a-2). If dispatch_mode.termination ==
+    "auto":
+    a. Build ExperimentStateView.
+    b. Invoke the termination policy.
+    c. If Terminate(reason): atomically transition state to
+-      "terminated", emit experiment.terminated, return.
+-3. Run the four operational decisions per dispatch_mode (12a-2 §6.2).
++      "terminated", emit experiment.terminated. Continue to step 4
++      with only the integration decision enabled.
++3. (Reached only when state was "running" entering this iteration
++   and the policy returned Continue or termination was manual.)
++4. Run the operational decisions per dispatch_mode (12a-2 §6.2):
++   - If experiment.state was "running" at iteration start AND
++     stayed "running" through step 2: run all four decisions.
++   - If experiment.state is "terminated" (either entering this
++     iteration or after step 2c's transition): run only the
++     integration decision; the other three are skipped.
++5. If integration drained on this iteration (no success variants
++   without variant_commit_sha remained), record that the
++   orchestrator has no further work and the loop may exit on the
++   next quiescence check.
+ ```
+ 
+ The atomic transition in step 2c is a Store-level composite
+@@ -350,7 +380,9 @@
+ gives idempotency: the second replica's transition attempt sees
+ the state is already `"terminated"` and no-ops (no second event,
+ no error). The 12a-2 §6.4 "exact-idempotent decisions" class
+-covers this.
++covers this. Both replicas then proceed to step 4 with only
++integration enabled; integration is itself
++exact-idempotent per 12a-2 §6.4.
+ 
+ ### 3.6 `Idea.intended_executor` field
+ 
+@@ -570,7 +602,8 @@
+ | `spec/v0/02-data-model.md` | Delete `max_variants`, `max_wall_time` from §2.1; delete §2.3 entirely; renumber §2.4 → §2.3. Add §2.5 "Experiment lifecycle state" per §3.2 above. Add `intended_executor` to §5.1 idea fields table. |
+ | `spec/v0/03-roles.md` | Insert decision-type 0 (Termination) at the top of §6.2 (the existing four become 1-4); extend §6.4 multi-instance safety to mention termination is exact-idempotent. Add fault-tolerance subsection per §3.8 above. |
+ | `spec/v0/04-task-protocol.md` | New §8 "Experiment lifecycle ops": `update_experiment_state` and the high-level `terminate_experiment` composite commit. Update authority table for `create_task(kind=execution)`. |
+-| `spec/v0/05-event-protocol.md` | Add `experiment.terminated` and `experiment.policy_error` event types. |
++| `spec/v0/05-event-protocol.md` | Add `experiment.terminated` and `experiment.policy_error` event types. **Broaden the §2 transactional invariant** to include experiment-state transitions: the current §2 prose names "tasks", "ideas", and "variants" as the protocol-owned objects whose state changes MUST be atomic with their corresponding events; 12a-3 adds "experiments" to that list. The §2 atomicity rule then extends naturally to the `experiment.state ∈ {"running", "terminated"}` transition + `experiment.terminated` event composite commit defined in §3.5 above. |
++| `spec/v0/08-storage.md` | Add `Experiment` to the protocol-owned object list (currently §1 covers the task store; §1.X gains a subsection for experiment runtime state). The new ops `read_experiment_state`, `update_experiment_state`, `terminate_experiment` go in this chapter alongside the task ops. The atomicity guarantee in §1.4 is restated to cover experiment-state transitions: a `terminate_experiment` call MUST commit the state update + the `experiment.terminated` event in a single transaction, observably-atomic to subscribers. |
+ | `spec/v0/07-wire-protocol.md` | Add endpoint sections for `POST .../experiments/<E>/terminate` (admin auth) and `PATCH .../experiments/<E>/state` (admin auth — the underlying op). Update `POST /tasks` authority paragraph for the lifted `kind=execution` restriction. |
+ | `spec/v0/09-conformance.md` | Extend §5 v1+roles+orchestrator index with three new groups: "Termination decision", "Experiment lifecycle", "Intended-executor flow-through". |
+ | `spec/v0/schemas/experiment-config.schema.json` | Remove `max_variants`, `max_wall_time`, `convergence_window`, `target_condition`. Update `required` to drop the two removed required fields. |
+@@ -592,7 +625,8 @@
+ 
+ | File | Change |
+ |---|---|
+-| `experiment.py` | Drop `max_variants`, `max_wall_time`, `convergence_window`, `target_condition` from `ExperimentConfig`. Add new `Experiment` model with `experiment_id`, `state: Literal["running", "terminated"]`, `created_at: datetime`. |
++| `config.py` | (Live `ExperimentConfig` lives in `config.py`, not `experiment.py`.) Drop `max_variants`, `max_wall_time`, `convergence_window`, `target_condition` from `ExperimentConfig`. Update `required` if any of the four are listed there. |
++| `experiment.py` (new) | New `Experiment` model with `experiment_id`, `state: Literal["running", "terminated"]`, `created_at: datetime`. Mirrors the new `experiment.schema.json` from §5.1. |
+ | `idea.py` | Add `intended_executor: TaskTarget \| None = None`. |
+ | `event.py` | Add `ExperimentTerminatedEvent`, `ExperimentPolicyErrorEvent`. |
+ 
+@@ -628,6 +662,8 @@
+ | `reference/compose/compose.yaml` | Add `--termination-policy ${EDEN_TERMINATION_POLICY:-eden_orchestrator.policies:never_terminate}` to orchestrator command. |
+ | `reference/compose/.env.example` | Add `EDEN_TERMINATION_POLICY=eden_orchestrator.policies:never_terminate` (default). |
+ | `reference/scripts/setup-experiment/setup-experiment.sh` | No structural change; the four legacy fields disappear from any experiment-config-template handling (greenfield: just delete the references). |
++| `tests/fixtures/experiment/.eden/config.yaml` | Drop `max_variants`, `max_wall_time` (any other legacy fields if present). |
++| `conformance/src/conformance/fixtures/minimal-experiment.yaml` | Drop `max_variants: 20` and `max_wall_time: "10m"` from the conformance fixture. |
+ | `reference/compose/healthcheck/smoke-termination.sh` | New smoke: configures `EDEN_TERMINATION_POLICY=eden_orchestrator.policies.max_variants_policy(N=2)` (or the equivalent), drives the experiment to 2 integrated variants, asserts `experiment.terminated` event + state transition + post-termination task-creation rejection. |
+ 
+ ## 6. Test design

@@ -1,0 +1,149 @@
+--- docs/plans/review/eden-phase-12a-3-lifecycle-policy/20260506T153258/4.md	2026-05-06 15:47:58
++++ docs/plans/eden-phase-12a-3-lifecycle-policy.md	2026-05-06 15:50:40
+@@ -323,10 +323,13 @@
+ > terminated experiment is reserved for a future spec change.
+ 
+ The `state` field is observed-only — it's NOT part of
+-`experiment-config` (which is declarative input) and NOT
+-mutable through any wire op except `update_experiment_state` (a
+-new admin-gated op for explicit operator-driven termination, in
+-addition to the policy-driven path).
++`experiment-config` (which is declarative input). The only wire
++op that mutates it is `POST .../experiments/<E>/terminate` per
++§2 Decision 8 (running → terminated; admin-gated). Internally
++the Store exposes `update_experiment_state` as a primitive used
++by both the operator-driven `/terminate` path and the
++policy-driven path (§3.5), but it is NOT a public wire endpoint
++in v0.
+ 
+ ### 3.3 Removal of the four legacy termination fields
+ 
+@@ -684,7 +687,7 @@
+ |---|---|
+ | `spec/v0/02-data-model.md` | Delete `max_variants`, `max_wall_time` from §2.1; delete §2.3 entirely; renumber §2.4 → §2.3. Add §2.5 "Experiment lifecycle state" per §3.2 above. Add `intended_executor` to §5.1 idea fields table. |
+ | `spec/v0/03-roles.md` | Insert decision-type 0 (Termination) at the top of §6.2 (the existing four become 1-4); extend §6.4 multi-instance safety to mention termination is exact-idempotent. Add fault-tolerance subsection per §3.8 above. |
+-| `spec/v0/04-task-protocol.md` | New §8 "Experiment lifecycle ops": `update_experiment_state` and the high-level `terminate_experiment` composite commit. Update authority table for `create_task(kind=execution)`. |
++| `spec/v0/04-task-protocol.md` | New §8 "Experiment lifecycle ops": `terminate_experiment` (the high-level composite commit; the only public lifecycle op per §2 Decision 8). The Store-level `update_experiment_state` primitive is described in chapter 08 §1, NOT here, since it is not a public wire op. Update authority table for `create_task(kind=execution)`. |
+ | `spec/v0/05-event-protocol.md` | Add `experiment.terminated` and `experiment.policy_error` event types. **Broaden the §2 transactional invariant** to include experiment-state transitions: the current §2 prose names "tasks", "ideas", and "variants" as the protocol-owned objects whose state changes MUST be atomic with their corresponding events; 12a-3 adds "experiments" to that list. The §2 atomicity rule then extends naturally to the `experiment.state ∈ {"running", "terminated"}` transition + `experiment.terminated` event composite commit defined in §3.5 above. |
+ | `spec/v0/08-storage.md` | Add `Experiment` to the protocol-owned object list (currently §1 covers the task store; §1.X gains a subsection for experiment runtime state). The new ops `read_experiment_state`, `update_experiment_state`, `terminate_experiment` go in this chapter alongside the task ops. The atomicity guarantee in §1.4 is restated to cover experiment-state transitions: a `terminate_experiment` call MUST commit the state update + the `experiment.terminated` event in a single transaction, observably-atomic to subscribers. |
+ | `spec/v0/07-wire-protocol.md` | Add an endpoint section for `POST .../experiments/<E>/terminate` (admin auth). Per §2 Decision 8, no generic `PATCH .../state` is added in v0. Update `POST /tasks` authority paragraph for the lifted `kind=execution` restriction. |
+@@ -1047,7 +1050,119 @@
+ with `experiment-config` (declarative). Mitigation: chapter 02
+ §2.5's prose explicitly names the split and cites the two
+ schema files side-by-side.
++
++### 7.7 `terminate_experiment` racing a live `integrate_variant`
++
++The most subtle concurrency case in 12a-3: `terminate_experiment`
++and `integrate_variant` both target the same Store and both
++involve composite commits. Two scenarios:
++
++**Scenario A: `terminate_experiment` commits first, then
++`integrate_variant` runs.**
++
++- The integrator's `integrate_variant` call observes
++  `experiment.state == "terminated"`. Per §3.2, the Store's
++  terminated-experiment guard does NOT block integration (the
++  drain semantics — integration MUST continue to drain success
++  variants).
++- Result: `experiment.terminated` event observed first;
++  `variant.integrated` event observed afterward. Both
++  legitimate. Final state: experiment terminated AND variant
++  integrated.
+ 
++**Scenario B: `integrate_variant` commits first, then
++`terminate_experiment` runs.**
++
++- The integrator's commit observes `experiment.state == "running"`
++  and proceeds normally; `variant.integrated` event fires.
++- `terminate_experiment` then commits the state transition;
++  `experiment.terminated` fires.
++- Result: `variant.integrated` event observed first;
++  `experiment.terminated` afterward. Both legitimate. Same final
++  state as A.
++
++**Scenario C: simultaneous transactions.**
++
++- Both calls reach the Store at the same moment. The Store
++  serializes them via the existing transaction lock (12a-2
++  §6.4): exactly one wins, the other waits and sees the
++  post-commit state.
++- If `terminate` wins first: scenario A.
++- If `integrate` wins first: scenario B.
++
++**Pinned contract:**
++
++- **Event ordering is NOT pinned** between `experiment.terminated`
++  and `variant.integrated`. Both orderings are legal.
++- **Cardinality is pinned.** Exactly one `experiment.terminated`
++  event is emitted per experiment (12a-2 §6.4 idempotency
++  applies). Each variant gets exactly one `variant.integrated`
++  event (chapter 06 §3.4).
++- **Final state is pinned.** Once both calls have committed,
++  `experiment.state == "terminated"` AND the integrated
++  variant's `variant_commit_sha` is set.
++
++**Test (in `test_termination_decision.py::test_integrate_terminate_race`):**
++launch two threads against the same Store: one calls
++`integrate_variant(V)`, the other calls
++`terminate_experiment(reason="X")`. The test reads the event log
++after both threads complete and asserts:
++
++- exactly one `experiment.terminated` event with reason "X";
++- exactly one `variant.integrated` event for V with the matching
++  `variant_commit_sha`;
++- both events are present (regardless of order).
++
++The reason this isn't a simple "termination wins; reject integrate"
++or "integrate wins; reject termination" rule: 12a-2 already says
++integration is exact-idempotent and must drain. 12a-3 §3.2 says
++termination MUST allow drain to continue. The race resolution
++that lets both succeed is the only one consistent with both
++predecessors.
++
++### 7.8 `Idea.intended_executor` group-target staleness
++
++§7.4 covered the worker-deregistered case. The group-target case
++is parallel: `idea.intended_executor = {"kind": "group", "id":
++"team-x"}`, then `delete_group("team-x")` (or
++`remove_from_group(W, "team-x")` for the only member W) before
++the orchestrator's execution-dispatch decision runs.
++
++**Contract.** The 12a-2 §7.10 rule applies unchanged:
++target eligibility is resolved at claim time, not at assignment
++time. The orchestrator's auto-dispatch copies
++`idea.intended_executor` to `task.target` even if the group is
++empty or deleted. The resulting task stays in `pending` until
++either (a) a worker becomes a member of `team-x` again, or (b) an
++operator runs `reassign_task` (12a-2 §3.6) to point the task at
++a valid target.
++
++**Test (in `test_intended_executor.py::test_group_target_emptied_post_idea_creation`):**
++
++- Create an idea with `intended_executor={"kind": "group", "id":
++  "team-x"}`. Worker W is in team-x.
++- Run the auto-dispatch flow: the resulting execution task has
++  `target={"kind": "group", "id": "team-x"}`.
++- Run `remove_from_group(W, "team-x")`. team-x is now empty.
++- Assert: claim attempts by any worker (including W) fail (W is
++  no longer a team-x member; no other worker is). Task stays
++  pending.
++- Run `reassign_task(task_id, new_target={"kind": "worker", "id":
++  "W"})`. Assert: W can now claim.
++
++**Test (in `test_intended_executor.py::test_group_target_deleted_post_idea_creation`):**
++
++- Same setup, but operator runs `delete_group("team-x")` instead
++  of `remove_from_group`.
++- Assert: claim attempts by any worker fail (the group's
++  membership lookup is empty / not-found).
++- Assert: `reassign_task` to a valid target restores
++  claimability.
++
++The reuse of 12a-2 §7.10 is intentional: 12a-3 doesn't add new
++target-eligibility semantics; `intended_executor` is just an
++ideator-supplied seed for the auto-dispatch's `target` parameter.
++
+ ## 8. Risks
+ 
+ 1. **The four removed fields are referenced by user docs or

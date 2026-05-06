@@ -1,0 +1,101 @@
+--- docs/plans/review/eden-phase-12a-3-lifecycle-policy/20260506T153258/2.md	2026-05-06 15:42:11
++++ docs/plans/eden-phase-12a-3-lifecycle-policy.md	2026-05-06 15:44:49
+@@ -143,8 +143,9 @@
+    `eden_orchestrator.policies:never_terminate` (matches today's
+    "run until operator stops" behavior). A reference library of
+    common policies ships separately:
+-   - `max_variants_policy(N)` — terminate when integrated variants
+-     ≥ N.
++   - `max_variants_policy(N)` — terminate when attempted variants
++     ≥ N (matches the legacy field's "ceiling on variants
++     attempted" semantics).
+    - `max_wall_time_policy(duration)` — terminate when wall-time
+      exceeds duration.
+    - `convergence_window_policy(N)` — terminate when objective
+@@ -634,7 +635,7 @@
+ | File | Change |
+ |---|---|
+ | `protocol.py` | Add `read_experiment_state`, `update_experiment_state`, `terminate_experiment` to the `Store` Protocol. Extend `create_execution_task` signature to accept an optional `target: TaskTarget \| None`. |
+-| `_base.py` | Implement the new ops + composite commit for `terminate_experiment` (state-update + `experiment.terminated` event, single transaction). Implement the terminated-experiment guard in every task-creation op (raises `IllegalTransition`). Implement the `target` parameter on `create_execution_task` (writes `task.target` directly from the parameter). |
++| `_base.py` | Implement the new ops + composite commit for `terminate_experiment` (state-update + `experiment.terminated` event, single transaction). Implement the **terminated-experiment guard in every task-creation op AND in `claim`** — both raise `IllegalTransition` when `experiment.state == "terminated"`. The guard sits in the Store layer (rather than the wire layer alone) so that a bypass via direct Store callers (in-process tests, future non-HTTP bindings) still honors the contract. Implement the `target` parameter on `create_execution_task` (writes `task.target` directly from the parameter). |
+ | `sqlite.py` | Schema migration: `experiments` table gains a `state text NOT NULL DEFAULT 'running'` column and a `created_at text NOT NULL` column. |
+ | `postgres.py` | Same: `state text NOT NULL DEFAULT 'running'`, `created_at timestamptz NOT NULL`. |
+ | `submissions.py` | No change. |
+@@ -652,7 +653,7 @@
+ 
+ | File | Change |
+ |---|---|
+-| `server.py` | New endpoints: `POST .../experiments/<E>/terminate` (admin auth), `PATCH .../experiments/<E>/state` (admin auth). **Authority change**: `POST /tasks` for `kind=execution` now accepts `admins` OR `orchestrators` (was `orchestrators`-only). The terminated-experiment guard returns `409 eden://error/illegal-transition` for any task-creation op against a terminated experiment. |
++| `server.py` | New endpoints: `POST .../experiments/<E>/terminate` (admin auth), `PATCH .../experiments/<E>/state` (admin auth). **Authority change**: `POST /tasks` for `kind=execution` now accepts `admins` OR `orchestrators` (was `orchestrators`-only). **Terminated-experiment guard**: every task-creation op AND `POST .../tasks/<T>/claim` against a terminated experiment surfaces 409 `eden://error/illegal-transition`. The guard's primary enforcement point is the Store layer (§5.2 above); the wire layer relays the Store's `IllegalTransition` exception to the 409 response. |
+ | `client.py` | New `StoreClient.terminate_experiment(reason)`, `StoreClient.read_experiment_state()`. Read-back ladder for indeterminate failures (parallel to 12a-2's pattern). |
+ 
+ ### 5.5 eden-dispatch
+@@ -660,7 +661,7 @@
+ | File | Change |
+ |---|---|
+ | `driver.py` | `run_orchestrator_iteration` gains a `termination_policy: Callable[[ExperimentStateView], TerminationDecision]` parameter. Added as the FIRST branch (before the four operational decisions). On `Terminate`, the loop atomically commits the experiment-state transition and then runs ONLY the integration decision (skipping ideation_creation / execution_dispatch / evaluation_dispatch). On a subsequent iteration, if `experiment.state == "terminated"` at iteration start, the policy is NOT re-consulted — only integration runs until it drains. |
+-| `state_view.py` | Extend `ExperimentStateView` with `integrated_variant_count`, `experiment_created_at`, `objective_history`, `latest_metrics` (§3.4 above). |
++| `state_view.py` | Extend `ExperimentStateView` with `attempted_variant_count`, `integrated_variant_count`, `experiment_created_at`, `objective_history`, `latest_metrics` (§3.4 above). |
+ | `tests/test_orchestrator_iteration.py` | New parametrized tests covering: policy returns `Continue` → all four operational decisions run; policy returns `Terminate` → only integration runs (no `task.created` events for ideation/execution/evaluation kinds; `variant.integrated` events still fire if drainable success variants exist); policy raises → all four operational decisions still run + `experiment.policy_error` event; experiment.state already terminated at iteration start → only integration runs, no policy invocation. |
+ 
+ ### 5.6 Reference services
+@@ -682,7 +683,7 @@
+ | `reference/scripts/setup-experiment/setup-experiment.sh` | No structural change; the four legacy fields disappear from any experiment-config-template handling (greenfield: just delete the references). |
+ | `tests/fixtures/experiment/.eden/config.yaml` | Drop `max_variants`, `max_wall_time` (any other legacy fields if present). |
+ | `conformance/src/conformance/fixtures/minimal-experiment.yaml` | Drop `max_variants: 20` and `max_wall_time: "10m"` from the conformance fixture. |
+-| `reference/compose/healthcheck/smoke-termination.sh` | New smoke: configures `EDEN_TERMINATION_POLICY=eden_orchestrator.policies.max_variants_policy(N=2)` (or the equivalent), drives the experiment to 2 integrated variants, asserts `experiment.terminated` event + state transition + post-termination task-creation rejection. |
++| `reference/compose/healthcheck/smoke-termination.sh` | New smoke: configures `EDEN_TERMINATION_POLICY=eden_orchestrator.policies.max_variants_policy(N=2)` (or the equivalent), drives the experiment to 2 attempted variants (per the `max_variants_policy`'s "attempted" semantics), asserts `experiment.terminated` event + state transition + post-termination task-creation rejection + post-termination claim rejection + integration-drain completion (the 2 successful variants get integrated post-termination). |
+ 
+ ## 6. Test design
+ 
+@@ -713,9 +714,12 @@
+ `eden_orchestrator.tests.test_policies`:
+ 
+ - `never_terminate(state) → Continue` always.
+-- `max_variants_policy(N)(state)`: integrated_count < N →
+-  `Continue`; integrated_count == N → `Terminate`;
+-  integrated_count > N → `Terminate` (defensive).
++- `max_variants_policy(N)(state)`: attempted_count < N →
++  `Continue`; attempted_count == N → `Terminate`;
++  attempted_count > N → `Terminate` (defensive). Uses
++  `attempted_variant_count` per §3.4 to match the legacy
++  `max_variants` field's "ceiling on variants attempted"
++  semantics.
+ - `max_wall_time_policy(d)`: elapsed < d → `Continue`; elapsed >=
+   d → `Terminate`.
+ - `convergence_window_policy(W)`: improvement within window →
+@@ -732,6 +736,19 @@
+ - After termination, every task-creation op
+   (`create_ideation_task`, `create_execution_task`,
+   `create_evaluation_task`) raises `IllegalTransition`.
++- After termination, `claim` against a pending task raises
++  `IllegalTransition`. (The pending task remains in the Store
++  but is unreachable.)
++- After termination, an already-claimed task can still call
++  `submit`, and the Store can still call `accept` / `reject` on
++  it — the in-progress work drains.
++- After termination, `reclaim` of an already-claimed task is
++  permitted (e.g., expired claim TTL fires); the resulting
++  pending task is unreachable, but the reclaim itself is a
++  cleanup op that does not raise.
++- After termination, `integrate_variant` on a `status="success"`
++  variant is permitted and writes `variant_commit_sha`
++  atomically with `variant.integrated`.
+ - Idempotent terminate: calling `terminate_experiment` on an
+   already-terminated experiment → no-op success (no second
+   event, no error). The Store reads the current state, sees
+@@ -900,12 +917,12 @@
+ ```python
+ # Before (12a-2 reference impl behavior, if any):
+ def max_variants_policy_from_config(state):
+-    return Terminate() if state.integrated_count >= state.config.max_variants else Continue()
++    return Terminate() if state.attempted_count >= state.config.max_variants else Continue()
+ 
+ # After (12a-3):
+ def max_variants_policy(target: int) -> Policy:
+     def _policy(state):
+-        return Terminate() if state.integrated_count >= target else Continue()
++        return Terminate() if state.attempted_variant_count >= target else Continue()
+     return _policy
+ ```
+ 

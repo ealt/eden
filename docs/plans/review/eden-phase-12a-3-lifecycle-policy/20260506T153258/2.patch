@@ -1,0 +1,161 @@
+--- docs/plans/review/eden-phase-12a-3-lifecycle-policy/20260506T153258/1.md	2026-05-06 15:37:59
++++ docs/plans/eden-phase-12a-3-lifecycle-policy.md	2026-05-06 15:41:54
+@@ -122,9 +122,14 @@
+ 1. **Termination becomes the orchestrator's 5th decision type.** It
+    runs *before* the four existing decision types in each
+    iteration. If the policy returns `terminate(reason)`, the
+-   orchestrator emits `experiment.terminated`, transitions the
+-   experiment state to `terminated`, and the orchestrator's loop
+-   exits cleanly.
++   orchestrator emits `experiment.terminated`, atomically
++   transitions experiment state to `terminated`, and continues
++   running ONLY the integration decision (§6.2 decision-type 4) on
++   this and subsequent iterations until all `status == "success"`
++   variants without `variant_commit_sha` are integrated. The
++   orchestrator's loop exits cleanly when integration has drained
++   (no remaining success variants need integration AND no
++   already-claimed in-flight tasks remain).
+ 
+ 2. **`experiment.state` becomes a first-class field.** Two values
+    in v0: `"running"` (default at experiment creation) and
+@@ -246,7 +251,7 @@
+ > | Value | Meaning |
+ > |---|---|
+ > | `"running"` | Default at creation. The orchestrator MAY make any decision per chapter 03 §6.2. |
+-> | `"terminated"` | The Store MUST reject all task-creation ops (`create_ideation_task`, `create_execution_task`, `create_evaluation_task`) with `eden://error/illegal-transition`. In-flight tasks complete or are reclaimed per the normal task-lifecycle. The orchestrator's integration decision (§6.2 decision-type 4) continues to run until no `status == "success"` variants without `variant_commit_sha` remain. Once integration drains, the orchestrator's loop has no remaining work; the deployment may stop the orchestrator container. |
++> | `"terminated"` | The Store MUST reject all task-creation ops (`create_ideation_task`, `create_execution_task`, `create_evaluation_task`) AND all `claim` ops on pending tasks with `eden://error/illegal-transition`. Already-claimed tasks may still be submitted, accepted, or rejected per the normal task-lifecycle (so work-in-progress is not stranded). Already-claimed tasks may also still be reclaimed (cause=`expired` / `operator`); the resulting pending task is unreachable (claims are forbidden) but its existence is a no-op. The orchestrator's integration decision (§6.2 decision-type 4) continues to run until no `status == "success"` variants without `variant_commit_sha` remain. Once integration drains, the orchestrator's loop has no remaining work; the deployment may stop the orchestrator container. |
+ >
+ > Transition: `running → terminated` is one-way; emitted with an
+ > `experiment.terminated` event carrying a `reason: str`.
+@@ -296,7 +301,10 @@
+ 
+ def max_variants_policy(target: int) -> Policy:
+     def _policy(state: ExperimentStateView) -> TerminationDecision:
+-        if state.integrated_variant_count >= target:
++        # Match the legacy `max_variants` semantics: ceiling on
++        # variants ATTEMPTED (i.e., created — any variant in any
++        # status), not on variants integrated.
++        if state.attempted_variant_count >= target:
+             return Terminate(reason=f"max_variants={target} reached")
+         return Continue()
+     return _policy
+@@ -326,8 +334,15 @@
+ ideation-policy callable; 12a-3 extends it with new counters
+ needed by termination policies:
+ 
++- `attempted_variant_count: int` — count of variants in any
++  status (i.e., total `create_variant` invocations). Used by
++  `max_variants_policy` to match the legacy `max_variants`
++  field's "ceiling on variants attempted" semantics
++  ([`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md)
++  §2.1, pre-removal).
+ - `integrated_variant_count: int` — count of variants with
+-  `variant_commit_sha` set (i.e., integration completed).
++  `variant_commit_sha` set (i.e., integration completed). Used
++  by `convergence_window_policy` to count completed integrations.
+ - `experiment_created_at: datetime` — for wall-time computation.
+ - `objective_history: list[float]` — ordered list of objective
+   values (one per integrated variant); used by
+@@ -556,9 +571,12 @@
+   down via the existing path).
+ - New `compose-smoke-termination` smoke: configures
+   `max_variants_policy(N=2)`, asserts the experiment terminates
+-  after 2 integrated variants, asserts an `experiment.terminated`
+-  event fires, asserts subsequent task-creation attempts return
+-  `IllegalTransition`.
++  after 2 attempted variants (per the policy's "attempted"
++  semantics), asserts an `experiment.terminated` event fires,
++  asserts subsequent task-creation attempts AND claim attempts
++  return `IllegalTransition`. The smoke also asserts the
++  integration drain: the 2 attempted variants that successfully
++  evaluated get integrated post-termination.
+ 
+ ### 4.2 Cross-references to followups
+ 
+@@ -641,16 +659,16 @@
+ 
+ | File | Change |
+ |---|---|
+-| `driver.py` | `run_orchestrator_iteration` gains a `termination_policy: Callable[[ExperimentStateView], TerminationDecision]` parameter. Added as the FIRST branch (before the four operational decisions). On `Terminate`, the loop atomically commits the experiment-state transition and returns immediately without running operational decisions. |
++| `driver.py` | `run_orchestrator_iteration` gains a `termination_policy: Callable[[ExperimentStateView], TerminationDecision]` parameter. Added as the FIRST branch (before the four operational decisions). On `Terminate`, the loop atomically commits the experiment-state transition and then runs ONLY the integration decision (skipping ideation_creation / execution_dispatch / evaluation_dispatch). On a subsequent iteration, if `experiment.state == "terminated"` at iteration start, the policy is NOT re-consulted — only integration runs until it drains. |
+ | `state_view.py` | Extend `ExperimentStateView` with `integrated_variant_count`, `experiment_created_at`, `objective_history`, `latest_metrics` (§3.4 above). |
+-| `tests/test_orchestrator_iteration.py` | New parametrized tests covering: policy returns `Continue` → operational decisions run; policy returns `Terminate` → no operational decisions, single `experiment.terminated` event; policy raises → operational decisions still run + `experiment.policy_error` event; terminated experiment → no decisions run, no events, immediate return. |
++| `tests/test_orchestrator_iteration.py` | New parametrized tests covering: policy returns `Continue` → all four operational decisions run; policy returns `Terminate` → only integration runs (no `task.created` events for ideation/execution/evaluation kinds; `variant.integrated` events still fire if drainable success variants exist); policy raises → all four operational decisions still run + `experiment.policy_error` event; experiment.state already terminated at iteration start → only integration runs, no policy invocation. |
+ 
+ ### 5.6 Reference services
+ 
+ | File | Change |
+ |---|---|
+ | `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Add `--termination-policy <module:callable>` (default `eden_orchestrator.policies:never_terminate`). |
+-| `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Read `termination_policy` from CLI; pass to `run_orchestrator_iteration`. Read `experiment.state` at iteration start; if terminated, log and exit cleanly. |
++| `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Read `termination_policy` from CLI; pass to `run_orchestrator_iteration`. Read `experiment.state` at iteration start; if `terminated`, skip policy consultation and run only the integration branch. The loop exits cleanly when `experiment.state == "terminated"` AND the integration branch reports zero pending success variants AND no claimed-but-not-submitted in-flight tasks remain. |
+ | `reference/packages/eden-orchestrator/src/eden_orchestrator/policies.py` | New `never_terminate` + four reference policies (§3.4). |
+ | `reference/services/web-ui/src/eden_web_ui/routes/ideator.py` | Add `intended_executor` dropdown to the ideator-claim form. |
+ | `reference/services/web-ui/src/eden_web_ui/routes/admin.py` | New `/admin/ideas/<id>/` detail page with a "create execution task" form. Add a "terminate experiment" button on the experiment dashboard with a confirm-form (closed-allowlist banner discipline). |
+@@ -676,13 +694,21 @@
+   decisions run as before.
+ - Termination policy returns `Terminate(reason="X")` → state
+   transitions to `terminated`, single `experiment.terminated`
+-  event with the reason, NO operational decisions run.
+-- Termination policy raises → operational decisions still run,
+-  `experiment.policy_error` event fires.
+-- Terminated experiment at iteration start → loop returns
+-  immediately, no events, no decisions.
++  event with the reason; ideation_creation / execution_dispatch /
++  evaluation_dispatch are SKIPPED for the rest of this iteration;
++  the integration decision STILL runs (variants in
++  `status="success"` without `variant_commit_sha` get integrated
++  on this iteration).
++- Termination policy raises → all four operational decisions
++  still run, `experiment.policy_error` event fires.
++- Experiment.state already `terminated` at iteration start → policy
++  is NOT consulted; only the integration decision runs; if no
++  drainable variants remain, no events fire.
++- Drain test: with `experiment.state="terminated"` and 2
++  unintegrated success variants, exactly 2 `variant.integrated`
++  events fire; subsequent iteration produces no events.
+ - `dispatch_mode.termination = "manual"` → policy is NOT invoked
+-  even if set.
++  even if set; all four operational decisions run normally.
+ 
+ `eden_orchestrator.tests.test_policies`:
+ 
+@@ -755,8 +781,11 @@
+ - **Termination is decision-type 0.** Custom termination policy
+   returning `Terminate(reason="test")` → orchestrator iteration
+   produces exactly one `experiment.terminated` event with the
+-  matching reason and ZERO operational events (no
+-  `task.created`, `idea.dispatched`, etc.).
++  matching reason and ZERO `task.created` / `task.completed` /
++  `idea.dispatched` events for the ideation/execution/evaluation
++  kinds. `variant.integrated` events MAY still fire if drainable
++  success variants exist (the integration drain — see chapter 03
++  §6.2 above).
+ - **Continue is the no-op path.** Policy returning `Continue`
+   → operational decisions run normally.
+ - **Policy fault tolerance.** Policy raises → orchestrator emits
+@@ -767,9 +796,21 @@
+ - **Terminated rejects task creation.** After
+   `terminate_experiment`, every `create_*_task` op returns 409
+   `eden://error/illegal-transition`.
+-- **In-flight tasks complete.** A claimed task at termination
+-  time can still be submitted, accepted, or reclaimed normally;
+-  termination doesn't invalidate in-flight work.
++- **Terminated rejects claim of pending tasks.** A pending task
++  that exists at termination time CANNOT be claimed by any
++  worker after termination (claim returns 409
++  `eden://error/illegal-transition`). The pending row remains
++  in storage but is unreachable.
++- **Already-claimed tasks complete.** A claimed task at
++  termination time can still be submitted, accepted, or rejected
++  normally; termination doesn't invalidate in-progress work. A
++  reclaim of a still-claimed task IS allowed (the resulting
++  pending task is unreachable, but reclaim itself is a Store-
++  level cleanup op that is not blocked).
++- **Integration drains.** Variants in `status="success"` without
++  `variant_commit_sha` at termination time get integrated; the
++  variant_commit_sha gets written and `variant.integrated`
++  events fire even after `experiment.terminated`.
+ - **State persistence across restart.** Restart the
+   task-store-server after termination; `read_experiment_state`
+   still returns `"terminated"`.
