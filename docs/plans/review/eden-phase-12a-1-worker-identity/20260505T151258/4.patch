@@ -1,0 +1,115 @@
+--- docs/plans/review/eden-phase-12a-1-worker-identity/20260505T151258/3.md	2026-05-06 11:20:07
++++ docs/plans/eden-phase-12a-1-worker-identity.md	2026-05-06 11:23:00
+@@ -544,9 +544,14 @@
+ 
+ **What's added:**
+ 
+-- `Store.claim` raises `WorkerNotRegistered` / `WorkerNotEligible`.
+-- The wire-binding submit handler raises `WrongClaimant` /
+-  `NotClaimed` before calling the Store.
++- `Store.claim` raises `WorkerNotRegistered` / `WorkerNotEligible`
++  on §D.3 enforcement failure.
++- `Store.submit` gains a required `worker_id` parameter and raises
++  `WrongClaimant` / `NotClaimed` atomically with the submit
++  transition (the binding does NOT pre-check; it just authenticates
++  and forwards the authenticated `worker_id` to the Store).
++- New wire op `verify_worker_credential` for authenticated startup
++  probes (per §D.1 startup recovery flow).
+ 
+ ### D.7 What does NOT change in 12a-1
+ 
+@@ -572,7 +577,7 @@
+   `Variant.evaluated_by`.
+ - Pydantic models: `Worker`, `Group`, all attribution fields.
+ - Storage protocol additions: `register_worker`,
+-  `update_worker_credential`, `read_worker`, `list_workers`,
++  `reissue_credential`, `verify_worker_credential`, `read_worker`, `list_workers`,
+   `register_group`, `add_to_group`, `remove_from_group`,
+   `read_group`, `list_groups`, `delete_group`,
+   `resolve_worker_in_group(worker_id, group_id) → bool` (with
+@@ -625,8 +630,8 @@
+ | `spec/v0/07-wire-protocol.md` | New endpoints `register_worker`, `register_group`, etc. New auth scheme (per-worker bearer + admin bearer). Existing endpoints' auth shifts. |
+ | `spec/v0/08-storage.md` | New §9 "Worker registry"; cycle-detection requirement for groups. |
+ | `spec/v0/schemas/task.schema.json` | Add `target`, `created_by`, `submitted_by`. Remove `claim.token` (breaking). |
+-| `spec/v0/schemas/proposal.schema.json` (now `idea.schema.json`) | Add `created_by`. |
+-| `spec/v0/schemas/trial.schema.json` (now `variant.schema.json`) | Add `executed_by`, `evaluated_by`. |
++| `spec/v0/schemas/idea.schema.json` | Add `created_by`. |
++| `spec/v0/schemas/variant.schema.json` | Add `executed_by`, `evaluated_by`. |
+ | `spec/v0/schemas/worker.schema.json` | NEW. |
+ | `spec/v0/schemas/group.schema.json` | NEW. |
+ | `spec/v0/reference-bindings/worker-host-subprocess.md` | Document the new credential env var threaded into `*_command` children. |
+@@ -648,7 +653,7 @@
+ 
+ | File | Change |
+ |---|---|
+-| `src/eden_storage/protocol.py` | Add `register_worker`, `read_worker`, `list_workers`, `register_group`, `add_to_group`, `remove_from_group`, `read_group`, `list_groups`, `delete_group`, `resolve_worker_in_group`, `verify_worker_credential`. |
++| `src/eden_storage/protocol.py` | Add `register_worker`, `reissue_credential`, `read_worker`, `list_workers`, `verify_worker_credential` (returns the worker_id whose hashed credential matches the presented token, or raises a typed error), `register_group`, `add_to_group`, `remove_from_group`, `read_group`, `list_groups`, `delete_group`, `resolve_worker_in_group`. Update `submit` signature to add required `worker_id` parameter. |
+ | `src/eden_storage/_base.py` | In-memory implementation of all new ops, including transitive group resolution + cycle detection. Update `claim` semantics (no token returned; `WorkerNotEligible` / `WorkerNotRegistered` raised on §D.3 enforcement failure). Update `submit` signature to drop `token` and add required `worker_id` (the claimant on whose behalf the submit happens). The Store atomically checks `task.claim.worker_id == worker_id` as part of the submit transition (single transaction); raises `WrongClaimant` / `NotClaimed` on mismatch. Authentication of the request itself is the binding's job per §D.0; the Store trusts the `worker_id` parameter as data. Remove `WrongToken`. |
+ | `src/eden_storage/sqlite.py` | New tables: `worker`, `group_membership`. Schema migration to drop `task.claim.token` field from JSON. |
+ | `src/eden_storage/postgres.py` | Same as sqlite, with postgres-specific syntax. |
+@@ -663,11 +668,12 @@
+ 
+ | File | Change |
+ |---|---|
+-| `src/eden_wire/server.py` | New `/workers`, `/groups` endpoints; auth dispatch reads `worker_id:token` or `admin:token`. |
+-| `src/eden_wire/client.py` | `StoreClient` gains worker auth fields; new methods for register/read/list workers + groups. |
++| `src/eden_wire/server.py` | New `/workers`, `/groups`, `/verify-credential` endpoints; auth dispatch reads `worker_id:token` or `admin:token`. The `/verify-credential` endpoint is the authenticated-ping op used by host startup recovery (§D.1) — returns the authenticated `worker_id` on success, 401 on bad credential. |
++| `src/eden_wire/client.py` | `StoreClient` gains worker auth fields; new methods `register_worker`, `read_worker`, `list_workers`, `reissue_credential`, `verify_worker_credential`, `register_group` / `add_to_group` / `remove_from_group` / `read_group` / `list_groups` / `delete_group`. |
+ | `src/eden_wire/auth.py` | NEW. Bearer parser + admin/worker dispatch. Authenticates incoming requests and extracts the authenticated `worker_id`; the submit handler passes that `worker_id` through to `Store.submit` (Store does the atomic claim-match per §D.6, eliminating the read-then-write TOCTOU). |
+ | `src/eden_wire/server.py` (already listed) | Submit endpoint extracts authenticated `worker_id` from auth dispatch, passes to `Store.submit(task_id, worker_id, payload)`. Surfaces Store-raised `WrongClaimant`→403 and `NotClaimed`→409. |
+-| `tests/test_workers_wire.py` | NEW. Round-trip register/read/list workers. |
++| `tests/test_workers_wire.py` | NEW. Round-trip register/read/list workers; `reissue_credential` rotates and old credential fails; `verify_worker_credential` returns expected `worker_id`. |
++| `tests/test_verify_credential.py` | NEW. Dedicated coverage of `verify_worker_credential` outcomes: success returns `worker_id`; expired/wrong credential returns 401; admin-token (not a worker bearer) is rejected; "wrong worker_id returned" branch when registry was rebuilt with same id but new credentials. |
+ | `tests/test_groups_wire.py` | NEW. Round-trip group ops. |
+ | `tests/test_auth.py` | NEW. Auth dispatch + 401 on missing/wrong creds. |
+ 
+@@ -792,8 +798,48 @@
+ Submit a task with admin auth (not worker auth) on a worker-scoped
+ endpoint → 403 (admins are not workers; the wire enforces the
+ distinction).
+-Submit as a different worker than the claimant → `WrongClaimant`.
++Submit as a different worker than the claimant → `WrongClaimant`
++raised by `Store.submit` atomically with the transition.
++
++### 6.6 Credential rotation during in-flight claim
++
++Captures the same-`worker_id` continuity property the new design
++implies — important to assert explicitly because the obvious
++"old credential fails" check doesn't cover it:
+ 
++1. Register worker `eric` (credential C₁).
++2. Worker authenticates with C₁; claims task T.
++3. Admin calls `reissue_credential("eric")` → mints C₂; the
++   registry's stored hash now corresponds to C₂; C₁ is invalid.
++4. A retry of T's submit with C₁ → 401 (binding-layer auth fail).
++5. Submit of T using C₂ → succeeds; `Store.submit` finds
++   `task.claim.worker_id == "eric"` and the authenticated
++   worker_id from C₂ is also `"eric"`, so the atomic claim-match
++   passes. The claim itself was never invalidated; only the
++   credential authenticating into it was rotated.
++
++This is the property that lets cross-app claim work (CLI-to-CLI
++per §6.4) even after admin-driven credential rotation.
++
++### 6.7 `verify_worker_credential` "wrong worker_id" branch
++
++The startup probe (§D.1) returns the worker_id the credential
++authenticates as. Two failure modes need test coverage:
++
++1. **Bad/expired credential** → 401 (the obvious case).
++2. **Wrong worker_id returned** → e.g., the registry was rebuilt
++   with the same `worker_id` but new credentials issued to a
++   different deployment generation. The presented credential is
++   valid (200) but the response says it authenticates as a
++   different `worker_id` than the host expected (the persisted
++   credential file says it's `worker-A`'s, but the server now
++   thinks the credential belongs to `worker-B`). Host MUST treat
++   this as failure-of-equivalent-severity and escalate to
++   `reissue_credential` per the §D.1 recovery flow.
++
++The second branch is easy to miss in implementation if testing
++only the obvious 401 path.
++
+ ## 7. Verification gates
+ 
+ The chunk is mergeable when all of the following pass:

@@ -1,0 +1,124 @@
+--- docs/plans/review/eden-phase-12a-1-worker-identity/20260505T151258/2.md	2026-05-06 11:17:25
++++ docs/plans/eden-phase-12a-1-worker-identity.md	2026-05-06 11:19:56
+@@ -463,44 +463,65 @@
+ "claim is application-scoped" friction documented in
+ [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §1 / design doc §8.
+ 
+-**Layering.** Per §D.0, authentication and authorization
+-(`authenticated_worker_id == task.claim.worker_id`) are
+-**binding-layer concerns**, not Store Protocol concerns. The
+-Store Protocol surface stays minimal and transport-independent:
++**Layering — two distinct concerns.** Authentication
++("who are you?") and claim-ownership integrity ("does this submit
++match the current claim?") split across layers:
+ 
+-- `Store.claim(task_id, worker_id, ...)` — unchanged signature.
+-  The Store assumes the binding has already authenticated the
+-  caller as `worker_id`. Returns success/failure per the §D.3
+-  target enforcement. **No token returned.**
+-- `Store.submit(task_id, payload)` — the `token` parameter is
+-  **removed**, and **no `worker_id` parameter is added**. The
+-  Store does not authenticate the submitter. Instead, the binding
+-  is required to perform the claimant-match check before invoking
+-  Store.submit:
++- **Authentication is binding-only** (per §D.0). The binding
++  verifies the presented credential and extracts an
++  authenticated `worker_id`. The Store does not see credentials.
++- **Claim-ownership integrity is a Store invariant**, enforced
++  atomically with the submit transition. The Store cannot
++  delegate this to the binding without opening a TOCTOU race
++  where another worker reclaims between the binding's check and
++  the Store's write.
+ 
+-  ```text
+-  task = store.read_task(task_id)
+-  if task.claim is None:
+-      raise NotClaimed              # binding-layer error
+-  if task.claim.worker_id != authenticated_worker_id:
+-      raise WrongClaimant           # binding-layer error
+-  store.submit(task_id, payload)    # passes through unconditionally
+-  ```
++Concretely:
+ 
++- `Store.claim(task_id, worker_id, ...)` — unchanged signature
++  modulo the new §D.3 enforcement. The Store assumes the binding
++  has already authenticated the caller as `worker_id`. **No token
++  returned.**
++- `Store.submit(task_id, worker_id, payload)` — `worker_id` is a
++  **new required parameter** representing the claimant on whose
++  behalf the submit is being made. The `token` parameter is
++  removed. The Store atomically checks
++  `task.claim.worker_id == worker_id` AS PART OF the submit
++  transition (single transaction with the state write); a
++  mismatch raises `WrongClaimant`. A submit on an unclaimed task
++  raises `NotClaimed`.
++
++**Binding's job on submit:**
++
++```text
++authenticated_worker_id = binding.verify_credential(request)
++                                  # raises 401 on bad creds
++store.submit(task_id, authenticated_worker_id, payload)
++                                  # Store does atomic claim-match
++```
++
++The binding does NOT do its own pre-flight `read_task → compare`
++check — that introduces the TOCTOU hole. It just authenticates
++and forwards the authenticated `worker_id` to the Store. The
++Store handles claim-match atomically.
++
+ **Error vocabulary placement:**
+ 
+ - `WorkerNotEligible`, `WorkerNotRegistered` — Store-layer typed
+   errors; raised from `Store.claim` per §D.3.
+-- `WrongClaimant`, `NotClaimed` — **binding-layer** errors raised
+-  by the wire's submit handler. They are NOT in the Store Protocol's
+-  error vocabulary; in-process callers don't get these (and don't
+-  need them — they're the binding's job).
+-- `WrongToken` — **removed** from both Store and binding; tokens
+-  no longer exist.
++- `WrongClaimant`, `NotClaimed` — **Store-layer** typed errors
++  raised by `Store.submit`. The atomicity requirement (no TOCTOU)
++  forces this layer placement; the binding surfaces them as
++  appropriate HTTP status codes (likely 403 / 409) but does not
++  detect them itself.
++- Authentication errors (bad bearer, missing bearer) — binding
++  only; never reach the Store.
++- `WrongToken` — **removed** from the protocol; tokens no longer
++  exist.
+ 
+-The chapter-7 wire spec gains a new section enumerating
+-binding-layer errors and their HTTP status codes (likely 401 / 403
+-for these); chapter 4 / chapter 8 stop documenting them.
++The chapter-7 wire spec enumerates how each Store-layer error
++maps to HTTP status; chapter 4 / chapter 8 own the error
++definitions themselves.
+ 
+ **Idempotency without tokens.** Today's per-claim token doubles
+ as an idempotency key (a re-submitted submission with the same
+@@ -628,12 +649,12 @@
+ | File | Change |
+ |---|---|
+ | `src/eden_storage/protocol.py` | Add `register_worker`, `read_worker`, `list_workers`, `register_group`, `add_to_group`, `remove_from_group`, `read_group`, `list_groups`, `delete_group`, `resolve_worker_in_group`, `verify_worker_credential`. |
+-| `src/eden_storage/_base.py` | In-memory implementation of all new ops, including transitive group resolution + cycle detection. Update `claim` semantics (no token returned; `WorkerNotEligible` / `WorkerNotRegistered` raised on enforcement failure). Update `submit` to drop the `token` parameter; the Store no longer authenticates the submitter (binding layer's job per §D.6). Remove `WrongToken`. |
++| `src/eden_storage/_base.py` | In-memory implementation of all new ops, including transitive group resolution + cycle detection. Update `claim` semantics (no token returned; `WorkerNotEligible` / `WorkerNotRegistered` raised on §D.3 enforcement failure). Update `submit` signature to drop `token` and add required `worker_id` (the claimant on whose behalf the submit happens). The Store atomically checks `task.claim.worker_id == worker_id` as part of the submit transition (single transaction); raises `WrongClaimant` / `NotClaimed` on mismatch. Authentication of the request itself is the binding's job per §D.0; the Store trusts the `worker_id` parameter as data. Remove `WrongToken`. |
+ | `src/eden_storage/sqlite.py` | New tables: `worker`, `group_membership`. Schema migration to drop `task.claim.token` field from JSON. |
+ | `src/eden_storage/postgres.py` | Same as sqlite, with postgres-specific syntax. |
+ | `src/eden_storage/_postgres_schema.py` | Schema bump (new tables; field removal). |
+ | `src/eden_storage/_schema.py` | Schema bump (sqlite). |
+-| `src/eden_storage/errors.py` | Add `WorkerNotEligible`, `WorkerNotRegistered`, `CycleDetected`, `ReservedIdentifier`, `WorkerAlreadyRegistered`. Remove `WrongToken`. `WrongClaimant` / `NotClaimed` live in the wire-binding error layer (`eden_wire/errors.py`), not here. |
++| `src/eden_storage/errors.py` | Add `WorkerNotEligible`, `WorkerNotRegistered`, `WrongClaimant`, `NotClaimed`, `CycleDetected`, `ReservedIdentifier`, `WorkerAlreadyRegistered`. Remove `WrongToken`. The atomicity requirement (no TOCTOU between check and submit) puts `WrongClaimant`/`NotClaimed` at the Store layer. |
+ | `tests/test_workers.py` | NEW. Unit + protocol-conformance tests for worker registry. |
+ | `tests/test_groups.py` | NEW. Group resolution + cycle-detection tests. |
+ | `tests/test_claim_eligibility.py` | NEW. Claim under per-worker auth, target matching. |
+@@ -644,8 +665,8 @@
+ |---|---|
+ | `src/eden_wire/server.py` | New `/workers`, `/groups` endpoints; auth dispatch reads `worker_id:token` or `admin:token`. |
+ | `src/eden_wire/client.py` | `StoreClient` gains worker auth fields; new methods for register/read/list workers + groups. |
+-| `src/eden_wire/auth.py` | NEW. Bearer parser + admin/worker dispatch. Implements claimant-match check on submit endpoint (per §D.6 layering); raises `WrongClaimant` / `NotClaimed` BEFORE invoking `Store.submit`. |
+-| `src/eden_wire/errors.py` | Add `WrongClaimant`, `NotClaimed` (binding-layer errors per §D.6). |
++| `src/eden_wire/auth.py` | NEW. Bearer parser + admin/worker dispatch. Authenticates incoming requests and extracts the authenticated `worker_id`; the submit handler passes that `worker_id` through to `Store.submit` (Store does the atomic claim-match per §D.6, eliminating the read-then-write TOCTOU). |
++| `src/eden_wire/server.py` (already listed) | Submit endpoint extracts authenticated `worker_id` from auth dispatch, passes to `Store.submit(task_id, worker_id, payload)`. Surfaces Store-raised `WrongClaimant`→403 and `NotClaimed`→409. |
+ | `tests/test_workers_wire.py` | NEW. Round-trip register/read/list workers. |
+ | `tests/test_groups_wire.py` | NEW. Round-trip group ops. |
+ | `tests/test_auth.py` | NEW. Auth dispatch + 401 on missing/wrong creds. |

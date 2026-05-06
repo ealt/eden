@@ -1,0 +1,7 @@
+No material review findings remain. The round-2 submit fix plus the round-3 propagation/cleanup close the last substantive design issues. Feasibility is clear, the auth/store split is coherent, and the completeness/edge-case coverage is now in good shape.
+
+Two minor editorial cleanups are still worth doing:
+- [eden-phase-12a-1-worker-identity.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md:60) cites `spec/v0/07-wire-protocol.md §1.4`, but the current chapter 7 structure does not have a `§1.4`. If that section numbering is part of the planned spec edit, this is fine; otherwise the reference should be updated when the spec prose lands.
+- [eden-phase-12a-1-worker-identity.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md:143) says `read_worker` / `list_workers` are “unauthenticated reads,” then immediately says “any caller authenticated for the experiment can list workers.” That wording is easy to misread. I’d tighten it to something like “not worker-scoped auth; available to any experiment-authenticated caller.”
+
+Overall assessment: the plan now looks implementation-ready. The remaining issues are editorial, not architectural.

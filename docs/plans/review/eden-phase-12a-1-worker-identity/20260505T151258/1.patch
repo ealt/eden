@@ -1,0 +1,255 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-12a-1-worker-identity/20260505T151258/0.md	2026-05-05 15:12:58
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md	2026-05-05 15:46:25
+@@ -46,12 +46,50 @@
+ 
+ ## 3. Design
+ 
++### D.0 Auth-layer boundary (read this first)
++
++Authentication is a **binding-layer concern**, NOT a Store Protocol
++concern. The Store Protocol takes `worker_id` as input data on
++operations like `claim` and `submit`; the binding (HTTP wire,
++in-process, future ones) is responsible for verifying that the
++caller was authorized to act as the named worker before invoking
++the Store.
++
++This preserves the chapter-7 wire framing in
++[`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)
++§1.4: auth is binding-defined, not part of the chapter-4/5/8
++operations themselves. After 12a-1, the wire binding gains:
++
++- A specified auth scheme (per-worker bearer + admin bearer; §D.5).
++- A normative requirement that the binding MUST verify the
++  presented credential and reject mismatched authenticated-id-vs-
++  Store-call-id BEFORE calling the Store.
++
++The Store Protocol's `claim` and `submit` signatures keep the
++existing `worker_id` parameter (no new auth context arg) — they
++trust the binding to have already verified. In-process callers
++(tests, etc.) bypass the binding and pass `worker_id` directly;
++that's a deliberate trust boundary at the binding edge.
++
++A consequence: third-party bindings (gRPC, in-VM IPC, etc.) MUST
++implement their own auth verification and apply the same
++"authenticated-id matches Store-call-id" invariant. The spec
++chapter for that binding documents how, just as chapter 7 will do
++for HTTP.
++
+ ### D.1 Worker as a first-class registered entity
+ 
+ Today's `worker_id` is an ad-hoc string passed via `--worker-id` at
+ service startup. After 12a-1, every worker that participates in the
+ task protocol MUST be registered with the experiment's store.
+ 
++**Worker-id grammar.** ``worker_id`` MUST match
++``^[a-z0-9][a-z0-9_-]{0,63}$``: lowercase alphanumeric, hyphen,
++underscore; ≤64 chars; first character non-hyphen. This excludes
++`:` (load-bearing for the bearer format in §D.5), whitespace, and
++URI-unsafe characters. Same posture as the existing `slug`
++constraint on proposals/ideas. Group IDs follow the same grammar.
++
+ **Worker shape.** A `Worker` is a small persistent record:
+ 
+ ```json
+@@ -95,12 +133,42 @@
+ experiment can list workers; this matches today's
+ unauthenticated-list-tasks posture).
+ 
+-**Restart safety.** If `register_worker` is called for an existing
+-`worker_id`, the operation MUST be idempotent: the registration
+-returns the existing record (no new token; the original token is
+-still valid). Re-registration with `--force` (or admin-supplied
+-flag) issues a new token and invalidates the old one.
++**Restart safety + credential rotation.** Two distinct operations:
+ 
++- `register_worker(worker_id, labels?)` is **idempotent on the
++  existing record**: if `worker_id` is already registered, return
++  the existing `Worker` shape (without a new token). The original
++  token remains valid. This makes service-restart-after-crash
++  cheap — the host's startup logic can call `register_worker`
++  unconditionally.
++- `reissue_credential(worker_id) → {worker_id, registration_token}`
++  is a **separate admin-gated operation** that mints a fresh token
++  and invalidates the old one. This is the documented recovery
++  path when a worker's local credential is lost.
++
++Conflating these (the prior draft did) leaves the recovery story
++broken: a host that has lost its local token but still has a
++registry row can't recover via re-register. The split is
++load-bearing.
++
++**Startup recovery flow.** Worker hosts at startup:
++
++1. If a persisted credential exists at the configured path, attempt
++   an authenticated no-op request (e.g., `read_worker(self_id)`).
++2. If that succeeds: continue with the existing credential.
++3. If that fails (admin rotated the token, registry was wiped, etc.):
++   the host MUST escalate — it cannot silently re-register since
++   the existing registry row would block under §D.1's idempotency.
++   Escalation paths:
++   - **Auto** (admin-token in the host's env): call
++     `reissue_credential` and persist the new credential.
++     Reference deployment uses this path since the admin token is
++     in `.env` at host bootstrap.
++   - **Manual**: log an error and exit non-zero. Operator runs
++     `reissue_credential` out-of-band and re-injects the credential.
++4. If no persisted credential exists at all (first run): call
++   `register_worker`; persist the returned credential.
++
+ ### D.2 Group as a named set
+ 
+ A `Group` is a recursive set whose members can be `worker_id`s
+@@ -138,14 +206,21 @@
+ 
+ ### D.3 `Task.target` field
+ 
+-Tasks gain a single optional field:
++Tasks gain a single optional field. Because worker IDs and group
++IDs are independently unique within an experiment but share the
++same string grammar (§D.1), the field is **tagged** to disambiguate
++namespaces — a plain `worker_id | group_id | null` would be
++ambiguous if a worker and group ever had the same id:
+ 
+ ```text
+-Task.target: <worker_id> | <group_id> | null
++Task.target: { kind: "worker", id: "<worker_id>" }
++            | { kind: "group",  id: "<group_id>" }
++            | null
+ ```
+ 
+-- A `worker_id` value: only that specific worker can claim.
+-- A `group_id` value: any worker transitively in that group can claim.
++- `{kind: "worker", id: "<wid>"}`: only that specific worker can claim.
++- `{kind: "group", id: "<gid>"}`: any worker transitively in that
++  group can claim.
+ - `null` (or absent): any registered worker matching the task `kind`
+   can claim. This is the "open" case and matches today's behavior
+   (modulo the registration requirement).
+@@ -155,21 +230,24 @@
+ and the claim-time enforcement.
+ 
+ **Claim-time enforcement.** `Store.claim(task_id, worker_id, ...)`
+-checks, in order:
++checks, in order (per the §D.0 layer split, the binding has
++already verified that the request was authorized to act as
++`worker_id` before this Store call runs):
+ 
+ 1. Task is in `pending` state (existing check).
+-2. Worker is registered for the experiment (new).
+-3. Worker authenticates (new — see §D.5).
+-4. Worker satisfies the task's target:
++2. Worker is registered for the experiment (new — `worker_id`
++   exists in the registry).
++3. Worker satisfies the task's target:
+    - If `target` is null: pass.
+-   - If `target` is a `worker_id`: pass iff `worker_id == target`.
+-   - If `target` is a `group_id`: pass iff `worker_id` is
+-     transitively in that group.
+-5. Atomic claim-write (existing).
++   - If `target.kind == "worker"`: pass iff `worker_id == target.id`.
++   - If `target.kind == "group"`: pass iff `worker_id` is
++     transitively in `target.id` (group membership resolved
++     transitively per §D.2).
++4. Atomic claim-write (existing).
+ 
+-A claim attempt that fails step 4 raises `WorkerNotEligible`
+-(new typed error, joins the existing `WrongToken` /
+-`IllegalTransition` family).
++A claim attempt that fails step 3 raises `WorkerNotEligible`
++(new typed error, joins `IllegalTransition` family). A claim by a
++non-registered worker (step 2 failure) raises `WorkerNotRegistered`.
+ 
+ ### D.4 Attribution as data on artifacts
+ 
+@@ -243,6 +321,80 @@
+ (idempotent, so `compose up` after a restart re-uses the existing
+ worker_id) and threads the credential into the child's env.
+ 
++### D.5b Web UI: per-session-user worker authentication
++
++The web-ui has two distinct auth identities post-12a-1:
++
++1. **Process-level admin worker** — registered at startup as
++   `web-ui` (or similar). Used for endpoints that don't have a
++   session (`/healthz`, the admin pages whose access is
++   controlled by the admin token). Holds an admin-issued
++   credential persisted on disk.
++2. **Per-session user worker** — when a user signs in via the
++   existing session model
++   ([`sessions.py`](../../reference/services/web-ui/src/eden_web_ui/sessions.py))
++   the UI registers them as a worker (idempotent if they've signed
++   in before) and stores the returned credential in the
++   itsdangerous-signed session cookie alongside the existing
++   `csrf` and `worker_id` fields.
++
++**Routing rule.** Wire calls made on behalf of a signed-in user
++(claim / submit on planner / executor / evaluator pages, admin
++reclaim / dispatch-mode flips that 12a-2 will add) MUST use the
++session-user's credential, not the process-level admin
++credential. The route layer's `wire_client_for_session(session)`
++helper enforces this at the type level — routes that don't have a
++session can't construct a session-authenticated client.
++
++**Why this is load-bearing.** Without per-session auth, every
++human action through the web-ui collapses to "the web-ui process"
++as the actor — defeating attribution (§D.4) and the
++claims-scoped-to-worker property of the design doc §8. The
++session-cookie route was already there in the codebase
++([`auth.py`](../../reference/services/web-ui/src/eden_web_ui/routes/auth.py)
++threads `worker_id` from the sign-in form into the session); we're
++extending it to also issue and store a real credential.
++
++**Sign-in flow.**
++
++1. User submits the sign-in form with `worker_id` (today's
++   "Continue as `<X>`" button).
++2. Web-ui calls `register_worker(worker_id)` via its
++   process-level admin credential. If the worker exists already,
++   this is a no-op; the UI then needs to obtain a credential to
++   act as that worker. Two options:
++   - **(a) admin-issued credential, returned at sign-in.** The UI
++     calls `reissue_credential(worker_id)` on every sign-in
++     (admin-gated, allowed because the web-ui process IS the admin
++     for sign-in purposes). The user gets a fresh credential per
++     session; the prior session's credential is invalidated.
++     Single-active-session-per-worker is the consequence; that's
++     usually fine for human users.
++   - **(b) admin-derived session-only credential.** The UI mints
++     a short-lived bearer signed by the admin token, scoped to
++     that user's `worker_id` and the session lifetime, that the
++     Store accepts as standing in for the per-worker credential.
++     Cleaner UX (multiple sessions OK) but adds a new auth
++     primitive.
++
++   12a-1 ships with **(a)** for simplicity. **(b)** is a viable
++   12a-2 expansion if multi-session-per-user matters.
++3. Session cookie carries `{worker_id, credential, csrf,
++   expires_at, ...}`. Existing claim/CSRF checks continue to work.
++
++**Sign-out** invalidates the session cookie locally; the
++worker registration persists in the registry (so the next sign-in
++is `register_worker` returning the existing record).
++
++**Implication for browser-only operators.** A human running the
++web-ui interactively never holds a worker credential outside the
++session cookie. They CAN'T claim from the web-ui and submit from a
++CLI session unless their CLI also signs in (acquires a credential)
++as the same `worker_id`. Cross-application claim works at the wire
++level (per the design doc §8) but requires both applications to
++authenticate as the same worker. Document that in the operator
++guide so the limit is clear.
++
+ ### D.6 Claim semantics under per-worker auth
+ 
+ Today's claim returns a per-claim token; submit checks
+@@ -410,7 +562,9 @@
+ | `reference/services/executor/src/eden_executor_host/cli.py` | Same. |
+ | `reference/services/evaluator/src/eden_evaluator_host/cli.py` | Same. |
+ | `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Same (will become more substantive in 12a-2). |
+-| `reference/services/web-ui/src/eden_web_ui/cli.py` | Same. The web-ui acts on behalf of authenticated end-users (next chunk extends this); 12a-1 just authenticates the web-ui process itself. |
++| `reference/services/web-ui/src/eden_web_ui/cli.py` | Process-level: register a deployment-wide `web-ui` admin worker for endpoints that don't have a session (admin pages, healthcheck). |
++| `reference/services/web-ui/src/eden_web_ui/sessions.py` | Per-session: when a user signs in, register them as a worker (idempotent on existing `worker_id`) and store their credential in the session payload. The signed-in `worker_id` is the user-supplied name (existing sign-in shape). |
++| `reference/services/web-ui/src/eden_web_ui/routes/_helpers.py` | New helper `wire_client_for_session(session)` that returns a `StoreClient` authenticated as the session's worker. ALL human-driven wire calls (claim/submit on planner / executor / evaluator / admin pages) MUST route through this helper, NOT through the process-level admin client. |
+ | `reference/services/_common/src/eden_service_common/container_exec.py` | New env var passed into spawned children: `EDEN_WORKER_CREDENTIAL`. |
+ 
+ ### 5.6 Compose / setup
