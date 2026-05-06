@@ -30,10 +30,10 @@ from eden_contracts import Idea, TaskAdapter, Variant
 from eden_storage import Store
 from eden_storage.errors import StorageError
 from eden_storage.submissions import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     Submission,
+    VariantSubmission,
 )
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -556,24 +556,24 @@ def make_app(
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, IdeateSubmission):
+    if isinstance(submission, IdeaSubmission):
         return {
-            "kind": "ideate",
+            "kind": "ideation",
             "status": submission.status,
             "idea_ids": list(submission.idea_ids),
         }
-    if isinstance(submission, ExecuteSubmission):
+    if isinstance(submission, VariantSubmission):
         body: dict[str, Any] = {
-            "kind": "execute",
+            "kind": "execution",
             "status": submission.status,
             "variant_id": submission.variant_id,
         }
         if submission.commit_sha is not None:
             body["commit_sha"] = submission.commit_sha
         return body
-    if isinstance(submission, EvaluateSubmission):
+    if isinstance(submission, EvaluationSubmission):
         body = {
-            "kind": "evaluate",
+            "kind": "evaluation",
             "status": submission.status,
             "variant_id": submission.variant_id,
         }
@@ -586,19 +586,19 @@ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "ideate":
-        return IdeateSubmission(
+    if kind == "ideation":
+        return IdeaSubmission(
             status=payload["status"],
             idea_ids=tuple(payload.get("idea_ids", ())),
         )
-    if kind == "execute":
-        return ExecuteSubmission(
+    if kind == "execution":
+        return VariantSubmission(
             status=payload["status"],
             variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
-    if kind == "evaluate":
-        return EvaluateSubmission(
+    if kind == "evaluation":
+        return EvaluationSubmission(
             status=payload["status"],
             variant_id=payload["variant_id"],
             evaluation=payload.get("evaluation"),

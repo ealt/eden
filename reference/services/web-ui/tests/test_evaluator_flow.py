@@ -26,7 +26,7 @@ from conftest import (
     seed_evaluate_task,
 )
 from eden_dispatch import sweep_expired_claims
-from eden_storage import EvaluateSubmission, InMemoryStore
+from eden_storage import EvaluationSubmission, InMemoryStore
 from eden_web_ui import make_app
 from eden_web_ui.routes import evaluator as evaluator_routes
 from fastapi.testclient import TestClient
@@ -225,7 +225,7 @@ class TestConflictPath:
         store.submit(
             eval_id,
             other.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id=variant_id,
                 evaluation={"score": 0.123},

@@ -2,7 +2,7 @@
 
 Mirrors ``test_e2e.py`` but runs each worker host with
 ``--mode subprocess`` and the fixture's ``plan.py`` /
-``implement.py`` / ``eval.py`` scripts. Asserts the same final
+``implement.py`` / ``evaluation.py`` scripts. Asserts the same final
 3-variant-success shape against the bare repo.
 """
 
@@ -173,7 +173,7 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             str(FIXTURE_DIR),
             "--artifacts-dir",
             str(artifacts_dir),
-            "--ideate-env-file",
+            "--ideation-env-file",
             str(ideator_env_file),
         ],
         ideator_log,
@@ -244,7 +244,7 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             token,
             "--repo-path",
             str(bare_repo),
-            "--ideate-tasks",
+            "--ideation-tasks",
             "ideate-1,plan-2,plan-3",
             "--poll-interval",
             "0.5",

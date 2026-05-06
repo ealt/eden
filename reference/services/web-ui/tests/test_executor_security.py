@@ -234,7 +234,7 @@ class TestArtifactUriRendering:
         )
         store.create_idea(idea)
         store.mark_idea_ready(idea_id)
-        store.create_execute_task("t-evil", idea_id)
+        store.create_execution_task("t-evil", idea_id)
         csrf = get_csrf(signed_in_impl_client)
         _post_form(
             signed_in_impl_client,

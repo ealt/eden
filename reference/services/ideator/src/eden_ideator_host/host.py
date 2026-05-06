@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eden_contracts import ExperimentConfig, IdeateTask
+from eden_contracts import ExperimentConfig, IdeationTask
 from eden_dispatch import ScriptedIdeator
 from eden_service_common import StopFlag, get_logger, make_plan_fn
 from eden_storage import IllegalTransition, Store, WrongToken
@@ -64,7 +64,7 @@ def run_ideator_loop(
 
 _MAX_CONSECUTIVE_RESPAWNS = 5
 """Stop the ideator host after this many back-to-back subprocess
-restarts without a successful task. A misconfigured ``ideate_command``
+restarts without a successful task. A misconfigured ``ideation_command``
 would otherwise thrash the LLM CLI in a tight loop."""
 
 
@@ -116,7 +116,7 @@ def run_ideator_subprocess_loop(
                         extra={"consecutive_failures": consecutive_failures},
                     )
                     continue
-            tasks = store.list_tasks(kind="ideate", state="pending")
+            tasks = store.list_tasks(kind="ideation", state="pending")
             if not tasks:
                 if stop.wait(poll_interval):
                     return
@@ -124,7 +124,7 @@ def run_ideator_subprocess_loop(
             for task in tasks:
                 if stop.is_set():
                     return
-                assert isinstance(task, IdeateTask)
+                assert isinstance(task, IdeationTask)
                 try:
                     handle_plan_task(
                         store=store,

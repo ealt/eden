@@ -32,7 +32,7 @@ _DEFAULT_EVENTS_LIMIT = 200
 _MAX_EVENTS_LIMIT = 1000
 _TRIAL_DETAIL_EVENT_CAP = 50
 
-_KIND_VALUES = ("ideate", "execute", "evaluate")
+_KIND_VALUES = ("ideation", "execution", "evaluation")
 _STATE_VALUES = ("pending", "claimed", "submitted", "completed", "failed")
 _VARIANT_STATUS_VALUES = ("starting", "success", "error", "eval_error")
 
@@ -361,7 +361,7 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     try:
         variants = store.list_variants(status=status)
-        impl_tasks = store.list_tasks(kind="execute")
+        impl_tasks = store.list_tasks(kind="execution")
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load variants")
     impl_terminal_by_idea: dict[str, bool] = {
@@ -456,12 +456,12 @@ def _events_for_variant(
     """
     impl_task_ids = {
         t.task_id
-        for t in store.list_tasks(kind="execute")
+        for t in store.list_tasks(kind="execution")
         if t.payload.idea_id == idea_id
     }
     eval_task_ids = {
         t.task_id
-        for t in store.list_tasks(kind="evaluate")
+        for t in store.list_tasks(kind="evaluation")
         if t.payload.variant_id == variant_id
     }
     related: list[Event] = []

@@ -102,8 +102,8 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
     )
     from eden_contracts import Idea
 
-    store.create_ideate_task("ideate-1")
-    claim = store.claim("ideate-1", "ideator-1")
+    store.create_ideation_task("ideation-1")
+    claim = store.claim("ideation-1", "ideator-1")
     idea = Idea(
         idea_id="p-mp",
         experiment_id="exp-mp",
@@ -116,13 +116,13 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
     )
     store.create_idea(idea)
     store.mark_idea_ready("p-mp")
-    from eden_dispatch import IdeateSubmission
+    from eden_dispatch import IdeaSubmission
 
     store.submit(
-        "ideate-1", claim.token, IdeateSubmission(status="success", idea_ids=("p-mp",))
+        "ideation-1", claim.token, IdeaSubmission(status="success", idea_ids=("p-mp",))
     )
-    store.accept("ideate-1")
-    store.create_execute_task("execute-1", "p-mp")
+    store.accept("ideation-1")
+    store.create_execution_task("execution-1", "p-mp")
 
     client, http = _store_via_testclient(store)
     stop = StopFlag()
@@ -142,7 +142,7 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
     try:
         # Wait up to 5 seconds for the executor to submit.
         for _ in range(250):
-            if store.read_task("execute-1").state == "submitted":
+            if store.read_task("execution-1").state == "submitted":
                 break
             threading.Event().wait(0.02)
         else:
@@ -152,10 +152,10 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
         thread.join(timeout=5)
         http.close()
 
-    from eden_dispatch import ExecuteSubmission
+    from eden_dispatch import VariantSubmission
 
-    submission = store.read_submission("execute-1")
-    assert isinstance(submission, ExecuteSubmission)
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
     assert submission.status == "success"
     commit_sha = submission.commit_sha
     assert commit_sha is not None

@@ -1,7 +1,7 @@
 """Phase 10d evaluator-host subprocess mode.
 
 For each pending evaluate task: claim, materialize a per-task
-worktree at the variant's commit, run the user's ``evaluate_command``,
+worktree at the variant's commit, run the user's ``evaluation_command``,
 parse the metrics outcome JSON, validate against ``evaluation_schema``,
 and submit.
 
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from eden_contracts import EvaluateTask, ExperimentConfig
+from eden_contracts import EvaluationTask, ExperimentConfig
 from eden_service_common import (
     StopFlag,
     TaskWorktree,
@@ -33,7 +33,7 @@ from eden_service_common import (
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
-    EvaluateSubmission,
+    EvaluationSubmission,
     IllegalTransition,
     InvalidPrecondition,
     Store,
@@ -102,7 +102,7 @@ def run_evaluator_subprocess_loop(
     objective = experiment_config.objective.model_dump()
 
     while not stop.is_set():
-        pending = store.list_tasks(kind="evaluate", state="pending")
+        pending = store.list_tasks(kind="evaluation", state="pending")
         if not pending:
             if stop.wait(poll_interval):
                 return
@@ -110,7 +110,7 @@ def run_evaluator_subprocess_loop(
         for task in pending:
             if stop.is_set():
                 return
-            assert isinstance(task, EvaluateTask)
+            assert isinstance(task, EvaluationTask)
             try:
                 _handle_one(
                     store=store,
@@ -132,7 +132,7 @@ def _handle_one(
     *,
     store: Store,
     worker_id: str,
-    task: EvaluateTask,
+    task: EvaluationTask,
     config: EvaluatorSubprocessConfig,
     host_subdir: Path,
     evaluation_schema: dict,
@@ -169,7 +169,7 @@ def _handle_one(
                 store=store,
                 task_id=task.task_id,
                 token=claim.token,
-                submission=EvaluateSubmission(
+                submission=EvaluationSubmission(
                     status="eval_error",
                     variant_id=variant_id,
                     evaluation=None,
@@ -194,7 +194,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=EvaluateSubmission(
+            submission=EvaluationSubmission(
                 status="eval_error", variant_id=variant_id, evaluation=None, artifacts_uri=None
             ),
         )
@@ -242,14 +242,14 @@ def _handle_one(
 
 def _outcome_to_submission(
     *, outcome: dict, variant_id: str, store: Store
-) -> EvaluateSubmission:
+) -> EvaluationSubmission:
     status = outcome.get("status")
     if status == "success":
         evaluation = outcome.get("evaluation")
         artifacts_uri = outcome.get("artifacts_uri")
         if not isinstance(evaluation, dict) or not evaluation:
             log.warning("evaluator_success_missing_evaluation")
-            return EvaluateSubmission(
+            return EvaluationSubmission(
                 status="eval_error",
                 variant_id=variant_id,
                 evaluation=None,
@@ -262,20 +262,20 @@ def _outcome_to_submission(
                 "evaluator_evaluation_invalid",
                 extra={"reason": str(exc)},
             )
-            return EvaluateSubmission(
+            return EvaluationSubmission(
                 status="eval_error",
                 variant_id=variant_id,
                 evaluation=None,
                 artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
             )
-        return EvaluateSubmission(
+        return EvaluationSubmission(
             status="success",
             variant_id=variant_id,
             evaluation=evaluation,
             artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
         )
     if status == "error":
-        return EvaluateSubmission(
+        return EvaluationSubmission(
             status="error",
             variant_id=variant_id,
             evaluation=None,
@@ -283,7 +283,7 @@ def _outcome_to_submission(
             if isinstance(outcome.get("artifacts_uri"), str)
             else None,
         )
-    return EvaluateSubmission(
+    return EvaluationSubmission(
         status="eval_error",
         variant_id=variant_id,
         evaluation=None,
@@ -294,7 +294,7 @@ def _outcome_to_submission(
 def _run_subprocess(
     *,
     wt_path: Path,
-    task: EvaluateTask,
+    task: EvaluationTask,
     variant: Any,
     evaluation_schema: dict,
     objective: dict,
@@ -409,7 +409,7 @@ def _submit_with_readback(
     store: Store,
     task_id: str,
     token: str,
-    submission: EvaluateSubmission,
+    submission: EvaluationSubmission,
 ) -> None:
     last_exc: Exception | None = None
     for delay in (0.0, *_RETRY_DELAYS_S):
@@ -440,7 +440,7 @@ def _submit_with_readback(
         return
     if prior is None:
         return
-    if not isinstance(prior, EvaluateSubmission):
+    if not isinstance(prior, EvaluationSubmission):
         return
     if submissions_equivalent(prior, submission):
         return

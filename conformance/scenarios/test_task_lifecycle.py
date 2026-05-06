@@ -21,7 +21,7 @@ def test_create_task_pending(wire_client: WireClient) -> None:
     Per chapter 02 §3.1 every task is created with state="pending"; the
     create endpoint returns 200 with the task body.
     """
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "pending"
     assert "claim" not in task or task.get("claim") is None
@@ -29,7 +29,7 @@ def test_create_task_pending(wire_client: WireClient) -> None:
 
 def test_pending_to_claimed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — `claim` transitions pending → claimed."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     assert "token" in c and c["token"]
     task = _seed.read_task(wire_client, tid)
@@ -38,7 +38,7 @@ def test_pending_to_claimed(wire_client: WireClient) -> None:
 
 def test_claimed_to_submitted(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.1 — `submit` transitions claimed → submitted."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     r = _seed.submit_idea(wire_client, tid, token=c["token"])
     assert r.status_code == 200
@@ -48,7 +48,7 @@ def test_claimed_to_submitted(wire_client: WireClient) -> None:
 
 def test_submitted_to_completed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.3 — `accept` transitions submitted → completed."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     _seed.submit_idea(wire_client, tid, token=c["token"])
     r = _seed.accept(wire_client, tid)
@@ -59,7 +59,7 @@ def test_submitted_to_completed(wire_client: WireClient) -> None:
 
 def test_submitted_to_failed_via_reject(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.3 — `reject` transitions submitted → failed."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     _seed.submit_idea(wire_client, tid, token=c["token"])
     r = _seed.reject(wire_client, tid, reason="validation_error")
@@ -69,7 +69,7 @@ def test_submitted_to_failed_via_reject(wire_client: WireClient) -> None:
 
 
 def _terminalize_completed(client: WireClient) -> tuple[str, str]:
-    tid = _seed.create_ideate_task(client)
+    tid = _seed.create_ideation_task(client)
     c = _seed.claim(client, tid)
     _seed.submit_idea(client, tid, token=c["token"])
     _seed.accept(client, tid)
@@ -77,7 +77,7 @@ def _terminalize_completed(client: WireClient) -> tuple[str, str]:
 
 
 def _terminalize_failed(client: WireClient) -> tuple[str, str]:
-    tid = _seed.create_ideate_task(client)
+    tid = _seed.create_ideation_task(client)
     c = _seed.claim(client, tid)
     _seed.submit_idea(client, tid, token=c["token"])
     _seed.reject(client, tid, reason="validation_error")
@@ -133,10 +133,10 @@ def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
 
 def test_pending_rejects_submit(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — submit on pending is illegal."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     r = wire_client.post(
         wire_client.tasks_path(tid, "/submit"),
-        json={"token": "any", "payload": {"kind": "ideate", "status": "success", "idea_ids": []}},
+        json={"token": "any", "payload": {"kind": "ideation", "status": "success", "idea_ids": []}},
     )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
@@ -144,7 +144,7 @@ def test_pending_rejects_submit(wire_client: WireClient) -> None:
 
 def test_pending_rejects_accept(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — accept on pending is illegal."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
@@ -152,7 +152,7 @@ def test_pending_rejects_accept(wire_client: WireClient) -> None:
 
 def test_pending_rejects_reject(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — reject on pending is illegal."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     r = _seed.reject(wire_client, tid, reason="validation_error")
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
@@ -160,7 +160,7 @@ def test_pending_rejects_reject(wire_client: WireClient) -> None:
 
 def test_claimed_rejects_accept(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — accept-without-submit is illegal."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     _seed.claim(wire_client, tid)
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409
@@ -169,7 +169,7 @@ def test_claimed_rejects_accept(wire_client: WireClient) -> None:
 
 def test_claim_rejected_when_not_pending(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §3.4 — re-claim of a `claimed` task is rejected."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     _seed.claim(wire_client, tid, worker_id="w1")
     r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
     assert r.status_code == 409

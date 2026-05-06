@@ -86,7 +86,7 @@ A task is a work item. It is persisted in the task store and advances through a 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `task_id` | yes | string | Unique identifier. |
-| `kind` | yes | string | One of `"ideate"`, `"execute"`, `"evaluate"`. |
+| `kind` | yes | string | One of `"ideation"`, `"execution"`, `"evaluation"`. |
 | `state` | yes | string | See §3.2. |
 | `payload` | yes | object | Kind-specific payload (§3.3). |
 | `claim` | no | object | Present iff the task is currently claimed (§3.4). |
@@ -101,9 +101,9 @@ The `state` field MUST be one of `"pending"`, `"claimed"`, `"submitted"`, `"comp
 
 The `payload` object's shape depends on `kind`.
 
-- `"ideate"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints.
-- `"execute"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch.
-- `"evaluate"` — MUST contain `variant_id` (string) referring to a variant with `status == "starting"` and a `commit_sha` set.
+- `"ideation"` — MUST contain `experiment_id` (string). MAY contain ideator-specific hints.
+- `"execution"` — MUST contain `idea_id` (string) referring to an idea with `state == "ready"` at the time of dispatch.
+- `"evaluation"` — MUST contain `variant_id` (string) referring to a variant with `status == "starting"` and a `commit_sha` set.
 
 ### 3.4 Claim object
 
@@ -220,7 +220,7 @@ Variant status transitions are behavioral and are defined alongside the task and
 This section collects structural invariants that span multiple entities. Behavioral invariants (claim semantics, transactional event writes) live in the corresponding behavior chapters.
 
 1. **Identifier scope.** `task_id`, `idea_id`, `variant_id`, and `event_id` MUST each be unique within a single experiment. Uniqueness across experiments is not required by the protocol but is RECOMMENDED when an implementation shares a store across experiments.
-2. **Reference integrity.** Every `idea_id` referenced by a task payload or variant MUST name an idea persisted in the store before the reference is written. Every `variant_id` referenced by an `evaluate` task MUST exist with `status == "starting"` at dispatch time.
+2. **Reference integrity.** Every `idea_id` referenced by a task payload or variant MUST name an idea persisted in the store before the reference is written. Every `variant_id` referenced by an `evaluation` task MUST exist with `status == "starting"` at dispatch time.
 3. **Evaluation/schema conformance.** Every evaluation payload persisted on a variant MUST validate against the experiment's `evaluation_schema` (§6).
 4. **Canonical-lineage single-writer.** Only the integrator MAY write to `variant_commit_sha` on a variant. Workers MUST NOT set or modify this field directly.
 5. **Claim uniqueness.** A task MAY have at most one active `claim` object at any time.

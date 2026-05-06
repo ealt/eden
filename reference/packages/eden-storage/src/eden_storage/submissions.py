@@ -10,16 +10,16 @@ binding.
 
 Fields are pinned by the spec:
 
-- ``IdeateSubmission``        — status + idea_ids (set-equivalent
+- ``IdeaSubmission``        — status + idea_ids (set-equivalent
   per 04 §4.2).
-- ``ExecuteSubmission``   — status + variant_id + commit_sha (03 §3.4).
-- ``EvaluateSubmission``    — status + variant_id + metrics + optional
+- ``VariantSubmission``   — status + variant_id + commit_sha (03 §3.4).
+- ``EvaluationSubmission``    — status + variant_id + metrics + optional
   artifacts_uri (03 §4.4, 04 §4.2 on metrics equivalence).
 
 All three are ``frozen=True`` so callers cannot rebind fields after
 construction. ``submit`` still deep-copies on entry and
 ``read_submission`` on exit, because the ``metrics`` dict on
-``EvaluateSubmission`` is not itself frozen.
+``EvaluationSubmission`` is not itself frozen.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ EvaluateStatus = Literal["success", "error", "eval_error"]
 
 
 @dataclass(frozen=True)
-class IdeateSubmission:
+class IdeaSubmission:
     """Ideator submission result. See ``spec/v0/03-roles.md`` §2.4."""
 
     status: PlanStatus
@@ -41,7 +41,7 @@ class IdeateSubmission:
 
 
 @dataclass(frozen=True)
-class ExecuteSubmission:
+class VariantSubmission:
     """Executor submission result. See ``spec/v0/03-roles.md`` §3.4."""
 
     status: ImplementStatus
@@ -50,7 +50,7 @@ class ExecuteSubmission:
 
 
 @dataclass(frozen=True)
-class EvaluateSubmission:
+class EvaluationSubmission:
     """Evaluator submission result. See ``spec/v0/03-roles.md`` §4.4."""
 
     status: EvaluateStatus
@@ -59,7 +59,7 @@ class EvaluateSubmission:
     artifacts_uri: str | None = None
 
 
-Submission = IdeateSubmission | ExecuteSubmission | EvaluateSubmission
+Submission = IdeaSubmission | VariantSubmission | EvaluationSubmission
 
 
 def submissions_equivalent(a: Submission, b: Submission) -> bool:
@@ -79,15 +79,15 @@ def submissions_equivalent(a: Submission, b: Submission) -> bool:
     """
     if type(a) is not type(b):
         return False
-    if isinstance(a, IdeateSubmission) and isinstance(b, IdeateSubmission):
+    if isinstance(a, IdeaSubmission) and isinstance(b, IdeaSubmission):
         return a.status == b.status and set(a.idea_ids) == set(b.idea_ids)
-    if isinstance(a, ExecuteSubmission) and isinstance(b, ExecuteSubmission):
+    if isinstance(a, VariantSubmission) and isinstance(b, VariantSubmission):
         return (
             a.status == b.status
             and a.variant_id == b.variant_id
             and a.commit_sha == b.commit_sha
         )
-    if isinstance(a, EvaluateSubmission) and isinstance(b, EvaluateSubmission):
+    if isinstance(a, EvaluationSubmission) and isinstance(b, EvaluationSubmission):
         return (
             a.status == b.status
             and a.variant_id == b.variant_id

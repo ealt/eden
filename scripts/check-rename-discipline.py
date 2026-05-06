@@ -117,30 +117,48 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("ImplementPayload",     re.compile(r"\bImplementPayload\b")),
     ("PlanOutcome",          re.compile(r"\bPlanOutcome\b")),
     ("ImplementOutcome",     re.compile(r"\bImplementOutcome\b")),
-    # Quoted task-kind values (string literals).
-    ('"plan" string',    re.compile(r'"plan"')),
+    # Quoted task-kind values (string literals). Both pre-rename
+    # ("plan"/"implement") and the verb-form ("ideate"/"execute") that
+    # the second-pass cleanup replaced with the gerund noun.
+    ('"plan" string',      re.compile(r'"plan"')),
     ('"implement" string', re.compile(r'"implement"')),
-    # Numbered task-ID prefixes from before the rename.
+    ('"ideate" string',    re.compile(r'"ideate"')),
+    ('"execute" string',   re.compile(r'"execute"')),
+    # Numbered task-ID prefixes from before each rename.
     ("plan-NNNN id",     re.compile(r"\bplan-\d{4,}\b")),
     ("implement-NNNN id",re.compile(r"\bimplement-\d{4,}\b")),
+    ("ideate-NNNN id",   re.compile(r"\bideate-\d{4,}\b")),
+    ("execute-NNNN id",  re.compile(r"\bexecute-\d{4,}\b")),
+    # Submission classes — verb-prefix forms were replaced by
+    # artifact-noun-prefix forms in the cleanup pass.
+    ("IdeateSubmission",   re.compile(r"\bIdeateSubmission\b")),
+    ("ExecuteSubmission",  re.compile(r"\bExecuteSubmission\b")),
+    ("EvaluateSubmission", re.compile(r"\bEvaluateSubmission\b")),
+    # Task / Payload / Outcome class prefixes — verb-form was
+    # replaced by gerund (Ideate -> Ideation, Execute -> Execution,
+    # Evaluate -> Evaluation).
+    ("Ideate<X> class",    re.compile(r"\bIdeate(?:Task|Payload|Outcome|Draft)\b")),
+    ("Execute<X> class",   re.compile(r"\bExecute(?:Task|Payload|Outcome|Draft)\b")),
+    ("Evaluate<X> class",  re.compile(r"\bEvaluate(?:Task|Payload|Outcome|Draft)\b")),
+    # Helper-name verb-suffix (replaced by artifact-noun forms).
+    ("submit_<verb>",      re.compile(r"\bsubmit_(?:ideate|execute|evaluate)\b")),
+    # Bare task-kind in code-fence-ish position. Both pre-rename
+    # forms (kind=plan / kind=implement) and the verb-form
+    # (kind=ideate / kind=execute) that the second pass replaced.
+    ("kind=plan",        re.compile(r"\bkind\s*=\s*plan\b")),
+    ("kind=implement",   re.compile(r"\bkind\s*=\s*implement\b")),
+    ("kind=ideate",      re.compile(r"\bkind\s*=\s*ideate\b")),
+    ("kind=execute",     re.compile(r"\bkind\s*=\s*execute\b")),
     # Verb-as-noun-head: a renamed task-kind verb directly followed by
     # an action noun reads awkwardly ("submit_ideate", "ideate
     # reclamation"). Catch these so future commits can't reintroduce
     # them. The clean form is either the artifact noun (`submit_idea`,
     # `submit_evaluation`) or a hyphenated kind-modifier
-    # (`ideate-task reclamation`). The matched action-noun set covers
-    # the common cases without trapping legitimate uses of the verbs
-    # themselves (e.g., "ideate the next batch").
-    ("submit_<verb>",    re.compile(r"\bsubmit_(?:ideate|execute|evaluate)\b")),
+    # (`ideation-task reclamation`).
     ("verb noun-head", re.compile(
         r"(?i)\b(?:plan|implement|ideate|execute|evaluate) "
         r"(?:reclamation|submit|submission|dispatch|terminal|reject|accept)\b"
     )),
-    # Bare task-kind in code-fence-ish position (e.g., `kind=implement`)
-    # — quoted forms are caught above; this catches the unquoted
-    # markdown / docstring shape.
-    ("kind=plan",        re.compile(r"\bkind\s*=\s*plan\b")),
-    ("kind=implement",   re.compile(r"\bkind\s*=\s*implement\b")),
 ]
 
 

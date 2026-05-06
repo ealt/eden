@@ -15,7 +15,7 @@ CONFORMANCE_GROUP = 'Evaluator submission'
 def _drive_to_starting_variant(client: WireClient) -> tuple[str, str]:
     """Return (eval_task_id, variant_id) for a freshly-prepared evaluator scenario."""
     variant_id = _seed.drive_to_starting_variant(client)
-    eval_tid = _seed.create_evaluate_task(client, variant_id=variant_id)
+    eval_tid = _seed.create_evaluation_task(client, variant_id=variant_id)
     return eval_tid, variant_id
 
 

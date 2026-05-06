@@ -27,12 +27,12 @@ from typing import Any
 
 import httpx
 from eden_contracts import (
-    EvaluateTask,
+    EvaluationTask,
     Event,
-    ExecuteTask,
+    ExecutionTask,
     FailReason,
     Idea,
-    IdeateTask,
+    IdeationTask,
     ReclaimCause,
     Task,
     TaskAdapter,
@@ -41,10 +41,10 @@ from eden_contracts import (
 )
 from eden_storage.errors import InvalidPrecondition
 from eden_storage.submissions import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     Submission,
+    VariantSubmission,
 )
 
 from .errors import raise_for_envelope
@@ -226,11 +226,11 @@ class StoreClient:
         )
         return TaskAdapter.validate_python(resp.json())
 
-    def create_ideate_task(self, task_id: str) -> IdeateTask:
-        task = IdeateTask.model_validate(
+    def create_ideation_task(self, task_id: str) -> IdeationTask:
+        task = IdeationTask.model_validate(
             {
                 "task_id": task_id,
-                "kind": "ideate",
+                "kind": "ideation",
                 "state": "pending",
                 "created_at": _now(),
                 "updated_at": _now(),
@@ -238,14 +238,14 @@ class StoreClient:
             }
         )
         created = self.create_task(task)
-        assert isinstance(created, IdeateTask)
+        assert isinstance(created, IdeationTask)
         return created
 
-    def create_execute_task(self, task_id: str, idea_id: str) -> ExecuteTask:
-        task = ExecuteTask.model_validate(
+    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
+        task = ExecutionTask.model_validate(
             {
                 "task_id": task_id,
-                "kind": "execute",
+                "kind": "execution",
                 "state": "pending",
                 "created_at": _now(),
                 "updated_at": _now(),
@@ -253,14 +253,14 @@ class StoreClient:
             }
         )
         created = self.create_task(task)
-        assert isinstance(created, ExecuteTask)
+        assert isinstance(created, ExecutionTask)
         return created
 
-    def create_evaluate_task(self, task_id: str, variant_id: str) -> EvaluateTask:
-        task = EvaluateTask.model_validate(
+    def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
+        task = EvaluationTask.model_validate(
             {
                 "task_id": task_id,
-                "kind": "evaluate",
+                "kind": "evaluation",
                 "state": "pending",
                 "created_at": _now(),
                 "updated_at": _now(),
@@ -268,7 +268,7 @@ class StoreClient:
             }
         )
         created = self.create_task(task)
-        assert isinstance(created, EvaluateTask)
+        assert isinstance(created, EvaluationTask)
         return created
 
     def claim(
@@ -408,24 +408,24 @@ class StoreClient:
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, IdeateSubmission):
+    if isinstance(submission, IdeaSubmission):
         return {
-            "kind": "ideate",
+            "kind": "ideation",
             "status": submission.status,
             "idea_ids": list(submission.idea_ids),
         }
-    if isinstance(submission, ExecuteSubmission):
+    if isinstance(submission, VariantSubmission):
         body: dict[str, Any] = {
-            "kind": "execute",
+            "kind": "execution",
             "status": submission.status,
             "variant_id": submission.variant_id,
         }
         if submission.commit_sha is not None:
             body["commit_sha"] = submission.commit_sha
         return body
-    if isinstance(submission, EvaluateSubmission):
+    if isinstance(submission, EvaluationSubmission):
         body = {
-            "kind": "evaluate",
+            "kind": "evaluation",
             "status": submission.status,
             "variant_id": submission.variant_id,
         }
@@ -438,19 +438,19 @@ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "ideate":
-        return IdeateSubmission(
+    if kind == "ideation":
+        return IdeaSubmission(
             status=payload["status"],
             idea_ids=tuple(payload.get("idea_ids", ())),
         )
-    if kind == "execute":
-        return ExecuteSubmission(
+    if kind == "execution":
+        return VariantSubmission(
             status=payload["status"],
             variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
-    if kind == "evaluate":
-        return EvaluateSubmission(
+    if kind == "evaluation":
+        return EvaluationSubmission(
             status=payload["status"],
             variant_id=payload["variant_id"],
             evaluation=payload.get("evaluation"),

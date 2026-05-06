@@ -37,9 +37,9 @@ def run_orchestrator_loop(
     *,
     store: Store,
     integrator: Integrator,
-    ideate_task_ids: list[str],
-    execute_task_prefix: str,
-    evaluate_task_prefix: str,
+    ideation_task_ids: list[str],
+    execution_task_prefix: str,
+    evaluation_task_prefix: str,
     poll_interval: float,
     max_quiescent_iterations: int,
     stop: StopFlag,
@@ -49,17 +49,17 @@ def run_orchestrator_loop(
     Returns when either ``stop`` is set or the orchestrator has observed
     ``max_quiescent_iterations`` consecutive iterations with no progress.
     """
-    for task_id in ideate_task_ids:
+    for task_id in ideation_task_ids:
         try:
-            store.create_ideate_task(task_id)
+            store.create_ideation_task(task_id)
         except AlreadyExists as exc:
             # Restart-safe: a previous orchestrator already seeded this
             # task. Anything else (transport, auth, illegal-transition)
             # surfaces immediately.
-            log.info("ideate_task_seed_skip", task_id=task_id, reason=str(exc))
+            log.info("ideation_task_seed_skip", task_id=task_id, reason=str(exc))
 
-    implement_factory = make_id_factory(execute_task_prefix)
-    evaluate_factory = make_id_factory(evaluate_task_prefix)
+    implement_factory = make_id_factory(execution_task_prefix)
+    evaluate_factory = make_id_factory(evaluation_task_prefix)
 
     def integrate(variant_id: str) -> None:
         integrator.integrate(variant_id)

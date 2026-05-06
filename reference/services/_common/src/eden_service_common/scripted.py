@@ -18,23 +18,23 @@ from collections.abc import Callable
 from typing import Any
 
 from eden_contracts import (
-    EvaluateTask,
     EvaluationSchema,
-    ExecuteTask,
+    EvaluationTask,
+    ExecutionTask,
     Idea,
-    IdeateTask,
+    IdeationTask,
     Variant,
 )
 from eden_dispatch.workers import (
-    EvaluateOutcome,
-    ExecuteOutcome,
+    EvaluationOutcome,
+    ExecutionOutcome,
     IdeaTemplate,
 )
 from eden_git import GitRepo, Identity, TreeEntry
 
-ScriptedPlanFn = Callable[[IdeateTask], list[IdeaTemplate]]
-ScriptedImplementFn = Callable[[ExecuteTask, Idea], ExecuteOutcome]
-ScriptedEvaluateFn = Callable[[EvaluateTask, Variant], EvaluateOutcome]
+ScriptedPlanFn = Callable[[IdeationTask], list[IdeaTemplate]]
+ScriptedImplementFn = Callable[[ExecutionTask, Idea], ExecutionOutcome]
+ScriptedEvaluateFn = Callable[[EvaluationTask, Variant], EvaluationOutcome]
 
 
 _IMPL_IDENTITY = Identity(
@@ -53,7 +53,7 @@ def make_plan_fn(
     satisfying the schema's ``min_length=1`` constraint.
     """
 
-    def _plan(task: IdeateTask) -> list[IdeaTemplate]:
+    def _plan(task: IdeationTask) -> list[IdeaTemplate]:
         templates: list[IdeaTemplate] = []
         for i in range(ideas_per_ideation):
             templates.append(
@@ -84,13 +84,13 @@ def make_implement_fn(
     """
     counter = itertools.count(1)
 
-    def _implement(task: ExecuteTask, idea: Idea) -> ExecuteOutcome:
+    def _implement(task: ExecutionTask, idea: Idea) -> ExecutionOutcome:
         index = next(counter)
         if fail_every is not None and fail_every > 0 and index % fail_every == 0:
-            return ExecuteOutcome(status="error")
+            return ExecutionOutcome(status="error")
 
         repo = GitRepo(repo_path)
-        variant_id = task.task_id.replace("execute-", "variant-")
+        variant_id = task.task_id.replace("execution-", "variant-")
         payload = f"variant={variant_id!r} slug={idea.slug!r}\n".encode()
         blob = repo.write_blob(payload)
         tree = repo.write_tree_from_entries(
@@ -117,7 +117,7 @@ def make_implement_fn(
         # Phase 10d follow-up B: when the local repo has an origin
         # remote (Gitea cutover), publish the work/* ref so the
         # orchestrator's clone can fetch it. Push failure rolls back
-        # the local ref + maps to ExecuteOutcome(status="error") —
+        # the local ref + maps to ExecutionOutcome(status="error") —
         # mirrors the production subprocess flow per chapter 3 §3.3.
         if "origin" in repo._run(["remote"], check=False).stdout.split():
             try:
@@ -129,8 +129,8 @@ def make_implement_fn(
                         f"refs/heads/{branch_short}",
                         expected_old_sha=commit_sha,
                     )
-                return ExecuteOutcome(status="error")
-        return ExecuteOutcome(
+                return ExecutionOutcome(status="error")
+        return ExecutionOutcome(
             status="success",
             commit_sha=commit_sha,
             branch=branch_short,
@@ -153,17 +153,17 @@ def make_evaluate_fn(
     """
     counter = itertools.count(1)
 
-    def _evaluate(task: EvaluateTask, variant: Variant) -> EvaluateOutcome:
+    def _evaluate(task: EvaluationTask, variant: Variant) -> EvaluationOutcome:
         index = next(counter)
         if fail_every is not None and fail_every > 0 and index % fail_every == 0:
-            return EvaluateOutcome(
+            return EvaluationOutcome(
                 status="error",
                 artifacts_uri=f"file:///tmp/artifacts/{variant.variant_id}",
             )
         evaluation: dict[str, Any] = {}
         for name, kind in evaluation_schema.root.items():
             evaluation[name] = _default_for_kind(kind, index)
-        return EvaluateOutcome(
+        return EvaluationOutcome(
             status="success",
             evaluation=evaluation,
             artifacts_uri=f"file:///tmp/artifacts/{variant.variant_id}",

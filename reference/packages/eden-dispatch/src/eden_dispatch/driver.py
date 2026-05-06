@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from eden_contracts import EvaluateTask
+from eden_contracts import EvaluationTask
 from eden_storage import Store
 
 _log = logging.getLogger(__name__)
@@ -51,11 +51,11 @@ def run_orchestrator_iteration(
     event atomically). The return value is ignored.
     """
     progress = False
-    progress |= _finalize_submitted(store, kind="ideate")
-    progress |= _dispatch_execute_tasks(store, implement_task_id_factory)
-    progress |= _finalize_submitted(store, kind="execute")
-    progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
-    progress |= _finalize_submitted(store, kind="evaluate")
+    progress |= _finalize_submitted(store, kind="ideation")
+    progress |= _dispatch_execution_tasks(store, implement_task_id_factory)
+    progress |= _finalize_submitted(store, kind="execution")
+    progress |= _dispatch_evaluation_tasks(store, evaluate_task_id_factory)
+    progress |= _finalize_submitted(store, kind="evaluation")
     if integrate_variant is not None:
         progress |= _promote_successful_variants(store, integrate_variant)
     return progress
@@ -84,24 +84,24 @@ def _finalize_submitted(store: Store, *, kind: str) -> bool:
     return progress
 
 
-def _dispatch_execute_tasks(
+def _dispatch_execution_tasks(
     store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
     for idea in store.list_ideas(state="ready"):
         task_id = factory()
-        store.create_execute_task(task_id, idea.idea_id)
+        store.create_execution_task(task_id, idea.idea_id)
         progress = True
     return progress
 
 
-def _dispatch_evaluate_tasks(
+def _dispatch_evaluation_tasks(
     store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
     for variant in _list_variants_needing_evaluation(store):
         task_id = factory()
-        store.create_evaluate_task(task_id, variant.variant_id)
+        store.create_evaluation_task(task_id, variant.variant_id)
         progress = True
     return progress
 
@@ -155,7 +155,7 @@ def _list_variants_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
 
 def _variants_with_evaluate_task(store: Store) -> set[str]:
     dispatched: set[str] = set()
-    for task in store.list_tasks(kind="evaluate"):
-        assert isinstance(task, EvaluateTask)
+    for task in store.list_tasks(kind="evaluation"):
+        assert isinstance(task, EvaluationTask)
         dispatched.add(task.payload.variant_id)
     return dispatched

@@ -28,7 +28,7 @@ docker compose --env-file .env up -d --wait
 
 1. Generates or preserves: `POSTGRES_PASSWORD`, `EDEN_SHARED_TOKEN`,
    `EDEN_SESSION_SECRET`, `GITEA_SECRET_KEY`, `GITEA_INTERNAL_TOKEN`,
-   default ports, and `EDEN_IDEATE_TASKS`. Re-runs preserve any
+   default ports, and `EDEN_IDEATION_TASKS`. Re-runs preserve any
    existing values from `.env`.
 2. Copies `<config.yaml>` to `reference/compose/experiment-config.yaml`
    so Compose mounts it into the task-store-server, evaluator-host,

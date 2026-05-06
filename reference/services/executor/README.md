@@ -1,6 +1,6 @@
 # eden-executor-host
 
-Reference executor worker: claims pending `execute` tasks, writes a real commit to the shared bare repo using `GitRepo`, and submits the new SHA. Honors the full `idea.parent_commits` list — single-parent ideas yield single-parent commits, merge ideas yield merge commits.
+Reference executor worker: claims pending `execution` tasks, writes a real commit to the shared bare repo using `GitRepo`, and submits the new SHA. Honors the full `idea.parent_commits` list — single-parent ideas yield single-parent commits, merge ideas yield merge commits.
 
 ## Run
 
@@ -20,7 +20,7 @@ Pass `--mode subprocess` plus `--experiment-config <path>`,
 `--experiment-dir <path>`, and (optionally) `--worktrees-dir
 <path>` to invoke a user-supplied per-task implement command
 instead of the scripted profile. The command string is read from
-the experiment-config YAML's `execute_command` key.
+the experiment-config YAML's `execution_command` key.
 
 For each execute task the host:
 

@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 
 from eden_contracts import (
-    EvaluateTask,
     EvaluationSchema,
+    EvaluationTask,
     ExperimentConfig,
     Idea,
     ObjectiveSpec,
@@ -21,7 +21,7 @@ from eden_evaluator_host.subprocess_mode import (
 )
 from eden_git import GitRepo
 from eden_service_common import seed_bare_repo
-from eden_storage import EvaluateSubmission, InMemoryStore
+from eden_storage import EvaluationSubmission, InMemoryStore
 
 EXPERIMENT_ID = "exp-1"
 
@@ -44,8 +44,8 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     )
     store.create_idea(idea)
     store.mark_idea_ready("idea-x1")
-    store.create_execute_task("execute-1", "idea-x1")
-    claim = store.claim("execute-1", "execute-1")
+    store.create_execution_task("execution-1", "idea-x1")
+    claim = store.claim("execution-1", "execution-1")
     variant = Variant(
         variant_id="variant-t1",
         experiment_id=EXPERIMENT_ID,
@@ -56,18 +56,18 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
         started_at="2026-04-01T00:00:00.000Z",
     )
     store.create_variant(variant)
-    from eden_storage import ExecuteSubmission
+    from eden_storage import VariantSubmission
 
     store.submit(
-        "execute-1",
+        "execution-1",
         claim.token,
-        ExecuteSubmission(status="success", variant_id="variant-t1", commit_sha=seed_sha),
+        VariantSubmission(status="success", variant_id="variant-t1", commit_sha=seed_sha),
     )
     # Drive accept so the variant picks up commit_sha and we can dispatch evaluate.
-    decision, _ = store.validate_terminal("execute-1")
+    decision, _ = store.validate_terminal("execution-1")
     assert decision == "accept"
-    store.accept("execute-1")
-    store.create_evaluate_task("evaluate-1", "variant-t1")
+    store.accept("execution-1")
+    store.create_evaluation_task("evaluate-1", "variant-t1")
     return store, str(repo_path), seed_sha, "variant-t1"
 
 
@@ -122,8 +122,8 @@ def test_success_submits_evaluation(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="evaluate", state="pending")[0]
-    assert isinstance(task_raw, EvaluateTask)
+    task_raw = store.list_tasks(kind="evaluation", state="pending")[0]
+    assert isinstance(task_raw, EvaluationTask)
     task = task_raw
     _handle_one(
         store=store,
@@ -135,7 +135,7 @@ def test_success_submits_evaluation(tmp_path: Path) -> None:
         objective={"expr": "score", "direction": "maximize"},
     )
     submission = store.read_submission("evaluate-1")
-    assert isinstance(submission, EvaluateSubmission)
+    assert isinstance(submission, EvaluationSubmission)
     assert submission.status == "success"
     assert submission.evaluation == {"score": 0.7}
 
@@ -157,8 +157,8 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="evaluate", state="pending")[0]
-    assert isinstance(task_raw, EvaluateTask)
+    task_raw = store.list_tasks(kind="evaluation", state="pending")[0]
+    assert isinstance(task_raw, EvaluationTask)
     task = task_raw
     _handle_one(
         store=store,
@@ -170,7 +170,7 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
         objective={"expr": "score", "direction": "maximize"},
     )
     submission = store.read_submission("evaluate-1")
-    assert isinstance(submission, EvaluateSubmission)
+    assert isinstance(submission, EvaluationSubmission)
     assert submission.status == "eval_error"
 
 
@@ -190,8 +190,8 @@ def test_status_error_passthrough(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="evaluate", state="pending")[0]
-    assert isinstance(task_raw, EvaluateTask)
+    task_raw = store.list_tasks(kind="evaluation", state="pending")[0]
+    assert isinstance(task_raw, EvaluationTask)
     task = task_raw
     _handle_one(
         store=store,
@@ -203,7 +203,7 @@ def test_status_error_passthrough(tmp_path: Path) -> None:
         objective={"expr": "score", "direction": "maximize"},
     )
     submission = store.read_submission("evaluate-1")
-    assert isinstance(submission, EvaluateSubmission)
+    assert isinstance(submission, EvaluationSubmission)
     assert submission.status == "error"
 
 
@@ -218,8 +218,8 @@ def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
     )
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
-    task_raw = store.list_tasks(kind="evaluate", state="pending")[0]
-    assert isinstance(task_raw, EvaluateTask)
+    task_raw = store.list_tasks(kind="evaluation", state="pending")[0]
+    assert isinstance(task_raw, EvaluationTask)
     task = task_raw
     start = time.monotonic()
     _handle_one(
@@ -234,5 +234,5 @@ def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
     elapsed = time.monotonic() - start
     assert elapsed < 10
     submission = store.read_submission("evaluate-1")
-    assert isinstance(submission, EvaluateSubmission)
+    assert isinstance(submission, EvaluationSubmission)
     assert submission.status == "eval_error"

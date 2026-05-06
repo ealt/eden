@@ -19,7 +19,7 @@ from ._common import CommitSha, DateTimeStr
 
 EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
-TaskKind = Literal["ideate", "execute", "evaluate"]
+TaskKind = Literal["ideation", "execution", "evaluation"]
 FailReason = Literal["worker_error", "validation_error", "policy_limit"]
 ReclaimCause = Literal["expired", "operator", "health_policy"]
 

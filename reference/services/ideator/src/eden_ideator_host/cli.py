@@ -77,10 +77,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Where to write rationale artifacts (required in --mode subprocess).",
     )
-    parser.add_argument("--ideate-startup-deadline", type=float, default=30.0)
-    parser.add_argument("--ideate-task-deadline", type=float, default=120.0)
-    parser.add_argument("--ideate-shutdown-deadline", type=float, default=10.0)
-    parser.add_argument("--ideate-env-file", default=None)
+    parser.add_argument("--ideation-startup-deadline", type=float, default=30.0)
+    parser.add_argument("--ideation-task-deadline", type=float, default=120.0)
+    parser.add_argument("--ideation-shutdown-deadline", type=float, default=10.0)
+    parser.add_argument("--ideation-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     add_exec_arguments(parser)
@@ -140,13 +140,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             config = load_experiment_config(args.experiment_config)
-            command = require_command(config, "ideate_command")
+            command = require_command(config, "ideation_command")
             # User env file lays down the base; host-owned reserved
             # EDEN_* keys overlay on top so a user file can't redirect
             # the protocol surface (§D.0 contract).
             env: dict[str, str] = {}
-            if args.ideate_env_file:
-                env.update(parse_env_file(args.ideate_env_file))
+            if args.ideation_env_file:
+                env.update(parse_env_file(args.ideation_env_file))
             # When --exec-mode=docker, EDEN_EXPERIMENT_DIR inside the
             # spawned child container resolves to the bind-mount
             # target supplied via --exec-bind, NOT the host-side path.
@@ -205,9 +205,9 @@ def main(argv: list[str] | None = None) -> int:
                 command=command,
                 cwd=Path(args.experiment_dir).resolve(),
                 env=env,
-                startup_deadline=args.ideate_startup_deadline,
-                task_deadline=args.ideate_task_deadline,
-                shutdown_deadline=args.ideate_shutdown_deadline,
+                startup_deadline=args.ideation_startup_deadline,
+                task_deadline=args.ideation_task_deadline,
+                shutdown_deadline=args.ideation_shutdown_deadline,
                 wrap_factory=wrap_factory,
             )
             run_ideator_subprocess_loop(

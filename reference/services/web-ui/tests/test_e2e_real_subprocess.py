@@ -188,7 +188,7 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_ideate_task("t-ui-1")
+            seed.create_ideation_task("t-ui-1")
         finally:
             seed.close()
 
@@ -367,7 +367,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_ideate_task("t-strand")
+            seed.create_ideation_task("t-strand")
         finally:
             seed.close()
 
@@ -405,7 +405,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 token,
                 "--repo-path",
                 str(bare_repo),
-                "--ideate-tasks",
+                "--ideation-tasks",
                 "",
                 "--max-quiescent-iterations",
                 "2",

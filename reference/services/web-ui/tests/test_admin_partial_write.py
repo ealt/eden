@@ -57,8 +57,8 @@ def signed_in_admin_repo_client(admin_repo_app: FastAPI):
         yield c
 
 
-def _seed_ideate_task(store: InMemoryStore, task_id: str = "ideate-A") -> str:
-    store.create_ideate_task(task_id)
+def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> str:
+    store.create_ideation_task(task_id)
     return task_id
 
 
@@ -67,11 +67,11 @@ class TestTaskReclaimFailures:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """Terminal task → reclaim raises IllegalTransition → ?error=illegal-transition."""
-        from eden_storage import IdeateSubmission
+        from eden_storage import IdeaSubmission
 
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         claim = store.claim(task_id, "w-1")
-        store.submit(task_id, claim.token, IdeateSubmission(status="success", idea_ids=()))
+        store.submit(task_id, claim.token, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -91,7 +91,7 @@ class TestTaskReclaimFailures:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A non-IllegalTransition Exception from store.reclaim → ?error=transport."""
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         store.claim(task_id, "w-1")
         call_count = {"n": 0}
 

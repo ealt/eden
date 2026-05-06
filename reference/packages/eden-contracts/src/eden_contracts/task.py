@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from ._common import DateTimeStr, NotNone
 
-TaskKind = Literal["ideate", "execute", "evaluate"]
+TaskKind = Literal["ideation", "execution", "evaluation"]
 TaskState = Literal["pending", "claimed", "submitted", "completed", "failed"]
 
 _CLAIM_STATES: frozenset[str] = frozenset({"claimed", "submitted"})
@@ -34,24 +34,24 @@ class TaskClaim(BaseModel):
     expires_at: Annotated[DateTimeStr | None, NotNone] = None
 
 
-class IdeatePayload(BaseModel):
-    """Payload for ``kind=ideate`` tasks."""
+class IdeationPayload(BaseModel):
+    """Payload for ``kind=ideation`` tasks."""
 
     model_config = ConfigDict(strict=True, extra="allow")
 
     experiment_id: Annotated[str, Field(min_length=1)]
 
 
-class ExecutePayload(BaseModel):
-    """Payload for ``kind=execute`` tasks."""
+class ExecutionPayload(BaseModel):
+    """Payload for ``kind=execution`` tasks."""
 
     model_config = ConfigDict(strict=True, extra="allow")
 
     idea_id: Annotated[str, Field(min_length=1)]
 
 
-class EvaluatePayload(BaseModel):
-    """Payload for ``kind=evaluate`` tasks."""
+class EvaluationPayload(BaseModel):
+    """Payload for ``kind=evaluation`` tasks."""
 
     model_config = ConfigDict(strict=True, extra="allow")
 
@@ -83,29 +83,29 @@ class _TaskBase(BaseModel):
         return self
 
 
-class IdeateTask(_TaskBase):
-    """Task of kind ``ideate``."""
+class IdeationTask(_TaskBase):
+    """Task of kind ``ideation``."""
 
-    kind: Literal["ideate"]
-    payload: IdeatePayload
-
-
-class ExecuteTask(_TaskBase):
-    """Task of kind ``execute``."""
-
-    kind: Literal["execute"]
-    payload: ExecutePayload
+    kind: Literal["ideation"]
+    payload: IdeationPayload
 
 
-class EvaluateTask(_TaskBase):
-    """Task of kind ``evaluate``."""
+class ExecutionTask(_TaskBase):
+    """Task of kind ``execution``."""
 
-    kind: Literal["evaluate"]
-    payload: EvaluatePayload
+    kind: Literal["execution"]
+    payload: ExecutionPayload
+
+
+class EvaluationTask(_TaskBase):
+    """Task of kind ``evaluation``."""
+
+    kind: Literal["evaluation"]
+    payload: EvaluationPayload
 
 
 Task = Annotated[
-    IdeateTask | ExecuteTask | EvaluateTask,
+    IdeationTask | ExecutionTask | EvaluationTask,
     Field(discriminator="kind"),
 ]
 """Discriminated union keyed by ``kind`` — use :data:`TaskAdapter` to validate untyped input."""

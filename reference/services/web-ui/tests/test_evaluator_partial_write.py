@@ -39,7 +39,7 @@ from conftest import (
 )
 from eden_storage import (
     ConflictingResubmission,
-    EvaluateSubmission,
+    EvaluationSubmission,
     InMemoryStore,
     InvalidPrecondition,
     WrongToken,
@@ -138,7 +138,7 @@ class TestSubCaseAPrime:
                 original_submit(
                     task_id,
                     other.token,
-                    EvaluateSubmission(
+                    EvaluationSubmission(
                         status="success", variant_id=variant_id, evaluation={"score": 0.123}
                     ),
                 )
@@ -235,13 +235,13 @@ class TestSubCaseD:
 
         # Make read_task return a synthetic submitted state, but
         # read_submission returns None.
-        from eden_contracts import EvaluatePayload, EvaluateTask, TaskClaim
+        from eden_contracts import EvaluationPayload, EvaluationTask, TaskClaim
 
-        synthetic_task = EvaluateTask(
+        synthetic_task = EvaluationTask(
             task_id=eval_id,
-            kind="evaluate",
+            kind="evaluation",
             state="submitted",
-            payload=EvaluatePayload(variant_id="variant-eval"),
+            payload=EvaluationPayload(variant_id="variant-eval"),
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T12:00:00.000Z",
             claim=TaskClaim(
@@ -409,7 +409,7 @@ class TestSubCaseIb:
         # with an *equivalent* submission to what the route is about
         # to send. We must do this without using our claim's token,
         # so reclaim, re-claim, and submit equivalent payload.
-        equivalent = EvaluateSubmission(
+        equivalent = EvaluationSubmission(
             status="success", variant_id=variant_id, evaluation={"score": 0.9}
         )
         store.reclaim(eval_id, "operator")
@@ -440,7 +440,7 @@ class TestSubCaseIc:
         store.submit(
             eval_id,
             other.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success", variant_id=variant_id, evaluation={"score": 0.111}
             ),
         )

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
-from eden_contracts import EvaluationSchema, ExperimentConfig, IdeateTask, ObjectiveSpec
+from eden_contracts import EvaluationSchema, ExperimentConfig, IdeationTask, ObjectiveSpec
 from eden_ideator_host import build_subprocess_config, run_ideator_subprocess_loop
 from eden_ideator_host.subprocess_mode import (
     IdeatorSubprocessConfig,
@@ -16,7 +16,7 @@ from eden_ideator_host.subprocess_mode import (
     start_ideator_subprocess,
 )
 from eden_service_common import StopFlag, seed_bare_repo
-from eden_storage import IdeateSubmission, InMemoryStore
+from eden_storage import IdeaSubmission, InMemoryStore
 
 EXPERIMENT_ID = "exp-1"
 
@@ -94,16 +94,16 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
                               "parent_commits": ["a" * 40],
                               "rationale": f"# rationale {i}\\n"}),
                   flush=True)
-        print(json.dumps({"event": "ideate-done", "task_id": task_id}), flush=True)
+        print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,
     )
     store, _ = _seed_store_and_repo(tmp_path)
-    store.create_ideate_task("ideate-1")
+    store.create_ideation_task("ideation-1")
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
-    plan_task = store.list_tasks(kind="ideate", state="pending")[0]
-    assert isinstance(plan_task, IdeateTask)
+    plan_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(plan_task, IdeationTask)
     handle_plan_task(
         store=store,
         task=plan_task,
@@ -115,10 +115,10 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
         artifacts_dir=artifacts,
     )
     sub.stop()
-    submitted = store.read_task("ideate-1")
+    submitted = store.read_task("ideation-1")
     assert submitted.state == "submitted"
-    submission = store.read_submission("ideate-1")
-    assert isinstance(submission, IdeateSubmission)
+    submission = store.read_submission("ideation-1")
+    assert isinstance(submission, IdeaSubmission)
     assert submission.status == "success"
     assert len(submission.idea_ids) == 2
     ideas = [store.read_idea(pid) for pid in submission.idea_ids]
@@ -133,17 +133,20 @@ def test_plan_error_terminator(tmp_path: Path) -> None:
         print(json.dumps({"event": "ready"}), flush=True)
         line = sys.stdin.readline()
         dispatch = json.loads(line)
-        print(json.dumps({"event": "ideate-error", "task_id": dispatch["task_id"], "reason": "no"}),
-              flush=True)
+        print(json.dumps({
+            "event": "ideation-error",
+            "task_id": dispatch["task_id"],
+            "reason": "no",
+        }), flush=True)
         """,
     )
     store, _ = _seed_store_and_repo(tmp_path)
-    store.create_ideate_task("ideate-1")
+    store.create_ideation_task("ideation-1")
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
-    plan_task = store.list_tasks(kind="ideate", state="pending")[0]
-    assert isinstance(plan_task, IdeateTask)
+    plan_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(plan_task, IdeationTask)
     handle_plan_task(
         store=store,
         task=plan_task,
@@ -155,8 +158,8 @@ def test_plan_error_terminator(tmp_path: Path) -> None:
         artifacts_dir=artifacts,
     )
     sub.stop()
-    submission = store.read_submission("ideate-1")
-    assert isinstance(submission, IdeateSubmission)
+    submission = store.read_submission("ideation-1")
+    assert isinstance(submission, IdeaSubmission)
     assert submission.status == "error"
 
 
@@ -175,11 +178,11 @@ def test_protocol_violation_wrong_task_id(tmp_path: Path) -> None:
         """,
     )
     store, _ = _seed_store_and_repo(tmp_path)
-    store.create_ideate_task("ideate-1")
+    store.create_ideation_task("ideation-1")
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
-    plan_task = store.list_tasks(kind="ideate", state="pending")[0]
-    assert isinstance(plan_task, IdeateTask)
+    plan_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(plan_task, IdeationTask)
     with pytest.raises(ProtocolViolation):
         handle_plan_task(
             store=store,
@@ -192,8 +195,8 @@ def test_protocol_violation_wrong_task_id(tmp_path: Path) -> None:
             artifacts_dir=tmp_path,
         )
     sub.stop()
-    submission = store.read_submission("ideate-1")
-    assert isinstance(submission, IdeateSubmission)
+    submission = store.read_submission("ideation-1")
+    assert isinstance(submission, IdeaSubmission)
     assert submission.status == "error"
 
 
@@ -216,12 +219,12 @@ def test_loop_respawns_on_subprocess_crash(tmp_path: Path) -> None:
                           "parent_commits": ["a" * 40],
                           "rationale": "# r"}),
               flush=True)
-        print(json.dumps({"event": "ideate-done", "task_id": task_id}), flush=True)
+        print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,
     )
     store, _ = _seed_store_and_repo(tmp_path)
-    store.create_ideate_task("ideate-1")
-    store.create_ideate_task("ideate-2")
+    store.create_ideation_task("ideation-1")
+    store.create_ideation_task("ideation-2")
     marker = tmp_path / "crashed"
     config = build_subprocess_config(
         command=f"python3 {worker}",
@@ -251,8 +254,8 @@ def test_loop_respawns_on_subprocess_crash(tmp_path: Path) -> None:
     t.start()
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        t1 = store.read_task("ideate-1")
-        t2 = store.read_task("ideate-2")
+        t1 = store.read_task("ideation-1")
+        t2 = store.read_task("ideation-2")
         if t1.state == "submitted" and t2.state == "submitted":
             break
         time.sleep(0.1)
@@ -261,9 +264,9 @@ def test_loop_respawns_on_subprocess_crash(tmp_path: Path) -> None:
     assert not t.is_alive()
     assert marker.is_file()
     # First task got submit-error from the crash; second succeeds after respawn.
-    s1 = store.read_submission("ideate-1")
-    s2 = store.read_submission("ideate-2")
-    assert isinstance(s1, IdeateSubmission)
-    assert isinstance(s2, IdeateSubmission)
+    s1 = store.read_submission("ideation-1")
+    s2 = store.read_submission("ideation-2")
+    assert isinstance(s1, IdeaSubmission)
+    assert isinstance(s2, IdeaSubmission)
     assert s1.status == "error"
     assert s2.status == "success"

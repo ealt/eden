@@ -194,9 +194,9 @@ def main() -> int:
     assert web_url is not None  # noqa: S101 — type narrowing only
     assert base_sha is not None  # noqa: S101 — type narrowing only
 
-    seeded_ids = tuple(f"ideate-{i:04d}" for i in range(1, 5))
-    submit_id = "ideate-0001"
-    reclaim_id = "ideate-0002"
+    seeded_ids = tuple(f"ideation-{i:04d}" for i in range(1, 5))
+    submit_id = "ideation-0001"
+    reclaim_id = "ideation-0002"
 
     print(f"e2e_drive: connecting to {web_url}", flush=True)
     try:

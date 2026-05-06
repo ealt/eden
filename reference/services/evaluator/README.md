@@ -20,7 +20,7 @@ Pass `--mode subprocess` plus `--experiment-dir <path>`,
 `--repo-path <path>`, and (optionally) `--worktrees-dir <path>` to
 invoke a user-supplied per-task evaluate command instead of the
 scripted profile. The command string is read from the
-experiment-config YAML's `evaluate_command` key.
+experiment-config YAML's `evaluation_command` key.
 
 For each evaluate task the host creates a worktree at
 `variant.commit_sha`, runs the command with cwd=wt and env

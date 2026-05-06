@@ -28,17 +28,17 @@ def fresh_variant_id(prefix: str = "tr") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
-def create_ideate_task(
+def create_ideation_task(
     client: WireClient,
     *,
     task_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> str:
-    """POST /tasks for a `ideate` task. Returns the task_id."""
-    tid = task_id or fresh_task_id("ideate")
+    """POST /tasks for a `ideation` task. Returns the task_id."""
+    tid = task_id or fresh_task_id("ideation")
     body = {
         "task_id": tid,
-        "kind": "ideate",
+        "kind": "ideation",
         "state": "pending",
         "payload": payload or {"experiment_id": client.experiment_id},
         "created_at": _NOW,
@@ -49,7 +49,7 @@ def create_ideate_task(
     return tid
 
 
-def create_evaluate_task(
+def create_evaluation_task(
     client: WireClient,
     *,
     variant_id: str,
@@ -59,7 +59,7 @@ def create_evaluate_task(
     tid = task_id or fresh_task_id("eval")
     body = {
         "task_id": tid,
-        "kind": "evaluate",
+        "kind": "evaluation",
         "state": "pending",
         "payload": {"variant_id": variant_id},
         "created_at": _NOW,
@@ -70,21 +70,21 @@ def create_evaluate_task(
     return tid
 
 
-def create_execute_task(
+def create_execution_task(
     client: WireClient,
     *,
     idea_id: str,
     task_id: str | None = None,
 ) -> str:
-    """POST /tasks for an `execute` task referencing a `ready` idea.
+    """POST /tasks for an `execution` task referencing a `ready` idea.
 
     The composite-commit invariant ([`05-event-protocol.md`](05-event-protocol.md) §2.2)
     flips the idea `ready → dispatched` atomically with this insert.
     """
-    tid = task_id or fresh_task_id("execute")
+    tid = task_id or fresh_task_id("execution")
     body = {
         "task_id": tid,
-        "kind": "execute",
+        "kind": "execution",
         "state": "pending",
         "payload": {"idea_id": idea_id},
         "created_at": _NOW,
@@ -120,7 +120,7 @@ def submit_idea(
     status: str = "success",
 ) -> Any:
     payload: dict[str, Any] = {
-        "kind": "ideate",
+        "kind": "ideation",
         "status": status,
         "idea_ids": idea_ids if idea_ids is not None else [],
     }
@@ -130,7 +130,7 @@ def submit_idea(
     )
 
 
-def submit_execution(
+def submit_variant(
     client: WireClient,
     task_id: str,
     *,
@@ -140,7 +140,7 @@ def submit_execution(
     commit_sha: str = "0" * 40,
 ) -> Any:
     payload: dict[str, Any] = {
-        "kind": "execute",
+        "kind": "execution",
         "status": status,
         "variant_id": variant_id,
     }
@@ -163,7 +163,7 @@ def submit_evaluation(
     artifacts_uri: str | None = None,
 ) -> Any:
     payload: dict[str, Any] = {
-        "kind": "evaluate",
+        "kind": "evaluation",
         "status": status,
         "variant_id": variant_id,
     }
@@ -291,7 +291,7 @@ def drive_to_starting_variant(
     """
     pid = idea_id or create_idea(client)
     mark_idea_ready(client, pid)
-    impl_tid = create_execute_task(client, idea_id=pid)
+    impl_tid = create_execution_task(client, idea_id=pid)
     impl_claim = claim(client, impl_tid, worker_id="impl-worker")
     variant_id = fresh_variant_id()
     # Executor creates the starting variant before submitting (chapter 3 §3.2 step 1).
@@ -301,7 +301,7 @@ def drive_to_starting_variant(
         idea_id=pid,
         status="starting",
     )
-    r = submit_execution(
+    r = submit_variant(
         client,
         impl_tid,
         token=impl_claim["token"],
@@ -340,7 +340,7 @@ def drive_to_error_variant(
     """
     pid = idea_id or create_idea(client)
     mark_idea_ready(client, pid)
-    impl_tid = create_execute_task(client, idea_id=pid)
+    impl_tid = create_execution_task(client, idea_id=pid)
     impl_claim = claim(client, impl_tid, worker_id="impl-worker")
     variant_id = fresh_variant_id()
     create_variant(
@@ -349,7 +349,7 @@ def drive_to_error_variant(
         idea_id=pid,
         status="starting",
     )
-    r = submit_execution(
+    r = submit_variant(
         client,
         impl_tid,
         token=impl_claim["token"],
@@ -409,7 +409,7 @@ def drive_to_success_variant(
     variant_id = drive_to_starting_variant(
         client, idea_id=idea_id, commit_sha=commit_sha
     )
-    eval_tid = create_evaluate_task(client, variant_id=variant_id)
+    eval_tid = create_evaluation_task(client, variant_id=variant_id)
     eval_claim = claim(client, eval_tid, worker_id="eval-worker")
     r = submit_evaluation(
         client,

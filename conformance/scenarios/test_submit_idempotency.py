@@ -24,7 +24,7 @@ def test_resubmit_content_equivalent_returns_200(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
     """spec/v0/04-task-protocol.md §4.2 — resubmit with identical payload is idempotent."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     r1 = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[])
     assert r1.status_code == 200
@@ -38,7 +38,7 @@ def test_resubmit_content_equivalent_returns_200(
 def test_resubmit_divergent_returns_409(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.2 — divergent resubmit is rejected."""
     pid_a, pid_b = _setup_idea_chain(wire_client)
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     r1 = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_a])
     assert r1.status_code == 200
@@ -50,7 +50,7 @@ def test_resubmit_divergent_returns_409(wire_client: WireClient) -> None:
 def test_plan_idea_ids_compared_as_set(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.2 — plan resubmit compares idea_ids as a set."""
     pid_a, pid_b = _setup_idea_chain(wire_client)
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     r1 = _seed.submit_idea(
         wire_client, tid, token=c["token"], idea_ids=[pid_a, pid_b]
@@ -65,7 +65,7 @@ def test_plan_idea_ids_compared_as_set(wire_client: WireClient) -> None:
 def test_evaluate_evaluation_compared_as_json(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.2 — evaluate metrics resubmit is JSON-equivalent."""
     variant_id = _seed.drive_to_starting_variant(wire_client)
-    eval_tid = _seed.create_evaluate_task(wire_client, variant_id=variant_id)
+    eval_tid = _seed.create_evaluation_task(wire_client, variant_id=variant_id)
     c = _seed.claim(wire_client, eval_tid)
     r1 = _seed.submit_evaluation(
         wire_client,
@@ -93,7 +93,7 @@ def test_resubmit_after_terminal_rejected(wire_client: WireClient) -> None:
     regardless of content equivalence; the failure mode is illegal-
     transition, not wrong-token.
     """
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     _seed.submit_idea(wire_client, tid, token=c["token"])
     _seed.accept(wire_client, tid)

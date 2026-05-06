@@ -60,7 +60,7 @@ def test_worker_view_after_reclamation_invalidates_prior_token(
     resubmit against a cleared claim MUST be rejected regardless of
     the presented token.
     """
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
 
     # 1. Worker claims; the task now carries our claim.
     original_claim = _seed.claim(wire_client, tid, worker_id="w-original")

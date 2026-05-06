@@ -17,12 +17,12 @@ from eden_contracts import EvaluationSchema, Idea, Variant
 from eden_dispatch import run_orchestrator_iteration
 from eden_storage import (
     ConflictingResubmission,
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     IllegalTransition,
     InvalidPrecondition,
     Store,
+    VariantSubmission,
 )
 
 
@@ -63,7 +63,7 @@ class TestReadIsolation:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t1")
+        store.create_ideation_task("t1")
         snapshot = store.read_task("t1")
         # Forge a corrupt state mutation on the returned object.
         snapshot.state = "completed"
@@ -83,7 +83,7 @@ class TestReadIsolation:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t1")
+        store.create_ideation_task("t1")
         events = store.events()
         events[0].data["task_id"] = "HIJACKED"
         assert store.events()[0].data["task_id"] == "t1"
@@ -116,31 +116,31 @@ class TestReadIsolation:
         place and break idempotency / validation decisions."""
         store = make_store()
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         original_evaluation = {"score": 0.9}
-        sub = EvaluateSubmission(
+        sub = EvaluationSubmission(
             status="success", variant_id="tr-1", evaluation=original_evaluation
         )
         store.submit("t-eval", ec.token, sub)
         # Mutate caller-owned metrics and the object returned from read.
         original_evaluation["score"] = 999.0
         read_back = store.read_submission("t-eval")
-        assert isinstance(read_back, EvaluateSubmission)
+        assert isinstance(read_back, EvaluationSubmission)
         assert read_back.evaluation is not None
         read_back.evaluation["score"] = 888.0
         # The committed submission must still carry 0.9.
         second_read = store.read_submission("t-eval")
-        assert isinstance(second_read, EvaluateSubmission)
+        assert isinstance(second_read, EvaluationSubmission)
         assert second_read.evaluation == {"score": 0.9}
 
 
@@ -152,22 +152,22 @@ class TestSubmissionBinding:
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         eclaim = store.claim("t-eval", "eval-w")
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-eval",
                 eclaim.token,
-                EvaluateSubmission(
+                EvaluationSubmission(
                     status="success", variant_id="not-tr-1", evaluation={"score": 0.9}
                 ),
             )
@@ -179,8 +179,8 @@ class TestSubmissionBinding:
         store = make_store()
         _ready_idea(store, "p1")
         _ready_idea(store, "p2")
-        store.create_execute_task("t-a", "p1")
-        store.create_execute_task("t-b", "p2")
+        store.create_execution_task("t-a", "p1")
+        store.create_execution_task("t-b", "p2")
         ca = store.claim("t-a", "executor-w")
         _starting_variant(store, "tr-a", "p1")
         _starting_variant(store, "tr-b", "p2")
@@ -188,20 +188,20 @@ class TestSubmissionBinding:
             store.submit(
                 "t-a",
                 ca.token,
-                ExecuteSubmission(status="success", variant_id="tr-b", commit_sha="b" * 40),
+                VariantSubmission(status="success", variant_id="tr-b", commit_sha="b" * 40),
             )
 
     def test_plan_submit_with_unknown_idea_rejected(
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t-ideate")
+        store.create_ideation_task("t-ideate")
         claim = store.claim("t-ideate", "ideator-w")
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-ideate",
                 claim.token,
-                IdeateSubmission(status="success", idea_ids=("never-existed",)),
+                IdeaSubmission(status="success", idea_ids=("never-existed",)),
             )
 
     def test_plan_submit_with_drafting_idea_rejected(
@@ -221,13 +221,13 @@ class TestSubmissionBinding:
                 created_at="2026-04-23T00:00:00.000Z",
             )
         )
-        store.create_ideate_task("t-ideate")
+        store.create_ideation_task("t-ideate")
         claim = store.claim("t-ideate", "ideator-w")
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-ideate",
                 claim.token,
-                IdeateSubmission(status="success", idea_ids=("p-draft",)),
+                IdeaSubmission(status="success", idea_ids=("p-draft",)),
             )
 
 
@@ -240,13 +240,13 @@ class TestValidationErrorRouting:
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha=None),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha=None),
         )
         reason = store.validate_acceptance("t-exec")
         assert reason is not None
@@ -257,21 +257,21 @@ class TestValidationErrorRouting:
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(status="success", variant_id="tr-1", evaluation=None),
+            EvaluationSubmission(status="success", variant_id="tr-1", evaluation=None),
         )
         reason = store.validate_acceptance("t-eval")
         assert reason is not None
@@ -283,14 +283,14 @@ class TestValidationErrorRouting:
         """A malformed success submission lands as task.failed(validation_error)."""
         store = make_store("exp-vr")
         _ready_idea(store, "p-1")
-        store.create_execute_task("t-exec", "p-1")
+        store.create_execution_task("t-exec", "p-1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p-1")
         # Claims success but omits commit_sha — must be routed to validation_error.
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha=None),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha=None),
         )
 
         progress = run_orchestrator_iteration(
@@ -318,21 +318,21 @@ class TestEvaluationSchemaEnforcement:
             evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id="tr-1",
                 evaluation={"not_in_schema": 0.5},
@@ -350,21 +350,21 @@ class TestEvaluationSchemaEnforcement:
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id="tr-1",
                 evaluation={"score": "not a number"},
@@ -383,21 +383,21 @@ class TestEvaluationSchemaEnforcement:
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success", variant_id="tr-1", evaluation={"score": True}
             ),
         )
@@ -420,13 +420,13 @@ class TestFieldValidationOnUpdate:
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(
+            VariantSubmission(
                 status="success", variant_id="tr-1", commit_sha="not-a-sha"
             ),
         )
@@ -449,21 +449,21 @@ class TestFieldValidationOnUpdate:
             evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id="tr-1",
                 evaluation={"score": 0.9},
@@ -498,21 +498,21 @@ class TestEvaluateResubmitEquivalence:
         artifacts_uri: str,
     ) -> str:
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id="tr-1",
                 evaluation={"score": 0.9},
@@ -529,7 +529,7 @@ class TestEvaluateResubmitEquivalence:
         store.submit(
             "t-eval",
             token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="success",
                 variant_id="tr-1",
                 evaluation={"score": 0.9},
@@ -539,7 +539,7 @@ class TestEvaluateResubmitEquivalence:
         # No ConflictingResubmission; first submission is the committed one.
         assert store.read_task("t-eval").state == "submitted"
         committed = store.read_submission("t-eval")
-        assert isinstance(committed, EvaluateSubmission)
+        assert isinstance(committed, EvaluationSubmission)
         assert committed.artifacts_uri == "https://artifacts.example/first"
 
     def test_resubmit_differing_evaluation_rejected(
@@ -551,7 +551,7 @@ class TestEvaluateResubmitEquivalence:
             store.submit(
                 "t-eval",
                 token,
-                EvaluateSubmission(
+                EvaluationSubmission(
                     status="success",
                     variant_id="tr-1",
                     evaluation={"score": 0.1},
@@ -568,13 +568,13 @@ class TestAcceptRejectSymmetry:
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="error", variant_id="tr-1"),
+            VariantSubmission(status="error", variant_id="tr-1"),
         )
         store.reject("t-exec", "worker_error")
         assert store.read_task("t-exec").claim is None
@@ -596,21 +596,21 @@ class TestEvaluationSchemaValidationIndependentOfSuccess:
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         _ready_idea(store, "p1")
-        store.create_execute_task("t-exec", "p1")
+        store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
         _starting_variant(store, "tr-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluate_task("t-eval", "tr-1")
+        store.create_evaluation_task("t-eval", "tr-1")
         ec = store.claim("t-eval", "eval-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluateSubmission(
+            EvaluationSubmission(
                 status="error",
                 variant_id="tr-1",
                 evaluation={"score": "not-an-int"},

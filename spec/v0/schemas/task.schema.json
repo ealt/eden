@@ -11,7 +11,7 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["ideate", "execute", "evaluate"]
+      "enum": ["ideation", "execution", "evaluation"]
     },
     "state": {
       "type": "string",
@@ -57,7 +57,7 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"kind": {"const": "ideate"}}, "required": ["kind"]},
+      "if": {"properties": {"kind": {"const": "ideation"}}, "required": ["kind"]},
       "then": {
         "properties": {
           "payload": {
@@ -71,7 +71,7 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"const": "execute"}}, "required": ["kind"]},
+      "if": {"properties": {"kind": {"const": "execution"}}, "required": ["kind"]},
       "then": {
         "properties": {
           "payload": {
@@ -85,7 +85,7 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"const": "evaluate"}}, "required": ["kind"]},
+      "if": {"properties": {"kind": {"const": "evaluation"}}, "required": ["kind"]},
       "then": {
         "properties": {
           "payload": {

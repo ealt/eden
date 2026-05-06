@@ -16,7 +16,7 @@ CONFORMANCE_GROUP = 'Event delivery'
 
 
 def _drive_some(client: WireClient) -> None:
-    tid = _seed.create_ideate_task(client)
+    tid = _seed.create_ideation_task(client)
     c = _seed.claim(client, tid)
     _seed.submit_idea(client, tid, token=c["token"])
     _seed.accept(client, tid)

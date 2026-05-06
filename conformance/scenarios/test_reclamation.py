@@ -16,7 +16,7 @@ def test_reclaim_operator_from_claimed(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
     """spec/v0/04-task-protocol.md §5.1 — operator reclaim from claimed."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     _seed.claim(wire_client, tid)
     r = _seed.reclaim(wire_client, tid, cause="operator")
     assert 200 <= r.status_code < 300, r.status_code
@@ -34,7 +34,7 @@ def test_reclaim_operator_from_claimed(
 
 def test_reclaim_operator_from_submitted(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §5.1 — operator reclaim from submitted."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
     _seed.submit_idea(wire_client, tid, token=c["token"])
     r = _seed.reclaim(wire_client, tid, cause="operator")
@@ -45,7 +45,7 @@ def test_reclaim_operator_from_submitted(wire_client: WireClient) -> None:
 
 def test_reclaim_expired_from_claimed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §5.1 — expired claim reclaim from claimed."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     _seed.claim(wire_client, tid, expires_at="2000-01-01T00:00:00Z")
     r = _seed.reclaim(wire_client, tid, cause="expired")
     assert 200 <= r.status_code < 300, r.text
@@ -55,7 +55,7 @@ def test_reclaim_expired_from_claimed(wire_client: WireClient) -> None:
 
 def test_reclaim_expired_against_submitted_rejected(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §5.1 — automatic reclaim cannot apply to submitted."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid, expires_at="2000-01-01T00:00:00Z")
     _seed.submit_idea(wire_client, tid, token=c["token"])
     r = _seed.reclaim(wire_client, tid, cause="expired")
@@ -69,7 +69,7 @@ def test_implement_reclaim_sets_starting_variant_to_error(
     """spec/v0/04-task-protocol.md §5.4 — implement reclaim composes variant → error."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     _seed.claim(wire_client, impl_tid)
     variant_id = _seed.create_variant(
         wire_client, idea_id=pid, status="starting"

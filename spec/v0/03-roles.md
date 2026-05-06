@@ -30,13 +30,13 @@ Before a task is dispatched to a worker-role queue, the orchestrator MUST ensure
 
 ## 2. Ideator
 
-The ideator proposes what to try. Every ideator invocation consumes one `ideate` task and produces zero or more ideas.
+The ideator proposes what to try. Every ideator invocation consumes one `ideation` task and produces zero or more ideas.
 
 ### 2.1 Inputs
 
 An ideator receives:
 
-- The task object (`kind == "ideate"`, `payload.experiment_id == E`).
+- The task object (`kind == "ideation"`, `payload.experiment_id == E`).
 - Read access to the experiment config for `E` ([`02-data-model.md`](02-data-model.md) §2), including the `evaluation_schema` and `objective`.
 - Read access to the set of ideas and variants already persisted for `E`. The mechanism (direct store read, orchestrator-supplied snapshot, event-log replay) is a role-binding concern.
 
@@ -50,7 +50,7 @@ For each idea the ideator produces, it MUST:
 2. Upload any artifacts (plan text, rationale, supporting files) to the artifact store and populate the idea's `artifacts_uri`.
 3. Transition the idea's `state` to `"ready"` once the idea is dispatchable. The transition from `drafting` to `ready` signals that the idea's metadata is stable and that the executor MAY consume it.
 
-An ideator MAY create multiple ideas under a single `ideate` task. An ideator MAY also produce zero ideas if it has no viable change to suggest; the task still completes normally (see §2.4).
+An ideator MAY create multiple ideas under a single `ideation` task. An ideator MAY also produce zero ideas if it has no viable change to suggest; the task still completes normally (see §2.4).
 
 ### 2.3 Idea invariants
 
@@ -62,12 +62,12 @@ The ideator MUST honor the structural invariants of ideas ([`02-data-model.md`](
 
 ### 2.4 Submission
 
-When its work on a `ideate` task is complete, the ideator MUST submit the task (§1 step 4). The submission payload MUST include:
+When its work on a `ideation` task is complete, the ideator MUST submit the task (§1 step 4). The submission payload MUST include:
 
 - `idea_ids` — the set of identifiers of every idea the ideator created under this task. Order is not significant; dispatch ordering is determined by each idea's `priority` field ([`02-data-model.md`](02-data-model.md) §5.1). MAY be empty.
 - `status` — one of `"success"` (the ideator completed normally, regardless of idea count) or `"error"` (the ideator could not complete; any partially-written ideas MUST remain in `"drafting"` state and MUST NOT be dispatched).
 
-An ideator MUST NOT submit a `ideate` task while any of its referenced ideas is still in `"drafting"` state.
+An ideator MUST NOT submit a `ideation` task while any of its referenced ideas is still in `"drafting"` state.
 
 ## 3. Executor
 
@@ -77,7 +77,7 @@ The executor realizes an idea as a working-tree change on a per-variant branch.
 
 An executor receives:
 
-- The task object (`kind == "execute"`, `payload.idea_id == P`).
+- The task object (`kind == "execution"`, `payload.idea_id == P`).
 - Read access to the idea `P`. The orchestrator MUST ensure `P.state == "ready"` before dispatch.
 - Read and write access to the git repository associated with `P.experiment_id`, at a revision reachable from `P.parent_commits`. How the repository is located and how access is granted is a role-binding concern (§6, [`02-data-model.md`](02-data-model.md) §2.4); the protocol constrains only that the executor's writes land under `work/*` and that no commit is introduced whose history does not descend from `P.parent_commits` (§3.3).
 - Read access to the artifacts at `P.artifacts_uri`.
@@ -108,7 +108,7 @@ The executor submits with:
   - `"error"` — the executor could not realize the idea. The variant MUST be persisted with `status == "error"`. No evaluate task is dispatched against an errored variant.
 - `commit_sha` — required when `status == "success"`; MUST equal the tip of the worker branch.
 
-A resubmission of the same `execute` task MUST be idempotent: a duplicate submit presenting the same `variant_id` and `commit_sha` MUST be accepted without side effect. A duplicate submit that disagrees with the already-recorded result MUST be rejected ([`04-task-protocol.md`](04-task-protocol.md) §4.2).
+A resubmission of the same `execution` task MUST be idempotent: a duplicate submit presenting the same `variant_id` and `commit_sha` MUST be accepted without side effect. A duplicate submit that disagrees with the already-recorded result MUST be rejected ([`04-task-protocol.md`](04-task-protocol.md) §4.2).
 
 ## 4. Evaluator
 
@@ -118,7 +118,7 @@ The evaluator measures a completed variant against the experiment's evaluation s
 
 An evaluator receives:
 
-- The task object (`kind == "evaluate"`, `payload.variant_id == T`).
+- The task object (`kind == "evaluation"`, `payload.variant_id == T`).
 - Read access to the variant `T`. The orchestrator MUST ensure `T.status == "starting"` and `T.commit_sha` is set before dispatch.
 - Read access to the git repository at `T.commit_sha` on the worker branch (`T.branch`). Repository location and access are a role-binding concern, as for the executor (§3.1).
 - Read access to the experiment's `evaluation_schema` and `objective`.

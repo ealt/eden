@@ -32,9 +32,9 @@ from eden_contracts import Idea, Variant
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
-    ExecuteSubmission,
     IllegalTransition,
     InvalidPrecondition,
+    VariantSubmission,
     WrongToken,
 )
 from eden_storage.submissions import submissions_equivalent
@@ -91,7 +91,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
-    pending = store.list_tasks(kind="execute", state="pending")
+    pending = store.list_tasks(kind="execution", state="pending")
     config = request.app.state.experiment_config
     return request.app.state.templates.TemplateResponse(
         request,
@@ -368,7 +368,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                 )
 
     # Phase 3: submit, with retry-before-orphan + read-back.
-    submission = ExecuteSubmission(
+    submission = VariantSubmission(
         status=draft.status,
         variant_id=variant_id,
         commit_sha=draft.commit_sha if draft.status == "success" else None,
@@ -405,7 +405,7 @@ def _retry_submit_with_readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: ExecuteSubmission,
+    submission: VariantSubmission,
 ) -> tuple[str, str | None]:
     """Submit with retry, then reconcile via committed-state read-back.
 
@@ -483,7 +483,7 @@ def _readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: ExecuteSubmission,
+    submission: VariantSubmission,
     last_exc: BaseException | None,
 ) -> tuple[str, str | None]:
     last_name = last_exc.__class__.__name__ if last_exc else "unknown"

@@ -146,7 +146,7 @@ PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("ideate-"))
+              and (.data.task_id | startswith("ideation-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 3 || {

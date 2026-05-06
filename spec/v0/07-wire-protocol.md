@@ -40,7 +40,7 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 
 ### 2.1 Create
 
-`POST /v0/experiments/{E}/tasks` accepts a JSON request body whose shape matches [`schemas/task.schema.json`](schemas/task.schema.json) with `state == "pending"` and no `claim`. On success the server returns 200 with the created task as the response body (same schema). The composite-commit rules in [`05-event-protocol.md`](05-event-protocol.md) §2.2 apply: creating an `execute` task transitions the referenced idea atomically with the task insert; the server MUST perform both effects in a single transaction.
+`POST /v0/experiments/{E}/tasks` accepts a JSON request body whose shape matches [`schemas/task.schema.json`](schemas/task.schema.json) with `state == "pending"` and no `claim`. On success the server returns 200 with the created task as the response body (same schema). The composite-commit rules in [`05-event-protocol.md`](05-event-protocol.md) §2.2 apply: creating an `execution` task transitions the referenced idea atomically with the task insert; the server MUST perform both effects in a single transaction.
 
 ### 2.2 List and read
 

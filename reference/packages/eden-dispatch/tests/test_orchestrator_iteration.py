@@ -16,17 +16,17 @@ from __future__ import annotations
 import itertools
 
 from eden_contracts import (
-    EvaluateTask,
     EvaluationSchema,
-    ExecuteTask,
+    EvaluationTask,
+    ExecutionTask,
     Idea,
     Variant,
 )
 from eden_dispatch import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     InMemoryStore,
+    VariantSubmission,
     run_orchestrator_iteration,
 )
 
@@ -59,12 +59,12 @@ def _eval_factory() -> str:
 def test_accepts_submitted_plan_task() -> None:
     store = _make_store()
     task_id = "t-ideate-1"
-    store.create_ideate_task(task_id)
+    store.create_ideation_task(task_id)
     claim = store.claim(task_id, worker_id="ideator-1")
     store.submit(
         task_id,
         claim.token,
-        IdeateSubmission(status="success", idea_ids=()),
+        IdeaSubmission(status="success", idea_ids=()),
     )
     # Precondition.
     assert store.read_task(task_id).state == "submitted"
@@ -111,7 +111,7 @@ def test_dispatches_implement_task_for_ready_idea() -> None:
     assert progress is True
     assert len(dispatched_ids) == 1
     impl = store.read_task(dispatched_ids[0])
-    assert isinstance(impl, ExecuteTask)
+    assert isinstance(impl, ExecutionTask)
     assert impl.payload.idea_id == "p-1"
 
 
@@ -158,7 +158,7 @@ def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
     assert progress is True
     assert len(dispatched_ids) == 1
     ev = store.read_task(dispatched_ids[0])
-    assert isinstance(ev, EvaluateTask)
+    assert isinstance(ev, EvaluationTask)
     assert ev.payload.variant_id == "tr-1"
 
 
@@ -170,7 +170,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     """
     now = _now_factory()
     # Ideate-task
-    store.create_ideate_task("t-ideate-1")
+    store.create_ideation_task("t-ideate-1")
     claim = store.claim("t-ideate-1", "ideator-1")
     idea = Idea(
         idea_id="p-1",
@@ -185,11 +185,11 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     store.create_idea(idea)
     store.mark_idea_ready("p-1")
     store.submit(
-        "t-ideate-1", claim.token, IdeateSubmission(status="success", idea_ids=("p-1",))
+        "t-ideate-1", claim.token, IdeaSubmission(status="success", idea_ids=("p-1",))
     )
     store.accept("t-ideate-1")
     # Execute-task
-    store.create_execute_task("t-exec-1", "p-1")
+    store.create_execution_task("t-exec-1", "p-1")
     claim = store.claim("t-exec-1", "executor-1")
     variant = Variant(
         variant_id="tr-1",
@@ -204,16 +204,16 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     store.submit(
         "t-exec-1",
         claim.token,
-        ExecuteSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+        VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
     )
     store.accept("t-exec-1")
     # Evaluate task
-    store.create_evaluate_task("t-eval-1", "tr-1")
+    store.create_evaluation_task("t-eval-1", "tr-1")
     claim = store.claim("t-eval-1", "evaluator-1")
     store.submit(
         "t-eval-1",
         claim.token,
-        EvaluateSubmission(status="success", variant_id="tr-1", evaluation={"loss": 0.5}),
+        EvaluationSubmission(status="success", variant_id="tr-1", evaluation={"loss": 0.5}),
     )
     store.accept("t-eval-1")
     return "tr-1"
@@ -288,7 +288,7 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     )
     store.create_idea(idea)
     store.mark_idea_ready("p-good")
-    store.create_execute_task("t-exec-good", "p-good")
+    store.create_execution_task("t-exec-good", "p-good")
     claim = store.claim("t-exec-good", "executor-1")
     good_variant = Variant(
         variant_id="tr-good",
@@ -303,15 +303,15 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     store.submit(
         "t-exec-good",
         claim.token,
-        ExecuteSubmission(status="success", variant_id="tr-good", commit_sha="d" * 40),
+        VariantSubmission(status="success", variant_id="tr-good", commit_sha="d" * 40),
     )
     store.accept("t-exec-good")
-    store.create_evaluate_task("t-eval-good", "tr-good")
+    store.create_evaluation_task("t-eval-good", "tr-good")
     eclaim = store.claim("t-eval-good", "evaluator-1")
     store.submit(
         "t-eval-good",
         eclaim.token,
-        EvaluateSubmission(status="success", variant_id="tr-good", evaluation={"loss": 0.4}),
+        EvaluationSubmission(status="success", variant_id="tr-good", evaluation={"loss": 0.4}),
     )
     store.accept("t-eval-good")
 

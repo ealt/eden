@@ -23,10 +23,10 @@ from .postgres import PostgresStore
 from .protocol import Store
 from .sqlite import SqliteStore
 from .submissions import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     Submission,
+    VariantSubmission,
     submissions_equivalent,
 )
 
@@ -34,13 +34,13 @@ __all__ = [
     "AlreadyExists",
     "ConflictingResubmission",
     "DispatchError",
-    "EvaluateSubmission",
+    "EvaluationSubmission",
     "IllegalTransition",
-    "ExecuteSubmission",
+    "VariantSubmission",
     "InMemoryStore",
     "InvalidPrecondition",
     "NotFound",
-    "IdeateSubmission",
+    "IdeaSubmission",
     "PostgresStore",
     "SqliteStore",
     "StorageError",

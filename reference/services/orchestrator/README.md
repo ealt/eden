@@ -9,7 +9,7 @@ python -m eden_orchestrator \
   --task-store-url http://127.0.0.1:8080 \
   --experiment-id exp-1 \
   --repo-path /tmp/eden-bare-repo \
-  --ideate-tasks plan-1,plan-2,plan-3
+  --ideation-tasks plan-1,plan-2,plan-3
 ```
 
 Exits 0 after `--max-quiescent-iterations` consecutive zero-progress iterations.

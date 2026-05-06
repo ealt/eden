@@ -32,11 +32,11 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
-from eden_contracts import EvaluateTask, Idea, Variant
+from eden_contracts import EvaluationTask, Idea, Variant
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
-    EvaluateSubmission,
+    EvaluationSubmission,
     IllegalTransition,
     InvalidPrecondition,
     WrongToken,
@@ -80,7 +80,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
     try:
-        pending = store.list_tasks(kind="evaluate", state="pending")
+        pending = store.list_tasks(kind="evaluation", state="pending")
         recent = _list_recent_variants(store)
     except DispatchError as exc:
         return _render_error(request, _wire_error_banner(exc))
@@ -129,7 +129,7 @@ async def claim(
             ),
             status_code=303,
         )
-    if not isinstance(task, EvaluateTask):
+    if not isinstance(task, EvaluationTask):
         return RedirectResponse(
             url="/evaluator/?banner=task+is+not+an+evaluate+task",
             status_code=303,
@@ -266,7 +266,7 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
             status_code=400,
         )
 
-    submission = EvaluateSubmission(
+    submission = EvaluationSubmission(
         status=draft.status,
         variant_id=variant_id,
         evaluation=dict(draft.evaluation) if draft.evaluation else None,
@@ -323,7 +323,7 @@ def _retry_submit_with_readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: EvaluateSubmission,
+    submission: EvaluationSubmission,
 ) -> tuple[str, str | None]:
     """Submit with retry; reconcile transport / IllegalTransition via read-back.
 
@@ -385,7 +385,7 @@ def _readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: EvaluateSubmission,
+    submission: EvaluationSubmission,
     last_exc: BaseException | None,
 ) -> tuple[str, str | None]:
     last_name = last_exc.__class__.__name__ if last_exc else "unknown"

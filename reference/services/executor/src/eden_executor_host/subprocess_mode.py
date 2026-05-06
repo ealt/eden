@@ -3,7 +3,7 @@
 For each pending execute task: claim, generate variant_id host-side,
 guard against ref collision, persist a ``starting`` variant,
 materialize a per-task worktree at ``parent_commits[0]``, run the
-user's ``execute_command`` with cwd = worktree, validate the
+user's ``execution_command`` with cwd = worktree, validate the
 resulting commit, create the ``work/*`` ref, and submit.
 
 See ``docs/plans/eden-phase-10d-llm-worker-hosts.md`` §D.3.
@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from eden_contracts import ExecuteTask, Idea, Variant
+from eden_contracts import ExecutionTask, Idea, Variant
 from eden_git import GitRepo
 from eden_service_common import (
     StopFlag,
@@ -37,10 +37,10 @@ from eden_service_common import (
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
-    ExecuteSubmission,
     IllegalTransition,
     InvalidPrecondition,
     Store,
+    VariantSubmission,
     WrongToken,
 )
 from eden_storage.submissions import submissions_equivalent
@@ -118,7 +118,7 @@ def run_executor_subprocess_loop(
     sweep_host_worktrees(repo_path=config.repo_path, host_subdir=host_subdir)
 
     while not stop.is_set():
-        pending = store.list_tasks(kind="execute", state="pending")
+        pending = store.list_tasks(kind="execution", state="pending")
         if not pending:
             if stop.wait(poll_interval):
                 return
@@ -126,7 +126,7 @@ def run_executor_subprocess_loop(
         for task in pending:
             if stop.is_set():
                 return
-            assert isinstance(task, ExecuteTask)
+            assert isinstance(task, ExecutionTask)
             try:
                 _handle_one(
                     store=store,
@@ -146,7 +146,7 @@ def _handle_one(
     *,
     store: Store,
     worker_id: str,
-    task: ExecuteTask,
+    task: ExecutionTask,
     config: ExecutorSubprocessConfig,
     host_subdir: Path,
 ) -> None:
@@ -166,7 +166,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=ExecuteSubmission(
+            submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
         )
@@ -197,7 +197,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=ExecuteSubmission(
+            submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
         )
@@ -221,7 +221,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=ExecuteSubmission(
+            submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
         )
@@ -259,7 +259,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=ExecuteSubmission(
+            submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
         )
@@ -275,7 +275,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=ExecuteSubmission(
+            submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
         )
@@ -296,7 +296,7 @@ def _handle_one(
             store=store,
             task_id=task.task_id,
             token=claim.token,
-            submission=ExecuteSubmission(
+            submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
         )
@@ -305,7 +305,7 @@ def _handle_one(
     # Phase 2g (Phase 10d follow-up B §D.7): if the repo has an
     # origin remote, publish the work/* ref so the integrator's
     # clone can fetch it. Per chapter 3 §3.3, infrastructure failure
-    # here maps to ExecuteSubmission(status=error). On push failure
+    # here maps to VariantSubmission(status=error). On push failure
     # we roll back the local ref so we don't leave a local-only
     # work/* that the orchestrator can never integrate.
     if _repo_has_origin(repo):
@@ -331,7 +331,7 @@ def _handle_one(
                 store=store,
                 task_id=task.task_id,
                 token=claim.token,
-                submission=ExecuteSubmission(
+                submission=VariantSubmission(
                     status="error", variant_id=variant_id, commit_sha=None
                 ),
             )
@@ -342,7 +342,7 @@ def _handle_one(
         store=store,
         task_id=task.task_id,
         token=claim.token,
-        submission=ExecuteSubmission(
+        submission=VariantSubmission(
             status="success", variant_id=variant_id, commit_sha=commit_sha
         ),
     )
@@ -366,13 +366,13 @@ def _validate_commit(
 def _run_subprocess(
     *,
     wt_path: Path,
-    task: ExecuteTask,
+    task: ExecutionTask,
     idea: Idea,
     variant_id: str,
     branch: str,
     config: ExecutorSubprocessConfig,
 ) -> dict[str, Any]:
-    """Run ``execute_command`` and parse outcome.json.
+    """Run ``execution_command`` and parse outcome.json.
 
     Returns a dict with at least ``status``. Missing/malformed outcome
     files are normalized to ``status="error"``.
@@ -507,7 +507,7 @@ def _submit_with_readback(
     store: Store,
     task_id: str,
     token: str,
-    submission: ExecuteSubmission,
+    submission: VariantSubmission,
 ) -> None:
     """Phase 3 submission with retry-before-orphan + committed-state read-back."""
     last_exc: Exception | None = None
@@ -543,7 +543,7 @@ def _submit_with_readback(
         return
     if prior is None:
         return
-    if not isinstance(prior, ExecuteSubmission):
+    if not isinstance(prior, VariantSubmission):
         return
     if submissions_equivalent(prior, submission):
         return

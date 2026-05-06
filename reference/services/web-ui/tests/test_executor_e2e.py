@@ -246,7 +246,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             )
             seed.create_idea(idea)
             seed.mark_idea_ready("p-impl")
-            seed.create_execute_task("t-exec-1", "p-impl")
+            seed.create_execution_task("t-exec-1", "p-impl")
         finally:
             seed.close()
 

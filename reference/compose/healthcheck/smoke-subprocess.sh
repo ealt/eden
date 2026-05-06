@@ -4,8 +4,8 @@ set -euo pipefail
 # Phase 10d subprocess-mode smoke test for the EDEN reference Compose
 # stack. Mirrors smoke.sh but layers on `compose.subprocess.yaml` so
 # the ideator / executor / evaluator hosts run the fixture's
-# user-supplied `*_command` scripts (`ideate.py` / `execute.py` /
-# `eval.py`) instead of their scripted profiles.
+# user-supplied `*_command` scripts (`ideation.py` / `execution.py` /
+# `evaluation.py`) instead of their scripted profiles.
 
 for tool in docker jq curl python3; do
     command -v "$tool" >/dev/null || {
@@ -125,7 +125,7 @@ PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
-              and (.data.task_id | startswith("ideate-"))
+              and (.data.task_id | startswith("ideation-"))
             )] | length'
 )"
 test "$PLAN_COMPLETED" -ge 3 || {

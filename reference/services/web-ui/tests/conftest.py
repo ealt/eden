@@ -204,7 +204,7 @@ def seed_implement_task(
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     task_id = f"execute-{slug}"
-    store.create_execute_task(task_id, idea_id)
+    store.create_execution_task(task_id, idea_id)
     return task_id, idea_id
 
 
@@ -223,7 +223,7 @@ def seed_evaluate_task(
 
     Drives the executor-accept flow so the variant is in
     ``starting`` with ``commit_sha`` set, the prerequisite for
-    ``create_evaluate_task`` per chapter 04 §3.1. The fixture
+    ``create_evaluation_task`` per chapter 04 §3.1. The fixture
     returns ``(eval_task_id, variant_id, idea_id)``.
 
     Variant-side context (``description`` / ``artifacts_uri``) is
@@ -232,7 +232,7 @@ def seed_evaluate_task(
     surfaces them on the draft page.
     """
     from eden_contracts import Idea, Variant
-    from eden_storage import ExecuteSubmission
+    from eden_storage import VariantSubmission
 
     idea_id = f"idea-{slug}"
     if artifacts_dir is not None:
@@ -254,7 +254,7 @@ def seed_evaluate_task(
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     impl_task_id = f"execute-{slug}"
-    store.create_execute_task(impl_task_id, idea_id)
+    store.create_execution_task(impl_task_id, idea_id)
     impl_claim = store.claim(impl_task_id, "executor-w")
 
     from typing import Any
@@ -277,12 +277,12 @@ def seed_evaluate_task(
     store.submit(
         impl_task_id,
         impl_claim.token,
-        ExecuteSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
+        VariantSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
     )
     store.accept(impl_task_id)
 
     eval_task_id = f"evaluate-{slug}"
-    store.create_evaluate_task(eval_task_id, variant_id)
+    store.create_evaluation_task(eval_task_id, variant_id)
     return eval_task_id, variant_id, idea_id
 
 
@@ -291,13 +291,13 @@ def get_evaluate_submission(store: InMemoryStore, task_id: str):
 
     Pyright treats ``Store.read_submission`` as returning the
     ``Submission`` union; tests that need to access
-    ``EvaluateSubmission``-specific fields use this helper to
+    ``EvaluationSubmission``-specific fields use this helper to
     narrow.
     """
-    from eden_storage import EvaluateSubmission
+    from eden_storage import EvaluationSubmission
 
     sub = store.read_submission(task_id)
-    assert isinstance(sub, EvaluateSubmission)
+    assert isinstance(sub, EvaluationSubmission)
     return sub
 
 

@@ -54,8 +54,8 @@ def test_token_from_other_task_rejected_even_with_same_worker_id(
     """
     same_worker_id = "w-shares-both-claims"
 
-    task_a = _seed.create_ideate_task(wire_client)
-    task_b = _seed.create_ideate_task(wire_client)
+    task_a = _seed.create_ideation_task(wire_client)
+    task_b = _seed.create_ideation_task(wire_client)
 
     claim_a = _seed.claim(wire_client, task_a, worker_id=same_worker_id)
     claim_b = _seed.claim(wire_client, task_b, worker_id=same_worker_id)

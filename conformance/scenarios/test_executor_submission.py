@@ -21,9 +21,9 @@ def test_submit_with_unknown_variant_rejected(wire_client: WireClient) -> None:
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     c = _seed.claim(wire_client, impl_tid)
-    r = _seed.submit_execution(
+    r = _seed.submit_variant(
         wire_client,
         impl_tid,
         token=c["token"],
@@ -45,13 +45,13 @@ def test_submit_with_wrong_idea_variant_rejected(wire_client: WireClient) -> Non
     pid_a = _seed.create_idea(wire_client, slug="a")
     pid_b = _seed.create_idea(wire_client, slug="b")
     _seed.mark_idea_ready(wire_client, pid_a)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid_a)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid_a)
     # Variant belongs to idea_b, not the task's idea_a.
     foreign_variant = _seed.create_variant(
         wire_client, idea_id=pid_b, status="starting"
     )
     c = _seed.claim(wire_client, impl_tid)
-    r = _seed.submit_execution(
+    r = _seed.submit_variant(
         wire_client,
         impl_tid,
         token=c["token"],
@@ -77,17 +77,17 @@ def test_success_without_commit_sha_must_not_complete_variant(
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     c = _seed.claim(wire_client, impl_tid)
-    # Wire-level submit without commit_sha. submit_execution always
+    # Wire-level submit without commit_sha. submit_variant always
     # includes commit_sha on success, so build the request inline.
     r = wire_client.post(
         wire_client.tasks_path(impl_tid, "/submit"),
         json={
             "token": c["token"],
             "payload": {
-                "kind": "execute",
+                "kind": "execution",
                 "status": "success",
                 "variant_id": variant_id,
             },
@@ -141,10 +141,10 @@ def test_success_with_commit_sha_writes_variant_commit_sha(
     sha = "abc" + "0" * 37
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     c = _seed.claim(wire_client, impl_tid)
-    r = _seed.submit_execution(
+    r = _seed.submit_variant(
         wire_client,
         impl_tid,
         token=c["token"],
@@ -170,15 +170,15 @@ def test_resubmit_same_commit_sha_is_idempotent(
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     c = _seed.claim(wire_client, impl_tid)
     sha = "d" * 40
-    r1 = _seed.submit_execution(
+    r1 = _seed.submit_variant(
         wire_client, impl_tid, token=c["token"], variant_id=variant_id, commit_sha=sha
     )
     assert r1.status_code == 200, r1.text
-    r2 = _seed.submit_execution(
+    r2 = _seed.submit_variant(
         wire_client, impl_tid, token=c["token"], variant_id=variant_id, commit_sha=sha
     )
     assert r2.status_code == 200, r2.text
@@ -200,14 +200,14 @@ def test_status_error_terminalizes_variant_and_blocks_evaluate_dispatch(
     task is dispatched against an errored variant." Both halves
     asserted: (a) after the orchestrator reject path runs, the
     variant's `status` is `"error"`; (b) no `task.created` event with
-    `kind == "evaluate"` references this variant.
+    `kind == "evaluation"` references this variant.
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     c = _seed.claim(wire_client, impl_tid)
-    r = _seed.submit_execution(
+    r = _seed.submit_variant(
         wire_client,
         impl_tid,
         token=c["token"],
@@ -249,10 +249,10 @@ def test_resubmit_divergent_commit_sha_rejected(wire_client: WireClient) -> None
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     c = _seed.claim(wire_client, impl_tid)
-    r1 = _seed.submit_execution(
+    r1 = _seed.submit_variant(
         wire_client,
         impl_tid,
         token=c["token"],
@@ -260,7 +260,7 @@ def test_resubmit_divergent_commit_sha_rejected(wire_client: WireClient) -> None
         commit_sha="1" * 40,
     )
     assert r1.status_code == 200, r1.text
-    r2 = _seed.submit_execution(
+    r2 = _seed.submit_variant(
         wire_client,
         impl_tid,
         token=c["token"],

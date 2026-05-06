@@ -28,9 +28,9 @@ from eden_storage.errors import (
     WrongToken,
 )
 from eden_storage.submissions import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
+    VariantSubmission,
 )
 from eden_wire import StoreClient, make_app
 from eden_wire.client import IndeterminateIntegration
@@ -109,35 +109,35 @@ def _run_variant_to_success(
     No internal-state mutation; no ``model_copy(update=...)``.
     """
     # Plan phase — produces a ready idea.
-    store_client.create_ideate_task(f"{task_prefix}-plan")
+    store_client.create_ideation_task(f"{task_prefix}-plan")
     claim = store_client.claim(f"{task_prefix}-plan", "ideator")
     store_client.create_idea(Idea.model_validate(_make_idea_body(idea_id)))
     store_client.mark_idea_ready(idea_id)
     store_client.submit(
         f"{task_prefix}-plan",
         claim.token,
-        IdeateSubmission(status="success", idea_ids=(idea_id,)),
+        IdeaSubmission(status="success", idea_ids=(idea_id,)),
     )
     store_client.accept(f"{task_prefix}-plan")
 
     # Implement phase — produces a variant with commit_sha.
-    store_client.create_execute_task(f"{task_prefix}-impl", idea_id)
+    store_client.create_execution_task(f"{task_prefix}-impl", idea_id)
     claim = store_client.claim(f"{task_prefix}-impl", "executor")
     store_client.create_variant(Variant.model_validate(_make_variant_body(variant_id, idea_id)))
     store_client.submit(
         f"{task_prefix}-impl",
         claim.token,
-        ExecuteSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
+        VariantSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
     )
     store_client.accept(f"{task_prefix}-impl")
 
     # Evaluate phase — transitions variant to success with metrics.
-    store_client.create_evaluate_task(f"{task_prefix}-eval", variant_id)
+    store_client.create_evaluation_task(f"{task_prefix}-eval", variant_id)
     claim = store_client.claim(f"{task_prefix}-eval", "evaluator")
     store_client.submit(
         f"{task_prefix}-eval",
         claim.token,
-        EvaluateSubmission(
+        EvaluationSubmission(
             status="success",
             variant_id=variant_id,
             evaluation={"loss": 0.1, "acc": 0.9},
@@ -172,37 +172,37 @@ class TestErrorEnvelopeRoundtrip:
             store_client.read_task("missing")
 
     def test_already_exists(self, store_client: StoreClient) -> None:
-        store_client.create_ideate_task("dup")
+        store_client.create_ideation_task("dup")
         with pytest.raises(AlreadyExists):
-            store_client.create_ideate_task("dup")
+            store_client.create_ideation_task("dup")
 
     def test_illegal_transition(self, store_client: StoreClient) -> None:
-        store_client.create_ideate_task("p1")
+        store_client.create_ideation_task("p1")
         store_client.claim("p1", "w1")
         with pytest.raises(IllegalTransition):
             store_client.claim("p1", "w2")
 
     def test_wrong_token(self, store_client: StoreClient) -> None:
-        store_client.create_ideate_task("p2")
+        store_client.create_ideation_task("p2")
         store_client.claim("p2", "w1")
         with pytest.raises(WrongToken):
             store_client.submit(
-                "p2", "not-the-token", IdeateSubmission(status="success")
+                "p2", "not-the-token", IdeaSubmission(status="success")
             )
 
     def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
-        store_client.create_ideate_task("p3")
+        store_client.create_ideation_task("p3")
         claim = store_client.claim("p3", "w1")
         store_client.create_idea(Idea.model_validate(_make_idea_body("pr-a")))
         store_client.mark_idea_ready("pr-a")
         store_client.create_idea(Idea.model_validate(_make_idea_body("pr-b")))
         store_client.mark_idea_ready("pr-b")
         store_client.submit(
-            "p3", claim.token, IdeateSubmission(status="success", idea_ids=("pr-a",))
+            "p3", claim.token, IdeaSubmission(status="success", idea_ids=("pr-a",))
         )
         with pytest.raises(ConflictingResubmission):
             store_client.submit(
-                "p3", claim.token, IdeateSubmission(status="success", idea_ids=("pr-b",))
+                "p3", claim.token, IdeaSubmission(status="success", idea_ids=("pr-b",))
             )
 
     def test_invalid_precondition(self, store_client: StoreClient) -> None:
@@ -238,12 +238,12 @@ class TestResponseCodes:
     """Spec §2.4, §3, §4, §5: success status codes and bodies."""
 
     def test_submit_returns_200(self, client: Client, store_client: StoreClient) -> None:
-        store_client.create_ideate_task("sc1")
+        store_client.create_ideation_task("sc1")
         claim = store_client.claim("sc1", "w")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/sc1/submit",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json={"token": claim.token, "payload": {"kind": "ideate", "status": "success"}},
+            json={"token": claim.token, "payload": {"kind": "ideation", "status": "success"}},
         )
         assert resp.status_code == 200
 
@@ -323,14 +323,14 @@ class TestSubscribe:
     def test_events_returns_immediately_when_present(
         self, store_client: StoreClient
     ) -> None:
-        store_client.create_ideate_task("ev1")
+        store_client.create_ideation_task("ev1")
         events = store_client.read_range()
         assert len(events) >= 1
 
     def test_subscribe_returns_immediately_when_events_available(
         self, store_client: StoreClient
     ) -> None:
-        store_client.create_ideate_task("ev2")
+        store_client.create_ideation_task("ev2")
         events = store_client.subscribe(cursor=0, timeout=SHORT_SUBSCRIBE_TIMEOUT)
         assert len(events) >= 1
 
@@ -339,7 +339,7 @@ class TestSubscribe:
     ) -> None:
         """When no events are available, subscribe returns empty after the
         configured timeout rather than hanging forever."""
-        store_client.create_ideate_task("ev3")
+        store_client.create_ideation_task("ev3")
         initial = store_client.read_range()
         # All events consumed; a follow-up subscribe should long-poll then
         # return an empty batch after the timeout.
@@ -349,8 +349,8 @@ class TestSubscribe:
         assert tail == []
 
     def test_replay_from_zero(self, store_client: StoreClient) -> None:
-        store_client.create_ideate_task("r1")
-        store_client.create_ideate_task("r2")
+        store_client.create_ideation_task("r1")
+        store_client.create_ideation_task("r2")
         events = store_client.replay()
         assert len(events) == 2
         assert all(e.type == "task.created" for e in events)

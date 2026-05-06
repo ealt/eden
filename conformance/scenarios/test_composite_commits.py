@@ -41,7 +41,7 @@ def test_implement_dispatch_atomic(
     """spec/v0/05-event-protocol.md §2.2 — implement create + idea dispatch atomic."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     events = event_log.replay_all()
     created = [
         e
@@ -75,7 +75,7 @@ def test_implement_terminal_completes_idea(
     impl_completed = [
         e
         for e in event_log.find_by_type(events, "task.completed")
-        if e["data"].get("task_id", "").startswith("execute-")
+        if e["data"].get("task_id", "").startswith("execution-")
     ]
     completed_props = [
         e
@@ -100,10 +100,10 @@ def test_implement_terminal_fails_idea(
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     impl_claim = _seed.claim(wire_client, impl_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
-    _seed.submit_execution(
+    _seed.submit_variant(
         wire_client,
         impl_tid,
         token=impl_claim["token"],
@@ -156,7 +156,7 @@ def test_evaluate_terminal_error_emits_variant_errored(
 ) -> None:
     """spec/v0/05-event-protocol.md §2.2 — evaluate error + variant.errored atomic."""
     variant_id = _seed.drive_to_starting_variant(wire_client)
-    eval_tid = _seed.create_evaluate_task(wire_client, variant_id=variant_id)
+    eval_tid = _seed.create_evaluation_task(wire_client, variant_id=variant_id)
     eval_claim = _seed.claim(wire_client, eval_tid)
     _seed.submit_evaluation(
         wire_client,
@@ -191,7 +191,7 @@ def test_evaluate_terminal_eval_error_keeps_variant_starting(
     `starting` so a fresh evaluate task may be tried.
     """
     variant_id = _seed.drive_to_starting_variant(wire_client)
-    eval_tid = _seed.create_evaluate_task(wire_client, variant_id=variant_id)
+    eval_tid = _seed.create_evaluation_task(wire_client, variant_id=variant_id)
     eval_claim = _seed.claim(wire_client, eval_tid)
     _seed.submit_evaluation(
         wire_client,
@@ -245,7 +245,7 @@ def test_implement_reclaim_with_starting_variant(
     """spec/v0/05-event-protocol.md §2.2 — implement reclaim + variant.errored atomic."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execute_task(wire_client, idea_id=pid)
+    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     _seed.claim(wire_client, impl_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     _seed.reclaim(wire_client, impl_tid, cause="operator")

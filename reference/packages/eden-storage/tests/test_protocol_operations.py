@@ -12,13 +12,13 @@ from collections.abc import Callable
 
 import pytest
 from eden_contracts import (
-    EvaluatePayload,
-    EvaluateTask,
-    ExecutePayload,
-    ExecuteTask,
+    EvaluationPayload,
+    EvaluationTask,
+    ExecutionPayload,
+    ExecutionTask,
     Idea,
-    IdeatePayload,
-    IdeateTask,
+    IdeationPayload,
+    IdeationTask,
     Variant,
 )
 from eden_storage import (
@@ -29,34 +29,34 @@ from eden_storage import (
 )
 
 
-def _plan_task(experiment_id: str, task_id: str = "t-ideate") -> IdeateTask:
-    return IdeateTask(
+def _plan_task(experiment_id: str, task_id: str = "t-ideate") -> IdeationTask:
+    return IdeationTask(
         task_id=task_id,
-        kind="ideate",
+        kind="ideation",
         state="pending",
-        payload=IdeatePayload(experiment_id=experiment_id),
+        payload=IdeationPayload(experiment_id=experiment_id),
         created_at="2026-04-23T00:00:00.000Z",
         updated_at="2026-04-23T00:00:00.000Z",
     )
 
 
-def _impl_task(task_id: str, idea_id: str) -> ExecuteTask:
-    return ExecuteTask(
+def _impl_task(task_id: str, idea_id: str) -> ExecutionTask:
+    return ExecutionTask(
         task_id=task_id,
-        kind="execute",
+        kind="execution",
         state="pending",
-        payload=ExecutePayload(idea_id=idea_id),
+        payload=ExecutionPayload(idea_id=idea_id),
         created_at="2026-04-23T00:00:00.000Z",
         updated_at="2026-04-23T00:00:00.000Z",
     )
 
 
-def _eval_task(task_id: str, variant_id: str) -> EvaluateTask:
-    return EvaluateTask(
+def _eval_task(task_id: str, variant_id: str) -> EvaluationTask:
+    return EvaluationTask(
         task_id=task_id,
-        kind="evaluate",
+        kind="evaluation",
         state="pending",
-        payload=EvaluatePayload(variant_id=variant_id),
+        payload=EvaluationPayload(variant_id=variant_id),
         created_at="2026-04-23T00:00:00.000Z",
         updated_at="2026-04-23T00:00:00.000Z",
     )
@@ -91,14 +91,14 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
         )
     )
     # Set commit_sha via a round-trip through execute-task dispatch/accept
-    from eden_storage import ExecuteSubmission
+    from eden_storage import VariantSubmission
 
-    store.create_execute_task(f"t-bootstrap-{variant_id}", idea_id)
-    c = store.claim(f"t-bootstrap-{variant_id}", "execute-bootstrap")
+    store.create_execution_task(f"t-bootstrap-{variant_id}", idea_id)
+    c = store.claim(f"t-bootstrap-{variant_id}", "execution-bootstrap")
     store.submit(
         f"t-bootstrap-{variant_id}",
         c.token,
-        ExecuteSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
+        VariantSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
     )
     store.accept(f"t-bootstrap-{variant_id}")
 
@@ -156,7 +156,7 @@ class TestCreateTaskSpecLiteral:
     def test_plan_task_cross_experiment_payload_rejected(
         self, make_store: Callable[..., Store]
     ) -> None:
-        """IdeatePayload.experiment_id MUST match the store's experiment_id.
+        """IdeationPayload.experiment_id MUST match the store's experiment_id.
 
         Otherwise the stored task would declare one experiment while
         its ``task.created`` event is stamped with another, producing
@@ -176,18 +176,18 @@ class TestReplayAndReadRange:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t1")
-        store.create_ideate_task("t2")
+        store.create_ideation_task("t1")
+        store.create_ideation_task("t2")
         assert store.replay() == store.events()
 
     def test_read_range_with_cursor_returns_since(
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t1")
-        store.create_ideate_task("t2")
+        store.create_ideation_task("t1")
+        store.create_ideation_task("t2")
         cursor = len(store.replay())
-        store.create_ideate_task("t3")
+        store.create_ideation_task("t3")
         new = store.read_range(cursor)
         assert [e.type for e in new] == ["task.created"]
         assert new[0].data["task_id"] == "t3"
@@ -196,7 +196,7 @@ class TestReplayAndReadRange:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t1")
+        store.create_ideation_task("t1")
         assert store.read_range() == store.replay()
         assert store.read_range(None) == store.replay()
 
@@ -204,5 +204,5 @@ class TestReplayAndReadRange:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideate_task("t1")
+        store.create_ideation_task("t1")
         assert store.read_range(0) == store.replay()

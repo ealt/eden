@@ -20,9 +20,9 @@ deliberately different conventions.
 Each role's host invokes a command string from the experiment-config
 YAML:
 
-- ideator: `ideate_command`
-- executor: `execute_command`
-- evaluator: `evaluate_command`
+- ideator: `ideation_command`
+- executor: `execution_command`
+- evaluator: `evaluation_command`
 
 All three keys are accepted as additional properties on the
 [`experiment-config.schema.json`](../schemas/experiment-config.schema.json)
@@ -30,7 +30,7 @@ schema (the schema does not pin them; user-supplied tooling may
 ignore or repurpose them).
 
 The host invokes the command via `shell=True` so user expressions
-like `python3 ${EDEN_EXPERIMENT_DIR}/ideate.py` expand against the
+like `python3 ${EDEN_EXPERIMENT_DIR}/ideation.py` expand against the
 host-supplied environment.
 
 ### 1.1 Environment supplied to every subprocess
@@ -81,7 +81,7 @@ host kills the subprocess.
 For each ideate task, the host writes one stdin line of the form:
 
 ```json
-{"event": "ideate", "task_id": "ideate-…", "experiment_id": "exp-1",
+{"event": "ideation", "task_id": "ideate-…", "experiment_id": "exp-1",
  "objective": {"expr": "score", "direction": "maximize"},
  "evaluation_schema": {"score": "real"},
  "history": [
@@ -97,7 +97,7 @@ results, newest first, capped at 50 entries by the reference host.
 ### 2.3 Worker response
 
 The subprocess writes any number of `idea` lines followed by
-exactly one terminator (`ideate-done` or `ideate-error`). All lines
+exactly one terminator (`ideation-done` or `ideation-error`). All lines
 MUST carry the same `task_id` as the dispatch.
 
 ```json
@@ -105,7 +105,7 @@ MUST carry the same `task_id` as the dispatch.
  "slug": "p0", "priority": 1.0,
  "parent_commits": ["abc…"],
  "rationale": "free-form markdown text"}
-{"event": "ideate-done", "task_id": "ideate-…"}
+{"event": "ideation-done", "task_id": "ideate-…"}
 ```
 
 If `rationale` is present, the host writes it to
@@ -114,7 +114,7 @@ resulting `file://` URI as the idea's `artifacts_uri`. If
 `rationale` is absent, the subprocess MUST set `artifacts_uri`
 explicitly.
 
-An `ideate-error` terminator submits a chapter-3 `IdeateSubmission`
+An `ideation-error` terminator submits a chapter-3 `IdeaSubmission`
 with `status="error"`.
 
 ### 2.4 Error handling
@@ -155,7 +155,7 @@ repository write becomes observable. The reference flow is:
    }
    ```
 
-6. Spawn `execute_command` with cwd = worktree.
+6. Spawn `execution_command` with cwd = worktree.
 7. Read `<wt>/.eden/outcome.json`:
 
    ```json
@@ -175,8 +175,8 @@ repository write becomes observable. The reference flow is:
 
 All four of (subprocess exit-nonzero, missing outcome.json,
 malformed outcome, `outcome.status != "success"`) terminalize as
-`ExecuteSubmission(status="error", variant_id=…)`. The
-`Store._reject_execute` path composite-commits the variant to
+`VariantSubmission(status="error", variant_id=…)`. The
+`Store._reject_execution` path composite-commits the variant to
 `error` atomically with the task transition. The user-supplied
 `description` field on `outcome.json` is logged for diagnostics
 but **not** propagated to the wire (the submission dataclass has
@@ -199,7 +199,7 @@ no free-form field; see §5).
    }
    ```
 
-3. Run `evaluate_command` with cwd = worktree.
+3. Run `evaluation_command` with cwd = worktree.
 4. Read outcome:
 
    ```json

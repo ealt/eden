@@ -50,16 +50,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from eden_contracts import (
-    EvaluatePayload,
-    EvaluateTask,
+    EvaluationPayload,
     EvaluationSchema,
+    EvaluationTask,
     Event,
-    ExecutePayload,
-    ExecuteTask,
+    ExecutionPayload,
+    ExecutionTask,
     FailReason,
     Idea,
-    IdeatePayload,
-    IdeateTask,
+    IdeationPayload,
+    IdeationTask,
     ReclaimCause,
     Task,
     TaskClaim,
@@ -76,10 +76,10 @@ from .errors import (
     WrongToken,
 )
 from .submissions import (
-    EvaluateSubmission,
-    ExecuteSubmission,
-    IdeateSubmission,
+    EvaluationSubmission,
+    IdeaSubmission,
     Submission,
+    VariantSubmission,
     submissions_equivalent,
 )
 
@@ -353,8 +353,8 @@ class _StoreBase:
         tasks the referenced variant's ``starting``/``commit_sha``
         precondition is enforced.
 
-        The typed helpers ``create_ideate_task`` / ``create_execute_task``
-        / ``create_evaluate_task`` build the task payload for the
+        The typed helpers ``create_ideation_task`` / ``create_execution_task``
+        / ``create_evaluation_task`` build the task payload for the
         caller; both paths converge on the same commit.
         """
         if task.state != "pending":
@@ -365,16 +365,16 @@ class _StoreBase:
             raise InvalidPrecondition(
                 "new task must not carry a claim (08-storage.md §1.1)"
             )
-        if task.kind == "ideate":
-            assert isinstance(task, IdeateTask)
+        if task.kind == "ideation":
+            assert isinstance(task, IdeationTask)
             return self._insert_plan_task(task)
-        if task.kind == "execute":
-            assert isinstance(task, ExecuteTask)
+        if task.kind == "execution":
+            assert isinstance(task, ExecutionTask)
             return self._insert_implement_task(task)
-        assert isinstance(task, EvaluateTask)
+        assert isinstance(task, EvaluationTask)
         return self._insert_evaluate_task(task)
 
-    def _insert_plan_task(self, task: IdeateTask) -> IdeateTask:
+    def _insert_plan_task(self, task: IdeationTask) -> IdeationTask:
         if task.payload.experiment_id != self._experiment_id:
             raise InvalidPrecondition(
                 f"ideate task payload.experiment_id={task.payload.experiment_id!r} "
@@ -385,12 +385,12 @@ class _StoreBase:
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "ideate"})
+                self._event("task.created", {"task_id": task.task_id, "kind": "ideation"})
             )
             self._apply_commit(tx)
             return _deep(task)
 
-    def _insert_implement_task(self, task: ExecuteTask) -> ExecuteTask:
+    def _insert_implement_task(self, task: ExecutionTask) -> ExecutionTask:
         with self._atomic_operation():
             self._require_no_task(task.task_id)
             idea_id = task.payload.idea_id
@@ -406,7 +406,7 @@ class _StoreBase:
             tx.tasks[task.task_id] = _deep(task)
             tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "execute"})
+                self._event("task.created", {"task_id": task.task_id, "kind": "execution"})
             )
             tx.events.append(
                 self._event(
@@ -417,7 +417,7 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def _insert_evaluate_task(self, task: EvaluateTask) -> EvaluateTask:
+    def _insert_evaluate_task(self, task: EvaluationTask) -> EvaluationTask:
         with self._atomic_operation():
             self._require_no_task(task.task_id)
             variant_id = task.payload.variant_id
@@ -436,31 +436,31 @@ class _StoreBase:
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "evaluate"})
+                self._event("task.created", {"task_id": task.task_id, "kind": "evaluation"})
             )
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_ideate_task(self, task_id: str) -> IdeateTask:
+    def create_ideation_task(self, task_id: str) -> IdeationTask:
         """Create a ``ideate`` task. Emits ``task.created`` atomically."""
         with self._atomic_operation():
             self._require_no_task(task_id)
             now = self._ts()
-            task = IdeateTask(
+            task = IdeationTask(
                 task_id=task_id,
-                kind="ideate",
+                kind="ideation",
                 state="pending",
-                payload=IdeatePayload(experiment_id=self._experiment_id),
+                payload=IdeationPayload(experiment_id=self._experiment_id),
                 created_at=now,
                 updated_at=now,
             )
             tx = _Tx()
             tx.tasks[task_id] = task
-            tx.events.append(self._event("task.created", {"task_id": task_id, "kind": "ideate"}))
+            tx.events.append(self._event("task.created", {"task_id": task_id, "kind": "ideation"}))
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_execute_task(self, task_id: str, idea_id: str) -> ExecuteTask:
+    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
         """Create an ``execute`` task; composite-commits ``idea.dispatched``.
 
         Per ``05-event-protocol.md`` §2.2: creating the execute task
@@ -478,11 +478,11 @@ class _StoreBase:
                     f"to dispatch, not {idea.state!r}"
                 )
             now = self._ts()
-            task = ExecuteTask(
+            task = ExecutionTask(
                 task_id=task_id,
-                kind="execute",
+                kind="execution",
                 state="pending",
-                payload=ExecutePayload(idea_id=idea_id),
+                payload=ExecutionPayload(idea_id=idea_id),
                 created_at=now,
                 updated_at=now,
             )
@@ -490,7 +490,7 @@ class _StoreBase:
             tx.tasks[task_id] = task
             tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
             tx.events.append(
-                self._event("task.created", {"task_id": task_id, "kind": "execute"})
+                self._event("task.created", {"task_id": task_id, "kind": "execution"})
             )
             tx.events.append(
                 self._event(
@@ -501,7 +501,7 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_evaluate_task(self, task_id: str, variant_id: str) -> EvaluateTask:
+    def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
         """Create an ``evaluate`` task against a starting variant with ``commit_sha``."""
         with self._atomic_operation():
             self._require_no_task(task_id)
@@ -518,18 +518,18 @@ class _StoreBase:
                     f"variant {variant_id!r} has no commit_sha; executor must set it first"
                 )
             now = self._ts()
-            task = EvaluateTask(
+            task = EvaluationTask(
                 task_id=task_id,
-                kind="evaluate",
+                kind="evaluation",
                 state="pending",
-                payload=EvaluatePayload(variant_id=variant_id),
+                payload=EvaluationPayload(variant_id=variant_id),
                 created_at=now,
                 updated_at=now,
             )
             tx = _Tx()
             tx.tasks[task_id] = task
             tx.events.append(
-                self._event("task.created", {"task_id": task_id, "kind": "evaluate"})
+                self._event("task.created", {"task_id": task_id, "kind": "evaluation"})
             )
             self._apply_commit(tx)
             return _deep(task)
@@ -638,19 +638,19 @@ class _StoreBase:
         submission = self._get_submission(task_id)
         if submission is None:
             return "no submission recorded"
-        if isinstance(submission, IdeateSubmission):
+        if isinstance(submission, IdeaSubmission):
             if submission.status != "success":
                 return None
-            return self._validate_ideate_acceptance(submission)
-        if isinstance(submission, ExecuteSubmission):
+            return self._validate_ideation_acceptance(submission)
+        if isinstance(submission, VariantSubmission):
             if submission.status != "success":
                 return None
-            assert isinstance(task, ExecuteTask)
-            return self._validate_execute_acceptance(task, submission)
-        if isinstance(submission, EvaluateSubmission):
+            assert isinstance(task, ExecutionTask)
+            return self._validate_execution_acceptance(task, submission)
+        if isinstance(submission, EvaluationSubmission):
             if submission.status != "success":
                 return None
-            assert isinstance(task, EvaluateTask)
+            assert isinstance(task, EvaluationTask)
             return self._validate_evaluate_acceptance(task, submission)
         return None
 
@@ -689,8 +689,8 @@ class _StoreBase:
             # default, but a malformed payload on `error` still has to
             # be treated as validation_error so no invalid field
             # actually lands on the variant.
-            if isinstance(submission, EvaluateSubmission) and submission.status == "error":
-                assert isinstance(task, EvaluateTask)
+            if isinstance(submission, EvaluationSubmission) and submission.status == "error":
+                assert isinstance(task, EvaluationTask)
                 reason = self._validate_evaluate_error(task, submission)
                 if reason is not None:
                     return ("reject_validation", reason)
@@ -714,12 +714,12 @@ class _StoreBase:
                 raise IllegalTransition(
                     f"task {task_id!r} is submitted but has no recorded submission"
                 )
-            if task.kind == "ideate":
-                self._accept_ideate(task, submission)
-            elif task.kind == "execute":
-                self._accept_execute(task, submission)
+            if task.kind == "ideation":
+                self._accept_ideation(task, submission)
+            elif task.kind == "execution":
+                self._accept_execution(task, submission)
             else:
-                self._accept_evaluate(task, submission)
+                self._accept_evaluation(task, submission)
 
     def reject(self, task_id: str, reason: FailReason) -> None:
         """Orchestrator reject: ``submitted → failed`` with composite effects.
@@ -739,10 +739,10 @@ class _StoreBase:
                 raise IllegalTransition(
                     f"task {task_id!r} is submitted but has no recorded submission"
                 )
-            if task.kind == "ideate":
-                self._reject_ideate(task, reason)
-            elif task.kind == "execute":
-                self._reject_execute(task, submission, reason)
+            if task.kind == "ideation":
+                self._reject_ideation(task, reason)
+            elif task.kind == "execution":
+                self._reject_execution(task, submission, reason)
             else:
                 self._reject_evaluate(task, submission, reason)
 
@@ -784,7 +784,7 @@ class _StoreBase:
                 self._event("task.reclaimed", {"task_id": task_id, "cause": cause})
             )
 
-            if task.kind == "execute":
+            if task.kind == "execution":
                 variant = self._find_starting_variant_for_implement_task(task)
                 if variant is not None:
                     tx.variants[variant.variant_id] = _validated_update(
@@ -935,9 +935,9 @@ class _StoreBase:
     # Internal dispatch — accept/reject helpers
     # ------------------------------------------------------------------
 
-    def _accept_ideate(self, task: Task, submission: Submission) -> None:
-        assert isinstance(submission, IdeateSubmission)
-        reason = self._validate_ideate_acceptance(submission)
+    def _accept_ideation(self, task: Task, submission: Submission) -> None:
+        assert isinstance(submission, IdeaSubmission)
+        reason = self._validate_ideation_acceptance(submission)
         if reason is not None:
             raise IllegalTransition(
                 f"cannot accept ideate {task.task_id!r}: {reason}"
@@ -950,7 +950,7 @@ class _StoreBase:
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         self._apply_commit(tx)
 
-    def _reject_ideate(self, task: Task, reason: FailReason) -> None:
+    def _reject_ideation(self, task: Task, reason: FailReason) -> None:
         now = self._ts()
         tx = _Tx()
         tx.tasks[task.task_id] = _validated_update(
@@ -961,10 +961,10 @@ class _StoreBase:
         )
         self._apply_commit(tx)
 
-    def _accept_execute(self, task: Task, submission: Submission) -> None:
-        assert isinstance(task, ExecuteTask)
-        assert isinstance(submission, ExecuteSubmission)
-        reason = self._validate_execute_acceptance(task, submission)
+    def _accept_execution(self, task: Task, submission: Submission) -> None:
+        assert isinstance(task, ExecutionTask)
+        assert isinstance(submission, VariantSubmission)
+        reason = self._validate_execution_acceptance(task, submission)
         if reason is not None:
             raise IllegalTransition(
                 f"cannot accept execute {task.task_id!r}: {reason}"
@@ -991,16 +991,16 @@ class _StoreBase:
         )
         self._apply_commit(tx)
 
-    def _reject_execute(
+    def _reject_execution(
         self,
         task: Task,
         submission: Submission,
         reason: FailReason,
     ) -> None:
-        assert isinstance(task, ExecuteTask)
+        assert isinstance(task, ExecutionTask)
         idea = self._require_idea(task.payload.idea_id)
         variant_for_error: Variant | None = None
-        if isinstance(submission, ExecuteSubmission):
+        if isinstance(submission, VariantSubmission):
             # Only touch the variant if it was created under this very
             # task's idea — submission.variant_id is caller-supplied
             # and could reference an unrelated variant.
@@ -1036,9 +1036,9 @@ class _StoreBase:
             )
         self._apply_commit(tx)
 
-    def _accept_evaluate(self, task: Task, submission: Submission) -> None:
-        assert isinstance(task, EvaluateTask)
-        assert isinstance(submission, EvaluateSubmission)
+    def _accept_evaluation(self, task: Task, submission: Submission) -> None:
+        assert isinstance(task, EvaluationTask)
+        assert isinstance(submission, EvaluationSubmission)
         reason = self._validate_evaluate_acceptance(task, submission)
         if reason is not None:
             raise IllegalTransition(
@@ -1073,8 +1073,8 @@ class _StoreBase:
         submission: Submission,
         reason: FailReason,
     ) -> None:
-        assert isinstance(task, EvaluateTask)
-        assert isinstance(submission, EvaluateSubmission)
+        assert isinstance(task, EvaluationTask)
+        assert isinstance(submission, EvaluationSubmission)
         # submission.variant_id is already bound to task.payload.variant_id
         # by _validate_submission_ref_binding at submit time.
         variant = self._require_variant(task.payload.variant_id)
@@ -1134,7 +1134,7 @@ class _StoreBase:
         (03-roles §3.4); an evaluate-task submission's variant_id must
         equal the task payload's variant_id (03-roles §4.4).
         """
-        if isinstance(submission, IdeateSubmission):
+        if isinstance(submission, IdeaSubmission):
             for pid in submission.idea_ids:
                 idea = self._get_idea(pid)
                 if idea is None:
@@ -1147,8 +1147,8 @@ class _StoreBase:
                         "ideator MUST NOT submit while ideas are in drafting "
                         "(03-roles.md §2.4)"
                     )
-        elif isinstance(submission, ExecuteSubmission):
-            assert isinstance(task, ExecuteTask)
+        elif isinstance(submission, VariantSubmission):
+            assert isinstance(task, ExecutionTask)
             variant = self._get_variant(submission.variant_id)
             if variant is None:
                 raise IllegalTransition(
@@ -1161,15 +1161,15 @@ class _StoreBase:
                     f"belongs to idea {variant.idea_id!r}, not the "
                     f"task's idea {task.payload.idea_id!r}"
                 )
-        elif isinstance(submission, EvaluateSubmission):
-            assert isinstance(task, EvaluateTask)
+        elif isinstance(submission, EvaluationSubmission):
+            assert isinstance(task, EvaluationTask)
             if submission.variant_id != task.payload.variant_id:
                 raise IllegalTransition(
                     f"evaluate-task submission variant_id={submission.variant_id!r} "
                     f"does not match task's variant {task.payload.variant_id!r}"
                 )
 
-    def _validate_ideate_acceptance(self, submission: IdeateSubmission) -> str | None:
+    def _validate_ideation_acceptance(self, submission: IdeaSubmission) -> str | None:
         for pid in submission.idea_ids:
             idea = self._get_idea(pid)
             if idea is None:
@@ -1178,8 +1178,8 @@ class _StoreBase:
                 return f"idea {pid!r} is still in drafting at accept time"
         return None
 
-    def _validate_execute_acceptance(
-        self, task: ExecuteTask, submission: ExecuteSubmission
+    def _validate_execution_acceptance(
+        self, task: ExecutionTask, submission: VariantSubmission
     ) -> str | None:
         if submission.commit_sha is None:
             return "success submission requires commit_sha (03-roles.md §3.4)"
@@ -1205,7 +1205,7 @@ class _StoreBase:
         return None
 
     def _validate_evaluate_acceptance(
-        self, task: EvaluateTask, submission: EvaluateSubmission
+        self, task: EvaluationTask, submission: EvaluationSubmission
     ) -> str | None:
         if submission.variant_id != task.payload.variant_id:
             return "submission variant_id does not match task's variant_id"
@@ -1238,7 +1238,7 @@ class _StoreBase:
         return None
 
     def _validate_evaluate_error(
-        self, task: EvaluateTask, submission: EvaluateSubmission
+        self, task: EvaluationTask, submission: EvaluationSubmission
     ) -> str | None:
         """Validate fields that a `status=error` evaluate-task submission would write."""
         if submission.variant_id != task.payload.variant_id:
@@ -1310,7 +1310,7 @@ class _StoreBase:
     # ------------------------------------------------------------------
 
     def _find_starting_variant_for_implement_task(self, task: Task) -> Variant | None:
-        assert isinstance(task, ExecuteTask)
+        assert isinstance(task, ExecutionTask)
         for variant in self._iter_variants():
             if (
                 variant.idea_id == task.payload.idea_id
@@ -1321,12 +1321,12 @@ class _StoreBase:
 
     def _require_submission_kind_matches(self, task: Task, submission: Submission) -> None:
         expected: type[Submission]
-        if task.kind == "ideate":
-            expected = IdeateSubmission
-        elif task.kind == "execute":
-            expected = ExecuteSubmission
+        if task.kind == "ideation":
+            expected = IdeaSubmission
+        elif task.kind == "execution":
+            expected = VariantSubmission
         else:
-            expected = EvaluateSubmission
+            expected = EvaluationSubmission
         if not isinstance(submission, expected):
             raise IllegalTransition(
                 f"task {task.task_id!r} (kind={task.kind!r}) requires "

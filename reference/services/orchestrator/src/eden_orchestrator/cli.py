@@ -97,20 +97,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--ideate-tasks",
+        "--ideation-tasks",
         required=True,
         help=(
-            "Either an integer N (creates ideate-0001..ideate-N) or a "
+            "Either an integer N (creates ideation-0001..ideate-N) or a "
             "comma-separated list of explicit ideate task IDs."
         ),
     )
     parser.add_argument(
-        "--execute-task-prefix",
-        default="execute-",
-        help="Prefix for orchestrator-allocated execute task IDs (default: 'execute-').",
+        "--execution-task-prefix",
+        default="execution-",
+        help="Prefix for orchestrator-allocated execute task IDs (default: 'execution-').",
     )
     parser.add_argument(
-        "--evaluate-task-prefix",
+        "--evaluation-task-prefix",
         default="evaluate-",
         help="Prefix for orchestrator-allocated evaluate task IDs (default: 'evaluate-').",
     )
@@ -138,11 +138,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _expand_ideate_tasks(spec: str) -> list[str]:
-    """Parse --ideate-tasks into a concrete list of IDs."""
+def _expand_ideation_tasks(spec: str) -> list[str]:
+    """Parse --ideation-tasks into a concrete list of IDs."""
     if spec.isdigit():
         n = int(spec)
-        return [f"ideate-{i:04d}" for i in range(1, n + 1)]
+        return [f"ideation-{i:04d}" for i in range(1, n + 1)]
     return [s.strip() for s in spec.split(",") if s.strip()]
 
 
@@ -202,8 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         deadline_seconds=args.startup_timeout,
     )
 
-    ideate_task_ids = _expand_ideate_tasks(args.ideate_tasks)
-    log.info("starting", ideate_tasks=len(ideate_task_ids), repo=args.repo_path)
+    ideation_task_ids = _expand_ideation_tasks(args.ideation_tasks)
+    log.info("starting", ideate_tasks=len(ideation_task_ids), repo=args.repo_path)
 
     with StoreClient(
         args.task_store_url,
@@ -233,9 +233,9 @@ def main(argv: list[str] | None = None) -> int:
         run_orchestrator_loop(
             store=client,
             integrator=integrator,
-            ideate_task_ids=ideate_task_ids,
-            execute_task_prefix=args.execute_task_prefix,
-            evaluate_task_prefix=args.evaluate_task_prefix,
+            ideation_task_ids=ideation_task_ids,
+            execution_task_prefix=args.execution_task_prefix,
+            evaluation_task_prefix=args.evaluation_task_prefix,
             poll_interval=args.poll_interval,
             max_quiescent_iterations=args.max_quiescent_iterations,
             stop=stop,

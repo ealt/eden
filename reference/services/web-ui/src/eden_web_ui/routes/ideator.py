@@ -23,7 +23,7 @@ from eden_contracts import Idea
 from eden_storage import (
     ConflictingResubmission,
     DispatchError,
-    IdeateSubmission,
+    IdeaSubmission,
     IllegalTransition,
     InvalidPrecondition,
     WrongToken,
@@ -77,7 +77,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
-    pending = store.list_tasks(kind="ideate", state="pending")
+    pending = store.list_tasks(kind="ideation", state="pending")
     config = request.app.state.experiment_config
     return request.app.state.templates.TemplateResponse(
         request,
@@ -246,7 +246,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
 
     if status == "error":
         try:
-            store.submit(task_id, token, IdeateSubmission(status="error"))
+            store.submit(task_id, token, IdeaSubmission(status="error"))
         except DispatchError as exc:
             return _render_error(request, _wire_error_banner(exc))
         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
@@ -315,7 +315,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             )
 
     # Phase 3: submit, with retry-before-orphan.
-    submission = IdeateSubmission(status="success", idea_ids=tuple(idea_ids))
+    submission = IdeaSubmission(status="success", idea_ids=tuple(idea_ids))
     ok, banner = _retry_submit(store, task_id, token, submission)
     if not ok:
         return _render_orphaned(request, task_id, idea_ids, banner=banner)
@@ -331,7 +331,7 @@ _RETRY_DELAYS_S = (0.05, 0.2, 0.5)
 
 
 def _retry_submit(
-    store: Any, task_id: str, token: str, submission: IdeateSubmission
+    store: Any, task_id: str, token: str, submission: IdeaSubmission
 ) -> tuple[bool, str | None]:
     """Resubmit on transport-only failures up to 3 times.
 
@@ -407,7 +407,7 @@ def _readback(
     store: Any,
     task_id: str,
     token: str,
-    submission: IdeateSubmission,
+    submission: IdeaSubmission,
     last_exc: BaseException | None,
 ) -> tuple[bool, str | None]:
     """Read-back disambiguation for the ideator's retry-exhaustion arm.

@@ -1,9 +1,9 @@
-"""Deterministic ideate_command for the fixture experiment.
+"""Deterministic ideation_command for the fixture experiment.
 
 Long-running JSON-line worker that exercises the Phase 10d ideator
 subprocess protocol (``docs/plans/eden-phase-10d-llm-worker-hosts.md``
 §D.2). For each ``ideate`` dispatch line on stdin, emits one or more
-``idea`` lines followed by a ``ideate-done`` terminator, all
+``idea`` lines followed by a ``ideation-done`` terminator, all
 scoped to the dispatch's ``task_id``.
 
 Knobs:
@@ -46,7 +46,7 @@ def main() -> int:
             dispatch = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if dispatch.get("event") != "ideate":
+        if dispatch.get("event") != "ideation":
             continue
         task_id = dispatch.get("task_id")
         if not isinstance(task_id, str):
@@ -65,7 +65,7 @@ def main() -> int:
             sys.stdout.write(json.dumps(idea, sort_keys=True) + "\n")
             sys.stdout.flush()
         sys.stdout.write(
-            json.dumps({"event": "ideate-done", "task_id": task_id}) + "\n"
+            json.dumps({"event": "ideation-done", "task_id": task_id}) + "\n"
         )
         sys.stdout.flush()
     return 0

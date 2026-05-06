@@ -77,7 +77,7 @@ def _classify(
 
 def test_concurrent_claim_at_most_one_succeeds(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §3.1 — concurrent claim atomicity: exactly one wins."""
-    tid = _seed.create_ideate_task(wire_client)
+    tid = _seed.create_ideation_task(wire_client)
 
     responses = _claim_concurrently(wire_client, tid, _N_CLAIMERS)
     assert len(responses) == _N_CLAIMERS, (
@@ -138,7 +138,7 @@ def test_concurrent_claim_yields_unique_winning_token(
     """
     seen_tokens: list[str] = []
     for _ in range(2):
-        tid = _seed.create_ideate_task(wire_client)
+        tid = _seed.create_ideation_task(wire_client)
         responses = _claim_concurrently(wire_client, tid, _N_CLAIMERS)
         successes, _ = _classify(responses)
         assert len(successes) == 1

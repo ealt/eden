@@ -22,8 +22,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _seed_ideate_task(store: InMemoryStore, task_id: str = "ideate-A") -> str:
-    store.create_ideate_task(task_id)
+def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> str:
+    store.create_ideation_task(task_id)
     return task_id
 
 
@@ -43,7 +43,7 @@ class TestAdminAuthGate:
     def test_post_reclaim_unauthenticated_redirects_signin(
         self, client: TestClient, store: InMemoryStore
     ) -> None:
-        task_id = _seed_ideate_task(store)
+        task_id = _seed_ideation_task(store)
         _claim_plan_task(store, task_id)
         resp = client.post(
             f"/admin/tasks/{task_id}/reclaim",
@@ -69,9 +69,9 @@ class TestAdminIndex:
     def test_renders_with_seeded_state(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        _seed_ideate_task(store, "ideate-B")
-        store.create_ideate_task("plan-C")
+        _seed_ideation_task(store, "ideation-A")
+        _seed_ideation_task(store, "ideation-B")
+        store.create_ideation_task("plan-C")
         store.claim("plan-C", "w-1")
         resp = signed_in_client.get("/admin/")
         assert resp.status_code == 200
@@ -84,49 +84,49 @@ class TestAdminTasks:
     def test_no_filter_lists_all(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        store.create_ideate_task("ideate-B")
+        _seed_ideation_task(store, "ideation-A")
+        store.create_ideation_task("ideation-B")
         resp = signed_in_client.get("/admin/tasks/")
         assert resp.status_code == 200
-        assert "ideate-A" in resp.text
-        assert "ideate-B" in resp.text
+        assert "ideation-A" in resp.text
+        assert "ideation-B" in resp.text
 
     def test_kind_filter(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        resp = signed_in_client.get("/admin/tasks/?kind=evaluate")
+        _seed_ideation_task(store, "ideation-A")
+        resp = signed_in_client.get("/admin/tasks/?kind=evaluation")
         assert resp.status_code == 200
-        assert "ideate-A" not in resp.text
+        assert "ideation-A" not in resp.text
 
     def test_state_filter(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        store.create_ideate_task("ideate-B")
-        store.claim("ideate-B", "w-1")
+        _seed_ideation_task(store, "ideation-A")
+        store.create_ideation_task("ideation-B")
+        store.claim("ideation-B", "w-1")
         resp = signed_in_client.get("/admin/tasks/?state=claimed")
         assert resp.status_code == 200
-        assert "ideate-B" in resp.text
-        assert "ideate-A" not in resp.text
+        assert "ideation-B" in resp.text
+        assert "ideation-A" not in resp.text
 
     def test_unknown_kind_renders_empty(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """Plan §A.3: unknown filter values must yield empty rowset, not full list."""
-        _seed_ideate_task(store, "ideate-A")
+        _seed_ideation_task(store, "ideation-A")
         resp = signed_in_client.get("/admin/tasks/?kind=garbage")
         assert resp.status_code == 200
-        assert "ideate-A" not in resp.text
+        assert "ideation-A" not in resp.text
         assert "no tasks match" in resp.text
 
     def test_unknown_state_renders_empty(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
+        _seed_ideation_task(store, "ideation-A")
         resp = signed_in_client.get("/admin/tasks/?state=lol")
         assert resp.status_code == 200
-        assert "ideate-A" not in resp.text
+        assert "ideation-A" not in resp.text
         assert "no tasks match" in resp.text
 
 
@@ -134,17 +134,17 @@ class TestAdminTaskDetail:
     def test_pending_task_shows_no_reclaim_button(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        resp = signed_in_client.get("/admin/tasks/ideate-A/")
+        _seed_ideation_task(store, "ideation-A")
+        resp = signed_in_client.get("/admin/tasks/ideation-A/")
         assert resp.status_code == 200
         assert "reclaim" not in resp.text.lower()
 
     def test_claimed_task_shows_reclaim_button(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        store.claim("ideate-A", "w-1")
-        resp = signed_in_client.get("/admin/tasks/ideate-A/")
+        _seed_ideation_task(store, "ideation-A")
+        store.claim("ideation-A", "w-1")
+        resp = signed_in_client.get("/admin/tasks/ideation-A/")
         assert resp.status_code == 200
         assert ">reclaim<" in resp.text
 
@@ -154,11 +154,11 @@ class TestAdminTaskDetail:
         store: InMemoryStore,
         artifacts_dir: Path,
     ) -> None:
-        from eden_storage import IdeateSubmission
+        from eden_storage import IdeaSubmission
 
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
+        store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/")
         assert resp.status_code == 200
         assert "force-reclaim" in resp.text
@@ -168,11 +168,11 @@ class TestAdminTaskDetail:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        from eden_storage import IdeateSubmission
+        from eden_storage import IdeaSubmission
 
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
+        store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/")
         assert resp.status_code == 200
@@ -190,7 +190,7 @@ class TestAdminTaskReclaim:
     def test_happy_path_claimed_to_pending(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         _claim_plan_task(store, task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -206,11 +206,11 @@ class TestAdminTaskReclaim:
     def test_submitted_to_pending(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        from eden_storage import IdeateSubmission
+        from eden_storage import IdeaSubmission
 
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
+        store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             f"/admin/tasks/{task_id}/reclaim",
@@ -224,11 +224,11 @@ class TestAdminTaskReclaim:
     def test_terminal_returns_illegal_transition(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        from eden_storage import IdeateSubmission
+        from eden_storage import IdeaSubmission
 
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         token = _claim_plan_task(store, task_id)
-        store.submit(task_id, token, IdeateSubmission(status="success", idea_ids=()))
+        store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -242,7 +242,7 @@ class TestAdminTaskReclaim:
     def test_csrf_mismatch_returns_403(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        task_id = _seed_ideate_task(store, "ideate-A")
+        task_id = _seed_ideation_task(store, "ideation-A")
         _claim_plan_task(store, task_id)
         resp = signed_in_client.post(
             f"/admin/tasks/{task_id}/reclaim",
@@ -290,7 +290,7 @@ class TestAdminEvents:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         for i in range(5):
-            _seed_ideate_task(store, f"ideate-{i}")
+            _seed_ideation_task(store, f"ideate-{i}")
         resp = signed_in_client.get("/admin/events/")
         assert resp.status_code == 200
         assert "task.created" in resp.text
@@ -298,7 +298,7 @@ class TestAdminEvents:
     def test_limit_clamped(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
+        _seed_ideation_task(store, "ideation-A")
         # Limit > 1000 must be clamped to 1000.
         resp = signed_in_client.get("/admin/events/?limit=99999")
         assert resp.status_code == 200
@@ -306,8 +306,8 @@ class TestAdminEvents:
     def test_type_filter(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        store.claim("ideate-A", "w-1")
+        _seed_ideation_task(store, "ideation-A")
+        store.claim("ideation-A", "w-1")
         resp = signed_in_client.get("/admin/events/?type=task.claimed")
         assert resp.status_code == 200
         assert "task.claimed" in resp.text

@@ -22,8 +22,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _seed_ideate_task(store: InMemoryStore, task_id: str = "ideate-A") -> str:
-    store.create_ideate_task(task_id)
+def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> str:
+    store.create_ideation_task(task_id)
     return task_id
 
 
@@ -94,9 +94,9 @@ class TestErrorEcho:
     def test_unknown_error_value_does_not_render_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
+        _seed_ideation_task(store, "ideation-A")
         resp = signed_in_client.get(
-            "/admin/tasks/ideate-A/?error=<script>alert(1)</script>"
+            "/admin/tasks/ideation-A/?error=<script>alert(1)</script>"
         )
         assert resp.status_code == 200
         assert "<script>alert(1)</script>" not in resp.text
@@ -105,8 +105,8 @@ class TestErrorEcho:
     def test_unknown_reclaimed_value_does_not_render_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        _seed_ideate_task(store, "ideate-A")
-        resp = signed_in_client.get("/admin/tasks/ideate-A/?reclaimed=garbage")
+        _seed_ideation_task(store, "ideation-A")
+        resp = signed_in_client.get("/admin/tasks/ideation-A/?reclaimed=garbage")
         assert resp.status_code == 200
         # No banner means none of the canonical banner copy is in the response.
         assert "task reclaimed" not in resp.text
