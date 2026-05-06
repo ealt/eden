@@ -4,7 +4,7 @@ Composes the ``GitRepo`` subprocess wrapper with the Phase 6
 ``Store`` to produce canonical ``variant/*`` commits. Given a
 ``success`` variant with a recorded ``commit_sha``, the integrator:
 
-- re-validates the variant against the §2 promotion preconditions,
+- re-validates the variant against the §2 integration preconditions,
 - re-checks §1.4 reachability via git,
 - builds the §3.2 single-commit squash (worker-tip tree plus exactly
   the evaluation manifest at ``.eden/variants/<variant_id>/evaluation.json``),
@@ -48,7 +48,7 @@ class IntegratorError(RuntimeError):
 
 
 class NotReadyForIntegration(IntegratorError):
-    """Variant fails §2 promotion preconditions."""
+    """Variant fails §2 integration preconditions."""
 
 
 class ReachabilityViolation(IntegratorError):
@@ -127,7 +127,7 @@ class Integrator:
         self._clock = clock if clock is not None else _default_clock
 
     def integrate(self, variant_id: str) -> IntegrationResult:
-        """Promote ``variant_id`` per §3.2 / §3.4.
+        """Integrate ``variant_id`` per §3.2 / §3.4.
 
         Returns ``already_integrated=True`` on the idempotent no-op
         path (§5.3 bullet 1). Raises ``IntegratorError`` subclasses on
@@ -148,7 +148,7 @@ class Integrator:
         # before §2 reachability checks run. The startup-only
         # fetch_all_heads can race against work/* refs the
         # executor pushes AFTER orchestrator startup; the
-        # promotion path must refresh local state per the long-lived-
+        # integration path must refresh local state per the long-lived-
         # clone freshness rule (plan §D.7d). Transport / git failure
         # falls through to the existing reachability check, which
         # raises NotReadyForIntegration with a precise diagnostic.
@@ -157,7 +157,7 @@ class Integrator:
             with contextlib.suppress(Exception):
                 self._repo.fetch_ref(f"refs/heads/{variant.branch}")
 
-        self._require_promotion_preconditions(variant)
+        self._require_integration_preconditions(variant)
         self._require_reachability(variant)
         manifest_path = _manifest_path(variant.variant_id)
         self._require_no_manifest_collision(variant, manifest_path)
@@ -357,7 +357,7 @@ class Integrator:
     # Preconditions
     # ------------------------------------------------------------------
 
-    def _require_promotion_preconditions(self, variant: Variant) -> None:
+    def _require_integration_preconditions(self, variant: Variant) -> None:
         if variant.status != "success":
             raise NotReadyForIntegration(
                 f"variant {variant.variant_id!r} status is {variant.status!r}, not 'success'"
@@ -492,7 +492,7 @@ class Integrator:
         # §3.2 tree-shape re-verification requires the worker-branch
         # tip commit (and its tree) to still be reachable in the
         # object DB. §1.3 permits deployments to delete work/*
-        # branches eagerly after promotion, which — combined with
+        # branches eagerly after integration, which — combined with
         # `git gc --prune=now` — can remove the worker commit and its
         # tree. In that case we cannot prove §5.3's "tree satisfies
         # §3.2" precondition, so the no-op path is not safe to take:

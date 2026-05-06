@@ -180,13 +180,12 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("VariantEvalErrored",re.compile(r"\bVariantEvalErroredEvent\b")),
     ("eval.json",         re.compile(r"\beval\.json\b")),
     ("eval manifest",     re.compile(r"\beval manifest\b")),
-    # NOTE: "promote" / "promotion" are NOT flagged. The spec uses
-    # them as the canonical noun/verb for the integrator's action
-    # (chapter 6 §2 "Promotion trigger", §3 "Promotion output").
-    # The glossary's verbs table dropped the explicit synonym
-    # listing for `integrate` / `promote` (one verb per row), but
-    # the codebase usage of "promote/promotion" stays — they're
-    # accepted spec terminology.
+    # promote / promotion / promoted / promoting were retired as
+    # synonyms of integrate / integration / integrated / integrating.
+    # The integrator integrates; chapter 6 §2 + §3 use "Integration
+    # trigger" / "Integration output" as the canonical headings. Any
+    # surviving "promote" usage is legacy and should be renamed.
+    ("promote*",          re.compile(r"\bpromot(?:e|es|ed|ing|ion|ions)\b", re.IGNORECASE)),
 ]
 
 

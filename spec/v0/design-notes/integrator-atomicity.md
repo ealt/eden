@@ -6,7 +6,7 @@ The normative clause in §3.4 stands on its own. This note explains why it reads
 
 ## Context
 
-§3.4 requires that the three artifacts produced by a successful promotion — the `variant/*` git ref, the `variant_commit_sha` field on the variant, and the `variant.integrated` event in the log — remain consistent with one another. The original text of the paragraph named four rules:
+§3.4 requires that the three artifacts produced by a successful integration — the `variant/*` git ref, the `variant_commit_sha` field on the variant, and the `variant.integrated` event in the log — remain consistent with one another. The original text of the paragraph named four rules:
 
 1. On failure of any step, the integrator MUST roll back any already-performed step.
 2. A dangling `variant/*` ref with no field and no event is a protocol violation.
@@ -15,42 +15,42 @@ The normative clause in §3.4 stands on its own. This note explains why it reads
 
 Rules 1 and 2 are uncontroversial: failure requires rollback, and a permanently dangling ref is a bug. Rule 3 explicitly lists mechanisms that implementations MAY choose from. Rule 4 states an observable invariant.
 
-The ambiguity is a tension between rules 3 and 4. A *compensating delete* — explicitly named in rule 3 — writes an artifact and, if a downstream step fails, deletes it. That pattern *necessarily* creates a window during which the artifact exists before the compensating deletion occurs. If rule 4 is read as an instantaneous invariant (applying at every point in time, including during a running promotion), then no mechanism named in rule 3 — compensating deletes specifically — can satisfy rule 4 in the face of an external filesystem reader that walks refs directly while a promotion is in flight. Rule 4 would, under that reading, outlaw the very mechanism rule 3 permits.
+The ambiguity is a tension between rules 3 and 4. A *compensating delete* — explicitly named in rule 3 — writes an artifact and, if a downstream step fails, deletes it. That pattern *necessarily* creates a window during which the artifact exists before the compensating deletion occurs. If rule 4 is read as an instantaneous invariant (applying at every point in time, including during a running integration), then no mechanism named in rule 3 — compensating deletes specifically — can satisfy rule 4 in the face of an external filesystem reader that walks refs directly while a integration is in flight. Rule 4 would, under that reading, outlaw the very mechanism rule 3 permits.
 
 Two readings of rule 4 resolve the tension:
 
-- **Post-promotion reading.** Rule 4 applies after the integrator's promotion call returns, whether by success or rollback. Intermediate states during a running promotion are permitted.
-- **Instantaneous reading.** Rule 4 applies at every point in time, including while a promotion is running. Intermediate states are not permitted.
+- **Post-integration reading.** Rule 4 applies after the integrator's integration call returns, whether by success or rollback. Intermediate states during a running integration are permitted.
+- **Instantaneous reading.** Rule 4 applies at every point in time, including while a integration is running. Intermediate states are not permitted.
 
-This note explains why the drafters chose the post-promotion reading and tightened §3.4 to state it explicitly.
+This note explains why the drafters chose the post-integration reading and tightened §3.4 to state it explicitly.
 
 ## Options considered
 
-### Option 1 — Post-promotion reading with compensating deletes *(chosen)*
+### Option 1 — Post-integration reading with compensating deletes *(chosen)*
 
 The integrator performs, in order: write the commit object (an orphan, content-addressed write visible only via the ref), create the `variant/*` ref via a compare-and-swap against the zero-oid, then call the store's atomic operation that writes `variant_commit_sha` and appends `variant.integrated` together. If the store operation raises, the integrator compensates by deleting the ref with an expected-old-sha precondition.
 
-On success, all three artifacts exist when the promotion returns. On failure, the ref exists briefly and is then deleted; by the time the promotion returns, none of the three exist. A reader observing the repository after the promotion returns sees a consistent state. A reader that happens to walk refs during the ~microseconds or milliseconds the promotion is running MAY observe a ref that is about to be compensated away.
+On success, all three artifacts exist when the integration returns. On failure, the ref exists briefly and is then deleted; by the time the integration returns, none of the three exist. A reader observing the repository after the integration returns sees a consistent state. A reader that happens to walk refs during the ~microseconds or milliseconds the integration is running MAY observe a ref that is about to be compensated away.
 
 **Pros:**
 
 - Satisfies rule 3 literally by using a mechanism rule 3 explicitly names as permitted.
 - Implementable against the Phase 6 reference backends (in-memory and SQLite) without extending the `Store` protocol.
 - The chosen order matches what §3.4's rollback rule requires: the failure mode ("ref exists, field and event do not") is the single-artifact case that a compensating delete can trivially reverse. The alternate order (field and event written, ref missing) has no corresponding reversal, because the event log is append-only per chapter 5.
-- Compatible with the in-process reference impl's reader convention. Every in-repo consumer already treats `variant.variant_commit_sha is not None` as the integration marker — see `_promote_successful_variants` in the dispatch driver. Because the field is written last, an in-process reader never observes a field-set state where the ref or event is missing.
+- Compatible with the in-process reference impl's reader convention. Every in-repo consumer already treats `variant.variant_commit_sha is not None` as the integration marker — see `_integrate_successful_variants` in the dispatch driver. Because the field is written last, an in-process reader never observes a field-set state where the ref or event is missing.
 
 **Cons:**
 
-- An external filesystem reader (for example, a human running `git log variant/*` in a terminal during an integrator call) MAY observe a `variant/*` ref that is about to be compensated away. After the promotion returns, a fresh read reflects the final state.
+- An external filesystem reader (for example, a human running `git log variant/*` in a terminal during an integrator call) MAY observe a `variant/*` ref that is about to be compensated away. After the integration returns, a fresh read reflects the final state.
 - Requires the drafters to pick one reading of the normative text and codify it. §3.4 as originally written was ambiguous; this option requires tightening the prose.
 
 ### Option 2 — Outbox pattern in the store
 
-Extend the `Store` Protocol with three new operations: `begin_integration(variant_id, commit_sha)` records the intent in an outbox table; the integrator writes the git ref; then `commit_integration(variant_id)` atomically promotes the outbox row into the variant's `variant_commit_sha` field and the `variant.integrated` event, deleting the outbox row in the same transaction. If any step fails, `abandon_integration(variant_id)` clears the outbox row and the compensating ref-delete runs as in Option 1.
+Extend the `Store` Protocol with three new operations: `begin_integration(variant_id, commit_sha)` records the intent in an outbox table; the integrator writes the git ref; then `commit_integration(variant_id)` atomically integrates the outbox row into the variant's `variant_commit_sha` field and the `variant.integrated` event, deleting the outbox row in the same transaction. If any step fails, `abandon_integration(variant_id)` clears the outbox row and the compensating ref-delete runs as in Option 1.
 
 **Pros:**
 
-- Improves restart-safety: if the integrator process crashes mid-promotion, a replay can inspect the outbox to determine whether the promotion had been committed or not.
+- Improves restart-safety: if the integrator process crashes mid-integration, a replay can inspect the outbox to determine whether the integration had been committed or not.
 - Follows a widely-used industry pattern (transactional outbox) that future implementations will recognize.
 
 **Cons:**
@@ -81,7 +81,7 @@ The drafters chose **Option 1**.
 
 The deciding factors:
 
-- **Rule 3 names compensating deletes explicitly.** The drafters concluded that a normative text listing compensating deletes as a permitted mechanism cannot simultaneously require a reader invariant that compensating deletes by construction cannot satisfy against external readers. The two rules must be read together. The post-promotion reading is the only reading under which rules 3 and 4 are coherent.
+- **Rule 3 names compensating deletes explicitly.** The drafters concluded that a normative text listing compensating deletes as a permitted mechanism cannot simultaneously require a reader invariant that compensating deletes by construction cannot satisfy against external readers. The two rules must be read together. The post-integration reading is the only reading under which rules 3 and 4 are coherent.
 
 - **Reference impl scope.** Option 2 triples the implementation scope without closing the window it purports to close. Option 3 is infeasible for the reference impl's chosen backends. Option 1 fits within Phase 7b's scope.
 
@@ -91,9 +91,9 @@ The deciding factors:
 
 ### For implementations
 
-A conforming integrator MAY use compensating deletes against an external reader. The observable invariant applies to completed promotions. A conforming implementation MAY choose an outbox or XA scheme instead if its target backend makes it cheap, but the protocol does not require one.
+A conforming integrator MAY use compensating deletes against an external reader. The observable invariant applies to completed integrations. A conforming implementation MAY choose an outbox or XA scheme instead if its target backend makes it cheap, but the protocol does not require one.
 
-Every in-repo consumer of the store (for example, a dispatch driver deciding which variants still need promotion) SHOULD consult `variant.variant_commit_sha` as the canonical integration marker rather than walking `variant/*` refs. This is not normative, but it is the convention the reference impl uses, and it gives in-process readers consistent observations even during a running promotion.
+Every in-repo consumer of the store (for example, a dispatch driver deciding which variants still need integration) SHOULD consult `variant.variant_commit_sha` as the canonical integration marker rather than walking `variant/*` refs. This is not normative, but it is the convention the reference impl uses, and it gives in-process readers consistent observations even during a running integration.
 
 ### For operators and external readers
 
@@ -101,7 +101,7 @@ An operator running ad-hoc git commands against the repository during active exp
 
 ### For future chapters
 
-Other chapters that cross-reference §3.4's atomicity contract inherit the post-promotion reading. If a future chapter needs stronger guarantees — for example, a cross-experiment index that walks `variant/*` refs across multiple repositories and cannot tolerate transient states — that chapter must specify the stronger requirement explicitly and §3.4 must be tightened in lockstep.
+Other chapters that cross-reference §3.4's atomicity contract inherit the post-integration reading. If a future chapter needs stronger guarantees — for example, a cross-experiment index that walks `variant/*` refs across multiple repositories and cannot tolerate transient states — that chapter must specify the stronger requirement explicitly and §3.4 must be tightened in lockstep.
 
 ## Revisit triggers
 
@@ -113,8 +113,8 @@ Reconsider this decision if any of the following become true:
 
 - **An XA-capable backend becomes the reference default.** If the reference impl migrates from SQLite to a backend that supports prepared transactions, Option 3 becomes feasible, and the cost argument against it no longer applies.
 
-- **Observational evidence of the transient window causing bugs.** The current design rests on the assertion that external ref-walkers during a running promotion are a human-with-terminal case, not a protocol-participant case. If that assumption is falsified in practice — for example, a tool repeatedly misbehaves due to a transient ref observation — revisit.
+- **Observational evidence of the transient window causing bugs.** The current design rests on the assertion that external ref-walkers during a running integration are a human-with-terminal case, not a protocol-participant case. If that assumption is falsified in practice — for example, a tool repeatedly misbehaves due to a transient ref observation — revisit.
 
-- **A conformance-test scenario benefits from the instantaneous reading.** Phase 11's conformance suite may uncover cases where the post-promotion reading produces observable flakiness; if so, the suite's requirements may drive a spec tightening.
+- **A conformance-test scenario benefits from the instantaneous reading.** Phase 11's conformance suite may uncover cases where the post-integration reading produces observable flakiness; if so, the suite's requirements may drive a spec tightening.
 
 Any revision tightening §3.4 toward the instantaneous reading should update this note to record what changed and why, and should confirm that the chosen mechanism (outbox, XA, or another) is actually sufficient rather than just more elaborate than compensating deletes.

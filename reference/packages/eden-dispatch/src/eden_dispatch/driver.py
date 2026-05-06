@@ -47,7 +47,7 @@ def run_orchestrator_iteration(
     ``integrate_variant``, if supplied, is called once per ``success``
     variant that still has no ``variant_commit_sha``. Typically this is
     ``Integrator.integrate`` from ``eden_git``, which handles the full
-    §3.2 / §3.4 promotion (writing the ref, the variant field, and the
+    §3.2 / §3.4 integration (writing the ref, the variant field, and the
     event atomically). The return value is ignored.
     """
     progress = False
@@ -57,7 +57,7 @@ def run_orchestrator_iteration(
     progress |= _dispatch_evaluation_tasks(store, evaluate_task_id_factory)
     progress |= _finalize_submitted(store, kind="evaluation")
     if integrate_variant is not None:
-        progress |= _promote_successful_variants(store, integrate_variant)
+        progress |= _integrate_successful_variants(store, integrate_variant)
     return progress
 
 
@@ -106,22 +106,22 @@ def _dispatch_evaluation_tasks(
     return progress
 
 
-def _promote_successful_variants(
+def _integrate_successful_variants(
     store: Store, integrate_variant: Callable[[str], object]
 ) -> bool:
-    """Promote each ``success`` variant whose integration hasn't run yet.
+    """Integrate each ``success`` variant whose integration hasn't run yet.
 
     Per-variant exceptions are caught, logged, and skipped so one
     malformed variant cannot crash the orchestrator process. A variant
     that raises (e.g. ``NotReadyForIntegration`` because ``branch`` is
     missing) stays in ``status=success`` without a
     ``variant_commit_sha`` — the operator can investigate it via the
-    admin UI without blocking promotion of healthy variants. Without
+    admin UI without blocking integration of healthy variants. Without
     this guard a single bad variant + ``restart: on-failure`` produces
     a tight crash loop that wedges the deployment.
 
     Returns ``True`` if at least one variant was successfully
-    promoted; a per-variant exception does NOT count as progress, so
+    integrated; a per-variant exception does NOT count as progress, so
     the orchestrator's quiescence accounting reflects only real
     forward motion.
     """

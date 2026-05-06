@@ -28,7 +28,7 @@ observable effects.
 | **ideator** | Proposes what to try; output is one or more *ideas* | [`01-concepts.md`](../spec/v0/01-concepts.md) §2.1 |
 | **executor** | Turns an idea into git commit(s) on a per-variant *work branch* | §2.2 |
 | **evaluator** | Measures an executed variant against the experiment's evaluation schema | §2.3 |
-| **integrator** | Promotes a successful variant to the canonical *variant lineage* (writes a `variant/*` commit) | §2.4 |
+| **integrator** | Integrates a successful variant to the canonical *variant lineage* (writes a `variant/*` commit) | §2.4 |
 
 The integrator is the only worker role with a fixed identity (in the
 current spec there is exactly one logical integrator per experiment;
@@ -84,7 +84,7 @@ three kinds are noun forms of the role actions:
 |---|---|---|---|---|
 | `ideation` | ideator | `{experiment_id}` | `IdeaSubmission(status, idea_ids: tuple)` | Marks the task `completed`. The referenced ideas (which the ideator moved to `state="ready"` before submit) are then dispatched by the orchestrator as `execution` tasks. |
 | `execution` | executor | `{experiment_id, idea_id}` | `VariantSubmission(status, variant_id, commit_sha?)` | On `success`: writes `commit_sha` onto the referenced variant; variant.status remains `starting`. The orchestrator then dispatches an `evaluation` task referencing the variant. On `error`: variant transitions to `error`. |
-| `evaluation` | evaluator | `{experiment_id, variant_id}` | `EvaluationSubmission(status, variant_id, evaluation?, artifacts_uri?)` | On `success`: variant transitions to `success` with the submitted evaluation. The integrator then promotes it (writes `variant_commit_sha`). On `error`: variant transitions to `error`. On `evaluation_error`: variant stays in `starting` (the evaluator didn't form a verdict; the variant remains evaluable). |
+| `evaluation` | evaluator | `{experiment_id, variant_id}` | `EvaluationSubmission(status, variant_id, evaluation?, artifacts_uri?)` | On `success`: variant transitions to `success` with the submitted evaluation. The integrator then integrates it (writes `variant_commit_sha`). On `error`: variant transitions to `error`. On `evaluation_error`: variant stays in `starting` (the evaluator didn't form a verdict; the variant remains evaluable). |
 
 The full state-machine semantics — including reject paths,
 validation_error handling, and idempotent resubmit — live in

@@ -1,4 +1,4 @@
-"""Promotion preconditions (wire projection) — chapter 06 §2."""
+"""Integration preconditions (wire projection) — chapter 06 §2."""
 
 from __future__ import annotations
 
@@ -9,17 +9,17 @@ from conformance.harness.wire_client import WireClient
 
 pytestmark = pytest.mark.conformance
 
-CONFORMANCE_GROUP = 'Promotion preconditions'
+CONFORMANCE_GROUP = 'Integration preconditions'
 
 
-def _assert_no_promotion_artifacts(
+def _assert_no_integration_artifacts(
     wire_client: WireClient,
     event_log: EventLog,
     variant_id: str,
 ) -> None:
     """End-state assertion: variant has no commit_sha and no event.
 
-    Pins the §2 promotion-trigger MUST plus the §3.4 rollback-half:
+    Pins the §2 integration-trigger MUST plus the §3.4 rollback-half:
     a rejected ``integrate_variant`` produces neither field nor event.
     """
     variant = _seed.read_variant(wire_client, variant_id)
@@ -45,7 +45,7 @@ def _assert_no_promotion_artifacts(
 def test_integrate_against_error_variant_rejected(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/06-integrator.md §2 — `error` variant MUST NOT be promoted.
+    """spec/v0/06-integrator.md §2 — `error` variant MUST NOT be integrated.
 
     §2 says "variants in `error`, `evaluation_error`, and `starting` MUST NOT
     receive a `variant/*` commit." Wire-projection: ``integrate_variant``
@@ -58,13 +58,13 @@ def test_integrate_against_error_variant_rejected(
     r = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha="d" * 40)
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/invalid-precondition"
-    _assert_no_promotion_artifacts(wire_client, event_log, variant_id)
+    _assert_no_integration_artifacts(wire_client, event_log, variant_id)
 
 
 def test_integrate_against_eval_error_variant_rejected(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/06-integrator.md §2 — `evaluation_error` variant MUST NOT be promoted.
+    """spec/v0/06-integrator.md §2 — `evaluation_error` variant MUST NOT be integrated.
 
     Same MUST as the `error` case, different status. The §2 status
     vocabulary ban applies to all three non-`success` states; the
@@ -77,4 +77,4 @@ def test_integrate_against_eval_error_variant_rejected(
     r = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha="e" * 40)
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/invalid-precondition"
-    _assert_no_promotion_artifacts(wire_client, event_log, variant_id)
+    _assert_no_integration_artifacts(wire_client, event_log, variant_id)

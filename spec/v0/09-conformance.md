@@ -33,7 +33,7 @@ The v0 spec defines exactly one wire binding ([`07-wire-protocol.md`](07-wire-pr
 
 - **v1** — task-store and event-log MUSTs from [`02-data-model.md`](02-data-model.md), [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`07-wire-protocol.md`](07-wire-protocol.md), plus the storage MUSTs that the wire binding exposes from [`08-storage.md`](08-storage.md) §1.1, §1.7. v1 does NOT cover the [`03-roles.md`](03-roles.md) role contracts or the [`06-integrator.md`](06-integrator.md) integrator atomicity ladder.
 - **v1+roles** — adds [`03-roles.md`](03-roles.md) role-contract scenarios (per-role submission semantics, backpressure, idempotency).
-- **v1+roles+integrator** — adds the wire-observable projection of [`06-integrator.md`](06-integrator.md) §2, §3.4, §5.3 — promotion preconditions on the variant-status vocabulary; atomicity-of-(field, event) on `integrate_variant`; no-overwrite under repeat promotion. The git-side artifacts (squash shape, evaluation-manifest shape, `work/*` discipline, reachability) are part of [`06-integrator.md`](06-integrator.md) but are **not** asserted by a wire-only suite — chapter 9 §6 makes the chapter-7 binding the only IUT contract a conformance harness can rely on, and git refs are not exposed through that binding. A future binding chapter that defines a "conformance + git access" contract MAY add those tests at a higher level.
+- **v1+roles+integrator** — adds the wire-observable projection of [`06-integrator.md`](06-integrator.md) §2, §3.4, §5.3 — integration preconditions on the variant-status vocabulary; atomicity-of-(field, event) on `integrate_variant`; no-overwrite under repeat integration. The git-side artifacts (squash shape, evaluation-manifest shape, `work/*` discipline, reachability) are part of [`06-integrator.md`](06-integrator.md) but are **not** asserted by a wire-only suite — chapter 9 §6 makes the chapter-7 binding the only IUT contract a conformance harness can rely on, and git refs are not exposed through that binding. A future binding chapter that defines a "conformance + git access" contract MAY add those tests at a higher level.
 
 A future spec lineage that introduces a second wire binding will at that point split the suite into transport-neutral semantic tests + per-binding wire tests, and chapter 9 will gain a `core` level claimable by IUTs implementing only the semantic layer. The marker structure in [`conformance/`](../../conformance/) anticipates that refactor but does not enable it in v0.
 
@@ -72,8 +72,8 @@ The v1+roles+integrator scenario groups (added in chunk 11d), with their primary
 
 | Group | Scope | Spec citations |
 |---|---|---|
-| Integrator atomicity | Cross-artifact (field, event) consistency on success; no-overwrite under repeat promotion. | [`06-integrator.md`](06-integrator.md) §3.4, §5.3 |
-| Promotion preconditions | Status-vocabulary preconditions for promotion (`error`, `evaluation_error`); end-state assertion on rejection. | [`06-integrator.md`](06-integrator.md) §2 |
+| Integrator atomicity | Cross-artifact (field, event) consistency on success; no-overwrite under repeat integration. | [`06-integrator.md`](06-integrator.md) §3.4, §5.3 |
+| Integration preconditions | Status-vocabulary preconditions for integration (`error`, `evaluation_error`); end-state assertion on rejection. | [`06-integrator.md`](06-integrator.md) §2 |
 
 ## 6. Adapter (informative)
 

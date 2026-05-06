@@ -177,7 +177,7 @@ The reference `eden_wire` server also exposes:
 
 These are conveniences for the Phase-5 dispatch driver and are **not** part of the normative binding. A conforming third-party client MUST NOT rely on them being present. A conforming third-party orchestrator implementing its own accept/reject decision inline is free to do so; the [`04-task-protocol.md`](04-task-protocol.md) §4.3 decision rules are all that matter for the state machine.
 
-Future phases MAY promote individual helpers into the normative binding if conformance testing requires it; such promotions follow the same versioning discipline as any other binding change.
+Future phases MAY integrate individual helpers into the normative binding if conformance testing requires it; such integrations follow the same versioning discipline as any other binding change.
 
 ## 10. Conformance
 

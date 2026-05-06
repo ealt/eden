@@ -200,7 +200,7 @@ A variant is one completed attempt.
 | `parent_commits` | yes | array of SHA | Inherited from the idea. |
 | `branch` | no | string | Worker branch under `work/*`. Present once the executor starts. |
 | `commit_sha` | no | string | Worker-branch tip SHA. Present once the executor completes. |
-| `variant_commit_sha` | no | string | Canonical-lineage SHA under `variant/*`. Present once the integrator has promoted the variant. |
+| `variant_commit_sha` | no | string | Canonical-lineage SHA under `variant/*`. Present once the integrator has integrated the variant. |
 | `artifacts_uri` | no | string (URI) | Where the variant's artifacts live. |
 | `description` | no | string | Human-readable summary. |
 | `metrics` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |

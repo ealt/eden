@@ -59,7 +59,7 @@ def test_cross_artifact_consistency_on_success(
 def test_divergent_resubmit_leaves_no_second_event(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/06-integrator.md §5.3 — repeat promotion with different SHA MUST NOT overwrite.
+    """spec/v0/06-integrator.md §5.3 — repeat integration with different SHA MUST NOT overwrite.
 
     §5.3 says "the integrator MUST NOT silently overwrite" if the
     variant already has ``variant_commit_sha`` set with a different value;

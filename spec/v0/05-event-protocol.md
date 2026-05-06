@@ -2,7 +2,7 @@
 
 This chapter specifies the event log: the envelope every event MUST carry, the transactional invariant that binds event writes to the state changes they describe, the per-type payload shapes for the v0 event registry, and the delivery guarantees a conforming event log MUST offer to subscribers.
 
-The event envelope's JSON Schema is [`schemas/event.schema.json`](schemas/event.schema.json). The behavioral contracts that produce events are in [`04-task-protocol.md`](04-task-protocol.md) (task transitions) and [`06-integrator.md`](06-integrator.md) (variant promotion). The event log's durability and subscription semantics as a *store* are in [`08-storage.md`](08-storage.md); this chapter specifies what events mean, not how they are persisted.
+The event envelope's JSON Schema is [`schemas/event.schema.json`](schemas/event.schema.json). The behavioral contracts that produce events are in [`04-task-protocol.md`](04-task-protocol.md) (task transitions) and [`06-integrator.md`](06-integrator.md) (variant integration). The event log's durability and subscription semantics as a *store* are in [`08-storage.md`](08-storage.md); this chapter specifies what events mean, not how they are persisted.
 
 ## 1. Envelope
 
@@ -49,7 +49,7 @@ Several transitions span multiple entities and MUST commit together:
 - **Evaluate-task terminal (`success`/`error`)** — the `evaluation` task's terminal transition plus writes to the variant's `status`, `evaluation`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
 - **Execute-task reclaim with in-flight variant** — reclamation of an `execution` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
 - **Retry-exhausted `evaluation_error` terminal** — the orchestrator's transition of a variant from `starting` to `evaluation_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.evaluation_errored` atomically.
-- **Variant promotion** — the integrator's write of a `variant/*` commit and the `variant_commit_sha` field on the variant ([`06-integrator.md`](06-integrator.md)). Event: `variant.integrated`.
+- **Variant integration** — the integrator's write of a `variant/*` commit and the `variant_commit_sha` field on the variant ([`06-integrator.md`](06-integrator.md)). Event: `variant.integrated`.
 
 A subscriber processing any of these composite events MUST therefore either observe the full set or observe none; partial visibility is a protocol violation.
 
@@ -110,7 +110,7 @@ Payload field definitions:
 
 ### 3.3 Variant events
 
-Produced atomically with variant `status` transitions and with the integrator's promotion write. The variant's lifecycle is defined in [`02-data-model.md`](02-data-model.md) §7 and [`03-roles.md`](03-roles.md) §3–§4; the promotion step is in [`06-integrator.md`](06-integrator.md).
+Produced atomically with variant `status` transitions and with the integrator's integration write. The variant's lifecycle is defined in [`02-data-model.md`](02-data-model.md) §7 and [`03-roles.md`](03-roles.md) §3–§4; the integration step is in [`06-integrator.md`](06-integrator.md).
 
 | Type | Transition | `data` required fields |
 |---|---|---|
@@ -127,7 +127,7 @@ Payload field definitions:
 - `commit_sha` — the worker-branch tip recorded on the variant at the moment of success ([`02-data-model.md`](02-data-model.md) §7.1).
 - `variant_commit_sha` — the canonical-lineage SHA the integrator wrote ([`06-integrator.md`](06-integrator.md)). A 40-hex SHA-1 or a 64-hex SHA-256; the same pattern as commits elsewhere in the data model.
 
-`variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks promotion so subscribers can reconstruct the canonical lineage without reading git directly.
+`variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks integration so subscribers can reconstruct the canonical lineage without reading git directly.
 
 ### 3.4 Subscriber observability guarantee
 

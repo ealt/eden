@@ -1,7 +1,7 @@
 """Unit tests for ``run_orchestrator_iteration``.
 
 The function is the orchestrator-iteration body — it finalizes
-submitted tasks, dispatches downstream work, and promotes successful
+submitted tasks, dispatches downstream work, and integrates successful
 variants, without invoking any workers. The standalone orchestrator
 service drives it in a poll loop. Each test pre-seeds the store so
 exactly one transition is applicable, then asserts that transition
@@ -260,21 +260,21 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     Before the fix, a single ``success`` variant whose integration
     callback raised (e.g. ``NotReadyForIntegration`` because
     ``branch`` was missing on the variant record) would propagate up
-    through ``_promote_successful_variants`` →
+    through ``_integrate_successful_variants`` →
     ``run_orchestrator_iteration`` → the orchestrator's main loop and
     crash the process. Combined with ``restart: on-failure``, this
     produced a tight crash loop until an operator hand-patched the
     bad variant.
 
     The fix logs + skips per-variant exceptions. Healthy variants in
-    the same iteration must still promote.
+    the same iteration must still integrate.
     """
     import logging
 
     store = _make_store()
     bad_id = _drive_variant_to_success(store)
     # Drive a second variant to success so we can confirm a healthy
-    # one in the same iteration still gets promoted.
+    # one in the same iteration still gets integrated.
     now = _now_factory()
     idea = Idea(
         idea_id="p-good",
@@ -315,12 +315,12 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     )
     store.accept("t-eval-good")
 
-    promoted: list[str] = []
+    integrated: list[str] = []
 
     def integrate(variant_id: str) -> None:
         if variant_id == bad_id:
             raise RuntimeError(f"variant '{variant_id}' has no branch")
-        promoted.append(variant_id)
+        integrated.append(variant_id)
         store.integrate_variant(variant_id, "c" * 40)
 
     with caplog.at_level(logging.ERROR, logger="eden_dispatch.driver"):
@@ -332,9 +332,9 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
             integrate_variant=integrate,
         )
 
-    # The healthy variant promoted; progress reflects that.
+    # The healthy variant integrated; progress reflects that.
     assert progress is True
-    assert promoted == ["tr-good"]
+    assert integrated == ["tr-good"]
     assert store.read_variant("tr-good").variant_commit_sha == "c" * 40
     # The bad variant is still success without an integration commit
     # (operator can investigate via the admin UI).

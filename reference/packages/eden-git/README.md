@@ -14,7 +14,7 @@ This package is a thin subprocess wrapper around the local `git` binary — the 
 - Branch management: `create_branch`, `delete_branch`, `current_branch`.
 - Plumbing for integrator squashing: `write_blob`, `empty_tree_sha`, `write_tree_from_entries`, `write_tree_with_file`, `commit_tree`, `create_ref`, `update_ref`, `delete_ref`.
 
-### `Integrator` (Phase 7b) — §3.2 / §3.4 promotion
+### `Integrator` (Phase 7b) — §3.2 / §3.4 integration
 
 Given a `success` variant with a recorded `commit_sha`, produces the canonical `variant/*` commit (worker-tip tree + exactly the evaluation manifest at `.eden/variants/<variant_id>/evaluation.json`), atomically coupling the git ref, `variant_commit_sha`, and `variant.integrated` event per §3.4 via compensating deletes.
 
@@ -31,8 +31,8 @@ result = integrator.integrate(variant_id)
 
 Error hierarchy: `IntegratorError` (base), `NotReadyForIntegration` (§2 preconditions fail), `ReachabilityViolation` (§1.4 fails), `EvalManifestPathCollision` (§3.2 collision), `CorruptIntegrationState` (§5.3 corrupt), `AtomicityViolation` (§3.4 double failure).
 
-Atomicity follows the post-promotion reading of §3.4 documented in [`spec/v0/design-notes/integrator-atomicity.md`](../../../spec/v0/design-notes/integrator-atomicity.md).
+Atomicity follows the post-integration reading of §3.4 documented in [`spec/v0/design-notes/integrator-atomicity.md`](../../../spec/v0/design-notes/integrator-atomicity.md).
 
 ### Integration with `eden-dispatch`
 
-The standalone orchestrator service (`reference/services/orchestrator`) calls `eden_dispatch.run_orchestrator_iteration` with `integrate_variant=integrator.integrate`, so successful variants are promoted through the real integrator.
+The standalone orchestrator service (`reference/services/orchestrator`) calls `eden_dispatch.run_orchestrator_iteration` with `integrate_variant=integrator.integrate`, so successful variants are integrated through the real integrator.

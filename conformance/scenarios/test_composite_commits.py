@@ -3,7 +3,7 @@
 Covers the §2.2 composite-commit cases observable through task-store
 wire endpoints (execute-task dispatch, execute-task terminal,
 evaluate-terminal cases, retry-exhausted evaluation_error terminalization,
-implement-reclaim with starting variant). The variant-promotion §2.2 case
+implement-reclaim with starting variant). The variant-integration §2.2 case
 is covered separately in test_integrate_idempotency.py because the
 wire endpoint binding it lives in chapter 7 §5.
 
