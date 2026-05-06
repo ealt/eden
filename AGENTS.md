@@ -188,6 +188,30 @@ These are the recurring traps that have shown up across chunks 9c / 9d / 10d / 1
 
 + **Compose smoke tests need explicit volume cleanup between runs.** `setup-experiment.sh` rotates the postgres password (and the `EDEN_SHARED_TOKEN` and other secrets) on every invocation; the generated `.env` carries the new password but the postgres data volume from a prior run still has the old password baked into `pg_authid`. The next `compose up` then fails task-store-server's healthcheck with a confusing `psycopg.OperationalError: ... password authentication failed for user "eden"`, reported as "dependency failed to start: container eden-task-store-server is unhealthy". The fix is volume cleanup before each smoke run: `docker rm -f $(docker ps -aq --filter 'name=eden-' 2>/dev/null) ; docker volume ls -q | grep eden | xargs -I{} docker volume rm {} 2>&1 | head`. CI gets this for free because each job starts on a fresh runner; the local-repro path doesn't, and the cryptic auth error sends diagnosis down a wrong path. Run the cleanup once at the start of any smoke-debugging session and after every smoke run.
 
+## Naming discipline
+
+EDEN's vocabulary is verb-noun-coherent and role-symmetric. Before introducing or renaming any identifier — class, function, JSON enum value, CLI flag, env var, spec heading, doc cross-reference — read [`docs/glossary.md`](docs/glossary.md) and validate the proposed name against the canonical patterns there.
+
+The patterns:
+
+| Role (-or) | Verb | Task kind (gerund) | Submission class | Artifact |
+|---|---|---|---|---|
+| ideator    | ideate    | `ideation`   | `IdeaSubmission`       | `idea`       |
+| executor   | execute   | `execution`  | `VariantSubmission`    | `variant`    |
+| evaluator  | evaluate  | `evaluation` | `EvaluationSubmission` | `evaluation` |
+| integrator | integrate | (n/a — runs in-orchestrator) | (n/a)            | (canonical lineage entry) |
+
+Rules of thumb:
+
++ **Helper-function names use the artifact noun.** `submit_idea`, `submit_variant`, `submit_evaluation` — never `submit_ideate` / `submit_execute` / `submit_evaluate` (verb-on-verb). <!-- rename-discipline:cite -->
++ **Task kinds are gerund nouns.** Wire enum, JSON schema enum, `task.kind == "X"` literals, CLI flags, env vars all use `ideation` / `execution` / `evaluation`.
++ **Submission classes use the artifact noun**, not the verb. `IdeaSubmission` / `VariantSubmission` / `EvaluationSubmission`.
++ **Status enums are gerund-as-noun.** `evaluation_error`, not `eval_error`. <!-- rename-discipline:cite -->
++ **Don't introduce synonyms.** The integrator integrates; it does not "promote". `eval_error` was retired — don't reintroduce it. <!-- rename-discipline:cite -->
++ **The glossary wins over other docs.** If a spec chapter, README, or plan disagrees with the glossary, fix the chapter / README / plan, not the glossary.
+
+The `rename-discipline` CI job (`scripts/check-rename-discipline.py`) catches the specific legacy patterns retired by past renames; it is a backstop, not a substitute for consulting the glossary before introducing a new identifier.
+
 ## Commit guidelines
 
 + Short imperative subjects (e.g., "Add event protocol chapter", "Pin task state machine").

@@ -188,6 +188,16 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("promote*",          re.compile(r"\bpromot(?:e|es|ed|ing|ion|ions)\b", re.IGNORECASE)),
 ]
 
+# Per-line opt-out marker for legitimate citations of legacy patterns
+# (e.g., a naming-discipline doc that has to literally write
+# `submit_ideate` to teach "don't write submit_ideate"). The marker is
+# an HTML comment so it doesn't render in markdown view but is
+# greppable in source. Use sparingly — every marker should accompany a
+# citation that genuinely needs the literal token. If a section's
+# every line carries the marker, that's a sign the section belongs
+# in a fully-allowlisted teaching doc instead.
+INLINE_CITE_MARKER = "<!-- rename-discipline:cite -->"
+
 
 def is_allowlisted(rel: str) -> bool:
     """True if a path is on the legacy-vocabulary allowlist."""
@@ -223,6 +233,9 @@ def scan() -> list[tuple[str, int, str, str]]:
             except Exception:
                 continue
             for i, line in enumerate(text.splitlines(), start=1):
+                if INLINE_CITE_MARKER in line:
+                    # Legitimate citation; explicit per-line carve-out.
+                    continue
                 for label, rx in PATTERNS:
                     if rx.search(line):
                         findings.append((rel, i, label, line.strip()[:160]))

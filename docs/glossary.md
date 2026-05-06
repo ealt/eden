@@ -13,6 +13,27 @@ configs, prose, etc.). The vocabulary below uses the four parallel
 matching artifact nouns (idea, variant, evaluation), and gerund task
 kinds (`ideation` / `execution` / `evaluation`).
 
+## How to use this glossary
+
+This glossary is the **canonical source of truth** for naming in EDEN.
+Any new identifier — class name, function name, JSON enum value, CLI
+flag, env var, spec heading, doc reference — MUST be consistent with
+the patterns below before it lands. When in doubt:
+
+1. Check §1 (worker roles) and §3.2 (task kinds) for the canonical
+   role / verb / kind / submission / artifact alignment.
+2. Check §3.1 for sub-field naming.
+3. Check §4 for the state-vs-status distinction.
+
+If the glossary disagrees with another doc (spec chapter, README,
+plan), **the glossary wins** and the other doc is wrong. Surface the
+disagreement; don't paper over it.
+
+The `scripts/check-rename-discipline.py` CI guardrail catches the
+specific legacy patterns retired by past renames. It is a backstop,
+not a substitute for reading the glossary before introducing a new
+identifier.
+
 ---
 
 ## 1. Worker roles
