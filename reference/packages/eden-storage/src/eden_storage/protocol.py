@@ -258,7 +258,7 @@ class Store(Protocol):
         ...
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
-        """Integrator promotion: write ``variant_commit_sha``; emits ``variant.integrated``."""
+        """Integrator integration: write ``variant_commit_sha``; emits ``variant.integrated``."""
         ...
 
     # ------------------------------------------------------------------

@@ -14,7 +14,7 @@ The EDEN protocol defines:
 - The **shared data model** — experiment configs, tasks, events, ideas, variants, and metrics schemas (Chapter [`02-data-model.md`](02-data-model.md) and the JSON Schemas in [`schemas/`](schemas/)).
 - The **task protocol** — how work is claimed, executed, and submitted (Chapter [`04-task-protocol.md`](04-task-protocol.md)).
 - The **event protocol** — how state changes are observed by subscribers (Chapter [`05-event-protocol.md`](05-event-protocol.md)).
-- The **integrator contract** — how variant branches are promoted into a canonical lineage (Chapter [`06-integrator.md`](06-integrator.md)).
+- The **integrator contract** — how variant branches are integrated into a canonical lineage (Chapter [`06-integrator.md`](06-integrator.md)).
 - The **storage contract** — the durability and consistency guarantees a conforming task store, event log, and artifact store must provide (Chapter [`08-storage.md`](08-storage.md)).
 - The **conformance procedure** — how an independent implementation proves it conforms (Chapter [`09-conformance.md`](09-conformance.md)).
 

@@ -79,7 +79,7 @@ def test_submit_status_error_does_not_dispatch_drafting_ideas(
     "any partially-written ideas MUST remain in `drafting` state
     and MUST NOT be dispatched." An ideator that gives up part-way
     submits status=error; previously-drafted ideas that were never
-    promoted to ready stay in drafting and never receive a
+    integrated to ready stay in drafting and never receive a
     `idea.dispatched` event.
     """
     pid = _seed.create_idea(wire_client, slug="partial")

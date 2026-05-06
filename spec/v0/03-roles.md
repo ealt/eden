@@ -161,7 +161,7 @@ Resubmission is idempotent under the same rules as §3.4 and [`04-task-protocol.
 
 ## 5. Integrator
 
-The integrator promotes successfully evaluated variants into the canonical variant lineage.
+The integrator integrates successfully evaluated variants into the canonical variant lineage.
 
 The integrator's full contract — the squash rule, the evaluation-manifest shape, conflict-resolution policy — is deferred to [`06-integrator.md`](06-integrator.md). This section pins only the boundary rules that every other role must honor.
 
@@ -175,11 +175,11 @@ The integrator observes variants transitioning to `status == "success"` (as reco
 
 ### 5.3 Outputs
 
-The integrator writes a single commit on a `variant/*` branch for each promoted variant and records the resulting SHA in the variant's `variant_commit_sha`. Exact topology invariants are in [`06-integrator.md`](06-integrator.md).
+The integrator writes a single commit on a `variant/*` branch for each integrated variant and records the resulting SHA in the variant's `variant_commit_sha`. Exact topology invariants are in [`06-integrator.md`](06-integrator.md).
 
 ### 5.4 Why integration is separate from evaluation
 
-Evaluation and integration are separate roles because a successful evaluation is a necessary but not sufficient condition for promoting a variant: the integrator applies experiment-level policy (squash shape, conflict resolution with concurrent variants, manifest attachment) that is not meaningful to the evaluator. A conforming implementation MAY collapse evaluator and integrator into the same process, but MUST still honor both contracts independently.
+Evaluation and integration are separate roles because a successful evaluation is a necessary but not sufficient condition for integrating a variant: the integrator applies experiment-level policy (squash shape, conflict resolution with concurrent variants, manifest attachment) that is not meaningful to the evaluator. A conforming implementation MAY collapse evaluator and integrator into the same process, but MUST still honor both contracts independently.
 
 ## 6. Role binding (deferred)
 

@@ -883,7 +883,7 @@ class _StoreBase:
             self._apply_commit(tx)
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
-        """Integrator promotion: write ``variant_commit_sha`` and emit ``variant.integrated``.
+        """Integrator integration: write ``variant_commit_sha`` and emit ``variant.integrated``.
 
         Per ``08-storage.md`` §1.7: ``variant_commit_sha`` is the one
         post-terminal write permitted on a variant; it must be written

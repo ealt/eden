@@ -226,7 +226,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         # Fetch from origin first so a freshly-pushed executor commit is
         # visible — the local clone otherwise only refreshes at startup
         # (Phase 10d follow-up B). Same posture as the integrator's
-        # per-promote fetch.
+        # per-integrate fetch.
         if _repo_has_origin(repo):
             # Fetch failure shouldn't block submit — fall through to
             # commit_exists, which will surface a clear error if the

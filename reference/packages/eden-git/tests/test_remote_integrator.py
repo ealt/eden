@@ -173,7 +173,7 @@ def _make_integrator(store: InMemoryStore, repo: GitRepo) -> Integrator:
 def test_integrate_fetches_work_branch_pushed_after_startup(
     tmp_path: Path,
 ) -> None:
-    """Integrator promotes from a clone that didn't have the work/*
+    """Integrator integrates from a clone that didn't have the work/*
     branch at startup — the executor pushed it later.
 
     Regression for the round-1 codex finding: a startup-only
@@ -247,7 +247,7 @@ def test_integrate_fetches_work_branch_pushed_after_startup(
     integrator = _make_integrator(store, integrator_clone)
     result = integrator.integrate(variant_id)
 
-    # Promotion succeeds: the integrator fetched the executor's
+    # Integration succeeds: the integrator fetched the executor's
     # work/* before the §2 reachability check ran.
     assert not result.already_integrated
     branch_ref = f"refs/heads/variant/{variant_id}-{slug}"

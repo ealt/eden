@@ -1,6 +1,6 @@
 # Integrator
 
-This chapter specifies the integrator role in full: the git topology it operates on, the promotion trigger, the squash rule, the evaluation-manifest shape, and the invariants it preserves across the canonical variant lineage.
+This chapter specifies the integrator role in full: the git topology it operates on, the integration trigger, the squash rule, the evaluation-manifest shape, and the invariants it preserves across the canonical variant lineage.
 
 The integrator is introduced in [`03-roles.md`](03-roles.md) §5, which pins its boundary rules — exclusive authority over `variant/*`, exclusive authority over `variant_commit_sha`. This chapter specifies what the integrator *produces* inside those boundaries.
 
@@ -21,34 +21,34 @@ A conforming EDEN deployment operates on a single git repository per experiment.
 - Holds the canonical variant lineage, one commit per integrated variant.
 - The integrator is the **sole writer** ([`03-roles.md`](03-roles.md) §5.1). No other role — ideator, executor, evaluator, orchestrator, operator tooling invoked through protocol-owned channels — MAY write to `variant/*`.
 - Each `variant/*` branch MUST name exactly one variant. Branch naming conforms to §3.1.
-- A `variant/*` branch MUST NOT be deleted or rewritten once written. If an integrator discovers a bug in an earlier promotion, it MAY record corrective state in subsequent events or operator-level channels, but MUST NOT rewrite history on `variant/*`.
+- A `variant/*` branch MUST NOT be deleted or rewritten once written. If an integrator discovers a bug in an earlier integration, it MAY record corrective state in subsequent events or operator-level channels, but MUST NOT rewrite history on `variant/*`.
 
 ### 1.3 `work/*`
 
 - Holds per-variant worker branches written by executors ([`03-roles.md`](03-roles.md) §3.3).
 - Each `work/*` branch MUST be unique to a single variant. A variant's `branch` field ([`02-data-model.md`](02-data-model.md) §7.1) records the exact branch name.
-- Worker branches are **inputs** to the integrator, not normative outputs. A conforming deployment MAY retain them for audit and debugging after promotion, MAY garbage-collect them after a retention window, and MAY delete them eagerly once a variant is integrated — the retention policy is a deployment concern. No protocol-owned reader MAY depend on a worker branch after the variant's promotion.
-- The evaluator reads a worker branch at the variant's `commit_sha` during evaluation ([`03-roles.md`](03-roles.md) §4.1); the executor's read-your-writes guarantee applies only until promotion, after which the worker branch's reachability is no longer a protocol-owned concern.
+- Worker branches are **inputs** to the integrator, not normative outputs. A conforming deployment MAY retain them for audit and debugging after integration, MAY garbage-collect them after a retention window, and MAY delete them eagerly once a variant is integrated — the retention policy is a deployment concern. No protocol-owned reader MAY depend on a worker branch after the variant's integration.
+- The evaluator reads a worker branch at the variant's `commit_sha` during evaluation ([`03-roles.md`](03-roles.md) §4.1); the executor's read-your-writes guarantee applies only until integration, after which the worker branch's reachability is no longer a protocol-owned concern.
 
 ### 1.4 Reachability rule
 
 Every commit on a `work/*` branch MUST descend from the idea's declared `parent_commits` ([`03-roles.md`](03-roles.md) §3.3). The integrator MUST reject a variant whose `commit_sha` does not satisfy this rule; rejection produces no `variant/*` commit and no `variant.integrated` event. The orchestrator MAY transition the variant to `error` via the normal channels if a reachability violation is discovered, but the integrator MUST NOT fabricate a `variant.errored` event itself — events are paired with state changes, and the integrator is not the writer for variant `status`.
 
-## 2. Promotion trigger
+## 2. Integration trigger
 
-The integrator promotes a variant iff:
+The integrator integrates a variant iff:
 
 - The variant's `status` is `success` ([`02-data-model.md`](02-data-model.md) §7.1).
 - The variant's `commit_sha` is set and resolves to a commit on the variant's `branch` in the experiment repository.
-- The variant has not yet been promoted (`variant_commit_sha` is absent).
+- The variant has not yet been integrated (`variant_commit_sha` is absent).
 
 The mechanism by which the integrator observes the trigger — subscribing to `variant.succeeded` events, polling the variant store, or receiving a dispatch call — is a binding concern and is not pinned. [`03-roles.md`](03-roles.md) §5.2.
 
-A conforming integrator MUST NOT promote variants in any other status. In particular, `error`, `evaluation_error`, and `starting` variants MUST NOT receive a `variant/*` commit.
+A conforming integrator MUST NOT integrate variants in any other status. In particular, `error`, `evaluation_error`, and `starting` variants MUST NOT receive a `variant/*` commit.
 
-The integrator MUST NOT promote a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §7.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
+The integrator MUST NOT integrate a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §7.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
 
-## 3. Promotion output
+## 3. Integration output
 
 ### 3.1 `variant/*` branch name
 
@@ -90,14 +90,14 @@ The subject MUST carry both the `variant_id` and the parent idea's `slug`, separ
 
 ### 3.4 Atomic write
 
-The promotion MUST be atomic with two other state changes:
+The integration MUST be atomic with two other state changes:
 
 1. Writing the `variant_commit_sha` field on the variant to the SHA of the new `variant/*` commit ([`02-data-model.md`](02-data-model.md) §7.1).
 2. Appending a `variant.integrated` event to the event log ([`05-event-protocol.md`](05-event-protocol.md) §3.3).
 
 If any of the three steps fails — git ref write, variant-object field write, event append — the integrator MUST roll back any already-performed step. In particular, a dangling `variant/*` ref with no `variant_commit_sha` field and no `variant.integrated` event is a protocol violation. Implementations MAY use store-level transactions, outbox patterns, compensating deletes, or any other mechanism; the observable invariant is that a reader of any one of the three artifacts (ref, field, event) MUST observe the other two.
 
-This invariant applies to completed promotions: once a promotion has returned — whether by success or by rollback — the three artifacts MUST reconcile, with all three present on success and none present on rollback. A promotion that is still running MAY transiently expose intermediate states to an external reader (for example, a `variant/*` ref written before its compensating delete, or a store-side field written before the git ref). The compensating-delete mechanism named above creates such states by construction; zero-width multi-artifact consistency during a running promotion is not required, and conforming implementations MAY rely on compensating deletes rather than two-phase commit or outbox patterns.
+This invariant applies to completed integrations: once a integration has returned — whether by success or by rollback — the three artifacts MUST reconcile, with all three present on success and none present on rollback. A integration that is still running MAY transiently expose intermediate states to an external reader (for example, a `variant/*` ref written before its compensating delete, or a store-side field written before the git ref). The compensating-delete mechanism named above creates such states by construction; zero-width multi-artifact consistency during a running integration is not required, and conforming implementations MAY rely on compensating deletes rather than two-phase commit or outbox patterns.
 
 See [`design-notes/integrator-atomicity.md`](design-notes/integrator-atomicity.md) for the rationale behind this reading, the alternatives considered, and the conditions under which a future revision of this chapter might tighten the invariant.
 
@@ -137,7 +137,7 @@ Optional fields:
 | `evaluator` | object | Implementation-defined identity of the evaluator (§4.3). Present when the evaluator's role-binding surfaces this metadata. |
 | `artifacts` | object | Implementation-defined inventory of per-file artifact metadata (§4.4). Present when the role-binding surfaces it. |
 
-Every required field's value MUST equal the corresponding field on the variant object at the moment of promotion. A conforming integrator MUST NOT synthesize or transform required-field values; they are a canonical, in-tree snapshot of the variant state, not a separate derivation.
+Every required field's value MUST equal the corresponding field on the variant object at the moment of integration. A conforming integrator MUST NOT synthesize or transform required-field values; they are a canonical, in-tree snapshot of the variant state, not a separate derivation.
 
 Implementations MAY include additional informational fields beyond those listed; consumers MUST tolerate them.
 
@@ -174,15 +174,15 @@ Because the evaluation manifest lives inside the `variant/*` commit's tree, it i
 
 ## 5. Failure modes
 
-### 5.1 Evaluation-schema violation at promotion time
+### 5.1 Evaluation-schema violation at integration time
 
-If the integrator re-validates the evaluation (per §2) and finds it in violation of the experiment's `evaluation_schema`, the integrator MUST NOT produce a `variant/*` commit, MUST NOT write `variant_commit_sha`, and MUST NOT append `variant.integrated`. It MUST surface the problem through an implementation-defined operator channel; since the variant's `status` was written to `success` by the orchestrator at the evaluate-task terminal, the promotion-side rejection is a protocol-level drift between the two that an operator MUST resolve. A conforming orchestrator makes this case rare by enforcing schema conformance at the evaluate-task terminal.
+If the integrator re-validates the evaluation (per §2) and finds it in violation of the experiment's `evaluation_schema`, the integrator MUST NOT produce a `variant/*` commit, MUST NOT write `variant_commit_sha`, and MUST NOT append `variant.integrated`. It MUST surface the problem through an implementation-defined operator channel; since the variant's `status` was written to `success` by the orchestrator at the evaluate-task terminal, the integration-side rejection is a protocol-level drift between the two that an operator MUST resolve. A conforming orchestrator makes this case rare by enforcing schema conformance at the evaluate-task terminal.
 
 ### 5.2 Partial git write
 
-If the underlying git ref write appears to succeed but later fails durability (crashed filesystem, partial replication), the integrator's atomicity contract (§3.4) is violated. Implementations MUST ensure ref durability before considering a promotion complete; the durability semantics that apply at the git layer mirror the storage-side rules in [`08-storage.md`](08-storage.md) §3 (write durability, read-after-write, crash recovery).
+If the underlying git ref write appears to succeed but later fails durability (crashed filesystem, partial replication), the integrator's atomicity contract (§3.4) is violated. Implementations MUST ensure ref durability before considering a integration complete; the durability semantics that apply at the git layer mirror the storage-side rules in [`08-storage.md`](08-storage.md) §3 (write durability, read-after-write, crash recovery).
 
-### 5.3 Repeat promotion
+### 5.3 Repeat integration
 
 If the integrator is invoked twice for the same variant (replay of a `variant.succeeded` event, operator retry), it MUST be idempotent:
 
@@ -194,7 +194,7 @@ If the integrator is invoked twice for the same variant (replay of a `variant.su
 The protocol leaves to implementations:
 
 - The git host (local bare repo, Gitea, GitHub, etc.) and the transport used to write `variant/*` refs.
-- The retention policy for `work/*` branches after promotion.
+- The retention policy for `work/*` branches after integration.
 - The exact author/committer identity stamped on the integrator's commits.
 - The mechanism of atomicity in §3.4 — outbox, store-level transaction, compensating writes.
 
