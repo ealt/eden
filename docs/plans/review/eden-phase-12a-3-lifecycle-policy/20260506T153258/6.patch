@@ -1,0 +1,23 @@
+--- docs/plans/review/eden-phase-12a-3-lifecycle-policy/20260506T153258/5.md	2026-05-06 15:51:02
++++ docs/plans/eden-phase-12a-3-lifecycle-policy.md	2026-05-06 15:52:20
+@@ -342,8 +342,9 @@
+ [`spec/v0/schemas/experiment-config.schema.json`](../../spec/v0/schemas/experiment-config.schema.json):
+ remove the four properties from `properties` and from `required`.
+ 
+-The reference impl's existing Pydantic model in
+-[`reference/packages/eden-contracts/src/eden_contracts/experiment.py`](../../reference/packages/eden-contracts/src/eden_contracts/experiment.py)
++The reference impl's existing `ExperimentConfig` Pydantic model
++in
++[`reference/packages/eden-contracts/src/eden_contracts/config.py`](../../reference/packages/eden-contracts/src/eden_contracts/config.py)
+ also drops the four fields. If any tests reference them, the
+ tests update to use the new policy callables instead.
+ 
+@@ -689,7 +690,7 @@
+ | `spec/v0/03-roles.md` | Insert decision-type 0 (Termination) at the top of §6.2 (the existing four become 1-4); extend §6.4 multi-instance safety to mention termination is exact-idempotent. Add fault-tolerance subsection per §3.8 above. |
+ | `spec/v0/04-task-protocol.md` | New §8 "Experiment lifecycle ops": `terminate_experiment` (the high-level composite commit; the only public lifecycle op per §2 Decision 8). The Store-level `update_experiment_state` primitive is described in chapter 08 §1, NOT here, since it is not a public wire op. Update authority table for `create_task(kind=execution)`. |
+ | `spec/v0/05-event-protocol.md` | Add `experiment.terminated` and `experiment.policy_error` event types. **Broaden the §2 transactional invariant** to include experiment-state transitions: the current §2 prose names "tasks", "ideas", and "variants" as the protocol-owned objects whose state changes MUST be atomic with their corresponding events; 12a-3 adds "experiments" to that list. The §2 atomicity rule then extends naturally to the `experiment.state ∈ {"running", "terminated"}` transition + `experiment.terminated` event composite commit defined in §3.5 above. |
+-| `spec/v0/08-storage.md` | Add `Experiment` to the protocol-owned object list (currently §1 covers the task store; §1.X gains a subsection for experiment runtime state). The new ops `read_experiment_state`, `update_experiment_state`, `terminate_experiment` go in this chapter alongside the task ops. The atomicity guarantee in §1.4 is restated to cover experiment-state transitions: a `terminate_experiment` call MUST commit the state update + the `experiment.terminated` event in a single transaction, observably-atomic to subscribers. |
++| `spec/v0/08-storage.md` | Add `Experiment` to the protocol-owned object list (currently §1 covers the task store; a new subsection — section number to be assigned when the chapter is amended — gains experiment runtime state). The new ops `read_experiment_state`, `update_experiment_state`, `terminate_experiment` go in this chapter alongside the task ops. The chapter's transactional-atomicity rules (§6 in the current numbering, "Transactional guarantees") are restated to cover experiment-state transitions: a `terminate_experiment` call MUST commit the state update + the `experiment.terminated` event in a single transaction, observably-atomic to subscribers. |
+ | `spec/v0/07-wire-protocol.md` | Add an endpoint section for `POST .../experiments/<E>/terminate` (admin auth). Per §2 Decision 8, no generic `PATCH .../state` is added in v0. Update `POST /tasks` authority paragraph for the lifted `kind=execution` restriction. |
+ | `spec/v0/09-conformance.md` | Extend §5 v1+roles+orchestrator index with three new groups: "Termination decision", "Experiment lifecycle", "Intended-executor flow-through". |
+ | `spec/v0/schemas/experiment-config.schema.json` | Remove `max_variants`, `max_wall_time`, `convergence_window`, `target_condition`. Update `required` to drop the two removed required fields. |

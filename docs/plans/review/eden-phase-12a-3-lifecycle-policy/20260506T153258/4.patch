@@ -1,0 +1,105 @@
+--- docs/plans/review/eden-phase-12a-3-lifecycle-policy/20260506T153258/3.md	2026-05-06 15:45:07
++++ docs/plans/eden-phase-12a-3-lifecycle-policy.md	2026-05-06 15:47:41
+@@ -187,7 +187,70 @@
+    (no termination ever fires) and makes the new mechanism
+    strictly opt-in.
+ 
++8. **Public lifecycle ops are `terminate_experiment` only, not a
++   generic `update_experiment_state`.** v0 has exactly one legal
++   lifecycle transition (`running → terminated`); a generic
++   `PATCH .../state` endpoint would expose normative surface for
++   transitions that don't exist yet (e.g., `terminated → running`,
++   reserved for a future amendment). The wire vocabulary is
++   intentionally narrow: `POST .../experiments/<E>/terminate` is
++   the only public lifecycle op. The Store retains
++   `update_experiment_state` as an internal primitive (used by
++   `terminate_experiment` and the policy-driven path), but it is
++   NOT exposed as a wire endpoint. When a second lifecycle
++   transition becomes legal, the right move is to add a second
++   purpose-built endpoint (`POST .../resume`, etc.), not to
++   generalize the unused state-mutation surface.
++
+ ## 3. Design
++
++### 3.0 Alternative considered: termination as a separate lifecycle concern
++
++Codex review on this plan (round 3) flagged that termination is
++qualitatively different from the four 12a-2 operational decision
++types: those four are homogeneous orchestrator actions
++(create / dispatch / integrate); termination mutates experiment
++state, gates other decisions, has both policy-driven and
++operator-driven invocation paths, and survives by special-casing
++integration. The reviewer's concrete suggestion was to model
++termination as a separate **experiment-lifecycle gate** outside
++the §6.2 decision-type enumeration entirely.
++
++**Why we keep termination as a §6.2 entry anyway:**
++
++1. **Decision-loop locus.** The orchestrator is already the
++   actor that decides what to do each iteration. Termination is
++   a decision the orchestrator makes (whether to consult a
++   policy and, given the policy's answer, whether to transition
++   experiment state). Putting it in §6.2 keeps the loop's
++   decision-making in one place — a reader looking at "what does
++   the orchestrator decide each iteration?" sees the full list.
++
++2. **`dispatch_mode` reuse.** 12a-2's `dispatch_mode` toggle
++   already gates the four operational decisions per-experiment.
++   Termination sharing the same gating mechanism (a 5th key) is
++   simpler than introducing a parallel `lifecycle_mode` toggle
++   that would only ever have one entry in v0.
++
++3. **Asymmetry is acknowledged, not hidden.** The §6.2 sketch in
++   §3.1 below explicitly calls out that termination is consulted
++   FIRST (before the four operational decisions), and that on
++   `Terminate` only the integration decision continues to run.
++   The asymmetry is documented in spec text, not glossed over.
++
++**What the alternative would look like.** Chapter 03 would have
++§6 (orchestrator role with four operational decisions per 12a-2)
++and a new §7 (experiment-lifecycle gate, listing the termination
++policy and the two paths to invoke it). The decision-loop pseudo
++in §3.5 would split into "lifecycle gate phase" + "operational
++decision phase". The implementation would still sequence the same
++ops; only the spec organization differs.
++
++We pick the §6.2 placement because (1) and (2) outweigh the
++clarity cost of acknowledging the asymmetry in (3). A future
++revision MAY restructure if a second lifecycle gate appears
++(e.g., a "pause" gate distinct from termination); v0 doesn't
++have one.
+ 
+ ### 3.1 Spec chapter 03 §6 — adding the termination decision type
+ 
+@@ -505,9 +568,10 @@
+   path), plus updated authority on `create_task(kind=execution)`.
+ - Chapter 05: new `experiment.terminated` event; new
+   `experiment.policy_error` event.
+-- Chapter 07: new endpoints `POST .../experiments/<E>/terminate`
+-  and `PATCH .../experiments/<E>/state` (the latter underlies the
+-  former).
++- Chapter 07: new endpoint `POST .../experiments/<E>/terminate`
++  (admin auth). Per §2 Decision 8 above, no generic
++  `PATCH .../state` is added in v0; the only public lifecycle op
++  is the purpose-built `/terminate`.
+ - Chapter 09: new conformance index entries — "Termination
+   decision contract" (chapter 03 §6.2 decision-type 0),
+   "Experiment lifecycle" (chapter 02 §2.5), "Intended-executor
+@@ -623,7 +687,7 @@
+ | `spec/v0/04-task-protocol.md` | New §8 "Experiment lifecycle ops": `update_experiment_state` and the high-level `terminate_experiment` composite commit. Update authority table for `create_task(kind=execution)`. |
+ | `spec/v0/05-event-protocol.md` | Add `experiment.terminated` and `experiment.policy_error` event types. **Broaden the §2 transactional invariant** to include experiment-state transitions: the current §2 prose names "tasks", "ideas", and "variants" as the protocol-owned objects whose state changes MUST be atomic with their corresponding events; 12a-3 adds "experiments" to that list. The §2 atomicity rule then extends naturally to the `experiment.state ∈ {"running", "terminated"}` transition + `experiment.terminated` event composite commit defined in §3.5 above. |
+ | `spec/v0/08-storage.md` | Add `Experiment` to the protocol-owned object list (currently §1 covers the task store; §1.X gains a subsection for experiment runtime state). The new ops `read_experiment_state`, `update_experiment_state`, `terminate_experiment` go in this chapter alongside the task ops. The atomicity guarantee in §1.4 is restated to cover experiment-state transitions: a `terminate_experiment` call MUST commit the state update + the `experiment.terminated` event in a single transaction, observably-atomic to subscribers. |
+-| `spec/v0/07-wire-protocol.md` | Add endpoint sections for `POST .../experiments/<E>/terminate` (admin auth) and `PATCH .../experiments/<E>/state` (admin auth — the underlying op). Update `POST /tasks` authority paragraph for the lifted `kind=execution` restriction. |
++| `spec/v0/07-wire-protocol.md` | Add an endpoint section for `POST .../experiments/<E>/terminate` (admin auth). Per §2 Decision 8, no generic `PATCH .../state` is added in v0. Update `POST /tasks` authority paragraph for the lifted `kind=execution` restriction. |
+ | `spec/v0/09-conformance.md` | Extend §5 v1+roles+orchestrator index with three new groups: "Termination decision", "Experiment lifecycle", "Intended-executor flow-through". |
+ | `spec/v0/schemas/experiment-config.schema.json` | Remove `max_variants`, `max_wall_time`, `convergence_window`, `target_condition`. Update `required` to drop the two removed required fields. |
+ | `spec/v0/schemas/idea.schema.json` | Add `intended_executor` (optional, tagged `TaskTarget` shape). |
+@@ -653,7 +717,7 @@
+ 
+ | File | Change |
+ |---|---|
+-| `server.py` | New endpoints: `POST .../experiments/<E>/terminate` (admin auth), `PATCH .../experiments/<E>/state` (admin auth). **Authority change**: `POST /tasks` for `kind=execution` now accepts `admins` OR `orchestrators` (was `orchestrators`-only). **Terminated-experiment guard**: every task-creation op AND `POST .../tasks/<T>/claim` against a terminated experiment surfaces 409 `eden://error/illegal-transition`. The guard's primary enforcement point is the Store layer (§5.2 above); the wire layer relays the Store's `IllegalTransition` exception to the 409 response. |
++| `server.py` | New endpoint: `POST .../experiments/<E>/terminate` (admin auth). Per §2 Decision 8, no generic `PATCH .../state` is exposed in v0. **Authority change**: `POST /tasks` for `kind=execution` now accepts `admins` OR `orchestrators` (was `orchestrators`-only). **Terminated-experiment guard**: every task-creation op AND `POST .../tasks/<T>/claim` against a terminated experiment surfaces 409 `eden://error/illegal-transition`. The guard's primary enforcement point is the Store layer (§5.2 above); the wire layer relays the Store's `IllegalTransition` exception to the 409 response. |
+ | `client.py` | New `StoreClient.terminate_experiment(reason)`, `StoreClient.read_experiment_state()`. Read-back ladder for indeterminate failures (parallel to 12a-2's pattern). |
+ 
+ ### 5.5 eden-dispatch
