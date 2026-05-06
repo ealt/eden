@@ -1,0 +1,145 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/7.md	2026-05-06 15:08:37
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:10:43
+@@ -1167,8 +1167,141 @@
+ the invariant prevents data corruption either way — but a usability
+ improvement that's cheap to add.
+ 
+-### 7.8 Scope dependency between 12a-2 and 12a-3
++### 7.8 `dispatch_mode` flip vs. running iteration
++
++§7.7 covers two operators racing on the same toggle; the more
++load-bearing race is operator vs. running orchestrator. Sequence:
++the orchestrator reads `evaluation_dispatch=auto` at iteration
++start, the operator flips it to `"manual"` mid-iteration, the
++orchestrator is about to issue
++`create_task(kind=evaluation, variant_id=V)`.
+ 
++**Contract.** Each orchestrator iteration reads `dispatch_mode`
++once at iteration start. Mid-iteration flips do NOT take effect
++until the next iteration. The reference loop in §5.6 caches the
++current `dispatch_mode` value at iteration start and uses that
++cached value for every branch in this iteration's
++`run_orchestrator_iteration` call. This is the simpler contract
++and matches the existing "read state → decide → act" loop
++structure.
++
++**Why not per-decision re-check.** A per-decision re-check would
++narrow the race window but not eliminate it (TOCTOU between the
++re-check and the actual `create_task` call). And it complicates
++the `run_orchestrator_iteration` signature: it'd have to take a
++"re-read dispatch_mode" callback rather than the dispatch_mode
++value directly, which leaks store-coupling into the function.
++
++**Operator-visible consequence.** A flip to `"manual"` may be
++followed by one final auto-orchestrator-driven dispatch from the
++in-flight iteration, before manual mode takes effect. Operators
++who need to be sure the auto-orchestrator stops dispatching can:
++
++1. Flip to `"manual"`.
++2. Wait one `--poll-interval` (default 1s; visible as a CLI flag
++   on the orchestrator service).
++3. Verify no new tasks of the gated kind appeared.
++
++The wait-one-poll discipline is documented in the admin UI
++dispatch-mode toggle page: a banner shows "manual mode takes
++effect at the next iteration boundary (typically <1s)" after a
++successful flip.
++
++**Test (unit, in `test_dispatch_mode.py`):** monkeypatch
++`run_orchestrator_iteration` to read `dispatch_mode` once,
++simulate a `dispatch_mode.evaluation_dispatch=manual` flip
++between the read and the dispatch decision, assert the dispatch
++still fires (because the cached value is `"auto"`), then run the
++next iteration and assert the dispatch no longer fires.
++
++### 7.9 Group-membership revocation of an orchestrator mid-iteration
++
++If a deployment operator removes the auto-orchestrator's worker
++from the `orchestrators` group while the orchestrator is running,
++subsequent wire calls (`accept`, `reject`, `integrate_variant`,
++`create_task(kind=execution)`) start returning 403. What should
++the orchestrator do?
++
++**Contract.** The auto-orchestrator MUST exit cleanly (exit code
++0) on the first 403 it observes for an op its role authority
++should cover. The compose service's `restart: on-failure` policy
++honors exit-0 (does NOT restart), so the orchestrator stays
++demoted until the operator re-grants membership and re-starts
++the container.
++
++**Why exit-and-don't-restart.** Removal from the group is a
++deployment intent: "this orchestrator should no longer make
++decisions." The orchestrator complying immediately matches that
++intent. Log-and-skip would let it stay in a half-functional state
++where some calls succeed (reads) and others 403 (writes), which
++is more confusing than a clean exit.
++
++**Detection.** The orchestrator wraps its wire calls in a single
++authority-error handler that distinguishes:
++
++- 403 with `eden://reference-error/unauthorized` (12a-1 §D.5
++  bearer-validation failure → credential is stale; escalate to
++  `reissue_credential` per §3.8 step 4).
++- 403 with `eden://error/forbidden` (group-membership check
++  failed → role authority revoked; exit 0 with a clear log line
++  `orchestrator role authority revoked; exiting cleanly`).
++
++**Test (unit, in `test_orchestrator_iteration.py`):** install a
++mock store that returns 403 `eden://error/forbidden` on the next
++`create_execution_task` call. Run one orchestrator iteration.
++Assert the orchestrator's `run_orchestrator_loop` returns and the
++`StopFlag` is set; assert the log carries the
++"role-authority-revoked" line.
++
++### 7.10 `reassign_task` target validity under group churn
++
++`reassign_task(task_id, new_target=...)` updates the task's
++`target` field. The new_target may name a worker_id or group_id
++that becomes invalid (worker deleted, group emptied, group
++deleted) immediately after the reassign call.
++
++**Contract.** Consistent with 12a-1 §D.3, target eligibility is
++resolved **at claim time**, not at assignment time.
++`reassign_task` validates only:
++
++- `new_target` is well-formed per the §D.3 grammar (tagged
++  `{kind, id}` or `null`).
++- The string id, if present, satisfies the §D.1 worker-id /
++  group-id grammar.
++
++`reassign_task` does NOT validate that the worker_id or group_id
++exists in the registry. If the target becomes invalid, the task
++remains in `pending` state — no worker can claim it (no claim
++attempt will pass the §D.3 eligibility check) until the operator
++runs another `reassign_task` with a valid target.
++
++**Rationale.** Atomic reassign + target-existence-check would
++require a Store-side join between the reassign-task transaction
++and a registry-snapshot read — feasible for the single-Store
++reference impl, but the wire binding then exposes a richer
++precondition vocabulary that all conforming Stores must support.
++The chosen "claim-time eligibility only" model matches what 12a-1
++landed; reassign is simpler than claim, not more complex.
++
++**Test (unit, in `test_reassign_task.py`):**
++
++- Reassign a task to `{kind: "group", id: "team-x"}` while
++  `team-x` exists with a member; the member can claim → the
++  scenario already covered.
++- Reassign a task to `{kind: "group", id: "team-x"}`, then run
++  `delete_group("team-x")`. Subsequent claim by any worker → 409
++  `eden://error/illegal-transition` with a target-mismatch
++  reason (claim-time eligibility check fails). Assert the task
++  stays in `pending`. Assert a follow-up `reassign_task` with a
++  valid target then makes the task claimable.
++- Reassign a task to `{kind: "worker", id: "nonexistent-worker"}`.
++  Assert the reassign call succeeds (200). Assert that any claim
++  attempt is rejected (no worker can authenticate as
++  `nonexistent-worker` per 12a-1's auth model). Assert
++  `reassign_task` again to a valid target restores claimability.
++
++### 7.11 Scope dependency between 12a-2 and 12a-3
++
+ The design doc has §3 (`intended_executor`) and §9 (termination
+ policy) in 12a-3, which means 12a-2 ships an orchestrator role
+ contract that doesn't yet honor `intended_executor` and doesn't yet

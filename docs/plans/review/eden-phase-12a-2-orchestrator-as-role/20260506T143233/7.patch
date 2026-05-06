@@ -1,0 +1,60 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/6.md	2026-05-06 15:06:10
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:08:22
+@@ -729,7 +729,7 @@
+ | `spec/v0/03-roles.md` | Insert new §6 "Orchestrator"; renumber existing §6 → §7. |
+ | `spec/v0/04-task-protocol.md` | Add §6 "Reassignment"; add §7 "Dispatch mode". |
+ | `spec/v0/05-event-protocol.md` | Add `task.reassigned`, `experiment.dispatch_mode_changed`, `ideation_task.created` event types to the catalog + schemas. |
+-| `spec/v0/07-wire-protocol.md` | Add endpoint sections for `reassign_task`, `update_dispatch_mode`. Spell out the `admins`-group authority requirement on each. Update §6 (subscribe) catalog with the three new events. |
++| `spec/v0/07-wire-protocol.md` | Add endpoint sections for `reassign_task`, `update_dispatch_mode`. Spell out the `admins`-group authority requirement on each. Update §6 (subscribe) catalog with the three new events. **Existing endpoints amended for new authority** (per §3.7): `POST /tasks` ([§2.1](../../spec/v0/07-wire-protocol.md), L43) — caller MUST be in `admins` for `kind=ideation` or `kind=evaluation`, in `orchestrators` for `kind=execution` (§3 Decision 8); `POST /tasks/{T}/accept` and `POST /tasks/{T}/reject` ([§2.5](../../spec/v0/07-wire-protocol.md), L60) — caller MUST be in `orchestrators`; `POST /variants/{T}/integrate` ([§5](../../spec/v0/07-wire-protocol.md), L86) — caller MUST be in `orchestrators`. Each gets a per-endpoint authority paragraph. |
+ | `spec/v0/09-conformance.md` | Extend §5 v1+roles index with four new groups: "Orchestrator role contract", "Multi-instance safety", "Reassignment", "Dispatch mode". |
+ | `spec/v0/02-data-model.md` | Add `dispatch_mode` field to the experiment-config schema definition. Add reserved-group section parallel to the 12a-1 reserved-worker-id section. |
+ | `spec/v0/schemas/experiment-config.schema.json` | Add `dispatch_mode` object property with four enum keys. |
+@@ -757,8 +757,8 @@
+ 
+ | File | Change |
+ |---|---|
+-| `server.py` | New endpoints: `POST .../tasks/<task_id>/reassign` and `PATCH .../experiments/<id>/dispatch_mode`. Authority dispatch reuses 12a-1's group-membership check. |
+-| `client.py` | New `StoreClient.reassign_task` and `StoreClient.update_dispatch_mode` methods. Read-back ladder for indeterminate failures (parallel to 12a-1 §D.7c integrate-variant pattern). |
++| `server.py` | New endpoints: `POST .../tasks/<task_id>/reassign` and `PATCH .../experiments/<id>/dispatch_mode`. Authority dispatch reuses 12a-1's group-membership check. **Existing-endpoint authority changes** (per §3.7 / spec §5.1): add group-membership checks to `POST /tasks` (kind-keyed: `kind=ideation \| evaluation` requires `admins`; `kind=execution` requires `orchestrators`), `POST /tasks/{T}/accept`, `POST /tasks/{T}/reject`, `POST /variants/{T}/integrate` (the last three require `orchestrators`). Each new check returns 403 `eden://error/unauthorized` on miss; tests in §6.1 pin the matrix. |
++| `client.py` | New `StoreClient.reassign_task` and `StoreClient.update_dispatch_mode` methods. Read-back ladder for indeterminate failures (parallel to 12a-1 §D.7c integrate-variant pattern). No client-side authority changes — the client just forwards the credential; rejection is server-side. |
+ 
+ ### 5.5 eden-dispatch
+ 
+@@ -784,7 +784,7 @@
+ |---|---|
+ | `reference/compose/compose.yaml` | Drop the `--ideation-tasks "${EDEN_IDEATE_TASKS:-3}"` flag from orchestrator command. Drop the `EDEN_IDEATE_TASKS` env reference. |
+ | `reference/compose/.env.example` | Drop `EDEN_IDEATE_TASKS`. Add `EDEN_IDEATION_POLICY_TARGET_PENDING=3` (default), `EDEN_IDEATION_POLICY_MAX_TOTAL=` (unbounded). |
+-| `reference/scripts/setup-experiment/setup-experiment.sh` | Drop the `EDEN_IDEATE_TASKS` substitution. Add `EDEN_ORCHESTRATOR_WORKER_ID=auto-orchestrator-1` (default; multi-replica setups override). Add `EDEN_ADMINS_INITIAL_MEMBER` defaulting to the experiment-creator's id. |
++| `reference/scripts/setup-experiment/setup-experiment.sh` | Drop the `EDEN_IDEATE_TASKS` substitution. Add `EDEN_ORCHESTRATOR_WORKER_ID=auto-orchestrator-1` (default; multi-replica setups override). Add `EDEN_ADMINS_INITIAL_MEMBER` defaulting to the experiment-creator's id. **Reserved-group bootstrap**: after the existing `task-store-server` health check and before bringing up the orchestrator/worker hosts, the script makes three admin-token-authenticated wire calls in sequence: (1) `register_group("orchestrators")`; (2) `register_group("admins")`; (3) `register_worker(${EDEN_ADMINS_INITIAL_MEMBER})` followed by `add_to_group(${EDEN_ADMINS_INITIAL_MEMBER}, "admins")`. All three calls are idempotent on existing record per 12a-1 §D.1 / §D.2, so re-running setup against an existing experiment is safe. The `orchestrators` group is created empty; auto-orchestrator instances populate it themselves at startup per §3.8. |
+ | `reference/compose/healthcheck/smoke.sh` | Update assertion: instead of "≥3 ideation tasks at startup", "≥3 ideation tasks within 30s of orchestrator startup" (the policy-driven shape). |
+ | `reference/compose/healthcheck/smoke-manual-mode.sh` | New smoke (per §4.1 above). |
+ | `reference/compose/healthcheck/smoke-multi-orchestrator.sh` | New smoke (per §4.1 above). |
+@@ -846,7 +846,28 @@
+ - `create_task(kind=execution)` as `admins` (not in `orchestrators`) →
+   403 (deferred to 12a-3, gated by `intended_executor` per §3
+   Decision 8).
++- `accept` / `reject` as random worker (not in `orchestrators`) →
++  403. Same as `orchestrators` member → 200.
++- `integrate_variant` as random worker → 403; as `orchestrators`
++  member → 200.
+ 
++`reference/scripts/setup-experiment/tests/test_bootstrap.py` (new):
++
++- Fresh experiment + admin token: setup-experiment runs to
++  completion. After completion, `list_groups()` returns
++  `["orchestrators", "admins"]` (idempotent: re-running yields the
++  same set, no errors).
++- After completion, `read_group("admins").members` contains
++  `${EDEN_ADMINS_INITIAL_MEMBER}` (the seeded initial admin worker).
++- After completion, `read_group("orchestrators").members` is empty
++  (the orchestrator hosts populate it themselves at startup per
++  §3.8).
++- Auto-orchestrator startup against a fresh experiment: after the
++  orchestrator container becomes ready, `read_group("orchestrators").members`
++  contains the orchestrator's `worker_id`. (Verified via the
++  Phase-10b smoke pattern of `docker compose exec` + a one-shot
++  curl against the wire.)
++
+ ### 6.2 Cross-request flow tests
+ 
+ `reference/services/web-ui/tests/test_admin_reassign.py`:

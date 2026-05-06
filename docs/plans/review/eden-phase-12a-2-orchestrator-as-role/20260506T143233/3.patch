@@ -1,0 +1,126 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/2.md	2026-05-06 14:56:53
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:00:15
+@@ -460,9 +460,9 @@
+ 
+ | Op | Authority |
+ |---|---|
+-| `register_worker(self_id)` | Any caller (12a-1 §D.5: open self-registration) |
+-| `reissue_credential(other_id)` | Caller in `admins` (12a-1 §D.1) |
+-| `register_group` / `add_to_group` / `remove_from_group` / `delete_group` | Caller in `admins` (12a-1 §D.2) |
++| `register_worker(worker_id)` | Caller authenticated with the deployment admin token (12a-1 §D.5: registration is admin-gated) |
++| `reissue_credential(other_id)` | Caller authenticated with the admin token (12a-1 §D.1) |
++| `register_group` / `add_to_group` / `remove_from_group` / `delete_group` | Caller authenticated with the admin token (12a-1 §D.2) |
+ | `create_task(kind=ideation)` | Caller in `admins` or `orchestrators` |
+ | `create_task(kind=execution)` | Caller in `orchestrators` (operator path deferred to 12a-3, gated on `intended_executor`) |
+ | `create_task(kind=evaluation)` | Caller in `admins` or `orchestrators` (admin path enables `dispatch_mode.evaluation_dispatch=manual`; see §3.9 below) |
+@@ -526,11 +526,12 @@
+   formal "termination decision" contract lands with `intended_executor`
+   in 12a-3 because both touch the experiment-config termination
+   fields scheduled for removal.
+-- **No operator-driven execution / evaluation task creation.** The
+-  authority table allows only `kind=ideation` for non-orchestrator
+-  callers. The operator-driven dispatch path that the design doc §2
+-  envisions — "humans can target tasks at specific workers" — needs
+-  `intended_executor` on ideas first.
++- **No operator-driven execution-task creation.** The authority
++  table at §3.7 allows `admins` to create `kind=ideation` and
++  `kind=evaluation` (the latter enabling the manual-evaluation-
++  dispatch flow); `kind=execution` stays orchestrator-only because
++  the design doc §2's "humans can target execution at a specific
++  worker" needs `intended_executor` on ideas, which is 12a-3.
+ - **No leases for HA.** §3.4 explains why CAS-based idempotency
+   suffices for the four current decision types.
+ - **No event-stream subscription.** Orchestrator polling stays;
+@@ -624,8 +625,9 @@
+ - Removal of `max_variants` / `max_wall_time` /
+   `convergence_window` / `target_condition` from the experiment
+   config — 12a-3.
+-- Operator-driven `kind=execution` / `kind=evaluation` task creation
+-  — 12a-3 (depends on `intended_executor`).
++- Operator-driven `kind=execution` task creation — 12a-3 (depends
++  on `intended_executor`). `kind=evaluation` is in scope here per
++  Decision 8.
+ - Lease-based HA model — deferred until a non-CAS-friendly decision
+   type appears.
+ 
+@@ -708,7 +710,7 @@
+ |---|---|
+ | `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Drop `--ideation-tasks`. Add `--ideation-policy`, `--worker-id`, `--credential`, `--admin-token`. Wire dispatch-mode reading into the loop. |
+ | `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Drop the static seed loop. Read `dispatch_mode` from the store at iteration start; pass it to `run_orchestrator_iteration`. Authentication: register-worker-on-startup logic per §3.8. |
+-| `reference/services/_common/src/eden_service_common/auth.py` | New helper `register_or_reissue(self_id, group, store_url, admin_token, cred_path)` shared by orchestrator + worker hosts (the same shape lands in 12a-1 for worker hosts; 12a-2 generalizes it). |
++| `reference/services/_common/src/eden_service_common/auth.py` | New helper `register_or_reissue(self_id, store_url, admin_token, cred_path) -> credential` shared by orchestrator + worker hosts. Calls `register_worker(self_id)` (admin-gated per 12a-1 §D.5; idempotent on existing record per 12a-1 §D.1). On `Unauthorized` from `verify_worker_credential`, escalates to `reissue_credential`. Group membership is a separate admin-gated call by the caller (e.g., `add_to_group(self_id, "orchestrators")`); the helper does NOT bake group assignment in, because different services target different groups. |
+ | `reference/services/web-ui/src/eden_web_ui/routes/admin.py` | New `/admin/dispatch-mode` page with four toggles. New `/admin/tasks/<id>/reassign` form. Each form follows the 12a-1 / chunk-9e auth-first POST + closed-allowlist banner discipline. |
+ 
+ ### 5.7 Compose / setup
+@@ -807,27 +809,52 @@
+ the same Store op and the second getting `AlreadyExists`. A test
+ that just races two threads on a wall-clock CI runner may schedule
+ them serially, which means the duplicate-create branch never fires
+-and the suite passes vacuously. To prevent that, the multi-instance
+-tests use a **deterministic synchronization barrier**:
++and the suite passes vacuously.
+ 
+-- The Store gains a test-only `_install_create_task_barrier(n)` hook
+-  (gated behind a `EDEN_TEST_BARRIER=1` env var; never installed in
+-  production paths). When set, every `create_execution_task` /
+-  `create_evaluation_task` call **enters** a shared
+-  `threading.Barrier(n)` immediately after acquiring the per-store
+-  lock and **exits** on `barrier.wait()`.
+-- The unit tests in `test_dispatch_uniqueness.py` install a
+-  barrier of size 2, then spawn two threads each calling the
+-  create op with the same `idea_id` / `variant_id`. The barrier
+-  guarantees both threads pass the lock-acquisition check before
+-  either commits, forcing the duplicate-create branch.
+-- Assertion: exactly one call returns the new Task; the other
+-  raises `AlreadyExists` (or 409 `invalid-precondition` on the
+-  wire). The barrier instrumentation is lifted and the test
+-  re-runs to validate the no-instrumentation path also reaches the
+-  same end-state (defensive against the barrier itself being the
+-  test fixture).
++The naive fix — a barrier inside the Store's create method, after
++the per-Store lock is acquired — deadlocks: thread A holds the
++RLock at
++[`reference/packages/eden-storage/src/eden_storage/_base.py:22`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
++while waiting on the barrier, and thread B can't acquire the same
++lock to reach the barrier. The synchronization point must be
++**before** the lock acquisition:
+ 
++```python
++def call_create(barrier, store, idea_id, results):
++    barrier.wait()  # synchronize *before* entering the lock-protected op
++    try:
++        store.create_execution_task(fresh_task_id(), idea_id)
++        results.append("ok")
++    except AlreadyExists:
++        results.append("conflict")
++
++barrier = threading.Barrier(2)
++results: list[str] = []
++threads = [
++    threading.Thread(target=call_create,
++                     args=(barrier, store, "idea-1", results))
++    for _ in range(2)
++]
++for t in threads: t.start()
++for t in threads: t.join()
++assert sorted(results) == ["conflict", "ok"]
++```
++
++Both threads pass the barrier simultaneously, then race for the
++RLock. One wins the race, completes the create, releases the lock.
++The other acquires the lock next, observes the existing live task,
++and raises `AlreadyExists`. No deadlock; the duplicate-create
++branch fires deterministically.
++
++For the SQLite + Postgres backends the same shape works — they
++serialize on `BEGIN IMMEDIATE` / row-level locks rather than the
++in-memory RLock, but the test code is unchanged: both threads pass
++the barrier, then enter their respective `create_*_task` calls,
++and the backend's own concurrency control picks the winner.
++
++No Store-side instrumentation is required; the test is pure
++caller-side coordination.
++
+ The conformance-level multi-instance tests in
+ `test_orchestrator_role.py::TestMultiInstance` operate against the
+ wire and CANNOT install Store-level barriers (per chapter 09 §6 the

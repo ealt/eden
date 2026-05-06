@@ -1,0 +1,1487 @@
+# Phase 12a-2 — Orchestrator as a role
+
+**Status.** Draft.
+
+**Predecessor.** [Phase 12a-1 — worker identity](eden-phase-12a-1-worker-identity.md). 12a-1
+made workers identifiable, gave them per-experiment registration with
+authenticated credentials, added group membership and tagged
+`Task.target` for selector matching, and moved claim-ownership
+enforcement to an atomic Store check. 12a-1 explicitly deferred
+"orchestrator-as-role" and "per-decision-type dispatch_mode flags" to
+this chunk.
+
+**Design source.** [`docs/design/orchestrator-and-worker-roles.md`](../design/orchestrator-and-worker-roles.md)
+§2, §6, §7, §10. §3 (per-idea `intended_executor` hint) and §9
+(termination as deployment policy) defer to 12a-3 — they depend on the
+orchestrator-role boundary 12a-2 establishes.
+
+**Naming.** Pre-draft check against
+[`docs/glossary.md`](../glossary.md) and AGENTS.md "Naming discipline":
+
+- Decision verbs use the canonical names — `integrate` rather than the
+  retired synonym, `dispatch` for orchestrator decisions, `reassign`
+  for the new operator op. <!-- rename-discipline:cite -->
+- Task kinds remain gerund nouns — `ideation` / `execution` / `evaluation`.
+- Submission classes use the artifact noun — `IdeaSubmission` /
+  `VariantSubmission` / `EvaluationSubmission`.
+- Status enums stay gerund — `evaluation_error`, never `eval_error`. <!-- rename-discipline:cite -->
+- A new orchestrator role does **not** introduce a new submission
+  class; the orchestrator's outputs are state writes through existing
+  Store ops, not submissions.
+
+## 1. Context
+
+The auto-orchestrator today is an unauthenticated polling loop with
+implicit, undivided authority over every routing decision in the
+experiment. After 12a-1 the loop is authenticated (it holds the
+process-level admin credential), but it still:
+
+- runs as a singleton with no formal definition in the spec
+  (current code:
+  [`reference/services/orchestrator/src/eden_orchestrator/loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py));
+- pre-seeds N ideation tasks at startup and never creates more —
+  conflating "experiment planning capacity" with "static budget at
+  t=0" (the seed loop at `loop.py:52-59`);
+- iterates dispatch + finalize + integrate decisions in a fixed,
+  unconfigurable order
+  ([`reference/packages/eden-dispatch/src/eden_dispatch/driver.py:36-61`](../../reference/packages/eden-dispatch/src/eden_dispatch/driver.py));
+- exits 0 on quiescence by default — confusing "no work right now"
+  with "experiment is over" (issue #1, partially mitigated by the
+  `EDEN_MAX_QUIESCENT_ITERATIONS` env-var escape hatch from PR #47);
+- exposes a `--ideation-tasks N` CLI flag
+  ([`reference/services/orchestrator/README.md`](../../reference/services/orchestrator/README.md))
+  that this chunk removes;
+- offers no operator override on individual decisions;
+- offers no reassignment of a task whose `target` was misrouted.
+
+The design doc's central reframing: the auto-orchestrator is one
+worker in the orchestrator role pool. A deployment with zero
+auto-orchestrators is valid (every routing decision driven by humans).
+A deployment with multiple auto-orchestrators is also valid (HA via
+idempotent decisions). Operators can pause individual decision types
+to take manual control without stopping unrelated decision types.
+
+12a-2 establishes the orchestrator role boundary, the per-decision
+override mechanism, the operator reassignment op, and the
+auto-orchestrator's authenticated identity. It does **not** make
+termination configurable (12a-3) and it does **not** introduce
+`intended_executor` on ideas (12a-3).
+
+### 1.1 Spec baseline + reconciliation
+
+The current spec already references "the orchestrator" in several
+chapters, but never as a defined role. 12a-2's chapter 03 §6 must
+reconcile with each existing site:
+
+| Existing site | Current text | 12a-2 disposition |
+|---|---|---|
+| [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md) §3 (orchestrator-as-component) | One-sentence definition: "The orchestrator is the component that dispatches tasks to workers and advances submitted tasks to terminal states." | Stays as the chapter-1 summary; gains a "(see chapter 03 §6 for the role contract)" cross-reference. No normative content moves. |
+| [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §4.3 (orchestrator finalizes submitted tasks) | Normative — "The orchestrator MUST: [enumerate transitions]". | Stays as the canonical task-finalization rule; chapter 03 §6.2 cross-references it for the `execution_dispatch` / `evaluation_dispatch` / `integration` decision types rather than restating. |
+| [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §5 (reclamation) | Normative — orchestrator-driven reclaim semantics. | Stays. The new `reassign` op (§6 of chapter 04, this chunk) extends the operator-driven path; it does not change reclaim. |
+| [`spec/v0/06-integrator.md`](../../spec/v0/06-integrator.md) | Defines integrator behavior. | Stays. Chapter 03 §6.2's `integration` decision type cross-references chapter 06; the integration decision IS the integrator's invocation. |
+
+Reconciliation rule: existing prose stays summary or task-protocol-
+local; the new chapter 03 §6 is the *role-contract* statement
+(authority, multi-instance safety, dispatch_mode boundary) that
+those summaries point at. Anywhere a chapter currently says "the
+orchestrator does X", §6 backfills "the orchestrator role's
+authority covers X". No existing MUST is moved or weakened.
+
+### 1.2 Naming-discipline baseline
+
+The "Naming discipline" risk callout in §0 above lives on a
+strengthened guardrail (PR #60): the rename-discipline script now
+catches backticked legacy task-kind values
+(`` `plan` ``/`` `implement` ``/`` `ideate` ``/`` `execute` ``/`` `evaluate` ``)
+in addition to the existing word-boundary patterns. PR #60 also
+fixed the existing drift sites that PR #51 / #59 missed (e.g. the
+spec's `kind` query-param values at
+[`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)
+§2.2 and several docstring instances in
+[`reference/packages/eden-storage/src/eden_storage/protocol.py`](../../reference/packages/eden-storage/src/eden_storage/protocol.py)).
+Implementation work in this chunk MUST run the strengthened guardrail
+before merge.
+
+## 2. Decisions
+
+These are the load-bearing design calls; §3 unpacks each.
+
+1. **Orchestrator is a 5th role in chapter 03**, parallel to ideator
+   / executor / evaluator / integrator. It has its own §6 with
+   "Inputs", "Decisions", "Authority boundary", and "Submission" (n/a
+   — orchestrator doesn't claim/submit; its outputs are direct state
+   writes via authorized Store ops).
+
+2. **The orchestrator makes four decision types**, each independently
+   gated by the experiment's per-decision `dispatch_mode`:
+   - `ideation_creation` — continuous creation of `ideation` tasks per
+     a configurable policy (replaces the static N-at-startup seed).
+   - `execution_dispatch` — `idea.state == "ready"` → create
+     `execution` task targeting `idea.intended_executor` (or `null`
+     until 12a-3 lands the field).
+   - `evaluation_dispatch` — `variant.status == "starting"` with
+     `commit_sha` set → create `evaluation` task.
+   - `integration` — `variant.status == "success"` without
+     `variant_commit_sha` → integrator integrates.
+
+3. **`dispatch_mode` lives on the experiment**, per-decision-type. Two
+   values: `"auto"` (auto-orchestrator runs the decision) or
+   `"manual"` (auto-orchestrator skips; human or external system runs
+   it via the same wire ops the auto-orchestrator uses). Default
+   `"auto"` for all four decision types preserves current behavior.
+
+4. **Multi-orchestrator HA via idempotent decisions** (no leases). Each
+   decision is naturally idempotent against `Store` CAS:
+   - `create_execution_task(idea_id)` — idempotent because the existing
+     §3 Store enforces "at most one live execution task per ready
+     idea" via a unique constraint;
+   - `create_evaluation_task(variant_id)` — same posture, "at most one
+     live evaluation task per starting variant";
+   - `integrate(variant_id)` — already same-value-idempotent per
+     [`spec/v0/06-integrator.md`](../../spec/v0/06-integrator.md) §5.3
+     (no-op if `variant_commit_sha` already set);
+   - `create_ideation_task(task_id)` — UUID-suffixed task IDs, plus
+     a per-experiment "pending ideation count" upper bound that
+     replicas check before creating. With N concurrent replicas and
+     a `maintain_pending(target=T)` policy, the worst-case post-
+     iteration pending count is `N * T` (the formula and worked
+     example are in §3.4); the next iteration self-corrects.
+   The lease-based alternative is deferred to a later phase if this
+   posture proves insufficient (e.g., for non-CAS-friendly decisions
+   12b adds). §3.4 walks through the analysis.
+
+5. **Continuous ideation-task creation policy** is a pluggable
+   callable. Default reference policy is "maintain N pending ideation
+   tasks". Other policies (one-per-integrated-variant,
+   one-per-fixed-interval, custom signal) are out-of-scope for 12a-2;
+   the extension point exists. The static N-at-startup seed is
+   removed.
+
+6. **Auto-orchestrator authenticates as a registered worker.** On
+   startup it walks the 12a-1 bootstrap shape: `register_worker(self_id)`
+   (12a-1 §D.1, idempotent on existing record) → admin-gated
+   `add_to_group(self_id, "orchestrators")` (12a-1 §D.2, also
+   idempotent on existing membership), and uses the returned
+   credential for every wire op. The default `orchestrators` group is
+   created at experiment creation time as a reserved group (parallel
+   to the 12a-1 reserved `worker_id` allowlist; see §3.5).
+   `register_worker` does NOT accept a `group` argument — group
+   membership is a separate admin-gated mutation per 12a-1.
+
+7. **`reassign_task` op.** New wire op for operator-driven retargeting:
+   pending → atomic `target` update; claimed → atomic
+   `reclaim(operator) + target update`; submitted/terminal → 409
+   `invalid-precondition`. Authority: caller must be authenticated AND
+   in the experiment's `admins` group (also a reserved group from §3.5).
+
+8. **`create_task` is operator-callable for `kind=ideation` and
+   `kind=evaluation` (not `kind=execution`).** Chapter 7 already
+   exposes `POST /v0/experiments/<id>/tasks`; 12a-2 adds an authority
+   check gating it on the `admins` group for these two kinds. Why the
+   asymmetric split: an evaluation task's only payload field is
+   `variant_id`, which is fully derivable from the existing variant.
+   An execution task carries `idea_id` (also derivable), but
+   operator-driven execution-task creation is meaningful **only** if
+   the operator can also set the task's `target` to a non-null worker
+   or group — and the natural source for that target is
+   `idea.intended_executor`, which is the 12a-3 field. Without
+   `intended_executor`, an operator-created execution task gets
+   `target = null` and behaves indistinguishably from an
+   auto-orchestrator-created one — there's no operator-distinguishing
+   signal to act on. Evaluation tasks have no such asymmetry: the
+   operator's act of *creating* the task with a chosen `target` is
+   itself the distinguishing intent. So evaluation is in 12a-2;
+   execution waits on 12a-3.
+
+## 3. Design
+
+### 3.1 Spec chapter 03 — orchestrator as §6
+
+The orchestrator's role contract lives next to the workers. Sketch:
+
+> ## 6. Orchestrator
+>
+> The orchestrator drives the task protocol. Unlike the worker roles
+> (§2–§4), the orchestrator does not claim and submit tasks; it
+> creates them, finalizes their submitted state, and integrates
+> successful variants. A conforming deployment MAY run zero, one, or
+> multiple orchestrator instances. Multi-instance deployments rely on
+> §6.4 below for safety.
+>
+> ### 6.1 Decisions
+>
+> The orchestrator MUST execute the four decision types defined in
+> §6.2 below. Each decision type is independently gated by the
+> experiment's `dispatch_mode.<decision>` field
+> ([`02-data-model.md`](02-data-model.md) §2). When the field is
+> `"auto"`, the orchestrator MAY run the decision. When `"manual"`,
+> the orchestrator MUST NOT run it; the decision is reserved for
+> human or external operator action via the same wire ops.
+>
+> ### 6.2 Decision types
+>
+> 1. **Ideation-task creation** (`dispatch_mode.ideation_creation`).
+>    The orchestrator MAY create new `kind == "ideation"` tasks per
+>    a deployment-defined policy. Mechanism is binding-specific.
+> 2. **Execution-task dispatch** (`dispatch_mode.execution_dispatch`).
+>    For each idea with `state == "ready"` that has no live
+>    `kind == "execution"` task referencing it, the orchestrator MUST
+>    eventually create exactly one `kind == "execution"` task with
+>    `payload.idea_id` set.
+> 3. **Evaluation-task dispatch** (`dispatch_mode.evaluation_dispatch`).
+>    For each variant with `status == "starting"` and `commit_sha`
+>    set that has no live `kind == "evaluation"` task referencing it,
+>    the orchestrator MUST eventually create exactly one
+>    `kind == "evaluation"` task with `payload.variant_id` set.
+> 4. **Integration** (`dispatch_mode.integration`). For each variant
+>    with `status == "success"` and `variant_commit_sha` unset, the
+>    orchestrator MUST eventually invoke the integrator
+>    ([`06-integrator.md`](06-integrator.md)).
+>
+> ### 6.3 Authority boundary
+>
+> The orchestrator MUST authenticate as a registered worker per
+> [`07-wire-protocol.md`](07-wire-protocol.md) §X. The orchestrator
+> MAY belong to the reserved `orchestrators` group; tasks targeted at
+> that group MAY only be claimed by group members. The orchestrator
+> MUST NOT impersonate other workers when finalizing submissions; the
+> `submitted_by` field on a finalized task MUST reflect the
+> claimant's `worker_id`, not the orchestrator's.
+>
+> ### 6.4 Multi-instance safety
+>
+> The four decision types fall into two safety classes:
+>
+> **Exact-idempotent decisions.** `execution_dispatch`,
+> `evaluation_dispatch`, and `integration` MUST be exactly
+> idempotent under concurrent execution: repeated or concurrent
+> invocation MUST converge on a single outcome. The Store MUST
+> enforce uniqueness constraints sufficient to make this property
+> mechanical: at most one live execution task per ready idea, at
+> most one live evaluation task per starting variant, exactly one
+> `variant_commit_sha` assignment per variant. A second concurrent
+> invocation MUST observe the first's commit and either no-op or
+> raise an idempotency error; it MUST NOT produce a second distinct
+> task or a second `variant_commit_sha`.
+>
+> **Bounded-overshoot decisions.** `ideation_creation` MUST be
+> bounded under concurrent execution but is NOT required to be
+> exactly idempotent. With N concurrent orchestrator instances each
+> applying a `maintain_pending(target=T)`-style policy, post-
+> iteration pending count MUST be ≤ `N * T`. Each orchestrator MUST
+> read the experiment's pending-ideation-task count before deciding
+> how many to create, so that subsequent iterations self-correct
+> downward as pending exceeds `T`. A deployment that requires exact
+> control over pending-task count MUST supply a policy callable
+> that implements its own coordination (e.g., advisory locks); the
+> protocol does not require that coordination at the role level.
+>
+> The split is intentional: dispatch and integration are CAS-
+> friendly (a single CAS commit decides the outcome), so demanding
+> exactness costs nothing. Ideation creation is not CAS-friendly
+> (the policy returns a count, not a single resource), so demanding
+> exactness would force every orchestrator into a global lock —
+> exactly the lease mechanism §3.4 explicitly avoids in this
+> chunk. (Conformance: §6.4 assertions in
+> [`09-conformance.md`](09-conformance.md).)
+>
+> ### 6.5 Manual mode
+>
+> When `dispatch_mode.<decision>` is `"manual"`, the decision is
+> driven by an authorized external caller (typically a human via the
+> Web UI or an automation script) using the same wire ops the
+> orchestrator would have used. The orchestrator role contract is
+> mechanism-neutral: the spec does not distinguish "human created
+> this task" from "auto-orchestrator created this task" beyond the
+> `task.created_by` attribution from 12a-1.
+
+The §6 placement keeps the chapter narrative clean: §1 lifecycle, §2-§4
+worker roles, §5 integrator (delegates to chapter 06), §6 orchestrator,
+§7 role binding (existing §6 renumbers).
+
+### 3.2 `dispatch_mode` shape
+
+Per-experiment, per-decision-type. JSON shape on the experiment config:
+
+```json
+{
+  "experiment_id": "exp-1",
+  "dispatch_mode": {
+    "ideation_creation": "auto",
+    "execution_dispatch": "auto",
+    "evaluation_dispatch": "auto",
+    "integration": "auto"
+  }
+}
+```
+
+Default for every key is `"auto"`. Missing keys default to `"auto"`
+(backward-compat with pre-12a-2 experiment configs). The four keys are
+fixed; new decision types added in later chunks (e.g., a hypothetical
+`ideation_dispatch` if the orchestrator ever assigns ideators) extend
+the enum.
+
+The flag is **mutable** during an experiment's lifetime — that's the
+point. New wire endpoint `PATCH /v0/experiments/<id>/dispatch_mode`
+accepts a partial object (only the keys to change) and atomically
+updates the experiment's `dispatch_mode`. Authority: caller must be
+in the `admins` group.
+
+### 3.3 Continuous ideation-task creation policy
+
+The current static seed at
+[`reference/services/orchestrator/src/eden_orchestrator/loop.py:52-59`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
+is replaced by a per-iteration policy callable.
+
+Reference impl: a Python callable supplied via a new
+`--ideation-policy <module:callable>` flag on the orchestrator CLI.
+Default: `eden_orchestrator.policies:maintain_pending` configured by
+two new env vars `EDEN_IDEATION_POLICY_TARGET_PENDING` (default 3)
+and `EDEN_IDEATION_POLICY_MAX_TOTAL` (default unbounded; safety
+ceiling for runaway loops). The callable signature:
+
+```python
+def ideation_policy(state: ExperimentStateView) -> int:
+    """Return the number of new ideation tasks to create this iteration."""
+```
+
+`ExperimentStateView` is a read-only view exposing
+`pending_ideation_count`, `total_ideation_count`,
+`integrated_variant_count`, `running_variant_count`, and similar
+counters derived from `Store.list_*` ops. The view doesn't add a new
+data type; it's a thin facade over existing reads.
+
+The policy is invoked once per orchestrator iteration. The
+orchestrator creates the returned number of `ideation` tasks via
+`Store.create_ideation_task(task_id)` — same op the static seed loop
+used. Task IDs are factory-generated (`make_id_factory("ideation-")`).
+
+Removing the static seed: `run_orchestrator_loop`'s
+`ideation_task_ids` parameter goes away. Setup-experiment no longer
+pre-computes the list; the orchestrator's first iteration creates the
+initial batch via the policy.
+
+### 3.4 Multi-orchestrator HA — idempotent decisions, no leases
+
+Today's iteration runs in
+[`run_orchestrator_iteration`](../../reference/packages/eden-dispatch/src/eden_dispatch/driver.py)
+(lines 36-61), which executes finalize / dispatch / integrate
+sequentially with no concurrency control. Multi-replica safety
+needs to come from below — the Store. Walking the four decision
+types under concurrent execution by N replicas:
+
+**Execution dispatch.** Two replicas observe idea I in state `ready`
+simultaneously, both call `create_execution_task(factory(), I.idea_id)`.
+The Store enforces (existing 12a-1 invariant, will be tightened in
+12a-2 §5.2) "at most one execution task per `idea_id`": the second
+call gets `AlreadyExists` (or 409 `invalid-precondition` on the wire).
+Replica B catches the exception and treats it as success — the task
+exists and has the right shape.
+
+**Evaluation dispatch.** Same pattern. "At most one evaluation task
+per `variant_id`" is enforced by the Store; concurrent attempts
+collapse to one.
+
+**Integration.** Already same-value-idempotent per chapter 06 §5.3:
+the integrator re-derives the squash and verifies the existing
+`variant_commit_sha` matches before no-op-returning. Two replicas
+integrating the same variant either both succeed (the second's call
+no-ops) or one raises `AtomicityViolation` and the other completes —
+either way exactly one wire-visible `variant.integrated` event fires
+(also a chapter 06 §3.4 invariant).
+
+**Ideation creation.** This is the noisy decision. The
+`maintain_pending(target=T)` reference policy returns
+`max(0, T - pending_ideation_count)`. With N concurrent replicas
+all observing `pending_ideation_count = p`, each creates `T - p`
+tasks; total post-iteration pending count is:
+
+```text
+p_after = p + N * max(0, T - p)
+```
+
+Worst case (initial `p = 0`, all N replicas observe simultaneously)
+gives `p_after = N * T`. The Decision 4 entry referenced
+`policy.max_pending + 1`; the precise bound is `N * T` (where `T` is
+the policy's target and `N` is the number of concurrent replicas).
+Worked example: target=3, initial pending=1, N=2 → each replica
+creates 2, post-iteration pending = 1 + 2·2 = 5.
+
+This is a one-iteration overshoot, not an unbounded race. Next
+iteration all replicas observe `pending = 5 ≥ T`, each returns 0,
+no further creation until pending drains below T.
+
+For deployments where overshoot is unacceptable, the policy callable
+can implement its own coordination (e.g., advisory lock via the
+Store, or a lease check). The reference policy accepts the
+overshoot.
+
+#### Alternative considered: Store-native exact-backlog primitive
+
+A natural intermediate between "bounded overshoot" and "leases" is
+a Store-native op like `ensure_ideation_backlog(target=T) →
+created: list[IdeationTask]`. The Store would atomically read
+`pending`, compute `max(0, T - pending)`, and create that many
+tasks under a single transaction. Concurrent invocations would
+serialize on the Store's transaction lock; the result is exactly-
+exact backlog control without any application-layer coordination.
+
+This alternative was considered and rejected for three reasons:
+
+1. **Policy flexibility loss.** A Store-native primitive bakes
+   "maintain target T" in as the canonical ideation policy. The
+   pluggable callable design lets a deployment swap in
+   one-per-integrated-variant, time-windowed, signal-based, or
+   custom-feedback policies without Store changes. The design doc
+   §2 explicitly names "deployment-defined policy" as a goal; a
+   single Store primitive forecloses that.
+
+2. **Spec-surface expansion.** A Store-native primitive becomes a
+   normative wire op that every conforming Store implementation
+   must support. That widens the chunk's spec footprint for a
+   single decision type (the other three decision types are pure
+   compositions of existing Store ops). Bounded overshoot keeps
+   the spec surface narrower: just `dispatch_mode` flag +
+   `task.created_by` attribution, no new primitive.
+
+3. **Multi-experiment cost (anticipating 12c).** When the control
+   plane lands in 12c, the orchestrator runs a loop *per active
+   experiment*. A Store-native primitive scoped to one experiment
+   doesn't generalize to "across all experiments, ensure each one's
+   backlog is at its policy target" without per-experiment context
+   the primitive can't naturally carry. A callable receiving
+   `ExperimentStateView` is already shape-correct for that future:
+   the orchestrator invokes it per-experiment, the Store doesn't
+   need to know about experiment-aware backlog policy.
+
+The cumulative property: every concurrent decision either no-ops
+(execution / evaluation / integration) or overshoots within the
+deterministic bound `N * T` for one iteration (ideation). This is
+sufficient for HA. Deployments needing exact control retain the
+escape hatch (custom policy with embedded coordination) without
+the protocol-layer cost.
+
+When this stops being sufficient: a future decision type that's
+neither CAS-friendly nor temporarily-overshoot-safe (e.g., a
+"pick exactly one variant for human review" decision in 12b). At
+that point a per-decision-type lease becomes necessary; defer the
+mechanism until then.
+
+### 3.5 Reserved groups
+
+12a-1 reserved `worker_id` values (`admin`, `system`, `internal`,
+`_*`). 12a-2 adds reserved `group_id` values:
+
+- `orchestrators` — auto-orchestrator instances register here.
+  Tasks created by the auto-orchestrator have
+  `created_by ∈ orchestrators`.
+- `admins` — operators with reassign / dispatch-mode-flip / operator-
+  driven-`create_task` authority. Membership is deployment-defined;
+  the reference impl seeds the experiment creator into this group.
+- `humans` and `agents` — informative defaults the design doc §1
+  mentions. NOT reserved (deployments may or may not use them); the
+  spec only reserves names whose semantics the protocol defines.
+
+Reserved group IDs MUST NOT be used by operators for general-purpose
+group definitions. Same posture as 12a-1's reserved worker IDs.
+
+### 3.6 `reassign_task` op
+
+```python
+def reassign_task(
+    task_id: str,
+    new_target: TaskTarget | None,
+    *,
+    reason: str = "operator",
+) -> None:
+    """Atomically update a task's target.
+
+    Pending tasks: atomic field update + ``task.reassigned`` event.
+    Claimed tasks: atomic ``reclaim(reason) + target update``; the
+    claim token is invalidated and a ``task.reclaimed`` event fires
+    in addition to ``task.reassigned``.
+    Submitted/terminal tasks: rejected with ``InvalidPrecondition``.
+    """
+```
+
+Wire endpoint: `POST /v0/experiments/<id>/tasks/<task_id>/reassign`
+with body `{new_target: TaskTarget | null, reason: str}`. Returns 200
+on success, 409 on submitted/terminal.
+
+Authority enforcement: the wire layer checks
+`authenticated_worker ∈ experiment.admins` before calling the Store.
+The Store assumes authority is already enforced (§D.0 of the 12a-1
+plan: auth at binding layer, claim/state-machine semantics at Store
+layer).
+
+`reason` is free-form text, included in the `task.reassigned` event
+payload for audit. Suggested values: `"operator"`, `"failed
+worker"`, `"misrouted"`. Not enumerated in the spec.
+
+### 3.7 Authority — who can do what
+
+Summary of who can call which op after 12a-2:
+
+| Op | Authority |
+|---|---|
+| `register_worker(worker_id)` | Caller authenticated with the deployment admin token (12a-1 §D.5: registration is admin-gated) |
+| `reissue_credential(other_id)` | Caller authenticated with the admin token (12a-1 §D.1) |
+| `register_group` / `add_to_group` / `remove_from_group` / `delete_group` | Caller authenticated with the admin token (12a-1 §D.2) |
+| `create_task(kind=ideation)` | Caller in `admins` or `orchestrators` |
+| `create_task(kind=execution)` | Caller in `orchestrators` (operator path deferred to 12a-3, gated on `intended_executor`) |
+| `create_task(kind=evaluation)` | Caller in `admins` or `orchestrators` (admin path enables `dispatch_mode.evaluation_dispatch=manual`; see §3.9 below) |
+| `claim` / `submit` | Any authenticated caller (target check + claim-ownership check enforce identity) |
+| `accept` / `reject` | Caller in `orchestrators` |
+| `integrate_variant` | Caller in `orchestrators` |
+| `reassign_task` | Caller in `admins` |
+| `update_dispatch_mode` | Caller in `admins` |
+
+The `orchestrators` group permission is what makes the auto-
+orchestrator's process-level credential safe: it can dispatch tasks
+and finalize submissions, but it can't reassign tasks or flip
+dispatch mode without being explicitly added to `admins`. That's the
+design intent — automation runs decisions; operators run
+meta-decisions.
+
+A deployment with zero auto-orchestrators creates the experiment with
+its initial admin in `admins` only (never in `orchestrators`). A
+deployment running auto-orchestrators always has at least one worker
+in `orchestrators`.
+
+### 3.8 Auto-orchestrator authentication
+
+On startup the orchestrator service walks the 12a-1 bootstrap shape:
+
+1. Reads `--worker-id` (default `auto-orchestrator-<hostname>`) and
+   `--credential` env (or path).
+2. If no credential, calls `register_worker(self_id)` against the
+   task store using the bootstrap admin token (passed via
+   `--admin-token` flag) per 12a-1 §D.5 — `register_worker` is
+   admin-gated, not open self-registration. The call is idempotent
+   on existing record per 12a-1 §D.1, so a restart re-running it is
+   safe. Persists the returned credential to a configurable path
+   (default `$XDG_STATE_HOME/eden/<experiment-id>/<self_id>.cred`).
+3. Calls `add_to_group(self_id, "orchestrators")` using the
+   bootstrap admin token (passed via `--admin-token` flag).
+   `add_to_group` is admin-gated per 12a-1 §D.2 and idempotent on
+   existing membership, so this also runs unconditionally on every
+   startup.
+4. Verifies the credential via `verify_worker_credential` (12a-1
+   §D.1). On `Unauthorized`, escalates to
+   `reissue_credential(self_id)` (12a-1 §D.1, admin-gated) if the
+   admin token is available, else exits with a clear error.
+5. Uses the credential for all subsequent wire calls.
+
+Multi-replica: each replica passes its own `--worker-id`
+(e.g., `auto-orchestrator-1`, `auto-orchestrator-2`) — the operator
+is responsible for unique IDs. A future phase MAY add a
+`register_worker_random` op that returns a generated ID; not in scope
+here.
+
+### 3.9 What 12a-2 does NOT do
+
+The list keeps the scope tight:
+
+- **No `intended_executor` on ideas.** Defers to 12a-3. Until then,
+  every execution task created by the auto-orchestrator has
+  `target = null` (matching today's behavior).
+- **No termination policy.** Defers to 12a-3 (design doc §9). The
+  orchestrator's `EDEN_MAX_QUIESCENT_ITERATIONS` env var stays as the
+  current operational escape hatch; 12a-2 does not change it. The
+  formal "termination decision" contract lands with `intended_executor`
+  in 12a-3 because both touch the experiment-config termination
+  fields scheduled for removal.
+- **No operator-driven execution-task creation.** The authority
+  table at §3.7 allows `admins` to create `kind=ideation` and
+  `kind=evaluation` (the latter enabling the manual-evaluation-
+  dispatch flow); `kind=execution` stays orchestrator-only because
+  the design doc §2's "humans can target execution at a specific
+  worker" needs `intended_executor` on ideas, which is 12a-3.
+- **No leases for HA.** §3.4 explains why CAS-based idempotency
+  suffices for the four current decision types.
+- **No event-stream subscription.** Orchestrator polling stays;
+  subscribe is in chapter 7 already but the orchestrator doesn't use
+  it.
+
+## 4. Scope
+
+### 4.1 In scope
+
+Spec edits:
+
+- Chapter 03: new §6 "Orchestrator" (§3.1 above); existing §6 "Role
+  binding" renumbers to §7.
+- Chapter 04: §3 (`claim`) cross-references §6.4 idempotency property;
+  new §6 (`reassign`) on the new wire op (§3.6); new §7
+  (`update_dispatch_mode`) for the experiment-level flag.
+- Chapter 05: new event types `task.reassigned`,
+  `experiment.dispatch_mode_changed`, `ideation_task.created`
+  (the last replaces the implicit static-seed events with explicit
+  attribution).
+- Chapter 07: new endpoints `POST .../tasks/<task_id>/reassign`,
+  `PATCH .../experiments/<id>/dispatch_mode`. Authority requirements
+  spelled out per §3.7.
+- Chapter 09: new conformance index entries — "Orchestrator role
+  contract" (§6.1–§6.3 of chapter 03), "Multi-instance safety" (§6.4),
+  "Reassignment" (chapter 04 §6), "Dispatch mode" (chapter 04 §7).
+
+Code (reference impl):
+
+- `eden_dispatch.run_orchestrator_iteration` gains a `dispatch_mode`
+  parameter; each branch checks the relevant field before running.
+- `eden_dispatch.run_orchestrator_iteration` gains a
+  `ideation_policy: Callable[[ExperimentStateView], int]` parameter;
+  invoked once per iteration to compute new-task count.
+- `eden_orchestrator.policies.maintain_pending(target=N, max_total=M)`
+  reference policy, configurable via env vars per §3.3.
+- `eden_orchestrator.cli` drops `--ideation-tasks` (the static seed
+  count); adds `--ideation-policy <module:callable>`,
+  `--worker-id`, `--credential`, `--admin-token`.
+- `eden_storage.Store` gains `reassign_task`,
+  `update_dispatch_mode`, `read_dispatch_mode`. Behavior tightened:
+  `create_execution_task(idea_id)` enforces "at most one live per
+  `idea_id`"; same for `create_evaluation_task(variant_id)`.
+- `eden_wire`: new endpoints; auth dispatch uses 12a-1's group
+  membership check.
+- `eden_contracts`: schemas for `Task.reassigned` event,
+  `experiment.dispatch_mode_changed` event,
+  `ideation_task.created` event. New `dispatch_mode` field on the
+  experiment-config Pydantic model + schema.
+- `eden_service_common.scripted` test profile gains a
+  `dispatch_mode` knob so e2e tests can exercise manual mode.
+- `eden_web_ui.routes.admin`: per-decision-type toggle UI;
+  `reassign_task` form on the per-task admin page (#54-style fix
+  pattern: closed allowlist of error banners; CAS via fresh-read at
+  POST time).
+
+Conformance:
+
+- New scenarios under
+  `conformance/scenarios/test_orchestrator_role.py` covering §6.1–§6.4
+  of the new chapter 03 §6.
+- `conformance/scenarios/test_reassign_task.py` covering chapter 04
+  §6 — pending vs. claimed vs. terminal pre-conditions, plus the
+  authority requirement (caller-not-in-admins → 403).
+- `conformance/scenarios/test_dispatch_mode.py` covering chapter 04
+  §7 — flag persistence, manual-mode skip behavior, partial-update
+  semantics.
+- Multi-instance safety scenarios under
+  `test_orchestrator_role.py::TestMultiInstance` — two simulated
+  orchestrators racing on the same experiment, asserting at most one
+  task per ready idea, etc.
+
+Compose / smokes:
+
+- Existing `compose-smoke` smokes unchanged in expected outcome
+  (default `dispatch_mode = auto` for everything; static seed becomes
+  policy-driven seed — first iteration creates 3 tasks instead of
+  startup creating 3 tasks).
+- New `compose-smoke-manual-mode` smoke that flips
+  `evaluation_dispatch` to manual, drives an evaluation task by
+  operator action through the Web UI, then flips back to auto.
+- New `compose-smoke-multi-orchestrator` smoke with two orchestrator
+  containers (`auto-orchestrator-1`, `auto-orchestrator-2`) racing
+  on a shared store; assertion: ≤ N execution tasks for N ready ideas.
+
+### 4.2 Cross-references to followups
+
+- `intended_executor` on ideas — 12a-3.
+- Termination policy contract — 12a-3.
+- Removal of `max_variants` / `max_wall_time` /
+  `convergence_window` / `target_condition` from the experiment
+  config — 12a-3.
+- Operator-driven `kind=execution` task creation — 12a-3 (depends
+  on `intended_executor`). `kind=evaluation` is in scope here per
+  Decision 8.
+- Lease-based HA model — deferred until a non-CAS-friendly decision
+  type appears.
+
+### 4.3 Out of scope
+
+- Spec chapter for role binding ("how does an orchestrator find the
+  task store?") — still deferred per chapter 03 §7 (renumbered from §6).
+- Operator-creatable workers (the wire endpoint exists from 12a-1; UI
+  surface for it is a smaller follow-up, not 12a-2's load).
+- Per-task `created_by` attribution UI on the admin page — extends
+  the 12a-1 attribution work, but the surfacing is small and
+  independent.
+- A spec-level "multi-experiment orchestrator" — the design doc §10
+  envisions one orchestrator process running multiple experiments;
+  12a-2 keeps the 1:1 binding, just with N replicas per experiment.
+  Multi-experiment orchestration lands in Phase 12c (control plane).
+
+### 4.4 Non-goals
+
+- Backwards compatibility with the static-seed CLI shape. Greenfield
+  project: the `--ideation-tasks N` CLI flag goes away in the same PR.
+- Cross-experiment resource arbitration. Each experiment's
+  `dispatch_mode` is independent.
+- A spec-mandated default policy. The reference impl has one;
+  conforming impls MAY use any callable (or no callable at all if the
+  deployment runs no auto-orchestrator).
+
+## 5. Files to touch
+
+### 5.1 Spec
+
+| File | Change |
+|---|---|
+| `spec/v0/03-roles.md` | Insert new §6 "Orchestrator"; renumber existing §6 → §7. |
+| `spec/v0/04-task-protocol.md` | Add §6 "Reassignment"; add §7 "Dispatch mode". |
+| `spec/v0/05-event-protocol.md` | Add `task.reassigned`, `experiment.dispatch_mode_changed`, `ideation_task.created` event types to the catalog + schemas. |
+| `spec/v0/07-wire-protocol.md` | Add endpoint sections for `reassign_task`, `update_dispatch_mode`. Spell out the `admins`-group authority requirement on each. Update §6 (subscribe) catalog with the three new events. **Existing endpoints amended for new authority** (per §3.7): `POST /tasks` ([§2.1](../../spec/v0/07-wire-protocol.md), L43) — caller MUST be in `admins` for `kind=ideation` or `kind=evaluation`, in `orchestrators` for `kind=execution` (§3 Decision 8); `POST /tasks/{T}/accept` and `POST /tasks/{T}/reject` ([§2.5](../../spec/v0/07-wire-protocol.md), L60) — caller MUST be in `orchestrators`; `POST /variants/{T}/integrate` ([§5](../../spec/v0/07-wire-protocol.md), L86) — caller MUST be in `orchestrators`. Each gets a per-endpoint authority paragraph. |
+| `spec/v0/09-conformance.md` | Extend §5 v1+roles index with four new groups: "Orchestrator role contract", "Multi-instance safety", "Reassignment", "Dispatch mode". |
+| `spec/v0/02-data-model.md` | Add `dispatch_mode` field to the experiment-config schema definition. Add reserved-group section parallel to the 12a-1 reserved-worker-id section. |
+| `spec/v0/schemas/experiment-config.schema.json` | Add `dispatch_mode` object property with four enum keys. |
+| `spec/v0/schemas/event.schema.json` | Add the three new event types. |
+
+### 5.2 eden-storage
+
+| File | Change |
+|---|---|
+| `protocol.py` | Add `reassign_task`, `read_dispatch_mode`, `update_dispatch_mode` to the `Store` Protocol. Tighten `create_execution_task` / `create_evaluation_task` signatures + docstrings to call out the at-most-one-live constraint. |
+| `_base.py` | Implement the new ops + composite commits for `task.reassigned` (and the claimed-task case's `task.reclaimed` + `task.reassigned` two-event atomic emit). Implement `update_dispatch_mode` as a partial-merge update with a single `experiment.dispatch_mode_changed` event carrying the diff. Tighten the dispatch-task creation invariants. |
+| `sqlite.py` | Schema migration: `experiments` table gains a `dispatch_mode` `text NOT NULL` column (matches the existing JSON-as-text posture for SQLite per the chunk-10b parity decision). Default value: `'{"ideation_creation":"auto","execution_dispatch":"auto","evaluation_dispatch":"auto","integration":"auto"}'`. Greenfield: existing test stores get this default at first read. Unique index strengthening on `json_extract(payload, '$.idea_id')` for `kind=execution` AND `state IN ('pending','claimed','submitted')` (live-only) and on `json_extract(payload, '$.variant_id')` for `kind=evaluation` AND `state IN ('pending','claimed','submitted')`. |
+| `postgres.py` | Same schema shape but `dispatch_mode jsonb NOT NULL DEFAULT '{"ideation_creation":"auto","execution_dispatch":"auto","evaluation_dispatch":"auto","integration":"auto"}'::jsonb`. Unique partial indexes on `(payload->>'idea_id')` for `kind=execution` and on `(payload->>'variant_id')` for `kind=evaluation`, both with `WHERE state IN ('pending','claimed','submitted')`. |
+| `submissions.py` | No change (orchestrator role doesn't introduce a submission shape). |
+
+### 5.3 eden-contracts
+
+| File | Change |
+|---|---|
+| `event.py` | Add `TaskReassignedEvent`, `ExperimentDispatchModeChangedEvent`, `IdeationTaskCreatedEvent`. |
+| `experiment.py` | Add `DispatchMode` Pydantic model with four `Literal["auto", "manual"]` fields, all defaulting to `"auto"`. Wire to `ExperimentConfig`. |
+| `task.py` | No change to the `Task` shape; the existing `target` field from 12a-1 is what reassign mutates. |
+
+### 5.4 eden-wire
+
+| File | Change |
+|---|---|
+| `server.py` | New endpoints: `POST .../tasks/<task_id>/reassign` and `PATCH .../experiments/<id>/dispatch_mode`. Authority dispatch reuses 12a-1's group-membership check. **Existing-endpoint authority changes** (per §3.7 / spec §5.1): add group-membership checks to `POST /tasks` (kind-keyed: `kind=ideation \| evaluation` requires `admins`; `kind=execution` requires `orchestrators`), `POST /tasks/{T}/accept`, `POST /tasks/{T}/reject`, `POST /variants/{T}/integrate` (the last three require `orchestrators`). Each new check returns **403 `eden://error/forbidden`** on membership miss (the caller is authenticated but lacks role authority — distinct from 12a-1's bearer-validation 401 `eden://reference-error/unauthorized` for invalid credentials). Tests in §6.1 pin the matrix. |
+| `client.py` | New `StoreClient.reassign_task` and `StoreClient.update_dispatch_mode` methods. Read-back ladder for indeterminate failures (parallel to 12a-1 §D.7c integrate-variant pattern). No client-side authority changes — the client just forwards the credential; rejection is server-side. |
+
+### 5.5 eden-dispatch
+
+| File | Change |
+|---|---|
+| `driver.py` | `run_orchestrator_iteration` gains `dispatch_mode: DispatchMode` and `ideation_policy: Callable[[ExperimentStateView], int]` parameters. Each branch checks `dispatch_mode.<decision> == "auto"` before running. New `_create_ideation_tasks` helper invokes the policy. |
+| `state_view.py` | New `ExperimentStateView` dataclass + builder reading from the Store (one read per counter; no caching — simpler is right for now). |
+| `policies.py` | New module exposing `maintain_pending(target, max_total)` and any other reference policies. Designed to be importable as `module:callable` strings on the CLI. |
+| `tests/test_orchestrator_iteration.py` | New parametrized test covering each `dispatch_mode` branch's auto-vs-manual behavior. New tests for the policy callable. |
+
+### 5.6 Reference services
+
+| File | Change |
+|---|---|
+| `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Drop `--ideation-tasks`. Add `--ideation-policy`, `--worker-id`, `--credential`, `--admin-token`. Wire dispatch-mode reading into the loop. |
+| `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Drop the static seed loop. Read `dispatch_mode` from the store at iteration start; pass it to `run_orchestrator_iteration`. Authentication: register-worker-on-startup logic per §3.8. |
+| `reference/services/_common/src/eden_service_common/auth.py` | New helper `register_or_reissue(self_id, store_url, admin_token, cred_path) -> credential` shared by orchestrator + worker hosts. Calls `register_worker(self_id)` (admin-gated per 12a-1 §D.5; idempotent on existing record per 12a-1 §D.1). On `Unauthorized` from `verify_worker_credential`, escalates to `reissue_credential`. Group membership is a separate admin-gated call by the caller (e.g., `add_to_group(self_id, "orchestrators")`); the helper does NOT bake group assignment in, because different services target different groups. |
+| `reference/services/web-ui/src/eden_web_ui/routes/admin.py` | New `/admin/dispatch-mode` page with four toggles. New `/admin/tasks/<id>/reassign` form. Each form follows the 12a-1 / chunk-9e auth-first POST + closed-allowlist banner discipline. |
+
+### 5.7 Compose / setup
+
+| File | Change |
+|---|---|
+| `reference/compose/compose.yaml` | Drop the `--ideation-tasks "${EDEN_IDEATE_TASKS:-3}"` flag from orchestrator command. Drop the `EDEN_IDEATE_TASKS` env reference. |
+| `reference/compose/.env.example` | Drop `EDEN_IDEATE_TASKS`. Add `EDEN_IDEATION_POLICY_TARGET_PENDING=3` (default), `EDEN_IDEATION_POLICY_MAX_TOTAL=` (unbounded). |
+| `reference/scripts/setup-experiment/setup-experiment.sh` | Drop the `EDEN_IDEATE_TASKS` substitution. Add `EDEN_ORCHESTRATOR_WORKER_ID=auto-orchestrator-1` (default; multi-replica setups override). Add `EDEN_ADMINS_INITIAL_MEMBER` defaulting to the experiment-creator's id. **Reserved-group bootstrap**: after the existing `task-store-server` health check and before bringing up the orchestrator/worker hosts, the script makes three admin-token-authenticated wire calls in sequence: (1) `register_group("orchestrators")`; (2) `register_group("admins")`; (3) `register_worker(${EDEN_ADMINS_INITIAL_MEMBER})` followed by `add_to_group(${EDEN_ADMINS_INITIAL_MEMBER}, "admins")`. All three calls are idempotent on existing record per 12a-1 §D.1 / §D.2, so re-running setup against an existing experiment is safe. The `orchestrators` group is created empty; auto-orchestrator instances populate it themselves at startup per §3.8. |
+| `reference/compose/healthcheck/smoke.sh` | Update assertion: instead of "≥3 ideation tasks at startup", "≥3 ideation tasks within 30s of orchestrator startup" (the policy-driven shape). |
+| `reference/compose/healthcheck/smoke-manual-mode.sh` | New smoke (per §4.1 above). |
+| `reference/compose/healthcheck/smoke-multi-orchestrator.sh` | New smoke (per §4.1 above). |
+
+## 6. Test design
+
+### 6.1 Unit tests (per-package)
+
+`eden_dispatch.tests.test_orchestrator_iteration`:
+
+- For each of the four `dispatch_mode` keys: auto runs the branch,
+  manual skips it. Asserted via call-counting on Store ops.
+- Policy callable invocation: returns 0 → no ideation task created;
+  returns N → exactly N created; raises → orchestrator logs and skips
+  (does NOT crash).
+- Mixed mode: `dispatch_mode = {ideation: manual, others: auto}`
+  exercises one decision type's manual gating without affecting
+  others.
+
+`eden_storage.tests.test_reassign_task`:
+
+- Pending → target updated, single `task.reassigned` event.
+- Claimed → composite commit: claim cleared, target updated,
+  `task.reclaimed` (cause=`reason`) + `task.reassigned` events both
+  fire atomically (events are observable in the same `read_range`
+  slice; no intermediate state is observable).
+- Submitted / completed / failed → `IllegalTransition`, no events.
+- Reassign to current target → no-op success (idempotent), single
+  `task.reassigned` event with no actual change recorded (or zero
+  events; design call — see §8 tricky areas).
+
+`eden_storage.tests.test_dispatch_mode`:
+
+- Default state: every key is `"auto"`.
+- Partial update preserves un-mentioned keys.
+- Roundtrip via `read_dispatch_mode` returns the persisted value.
+- Concurrent updates: last-write-wins (CAS not required; the state
+  is a small fixed-shape object).
+
+`eden_storage.tests.test_dispatch_uniqueness`:
+
+- Two `create_execution_task(idea_id=I)` calls: first succeeds, second
+  raises `AlreadyExists`.
+- Edge: a previously-failed execution task for `I` does NOT count as
+  "live" — a new task can be created. (`live` ≡ state ∈ {pending,
+  claimed, submitted}; terminal does not block.)
+
+`eden_wire.tests.test_authority`:
+
+- `reassign_task` as non-admin → 403.
+- `update_dispatch_mode` as non-admin → 403.
+- `create_task(kind=ideation)` as `orchestrators` member → 200.
+- `create_task(kind=ideation)` as `admins` member → 200.
+- `create_task(kind=ideation)` as random worker → 403.
+- `create_task(kind=evaluation)` as `admins` member → 200 (enables
+  the §3 manual-evaluation-dispatch flow).
+- `create_task(kind=evaluation)` as `orchestrators` member → 200.
+- `create_task(kind=evaluation)` as random worker → 403.
+- `create_task(kind=execution)` as `admins` (not in `orchestrators`) →
+  403 (deferred to 12a-3, gated by `intended_executor` per §3
+  Decision 8).
+- `accept` / `reject` as random worker (not in `orchestrators`) →
+  403. Same as `orchestrators` member → 200.
+- `integrate_variant` as random worker → 403; as `orchestrators`
+  member → 200.
+
+`reference/scripts/setup-experiment/tests/test_bootstrap.py` (new):
+
+- Fresh experiment + admin token: setup-experiment runs to
+  completion. After completion, `list_groups()` returns
+  `["orchestrators", "admins"]` (idempotent: re-running yields the
+  same set, no errors).
+- After completion, `read_group("admins").members` contains
+  `${EDEN_ADMINS_INITIAL_MEMBER}` (the seeded initial admin worker).
+- After completion, `read_group("orchestrators").members` is empty
+  (the orchestrator hosts populate it themselves at startup per
+  §3.8).
+- Auto-orchestrator startup against a fresh experiment: after the
+  orchestrator container becomes ready, `read_group("orchestrators").members`
+  contains the orchestrator's `worker_id`. (Verified via the
+  Phase-10b smoke pattern of `docker compose exec` + a one-shot
+  curl against the wire.)
+
+### 6.2 Cross-request flow tests
+
+`reference/services/web-ui/tests/test_admin_reassign.py`:
+
+- Operator reassigns a pending execution task targeted at `null` to
+  group `humans`. Subsequent claim by an `agents` worker is rejected
+  by the target check; claim by a `humans` worker succeeds.
+- Operator reassigns a claimed task. The claimant's next submit is
+  rejected (token invalidated). The new target's claim succeeds.
+- Operator attempts reassign on a completed task. Form rejects with a
+  closed-allowlist banner.
+
+`reference/services/web-ui/tests/test_admin_dispatch_mode.py`:
+
+- Operator flips `evaluation_dispatch` to manual. Variants reach
+  `status=starting` but no evaluation task is created. Operator
+  manually creates an evaluation task targeted at a specific
+  evaluator. Operator flips back to auto. Subsequent variants get
+  auto-created evaluation tasks.
+- Authority: non-admin tries to flip → 403.
+
+### 6.3 Multi-instance scenarios
+
+The HA argument in §3.4 hinges on two replicas concurrently calling
+the same Store op and the second getting `AlreadyExists`. A test
+that just races two threads on a wall-clock CI runner may schedule
+them serially, which means the duplicate-create branch never fires
+and the suite passes vacuously.
+
+The naive fix — a barrier inside the Store's create method, after
+the per-Store lock is acquired — deadlocks: thread A holds the
+RLock at
+[`reference/packages/eden-storage/src/eden_storage/_base.py:22`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
+while waiting on the barrier, and thread B can't acquire the same
+lock to reach the barrier. The synchronization point must be
+**before** the lock acquisition:
+
+```python
+def call_create(barrier, store, idea_id, results):
+    barrier.wait()  # synchronize *before* entering the lock-protected op
+    try:
+        store.create_execution_task(fresh_task_id(), idea_id)
+        results.append("ok")
+    except AlreadyExists:
+        results.append("conflict")
+
+barrier = threading.Barrier(2)
+results: list[str] = []
+threads = [
+    threading.Thread(target=call_create,
+                     args=(barrier, store, "idea-1", results))
+    for _ in range(2)
+]
+for t in threads: t.start()
+for t in threads: t.join()
+assert sorted(results) == ["conflict", "ok"]
+```
+
+Both threads pass the barrier simultaneously, then race for the
+RLock. One wins the race, completes the create, releases the lock.
+The other acquires the lock next, observes the existing live task,
+and raises `AlreadyExists`. No deadlock; the duplicate-create
+branch fires deterministically.
+
+For the SQLite + Postgres backends the same shape works — they
+serialize on `BEGIN IMMEDIATE` / row-level locks rather than the
+in-memory RLock, but the test code is unchanged: both threads pass
+the barrier, then enter their respective `create_*_task` calls,
+and the backend's own concurrency control picks the winner.
+
+No Store-side instrumentation is required; the test is pure
+caller-side coordination.
+
+The conformance-level multi-instance tests in
+`test_orchestrator_role.py::TestMultiInstance` operate against the
+wire and CANNOT install Store-level barriers (per chapter 09 §6 the
+chapter-7 binding is the only IUT contract). They assert end-state
+correctness only:
+
+- N ready ideas + 2 racing orchestrator clients → exactly N
+  execution tasks at the end.
+- N starting variants + 2 racing orchestrator clients → exactly N
+  evaluation tasks.
+- N success variants + 2 racing orchestrator clients → exactly N
+  `variant.integrated` events (chapter 06 §3.4 invariant).
+- Ideation race: two orchestrators with `target_pending=3`, initial
+  state `pending=1`. Per the §3.4 formula, post-iteration pending ≤
+  `N * T = 6`, with 5 the typical worst-case for this seed. With no
+  consumer draining tasks, the overshot pending count persists: a
+  second iteration of both replicas creates **zero** new tasks (the
+  policy returns `max(0, T - pending)` = 0 when `pending ≥ T`).
+  Assertions:
+  - After iteration 1: `pending ∈ {3, 4, 5}` (deterministic 5 if
+    both replicas observed `pending=1` before either committed; 3
+    if they fully serialized; 4 in the partial-overlap case).
+  - After iteration 2: `pending` is unchanged from after iteration 1
+    (no growth, no shrink). This is the load-bearing
+    "overshoot-is-one-iteration-only" assertion.
+  - To assert *return-to-target*, a separate scenario seeds an
+    ideator host that consumes tasks; the test then asserts
+    `pending` decreases monotonically toward `T` as the consumer
+    works. That scenario lives in the e2e smoke, not the unit
+    suite, because it requires a worker host.
+
+The Store-side barrier tests are the load-bearing ones for the §3.4
+argument; the wire-side tests are defense-in-depth that catch
+end-state regressions even when the race itself doesn't fire.
+
+### 6.4 Conformance scenarios
+
+Each scenario is grouped under one of the four new chapter 09 §5
+v1+roles+orchestrator index entries. Citations follow the chunk-11c
+"end-state, not endpoint" pattern.
+
+`test_orchestrator_role.py`: §6.1–§6.3 of the new chapter 03 §6.
+
+- **Decision-type completeness.** An orchestrator that runs all four
+  decision types end-to-end produces the four expected artifacts
+  (ideation tasks, execution tasks, evaluation tasks, integrated
+  variants). Asserts via wire-only state inspection.
+- **Authority boundary.** A non-orchestrator caller attempting any of
+  the four decision-type ops is rejected with the right authority
+  error code.
+
+`test_dispatch_mode.py`: chapter 04 §7.
+
+- **Manual-mode skip.** With `evaluation_dispatch = manual` and a
+  starting variant present, the orchestrator's iteration completes
+  without creating an evaluation task. (Asserted by polling
+  `list_tasks(kind=evaluation)` for 3 seconds + asserting empty.)
+- **Per-decision independence.** Flipping one key to manual does not
+  affect the other three.
+- **Persistence across restart.** Flag survives orchestrator restart.
+
+`test_reassign_task.py`: chapter 04 §6.
+
+- Pending / claimed / terminal preconditions per §6.1 above.
+- Authority: non-admin → 403.
+- Idempotency on no-op reassign (current target == new target).
+
+`test_orchestrator_role.py::TestMultiInstance`: §6.4.
+
+- The four race scenarios from §6.3 above, run as conformance tests
+  against any conforming IUT.
+
+### 6.5 Verification gates
+
+Before merge:
+
+- `uv run ruff check .` clean.
+- `uv run pyright` 0 errors.
+- `uv run pytest -q` (full suite) passes.
+- `uv run pytest -q conformance/` passes (existing v1+roles +
+  v1+roles+integrator scenarios + the new v1+roles+orchestrator).
+- `uv run python conformance/src/conformance/tools/check_citations.py`
+  clean (every new scenario cites chapter 03 §6 / chapter 04 §6 /
+  chapter 04 §7 by section number, and the citation falls within the
+  right chapter-09 §5 group's entry).
+- `python3 scripts/spec-xref-check.py` clean (new §6 cross-references
+  all resolve).
+- `python3 scripts/check-rename-discipline.py` clean — no
+  retired-vocab slip-ins (per the patterns at
+  [`scripts/check-rename-discipline.py`](../../scripts/check-rename-discipline.py)),
+  no legacy submission-class names.
+- `bash reference/compose/healthcheck/smoke.sh` passes.
+- `bash reference/compose/healthcheck/smoke-manual-mode.sh` passes
+  (new).
+- `bash reference/compose/healthcheck/smoke-multi-orchestrator.sh`
+  passes (new).
+- Markdownlint clean.
+- Manual UI smoke: spin up the stack with two orchestrator
+  containers, drive a 3-variant experiment to integration via the
+  Web UI, then repeat with `evaluation_dispatch=manual` and confirm
+  the operator-driven path works end-to-end.
+
+## 7. Tricky areas
+
+### 7.1 Spec chapter renumbering
+
+Inserting §6 "Orchestrator" before existing §6 "Role binding" means
+the role-binding section becomes §7. Every cross-reference to
+"chapter 03 §6" elsewhere in the spec needs updating. The
+`spec-xref-check.py` script catches missed updates; budget time for
+~5–10 fix-ups.
+
+Alternative: append the orchestrator as §7 after role binding. Less
+intrusive, but worse narrative — role binding is a "deferred" stub
+and putting orchestrator behind it implies the orchestrator role is
+also deferred. Reject.
+
+### 7.2 Multi-instance ideation overshoot
+
+§3.4 accepts a one-iteration overshoot on ideation creation. The
+scenario tests pin "≤ N + epsilon" rather than "= N". A reader who
+expects strict equality will be surprised; the chapter 03 §6.4 prose
+must spell out that idempotency for ideation creation is
+"eventually-bounded" rather than "instantaneously-exact". Stronger
+language is available — explicit lease — but at the cost of a
+mechanism (and an authority hierarchy) we don't currently need.
+
+The right shape for the spec text: §6.4 says "concurrent invocation
+MUST NOT produce two distinct outcomes for the same input" with a
+parenthetical "ideation-task creation is bounded by the policy's
+target count plus the number of concurrent invocations; the policy
+self-corrects in subsequent iterations".
+
+### 7.3 The `--ideation-tasks` flag removal
+
+A breaking CLI change. Greenfield project, no external users. Per
+AGENTS.md "Project Lifecycle" section, this is fine; no shim needed.
+Still, the smoke scripts and any docs that mentioned the flag must be
+updated in the same PR (see §5.7). The rename-discipline guardrail
+won't catch this (it's not legacy vocab, just removed flag); add a
+grep-for-`--ideation-tasks` check in the verification gate to make
+sure no references survive.
+
+Actually — `EDEN_IDEATE_TASKS` is the env var that PR #51 already
+caught a regression on (the `--max-quiescent-iterations 36000`
+incident). The audit lesson stands: re-running the canonical commands
+(smoke + lint) catches accidental survivors. No new mechanism needed.
+
+### 7.4 Reassign-when-claimed atomicity
+
+The claimed-task case is a composite commit: clear claim, update
+target, emit two events (`task.reclaimed` + `task.reassigned`). The
+two events MUST be observable in the same `read_range` slice; no
+intermediate state where one event is visible without the other. The
+12a-1 §D.6 composite-commit pattern applies; this is mechanically
+similar to `_base.reclaim`'s existing two-event emit (`task.reclaimed`
+and the variant-side `variant.errored` for orphan starting variants).
+
+Test design pin: `test_reassign_task.py::test_claimed_atomicity` reads
+the event log immediately after `reassign_task` and asserts both
+events are present, in the right order, with no other events
+interleaved.
+
+### 7.5 Authority on operator-driven `kind=ideation` task creation
+
+§3.7's authority table grants `admins` and `orchestrators`
+permission to create `kind=ideation` tasks. That's two paths to the
+same op. The Store doesn't distinguish; the wire layer authorizes.
+A reader might expect "only `orchestrators` can create tasks; admins
+just flip flags". The design intent is the opposite — admins can
+inject work directly. That's the whole point of operator-driven
+ideation-task creation per design doc §2.
+
+The chapter 04 §6 reassignment authority is admins-only, not
+orchestrators (orchestrators don't reassign their own decisions; they
+just make different decisions next iteration). This split is
+intentional but worth calling out in the spec prose so a future
+reader doesn't conclude the table has typos.
+
+### 7.6 The default `admins` group
+
+§3.5 reserves `admins`. The reference impl seeds the
+experiment-creator's worker_id into `admins` at experiment creation.
+That requires the experiment creator to register first — which means
+the bootstrap admin token (the deployment-wide credential 12a-1's
+§D.5 introduces) needs to register a worker on first use rather than
+acting as a permanent disembodied caller. Two options:
+
+A. **Bootstrap-admin self-registration.** The deployment's admin
+   token, on first use against an experiment, automatically registers
+   a worker `admin` (the reserved id from 12a-1) in the `admins`
+   group of that experiment. Subsequent calls authenticate as that
+   worker. Simple; matches the 12a-1 reserved-id intent.
+
+B. **Explicit setup step.** setup-experiment.sh runs two
+   additional admin-token-authenticated calls after creating the
+   experiment: `register_worker(admin)` to mint the worker, then
+   `add_to_group(admin, "admins")` to grant authority. (The
+   `register_worker` call does NOT take a `group` argument per
+   12a-1 §D.1; group membership is a separate admin-gated mutation
+   per 12a-1 §D.2.) The bootstrap token never authenticates ops
+   directly; it only registers workers and assigns them to groups.
+
+Option B is cleaner (the bootstrap token has exactly one purpose:
+mint workers). Option A is less ceremonious. Recommend B; it pairs
+naturally with §3.8's auto-orchestrator startup flow (also a
+register-then-use pattern).
+
+### 7.7 Web UI dispatch-mode toggle race
+
+Two operators simultaneously flipping the same toggle — A flips
+manual, B flips back to auto, A's UI still shows "manual". The
+update is last-write-wins per §6.1 of `test_dispatch_mode.py`; the
+UI re-reads `dispatch_mode` after every successful POST so it
+self-corrects within one round-trip.
+
+The dangerous case is operator A flipping `evaluation_dispatch =
+manual`, manually creating an evaluation task, then operator B (not
+seeing A's change) flipping back to auto before A's manual task is
+claimed. Now the auto-orchestrator might create a duplicate
+evaluation task. The Store's "at most one live evaluation task per
+variant" invariant from §3.4 catches this — A's task and the
+auto-orchestrator's attempt collide on the same `variant_id` and the
+auto attempt fails. So the invariant, not the UI, is the safety net.
+
+Worth a UI affordance: "this experiment has 2 manual evaluation
+tasks pending; flip to auto?" with a confirm. Not load-bearing —
+the invariant prevents data corruption either way — but a usability
+improvement that's cheap to add.
+
+### 7.8 `dispatch_mode` flip vs. running iteration
+
+§7.7 covers two operators racing on the same toggle; the more
+load-bearing race is operator vs. running orchestrator. Sequence:
+the orchestrator reads `evaluation_dispatch=auto` at iteration
+start, the operator flips it to `"manual"` mid-iteration, the
+orchestrator is about to issue
+`create_task(kind=evaluation, variant_id=V)`.
+
+**Contract.** Each orchestrator iteration reads `dispatch_mode`
+once at iteration start. Mid-iteration flips do NOT take effect
+until the next iteration. The reference loop in §5.6 caches the
+current `dispatch_mode` value at iteration start and uses that
+cached value for every branch in this iteration's
+`run_orchestrator_iteration` call. This is the simpler contract
+and matches the existing "read state → decide → act" loop
+structure.
+
+**Why not per-decision re-check.** A per-decision re-check would
+narrow the race window but not eliminate it (TOCTOU between the
+re-check and the actual `create_task` call). And it complicates
+the `run_orchestrator_iteration` signature: it'd have to take a
+"re-read dispatch_mode" callback rather than the dispatch_mode
+value directly, which leaks store-coupling into the function.
+
+**Operator-visible consequence.** A flip to `"manual"` may be
+followed by one final auto-orchestrator-driven dispatch from the
+in-flight iteration, before manual mode takes effect. Operators
+who need to be sure the auto-orchestrator stops dispatching can:
+
+1. Flip to `"manual"`.
+2. Wait one `--poll-interval` (default 1s; visible as a CLI flag
+   on the orchestrator service).
+3. Verify no new tasks of the gated kind appeared.
+
+The wait-one-poll discipline is documented in the admin UI
+dispatch-mode toggle page: a banner shows "manual mode takes
+effect at the next iteration boundary (typically <1s)" after a
+successful flip.
+
+**Test (unit, in `test_dispatch_mode.py`):** monkeypatch
+`run_orchestrator_iteration` to read `dispatch_mode` once,
+simulate a `dispatch_mode.evaluation_dispatch=manual` flip
+between the read and the dispatch decision, assert the dispatch
+still fires (because the cached value is `"auto"`), then run the
+next iteration and assert the dispatch no longer fires.
+
+### 7.9 Group-membership revocation of an orchestrator mid-iteration
+
+If a deployment operator removes the auto-orchestrator's worker
+from the `orchestrators` group while the orchestrator is running,
+subsequent wire calls (`accept`, `reject`, `integrate_variant`,
+`create_task(kind=execution)`) start returning **403
+`eden://error/forbidden`** per §5.4. What should the orchestrator
+do?
+
+**Contract.** The auto-orchestrator MUST exit cleanly (exit code
+0) on the first 403 it observes for an op its role authority
+should cover. The compose service's `restart: on-failure` policy
+honors exit-0 (does NOT restart), so the orchestrator stays
+demoted until the operator re-grants membership and re-starts
+the container.
+
+**Why exit-and-don't-restart.** Removal from the group is a
+deployment intent: "this orchestrator should no longer make
+decisions." The orchestrator complying immediately matches that
+intent. Log-and-skip would let it stay in a half-functional state
+where some calls succeed (reads) and others 403 (writes), which
+is more confusing than a clean exit.
+
+**Detection.** The orchestrator wraps its wire calls in a single
+auth-error handler that distinguishes the two failure modes by
+HTTP status, matching the 12a-1 / 12a-2 error matrix:
+
+- **401 `eden://reference-error/unauthorized`** (12a-1 §D.5 / §D.1
+  bearer-validation failure → credential is stale; escalate to
+  `reissue_credential` per §3.8 step 4).
+- **403 `eden://error/forbidden`** (12a-2 §5.4 group-membership
+  check failed → role authority revoked; exit 0 with a clear log
+  line `orchestrator role authority revoked; exiting cleanly`).
+
+Note the status difference: 401 is "we don't trust your bearer";
+403 is "we trust your bearer but you're not allowed to do this".
+That split lets the orchestrator pick the right recovery (re-auth
+vs. exit) from the HTTP status alone, without needing to inspect
+the problem-json body.
+
+**Test (unit, in `test_orchestrator_iteration.py`):** install a
+mock store that returns 403 `eden://error/forbidden` on the next
+`create_execution_task` call. Run one orchestrator iteration.
+Assert the orchestrator's `run_orchestrator_loop` returns and the
+`StopFlag` is set; assert the log carries the
+"role-authority-revoked" line. A separate test installs a 401
+`eden://reference-error/unauthorized` and asserts the orchestrator
+escalates to `reissue_credential` (does NOT exit).
+
+### 7.10 `reassign_task` target validity under group churn
+
+`reassign_task(task_id, new_target=...)` updates the task's
+`target` field. The new_target may name a worker_id or group_id
+that becomes invalid (worker deleted, group emptied, group
+deleted) immediately after the reassign call.
+
+**Contract.** Consistent with 12a-1 §D.3, target eligibility is
+resolved **at claim time**, not at assignment time.
+`reassign_task` validates only:
+
+- `new_target` is well-formed per the §D.3 grammar (tagged
+  `{kind, id}` or `null`).
+- The string id, if present, satisfies the §D.1 worker-id /
+  group-id grammar.
+
+`reassign_task` does NOT validate that the worker_id or group_id
+exists in the registry. If the target becomes invalid, the task
+remains in `pending` state — no worker can claim it (no claim
+attempt will pass the §D.3 eligibility check) until the operator
+runs another `reassign_task` with a valid target.
+
+**Rationale.** Atomic reassign + target-existence-check would
+require a Store-side join between the reassign-task transaction
+and a registry-snapshot read — feasible for the single-Store
+reference impl, but the wire binding then exposes a richer
+precondition vocabulary that all conforming Stores must support.
+The chosen "claim-time eligibility only" model matches what 12a-1
+landed; reassign is simpler than claim, not more complex.
+
+**Test (unit, in `test_reassign_task.py`):**
+
+- Reassign a task to `{kind: "group", id: "team-x"}` while
+  `team-x` exists with a member; the member can claim → the
+  scenario already covered.
+- Reassign a task to `{kind: "group", id: "team-x"}`, then run
+  `delete_group("team-x")`. Subsequent claim by any worker is
+  rejected with the wire mapping for `WorkerNotEligible`
+  (12a-1 §D.3 + §5.4 leave the exact 4xx mapping
+  implementation-defined within the `403`/`409` band; this test
+  asserts only "claim is rejected with 4xx and the task stays
+  in `pending`", not a specific code). Assert a follow-up
+  `reassign_task` with a valid target makes the task claimable.
+- Reassign a task to `{kind: "worker", id: "nonexistent-worker"}`.
+  Assert the reassign call succeeds (200). Assert that any claim
+  attempt is rejected (no worker can authenticate as
+  `nonexistent-worker` per 12a-1's auth model — this manifests as
+  401 from the bearer check, before claim semantics run). Assert
+  `reassign_task` again to a valid target restores claimability.
+
+**Rationale for not pinning the claim-rejection status code:**
+12a-1 §5.4 deliberately leaves `WorkerNotEligible`'s wire mapping
+unpinned in v0 ("appropriate HTTP status codes (likely 403 / 409)
+but does not pin a specific mapping"). 12a-2 should not lock in
+a specific code for the stale-target case either, since that
+would extend 12a-1's pinned vocabulary by side effect. A future
+chunk can normalize the claim-eligibility error matrix; until
+then the test asserts the observable behavior (claim rejected,
+task stays pending) without overcommitting on the wire shape.
+
+### 7.11 Scope dependency between 12a-2 and 12a-3
+
+The design doc has §3 (`intended_executor`) and §9 (termination
+policy) in 12a-3, which means 12a-2 ships an orchestrator role
+contract that doesn't yet honor `intended_executor` and doesn't yet
+have a termination decision. The spec text in §6.1–§6.3 above is
+written so 12a-3's additions are extensions, not contradictions:
+12a-2's `execution_dispatch` decision creates `target = null` tasks;
+12a-3 changes that to `target = idea.intended_executor`. 12a-2's
+orchestrator runs forever until the operator stops the container;
+12a-3 adds the termination decision as a 5th decision type that runs
+before the existing four.
+
+Risk: the spec prose locks in "four decision types" and 12a-3 has to
+amend it. Mitigation: the §6.2 list is presented as "v0 v1+roles+
+orchestrator decision types" with explicit footnote that future
+chunks MAY extend the list. The list is enumerable and open; not a
+fixed contract.
+
+## 8. Risks
+
+1. **Spec chapter renumbering misses cross-references.** Mitigation:
+   `spec-xref-check.py` runs in CI; missing refs surface immediately.
+
+2. **Reference policy "maintain N pending" is too simplistic.** It
+   doesn't account for in-flight ideation tasks that were claimed but
+   not yet submitted (those are pending → no longer pending → soon
+   ready). For a well-tuned deployment this matters; for the
+   reference impl it doesn't (the smoke stack runs 3 ideators, all of
+   which submit within seconds). Mitigation: design the
+   `ExperimentStateView` to expose `claimed_ideation_count`
+   separately, so a smarter policy can subtract it. The reference
+   policy ignores the field.
+
+3. **Wire-only multi-instance tests don't actually race.** Two
+   containers / two `StoreClient` threads scheduled by the OS may
+   serialize. A test that only asserts "≤ N tasks at the end" passes
+   vacuously when the race doesn't fire — and that's exactly the
+   branch (`AlreadyExists` on duplicate create) the §3.4 HA argument
+   depends on. Mitigation: the unit-level Store tests in §6.3 install
+   a `threading.Barrier` that forces both create calls to enter the
+   committed-state check at the same time. The wire-level conformance
+   tests stay end-state-only (per chapter 09 §6 the chapter-7 binding
+   is the only IUT contract; cross-process barriers are out of
+   reach), but the Store-side barrier tests are the load-bearing
+   coverage of the duplicate-create branch.
+
+4. **Authority enforcement leak.** A wire-layer 403 that's missed on
+   one endpoint becomes a privilege-escalation vector. Mitigation:
+   every new endpoint gets an authority-required test
+   (per §6.1's `test_authority` block); CI fails if a 200 path
+   exists for a non-admin caller.
+
+5. **Composite-commit on reassign-when-claimed.** Two events emitted
+   atomically is exactly the pattern 12a-1 §D.6 nailed for
+   `submit_with_target_check`. The risk is mechanical (forgetting the
+   `_base` composite-commit helper and using two separate transaction
+   commits). Mitigation: the per-store composite-commit tests in
+   `eden-storage/tests/test_composite_commits.py` are parametrized;
+   the new reassign op gets added to the parametrization.
+
+6. **Re-introducing legacy vocab in the new spec text.** The naming
+   guardrail catches the retired-synonym verbs (the integrator
+   integrates; the synonym retired by PR #59 is no longer accepted)
+   and the legacy class names. New surface area = new opportunity for
+   slip-ins. Mitigation: the `<!-- rename-discipline:cite -->` marker
+   exists for legitimate citations; the guardrail is a backstop.
+   Pre-submit check: `python3 scripts/check-rename-discipline.py`
+   clean.
+
+7. **`dispatch_mode` flag misuse via API.** A caller who can flip
+   `integration` to `manual` and never flip it back can wedge the
+   experiment indefinitely. Not really a "risk" — it's the operator's
+   prerogative to pause integration — but worth a UI affordance:
+   "warning: integration paused for >1 day, no progress will be made
+   until resumed." Out-of-scope for 12a-2; tracked as a UX
+   follow-up.
+
+## 9. Sequencing
+
+Recommended PR shape (in order):
+
+1. **Spec PR.** Chapter 03 §6, chapter 04 §6 / §7, chapter 05 events,
+   chapter 07 endpoints, chapter 09 conformance index. No code.
+   Reviewable in isolation as a spec change.
+
+2. **Pydantic + storage PR.** `dispatch_mode` schema + Pydantic model;
+   `Store` Protocol additions; `_base` / `sqlite` / `postgres`
+   implementations; uniqueness-constraint tightening; per-store
+   composite-commit tests.
+
+3. **Wire PR.** `eden_wire` server + client for the two new
+   endpoints; authority dispatch; transport-indeterminate read-back
+   per the 12a-1 pattern.
+
+4. **Dispatch + orchestrator service PR.** `run_orchestrator_iteration`
+   parameter additions; reference policy module; orchestrator service
+   CLI flag rework; auto-orchestrator startup auth.
+
+5. **Web UI PR.** Dispatch-mode toggle page; reassign form on the
+   per-task page. (Smaller; can ride alongside #4 if reviewer
+   bandwidth allows.)
+
+6. **Conformance PR.** New scenarios under
+   `test_orchestrator_role.py` / `test_dispatch_mode.py` /
+   `test_reassign_task.py`; multi-instance scenarios; citations
+   check.
+
+7. **Compose + smokes PR.** New manual-mode + multi-orchestrator
+   smokes; the existing `compose-smoke` budget assertion update.
+
+8. **Docs PR.** Glossary update (orchestrator gets a row;
+   `dispatch_mode` enters the lifecycle table); roadmap delta.
+   AGENTS.md "Current phase" entry.
+
+A reviewer going from PR 1 to PR 8 should expect tests to go red
+around PR 4 (when the orchestrator service drops the static seed and
+the smokes haven't been updated yet) and come back green at PR 7. The
+spec-only PR 1 is mergeable independently.
+
+## 10. Estimated effort
+
+- **Spec prose** (PR 1): ~1.5 days. Five chapters touched, one new
+  major section (chapter 03 §6), four new event types, two new wire
+  endpoints, conformance index extension.
+- **Pydantic + storage** (PR 2): ~2 days. Three backends + the
+  composite-commit pattern + uniqueness-constraint tightening.
+- **Wire** (PR 3): ~1 day. Two endpoints, authority dispatch (the
+  12a-1 mechanism, applied), read-back ladder.
+- **Dispatch + orchestrator** (PR 4): ~1.5 days. The state-view
+  builder + the policy module + the CLI flag rework + the
+  startup-auth integration are all small, but it adds up.
+- **Web UI** (PR 5): ~1 day.
+- **Conformance** (PR 6): ~1 day.
+- **Compose + smokes** (PR 7): ~0.5 day.
+- **Docs** (PR 8): ~0.5 day.
+
+**Realistic total: ~9 working days** of focused work — heavier than
+12a-1 (~6–7 days) because the spec surface is bigger and the
+multi-instance scenarios add real test design work.
+
+## 11. Followups (out of scope)
+
+- **`intended_executor` on ideas** — 12a-3.
+- **Termination as deployment policy** — 12a-3. Removes the four
+  termination fields from the experiment-config schema.
+- **Operator-driven `kind=execution` / `kind=evaluation` task
+  creation** — 12a-3 (depends on `intended_executor`).
+- **Lease-based HA model** — deferred until a non-CAS-friendly
+  decision type appears.
+- **Multi-experiment orchestrator process** — Phase 12c (control
+  plane).
+- **Spec-level role-binding chapter** — chapter 03 §7 ("Role binding")
+  remains a stub through 12a; lands when the binding pattern is
+  stable across roles.
+- **Operator authority hierarchy** — design doc §5 "RBAC-on-the-RBAC"
+  is deferred. v0 stays simple: `admins` is a flat group; everyone in
+  it can do everything an admin can do.

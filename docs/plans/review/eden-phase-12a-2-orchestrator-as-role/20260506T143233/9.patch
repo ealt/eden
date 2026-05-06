@@ -1,0 +1,97 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/8.md	2026-05-06 15:11:05
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:13:54
+@@ -757,7 +757,7 @@
+ 
+ | File | Change |
+ |---|---|
+-| `server.py` | New endpoints: `POST .../tasks/<task_id>/reassign` and `PATCH .../experiments/<id>/dispatch_mode`. Authority dispatch reuses 12a-1's group-membership check. **Existing-endpoint authority changes** (per §3.7 / spec §5.1): add group-membership checks to `POST /tasks` (kind-keyed: `kind=ideation \| evaluation` requires `admins`; `kind=execution` requires `orchestrators`), `POST /tasks/{T}/accept`, `POST /tasks/{T}/reject`, `POST /variants/{T}/integrate` (the last three require `orchestrators`). Each new check returns 403 `eden://error/unauthorized` on miss; tests in §6.1 pin the matrix. |
++| `server.py` | New endpoints: `POST .../tasks/<task_id>/reassign` and `PATCH .../experiments/<id>/dispatch_mode`. Authority dispatch reuses 12a-1's group-membership check. **Existing-endpoint authority changes** (per §3.7 / spec §5.1): add group-membership checks to `POST /tasks` (kind-keyed: `kind=ideation \| evaluation` requires `admins`; `kind=execution` requires `orchestrators`), `POST /tasks/{T}/accept`, `POST /tasks/{T}/reject`, `POST /variants/{T}/integrate` (the last three require `orchestrators`). Each new check returns **403 `eden://error/forbidden`** on membership miss (the caller is authenticated but lacks role authority — distinct from 12a-1's bearer-validation 401 `eden://reference-error/unauthorized` for invalid credentials). Tests in §6.1 pin the matrix. |
+ | `client.py` | New `StoreClient.reassign_task` and `StoreClient.update_dispatch_mode` methods. Read-back ladder for indeterminate failures (parallel to 12a-1 §D.7c integrate-variant pattern). No client-side authority changes — the client just forwards the credential; rejection is server-side. |
+ 
+ ### 5.5 eden-dispatch
+@@ -1219,8 +1219,9 @@
+ If a deployment operator removes the auto-orchestrator's worker
+ from the `orchestrators` group while the orchestrator is running,
+ subsequent wire calls (`accept`, `reject`, `integrate_variant`,
+-`create_task(kind=execution)`) start returning 403. What should
+-the orchestrator do?
++`create_task(kind=execution)`) start returning **403
++`eden://error/forbidden`** per §5.4. What should the orchestrator
++do?
+ 
+ **Contract.** The auto-orchestrator MUST exit cleanly (exit code
+ 0) on the first 403 it observes for an op its role authority
+@@ -1237,21 +1238,30 @@
+ is more confusing than a clean exit.
+ 
+ **Detection.** The orchestrator wraps its wire calls in a single
+-authority-error handler that distinguishes:
++auth-error handler that distinguishes the two failure modes by
++HTTP status, matching the 12a-1 / 12a-2 error matrix:
+ 
+-- 403 with `eden://reference-error/unauthorized` (12a-1 §D.5
++- **401 `eden://reference-error/unauthorized`** (12a-1 §D.5 / §D.1
+   bearer-validation failure → credential is stale; escalate to
+   `reissue_credential` per §3.8 step 4).
+-- 403 with `eden://error/forbidden` (group-membership check
+-  failed → role authority revoked; exit 0 with a clear log line
+-  `orchestrator role authority revoked; exiting cleanly`).
++- **403 `eden://error/forbidden`** (12a-2 §5.4 group-membership
++  check failed → role authority revoked; exit 0 with a clear log
++  line `orchestrator role authority revoked; exiting cleanly`).
+ 
++Note the status difference: 401 is "we don't trust your bearer";
++403 is "we trust your bearer but you're not allowed to do this".
++That split lets the orchestrator pick the right recovery (re-auth
++vs. exit) from the HTTP status alone, without needing to inspect
++the problem-json body.
++
+ **Test (unit, in `test_orchestrator_iteration.py`):** install a
+ mock store that returns 403 `eden://error/forbidden` on the next
+ `create_execution_task` call. Run one orchestrator iteration.
+ Assert the orchestrator's `run_orchestrator_loop` returns and the
+ `StopFlag` is set; assert the log carries the
+-"role-authority-revoked" line.
++"role-authority-revoked" line. A separate test installs a 401
++`eden://reference-error/unauthorized` and asserts the orchestrator
++escalates to `reissue_credential` (does NOT exit).
+ 
+ ### 7.10 `reassign_task` target validity under group churn
+ 
+@@ -1289,17 +1299,30 @@
+   `team-x` exists with a member; the member can claim → the
+   scenario already covered.
+ - Reassign a task to `{kind: "group", id: "team-x"}`, then run
+-  `delete_group("team-x")`. Subsequent claim by any worker → 409
+-  `eden://error/illegal-transition` with a target-mismatch
+-  reason (claim-time eligibility check fails). Assert the task
+-  stays in `pending`. Assert a follow-up `reassign_task` with a
+-  valid target then makes the task claimable.
++  `delete_group("team-x")`. Subsequent claim by any worker is
++  rejected with the wire mapping for `WorkerNotEligible`
++  (12a-1 §D.3 + §5.4 leave the exact 4xx mapping
++  implementation-defined within the `403`/`409` band; this test
++  asserts only "claim is rejected with 4xx and the task stays
++  in `pending`", not a specific code). Assert a follow-up
++  `reassign_task` with a valid target makes the task claimable.
+ - Reassign a task to `{kind: "worker", id: "nonexistent-worker"}`.
+   Assert the reassign call succeeds (200). Assert that any claim
+   attempt is rejected (no worker can authenticate as
+-  `nonexistent-worker` per 12a-1's auth model). Assert
++  `nonexistent-worker` per 12a-1's auth model — this manifests as
++  401 from the bearer check, before claim semantics run). Assert
+   `reassign_task` again to a valid target restores claimability.
+ 
++**Rationale for not pinning the claim-rejection status code:**
++12a-1 §5.4 deliberately leaves `WorkerNotEligible`'s wire mapping
++unpinned in v0 ("appropriate HTTP status codes (likely 403 / 409)
++but does not pin a specific mapping"). 12a-2 should not lock in
++a specific code for the stale-target case either, since that
++would extend 12a-1's pinned vocabulary by side effect. A future
++chunk can normalize the claim-eligibility error matrix; until
++then the test asserts the observable behavior (claim rejected,
++task stays pending) without overcommitting on the wire shape.
++
+ ### 7.11 Scope dependency between 12a-2 and 12a-3
+ 
+ The design doc has §3 (`intended_executor`) and §9 (termination

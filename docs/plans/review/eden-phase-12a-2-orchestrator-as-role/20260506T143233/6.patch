@@ -1,0 +1,55 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/5.md	2026-05-06 15:04:22
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:05:53
+@@ -415,11 +415,51 @@
+ can implement its own coordination (e.g., advisory lock via the
+ Store, or a lease check). The reference policy accepts the
+ overshoot.
++
++#### Alternative considered: Store-native exact-backlog primitive
++
++A natural intermediate between "bounded overshoot" and "leases" is
++a Store-native op like `ensure_ideation_backlog(target=T) →
++created: list[IdeationTask]`. The Store would atomically read
++`pending`, compute `max(0, T - pending)`, and create that many
++tasks under a single transaction. Concurrent invocations would
++serialize on the Store's transaction lock; the result is exactly-
++exact backlog control without any application-layer coordination.
++
++This alternative was considered and rejected for three reasons:
++
++1. **Policy flexibility loss.** A Store-native primitive bakes
++   "maintain target T" in as the canonical ideation policy. The
++   pluggable callable design lets a deployment swap in
++   one-per-integrated-variant, time-windowed, signal-based, or
++   custom-feedback policies without Store changes. The design doc
++   §2 explicitly names "deployment-defined policy" as a goal; a
++   single Store primitive forecloses that.
++
++2. **Spec-surface expansion.** A Store-native primitive becomes a
++   normative wire op that every conforming Store implementation
++   must support. That widens the chunk's spec footprint for a
++   single decision type (the other three decision types are pure
++   compositions of existing Store ops). Bounded overshoot keeps
++   the spec surface narrower: just `dispatch_mode` flag +
++   `task.created_by` attribution, no new primitive.
++
++3. **Multi-experiment cost (anticipating 12c).** When the control
++   plane lands in 12c, the orchestrator runs a loop *per active
++   experiment*. A Store-native primitive scoped to one experiment
++   doesn't generalize to "across all experiments, ensure each one's
++   backlog is at its policy target" without per-experiment context
++   the primitive can't naturally carry. A callable receiving
++   `ExperimentStateView` is already shape-correct for that future:
++   the orchestrator invokes it per-experiment, the Store doesn't
++   need to know about experiment-aware backlog policy.
+ 
+ The cumulative property: every concurrent decision either no-ops
+ (execution / evaluation / integration) or overshoots within the
+ deterministic bound `N * T` for one iteration (ideation). This is
+-sufficient for HA.
++sufficient for HA. Deployments needing exact control retain the
++escape hatch (custom policy with embedded coordination) without
++the protocol-layer cost.
+ 
+ When this stops being sufficient: a future decision type that's
+ neither CAS-friendly nor temporarily-overshoot-safe (e.g., a
