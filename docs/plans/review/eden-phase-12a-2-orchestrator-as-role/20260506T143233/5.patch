@@ -1,0 +1,51 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/4.md	2026-05-06 15:02:11
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:04:05
+@@ -250,15 +250,39 @@
+ >
+ > ### 6.4 Multi-instance safety
+ >
+-> Conforming orchestrator decisions MUST be idempotent under
+-> concurrent execution by multiple orchestrator instances:
+-> repeated invocation MUST be a no-op once the decision has been
+-> made, and concurrent invocation MUST NOT produce two distinct
+-> outcomes for the same input. The Store MUST enforce uniqueness
+-> constraints sufficient to make this property mechanical: at most
+-> one live execution task per ready idea, at most one live evaluation
+-> task per starting variant, exactly one `variant_commit_sha`
+-> assignment per variant. (Conformance: §6.4 assertions in
++> The four decision types fall into two safety classes:
++>
++> **Exact-idempotent decisions.** `execution_dispatch`,
++> `evaluation_dispatch`, and `integration` MUST be exactly
++> idempotent under concurrent execution: repeated or concurrent
++> invocation MUST converge on a single outcome. The Store MUST
++> enforce uniqueness constraints sufficient to make this property
++> mechanical: at most one live execution task per ready idea, at
++> most one live evaluation task per starting variant, exactly one
++> `variant_commit_sha` assignment per variant. A second concurrent
++> invocation MUST observe the first's commit and either no-op or
++> raise an idempotency error; it MUST NOT produce a second distinct
++> task or a second `variant_commit_sha`.
++>
++> **Bounded-overshoot decisions.** `ideation_creation` MUST be
++> bounded under concurrent execution but is NOT required to be
++> exactly idempotent. With N concurrent orchestrator instances each
++> applying a `maintain_pending(target=T)`-style policy, post-
++> iteration pending count MUST be ≤ `N * T`. Each orchestrator MUST
++> read the experiment's pending-ideation-task count before deciding
++> how many to create, so that subsequent iterations self-correct
++> downward as pending exceeds `T`. A deployment that requires exact
++> control over pending-task count MUST supply a policy callable
++> that implements its own coordination (e.g., advisory locks); the
++> protocol does not require that coordination at the role level.
++>
++> The split is intentional: dispatch and integration are CAS-
++> friendly (a single CAS commit decides the outcome), so demanding
++> exactness costs nothing. Ideation creation is not CAS-friendly
++> (the policy returns a count, not a single resource), so demanding
++> exactness would force every orchestrator into a global lock —
++> exactly the lease mechanism §3.4 explicitly avoids in this
++> chunk. (Conformance: §6.4 assertions in
+ > [`09-conformance.md`](09-conformance.md).)
+ >
+ > ### 6.5 Manual mode

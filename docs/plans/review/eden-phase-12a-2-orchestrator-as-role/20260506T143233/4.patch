@@ -1,0 +1,46 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/3.md	2026-05-06 15:00:31
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:01:55
+@@ -491,11 +491,12 @@
+ 1. Reads `--worker-id` (default `auto-orchestrator-<hostname>`) and
+    `--credential` env (or path).
+ 2. If no credential, calls `register_worker(self_id)` against the
+-   task store (12a-1 §D.5: open self-registration; the call is
+-   idempotent on existing record per 12a-1 §D.1, so a restart
+-   re-running it is safe). Persists the returned credential to a
+-   configurable path (default
+-   `$XDG_STATE_HOME/eden/<experiment-id>/<self_id>.cred`).
++   task store using the bootstrap admin token (passed via
++   `--admin-token` flag) per 12a-1 §D.5 — `register_worker` is
++   admin-gated, not open self-registration. The call is idempotent
++   on existing record per 12a-1 §D.1, so a restart re-running it is
++   safe. Persists the returned credential to a configurable path
++   (default `$XDG_STATE_HOME/eden/<experiment-id>/<self_id>.cred`).
+ 3. Calls `add_to_group(self_id, "orchestrators")` using the
+    bootstrap admin token (passed via `--admin-token` flag).
+    `add_to_group` is admin-gated per 12a-1 §D.2 and idempotent on
+@@ -869,9 +870,22 @@
+   `variant.integrated` events (chapter 06 §3.4 invariant).
+ - Ideation race: two orchestrators with `target_pending=3`, initial
+   state `pending=1`. Per the §3.4 formula, post-iteration pending ≤
+-  `N * T = 6`, with 5 the typical worst-case for this seed. Assert
+-  pending stabilizes at exactly 3 after both replicas run a second
+-  iteration (overshoot is one-iteration only).
++  `N * T = 6`, with 5 the typical worst-case for this seed. With no
++  consumer draining tasks, the overshot pending count persists: a
++  second iteration of both replicas creates **zero** new tasks (the
++  policy returns `max(0, T - pending)` = 0 when `pending ≥ T`).
++  Assertions:
++  - After iteration 1: `pending ∈ {3, 4, 5}` (deterministic 5 if
++    both replicas observed `pending=1` before either committed; 3
++    if they fully serialized; 4 in the partial-overlap case).
++  - After iteration 2: `pending` is unchanged from after iteration 1
++    (no growth, no shrink). This is the load-bearing
++    "overshoot-is-one-iteration-only" assertion.
++  - To assert *return-to-target*, a separate scenario seeds an
++    ideator host that consumes tasks; the test then asserts
++    `pending` decreases monotonically toward `T` as the consumer
++    works. That scenario lives in the e2e smoke, not the unit
++    suite, because it requires a worker host.
+ 
+ The Store-side barrier tests are the load-bearing ones for the §3.4
+ argument; the wire-side tests are defense-in-depth that catch

@@ -1,0 +1,7 @@
+**Stopped At Level 2: Feasibility**
+
+- The last remaining blocker is the spec sketch for chapter 03 §6.4 itself. The planned normative text still says concurrent orchestrator execution “MUST NOT produce two distinct outcomes for the same input” at [3.1 §6.4](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-2-orchestrator-as-role.md:253). But the rest of the plan explicitly accepts bounded non-exact outcomes for `ideation_creation`: [3.4](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-2-orchestrator-as-role.md:369) allows overshoot up to `N * T`, and [7.2](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-2-orchestrator-as-role.md:980) says the prose must describe ideation as “eventually-bounded” rather than “instantaneously-exact.” Those positions are not yet reconciled in the actual §6.4 sketch. As written, the spec text still bans the ideation behavior that the design, tests, and tricky-area notes all permit.
+
+**Overall Assessment**
+
+The round-4 fixes did clear the two issues from the prior pass, but I still would not move to alternatives/completeness yet because the planned normative wording for multi-instance safety is still internally inconsistent. The fix is narrow now: either carve `ideation_creation` out of the strict “same input, same outcome” rule, or rewrite §6.4 so it explicitly distinguishes exact-idempotent decisions from bounded-overshoot decisions. Once that is done, the next review should be able to move past Level 2.

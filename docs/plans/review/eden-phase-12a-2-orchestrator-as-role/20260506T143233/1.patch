@@ -1,0 +1,93 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/0.md	2026-05-06 14:32:33
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 14:50:32
+@@ -36,12 +36,21 @@
+ experiment. After 12a-1 the loop is authenticated (it holds the
+ process-level admin credential), but it still:
+ 
+-- runs as a singleton with no formal definition in the spec;
++- runs as a singleton with no formal definition in the spec
++  (current code:
++  [`reference/services/orchestrator/src/eden_orchestrator/loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py));
+ - pre-seeds N ideation tasks at startup and never creates more —
+-  conflating "experiment planning capacity" with "static budget at t=0";
++  conflating "experiment planning capacity" with "static budget at
++  t=0" (the seed loop at `loop.py:52-59`);
++- iterates dispatch + finalize + integrate decisions in a fixed,
++  unconfigurable order
++  ([`reference/packages/eden-dispatch/src/eden_dispatch/driver.py:36-61`](../../reference/packages/eden-dispatch/src/eden_dispatch/driver.py));
+ - exits 0 on quiescence by default — confusing "no work right now"
+   with "experiment is over" (issue #1, partially mitigated by the
+   `EDEN_MAX_QUIESCENT_ITERATIONS` env-var escape hatch from PR #47);
++- exposes a `--ideation-tasks N` CLI flag
++  ([`reference/services/orchestrator/README.md`](../../reference/services/orchestrator/README.md))
++  that this chunk removes;
+ - offers no operator override on individual decisions;
+ - offers no reassignment of a task whose `target` was misrouted.
+ 
+@@ -58,6 +67,41 @@
+ termination configurable (12a-3) and it does **not** introduce
+ `intended_executor` on ideas (12a-3).
+ 
++### 1.1 Spec baseline + reconciliation
++
++The current spec already references "the orchestrator" in several
++chapters, but never as a defined role. 12a-2's chapter 03 §6 must
++reconcile with each existing site:
++
++| Existing site | Current text | 12a-2 disposition |
++|---|---|---|
++| [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md) §3 (orchestrator-as-component) | One-sentence definition: "The orchestrator is the component that dispatches tasks to workers and advances submitted tasks to terminal states." | Stays as the chapter-1 summary; gains a "(see chapter 03 §6 for the role contract)" cross-reference. No normative content moves. |
++| [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §4.3 (orchestrator finalizes submitted tasks) | Normative — "The orchestrator MUST: [enumerate transitions]". | Stays as the canonical task-finalization rule; chapter 03 §6.2 cross-references it for the `execution_dispatch` / `evaluation_dispatch` / `integration` decision types rather than restating. |
++| [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §5 (reclamation) | Normative — orchestrator-driven reclaim semantics. | Stays. The new `reassign` op (§6 of chapter 04, this chunk) extends the operator-driven path; it does not change reclaim. |
++| [`spec/v0/06-integrator.md`](../../spec/v0/06-integrator.md) | Defines integrator behavior. | Stays. Chapter 03 §6.2's `integration` decision type cross-references chapter 06; the integration decision IS the integrator's invocation. |
++
++Reconciliation rule: existing prose stays summary or task-protocol-
++local; the new chapter 03 §6 is the *role-contract* statement
++(authority, multi-instance safety, dispatch_mode boundary) that
++those summaries point at. Anywhere a chapter currently says "the
++orchestrator does X", §6 backfills "the orchestrator role's
++authority covers X". No existing MUST is moved or weakened.
++
++### 1.2 Naming-discipline baseline
++
++The "Naming discipline" risk callout in §0 above lives on a
++strengthened guardrail (PR #60): the rename-discipline script now
++catches backticked legacy task-kind values
++(`` `plan` ``/`` `implement` ``/`` `ideate` ``/`` `execute` ``/`` `evaluate` ``)
++in addition to the existing word-boundary patterns. PR #60 also
++fixed the existing drift sites that PR #51 / #59 missed (e.g. the
++spec's `kind` query-param values at
++[`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)
++§2.2 and several docstring instances in
++[`reference/packages/eden-storage/src/eden_storage/protocol.py`](../../reference/packages/eden-storage/src/eden_storage/protocol.py)).
++Implementation work in this chunk MUST run the strengthened guardrail
++before merge.
++
+ ## 2. Decisions
+ 
+ These are the load-bearing design calls; §3 unpacks each.
+@@ -244,6 +288,10 @@
+ in the `admins` group.
+ 
+ ### 3.3 Continuous ideation-task creation policy
++
++The current static seed at
++[`reference/services/orchestrator/src/eden_orchestrator/loop.py:52-59`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
++is replaced by a per-iteration policy callable.
+ 
+ Reference impl: a Python callable supplied via a new
+ `--ideation-policy <module:callable>` flag on the orchestrator CLI.
+@@ -275,7 +323,12 @@
+ 
+ ### 3.4 Multi-orchestrator HA — idempotent decisions, no leases
+ 
+-The four decision types under concurrent execution by N replicas:
++Today's iteration runs in
++[`run_orchestrator_iteration`](../../reference/packages/eden-dispatch/src/eden_dispatch/driver.py)
++(lines 36-61), which executes finalize / dispatch / integrate
++sequentially with no concurrency control. Multi-replica safety
++needs to come from below — the Store. Walking the four decision
++types under concurrent execution by N replicas:
+ 
+ **Execution dispatch.** Two replicas observe idea I in state `ready`
+ simultaneously, both call `create_execution_task(factory(), I.idea_id)`.

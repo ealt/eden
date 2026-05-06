@@ -1,0 +1,21 @@
+--- docs/plans/review/eden-phase-12a-2-orchestrator-as-role/20260506T143233/9.md	2026-05-06 15:14:10
++++ docs/plans/eden-phase-12a-2-orchestrator-as-role.md	2026-05-06 15:15:11
+@@ -1135,10 +1135,14 @@
+    group of that experiment. Subsequent calls authenticate as that
+    worker. Simple; matches the 12a-1 reserved-id intent.
+ 
+-B. **Explicit setup step.** setup-experiment.sh runs an additional
+-   call after creating the experiment: `register_worker(admin,
+-   group=admins)` using the bootstrap-admin token. The bootstrap
+-   token never authenticates ops directly; it only registers workers.
++B. **Explicit setup step.** setup-experiment.sh runs two
++   additional admin-token-authenticated calls after creating the
++   experiment: `register_worker(admin)` to mint the worker, then
++   `add_to_group(admin, "admins")` to grant authority. (The
++   `register_worker` call does NOT take a `group` argument per
++   12a-1 §D.1; group membership is a separate admin-gated mutation
++   per 12a-1 §D.2.) The bootstrap token never authenticates ops
++   directly; it only registers workers and assigns them to groups.
+ 
+ Option B is cleaner (the bootstrap token has exactly one purpose:
+ mint workers). Option A is less ceremonious. Recommend B; it pairs
