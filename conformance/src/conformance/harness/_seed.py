@@ -170,7 +170,7 @@ def submit_evaluation(
     # status=success defaults an evaluation object so well-formed
     # successes don't need to repeat the boilerplate. Other statuses
     # only get an evaluation when the caller explicitly passes one, so
-    # eval_error/error tests can drive the §4.4 "discard
+    # evaluation_error/error tests can drive the §4.4 "discard
     # submission-carried evaluation" rule with a real wire payload.
     if evaluation is not None:
         payload["evaluation"] = evaluation
@@ -268,8 +268,8 @@ def integrate_variant(
     )
 
 
-def declare_variant_eval_error(client: WireClient, variant_id: str) -> Any:
-    return client.post(client.variants_path(variant_id, "/declare-eval-error"))
+def declare_variant_evaluation_error(client: WireClient, variant_id: str) -> Any:
+    return client.post(client.variants_path(variant_id, "/declare-evaluation-error"))
 
 
 def read_task(client: WireClient, task_id: str) -> dict[str, Any]:
@@ -367,29 +367,29 @@ def drive_to_error_variant(
     return variant_id
 
 
-def drive_to_eval_error_variant(
+def drive_to_evaluation_error_variant(
     client: WireClient,
     *,
     idea_id: str | None = None,
     commit_sha: str = "1" * 40,
 ) -> str:
-    """Drive a fresh idea through to ``status="eval_error"``.
+    """Drive a fresh idea through to ``status="evaluation_error"``.
 
     Drives implement-accept (so the variant reaches ``starting`` with
-    ``commit_sha``) and then calls ``declare_variant_eval_error`` to
-    terminalize the variant as ``eval_error`` per chapter 04 §4.3 retry-
-    exhaustion / chapter 05 §3.3 ``variant.eval_errored``. Returns
+    ``commit_sha``) and then calls ``declare_variant_evaluation_error`` to
+    terminalize the variant as ``evaluation_error`` per chapter 04 §4.3 retry-
+    exhaustion / chapter 05 §3.3 ``variant.evaluation_errored``. Returns
     variant_id.
     """
     variant_id = drive_to_starting_variant(
         client, idea_id=idea_id, commit_sha=commit_sha
     )
-    declared = declare_variant_eval_error(client, variant_id)
+    declared = declare_variant_evaluation_error(client, variant_id)
     declared.raise_for_status()
     variant = read_variant(client, variant_id)
-    assert variant.get("status") == "eval_error", (
-        f"setup precondition: variant {variant_id!r} should be 'eval_error' "
-        f"after declare-eval-error; got {variant.get('status')!r}"
+    assert variant.get("status") == "evaluation_error", (
+        f"setup precondition: variant {variant_id!r} should be 'evaluation_error' "
+        f"after declare-evaluation-error; got {variant.get('status')!r}"
     )
     return variant_id
 

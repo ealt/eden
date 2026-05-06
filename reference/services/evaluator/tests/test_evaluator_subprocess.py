@@ -171,7 +171,7 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
     )
     submission = store.read_submission("evaluate-1")
     assert isinstance(submission, EvaluationSubmission)
-    assert submission.status == "eval_error"
+    assert submission.status == "evaluation_error"
 
 
 def test_status_error_passthrough(tmp_path: Path) -> None:
@@ -235,4 +235,4 @@ def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
     assert elapsed < 10
     submission = store.read_submission("evaluate-1")
     assert isinstance(submission, EvaluationSubmission)
-    assert submission.status == "eval_error"
+    assert submission.status == "evaluation_error"

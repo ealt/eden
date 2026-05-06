@@ -44,7 +44,7 @@ def run_orchestrator_loop(
     max_quiescent_iterations: int,
     stop: StopFlag,
 ) -> None:
-    """Seed ideate tasks, then loop finalize + dispatch + integrate to quiescence.
+    """Seed ideation tasks, then loop finalize + dispatch + integrate to quiescence.
 
     Returns when either ``stop`` is set or the orchestrator has observed
     ``max_quiescent_iterations`` consecutive iterations with no progress.

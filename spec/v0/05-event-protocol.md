@@ -48,7 +48,7 @@ Several transitions span multiple entities and MUST commit together:
 - **Execute-task terminal** — the `execution` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §7). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
 - **Evaluate-task terminal (`success`/`error`)** — the `evaluation` task's terminal transition plus writes to the variant's `status`, `evaluation`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
 - **Execute-task reclaim with in-flight variant** — reclamation of an `execution` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
-- **Retry-exhausted `eval_error` terminal** — the orchestrator's transition of a variant from `starting` to `eval_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.eval_errored` atomically.
+- **Retry-exhausted `evaluation_error` terminal** — the orchestrator's transition of a variant from `starting` to `evaluation_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.evaluation_errored` atomically.
 - **Variant promotion** — the integrator's write of a `variant/*` commit and the `variant_commit_sha` field on the variant ([`06-integrator.md`](06-integrator.md)). Event: `variant.integrated`.
 
 A subscriber processing any of these composite events MUST therefore either observe the full set or observe none; partial visibility is a protocol violation.
@@ -117,7 +117,7 @@ Produced atomically with variant `status` transitions and with the integrator's 
 | `variant.started` | — → `starting` | `variant_id`, `idea_id` |
 | `variant.succeeded` | `starting` → `success` | `variant_id`, `commit_sha` |
 | `variant.errored` | `starting` → `error` | `variant_id` |
-| `variant.eval_errored` | `starting` → `eval_error` | `variant_id` |
+| `variant.evaluation_errored` | `starting` → `evaluation_error` | `variant_id` |
 | `variant.integrated` | — (integrator writes `variant_commit_sha`) | `variant_id`, `variant_commit_sha` |
 
 Payload field definitions:

@@ -14,7 +14,7 @@ mean what it says.
   ``reject``, ``reclaim``, ``create_*``, ``read_*``, ``list_*``,
   ``events``, ``validate_acceptance``, ``validate_terminal``,
   ``create_idea``, ``mark_idea_ready``, ``create_variant``,
-  ``declare_variant_eval_error``, ``integrate_variant``).
+  ``declare_variant_evaluation_error``, ``integrate_variant``).
 - All validation, composite-commit staging, and event construction.
 
 Subclasses own:
@@ -377,7 +377,7 @@ class _StoreBase:
     def _insert_plan_task(self, task: IdeationTask) -> IdeationTask:
         if task.payload.experiment_id != self._experiment_id:
             raise InvalidPrecondition(
-                f"ideate task payload.experiment_id={task.payload.experiment_id!r} "
+                f"ideation task payload.experiment_id={task.payload.experiment_id!r} "
                 f"does not match store experiment {self._experiment_id!r}"
             )
         with self._atomic_operation():
@@ -463,7 +463,7 @@ class _StoreBase:
     def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
         """Create an ``execute`` task; composite-commits ``idea.dispatched``.
 
-        Per ``05-event-protocol.md`` §2.2: creating the execute task
+        Per ``05-event-protocol.md`` §2.2: creating the execution task
         and transitioning the referenced idea from ``ready`` to
         ``dispatched`` land in one atomic commit.
         """
@@ -660,7 +660,7 @@ class _StoreBase:
         Returns one of:
           * ``("accept", None)`` — worker-declared success and result
             satisfies the role's success contract.
-          * ``("reject_worker", None)`` — worker-declared error/eval_error,
+          * ``("reject_worker", None)`` — worker-declared error/evaluation_error,
             and the recorded result is writable as specified in
             ``03-roles.md`` §2.4/§3.4/§4.4.
           * ``("reject_validation", reason)`` — the orchestrator must
@@ -685,7 +685,7 @@ class _StoreBase:
                 if reason is not None:
                     return ("reject_validation", reason)
                 return ("accept", None)
-            # status is "error" or "eval_error" — worker_error is the
+            # status is "error" or "evaluation_error" — worker_error is the
             # default, but a malformed payload on `error` still has to
             # be treated as validation_error so no invalid field
             # actually lands on the variant.
@@ -724,9 +724,9 @@ class _StoreBase:
     def reject(self, task_id: str, reason: FailReason) -> None:
         """Orchestrator reject: ``submitted → failed`` with composite effects.
 
-        Dispatches by task kind. For evaluate tasks, the variant-side
+        Dispatches by task kind. For evaluation tasks, the variant-side
         effect depends on whether the worker declared ``error`` or
-        ``eval_error`` (``04-task-protocol.md`` §4.3).
+        ``evaluation_error`` (``04-task-protocol.md`` §4.3).
         """
         with self._atomic_operation():
             task = self._require_task(task_id)
@@ -862,8 +862,8 @@ class _StoreBase:
             )
             self._apply_commit(tx)
 
-    def declare_variant_eval_error(self, variant_id: str) -> None:
-        """Retry-exhausted terminal: ``starting → eval_error`` (``05-event-protocol.md`` §2.2).
+    def declare_variant_evaluation_error(self, variant_id: str) -> None:
+        """Retry-exhausted: ``starting → evaluation_error`` (``05-event-protocol.md`` §2.2).
 
         Writes ``completed_at`` atomically; MUST NOT set metrics or
         artifacts_uri (``03-roles.md`` §4.4).
@@ -872,14 +872,14 @@ class _StoreBase:
             variant = self._require_variant(variant_id)
             if variant.status != "starting":
                 raise IllegalTransition(
-                    f"cannot declare eval_error from variant status {variant.status!r}"
+                    f"cannot declare evaluation_error from variant status {variant.status!r}"
                 )
             now = self._ts()
             tx = _Tx()
             tx.variants[variant_id] = _validated_update(
-                variant, status="eval_error", completed_at=now
+                variant, status="evaluation_error", completed_at=now
             )
-            tx.events.append(self._event("variant.eval_errored", {"variant_id": variant_id}))
+            tx.events.append(self._event("variant.evaluation_errored", {"variant_id": variant_id}))
             self._apply_commit(tx)
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
@@ -1090,7 +1090,7 @@ class _StoreBase:
 
         # Variant-side effect depends on the submission status, not on
         # the orchestrator's reason (03-roles.md §4.4):
-        #   • eval_error — variant stays in starting; evaluator-side
+        #   • evaluation_error — variant stays in starting; evaluator-side
         #     failure does not condemn the variant.
         #   • success — reject can only happen via validation_error
         #     (malformed success). Variant stays in starting: the
@@ -1113,7 +1113,7 @@ class _StoreBase:
                     update_kwargs["artifacts_uri"] = submission.artifacts_uri
             tx.variants[variant.variant_id] = _validated_update(variant, **update_kwargs)
             tx.events.append(self._event("variant.errored", {"variant_id": variant.variant_id}))
-        # status in {"eval_error", "success"} — no variant-side writes.
+        # status in {"evaluation_error", "success"} — no variant-side writes.
 
         self._apply_commit(tx)
 
@@ -1297,7 +1297,7 @@ class _StoreBase:
                     f"evaluation key {key!r} value {value!r} is not of declared type {mtype!r}"
                 )
             # Non-finite floats (NaN, +inf, -inf) fail JSON round-trip
-            # and can't be stored in the event log or eval manifest. The
+            # and can't be stored in the event log or evaluation manifest. The
             # ``real`` type in the evaluation schema implies "finite IEEE
             # 754 double" per the spec's JSON grounding.
             if mtype == "real" and not math.isfinite(value):

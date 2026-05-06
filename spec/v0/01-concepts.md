@@ -32,7 +32,7 @@ The **evaluator** measures an implemented variant against the experiment's evalu
 
 ### 2.4 Integrator
 
-The **integrator** decides how evaluated variants enter the canonical variant lineage. It squashes a per-variant worker branch into a variant-shaped commit on a canonical branch, attaches an eval manifest, and exposes the resulting commit to downstream consumers. The integrator is the sole writer of the canonical lineage.
+The **integrator** decides how evaluated variants enter the canonical variant lineage. It squashes a per-variant worker branch into a variant-shaped commit on a canonical branch, attaches an evaluation manifest, and exposes the resulting commit to downstream consumers. The integrator is the sole writer of the canonical lineage.
 
 ## 3. Idea
 
@@ -45,7 +45,7 @@ A **variant** is a single attempt to improve the objective. A variant references
 - The idea that was implemented.
 - The resulting commit(s) on the worker branch and the squashed commit on the canonical branch.
 - The metrics reported by the evaluator.
-- A status (starting, success, error, eval_error).
+- A status (starting, success, error, evaluation_error).
 
 Variants are the unit of progress: a terminated experiment is summarized by the sequence of its completed variants and their scores under the objective. Schema: [`schemas/variant.schema.json`](schemas/variant.schema.json).
 

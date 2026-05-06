@@ -76,7 +76,7 @@ class TestAdminIndex:
         resp = signed_in_client.get("/admin/")
         assert resp.status_code == 200
         assert "admin dashboard" in resp.text
-        # 2 pending ideate tasks + 1 claimed ideate task seeded above.
+        # 2 pending ideation tasks + 1 claimed ideation task seeded above.
         assert "tasks by kind" in resp.text
 
 
@@ -363,7 +363,7 @@ class TestAdminWorkRefs:
         artifacts_dir: Path,
     ) -> None:
         # Seed an evaluate flow that produces a starting+success variant,
-        # then mark it eval_error so it's terminal-handled.
+        # then mark it evaluation_error so it's terminal-handled.
         seed_evaluate_task(
             store, slug="t1", variant_id="variant-E", artifacts_dir=artifacts_dir,
             commit_sha=make_child_commit(bare_repo, base_sha, "abc"),
@@ -374,7 +374,7 @@ class TestAdminWorkRefs:
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
         # Mark variant terminal so it's GC-eligible.
-        store.declare_variant_eval_error("variant-E")
+        store.declare_variant_evaluation_error("variant-E")
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert resp.status_code == 200
         assert variant.branch in resp.text
@@ -499,7 +499,7 @@ class TestAdminWorkRefsDelete:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-G")
+        store.declare_variant_evaluation_error("variant-G")
         csrf = get_csrf(signed_in_admin_repo_client)
         resp = signed_in_admin_repo_client.post(
             "/admin/work-refs/delete",

@@ -63,7 +63,7 @@ healthy but unconsumed.
 
 **The web-ui executor module overlaps with `executor-host`.**
 Passing `--repo-path` to web-ui activates the full executor
-module (chunk 9c). Both can claim execute tasks; whoever wins the
+module (chunk 9c). Both can claim execution tasks; whoever wins the
 claim does the work via `Store.claim`'s atomicity guarantee. The
 `executor-host` is the unattended scripted worker; web-ui's
 executor module is for human override / debugging. Operators

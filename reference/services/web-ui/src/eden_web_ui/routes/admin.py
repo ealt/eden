@@ -34,7 +34,7 @@ _TRIAL_DETAIL_EVENT_CAP = 50
 
 _KIND_VALUES = ("ideation", "execution", "evaluation")
 _STATE_VALUES = ("pending", "claimed", "submitted", "completed", "failed")
-_VARIANT_STATUS_VALUES = ("starting", "success", "error", "eval_error")
+_VARIANT_STATUS_VALUES = ("starting", "success", "error", "evaluation_error")
 
 # Closed allowlist: ?error=… and ?reclaimed=… banner copy. Keys
 # match the querystring values; values are (level, message).
@@ -115,7 +115,7 @@ def _parse_dt(raw: str | datetime | None) -> datetime | None:
 
 def _variant_terminal_handled(variant: Variant) -> bool:
     """Return True iff the variant has reached a terminal-and-handled status."""
-    if variant.status in {"error", "eval_error"}:
+    if variant.status in {"error", "evaluation_error"}:
         return True
     return variant.status == "success" and variant.variant_commit_sha is not None
 
@@ -451,8 +451,8 @@ def _events_for_variant(
     """Return (events_correlated_to_this_variant_in_replay_order, total_match_count).
 
     Correlation per chunk-9e plan §A.5: variant-id direct match + task-id
-    match for the execute task that produced this variant + task-id
-    match for any evaluate task whose payload references this variant.
+    match for the execution task that produced this variant + task-id
+    match for any evaluation task whose payload references this variant.
     """
     impl_task_ids = {
         t.task_id

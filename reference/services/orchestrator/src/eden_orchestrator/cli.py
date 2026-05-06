@@ -101,18 +101,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "Either an integer N (creates ideation-0001..ideate-N) or a "
-            "comma-separated list of explicit ideate task IDs."
+            "comma-separated list of explicit ideation task IDs."
         ),
     )
     parser.add_argument(
         "--execution-task-prefix",
         default="execution-",
-        help="Prefix for orchestrator-allocated execute task IDs (default: 'execution-').",
+        help="Prefix for orchestrator-allocated execution task IDs (default: 'execution-').",
     )
     parser.add_argument(
         "--evaluation-task-prefix",
         default="evaluate-",
-        help="Prefix for orchestrator-allocated evaluate task IDs (default: 'evaluate-').",
+        help="Prefix for orchestrator-allocated evaluation task IDs (default: 'evaluate-').",
     )
     parser.add_argument(
         "--poll-interval",

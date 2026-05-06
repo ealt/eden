@@ -232,7 +232,7 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
     # Quiescence tolerance must exceed subprocess-mode worker
     # startup-to-first-claim latency; with the default 0.3s the
     # orchestrator declares quiescence before workers come online and
-    # every ideate task stays pending.
+    # every ideation task stays pending.
     orchestrator = _spawn(
         [
             "eden_orchestrator",

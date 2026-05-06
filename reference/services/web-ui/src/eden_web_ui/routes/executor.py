@@ -1,7 +1,7 @@
 """Executor-module routes.
 
 Implements the spec-to-code map pinned in §C of the Phase 9c plan.
-The flow is: list pending execute tasks → claim with TTL +
+The flow is: list pending execution tasks → claim with TTL +
 server-owned variant_id → render draft form (read-only idea
 context, optional inline rationale) → submit, which runs
 

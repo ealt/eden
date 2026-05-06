@@ -105,7 +105,7 @@ The executor submits with:
 - `variant_id` — the variant it created.
 - `status` — one of:
   - `"success"` — the `work/*` branch tip is `commit_sha` and is ready to be evaluated.
-  - `"error"` — the executor could not realize the idea. The variant MUST be persisted with `status == "error"`. No evaluate task is dispatched against an errored variant.
+  - `"error"` — the executor could not realize the idea. The variant MUST be persisted with `status == "error"`. No evaluation task is dispatched against an errored variant.
 - `commit_sha` — required when `status == "success"`; MUST equal the tip of the worker branch.
 
 A resubmission of the same `execution` task MUST be idempotent: a duplicate submit presenting the same `variant_id` and `commit_sha` MUST be accepted without side effect. A duplicate submit that disagrees with the already-recorded result MUST be rejected ([`04-task-protocol.md`](04-task-protocol.md) §4.2).
@@ -144,18 +144,18 @@ The evaluator submits with:
 - `status` — one of:
   - `"success"` — the variant ran and produced metrics.
   - `"error"` — the variant could not be evaluated for reasons attributable to the variant's own code (build failure, test failure, etc.). The evaluator MAY still include partial metrics.
-  - `"eval_error"` — the evaluator itself failed for reasons unrelated to the variant's code (infrastructure fault, evaluator bug). While a fresh evaluate task MAY still be created for this variant, the variant's status MUST remain `"starting"`. If the orchestrator's retry policy is exhausted (or the operator abandons evaluation), the orchestrator MUST transition the variant's status to `"eval_error"`, making that status terminal for the variant ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
-- `metrics` — the evaluation object described in §4.2. MAY be absent when `status == "eval_error"`.
+  - `"evaluation_error"` — the evaluator itself failed for reasons unrelated to the variant's code (infrastructure fault, evaluator bug). While a fresh evaluation task MAY still be created for this variant, the variant's status MUST remain `"starting"`. If the orchestrator's retry policy is exhausted (or the operator abandons evaluation), the orchestrator MUST transition the variant's status to `"evaluation_error"`, making that status terminal for the variant ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
+- `metrics` — the evaluation object described in §4.2. MAY be absent when `status == "evaluation_error"`.
 - `artifacts_uri` — OPTIONAL. A URI the evaluator uploaded supporting artifacts to.
 
 On a `submitted → completed` or `submitted → failed` transition (per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the orchestrator MUST write the following variant fields atomically with the event:
 
-- `status` — the variant status implied by the submission: `"success"` when the submission's `status == "success"`; `"error"` when the submission's `status == "error"`; unchanged from `"starting"` when the submission's `status == "eval_error"` (see §4.4 above for the terminal-retry case).
-- `metrics` — set to the submission's `metrics` when `status ∈ {"success", "error"}`. When `status == "eval_error"` the orchestrator MUST NOT write `metrics` on the variant; any submission-carried `metrics` is discarded.
-- `artifacts_uri` — set to the submission's `artifacts_uri` when provided and `status ∈ {"success", "error"}`. When `status == "eval_error"` the orchestrator MUST NOT write `artifacts_uri` on the variant; any submission-carried `artifacts_uri` is discarded. (An evaluator that wishes to retain diagnostic artifacts from a failed attempt MAY reference them in the `task.failed` event for that evaluate task; that channel is defined in [`05-event-protocol.md`](05-event-protocol.md).)
-- `completed_at` — set to the time of the terminal variant transition, i.e. written exactly once, when the variant's status leaves `"starting"` (either on a `"success"`/`"error"` submission, or on the retry-exhausted `"eval_error"` transition). Intermediate `eval_error` submissions MUST NOT advance `completed_at`.
+- `status` — the variant status implied by the submission: `"success"` when the submission's `status == "success"`; `"error"` when the submission's `status == "error"`; unchanged from `"starting"` when the submission's `status == "evaluation_error"` (see §4.4 above for the terminal-retry case).
+- `metrics` — set to the submission's `metrics` when `status ∈ {"success", "error"}`. When `status == "evaluation_error"` the orchestrator MUST NOT write `metrics` on the variant; any submission-carried `metrics` is discarded.
+- `artifacts_uri` — set to the submission's `artifacts_uri` when provided and `status ∈ {"success", "error"}`. When `status == "evaluation_error"` the orchestrator MUST NOT write `artifacts_uri` on the variant; any submission-carried `artifacts_uri` is discarded. (An evaluator that wishes to retain diagnostic artifacts from a failed attempt MAY reference them in the `task.failed` event for that evaluation task; that channel is defined in [`05-event-protocol.md`](05-event-protocol.md).)
+- `completed_at` — set to the time of the terminal variant transition, i.e. written exactly once, when the variant's status leaves `"starting"` (either on a `"success"`/`"error"` submission, or on the retry-exhausted `"evaluation_error"` transition). Intermediate `evaluation_error` submissions MUST NOT advance `completed_at`.
 
-On the retry-exhausted `"eval_error"` terminal transition itself, the orchestrator MUST NOT graft metrics or artifacts from any prior `eval_error` submission onto the variant; the variant's `metrics` and `artifacts_uri` fields remain unset. This keeps the variant object canonical: a variant either carries the outputs of a successful or code-level-failed evaluation, or it carries nothing.
+On the retry-exhausted `"evaluation_error"` terminal transition itself, the orchestrator MUST NOT graft metrics or artifacts from any prior `evaluation_error` submission onto the variant; the variant's `metrics` and `artifacts_uri` fields remain unset. This keeps the variant object canonical: a variant either carries the outputs of a successful or code-level-failed evaluation, or it carries nothing.
 
 Resubmission is idempotent under the same rules as §3.4 and [`04-task-protocol.md`](04-task-protocol.md) §4.2: identical normative fields (`variant_id`, `status`, `metrics`) MUST be accepted; inconsistent resubmission MUST be rejected. `artifacts_uri` is NOT part of equivalence — the first submission's `artifacts_uri` is the committed one. (Earlier drafts of this section listed `artifacts_uri` as part of the equivalence formula; the §4.2 statement is canonical and this section now defers to it.)
 
@@ -163,7 +163,7 @@ Resubmission is idempotent under the same rules as §3.4 and [`04-task-protocol.
 
 The integrator promotes successfully evaluated variants into the canonical variant lineage.
 
-The integrator's full contract — the squash rule, the eval-manifest shape, conflict-resolution policy — is deferred to [`06-integrator.md`](06-integrator.md). This section pins only the boundary rules that every other role must honor.
+The integrator's full contract — the squash rule, the evaluation-manifest shape, conflict-resolution policy — is deferred to [`06-integrator.md`](06-integrator.md). This section pins only the boundary rules that every other role must honor.
 
 ### 5.1 Exclusive authority
 

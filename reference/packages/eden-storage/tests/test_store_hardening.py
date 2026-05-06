@@ -479,7 +479,7 @@ class TestFieldValidationOnUpdate:
         variant = store.read_variant("tr-1")
         # The invalid artifacts_uri must never have landed on the variant.
         assert variant.artifacts_uri is None
-        # Variant stays in starting (validation_error ≈ eval_error).
+        # Variant stays in starting (validation_error ≈ evaluation_error).
         assert variant.status == "starting"
 
 

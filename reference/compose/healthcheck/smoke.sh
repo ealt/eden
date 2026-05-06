@@ -162,11 +162,11 @@ test "$VARIANT_INTEGRATED" -ge 3 || {
     exit 1
 }
 
-# Plan section G step 6: assert each ideate task reached a terminal
+# Plan section G step 6: assert each ideation task reached a terminal
 # state. The terminal task event is `task.completed` (or
 # `task.failed` / `task.cancelled`) — `task.terminated` per the plan
 # refers to "any terminal task event" rather than a specific event
-# name. With 3 ideate tasks + 3 execute tasks + 3 evaluate tasks all
+# name. With 3 ideation tasks + 3 execution tasks + 3 evaluation tasks all
 # completing on the success path, we expect >= 9 task.completed.
 TASK_COMPLETED="$(
     echo "$EVENTS_JSON" \
@@ -177,7 +177,7 @@ test "$TASK_COMPLETED" -ge 9 || {
     exit 1
 }
 
-# Each of the 3 ideate tasks specifically must reach `task.completed`.
+# Each of the 3 ideation tasks specifically must reach `task.completed`.
 PLAN_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(

@@ -31,7 +31,7 @@ def run_executor_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for pending execute tasks and drive each through the scripted profile.
+    """Poll for pending execution tasks and drive each through the scripted profile.
 
     Returns only when ``stop`` is set.
     """

@@ -157,8 +157,25 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # (`ideation-task reclamation`).
     ("verb noun-head", re.compile(
         r"(?i)\b(?:plan|implement|ideate|execute|evaluate) "
-        r"(?:reclamation|submit|submission|dispatch|terminal|reject|accept)\b"
+        r"(?:reclamation|submit|submission|dispatch|terminal|reject|accept|task|tasks)\b"
     )),
+    # eval_error wire enum was renamed to evaluation_error. Same for
+    # the matching event type variant.eval_errored. The reference
+    # impl's evaluation manifest path was renamed from eval.json to
+    # evaluation.json and the colloquial "eval manifest" to
+    # "evaluation manifest".
+    ("eval_error",        re.compile(r"\beval_error\b")),
+    ("eval_errored",      re.compile(r"\beval_errored\b")),
+    ("VariantEvalErrored",re.compile(r"\bVariantEvalErroredEvent\b")),
+    ("eval.json",         re.compile(r"\beval\.json\b")),
+    ("eval manifest",     re.compile(r"\beval manifest\b")),
+    # NOTE: "promote" / "promotion" are NOT flagged. The spec uses
+    # them as the canonical noun/verb for the integrator's action
+    # (chapter 6 §2 "Promotion trigger", §3 "Promotion output").
+    # The glossary's verbs table dropped the explicit synonym
+    # listing for `integrate` / `promote` (one verb per row), but
+    # the codebase usage of "promote/promotion" stays — they're
+    # accepted spec terminology.
 ]
 
 

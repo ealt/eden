@@ -207,7 +207,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
         VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
     )
     store.accept("t-exec-1")
-    # Evaluate task
+    # Evaluation task
     store.create_evaluation_task("t-eval-1", "tr-1")
     claim = store.claim("t-eval-1", "evaluator-1")
     store.submit(

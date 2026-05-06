@@ -232,7 +232,7 @@
       }
     },
     {
-      "if": {"properties": {"type": {"const": "variant.eval_errored"}}, "required": ["type"]},
+      "if": {"properties": {"type": {"const": "variant.evaluation_errored"}}, "required": ["type"]},
       "then": {
         "properties": {
           "data": {

@@ -176,7 +176,7 @@ def seed_implement_task(
     artifacts_dir: Path | None = None,
     artifact_text: str = "rationale",
 ) -> tuple[str, str]:
-    """Seed a ready idea + pending execute task; return (task_id, idea_id).
+    """Seed a ready idea + pending execution task; return (task_id, idea_id).
 
     Builds a `file://` artifacts_uri inside ``artifacts_dir`` so the
     rationale renders inline in tests that need it. Pass
@@ -219,7 +219,7 @@ def seed_evaluate_task(
     variant_description: str | None = None,
     commit_sha: str = "b" * 40,
 ) -> tuple[str, str, str]:
-    """Seed a starting variant (with commit_sha) + a pending evaluate task.
+    """Seed a starting variant (with commit_sha) + a pending evaluation task.
 
     Drives the executor-accept flow so the variant is in
     ``starting`` with ``commit_sha`` set, the prerequisite for

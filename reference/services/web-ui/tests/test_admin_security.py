@@ -173,7 +173,7 @@ class TestExpectedShaSourceServerSide:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-S")
+        store.declare_variant_evaluation_error("variant-S")
 
         captured: dict[str, str | None] = {}
 

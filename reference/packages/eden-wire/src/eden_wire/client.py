@@ -340,8 +340,8 @@ class StoreClient:
             json=variant.model_dump(mode="json", exclude_none=True),
         )
 
-    def declare_variant_eval_error(self, variant_id: str) -> None:
-        self._request("POST", f"{self._base}/variants/{variant_id}/declare-eval-error")
+    def declare_variant_evaluation_error(self, variant_id: str) -> None:
+        self._request("POST", f"{self._base}/variants/{variant_id}/declare-evaluation-error")
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
         """Integrator promotion with transport-indeterminate reconciliation.

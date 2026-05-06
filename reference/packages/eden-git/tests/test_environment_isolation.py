@@ -98,7 +98,7 @@ class TestRedirectingEnvIsIgnored:
         manifest = repo.write_blob(b"{}\n")
         seed_tree = repo.commit_tree_sha(seed)
         # This should succeed without ever touching decoy-index.
-        repo.write_tree_with_file(seed_tree, ".eden/variants/t1/eval.json", manifest)
+        repo.write_tree_with_file(seed_tree, ".eden/variants/t1/evaluation.json", manifest)
         assert not decoy_index.exists()
 
     def test_git_graft_file_cannot_fabricate_parents(
@@ -279,7 +279,7 @@ class TestWriteTreeWithFileEdgeCases:
         """A blob at an intermediate path would make the add a type conflict.
 
         E.g., base tree has `.eden` as a blob, and we try to add
-        `.eden/variants/t1/eval.json` — git can't nest under a blob.
+        `.eden/variants/t1/evaluation.json` — git can't nest under a blob.
         """
         repo, _ = repo_with_main
         # Build a tree where `.eden` is a blob (file), then try to add
@@ -295,14 +295,14 @@ class TestWriteTreeWithFileEdgeCases:
         from eden_git import GitError
 
         manifest = repo.write_blob(b"{}")
-        # `tree_entry_exists` at `.eden/variants/t1/eval.json` returns
+        # `tree_entry_exists` at `.eden/variants/t1/evaluation.json` returns
         # false (no match), so write_tree_with_file will attempt the
         # update-index. Git itself should reject because `.eden` is a
         # file, not a tree.
         with pytest.raises(GitError):
             repo.write_tree_with_file(
                 tree_with_eden_as_file,
-                ".eden/variants/t1/eval.json",
+                ".eden/variants/t1/evaluation.json",
                 manifest,
             )
 
@@ -321,7 +321,7 @@ class TestWriteTreeWithFileEdgeCases:
         inner_tree = repo.write_tree_from_entries(
             [
                 TreeEntry(
-                    mode="120000", type="blob", sha=link_target, path="eval.json"
+                    mode="120000", type="blob", sha=link_target, path="evaluation.json"
                 )
             ]
         )
@@ -342,5 +342,5 @@ class TestWriteTreeWithFileEdgeCases:
         manifest = repo.write_blob(b"{}")
         with pytest.raises(GitError):
             repo.write_tree_with_file(
-                root_tree, ".eden/variants/t1/eval.json", manifest
+                root_tree, ".eden/variants/t1/evaluation.json", manifest
             )

@@ -82,7 +82,7 @@ Request and response bodies match [`schemas/idea.schema.json`](schemas/idea.sche
 | `create_variant` | `POST` | `/v0/experiments/{E}/variants` |
 | `list_variants` | `GET` | `/v0/experiments/{E}/variants` |
 | `read_variant` | `GET` | `/v0/experiments/{E}/variants/{T}` |
-| `declare_variant_eval_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-eval-error` |
+| `declare_variant_evaluation_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-evaluation-error` |
 | `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` |
 
 `integrate_variant` binds [`06-integrator.md`](06-integrator.md) §3.4 and carries additional idempotency rules (§5 below); the other endpoints are transport-only bindings of their [`08-storage.md`](08-storage.md) §1.7 operations.

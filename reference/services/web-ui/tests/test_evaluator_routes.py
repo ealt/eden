@@ -36,7 +36,7 @@ class TestList:
     def test_list_empty(self, signed_in_client: TestClient) -> None:
         resp = signed_in_client.get("/evaluator/")
         assert resp.status_code == 200
-        assert "no pending evaluate tasks" in resp.text
+        assert "no pending evaluation tasks" in resp.text
 
     def test_list_shows_pending(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -240,11 +240,11 @@ class TestSubmitValidation:
         resp = _post_form(
             signed_in_client,
             f"/evaluator/{eval_id}/submit",
-            [("csrf_token", csrf), ("status", "eval_error")],
+            [("csrf_token", csrf), ("status", "evaluation_error")],
         )
         assert resp.status_code == 200
         recorded = get_evaluate_submission(store, eval_id)
-        assert recorded.status == "eval_error"
+        assert recorded.status == "evaluation_error"
 
     def test_real_metric_nan_rejected(
         self, signed_in_client: TestClient, store: InMemoryStore

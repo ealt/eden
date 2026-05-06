@@ -56,9 +56,9 @@ User-supplied env from a `--*-env-file` flag is also injected
 ## 2. Ideator subprocess: long-running JSON-line protocol
 
 The ideator subprocess is launched **once per host** and serves
-every ideate task that arrives during the host's lifetime. The
+every ideation task that arrives during the host's lifetime. The
 intent is that user code can hold accumulating session state (e.g.
-a running LLM conversation) across ideate tasks.
+a running LLM conversation) across ideation tasks.
 
 Wire format: one JSON object per line, on both stdin and stdout.
 
@@ -78,7 +78,7 @@ host kills the subprocess.
 
 ### 2.2 Ideate-task dispatch
 
-For each ideate task, the host writes one stdin line of the form:
+For each ideation task, the host writes one stdin line of the form:
 
 ```json
 {"event": "ideation", "task_id": "ideate-…", "experiment_id": "exp-1",
@@ -207,10 +207,10 @@ no free-form field; see §5).
     "artifacts_uri": "file:///…"}
    ```
 
-   or `{"status": "error" | "eval_error"}`.
+   or `{"status": "error" | "evaluation_error"}`.
 5. Validate evaluation against `evaluation_schema` via
    `Store.validate_evaluation`. Validation failures route to
-   `eval_error`.
+   `evaluation_error`.
 6. `Store.submit(...)`. Cleanup worktree.
 
 ## 5. Failure-context surface
@@ -288,7 +288,7 @@ the DooD socket mount documented in §8.
 |---|---|---|
 | Orchestrator/integrator | fetch_all_heads at startup; ls_remote at orphan-reconciliation | local create_ref → push_ref → integrate_variant → on store fail compensating delete_remote_ref |
 | Executor | local create_ref → push_ref of `work/*` after the user `*_command` produces a commit | rolls back local on push failure + submits status=error |
-| Evaluator | fetch_ref of `variant.branch` before `git worktree add`; eval_error on transport failure | never pushes |
+| Evaluator | fetch_ref of `variant.branch` before `git worktree add`; evaluation_error on transport failure | never pushes |
 | Web-ui executor | same as executor | same as executor |
 
 ### 7.3 Integrator atomicity ladder (chapter 6 §3.4)
@@ -321,7 +321,7 @@ consumers.
 `Integrator.reconcile_remote_orphans()` runs at orchestrator
 startup. It walks `refs/heads/variant/*` on Gitea via `ls-remote`,
 recovers the `variant_id` from each commit's
-`.eden/variants/<variant_id>/eval.json` tree path
+`.eden/variants/<variant_id>/evaluation.json` tree path
 (spec-authoritative — chapter 6 §3.2), and for each calls
 `Store.read_variant(variant_id)`. If the variant has no
 `variant_commit_sha`, the integrator deletes the remote ref.

@@ -275,7 +275,7 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
                 ref = f"refs/heads/variant/{variant.variant_id}-{slug}"
                 assert repo.resolve_ref(ref) == variant.variant_commit_sha
 
-            # Every plan/implement/evaluate task terminal.
+            # Every plan/implement/evaluation task terminal.
             for kind in ("ideation", "execution", "evaluation"):
                 tasks = store.list_tasks(kind=kind)
                 completed = [t for t in tasks if t.state == "completed"]
@@ -365,6 +365,6 @@ def _reconstruct_lifecycle(events) -> dict:  # noqa: ANN001 - sequence of EventR
             variants[data["variant_id"]] = "success"
         elif t == "variant.errored":
             variants[data["variant_id"]] = "error"
-        elif t == "variant.eval_errored":
-            variants[data["variant_id"]] = "eval_error"
+        elif t == "variant.evaluation_errored":
+            variants[data["variant_id"]] = "evaluation_error"
     return {"tasks": tasks, "ideas": ideas, "variants": variants}

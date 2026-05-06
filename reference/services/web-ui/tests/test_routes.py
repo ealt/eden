@@ -45,7 +45,7 @@ class TestIndex:
         store.create_ideation_task("t-2")
         resp = signed_in_client.get("/")
         assert resp.status_code == 200
-        # rough check: counts cell should reflect 2 pending ideate tasks
+        # rough check: counts cell should reflect 2 pending ideation tasks
         assert "<td>ideation</td><td>2</td>" in resp.text.replace(" ", "").replace(
             "\n", ""
         )

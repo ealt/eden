@@ -2,7 +2,7 @@
 
 Runs a single long-running subprocess for the ideator role and
 exchanges JSON-line messages with it. The subprocess emits
-``{"event": "ready"}`` once on startup, then for each ideate task the
+``{"event": "ready"}`` once on startup, then for each ideation task the
 host writes a ``{"event": "ideation", ...}`` line on stdin and reads
 ``{"event": "idea", ...}`` lines back, terminated by either
 ``{"event": "ideation-done", ...}`` or ``{"event": "ideation-error", ...}``.
@@ -78,7 +78,7 @@ def _build_history(store: Store, *, limit: int = _HISTORY_LIMIT) -> list[dict]:
     Returns at most ``limit`` entries, newest first. Each entry
     carries the variant's ``variant_id``, ``status``, ``commit_sha``,
     and ``metrics`` (read from the evaluator's submission for the
-    completing evaluate task), plus the idea slug if the idea can be
+    completing evaluation task), plus the idea slug if the idea can be
     located. The set is small by design — see §D.2 in the chunk plan.
     """
     history: list[dict] = []
@@ -172,7 +172,7 @@ class IdeatorSubprocess:
             "history": history,
         }
         import json
-        # Tag stderr forwarding with the active ideate task so the
+        # Tag stderr forwarding with the active ideation task so the
         # long-running ideator subprocess's diagnostic lines are
         # attributable to the dispatch they were emitted under.
         self._sub.set_current_task(task.task_id)
@@ -303,7 +303,7 @@ def handle_plan_task(
     evaluation_schema: dict,
     artifacts_dir: Path,
 ) -> None:
-    """Drive one ideate task through the subprocess: claim → dispatch → submit."""
+    """Drive one ideation task through the subprocess: claim → dispatch → submit."""
     claim = store.claim(task.task_id, worker_id)
     history = _build_history(store)
     try:

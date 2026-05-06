@@ -2,8 +2,8 @@
 
 Forks task-store-server + web-ui (no ``--repo-path`` needed; the
 evaluator never touches a repo through the UI), seeds a ready
-idea + execute task and drives it through to ``starting``
-with a ``commit_sha`` set so an evaluate task can be created. Then
+idea + execution task and drives it through to ``starting``
+with a ``commit_sha`` set so an evaluation task can be created. Then
 drives the full claim → draft → submit flow over real HTTP.
 Asserts the resulting task / submission state via a separate
 ``StoreClient`` against the same SQLite database.
@@ -175,8 +175,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed: ready idea + execute task; drive it to a
-        # starting variant with commit_sha so the evaluate task can be
+        # Seed: ready idea + execution task; drive it to a
+        # starting variant with commit_sha so the evaluation task can be
         # created.
         from eden_wire import StoreClient
 

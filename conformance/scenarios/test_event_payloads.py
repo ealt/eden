@@ -176,10 +176,10 @@ def test_variant_errored_carries_variant_id(
 def test_variant_eval_errored_carries_variant_id(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/05-event-protocol.md §3.3 — variant.eval_errored data has variant_id.
+    """spec/v0/05-event-protocol.md §3.3 — variant.evaluation_errored data has variant_id.
 
     The retry-exhausted decision is bound by the chapter-7 §4
-    `declare-eval-error` endpoint.
+    `declare-evaluation-error` endpoint.
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
@@ -194,10 +194,10 @@ def test_variant_eval_errored_carries_variant_id(
         commit_sha="b" * 40,
     )
     _seed.accept(wire_client, impl_tid)
-    r = _seed.declare_variant_eval_error(wire_client, variant_id)
+    r = _seed.declare_variant_evaluation_error(wire_client, variant_id)
     assert 200 <= r.status_code < 300, r.text
     [event] = _by_type_for(
-        event_log.replay_all(), "variant.eval_errored", variant_id=variant_id
+        event_log.replay_all(), "variant.evaluation_errored", variant_id=variant_id
     )
     assert event["data"]["variant_id"] == variant_id
 

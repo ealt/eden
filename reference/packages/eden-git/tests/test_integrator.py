@@ -286,12 +286,12 @@ class TestSuccessPath:
         for key, sha in worker_entries.items():
             assert squash_entries.get(key) == sha
 
-        # Exactly one extra entry: the eval manifest.
+        # Exactly one extra entry: the evaluation manifest.
         extras = {k: v for k, v in squash_entries.items() if k not in worker_entries}
-        assert list(extras) == [("100644", "blob", ".eden/variants/tr-1/eval.json")]
+        assert list(extras) == [("100644", "blob", ".eden/variants/tr-1/evaluation.json")]
 
         # Manifest blob matches build_manifest(variant).
-        manifest_sha = extras[("100644", "blob", ".eden/variants/tr-1/eval.json")]
+        manifest_sha = extras[("100644", "blob", ".eden/variants/tr-1/evaluation.json")]
         assert repo.read_blob(manifest_sha) == build_manifest(
             store.read_variant(variant.variant_id)
         )
@@ -517,7 +517,7 @@ class TestManifestPathCollision:
         base_tree = repo.commit_tree_sha(seed_sha)
         collision_blob = repo.write_blob(b'{"rogue":true}\n')
         new_tree = repo.write_tree_with_file(
-            base_tree, ".eden/variants/tr-1/eval.json", collision_blob
+            base_tree, ".eden/variants/tr-1/evaluation.json", collision_blob
         )
         commit = repo.commit_tree(
             new_tree,
@@ -551,7 +551,7 @@ class TestManifestPathCollision:
 
 
 class TestPromotionPreconditions:
-    @pytest.mark.parametrize("status", ["starting", "error", "eval_error"])
+    @pytest.mark.parametrize("status", ["starting", "error", "evaluation_error"])
     def test_non_success_status_rejected(
         self,
         integrator: Integrator,
@@ -912,7 +912,7 @@ class TestReplayAfterWorkerPruned:
 
 class TestCorruptVariantTreeRejected:
     """Codex round-1 reproduction: a variant/* commit with an extra file
-    in its tree but the same eval.json bytes must be rejected on
+    in its tree but the same evaluation.json bytes must be rejected on
     replay, not silently accepted."""
 
     def test_tree_with_extra_path_rejected(
@@ -1035,7 +1035,7 @@ def test_manifest_committed_blob_is_parseable_json(
     blob_entry = next(
         e
         for e in repo.ls_tree(tree, recursive=True)
-        if e.path == ".eden/variants/tr-1/eval.json"
+        if e.path == ".eden/variants/tr-1/evaluation.json"
     )
     payload = json.loads(repo.read_blob(blob_entry.sha).decode("utf-8"))
     assert payload["variant_id"] == "tr-1"

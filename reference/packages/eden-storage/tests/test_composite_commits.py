@@ -186,7 +186,7 @@ class TestEvaluateTerminalComposite:
     def test_evaluate_eval_error_leaves_variant_starting(
         self, make_store: Callable[..., Store]
     ) -> None:
-        """§4.4: eval_error MUST NOT write metrics/artifacts; variant stays in starting."""
+        """§4.4: evaluation_error MUST NOT write metrics/artifacts; variant stays in starting."""
         store = make_store()
         self._advance_to_variant_with_commit(store)
         store.create_evaluation_task("t-eval", "tr-1")
@@ -195,7 +195,7 @@ class TestEvaluateTerminalComposite:
             "t-eval",
             claim.token,
             EvaluationSubmission(
-                status="eval_error",
+                status="evaluation_error",
                 variant_id="tr-1",
                 evaluation={"score": 0.5},
                 artifacts_uri="https://artifacts.example/discard",
@@ -231,7 +231,7 @@ class TestImplementReclaimComposite:
 
 
 class TestEvalErrorTerminalComposite:
-    """Retry-exhausted `variant.eval_errored` emits atomically with the status write."""
+    """Retry-exhausted `variant.evaluation_errored` emits atomically with the status write."""
 
     def test_declare_eval_error(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
@@ -245,11 +245,11 @@ class TestEvalErrorTerminalComposite:
             VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.declare_variant_eval_error("tr-1")
+        store.declare_variant_evaluation_error("tr-1")
         types = _type_sequence(store)
-        assert types[-1] == "variant.eval_errored"
+        assert types[-1] == "variant.evaluation_errored"
         variant = store.read_variant("tr-1")
-        assert variant.status == "eval_error"
+        assert variant.status == "evaluation_error"
         assert variant.completed_at is not None
         assert variant.evaluation is None
         assert variant.artifacts_uri is None

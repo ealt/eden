@@ -8,7 +8,7 @@
     <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
 </section>
 <section class="pending">
-    <h2>pending execute tasks</h2>
+    <h2>pending execution tasks</h2>
     {% if pending %}
     <table>
         <thead><tr><th>task id</th><th>idea id</th><th>created</th><th>action</th></tr></thead>
@@ -29,7 +29,7 @@
         </tbody>
     </table>
     {% else %}
-    <p>no pending execute tasks.</p>
+    <p>no pending execution tasks.</p>
     {% endif %}
 </section>
 <section class="recent">

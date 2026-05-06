@@ -29,7 +29,7 @@ from typing import Any, Literal
 
 PlanStatus = Literal["success", "error"]
 ImplementStatus = Literal["success", "error"]
-EvaluateStatus = Literal["success", "error", "eval_error"]
+EvaluateStatus = Literal["success", "error", "evaluation_error"]
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,7 @@ This package is a thin subprocess wrapper around the local `git` binary — the 
 
 ### `Integrator` (Phase 7b) — §3.2 / §3.4 promotion
 
-Given a `success` variant with a recorded `commit_sha`, produces the canonical `variant/*` commit (worker-tip tree + exactly the eval manifest at `.eden/variants/<variant_id>/eval.json`), atomically coupling the git ref, `variant_commit_sha`, and `variant.integrated` event per §3.4 via compensating deletes.
+Given a `success` variant with a recorded `commit_sha`, produces the canonical `variant/*` commit (worker-tip tree + exactly the evaluation manifest at `.eden/variants/<variant_id>/evaluation.json`), atomically coupling the git ref, `variant_commit_sha`, and `variant.integrated` event per §3.4 via compensating deletes.
 
 ```python
 from eden_git import GitRepo, Identity, Integrator

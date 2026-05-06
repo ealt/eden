@@ -1,13 +1,13 @@
 """Evaluator-module routes.
 
 Implements the spec-to-code map pinned in §C of the Phase 9d plan.
-The flow is: list pending evaluate tasks → claim with TTL +
+The flow is: list pending evaluation tasks → claim with TTL +
 server-pinned ``variant_id`` from ``task.payload.variant_id`` → render
 draft form (read-only variant context, optional inline rationale +
 variant-side artifact, per-metric inputs generated from the
 experiment's ``evaluation_schema``) → submit, which runs
 
-1. validate the form (status in {success, error, eval_error};
+1. validate the form (status in {success, error, evaluation_error};
    metric values type-check against ``evaluation_schema``;
    ``status="success"`` requires at least one metric)
 2. ``store.submit`` with retry-before-orphan plus a

@@ -110,9 +110,9 @@
                 error (variant code failure)
             </label>
             <label>
-                <input type="radio" name="status" value="eval_error"
-                    {% if form_state.status == "eval_error" %}checked{% endif %}>
-                eval_error (evaluator-side failure; variant may be retried)
+                <input type="radio" name="status" value="evaluation_error"
+                    {% if form_state.status == "evaluation_error" %}checked{% endif %}>
+                evaluation_error (evaluator-side failure; variant may be retried)
             </label>
             {% if errors and errors.by_row.get(0, {}).get("status") %}
             <span class="field-error">{{ errors.by_row[0]["status"] }}</span>

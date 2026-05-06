@@ -58,23 +58,23 @@ class TestBlobsAndTrees:
     def test_write_tree_with_file_nested(
         self, repo_with_main: tuple[GitRepo, str]
     ) -> None:
-        """The eval-manifest path lives under .eden/variants/<id>/eval.json."""
+        """The evaluation-manifest path lives under .eden/variants/<id>/evaluation.json."""
         repo, seed = repo_with_main
         seed_tree = repo.commit_tree_sha(seed)
         manifest = repo.write_blob(b'{"variant_id":"t1"}\n')
         new_tree = repo.write_tree_with_file(
-            seed_tree, ".eden/variants/t1/eval.json", manifest
+            seed_tree, ".eden/variants/t1/evaluation.json", manifest
         )
 
         entries = {e.path: e for e in repo.ls_tree(new_tree, recursive=True)}
         # README survives, manifest appears, no extra entries.
-        assert set(entries) == {"README", ".eden/variants/t1/eval.json"}
-        assert entries[".eden/variants/t1/eval.json"].sha == manifest
+        assert set(entries) == {"README", ".eden/variants/t1/evaluation.json"}
+        assert entries[".eden/variants/t1/evaluation.json"].sha == manifest
 
     def test_write_tree_with_file_rejects_existing_path(
         self, repo_with_main: tuple[GitRepo, str]
     ) -> None:
-        """§3.2: the eval manifest path must not pre-exist in the worker tree."""
+        """§3.2: the evaluation manifest path must not pre-exist in the worker tree."""
         repo, seed = repo_with_main
         seed_tree = repo.commit_tree_sha(seed)
         other_blob = repo.write_blob(b"collision\n")
@@ -88,7 +88,7 @@ class TestBlobsAndTrees:
         repo, seed = repo_with_main
         seed_tree = repo.commit_tree_sha(seed)
         manifest = repo.write_blob(b"{}")
-        repo.write_tree_with_file(seed_tree, ".eden/variants/t1/eval.json", manifest)
+        repo.write_tree_with_file(seed_tree, ".eden/variants/t1/evaluation.json", manifest)
         # No lingering .git/index in the bare repo (bare repos don't
         # have one by default; the isolated GIT_INDEX_FILE must not
         # have accidentally written into the bare repo dir).
@@ -261,7 +261,7 @@ class TestAncestryAndInspection:
         repo, seed = repo_with_main
         tree = repo.commit_tree_sha(seed)
         assert repo.tree_entry_exists(tree, "README") is True
-        assert repo.tree_entry_exists(tree, ".eden/variants/t1/eval.json") is False
+        assert repo.tree_entry_exists(tree, ".eden/variants/t1/evaluation.json") is False
 
     def test_ls_tree_recursive_descends(
         self, repo_with_main: tuple[GitRepo, str]
@@ -270,10 +270,10 @@ class TestAncestryAndInspection:
         seed_tree = repo.commit_tree_sha(seed)
         manifest = repo.write_blob(b"{}")
         new_tree = repo.write_tree_with_file(
-            seed_tree, ".eden/variants/t1/eval.json", manifest
+            seed_tree, ".eden/variants/t1/evaluation.json", manifest
         )
         recursive = {e.path for e in repo.ls_tree(new_tree, recursive=True)}
-        assert recursive == {"README", ".eden/variants/t1/eval.json"}
+        assert recursive == {"README", ".eden/variants/t1/evaluation.json"}
         # Non-recursive returns only the top level, showing a tree
         # entry for `.eden`.
         top = {e.path: e.type for e in repo.ls_tree(new_tree)}

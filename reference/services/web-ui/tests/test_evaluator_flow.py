@@ -1,7 +1,7 @@
 """Cross-request flow tests for the evaluator module.
 
 Covers the full claim → draft → submit happy path, validation
-recovery, status=eval_error, sweeper-driven stranded-claim
+recovery, status=evaluation_error, sweeper-driven stranded-claim
 recovery, and conflict via a different submission winning the
 race.
 
@@ -150,13 +150,13 @@ class TestEvalErrorPath:
             f"/evaluator/{eval_id}/submit",
             [
                 ("csrf_token", csrf),
-                ("status", "eval_error"),
+                ("status", "evaluation_error"),
                 ("metric.score", "0.1"),
             ],
         )
         assert resp.status_code == 200
         recorded = get_evaluate_submission(store, eval_id)
-        assert recorded.status == "eval_error"
+        assert recorded.status == "evaluation_error"
         assert recorded.evaluation == {"score": 0.1}
 
 

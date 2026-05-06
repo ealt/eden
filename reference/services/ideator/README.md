@@ -27,7 +27,7 @@ messages with the host per the
 [reference binding](../../../spec/v0/reference-bindings/worker-host-subprocess.md):
 
 1. Subprocess emits `{"event": "ready"}` once on startup.
-2. For each ideate task, host writes a `{"event": "ideation", ...}` line
+2. For each ideation task, host writes a `{"event": "ideation", ...}` line
    on stdin; subprocess emits any number of `idea` lines and
    then `{"event": "ideation-done", "task_id": …}` (or `plan-error`).
 3. cwd = the experiment directory; env carries

@@ -196,7 +196,7 @@ A variant is one completed attempt.
 | `variant_id` | yes | string | Unique identifier. |
 | `experiment_id` | yes | string | The experiment this variant belongs to. |
 | `idea_id` | yes | string | The idea that produced this variant. |
-| `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"eval_error"`. |
+| `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"evaluation_error"`. |
 | `parent_commits` | yes | array of SHA | Inherited from the idea. |
 | `branch` | no | string | Worker branch under `work/*`. Present once the executor starts. |
 | `commit_sha` | no | string | Worker-branch tip SHA. Present once the executor completes. |
@@ -205,7 +205,7 @@ A variant is one completed attempt.
 | `description` | no | string | Human-readable summary. |
 | `metrics` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
 | `started_at` | yes | timestamp | When the executor began. |
-| `completed_at` | no | timestamp | Set when the variant reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+| `completed_at` | no | timestamp | Set when the variant reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"evaluation_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
 
 ### 7.2 Evaluation payload
 

@@ -213,7 +213,7 @@ The draft page surfaces:
   `MetricType` (`<input type="number" step="1">` for `integer`,
   `step="any"` for `real`, plain text otherwise).
 - **Submission status**: radio for `success` / `error` /
-  `eval_error` per §4.4.
+  `evaluation_error` per §4.4.
 - **Optional `artifacts_uri`** text input (the operator's URI for
   their eval logs / outputs, uploaded out-of-band).
 
@@ -221,7 +221,7 @@ The draft page surfaces:
 
 1. **Validate** the form. `parse_evaluate_form` returns `(None,
    errors)` on:
-   - `status` outside `{"success", "error", "eval_error"}`.
+   - `status` outside `{"success", "error", "evaluation_error"}`.
    - Per-metric type drift (integer accepts `1.0` per
      `02-data-model.md` §1.3 but rejects `1.5`; real rejects
      `nan`/`±inf`; text must be non-empty after strip).

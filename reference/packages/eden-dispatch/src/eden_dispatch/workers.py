@@ -56,7 +56,7 @@ class ExecutionOutcome:
 class EvaluationOutcome:
     """Stand-in for the evaluator's output."""
 
-    status: Literal["success", "error", "eval_error"]
+    status: Literal["success", "error", "evaluation_error"]
     evaluation: dict[str, Any] | None = None
     artifacts_uri: str | None = None
 
@@ -100,7 +100,7 @@ class ScriptedIdeator:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending ideate task. Returns count processed.
+        """Claim and process every pending ideation task. Returns count processed.
 
         If ``stop`` is provided, it is consulted before each task; the loop
         returns early when it returns ``True``. This lets a host running
@@ -179,7 +179,7 @@ class ScriptedExecutor:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending execute task. Returns count processed.
+        """Claim and process every pending execution task. Returns count processed.
 
         ``stop`` lets a host break mid-drain on SIGTERM. See
         :meth:`ScriptedIdeator.run_pending`.
@@ -233,7 +233,7 @@ class ScriptedEvaluator:
     Discovers pending ``evaluate`` tasks, reads the referenced variant,
     runs its scripted evaluation, and submits. ``success`` and
     ``error`` write metrics on the variant via the orchestrator's
-    terminal transition; ``eval_error`` leaves the variant in
+    terminal transition; ``evaluation_error`` leaves the variant in
     ``starting`` per ``03-roles.md`` §4.4.
     """
 
@@ -256,7 +256,7 @@ class ScriptedEvaluator:
         *,
         stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Claim and process every pending evaluate task. Returns count processed.
+        """Claim and process every pending evaluation task. Returns count processed.
 
         ``stop`` lets a host break mid-drain on SIGTERM. See
         :meth:`ScriptedIdeator.run_pending`.

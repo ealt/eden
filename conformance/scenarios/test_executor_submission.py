@@ -234,7 +234,7 @@ def test_status_error_terminalizes_variant_and_blocks_evaluate_dispatch(
         eval_tid = e["data"]["task_id"]
         eval_task = _seed.read_task(wire_client, eval_tid)
         assert eval_task["payload"].get("variant_id") != variant_id, (
-            f"evaluate task {eval_tid!r} dispatched against errored variant "
+            f"evaluation task {eval_tid!r} dispatched against errored variant "
             f"{variant_id!r}; spec/v0/03-roles.md §3.4 forbids this"
         )
 

@@ -1,7 +1,7 @@
 """Ideator-module routes.
 
 Implements the spec-to-code map pinned in section §C of the Phase
-9 plan: list pending ideate tasks, claim with a TTL, draft ideas,
+9 plan: list pending ideation tasks, claim with a TTL, draft ideas,
 submit. Errors propagate as canonical wire-error names so the user
 sees an honest banner.
 

@@ -688,7 +688,7 @@ EVENT_CASES: list[Case] = [
         "variant_eval_errored_ok",
         {
             "event_id": "evt-tee-1",
-            "type": "variant.eval_errored",
+            "type": "variant.evaluation_errored",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
             "data": {"variant_id": "variant-1"},
@@ -953,12 +953,12 @@ VARIANT_CASES: list[Case] = [
         True,
     ),
     Case(
-        "eval_error",
+        "evaluation_error",
         {
             "variant_id": "variant-3",
             "experiment_id": "exp-1",
             "idea_id": "p-1",
-            "status": "eval_error",
+            "status": "evaluation_error",
             "parent_commits": [_SHA1],
             "started_at": _DT,
         },

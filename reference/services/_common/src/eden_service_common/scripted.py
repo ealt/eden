@@ -47,7 +47,7 @@ _IMPL_DATE = "2026-04-01T00:00:00+00:00"
 def make_plan_fn(
     *, base_commit_sha: str, ideas_per_ideation: int = 1
 ) -> ScriptedPlanFn:
-    """Build a plan_fn that drafts ``ideas_per_ideation`` ideas per ideate task.
+    """Build a plan_fn that drafts ``ideas_per_ideation`` ideas per ideation task.
 
     Each idea carries ``parent_commits=(base_commit_sha,)``,
     satisfying the schema's ``min_length=1`` constraint.

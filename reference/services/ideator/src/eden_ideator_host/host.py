@@ -41,7 +41,7 @@ def run_ideator_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for pending ideate tasks and drive each through the scripted profile.
+    """Poll for pending ideation tasks and drive each through the scripted profile.
 
     Returns only when ``stop`` is set. If no pending tasks are visible,
     waits ``poll_interval`` seconds between polls; drains bursts without
@@ -79,9 +79,9 @@ def run_ideator_subprocess_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for ideate tasks; drive each via the long-running ideator subprocess.
+    """Poll for ideation tasks; drive each via the long-running ideator subprocess.
 
-    Spawns the subprocess once and keeps it alive across ideate tasks
+    Spawns the subprocess once and keeps it alive across ideation tasks
     (so the user's command — typically a long-lived LLM session —
     accumulates context). On subprocess crash or protocol violation
     the host respawns it and continues; gives up after

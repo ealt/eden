@@ -16,7 +16,7 @@
 # keeps the soft-isolation security posture chunk 10d shipped.
 #
 # When this overlay is active, the orchestrator's `--ideation-tasks`
-# value must still be a comma-separated list of ideate task ids
+# value must still be a comma-separated list of ideation task ids
 # (e.g. plan-1,plan-2,plan-3); that flag is unchanged.
 
 name: eden-reference

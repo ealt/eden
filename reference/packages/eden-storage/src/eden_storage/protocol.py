@@ -253,8 +253,8 @@ class Store(Protocol):
         """Persist a new ``starting`` variant; emits ``variant.started``."""
         ...
 
-    def declare_variant_eval_error(self, variant_id: str) -> None:
-        """Retry-exhausted terminal ``starting → eval_error`` (``05-event-protocol.md`` §2.2)."""
+    def declare_variant_evaluation_error(self, variant_id: str) -> None:
+        """Retry-exhausted: ``starting → evaluation_error`` (``05-event-protocol.md`` §2.2)."""
         ...
 
     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:

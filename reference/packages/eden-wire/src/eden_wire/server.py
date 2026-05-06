@@ -439,7 +439,7 @@ def make_app(
         )
         return store.read_variant(variant_id).model_dump(mode="json", exclude_none=True)
 
-    @app.post(f"{base}/variants/{{variant_id}}/declare-eval-error")
+    @app.post(f"{base}/variants/{{variant_id}}/declare-evaluation-error")
     async def _declare_variant_eval_error(
         experiment_id: str,
         variant_id: str,
@@ -448,9 +448,9 @@ def make_app(
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
-            f"/v0/experiments/{experiment_id}/variants/{variant_id}/declare-eval-error",
+            f"/v0/experiments/{experiment_id}/variants/{variant_id}/declare-evaluation-error",
         )
-        store.declare_variant_eval_error(variant_id)
+        store.declare_variant_evaluation_error(variant_id)
         return Response(status_code=204)
 
     @app.post(f"{base}/variants/{{variant_id}}/integrate")

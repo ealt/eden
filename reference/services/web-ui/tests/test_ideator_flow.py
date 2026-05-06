@@ -363,7 +363,7 @@ class TestDefinitiveSubmitErrors:
     work product (the ideas themselves) is what needs recovery,
     not the form inputs. The orphan page lists the orphaned
     idea IDs and surfaces the canonical error type so an
-    operator can decide whether to reclaim the ideate task or
+    operator can decide whether to reclaim the ideation task or
     garbage-collect.
     """
 
@@ -851,7 +851,7 @@ class TestDraftBufferReHydration:
             },
         )
         # Successful submit clears the buffer. The simplest probe: a
-        # fresh ideate task on the same session must NOT inherit the
+        # fresh ideation task on the same session must NOT inherit the
         # prior buffer's state when GET'd.
         ok = signed_in_client.post(
             "/ideator/t-clear-buf/submit",

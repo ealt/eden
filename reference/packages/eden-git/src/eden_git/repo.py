@@ -405,7 +405,7 @@ class GitRepo:
         Uses an isolated index file (``GIT_INDEX_FILE``) so the
         operation never touches the repo's main index or any worktree.
         Raises :class:`GitError` if ``file_path`` already exists in
-        the base tree — the §3.2 squash rule requires the eval-manifest
+        the base tree — the §3.2 squash rule requires the evaluation-manifest
         path to be the only addition, and a pre-existing file at that
         path would mean a silent overwrite.
         """

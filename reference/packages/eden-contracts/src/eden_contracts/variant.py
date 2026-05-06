@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ._common import CommitSha, DateTimeStr, NotNone, UriStr
 
-VariantStatus = Literal["starting", "success", "error", "eval_error"]
-"""Variant lifecycle statuses; ``success``, ``error``, ``eval_error`` are terminal."""
+VariantStatus = Literal["starting", "success", "error", "evaluation_error"]
+"""Variant lifecycle statuses; ``success``, ``error``, ``evaluation_error`` are terminal."""
 
 WORK_BRANCH_PATTERN = r"^work/.+$"
 WorkBranch = Annotated[str, StringConstraints(pattern=WORK_BRANCH_PATTERN)]

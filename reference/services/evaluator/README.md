@@ -22,11 +22,11 @@ invoke a user-supplied per-task evaluate command instead of the
 scripted profile. The command string is read from the
 experiment-config YAML's `evaluation_command` key.
 
-For each evaluate task the host creates a worktree at
+For each evaluation task the host creates a worktree at
 `variant.commit_sha`, runs the command with cwd=wt and env
 carrying `EDEN_TASK_JSON` / `EDEN_OUTPUT` / `EDEN_WORKTREE` /
 `EDEN_EXPERIMENT_DIR`, then reads `<wt>/.eden/eval-outcome.json`
 (`status` + `metrics`). Evaluation are validated against
 `evaluation_schema` before submit; type mismatches route to
-`status=eval_error`. See the
+`status=evaluation_error`. See the
 [reference binding](../../../spec/v0/reference-bindings/worker-host-subprocess.md).

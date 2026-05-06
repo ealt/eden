@@ -133,7 +133,7 @@ class TestWorkRefDeleteFailures:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-Z")
+        store.declare_variant_evaluation_error("variant-Z")
         # Get the page (eligible at GET-time).
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert "eligible for deletion (1)" in resp.text
@@ -176,7 +176,7 @@ class TestWorkRefDeleteFailures:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-V")
+        store.declare_variant_evaluation_error("variant-V")
         resp = signed_in_admin_repo_client.get("/admin/work-refs/")
         assert "eligible for deletion (1)" in resp.text
         # Third-party deletion before POST.
@@ -217,7 +217,7 @@ class TestWorkRefDeleteFailures:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-C")
+        store.declare_variant_evaluation_error("variant-C")
         from eden_git.repo import GitError
 
         def boom(self, *args, **kwargs):
@@ -265,7 +265,7 @@ class TestWorkRefDeleteFailures:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-UVR")
+        store.declare_variant_evaluation_error("variant-UVR")
         from eden_git.repo import GitError
 
         def boom(self, *args, **kwargs):
@@ -314,7 +314,7 @@ class TestWorkRefDeleteFailures:
         assert variant.branch is not None
         assert variant.commit_sha is not None
         bare_repo.create_ref(f"refs/heads/{variant.branch}", variant.commit_sha)
-        store.declare_variant_eval_error("variant-P")
+        store.declare_variant_evaluation_error("variant-P")
         from eden_git.repo import GitError
 
         # exit code 128 + stderr without "expected" => unexpected git

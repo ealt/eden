@@ -56,7 +56,7 @@ Ideas ([`02-data-model.md`](02-data-model.md) §5) and variants ([`02-data-model
 - **List** — return objects matching a filter (by `experiment_id`, `state`/`status`, etc.). Ordering is implementation-defined.
 - **Update** — apply the field writes the role contracts and task- terminal transitions specify ([`03-roles.md`](03-roles.md) §2.2, §3.2, §4.4; [`04-task-protocol.md`](04-task-protocol.md) §4.3, §5.4).
 
-All idea and variant writes MUST commit atomically with the accompanying event(s) per §6. The durability (§3.1), read-after-write (§3.2), crash-recovery (§3.3), and no-fabrication (§3.4) rules apply uniformly. Terminal immutability applies to ideas in `completed` and variants in `success`/`error`/`eval_error` — the `variant_commit_sha` field is the **one** post-terminal write permitted on a variant, written exclusively by the integrator ([`06-integrator.md`](06-integrator.md) §3.4), and it MUST be written atomically with its event and its `variant/*` ref.
+All idea and variant writes MUST commit atomically with the accompanying event(s) per §6. The durability (§3.1), read-after-write (§3.2), crash-recovery (§3.3), and no-fabrication (§3.4) rules apply uniformly. Terminal immutability applies to ideas in `completed` and variants in `success`/`error`/`evaluation_error` — the `variant_commit_sha` field is the **one** post-terminal write permitted on a variant, written exclusively by the integrator ([`06-integrator.md`](06-integrator.md) §3.4), and it MUST be written atomically with its event and its `variant/*` ref.
 
 ## 2. Event log
 
@@ -146,7 +146,7 @@ URIs MUST be RFC 3986–conformant ([`schemas/idea.schema.json`](schemas/idea.sc
 
 ### 5.2 Durability
 
-Once the artifact store returns a URI to an uploader, the content at that URI MUST remain resolvable until the experiment's retention window elapses. A conforming deployment MUST define its retention window explicitly. A URI recorded on a `variant/*` commit's eval manifest — whether as the optional `artifacts_uri` field ([`06-integrator.md`](06-integrator.md) §4.2) or inside the optional per-file `artifacts` inventory ([`06-integrator.md`](06-integrator.md) §4.4) — MUST be resolvable for at least as long as that `variant/*` commit is retained.
+Once the artifact store returns a URI to an uploader, the content at that URI MUST remain resolvable until the experiment's retention window elapses. A conforming deployment MUST define its retention window explicitly. A URI recorded on a `variant/*` commit's evaluation manifest — whether as the optional `artifacts_uri` field ([`06-integrator.md`](06-integrator.md) §4.2) or inside the optional per-file `artifacts` inventory ([`06-integrator.md`](06-integrator.md) §4.4) — MUST be resolvable for at least as long as that `variant/*` commit is retained.
 
 ### 5.3 Content integrity
 
@@ -156,7 +156,7 @@ When the optional per-file `artifacts` inventory ([`06-integrator.md`](06-integr
 
 ### 5.4 No protocol-owned mutation after the fact
 
-Once a protocol-owned object (idea, variant, eval manifest) references an artifact URI, a conforming deployment MUST NOT overwrite the content at that URI. Overwriting would break reproducibility guarantees that subscribers reading the event log rely on.
+Once a protocol-owned object (idea, variant, evaluation manifest) references an artifact URI, a conforming deployment MUST NOT overwrite the content at that URI. Overwriting would break reproducibility guarantees that subscribers reading the event log rely on.
 
 ## 6. Transactional guarantees
 

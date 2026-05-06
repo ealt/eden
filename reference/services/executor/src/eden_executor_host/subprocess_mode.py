@@ -1,6 +1,6 @@
 """Phase 10d executor-host subprocess mode.
 
-For each pending execute task: claim, generate variant_id host-side,
+For each pending execution task: claim, generate variant_id host-side,
 guard against ref collision, persist a ``starting`` variant,
 materialize a per-task worktree at ``parent_commits[0]``, run the
 user's ``execution_command`` with cwd = worktree, validate the
@@ -112,7 +112,7 @@ def run_executor_subprocess_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for pending execute tasks; handle each via the subprocess flow."""
+    """Poll for pending execution tasks; handle each via the subprocess flow."""
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
     sweep_host_worktrees(repo_path=config.repo_path, host_subdir=host_subdir)

@@ -1,6 +1,6 @@
 """Phase 10d evaluator-host subprocess mode.
 
-For each pending evaluate task: claim, materialize a per-task
+For each pending evaluation task: claim, materialize a per-task
 worktree at the variant's commit, run the user's ``evaluation_command``,
 parse the metrics outcome JSON, validate against ``evaluation_schema``,
 and submit.
@@ -70,7 +70,7 @@ def _fetch_variant_branch(*, repo_path: Path, branch: str) -> None:
 
     No-op when the repo has no origin (Phase 10d follow-up B local-only
     fallback). Raises on transport / git errors so the caller can map
-    to ``eval_error`` per chapter 3 §4.4.
+    to ``evaluation_error`` per chapter 3 §4.4.
     """
     from eden_git import GitRepo
 
@@ -94,7 +94,7 @@ def run_evaluator_subprocess_loop(
     poll_interval: float,
     stop: StopFlag,
 ) -> None:
-    """Poll for pending evaluate tasks; handle each via the subprocess flow."""
+    """Poll for pending evaluation tasks; handle each via the subprocess flow."""
     host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
     host_subdir.mkdir(parents=True, exist_ok=True)
     sweep_host_worktrees(repo_path=config.repo_path, host_subdir=host_subdir)
@@ -152,7 +152,7 @@ def _handle_one(
     # remote (Gitea cutover), fetch the executor's work/* branch
     # so the worker commit is present locally before we worktree-add.
     # Per chapter 3 §4.4, infrastructure failures here map to
-    # eval_error (NOT error) so the variant stays at `success` and
+    # evaluation_error (NOT error) so the variant stays at `success` and
     # can be re-evaluated later.
     if variant.branch is not None:
         try:
@@ -170,7 +170,7 @@ def _handle_one(
                 task_id=task.task_id,
                 token=claim.token,
                 submission=EvaluationSubmission(
-                    status="eval_error",
+                    status="evaluation_error",
                     variant_id=variant_id,
                     evaluation=None,
                     artifacts_uri=None,
@@ -195,7 +195,10 @@ def _handle_one(
             task_id=task.task_id,
             token=claim.token,
             submission=EvaluationSubmission(
-                status="eval_error", variant_id=variant_id, evaluation=None, artifacts_uri=None
+                status="evaluation_error",
+                variant_id=variant_id,
+                evaluation=None,
+                artifacts_uri=None,
             ),
         )
         return
@@ -214,7 +217,7 @@ def _handle_one(
             "evaluator_subprocess_unexpected",
             extra={"task_id": task.task_id},
         )
-        outcome = {"status": "eval_error"}
+        outcome = {"status": "evaluation_error"}
     finally:
         wt.remove()
 
@@ -250,7 +253,7 @@ def _outcome_to_submission(
         if not isinstance(evaluation, dict) or not evaluation:
             log.warning("evaluator_success_missing_evaluation")
             return EvaluationSubmission(
-                status="eval_error",
+                status="evaluation_error",
                 variant_id=variant_id,
                 evaluation=None,
                 artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
@@ -263,7 +266,7 @@ def _outcome_to_submission(
                 extra={"reason": str(exc)},
             )
             return EvaluationSubmission(
-                status="eval_error",
+                status="evaluation_error",
                 variant_id=variant_id,
                 evaluation=None,
                 artifacts_uri=artifacts_uri if isinstance(artifacts_uri, str) else None,
@@ -284,7 +287,7 @@ def _outcome_to_submission(
             else None,
         )
     return EvaluationSubmission(
-        status="eval_error",
+        status="evaluation_error",
         variant_id=variant_id,
         evaluation=None,
         artifacts_uri=None,
@@ -369,7 +372,7 @@ def _run_subprocess(
                     extra={"task_id": task.task_id},
                 )
                 sub.terminate(shutdown_deadline=config.shutdown_deadline)
-                return {"status": "eval_error"}
+                return {"status": "evaluation_error"}
             try:
                 line = sub.read_line(
                     deadline=time.monotonic() + min(remaining, 1.0)
@@ -385,20 +388,20 @@ def _run_subprocess(
                 "evaluator_subprocess_nonzero_exit",
                 extra={"task_id": task.task_id, "exit_code": rc},
             )
-            return {"status": "eval_error"}
+            return {"status": "evaluation_error"}
         if not output_json.is_file():
             log.warning(
                 "evaluator_subprocess_missing_outcome",
                 extra={"task_id": task.task_id},
             )
-            return {"status": "eval_error"}
+            return {"status": "evaluation_error"}
         parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
         if parsed is None:
             log.warning(
                 "evaluator_subprocess_malformed_outcome",
                 extra={"task_id": task.task_id},
             )
-            return {"status": "eval_error"}
+            return {"status": "evaluation_error"}
         return parsed
     finally:
         sub.run_cleanups()

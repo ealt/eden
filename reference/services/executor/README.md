@@ -22,7 +22,7 @@ Pass `--mode subprocess` plus `--experiment-config <path>`,
 instead of the scripted profile. The command string is read from
 the experiment-config YAML's `execution_command` key.
 
-For each execute task the host:
+For each execution task the host:
 
 1. Generates `variant_id` and persists `Variant(status="starting")`
    before any repo write.

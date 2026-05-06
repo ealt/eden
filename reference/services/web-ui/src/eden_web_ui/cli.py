@@ -82,7 +82,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Bare git repo the executor host writes work/* refs into. "
             "Optional: when set, the executor module is registered "
-            "and the user can claim execute tasks via the UI; when "
+            "and the user can claim execution tasks via the UI; when "
             "omitted, the executor module is not available and the "
             "/executor/* routes return 404."
         ),
