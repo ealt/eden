@@ -1,0 +1,340 @@
+--- /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-12a-1-worker-identity/20260505T151258/1.md	2026-05-05 15:46:48
++++ /Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md	2026-05-06 11:17:01
+@@ -90,6 +90,19 @@
+ URI-unsafe characters. Same posture as the existing `slug`
+ constraint on proposals/ideas. Group IDs follow the same grammar.
+ 
++The following identifiers are **reserved** and MUST NOT be used as
++either `worker_id` or `group_id`:
++
++- `admin` — used as the bearer-format auth-principal sentinel (§D.5).
++- `system`, `internal` — reserved for future protocol use.
++- Anything starting with `_` (underscore) — reserved for
++  reference-impl internals (parallel to `_reference/` in
++  chapter 7).
++
++The reservation is a grammar-layer rule enforced at register-time
++by both `register_worker` and `register_group`. Attempting to
++register a reserved name MUST raise `ReservedIdentifier`.
++
+ **Worker shape.** A `Worker` is a small persistent record:
+ 
+ ```json
+@@ -151,24 +164,40 @@
+ registry row can't recover via re-register. The split is
+ load-bearing.
+ 
+-**Startup recovery flow.** Worker hosts at startup:
++**Startup recovery flow.** A new wire op is needed to make this
++work cleanly: `verify_worker_credential() → {worker_id}` returns
++the authenticated worker's id (or 401 if the credential is bad).
++This is an **authenticated** ping; `read_worker` is an
++unauthenticated experiment-level read and CANNOT serve as the
++auth check. Worker hosts at startup:
+ 
+-1. If a persisted credential exists at the configured path, attempt
+-   an authenticated no-op request (e.g., `read_worker(self_id)`).
+-2. If that succeeds: continue with the existing credential.
+-3. If that fails (admin rotated the token, registry was wiped, etc.):
+-   the host MUST escalate — it cannot silently re-register since
+-   the existing registry row would block under §D.1's idempotency.
+-   Escalation paths:
+-   - **Auto** (admin-token in the host's env): call
+-     `reissue_credential` and persist the new credential.
+-     Reference deployment uses this path since the admin token is
+-     in `.env` at host bootstrap.
++1. If a persisted credential exists at the configured path,
++   attempt `verify_worker_credential` against the wire.
++2. If that returns the expected `worker_id`: continue with the
++   existing credential.
++3. If that returns 401 / the wrong worker_id (admin rotated the
++   token, registry was wiped, server identity drift, etc.): the
++   host MUST escalate to `reissue_credential` rather than
++   `register_worker`. Re-registering would either be a no-op (if
++   the row exists per §D.1's idempotency rule) without yielding a
++   new token, OR fail (if the row is gone but persisted state
++   says it should exist). The reissue path is the canonical one
++   for credential recovery; document it as such.
++   - **Auto** (admin-token in the host's env): call
++     `reissue_credential(worker_id)` and persist the new
++     credential. Reference deployment uses this path since the
++     admin token is in `.env` at host bootstrap.
+    - **Manual**: log an error and exit non-zero. Operator runs
+-     `reissue_credential` out-of-band and re-injects the credential.
++     `reissue_credential` out-of-band and re-injects the
++     credential.
+ 4. If no persisted credential exists at all (first run): call
+    `register_worker`; persist the returned credential.
+ 
++This makes `register_worker` (idempotent on existing record) and
++`reissue_credential` (explicit credential rotation) play
++non-overlapping roles, with `verify_worker_credential` as the
++discriminator.
++
+ ### D.2 Group as a named set
+ 
+ A `Group` is a recursive set whose members can be `worker_id`s
+@@ -386,15 +415,47 @@
+ worker registration persists in the registry (so the next sign-in
+ is `register_worker` returning the existing record).
+ 
+-**Implication for browser-only operators.** A human running the
+-web-ui interactively never holds a worker credential outside the
+-session cookie. They CAN'T claim from the web-ui and submit from a
+-CLI session unless their CLI also signs in (acquires a credential)
+-as the same `worker_id`. Cross-application claim works at the wire
+-level (per the design doc §8) but requires both applications to
+-authenticate as the same worker. Document that in the operator
+-guide so the limit is clear.
++**Accepted limitation in 12a-1: web-UI sessions are NOT
++cross-app-compatible.** Per-sign-in `reissue_credential`
++invalidates the prior credential, so:
++
++- A user who had an active claim in a CLI session and signs into
++  the web-ui: the CLI's submit will fail with stale-credential.
++  They have to re-acquire the credential in the CLI.
++- A second concurrent web-ui sign-in as the same worker_id
++  invalidates the first session's credential; the first session's
++  in-flight claim is stranded (the user has to sign in again to
++  resubmit).
+ 
++This contradicts the design-doc §8 promise of cross-application
++claim, but only for the web-UI side of the boundary. Pure-CLI
++cross-app claim still works (different terminals on the same
++machine sharing a credential file).
++
++**The cleaner fix** is option (b) from above — admin-derived
++session-only credential that doesn't rotate the worker's primary
++credential. That preserves cross-app claim end-to-end. **Deferred
++to 12a-2** with a tracker entry; the simpler-to-ship option (a) is
++correct for 12a-1 because:
++
++- The wire / Store layer changes in 12a-1 are already substantial
++  and (a) avoids introducing a new auth primitive (admin-derived
++  session token).
++- The cross-app limitation is documentable and operational, not a
++  protocol soundness issue.
++- Most reference-deployment users are CLI-driven (CLI claim, CLI
++  submit); the web-UI is the secondary path and the limitation is
++  only visible when the same user is on both at once.
++
++12a-2 can revisit if multi-app concurrent claim becomes important.
++
++**Implication for operators.** Document in the operator guide
++(in the existing `eden-manual` skill or a new doc): web-UI
++sign-in is "session-exclusive" — owning a session for worker `X`
++in browser tab A invalidates worker `X`'s credential in any other
++session. Users who want to keep CLI work alongside web-UI should
++operate as different `worker_id`s, or use one app at a time.
++
+ ### D.6 Claim semantics under per-worker auth
+ 
+ Today's claim returns a per-claim token; submit checks
+@@ -402,31 +463,70 @@
+ "claim is application-scoped" friction documented in
+ [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §1 / design doc §8.
+ 
+-**New semantics in 12a-1**:
++**Layering.** Per §D.0, authentication and authorization
++(`authenticated_worker_id == task.claim.worker_id`) are
++**binding-layer concerns**, not Store Protocol concerns. The
++Store Protocol surface stays minimal and transport-independent:
+ 
+-- `claim(task_id)` → success/failure based on §D.3 enforcement; no
+-  per-claim token returned (the claim is now identified by
+-  `task.claim.worker_id`, which the authenticated request already
+-  proves).
+-- `submit(task_id, payload)` → checks
+-  `authenticated_worker_id == task.claim.worker_id`. If they
+-  match, the submission is accepted.
++- `Store.claim(task_id, worker_id, ...)` — unchanged signature.
++  The Store assumes the binding has already authenticated the
++  caller as `worker_id`. Returns success/failure per the §D.3
++  target enforcement. **No token returned.**
++- `Store.submit(task_id, payload)` — the `token` parameter is
++  **removed**, and **no `worker_id` parameter is added**. The
++  Store does not authenticate the submitter. Instead, the binding
++  is required to perform the claimant-match check before invoking
++  Store.submit:
+ 
+-**Idempotency.** Today's per-claim token doubles as an idempotency
+-key (a re-submitted submission with the same token is a no-op).
+-12a-1 replaces this with an explicit optional `submission_id` (UUID)
+-on the wire — same equivalence semantics as `submissions_equivalent`
+-in [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md)
+-§4.2, but tagged by an explicit id rather than a token.
++  ```text
++  task = store.read_task(task_id)
++  if task.claim is None:
++      raise NotClaimed              # binding-layer error
++  if task.claim.worker_id != authenticated_worker_id:
++      raise WrongClaimant           # binding-layer error
++  store.submit(task_id, payload)    # passes through unconditionally
++  ```
+ 
++**Error vocabulary placement:**
++
++- `WorkerNotEligible`, `WorkerNotRegistered` — Store-layer typed
++  errors; raised from `Store.claim` per §D.3.
++- `WrongClaimant`, `NotClaimed` — **binding-layer** errors raised
++  by the wire's submit handler. They are NOT in the Store Protocol's
++  error vocabulary; in-process callers don't get these (and don't
++  need them — they're the binding's job).
++- `WrongToken` — **removed** from both Store and binding; tokens
++  no longer exist.
++
++The chapter-7 wire spec gains a new section enumerating
++binding-layer errors and their HTTP status codes (likely 401 / 403
++for these); chapter 4 / chapter 8 stop documenting them.
++
++**Idempotency without tokens.** Today's per-claim token doubles
++as an idempotency key (a re-submitted submission with the same
++token is a no-op). 12a-1 replaces this with an explicit optional
++`submission_id` (UUID) field on the wire payload — same
++equivalence semantics as `submissions_equivalent` in
++[`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md)
++§4.2, but tagged by an explicit caller-supplied id rather than a
++server-issued token. The Store retains the existing
++content-equivalence path (§4.2's
++"submissions_equivalent" check) as a backstop for clients that
++don't supply `submission_id`.
++
+ **What's removed:**
+ 
+ - `Store.claim` no longer returns a token.
+ - `Task.claim.token` field removed from the schema.
+ - `submit`'s `token` parameter removed.
+-- The `WrongToken` typed error removed (replaced by
+-  `WorkerNotEligible` / `WrongClaimant`).
++- `WrongToken` removed from the protocol error vocabulary.
+ 
++**What's added:**
++
++- `Store.claim` raises `WorkerNotRegistered` / `WorkerNotEligible`.
++- The wire-binding submit handler raises `WrongClaimant` /
++  `NotClaimed` before calling the Store.
++
+ ### D.7 What does NOT change in 12a-1
+ 
+ - Task lifecycle states (`pending` → `claimed` → `submitted` →
+@@ -528,12 +628,12 @@
+ | File | Change |
+ |---|---|
+ | `src/eden_storage/protocol.py` | Add `register_worker`, `read_worker`, `list_workers`, `register_group`, `add_to_group`, `remove_from_group`, `read_group`, `list_groups`, `delete_group`, `resolve_worker_in_group`, `verify_worker_credential`. |
+-| `src/eden_storage/_base.py` | In-memory implementation of all new ops, including transitive group resolution + cycle detection. Update `claim` and `submit` semantics. Issue `WorkerNotEligible` / `WrongClaimant` typed errors; remove `WrongToken`. |
++| `src/eden_storage/_base.py` | In-memory implementation of all new ops, including transitive group resolution + cycle detection. Update `claim` semantics (no token returned; `WorkerNotEligible` / `WorkerNotRegistered` raised on enforcement failure). Update `submit` to drop the `token` parameter; the Store no longer authenticates the submitter (binding layer's job per §D.6). Remove `WrongToken`. |
+ | `src/eden_storage/sqlite.py` | New tables: `worker`, `group_membership`. Schema migration to drop `task.claim.token` field from JSON. |
+ | `src/eden_storage/postgres.py` | Same as sqlite, with postgres-specific syntax. |
+ | `src/eden_storage/_postgres_schema.py` | Schema bump (new tables; field removal). |
+ | `src/eden_storage/_schema.py` | Schema bump (sqlite). |
+-| `src/eden_storage/errors.py` | Add `WorkerNotEligible`, `WrongClaimant`, `CycleDetected`, `WorkerAlreadyRegistered`. Remove `WrongToken`. |
++| `src/eden_storage/errors.py` | Add `WorkerNotEligible`, `WorkerNotRegistered`, `CycleDetected`, `ReservedIdentifier`, `WorkerAlreadyRegistered`. Remove `WrongToken`. `WrongClaimant` / `NotClaimed` live in the wire-binding error layer (`eden_wire/errors.py`), not here. |
+ | `tests/test_workers.py` | NEW. Unit + protocol-conformance tests for worker registry. |
+ | `tests/test_groups.py` | NEW. Group resolution + cycle-detection tests. |
+ | `tests/test_claim_eligibility.py` | NEW. Claim under per-worker auth, target matching. |
+@@ -544,7 +644,8 @@
+ |---|---|
+ | `src/eden_wire/server.py` | New `/workers`, `/groups` endpoints; auth dispatch reads `worker_id:token` or `admin:token`. |
+ | `src/eden_wire/client.py` | `StoreClient` gains worker auth fields; new methods for register/read/list workers + groups. |
+-| `src/eden_wire/auth.py` | NEW. Bearer parser + admin/worker dispatch. |
++| `src/eden_wire/auth.py` | NEW. Bearer parser + admin/worker dispatch. Implements claimant-match check on submit endpoint (per §D.6 layering); raises `WrongClaimant` / `NotClaimed` BEFORE invoking `Store.submit`. |
++| `src/eden_wire/errors.py` | Add `WrongClaimant`, `NotClaimed` (binding-layer errors per §D.6). |
+ | `tests/test_workers_wire.py` | NEW. Round-trip register/read/list workers. |
+ | `tests/test_groups_wire.py` | NEW. Round-trip group ops. |
+ | `tests/test_auth.py` | NEW. Auth dispatch + 401 on missing/wrong creds. |
+@@ -631,21 +732,39 @@
+ variant (`executed_by` / `evaluated_by` survive `success` / `error`
+ / `eval_error`).
+ 
+-### 6.4 Cross-application claim
++### 6.4 Cross-application claim (CLI-to-CLI)
+ 
+ Spec implication of §D.6: an authenticated worker can claim from
+-one application and submit from another. The conformance test:
++one application and submit from another, **provided both
++applications hold the same valid credential**. The conformance test:
+ 
+-1. Register worker `eric`.
+-2. Authenticate as `eric` from client A; claim task T.
++1. Register worker `eric` (issuing credential C).
++2. Authenticate as `eric` with credential C from client A; claim
++   task T.
+ 3. Disconnect client A.
+-4. Authenticate as `eric` from client B (different process);
+-   submit T.
++4. Authenticate as `eric` with credential C from client B
++   (different process / machine); submit T.
+ 5. Submit MUST succeed.
+ 
+ Today this fails because client B doesn't have the per-claim token.
+-After 12a-1 it MUST succeed.
++After 12a-1 it MUST succeed for CLI-to-CLI flows.
+ 
++**Web-UI sessions are explicitly out-of-scope for cross-app
++claim** in 12a-1 (per §D.5b accepted limitation). A separate
++conformance test asserts this is documented behavior:
++
++1. Register worker `eric` (credential C).
++2. CLI client A authenticates as `eric` with C; claims task T.
++3. Browser signs into the web-UI as `eric` (via
++   `reissue_credential`, mints new credential C').
++4. Web-UI's signed-in session can submit T (the claim's
++   `worker_id` is `eric`; the web-UI's session-authenticated
++   request matches).
++5. CLI client A's submit attempt with credential C fails with
++   401 / stale-credential — the credential was rotated by step 3.
++
++Test 5 documents the asymmetry; future work (12a-2) lifts it.
++
+ ### 6.5 Auth-required for submit
+ 
+ Submit a task without any `Authorization` header → 401.
+@@ -696,24 +815,38 @@
+ cross-experiment worker identity. This MUST be clear in the spec
+ prose.
+ 
+-### 8.2 Idempotent re-registration
++### 8.2 Idempotent re-registration vs explicit reissue
+ 
+ `compose up` after a crash re-creates the worker-host containers.
+-If they re-register naively, they'd get a new `worker_id` (or be
+-rejected as duplicates). The host's startup logic has to:
++The startup recovery flow is canonical (§D.1): `register_worker`
++is idempotent on existing rows (returns no new token);
++`reissue_credential` is the explicit recovery op when the local
++credential is stale; `verify_worker_credential` is the
++authenticated probe used to discriminate. Concretely, the host's
++startup logic:
+ 
+ 1. Check if there's a persisted credential at a known path
+    (e.g., `/var/lib/eden/worker-credential`).
+-2. If yes, re-use it; verify with the store via a no-op
+-   authenticated request.
+-3. If no, register a new worker; persist the credential.
+-4. If the existing credential fails verification (token rotated
+-   admin-side, or registry was wiped), fall through to a fresh
+-   register.
++2. If yes, call `verify_worker_credential` against the wire
++   using that credential. The Store must return the matching
++   `worker_id`, or the credential is stale.
++3. If verify succeeds: continue.
++4. If verify fails (admin rotated the token, registry was wiped,
++   server identity drift): the host MUST escalate to
++   `reissue_credential(self_id)`, NOT to `register_worker`.
++   `register_worker` is idempotent on existing rows and would
++   return no new token; `reissue_credential` is the canonical
++   credential-recovery path.
++5. If no persisted credential exists: `register_worker(self_id)`
++   for first-run; persist the returned credential.
+ 
+ This persistence is per-service-volume and must survive container
+ recreation but not volume deletion. Document the recovery posture
+-explicitly.
++explicitly. Note in particular: there is **no fall-through to
++fresh register** on credential failure — the existing registry
++row is the authority on the worker's identity, and the only
++documented escape from a stale credential is the explicit
++admin-gated reissue.
+ 
+ ### 8.3 Admin-token rotation
+ 

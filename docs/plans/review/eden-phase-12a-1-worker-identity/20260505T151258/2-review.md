@@ -1,0 +1,9 @@
+**Feasibility**
+
+This is much closer. Most of the round-1 blockers are resolved. I still see one substantive feasibility issue, so I’d stop here before moving deeper.
+
+1. Moving `WrongClaimant` entirely into the binding creates a TOCTOU hole around submit. In [D.6](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md:466), the binding does `read_task`, compares `task.claim.worker_id` to the authenticated worker, then calls `store.submit(task_id, payload)` unconditionally in [the pseudocode](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md:481). But `Store.submit` still takes no claimant identity in [the planned protocol shape](/Users/ericalt/Documents/eden/docs/plans/eden-phase-12a-1-worker-identity.md:475), so a reclaim or re-claim by another worker can interleave between the binding check and the store write. At that point the binding’s check is stale, and the store has no way to atomically enforce “submit only if the current claim still belongs to X.” This is exactly the safety property the old in-store token check gave you. Suggestion: the atomic compare must stay at the store boundary, even if the error is surfaced as a binding-layer error. That could be `Store.submit(task_id, worker_id, payload)` or a CAS-style precondition parameter, but the current “read then submit” split is not race-safe.
+
+**Overall Assessment**
+
+The plan is now structurally sound almost everywhere else. After fixing the submit/claim race so claimant ownership is checked atomically with the submit transition, I’d be comfortable moving on to completeness and edge cases.
