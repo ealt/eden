@@ -1,0 +1,38 @@
+--- docs/plans/review/eden-phase-12a-1-worker-identity/20260505T151258/4.md	2026-05-06 11:23:09
++++ docs/plans/eden-phase-12a-1-worker-identity.md	2026-05-06 11:24:58
+@@ -55,10 +55,13 @@
+ caller was authorized to act as the named worker before invoking
+ the Store.
+ 
+-This preserves the chapter-7 wire framing in
+-[`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)
+-§1.4: auth is binding-defined, not part of the chapter-4/5/8
+-operations themselves. After 12a-1, the wire binding gains:
++This **changes** the chapter-7 wire framing: today's §11 places
++authentication outside the normative binding (§12 documents the
++optional reference-impl shared-bearer as informative), but 12a-1
++makes per-worker authentication a normative requirement of the
++HTTP binding. Conforming non-HTTP bindings still implement their
++own auth verification with the same authenticated-id-vs-Store-call-id
++invariant. After 12a-1, the wire binding gains:
+ 
+ - A specified auth scheme (per-worker bearer + admin bearer; §D.5).
+ - A normative requirement that the binding MUST verify the
+@@ -141,10 +144,13 @@
+ claim / etc. operations.
+ 
+ **Read operation.** `read_worker(worker_id) → Worker` (without
+-hash); `list_workers(filter?) → [Worker]`. Both are unauthenticated
+-reads at the experiment level (any caller authenticated for the
+-experiment can list workers; this matches today's
+-unauthenticated-list-tasks posture).
++hash); `list_workers(filter?) → [Worker]`. Both are
++**not worker-scoped reads**: available to any caller with
++experiment-level access (admin token OR any registered worker for
++the experiment), matching today's posture for `list_tasks`. They
++are NOT a substitute for `verify_worker_credential` as a
++credential-validity probe — they don't authenticate the
++credential's binding to a specific worker_id.
+ 
+ **Restart safety + credential rotation.** Two distinct operations:
+ 
