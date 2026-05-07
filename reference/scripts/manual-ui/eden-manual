@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """eden-manual — operator CLI for manual-UI sessions.
 
-Drives the planner / implementer / evaluator roles end-to-end against
+Drives the ideator / executor / evaluator roles end-to-end against
 the EDEN reference Compose stack via the task-store-server wire (no
 web-UI session cookies required). Reads ``reference/compose/.env`` for
 the bearer token, experiment id, gitea creds, and host ports.
@@ -10,7 +10,7 @@ Subcommands:
 
     list-tasks [--kind ...] [--state ...]
     show <task-id>                    — full task context
-    list-commits                      — base + integrated trial SHAs
+    list-commits                      — base + integrated variant SHAs
     creds                             — gitea URL with creds embedded
 
     claim <task-id> [--worker-id W] [--ttl-seconds N]
@@ -21,9 +21,9 @@ Subcommands:
     push <workdir> [--branch B] [--message M]
                                       — git add -A + commit + push
 
-    plan-submit <task-id> --proposals-file F   (or --status error)
-    implement-submit <task-id> --sha SHA [--description D] (or --status error)
-    evaluate-submit <task-id> --metric K=V [--metric K=V ...] (or --status eval_error|error)
+    ideation-submit <task-id> --ideas-file F   (or --status error)
+    execution-submit <task-id> --sha SHA [--description D] (or --status error)
+    evaluation-submit <task-id> --field K=V [--field K=V ...] (or --status evaluation_error|error)
 
 The claim/submit subcommands talk to the wire directly and bypass the
 web-UI's session/CSRF layer, but produce identical store state.
@@ -149,11 +149,11 @@ def _write_claims(claims: dict[str, dict[str, str]]) -> None:
     CLAIMS_FILE.write_text(json.dumps(claims, indent=2) + "\n")
 
 
-def _record_claim(task_id: str, *, token: str, worker_id: str, trial_id: str | None = None) -> None:
+def _record_claim(task_id: str, *, token: str, worker_id: str, variant_id: str | None = None) -> None:
     claims = _read_claims()
     entry: dict[str, str] = {"token": token, "worker_id": worker_id}
-    if trial_id is not None:
-        entry["trial_id"] = trial_id
+    if variant_id is not None:
+        entry["variant_id"] = variant_id
     claims[task_id] = entry
     _write_claims(claims)
 
@@ -192,17 +192,17 @@ def cmd_list_tasks(env: dict[str, str], args: argparse.Namespace) -> None:
 def cmd_show(env: dict[str, str], args: argparse.Namespace) -> None:
     task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
     out: dict[str, object] = {"task": task}
-    if task["kind"] == "implement":
-        proposal_id = task["payload"]["proposal_id"]
-        proposal = _wire(env, f"/v0/experiments/{_exp(env)}/proposals/{proposal_id}")
-        out["proposal"] = proposal
+    if task["kind"] == "execution":
+        idea_id = task["payload"]["idea_id"]
+        idea = _wire(env, f"/v0/experiments/{_exp(env)}/ideas/{idea_id}")
+        out["idea"] = idea
         # Inline rationale if it's a file:// URI we can read.
-        rationale_text = _try_read_rationale(proposal.get("artifacts_uri"))
+        rationale_text = _try_read_rationale(idea.get("artifacts_uri"))
         if rationale_text is not None:
             out["rationale_text"] = rationale_text
-    elif task["kind"] == "evaluate":
-        trial_id = task["payload"]["trial_id"]
-        out["trial"] = _wire(env, f"/v0/experiments/{_exp(env)}/trials/{trial_id}")
+    elif task["kind"] == "evaluation":
+        variant_id = task["payload"]["variant_id"]
+        out["variant"] = _wire(env, f"/v0/experiments/{_exp(env)}/variants/{variant_id}")
     json.dump(out, sys.stdout, indent=2)
     sys.stdout.write("\n")
 
@@ -225,14 +225,14 @@ def cmd_list_commits(env: dict[str, str], args: argparse.Namespace) -> None:
     out = []
     if base:
         out.append({"kind": "base", "sha": base, "label": "seed"})
-    trials = _wire(env, f"/v0/experiments/{_exp(env)}/trials") or []
-    for t in trials:
-        if t.get("trial_commit_sha"):
+    variants = _wire(env, f"/v0/experiments/{_exp(env)}/variants") or []
+    for v in variants:
+        if v.get("variant_commit_sha"):
             out.append({
-                "kind": "integrated_trial",
-                "sha": t["trial_commit_sha"],
-                "label": t.get("branch", t.get("trial_id", "")),
-                "trial_id": t.get("trial_id"),
+                "kind": "integrated_variant",
+                "sha": v["variant_commit_sha"],
+                "label": v.get("branch", v.get("variant_id", "")),
+                "variant_id": v.get("variant_id"),
             })
     if args.json:
         json.dump(out, sys.stdout, indent=2)
@@ -263,15 +263,15 @@ def cmd_claim(env: dict[str, str], args: argparse.Namespace) -> None:
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/claim",
         method="POST", body=body,
     )
-    trial_id = None
-    if task["kind"] == "implement":
-        # Pre-allocate a trial_id at claim time so the canonical work-branch
-        # name is stable across the implement flow (matches web-ui posture).
-        trial_id = uuid.uuid4().hex
-    _record_claim(args.task_id, token=resp["token"], worker_id=args.worker_id, trial_id=trial_id)
+    variant_id = None
+    if task["kind"] == "execution":
+        # Pre-allocate a variant_id at claim time so the canonical work-branch
+        # name is stable across the execution flow (matches web-ui posture).
+        variant_id = uuid.uuid4().hex
+    _record_claim(args.task_id, token=resp["token"], worker_id=args.worker_id, variant_id=variant_id)
     out = {"task_id": args.task_id, "token": resp["token"], "worker_id": args.worker_id}
-    if trial_id:
-        out["trial_id"] = trial_id
+    if variant_id:
+        out["variant_id"] = variant_id
     if expires_at:
         out["expires_at"] = expires_at
     json.dump(out, sys.stdout, indent=2)
@@ -281,21 +281,21 @@ def cmd_claim(env: dict[str, str], args: argparse.Namespace) -> None:
 def cmd_checkout(env: dict[str, str], args: argparse.Namespace) -> None:
     task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
     kind = task["kind"]
-    if kind == "plan":
+    if kind == "ideation":
         sys.exit(
-            "error: plan tasks have no commit context. The planner picks "
-            "parent_commits when drafting a proposal — use list-commits."
+            "error: ideation tasks have no commit context. The ideator picks "
+            "parent_commits when drafting an idea — use list-commits."
         )
-    if kind == "implement":
-        proposal_id = task["payload"]["proposal_id"]
-        proposal = _wire(env, f"/v0/experiments/{_exp(env)}/proposals/{proposal_id}")
-        target_sha = proposal["parent_commits"][0]
-        label = proposal["slug"]
-    elif kind == "evaluate":
-        trial_id = task["payload"]["trial_id"]
-        trial = _wire(env, f"/v0/experiments/{_exp(env)}/trials/{trial_id}")
-        target_sha = trial["commit_sha"]
-        label = f"eval-{trial.get('branch', trial_id)}"
+    if kind == "execution":
+        idea_id = task["payload"]["idea_id"]
+        idea = _wire(env, f"/v0/experiments/{_exp(env)}/ideas/{idea_id}")
+        target_sha = idea["parent_commits"][0]
+        label = idea["slug"]
+    elif kind == "evaluation":
+        variant_id = task["payload"]["variant_id"]
+        variant = _wire(env, f"/v0/experiments/{_exp(env)}/variants/{variant_id}")
+        target_sha = variant["commit_sha"]
+        label = f"eval-{variant.get('branch', variant_id)}"
     else:
         sys.exit(f"error: unsupported task kind {kind!r}")
 
@@ -321,7 +321,7 @@ def cmd_push(env: dict[str, str], args: argparse.Namespace) -> None:
     if not (workdir / ".git").is_dir():
         sys.exit(f"error: {workdir} is not a git checkout")
     branch = args.branch or "manual-work"
-    msg = args.message or "manual implementer change"
+    msg = args.message or "manual executor change"
     _git("checkout", "-B", branch, cwd=workdir)
     _git("add", "-A", cwd=workdir)
     diff = _git("diff", "--cached", "--quiet", cwd=workdir, check=False)
@@ -341,9 +341,9 @@ def cmd_push(env: dict[str, str], args: argparse.Namespace) -> None:
     print(json.dumps({"sha": sha, "branch": branch, "workdir": str(workdir)}, indent=2))
 
 
-# ---------------------------------------------------------------- plan-submit
+# ------------------------------------------------------------ ideation-submit
 
-def cmd_plan_submit(env: dict[str, str], args: argparse.Namespace) -> None:
+def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     claim = _get_claim(args.task_id)
     token = claim["token"]
     if args.status == "error":
@@ -356,24 +356,24 @@ def cmd_plan_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         print(json.dumps({"task_id": args.task_id, "status": "error"}, indent=2))
         return
 
-    if not args.proposals_file:
-        sys.exit("error: --proposals-file required for status=success")
-    spec = json.loads(Path(args.proposals_file).read_text())
-    raw_proposals = spec.get("proposals", spec) if isinstance(spec, dict) else spec
-    if not raw_proposals:
-        sys.exit("error: --proposals-file contained no proposals")
+    if not args.ideas_file:
+        sys.exit("error: --ideas-file required for status=success")
+    spec = json.loads(Path(args.ideas_file).read_text())
+    raw_ideas = spec.get("ideas", spec) if isinstance(spec, dict) else spec
+    if not raw_ideas:
+        sys.exit("error: --ideas-file contained no ideas")
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    proposal_ids: list[str] = []
+    idea_ids: list[str] = []
 
-    # Phase 1: create_proposal as drafting for each.
-    for raw in raw_proposals:
-        proposal_id = uuid.uuid4().hex
+    # Phase 1: create_idea as drafting for each.
+    for raw in raw_ideas:
+        idea_id = uuid.uuid4().hex
         rationale = raw.get("rationale", "")
-        artifact_path = ARTIFACTS_DIR / f"{proposal_id}.md"
+        artifact_path = ARTIFACTS_DIR / f"{idea_id}.md"
         artifact_path.write_text(rationale)
-        proposal = {
-            "proposal_id": proposal_id,
+        idea = {
+            "idea_id": idea_id,
             "experiment_id": _exp(env),
             "slug": raw["slug"],
             "priority": float(raw.get("priority", 1.0)),
@@ -382,58 +382,58 @@ def cmd_plan_submit(env: dict[str, str], args: argparse.Namespace) -> None:
             "state": "drafting",
             "created_at": _now_iso(),
         }
-        _wire(env, f"/v0/experiments/{_exp(env)}/proposals", method="POST", body=proposal)
-        proposal_ids.append(proposal_id)
+        _wire(env, f"/v0/experiments/{_exp(env)}/ideas", method="POST", body=idea)
+        idea_ids.append(idea_id)
 
     # Phase 2: mark_ready for each.
-    for pid in proposal_ids:
+    for iid in idea_ids:
         _wire(
-            env, f"/v0/experiments/{_exp(env)}/proposals/{pid}/mark-ready",
+            env, f"/v0/experiments/{_exp(env)}/ideas/{iid}/mark-ready",
             method="POST",
         )
 
-    # Phase 3: submit the plan task.
+    # Phase 3: submit the ideation task.
     _wire(
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
         method="POST",
         body={
             "token": token,
-            "payload": {"status": "success", "proposal_ids": proposal_ids},
+            "payload": {"status": "success", "idea_ids": idea_ids},
         },
     )
     _drop_claim(args.task_id)
     print(json.dumps({
         "task_id": args.task_id,
         "status": "success",
-        "proposal_ids": proposal_ids,
+        "idea_ids": idea_ids,
     }, indent=2))
 
 
-# --------------------------------------------------------- implement-submit
+# ----------------------------------------------------------- execution-submit
 
-def _branch_name(slug: str, trial_id: str) -> str:
-    return f"work/{slug}-{trial_id}"
+def _branch_name(slug: str, variant_id: str) -> str:
+    return f"work/{slug}-{variant_id}"
 
 
-def cmd_implement_submit(env: dict[str, str], args: argparse.Namespace) -> None:
+def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     claim = _get_claim(args.task_id)
     token = claim["token"]
-    trial_id = claim.get("trial_id")
-    if not trial_id:
-        sys.exit("error: implement claim record is missing trial_id; reclaim the task")
+    variant_id = claim.get("variant_id")
+    if not variant_id:
+        sys.exit("error: execution claim record is missing variant_id; reclaim the task")
 
     task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
-    proposal = _wire(
-        env, f"/v0/experiments/{_exp(env)}/proposals/{task['payload']['proposal_id']}"
+    idea = _wire(
+        env, f"/v0/experiments/{_exp(env)}/ideas/{task['payload']['idea_id']}"
     )
 
     if args.status == "error":
-        # Per spec: error implementer submission just records the failure;
-        # no trial is created.
+        # Per spec: error executor submission just records the failure;
+        # no variant is created.
         _wire(
             env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
             method="POST",
-            body={"token": token, "payload": {"status": "error", "trial_id": trial_id}},
+            body={"token": token, "payload": {"status": "error", "variant_id": variant_id}},
         )
         _drop_claim(args.task_id)
         print(json.dumps({"task_id": args.task_id, "status": "error"}, indent=2))
@@ -457,7 +457,7 @@ def cmd_implement_submit(env: dict[str, str], args: argparse.Namespace) -> None:
             f"error: commit {sha!r} not reachable in {workdir} after fetch — "
             "did you push your branch to origin?"
         )
-    for parent in proposal["parent_commits"]:
+    for parent in idea["parent_commits"]:
         rc = _git(
             "merge-base", "--is-ancestor", parent, sha,
             cwd=workdir, check=False,
@@ -467,29 +467,29 @@ def cmd_implement_submit(env: dict[str, str], args: argparse.Namespace) -> None:
                 f"error: commit {sha!r} does not descend from declared parent {parent!r}"
             )
 
-    branch = _branch_name(proposal["slug"], trial_id)
+    branch = _branch_name(idea["slug"], variant_id)
 
-    # Phase 1: create_trial in starting state. ``branch`` is REQUIRED
+    # Phase 1: create_variant in starting state. ``branch`` is REQUIRED
     # for integration to find the canonical ref later.
-    trial = {
-        "trial_id": trial_id,
+    variant = {
+        "variant_id": variant_id,
         "experiment_id": _exp(env),
-        "proposal_id": proposal["proposal_id"],
+        "idea_id": idea["idea_id"],
         "status": "starting",
-        "parent_commits": list(proposal["parent_commits"]),
+        "parent_commits": list(idea["parent_commits"]),
         "branch": branch,
         "started_at": _now_iso(),
     }
     if args.description:
-        trial["description"] = args.description
-    _wire(env, f"/v0/experiments/{_exp(env)}/trials", method="POST", body=trial)
+        variant["description"] = args.description
+    _wire(env, f"/v0/experiments/{_exp(env)}/variants", method="POST", body=variant)
 
     # Phase 2: push the canonical work branch directly to gitea.
     # `<sha>:refs/heads/<branch>` creates the named ref on origin.
     push_target = f"{sha}:refs/heads/{branch}"
     _git("push", "origin", push_target, cwd=workdir)
 
-    # Phase 3: submit the implement task.
+    # Phase 3: submit the execution task.
     _wire(
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
         method="POST",
@@ -497,7 +497,7 @@ def cmd_implement_submit(env: dict[str, str], args: argparse.Namespace) -> None:
             "token": token,
             "payload": {
                 "status": "success",
-                "trial_id": trial_id,
+                "variant_id": variant_id,
                 "commit_sha": sha,
             },
         },
@@ -506,22 +506,22 @@ def cmd_implement_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     print(json.dumps({
         "task_id": args.task_id,
         "status": "success",
-        "trial_id": trial_id,
+        "variant_id": variant_id,
         "commit_sha": sha,
         "branch": branch,
     }, indent=2))
 
 
-# ---------------------------------------------------------- evaluate-submit
+# ---------------------------------------------------------- evaluation-submit
 
-def _parse_metric(raw: str) -> tuple[str, object]:
+def _parse_field(raw: str) -> tuple[str, object]:
     if "=" not in raw:
-        sys.exit(f"error: --metric must be K=V (got {raw!r})")
+        sys.exit(f"error: --field must be K=V (got {raw!r})")
     k, v = raw.split("=", 1)
     k = k.strip()
     v = v.strip()
     if not k:
-        sys.exit("error: empty metric name")
+        sys.exit("error: empty field name")
     # Coerce: try int → float → leave as string.
     try:
         if v.lstrip("-").isdigit():
@@ -531,19 +531,19 @@ def _parse_metric(raw: str) -> tuple[str, object]:
         return k, v
 
 
-def cmd_evaluate_submit(env: dict[str, str], args: argparse.Namespace) -> None:
+def cmd_evaluation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     claim = _get_claim(args.task_id)
     token = claim["token"]
 
     task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
-    trial_id = task["payload"]["trial_id"]
+    variant_id = task["payload"]["variant_id"]
 
-    payload: dict[str, object] = {"status": args.status, "trial_id": trial_id}
+    payload: dict[str, object] = {"status": args.status, "variant_id": variant_id}
     if args.status == "success":
-        if not args.metric:
-            sys.exit("error: --metric K=V required for status=success (one per metric)")
-        metrics = dict(_parse_metric(m) for m in args.metric)
-        payload["metrics"] = metrics
+        if not args.field:
+            sys.exit("error: --field K=V required for status=success (one per evaluation field)")
+        evaluation = dict(_parse_field(f) for f in args.field)
+        payload["evaluation"] = evaluation
     if args.artifacts_uri:
         payload["artifacts_uri"] = args.artifacts_uri
 
@@ -553,7 +553,7 @@ def cmd_evaluate_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         body={"token": token, "payload": payload},
     )
     _drop_claim(args.task_id)
-    print(json.dumps({"task_id": args.task_id, "status": args.status, "trial_id": trial_id}, indent=2))
+    print(json.dumps({"task_id": args.task_id, "status": args.status, "variant_id": variant_id}, indent=2))
 
 
 # --------------------------------------------------------------------- main
@@ -563,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("list-tasks")
-    sp.add_argument("--kind", choices=("plan", "implement", "evaluate"))
+    sp.add_argument("--kind", choices=("ideation", "execution", "evaluation"))
     sp.add_argument("--state")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_list_tasks)
@@ -597,28 +597,28 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--message")
     sp.set_defaults(func=cmd_push)
 
-    sp = sub.add_parser("plan-submit")
+    sp = sub.add_parser("ideation-submit")
     sp.add_argument("task_id")
-    sp.add_argument("--proposals-file")
+    sp.add_argument("--ideas-file")
     sp.add_argument("--status", choices=("success", "error"), default="success")
-    sp.set_defaults(func=cmd_plan_submit)
+    sp.set_defaults(func=cmd_ideation_submit)
 
-    sp = sub.add_parser("implement-submit")
+    sp = sub.add_parser("execution-submit")
     sp.add_argument("task_id")
     sp.add_argument("--sha")
     sp.add_argument("--description")
     sp.add_argument("--workdir", help="default: /tmp/eden-manual/<task_id>")
     sp.add_argument("--status", choices=("success", "error"), default="success")
-    sp.set_defaults(func=cmd_implement_submit)
+    sp.set_defaults(func=cmd_execution_submit)
 
-    sp = sub.add_parser("evaluate-submit")
+    sp = sub.add_parser("evaluation-submit")
     sp.add_argument("task_id")
-    sp.add_argument("--metric", action="append", default=[],
+    sp.add_argument("--field", action="append", default=[],
                     help="K=V (repeatable); required when --status=success")
     sp.add_argument("--artifacts-uri")
-    sp.add_argument("--status", choices=("success", "error", "eval_error"),
+    sp.add_argument("--status", choices=("success", "error", "evaluation_error"),
                     default="success")
-    sp.set_defaults(func=cmd_evaluate_submit)
+    sp.set_defaults(func=cmd_evaluation_submit)
 
     args = p.parse_args(argv)
     env = _load_env()

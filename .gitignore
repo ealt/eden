@@ -36,8 +36,10 @@ docs/plans/review/**/*.stderr
 docs/plans/review/**/*.stdout
 docs/plans/review/**/prompt.txt
 
-# Claude Code local runtime state (scheduled-task lock, etc.)
-.claude/
+# Claude Code local runtime state (scheduled-task lock, etc.) —
+# but track project-specific skills under .claude/skills/.
+.claude/*
+!.claude/skills/
 
 # Compose secrets — example template is committed; real .env is not.
 reference/compose/.env
