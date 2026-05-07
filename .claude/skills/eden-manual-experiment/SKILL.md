@@ -16,11 +16,12 @@ are `eden-manual-{ideator,executor,evaluator}`.
 
 The CLI lives at:
 
-```
+```text
 EDEN_EXP=/Users/ericalt/Documents/eden-worktrees/test-main/reference/scripts/manual-ui/eden-experiment
 ```
 
 Subcommands:
+
 - `up <config> --experiment-id <id> [--seed-from <dir>] [--with-workers] [--port <n>]`
 - `down [--purge]`
 - `reset <config> --experiment-id <id> [--seed-from <dir>] [--with-workers] [--port <n>]`
@@ -127,6 +128,7 @@ Stack must be running (need `pg_dump`). Gitea is briefly stopped
 `reference/compose/checkpoints/<name>/`.
 
 The checkpoint includes:
+
 - `postgres.sql` — pg_dump of the eden database
 - `gitea.tar.gz` — full gitea data dir (repos + auth + tokens)
 - `artifacts.tar.gz` — artifacts volume

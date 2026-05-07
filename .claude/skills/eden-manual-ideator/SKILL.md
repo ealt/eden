@@ -28,7 +28,7 @@ The CLI lives at `reference/scripts/manual-ui/eden-manual` (relative to
 the repo root). Use the absolute path when invoking from the user's
 shell to avoid cwd-related fragility:
 
-```
+```text
 EDEN=/Users/ericalt/Documents/eden-worktrees/test-main/reference/scripts/manual-ui/eden-manual
 ```
 
@@ -45,6 +45,7 @@ cat /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose/experime
 ```
 
 Show:
+
 - Pending ideation tasks.
 - Available parent commits (base + integrated variants).
 - The experiment's `objective` and `evaluation_schema` (so user knows
@@ -64,6 +65,7 @@ The token is persisted in `/tmp/eden-manual/.claims.json` automatically.
 ### Phase 3: Elicit ideas from the user (judgment)
 
 Ask the user — concisely, one prompt — for:
+
 - How many ideas to draft (default 1).
 - For each: slug, parent_commits (suggest from `list-commits`), priority
   (default 1.0), and rationale.

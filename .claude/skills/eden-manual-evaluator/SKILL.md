@@ -33,7 +33,7 @@ web UI.
 
 ## Workflow
 
-```
+```text
 EDEN=/Users/ericalt/Documents/eden-worktrees/test-main/reference/scripts/manual-ui/eden-manual
 ```
 
@@ -53,6 +53,7 @@ $EDEN show <task-id>
 ```
 
 Present:
+
 - The variant: `branch`, `commit_sha`, `parent_commits`, `description`.
 - The evaluation_schema (names + types) from `experiment-config.yaml`.
 - The objective so the user knows the direction to score in.

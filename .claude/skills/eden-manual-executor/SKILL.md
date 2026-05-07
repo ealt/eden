@@ -23,7 +23,7 @@ web UI.
 
 ## Workflow
 
-```
+```text
 EDEN=/Users/ericalt/Documents/eden-worktrees/test-main/reference/scripts/manual-ui/eden-manual
 ```
 
@@ -44,6 +44,7 @@ $EDEN show <task-id>
 
 This returns task + idea + (if reachable) inline rationale text.
 Present a digest:
+
 - idea slug, priority, parent_commits
 - the **rationale text in full** — the user needs to see the spec
 - the experiment's objective from `experiment-config.yaml`
@@ -90,7 +91,7 @@ git -C /tmp/eden-manual/<task-id> diff --stat
 ### Phase 6: Commit + push + submit (automatic)
 
 Ask the user briefly for a commit message (default: derive from idea
-slug, e.g. "execute: <slug>"). Use `idea.slug` as the local branch name
+slug, e.g. `execute: <slug>`). Use `idea.slug` as the local branch name
 to mirror the canonical work-branch shape.
 
 ```bash
@@ -104,6 +105,7 @@ $EDEN execution-submit <task-id> --sha <sha> --description "<short note>"
 ```
 
 This:
+
 1. Fetches origin in the workdir.
 2. Verifies commit exists + descends from declared parent_commits.
 3. Creates a `Variant(starting, branch=work/<slug>-<variant_id>,
