@@ -52,7 +52,7 @@ def _common_wrap_kwargs(
     if extra_binds:
         binds.extend(extra_binds)
     return dict(
-        original_command="python3 /etc/eden/experiment-dir/implement.py",
+        original_command="python3 /etc/eden/experiment-dir/execution.py",
         image="eden-runtime:dev",
         cwd_target=cwd_target,
         cidfile=cidfile,
@@ -158,7 +158,7 @@ def test_wrap_command_ideator_only_bind(tmp_path: Path) -> None:
     """Ideator has no volume mounts (cwd = experiment-dir bind)."""
     cidfile = tmp_path / "cid"
     out = wrap_command(
-        original_command="python3 plan.py",
+        original_command="python3 ideation.py",
         image="eden-runtime:dev",
         cwd_target="/etc/eden/experiment-dir",
         cidfile=cidfile,

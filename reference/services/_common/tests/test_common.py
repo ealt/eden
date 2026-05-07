@@ -56,7 +56,7 @@ def _make_impl_task(task_id: str = "execution-1") -> Any:
         state="pending",
         created_at=_TS,
         updated_at=_TS,
-        payload=ExecutionPayload(idea_id="p-1"),
+        payload=ExecutionPayload(idea_id="idea-1"),
     )
 
 
@@ -69,21 +69,21 @@ def _make_eval_task(task_id: str = "evaluate-1") -> Any:
         state="pending",
         created_at=_TS,
         updated_at=_TS,
-        payload=EvaluationPayload(variant_id="tr-1"),
+        payload=EvaluationPayload(variant_id="variant-1"),
     )
 
 
-def test_make_plan_fn_emits_ideas_with_base_commit_parent() -> None:
+def test_make_ideation_fn_emits_ideas_with_base_commit_parent() -> None:
     base = "a" * 40
-    plan_fn = make_plan_fn(base_commit_sha=base, ideas_per_ideation=2)
-    out = plan_fn(_make_plan_task())
+    ideation_fn = make_plan_fn(base_commit_sha=base, ideas_per_ideation=2)
+    out = ideation_fn(_make_plan_task())
     assert len(out) == 2
     for tpl in out:
         assert tpl.parent_commits == (base,)
         assert tpl.slug.startswith("ideation-1-p")
 
 
-def test_make_implement_fn_writes_real_commit(tmp_path: Path) -> None:
+def test_make_execution_fn_writes_real_commit(tmp_path: Path) -> None:
     import subprocess
 
     from eden_contracts import Idea
@@ -94,10 +94,10 @@ def test_make_implement_fn_writes_real_commit(tmp_path: Path) -> None:
         capture_output=True,
     )
     base = seed_bare_repo(str(tmp_path))
-    impl_fn = make_implement_fn(repo_path=str(tmp_path))
+    exec_fn = make_implement_fn(repo_path=str(tmp_path))
     task = _make_impl_task()
     idea = Idea(
-        idea_id="p-1",
+        idea_id="idea-1",
         experiment_id="exp",
         slug="feat-x",
         priority=1.0,
@@ -106,7 +106,7 @@ def test_make_implement_fn_writes_real_commit(tmp_path: Path) -> None:
         state="ready",
         created_at=_TS,
     )
-    outcome = impl_fn(task, idea)
+    outcome = exec_fn(task, idea)
     assert outcome.status == "success"
     assert outcome.commit_sha is not None
     assert len(outcome.commit_sha) == 40
@@ -121,9 +121,9 @@ def test_make_evaluate_fn_emits_schema_matching_evaluation() -> None:
     eval_fn = make_evaluate_fn(evaluation_schema=schema)
     task = _make_eval_task()
     variant = Variant(
-        variant_id="tr-1",
+        variant_id="variant-1",
         experiment_id="exp",
-        idea_id="p-1",
+        idea_id="idea-1",
         status="starting",
         parent_commits=["a" * 40],
         branch="work/x",

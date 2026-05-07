@@ -27,7 +27,7 @@ def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> st
     return task_id
 
 
-def _claim_plan_task(
+def _claim_ideation_task(
     store: InMemoryStore, task_id: str, *, worker_id: str = "ui-w"
 ) -> str:
     claim = store.claim(task_id, worker_id)
@@ -44,7 +44,7 @@ class TestAdminAuthGate:
         self, client: TestClient, store: InMemoryStore
     ) -> None:
         task_id = _seed_ideation_task(store)
-        _claim_plan_task(store, task_id)
+        _claim_ideation_task(store, task_id)
         resp = client.post(
             f"/admin/tasks/{task_id}/reclaim",
             data={"csrf_token": "anything"},
@@ -157,7 +157,7 @@ class TestAdminTaskDetail:
         from eden_storage import IdeaSubmission
 
         task_id = _seed_ideation_task(store, "ideation-A")
-        token = _claim_plan_task(store, task_id)
+        token = _claim_ideation_task(store, task_id)
         store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/")
         assert resp.status_code == 200
@@ -171,7 +171,7 @@ class TestAdminTaskDetail:
         from eden_storage import IdeaSubmission
 
         task_id = _seed_ideation_task(store, "ideation-A")
-        token = _claim_plan_task(store, task_id)
+        token = _claim_ideation_task(store, task_id)
         store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/")
@@ -191,7 +191,7 @@ class TestAdminTaskReclaim:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         task_id = _seed_ideation_task(store, "ideation-A")
-        _claim_plan_task(store, task_id)
+        _claim_ideation_task(store, task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             f"/admin/tasks/{task_id}/reclaim",
@@ -209,7 +209,7 @@ class TestAdminTaskReclaim:
         from eden_storage import IdeaSubmission
 
         task_id = _seed_ideation_task(store, "ideation-A")
-        token = _claim_plan_task(store, task_id)
+        token = _claim_ideation_task(store, task_id)
         store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -227,7 +227,7 @@ class TestAdminTaskReclaim:
         from eden_storage import IdeaSubmission
 
         task_id = _seed_ideation_task(store, "ideation-A")
-        token = _claim_plan_task(store, task_id)
+        token = _claim_ideation_task(store, task_id)
         store.submit(task_id, token, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
@@ -243,7 +243,7 @@ class TestAdminTaskReclaim:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         task_id = _seed_ideation_task(store, "ideation-A")
-        _claim_plan_task(store, task_id)
+        _claim_ideation_task(store, task_id)
         resp = signed_in_client.post(
             f"/admin/tasks/{task_id}/reclaim",
             data={"csrf_token": "wrong-token"},
@@ -290,7 +290,7 @@ class TestAdminEvents:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         for i in range(5):
-            _seed_ideation_task(store, f"ideate-{i}")
+            _seed_ideation_task(store, f"ideation-{i}")
         resp = signed_in_client.get("/admin/events/")
         assert resp.status_code == 200
         assert "task.created" in resp.text

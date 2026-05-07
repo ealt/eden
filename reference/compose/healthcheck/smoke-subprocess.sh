@@ -121,15 +121,15 @@ test "$TASK_COMPLETED" -ge 9 || {
     echo "expected >= 9 task.completed events; got $TASK_COMPLETED" >&2
     exit 1
 }
-PLAN_COMPLETED="$(
+IDEATION_COMPLETED="$(
     echo "$EVENTS_JSON" \
         | jq '(.events // .) | [.[] | select(
               .type == "task.completed"
               and (.data.task_id | startswith("ideation-"))
             )] | length'
 )"
-test "$PLAN_COMPLETED" -ge 3 || {
-    echo "expected >= 3 ideate-task.completed events; got $PLAN_COMPLETED" >&2
+test "$IDEATION_COMPLETED" -ge 3 || {
+    echo "expected >= 3 ideation-task.completed events; got $IDEATION_COMPLETED" >&2
     exit 1
 }
 

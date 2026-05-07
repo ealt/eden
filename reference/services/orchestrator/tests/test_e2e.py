@@ -214,7 +214,7 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             "--repo-path",
             str(bare_repo),
             "--ideation-tasks",
-            "ideate-1,plan-2,plan-3",
+            "ideation-1,plan-2,plan-3",
         ],
         orchestrator_log,
     )

@@ -100,7 +100,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ideation-tasks",
         required=True,
         help=(
-            "Either an integer N (creates ideation-0001..ideate-N) or a "
+            "Either an integer N (creates ideation-0001..ideation-N) or a "
             "comma-separated list of explicit ideation task IDs."
         ),
     )
@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ideation_task_ids = _expand_ideation_tasks(args.ideation_tasks)
-    log.info("starting", ideate_tasks=len(ideation_task_ids), repo=args.repo_path)
+    log.info("starting", ideation_tasks=len(ideation_task_ids), repo=args.repo_path)
 
     with StoreClient(
         args.task_store_url,

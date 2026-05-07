@@ -150,11 +150,11 @@ def _run_variant_to_success(
 class TestFullExperiment:
     """Plan → implement → evaluate → integrate over HTTP."""
 
-    def test_plan_implement_evaluate_integrate(
+    def test_ideation_execution_evaluation_integration(
         self, store_client: StoreClient
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="t1", idea_id="prop-1", variant_id="variant-1"
+            store_client, task_prefix="t1", idea_id="idea-1", variant_id="variant-1"
         )
         variant_commit_sha = "c" * 40
         store_client.integrate_variant("variant-1", variant_commit_sha)
@@ -207,10 +207,10 @@ class TestErrorEnvelopeRoundtrip:
 
     def test_invalid_precondition(self, store_client: StoreClient) -> None:
         """An integrate call against a non-success variant raises InvalidPrecondition."""
-        store_client.create_idea(Idea.model_validate(_make_idea_body("prop-x")))
-        store_client.mark_idea_ready("prop-x")
+        store_client.create_idea(Idea.model_validate(_make_idea_body("idea-x")))
+        store_client.mark_idea_ready("idea-x")
         store_client.create_variant(
-            Variant.model_validate(_make_variant_body("t-starting", "prop-x"))
+            Variant.model_validate(_make_variant_body("t-starting", "idea-x"))
         )
         # Variant is still "starting"; integrate must refuse.
         with pytest.raises(InvalidPrecondition):
@@ -251,7 +251,7 @@ class TestResponseCodes:
         self, client: Client, store_client: StoreClient
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="sc2", idea_id="sc2-prop", variant_id="sc2-variant"
+            store_client, task_prefix="sc2", idea_id="sc2-idea", variant_id="sc2-variant"
         )
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/variants/sc2-variant/integrate",
@@ -266,24 +266,24 @@ class TestResponseCodes:
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/ideas",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json=_make_idea_body("body-prop"),
+            json=_make_idea_body("body-idea"),
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["idea_id"] == "body-prop"
+        assert body["idea_id"] == "body-idea"
         assert body["state"] == "drafting"
 
     def test_create_variant_returns_entity(
         self, client: Client, store_client: StoreClient
     ) -> None:
         store_client.create_idea(
-            Idea.model_validate(_make_idea_body("ct-prop"))
+            Idea.model_validate(_make_idea_body("ct-idea"))
         )
-        store_client.mark_idea_ready("ct-prop")
+        store_client.mark_idea_ready("ct-idea")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/variants",
             headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json=_make_variant_body("ct-variant", "ct-prop"),
+            json=_make_variant_body("ct-variant", "ct-idea"),
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -298,7 +298,7 @@ class TestIntegrateIdempotency:
         self, store: InMemoryStore, store_client: StoreClient
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="idem", idea_id="idem-prop", variant_id="idem-t"
+            store_client, task_prefix="idem", idea_id="idem-idea", variant_id="idem-t"
         )
         sha = "c" * 40
         store_client.integrate_variant("idem-t", sha)
@@ -310,7 +310,7 @@ class TestIntegrateIdempotency:
         self, store_client: StoreClient
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="div", idea_id="div-prop", variant_id="div-t"
+            store_client, task_prefix="div", idea_id="div-idea", variant_id="div-t"
         )
         store_client.integrate_variant("div-t", "c" * 40)
         with pytest.raises(InvalidPrecondition):
@@ -442,7 +442,7 @@ class TestIndeterminateIntegration:
         seed = TestClient(app, base_url="http://wire.test")
         seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
         _run_variant_to_success(
-            seed_client, task_prefix="cs", idea_id="cs-prop", variant_id="cs-t"
+            seed_client, task_prefix="cs", idea_id="cs-idea", variant_id="cs-t"
         )
 
         flaky = Client(
@@ -468,7 +468,7 @@ class TestIndeterminateIntegration:
         seed = TestClient(app, base_url="http://wire.test")
         seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
         _run_variant_to_success(
-            seed_client, task_prefix="ind", idea_id="ind-prop", variant_id="ind-t"
+            seed_client, task_prefix="ind", idea_id="ind-idea", variant_id="ind-t"
         )
 
         flaky = Client(
@@ -498,7 +498,7 @@ class TestIndeterminateIntegration:
         seed = TestClient(app, base_url="http://wire.test")
         seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
         _run_variant_to_success(
-            seed_client, task_prefix="dv", idea_id="dv-prop", variant_id="dv-t"
+            seed_client, task_prefix="dv", idea_id="dv-idea", variant_id="dv-t"
         )
         seed_client.integrate_variant("dv-t", "d" * 40)  # pre-commit a different SHA
 

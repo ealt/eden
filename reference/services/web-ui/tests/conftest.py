@@ -137,7 +137,7 @@ def make_child_commit(repo: GitRepo, parent_sha: str, payload: str) -> str:
 
 
 @pytest.fixture
-def impl_app(
+def exec_app(
     store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
 ) -> FastAPI:
     """A make_app that has the executor module enabled."""
@@ -156,16 +156,16 @@ def impl_app(
 
 
 @pytest.fixture
-def impl_client(impl_app: FastAPI) -> Iterator[TestClient]:
-    with TestClient(impl_app) as c:
+def exec_client(exec_app: FastAPI) -> Iterator[TestClient]:
+    with TestClient(exec_app) as c:
         yield c
 
 
 @pytest.fixture
-def signed_in_impl_client(impl_client: TestClient) -> TestClient:
-    resp = impl_client.post("/signin", follow_redirects=False)
+def signed_in_impl_client(exec_client: TestClient) -> TestClient:
+    resp = exec_client.post("/signin", follow_redirects=False)
     assert resp.status_code == 303
-    return impl_client
+    return exec_client
 
 
 def seed_implement_task(
@@ -253,9 +253,9 @@ def seed_evaluate_task(
     )
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
-    impl_task_id = f"execute-{slug}"
-    store.create_execution_task(impl_task_id, idea_id)
-    impl_claim = store.claim(impl_task_id, "executor-w")
+    exec_task_id = f"execute-{slug}"
+    store.create_execution_task(exec_task_id, idea_id)
+    exec_claim = store.claim(exec_task_id, "executor-w")
 
     from typing import Any
 
@@ -275,11 +275,11 @@ def seed_evaluate_task(
     store.create_variant(Variant(**variant_kwargs))
 
     store.submit(
-        impl_task_id,
-        impl_claim.token,
+        exec_task_id,
+        exec_claim.token,
         VariantSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
     )
-    store.accept(impl_task_id)
+    store.accept(exec_task_id)
 
     eval_task_id = f"evaluate-{slug}"
     store.create_evaluation_task(eval_task_id, variant_id)
@@ -287,7 +287,7 @@ def seed_evaluate_task(
 
 
 def get_evaluate_submission(store: InMemoryStore, task_id: str):
-    """Read and type-narrow an evaluate-task submission for evaluator-module tests.
+    """Read and type-narrow an evaluation-task submission for evaluator-module tests.
 
     Pyright treats ``Store.read_submission`` as returning the
     ``Submission`` union; tests that need to access

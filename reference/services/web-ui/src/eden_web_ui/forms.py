@@ -3,7 +3,7 @@
 Ideator form input arrives as a list of repeated field rows (one per
 idea); we parse it into ``IdeaDraft`` objects plus the
 ideator-level status. Executor form input is single-row (one
-variant per task); we parse it into a single ``ImplementDraft``.
+variant per task); we parse it into a single ``ExecutionDraft``.
 Evaluator form input is single-row (one evaluation task → one
 submission) with one input per declared metric; we parse it into a
 single ``EvaluationDraft``. Validation errors are accumulated
@@ -129,7 +129,7 @@ def parse_idea_rows(
 
 
 @dataclass(frozen=True)
-class ImplementDraft:
+class ExecutionDraft:
     """Validated executor-form input for one variant.
 
     The route handler combines this with the server-owned
@@ -148,7 +148,7 @@ def parse_implement_form(
     status_raw: str,
     commit_sha_raw: str,
     description_raw: str,
-) -> tuple[ImplementDraft | None, FormErrors]:
+) -> tuple[ExecutionDraft | None, FormErrors]:
     """Parse the executor draft form into a validated draft.
 
     Returns ``(None, errors)`` if validation fails, otherwise
@@ -182,7 +182,7 @@ def parse_implement_form(
         return None, errors
 
     return (
-        ImplementDraft(
+        ExecutionDraft(
             status=status,
             commit_sha=commit_sha,
             description=description or None,

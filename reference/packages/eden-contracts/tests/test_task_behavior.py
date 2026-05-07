@@ -23,7 +23,7 @@ def _claim() -> dict[str, str]:
     }
 
 
-def test_discriminator_dispatches_plan() -> None:
+def test_discriminator_dispatches_ideation() -> None:
     task = TaskAdapter.validate_python(
         {
             "task_id": "t",
@@ -39,13 +39,13 @@ def test_discriminator_dispatches_plan() -> None:
     assert task.payload.experiment_id == "exp-1"
 
 
-def test_discriminator_dispatches_implement() -> None:
+def test_discriminator_dispatches_execution() -> None:
     task = TaskAdapter.validate_python(
         {
             "task_id": "t",
             "kind": "execution",
             "state": "claimed",
-            "payload": {"idea_id": "p-1"},
+            "payload": {"idea_id": "idea-1"},
             "claim": _claim(),
             "created_at": "2026-04-23T12:00:00Z",
             "updated_at": "2026-04-23T12:00:00Z",

@@ -61,9 +61,9 @@ class EvaluationOutcome:
     artifacts_uri: str | None = None
 
 
-PlanFn = Callable[[IdeationTask], list[IdeaTemplate]]
-ImplementFn = Callable[[ExecutionTask, Idea], ExecutionOutcome]
-EvaluateFn = Callable[[EvaluationTask, Variant], EvaluationOutcome]
+IdeationFn = Callable[[IdeationTask], list[IdeaTemplate]]
+ExecutionFn = Callable[[ExecutionTask, Idea], ExecutionOutcome]
+EvaluationFn = Callable[[EvaluationTask, Variant], EvaluationOutcome]
 
 
 class ScriptedIdeator:
@@ -79,13 +79,13 @@ class ScriptedIdeator:
     def __init__(
         self,
         worker_id: str,
-        plan_fn: PlanFn,
+        ideation_fn: IdeationFn,
         *,
         idea_id_factory: Callable[[], str],
         now: Callable[[], str],
     ) -> None:
         self._worker_id = worker_id
-        self._plan_fn = plan_fn
+        self._ideation_fn = ideation_fn
         self._idea_id_factory = idea_id_factory
         self._now = now
 
@@ -121,7 +121,7 @@ class ScriptedIdeator:
 
     def _handle(self, store: Store, task: IdeationTask) -> None:
         claim = store.claim(task.task_id, self._worker_id)
-        templates = self._plan_fn(task)
+        templates = self._ideation_fn(task)
         idea_ids: list[str] = []
         for tpl in templates:
             idea_id = self._idea_id_factory()
@@ -158,13 +158,13 @@ class ScriptedExecutor:
     def __init__(
         self,
         worker_id: str,
-        implement_fn: ImplementFn,
+        execution_fn: ExecutionFn,
         *,
         variant_id_factory: Callable[[], str],
         now: Callable[[], str],
     ) -> None:
         self._worker_id = worker_id
-        self._implement_fn = implement_fn
+        self._execution_fn = execution_fn
         self._variant_id_factory = variant_id_factory
         self._now = now
 
@@ -201,7 +201,7 @@ class ScriptedExecutor:
         claim = store.claim(task.task_id, self._worker_id)
 
         variant_id = self._variant_id_factory()
-        outcome = self._implement_fn(task, idea)
+        outcome = self._execution_fn(task, idea)
         branch = outcome.branch or f"work/{idea.slug}-{variant_id}"
         variant_kwargs: dict[str, Any] = {
             "variant_id": variant_id,
@@ -240,10 +240,10 @@ class ScriptedEvaluator:
     def __init__(
         self,
         worker_id: str,
-        evaluate_fn: EvaluateFn,
+        evaluation_fn: EvaluationFn,
     ) -> None:
         self._worker_id = worker_id
-        self._evaluate_fn = evaluate_fn
+        self._evaluation_fn = evaluation_fn
 
     @property
     def worker_id(self) -> str:
@@ -276,7 +276,7 @@ class ScriptedEvaluator:
     def _handle(self, store: Store, task: EvaluationTask) -> None:
         variant = store.read_variant(task.payload.variant_id)
         claim = store.claim(task.task_id, self._worker_id)
-        outcome = self._evaluate_fn(task, variant)
+        outcome = self._evaluation_fn(task, variant)
         store.submit(
             task.task_id,
             claim.token,

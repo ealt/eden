@@ -123,8 +123,8 @@ class TestCSRF:
 
 
 class TestCookieAttributes:
-    def test_cookie_has_httponly_lax_path(self, impl_client: TestClient) -> None:
-        resp = impl_client.post("/signin", follow_redirects=False)
+    def test_cookie_has_httponly_lax_path(self, exec_client: TestClient) -> None:
+        resp = exec_client.post("/signin", follow_redirects=False)
         assert resp.status_code == 303
         cookie_hdr = resp.headers["set-cookie"].lower()
         assert "httponly" in cookie_hdr

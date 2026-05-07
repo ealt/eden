@@ -205,12 +205,12 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             from eden_contracts import Variant
 
             variant = Variant(
-                variant_id="tr-1",
+                variant_id="variant-1",
                 experiment_id=experiment_id,
                 idea_id="p-eval",
                 status="starting",
                 parent_commits=["a" * 40],
-                branch="work/eval-e2e-tr-1",
+                branch="work/eval-e2e-variant-1",
                 started_at="2026-04-24T12:00:00Z",
             )
             seed.create_variant(variant)
@@ -219,11 +219,11 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
                 "t-exec-1",
                 claim.token,
                 VariantSubmission(
-                    status="success", variant_id="tr-1", commit_sha="b" * 40
+                    status="success", variant_id="variant-1", commit_sha="b" * 40
                 ),
             )
             seed.accept("t-exec-1")
-            seed.create_evaluation_task("t-eval-1", "tr-1")
+            seed.create_evaluation_task("t-eval-1", "variant-1")
         finally:
             seed.close()
 
@@ -248,7 +248,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
 
             resp = ui.get("/evaluator/t-eval-1/draft")
             assert resp.status_code == 200, resp.text
-            assert "tr-1" in resp.text
+            assert "variant-1" in resp.text
 
             body = urlencode(
                 [
@@ -284,7 +284,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             recorded = store.read_submission("t-eval-1")
             assert isinstance(recorded, EvaluationSubmission)
             assert recorded.status == "success"
-            assert recorded.variant_id == "tr-1"
+            assert recorded.variant_id == "variant-1"
             assert recorded.evaluation == {"score": 0.875}
             assert recorded.artifacts_uri == "https://logs.example/run-1"
         finally:

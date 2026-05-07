@@ -361,19 +361,19 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     try:
         variants = store.list_variants(status=status)
-        impl_tasks = store.list_tasks(kind="execution")
+        exec_tasks = store.list_tasks(kind="execution")
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load variants")
-    impl_terminal_by_idea: dict[str, bool] = {
+    exec_terminal_by_idea: dict[str, bool] = {
         t.payload.idea_id: (t.state in {"completed", "failed"})
-        for t in impl_tasks
+        for t in exec_tasks
     }
 
     rows: list[dict[str, Any]] = []
     for tr in variants:
         orphaned = (
             tr.status == "starting"
-            and impl_terminal_by_idea.get(tr.idea_id, False)
+            and exec_terminal_by_idea.get(tr.idea_id, False)
         )
         rows.append(
             {
@@ -454,7 +454,7 @@ def _events_for_variant(
     match for the execution task that produced this variant + task-id
     match for any evaluation task whose payload references this variant.
     """
-    impl_task_ids = {
+    exec_task_ids = {
         t.task_id
         for t in store.list_tasks(kind="execution")
         if t.payload.idea_id == idea_id
@@ -470,7 +470,7 @@ def _events_for_variant(
             related.append(ev)
             continue
         tid = ev.data.get("task_id")
-        if tid is not None and (tid in impl_task_ids or tid in eval_task_ids):
+        if tid is not None and (tid in exec_task_ids or tid in eval_task_ids):
             related.append(ev)
     return related, len(related)
 

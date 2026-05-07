@@ -53,9 +53,9 @@ class TestRouting:
 
 class TestList:
     def test_list_pending_redirects_when_unauthenticated(
-        self, impl_client: TestClient
+        self, exec_client: TestClient
     ) -> None:
-        resp = impl_client.get("/executor/", follow_redirects=False)
+        resp = exec_client.get("/executor/", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/signin"
 

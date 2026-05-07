@@ -37,7 +37,7 @@ def run_executor_loop(
     """
     impl = ScriptedExecutor(
         worker_id=worker_id,
-        implement_fn=make_implement_fn(
+        execution_fn=make_implement_fn(
             repo_path=repo_path, fail_every=fail_every
         ),
         variant_id_factory=_variant_id,

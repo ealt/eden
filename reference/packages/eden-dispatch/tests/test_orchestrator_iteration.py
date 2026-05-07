@@ -48,7 +48,7 @@ def _make_store() -> InMemoryStore:
     )
 
 
-def _impl_factory() -> str:
+def _exec_factory() -> str:
     return f"t-exec-{itertools.count(1).__next__()}"
 
 
@@ -56,9 +56,9 @@ def _eval_factory() -> str:
     return f"t-eval-{itertools.count(1).__next__()}"
 
 
-def test_accepts_submitted_plan_task() -> None:
+def test_accepts_submitted_ideation_task() -> None:
     store = _make_store()
-    task_id = "t-ideate-1"
+    task_id = "t-ideation-1"
     store.create_ideation_task(task_id)
     claim = store.claim(task_id, worker_id="ideator-1")
     store.submit(
@@ -71,19 +71,19 @@ def test_accepts_submitted_plan_task() -> None:
 
     progress = run_orchestrator_iteration(
         store,
-        implement_task_id_factory=_impl_factory,
-        evaluate_task_id_factory=_eval_factory,
+        execution_task_id_factory=_exec_factory,
+        evaluation_task_id_factory=_eval_factory,
     )
 
     assert progress is True
     assert store.read_task(task_id).state == "completed"
 
 
-def test_dispatches_implement_task_for_ready_idea() -> None:
+def test_dispatches_execution_task_for_ready_idea() -> None:
     store = _make_store()
     now = _now_factory()
     idea = Idea(
-        idea_id="p-1",
+        idea_id="idea-1",
         experiment_id=store.experiment_id,
         slug="feat-1",
         priority=1.0,
@@ -93,7 +93,7 @@ def test_dispatches_implement_task_for_ready_idea() -> None:
         created_at=now(),
     )
     store.create_idea(idea)
-    store.mark_idea_ready("p-1")
+    store.mark_idea_ready("idea-1")
 
     dispatched_ids: list[str] = []
 
@@ -104,22 +104,22 @@ def test_dispatches_implement_task_for_ready_idea() -> None:
 
     progress = run_orchestrator_iteration(
         store,
-        implement_task_id_factory=factory,
-        evaluate_task_id_factory=_eval_factory,
+        execution_task_id_factory=factory,
+        evaluation_task_id_factory=_eval_factory,
     )
 
     assert progress is True
     assert len(dispatched_ids) == 1
     impl = store.read_task(dispatched_ids[0])
     assert isinstance(impl, ExecutionTask)
-    assert impl.payload.idea_id == "p-1"
+    assert impl.payload.idea_id == "idea-1"
 
 
 def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
     store = _make_store()
     now = _now_factory()
     idea = Idea(
-        idea_id="p-1",
+        idea_id="idea-1",
         experiment_id=store.experiment_id,
         slug="feat-1",
         priority=1.0,
@@ -129,14 +129,14 @@ def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
         created_at=now(),
     )
     store.create_idea(idea)
-    store.mark_idea_ready("p-1")
+    store.mark_idea_ready("idea-1")
     variant = Variant(
-        variant_id="tr-1",
+        variant_id="variant-1",
         experiment_id=store.experiment_id,
-        idea_id="p-1",
+        idea_id="idea-1",
         status="starting",
         parent_commits=["a" * 40],
-        branch="work/feat-1-tr-1",
+        branch="work/feat-1-variant-1",
         commit_sha="b" * 40,
         started_at=now(),
     )
@@ -151,15 +151,15 @@ def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
 
     progress = run_orchestrator_iteration(
         store,
-        implement_task_id_factory=_impl_factory,
-        evaluate_task_id_factory=factory,
+        execution_task_id_factory=_exec_factory,
+        evaluation_task_id_factory=factory,
     )
 
     assert progress is True
     assert len(dispatched_ids) == 1
     ev = store.read_task(dispatched_ids[0])
     assert isinstance(ev, EvaluationTask)
-    assert ev.payload.variant_id == "tr-1"
+    assert ev.payload.variant_id == "variant-1"
 
 
 def _drive_variant_to_success(store: InMemoryStore) -> str:
@@ -169,11 +169,11 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     internal invariants hold.
     """
     now = _now_factory()
-    # Ideate-task
-    store.create_ideation_task("t-ideate-1")
-    claim = store.claim("t-ideate-1", "ideator-1")
+    # Ideation-task
+    store.create_ideation_task("t-ideation-1")
+    claim = store.claim("t-ideation-1", "ideator-1")
     idea = Idea(
-        idea_id="p-1",
+        idea_id="idea-1",
         experiment_id=store.experiment_id,
         slug="feat-1",
         priority=1.0,
@@ -183,40 +183,40 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
         created_at=now(),
     )
     store.create_idea(idea)
-    store.mark_idea_ready("p-1")
+    store.mark_idea_ready("idea-1")
     store.submit(
-        "t-ideate-1", claim.token, IdeaSubmission(status="success", idea_ids=("p-1",))
+        "t-ideation-1", claim.token, IdeaSubmission(status="success", idea_ids=("idea-1",))
     )
-    store.accept("t-ideate-1")
-    # Execute-task
-    store.create_execution_task("t-exec-1", "p-1")
+    store.accept("t-ideation-1")
+    # Execution-task
+    store.create_execution_task("t-exec-1", "idea-1")
     claim = store.claim("t-exec-1", "executor-1")
     variant = Variant(
-        variant_id="tr-1",
+        variant_id="variant-1",
         experiment_id=store.experiment_id,
-        idea_id="p-1",
+        idea_id="idea-1",
         status="starting",
         parent_commits=["a" * 40],
-        branch="work/feat-1-tr-1",
+        branch="work/feat-1-variant-1",
         started_at=now(),
     )
     store.create_variant(variant)
     store.submit(
         "t-exec-1",
         claim.token,
-        VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+        VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
     )
     store.accept("t-exec-1")
     # Evaluation task
-    store.create_evaluation_task("t-eval-1", "tr-1")
+    store.create_evaluation_task("t-eval-1", "variant-1")
     claim = store.claim("t-eval-1", "evaluator-1")
     store.submit(
         "t-eval-1",
         claim.token,
-        EvaluationSubmission(status="success", variant_id="tr-1", evaluation={"loss": 0.5}),
+        EvaluationSubmission(status="success", variant_id="variant-1", evaluation={"loss": 0.5}),
     )
     store.accept("t-eval-1")
-    return "tr-1"
+    return "variant-1"
 
 
 def test_promotes_successful_variant_via_integrate_variant_callback() -> None:
@@ -233,8 +233,8 @@ def test_promotes_successful_variant_via_integrate_variant_callback() -> None:
 
     progress = run_orchestrator_iteration(
         store,
-        implement_task_id_factory=_impl_factory,
-        evaluate_task_id_factory=_eval_factory,
+        execution_task_id_factory=_exec_factory,
+        evaluation_task_id_factory=_eval_factory,
         integrate_variant=integrate,
     )
 
@@ -248,8 +248,8 @@ def test_quiesced_store_returns_false() -> None:
     store = _make_store()
     progress = run_orchestrator_iteration(
         store,
-        implement_task_id_factory=_impl_factory,
-        evaluate_task_id_factory=_eval_factory,
+        execution_task_id_factory=_exec_factory,
+        evaluation_task_id_factory=_eval_factory,
     )
     assert progress is False
 
@@ -291,7 +291,7 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     store.create_execution_task("t-exec-good", "p-good")
     claim = store.claim("t-exec-good", "executor-1")
     good_variant = Variant(
-        variant_id="tr-good",
+        variant_id="variant-good",
         experiment_id=store.experiment_id,
         idea_id="p-good",
         status="starting",
@@ -303,15 +303,15 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     store.submit(
         "t-exec-good",
         claim.token,
-        VariantSubmission(status="success", variant_id="tr-good", commit_sha="d" * 40),
+        VariantSubmission(status="success", variant_id="variant-good", commit_sha="d" * 40),
     )
     store.accept("t-exec-good")
-    store.create_evaluation_task("t-eval-good", "tr-good")
+    store.create_evaluation_task("t-eval-good", "variant-good")
     eclaim = store.claim("t-eval-good", "evaluator-1")
     store.submit(
         "t-eval-good",
         eclaim.token,
-        EvaluationSubmission(status="success", variant_id="tr-good", evaluation={"loss": 0.4}),
+        EvaluationSubmission(status="success", variant_id="variant-good", evaluation={"loss": 0.4}),
     )
     store.accept("t-eval-good")
 
@@ -327,15 +327,15 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
         # Must not raise.
         progress = run_orchestrator_iteration(
             store,
-            implement_task_id_factory=_impl_factory,
-            evaluate_task_id_factory=_eval_factory,
+            execution_task_id_factory=_exec_factory,
+            evaluation_task_id_factory=_eval_factory,
             integrate_variant=integrate,
         )
 
     # The healthy variant integrated; progress reflects that.
     assert progress is True
-    assert integrated == ["tr-good"]
-    assert store.read_variant("tr-good").variant_commit_sha == "c" * 40
+    assert integrated == ["variant-good"]
+    assert store.read_variant("variant-good").variant_commit_sha == "c" * 40
     # The bad variant is still success without an integration commit
     # (operator can investigate via the admin UI).
     bad = store.read_variant(bad_id)
@@ -367,8 +367,8 @@ def test_only_malformed_variant_returns_false_progress(caplog) -> None:
     with caplog.at_level(logging.ERROR, logger="eden_dispatch.driver"):
         progress = run_orchestrator_iteration(
             store,
-            implement_task_id_factory=_impl_factory,
-            evaluate_task_id_factory=_eval_factory,
+            execution_task_id_factory=_exec_factory,
+            evaluation_task_id_factory=_eval_factory,
             integrate_variant=integrate,
         )
 

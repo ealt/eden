@@ -200,30 +200,30 @@ class TestSuccessPath:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         variant = _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
 
-        result = integrator.integrate("tr-1")
+        result = integrator.integrate("variant-1")
 
         assert result.already_integrated is False
-        assert result.branch == "variant/tr-1-speedup"
+        assert result.branch == "variant/variant-1-speedup"
         # Ref exists at the returned SHA.
-        ref_sha = repo.resolve_ref("refs/heads/variant/tr-1-speedup")
+        ref_sha = repo.resolve_ref("refs/heads/variant/variant-1-speedup")
         assert ref_sha == result.variant_commit_sha
         # Field + event in store.
-        fresh = store.read_variant("tr-1")
+        fresh = store.read_variant("variant-1")
         assert fresh.variant_commit_sha == result.variant_commit_sha
         integrated = [e for e in store.events() if e.type == "variant.integrated"]
         assert len(integrated) == 1
-        assert integrated[0].data["variant_id"] == "tr-1"
+        assert integrated[0].data["variant_id"] == "variant-1"
         assert integrated[0].data["variant_commit_sha"] == result.variant_commit_sha
         # Parents of the variant commit match variant.parent_commits.
         assert repo.commit_parents(result.variant_commit_sha) == list(
@@ -237,19 +237,19 @@ class TestSuccessPath:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
-        result = integrator.integrate("tr-1")
+        result = integrator.integrate("variant-1")
         subject = repo.commit_message_subject(result.variant_commit_sha)
-        assert subject == "variant: tr-1 speedup"
+        assert subject == "variant: variant-1 speedup"
 
     def test_squash_tree_equals_worker_tip_plus_manifest(
         self,
@@ -258,17 +258,17 @@ class TestSuccessPath:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         variant = _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
-        result = integrator.integrate("tr-1")
+        result = integrator.integrate("variant-1")
 
         worker_tree = repo.commit_tree_sha(commit)
         squash_tree = repo.commit_tree_sha(result.variant_commit_sha)
@@ -288,10 +288,10 @@ class TestSuccessPath:
 
         # Exactly one extra entry: the evaluation manifest.
         extras = {k: v for k, v in squash_entries.items() if k not in worker_entries}
-        assert list(extras) == [("100644", "blob", ".eden/variants/tr-1/evaluation.json")]
+        assert list(extras) == [("100644", "blob", ".eden/variants/variant-1/evaluation.json")]
 
         # Manifest blob matches build_manifest(variant).
-        manifest_sha = extras[("100644", "blob", ".eden/variants/tr-1/evaluation.json")]
+        manifest_sha = extras[("100644", "blob", ".eden/variants/variant-1/evaluation.json")]
         assert repo.read_blob(manifest_sha) == build_manifest(
             store.read_variant(variant.variant_id)
         )
@@ -328,25 +328,25 @@ class TestSuccessPath:
             author_date="2026-04-23T01:00:00+00:00",
             committer_date="2026-04-23T01:00:00+00:00",
         )
-        repo.update_ref("refs/heads/work/tr-m", merge_commit)
+        repo.update_ref("refs/heads/work/variant-m", merge_commit)
 
         _make_idea(store, idea_id="p-m", slug="merge", parent=seed_sha)
         store.create_variant(
             Variant(
-                variant_id="tr-m",
+                variant_id="variant-m",
                 experiment_id=store.experiment_id,
                 idea_id="p-m",
                 status="starting",
                 parent_commits=[seed_sha, second_parent],
-                branch="work/tr-m",
+                branch="work/variant-m",
                 started_at="2026-04-23T00:30:00Z",
             )
         )
         _force_variant_success(
-            store, "tr-m", commit_sha=merge_commit, evaluation={"score": 1.0}
+            store, "variant-m", commit_sha=merge_commit, evaluation={"score": 1.0}
         )
 
-        result = integrator.integrate("tr-m")
+        result = integrator.integrate("variant-m")
         assert repo.commit_parents(result.variant_commit_sha) == [seed_sha, second_parent]
 
     def test_branch_tip_descending_past_commit_sha_still_integrates(
@@ -357,7 +357,7 @@ class TestSuccessPath:
         seed_sha: str,
     ) -> None:
         """§2: commit_sha reachable from branch tip is sufficient."""
-        work_commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        work_commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         # Advance the branch with an extra commit after evaluation.
         extra_blob = repo.write_blob(b"extra\n")
         extra_tree = repo.write_tree_with_file(
@@ -371,17 +371,17 @@ class TestSuccessPath:
             author_date="2026-04-23T02:00:00+00:00",
             committer_date="2026-04-23T02:00:00+00:00",
         )
-        repo.update_ref("refs/heads/work/tr-1", extra_commit)
+        repo.update_ref("refs/heads/work/variant-1", extra_commit)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=work_commit,  # evaluated at the earlier commit
         )
-        result = integrator.integrate("tr-1")
+        result = integrator.integrate("variant-1")
         # Squash tree derives from work_commit, NOT from the advanced tip.
         squash_tree = repo.commit_tree_sha(result.variant_commit_sha)
         squash_paths = {e.path for e in repo.ls_tree(squash_tree, recursive=True)}
@@ -403,20 +403,20 @@ class TestIdempotency:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
-        first = integrator.integrate("tr-1")
+        first = integrator.integrate("variant-1")
         events_before = len(store.events())
 
-        second = integrator.integrate("tr-1")
+        second = integrator.integrate("variant-1")
 
         assert second.already_integrated is True
         assert second.variant_commit_sha == first.variant_commit_sha
@@ -429,24 +429,24 @@ class TestIdempotency:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
         # Integrate, then delete the ref externally.
-        result = integrator.integrate("tr-1")
-        repo.delete_ref("refs/heads/variant/tr-1-speedup")
+        result = integrator.integrate("variant-1")
+        repo.delete_ref("refs/heads/variant/variant-1-speedup")
         # Variant still has variant_commit_sha set.
-        assert store.read_variant("tr-1").variant_commit_sha == result.variant_commit_sha
+        assert store.read_variant("variant-1").variant_commit_sha == result.variant_commit_sha
 
         with pytest.raises(CorruptIntegrationState):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
 
 # ----------------------------------------------------------------------
@@ -475,29 +475,29 @@ class TestReachability:
             author_date="2026-04-23T00:00:00+00:00",
             committer_date="2026-04-23T00:00:00+00:00",
         )
-        repo.update_ref("refs/heads/work/tr-1", other_root)
+        repo.update_ref("refs/heads/work/variant-1", other_root)
 
         # Variant declares seed_sha as parent but commit_sha is other_root.
-        _make_idea(store, idea_id="p-1", slug="speedup", parent=seed_sha)
+        _make_idea(store, idea_id="idea-1", slug="speedup", parent=seed_sha)
         store.create_variant(
             Variant(
-                variant_id="tr-1",
+                variant_id="variant-1",
                 experiment_id=store.experiment_id,
-                idea_id="p-1",
+                idea_id="idea-1",
                 status="starting",
                 parent_commits=[seed_sha],
-                branch="work/tr-1",
+                branch="work/variant-1",
                 started_at="2026-04-23T00:30:00Z",
             )
         )
         _force_variant_success(
-            store, "tr-1", commit_sha=other_root, evaluation={"score": 1.0}
+            store, "variant-1", commit_sha=other_root, evaluation={"score": 1.0}
         )
 
         with pytest.raises(ReachabilityViolation):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
-        _assert_no_side_effects(store, repo, branch="variant/tr-1-speedup")
+        _assert_no_side_effects(store, repo, branch="variant/variant-1-speedup")
 
 
 # ----------------------------------------------------------------------
@@ -517,7 +517,7 @@ class TestManifestPathCollision:
         base_tree = repo.commit_tree_sha(seed_sha)
         collision_blob = repo.write_blob(b'{"rogue":true}\n')
         new_tree = repo.write_tree_with_file(
-            base_tree, ".eden/variants/tr-1/evaluation.json", collision_blob
+            base_tree, ".eden/variants/variant-1/evaluation.json", collision_blob
         )
         commit = repo.commit_tree(
             new_tree,
@@ -527,22 +527,22 @@ class TestManifestPathCollision:
             author_date="2026-04-23T01:00:00+00:00",
             committer_date="2026-04-23T01:00:00+00:00",
         )
-        repo.update_ref("refs/heads/work/tr-1", commit)
+        repo.update_ref("refs/heads/work/variant-1", commit)
 
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
 
         with pytest.raises(EvalManifestPathCollision):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
-        _assert_no_side_effects(store, repo, branch="variant/tr-1-speedup")
+        _assert_no_side_effects(store, repo, branch="variant/variant-1-speedup")
 
 
 # ----------------------------------------------------------------------
@@ -560,25 +560,25 @@ class TestPromotionPreconditions:
         seed_sha: str,
         status: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
         # Overwrite to the non-success status.
         from eden_storage._base import _validated_update
 
-        variant = store.read_variant("tr-1")
-        store._variants["tr-1"] = _validated_update(variant, status=status)  # type: ignore[attr-defined]
+        variant = store.read_variant("variant-1")
+        store._variants["variant-1"] = _validated_update(variant, status=status)  # type: ignore[attr-defined]
 
         with pytest.raises(NotReadyForIntegration):
-            integrator.integrate("tr-1")
-        _assert_no_side_effects(store, repo, branch="variant/tr-1-speedup")
+            integrator.integrate("variant-1")
+        _assert_no_side_effects(store, repo, branch="variant/variant-1-speedup")
 
     def test_missing_branch_rejected(
         self,
@@ -587,20 +587,20 @@ class TestPromotionPreconditions:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
         # Delete the work branch.
-        repo.delete_ref("refs/heads/work/tr-1")
+        repo.delete_ref("refs/heads/work/variant-1")
         with pytest.raises(NotReadyForIntegration):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
     def test_branch_unrelated_to_commit_sha_rejected(
         self,
@@ -609,21 +609,21 @@ class TestPromotionPreconditions:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        work_commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        work_commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=work_commit,
         )
         # Repoint the branch to seed (commit_sha is now a descendant of
         # branch tip — not an ancestor).
-        repo.update_ref("refs/heads/work/tr-1", seed_sha, expected_old_sha=work_commit)
+        repo.update_ref("refs/heads/work/variant-1", seed_sha, expected_old_sha=work_commit)
         with pytest.raises(NotReadyForIntegration):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
 
 class TestMetricsRevalidation:
@@ -639,20 +639,20 @@ class TestMetricsRevalidation:
         integrator = Integrator(
             store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK
         )
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
             evaluation={"score": "not-an-int"},
         )
         with pytest.raises(NotReadyForIntegration):
-            integrator.integrate("tr-1")
-        _assert_no_side_effects(store, repo, branch="variant/tr-1-speedup")
+            integrator.integrate("variant-1")
+        _assert_no_side_effects(store, repo, branch="variant/variant-1-speedup")
 
     def test_no_schema_skips_validation(
         self,
@@ -661,18 +661,18 @@ class TestMetricsRevalidation:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
             evaluation={"whatever": "goes"},  # would fail a schema, none present
         )
-        result = integrator.integrate("tr-1")
+        result = integrator.integrate("variant-1")
         assert result.already_integrated is False
 
 
@@ -690,14 +690,14 @@ class TestAtomicRollback:
         seed_sha: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
 
@@ -709,12 +709,12 @@ class TestAtomicRollback:
         monkeypatch.setattr(store, "integrate_variant", _explode)
 
         with pytest.raises(RuntimeError) as exc_info:
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
         assert exc_info.value is boom
         # Ref compensated away.
-        assert repo.resolve_ref("refs/heads/variant/tr-1-speedup") is None
+        assert repo.resolve_ref("refs/heads/variant/variant-1-speedup") is None
         # Field still absent.
-        assert store.read_variant("tr-1").variant_commit_sha is None
+        assert store.read_variant("variant-1").variant_commit_sha is None
         # No variant.integrated event.
         assert [e for e in store.events() if e.type == "variant.integrated"] == []
 
@@ -726,14 +726,14 @@ class TestAtomicRollback:
         seed_sha: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
 
@@ -750,7 +750,7 @@ class TestAtomicRollback:
         monkeypatch.setattr(repo, "delete_ref", _ref_explode)
 
         with pytest.raises(AtomicityViolation) as exc_info:
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
         assert exc_info.value.original is store_boom
         assert exc_info.value.rollback is rollback_boom
 
@@ -767,27 +767,27 @@ class TestCommitIdentity:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
         integ = Integrator(
             store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK
         )
-        result = integ.integrate("tr-1")
+        result = integ.integrate("variant-1")
         header = repo.commit_message(result.variant_commit_sha)  # full message
         # commit_tree stamps via GIT_AUTHOR_* / GIT_COMMITTER_* env vars;
         # asserting identity requires cat-file -p.
         raw = _raw_commit(repo, result.variant_commit_sha)
         assert f"author {AUTHOR.name} <{AUTHOR.email}>" in raw
         assert f"committer {AUTHOR.name} <{AUTHOR.email}>" in raw
-        assert "variant: tr-1 speedup" in header
+        assert "variant: variant-1 speedup" in header
 
     def test_explicit_committer_used(
         self,
@@ -795,14 +795,14 @@ class TestCommitIdentity:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
         committer = Identity("CI Bot", "ci@eden.example")
@@ -813,7 +813,7 @@ class TestCommitIdentity:
             committer=committer,
             clock=lambda: FIXED_CLOCK,
         )
-        result = integ.integrate("tr-1")
+        result = integ.integrate("variant-1")
         raw = _raw_commit(repo, result.variant_commit_sha)
         assert f"author {AUTHOR.name} <{AUTHOR.email}>" in raw
         assert f"committer {committer.name} <{committer.email}>" in raw
@@ -864,27 +864,27 @@ class TestReplayAfterWorkerPruned:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
-        integrator.integrate("tr-1")
+        integrator.integrate("variant-1")
 
         # §1.3: delete work/* and `git gc --prune=now`.
-        repo.delete_ref("refs/heads/work/tr-1")
+        repo.delete_ref("refs/heads/work/variant-1")
         _force_gc_prune_now(repo)
         assert repo.commit_exists(commit) is False, (
             "test precondition: git gc should have pruned the worker commit"
         )
 
         with pytest.raises(CorruptIntegrationState):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
     def test_replay_with_worker_alive_still_noops(
         self,
@@ -894,18 +894,18 @@ class TestReplayAfterWorkerPruned:
         seed_sha: str,
     ) -> None:
         """§5.3: when the worker tree is still reachable, replay IS a no-op."""
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
-        first = integrator.integrate("tr-1")
-        second = integrator.integrate("tr-1")
+        first = integrator.integrate("variant-1")
+        second = integrator.integrate("variant-1")
         assert second.already_integrated is True
         assert second.variant_commit_sha == first.variant_commit_sha
 
@@ -922,17 +922,17 @@ class TestCorruptVariantTreeRejected:
         repo: GitRepo,
         seed_sha: str,
     ) -> None:
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
         )
-        first = integrator.integrate("tr-1")
+        first = integrator.integrate("variant-1")
 
         # Rewrite the variant/* commit externally to have an extra path
         # alongside the manifest — exactly the corruption Codex flagged.
@@ -941,14 +941,14 @@ class TestCorruptVariantTreeRejected:
         corrupt_tree = repo.write_tree_with_file(squash_tree, "rogue.txt", extra_blob)
         corrupt_commit = repo.commit_tree(
             corrupt_tree,
-            parents=list(store.read_variant("tr-1").parent_commits),
-            message="variant: tr-1 speedup\n",
+            parents=list(store.read_variant("variant-1").parent_commits),
+            message="variant: variant-1 speedup\n",
             author=AUTHOR,
             author_date="2026-04-23T03:00:00+00:00",
             committer_date="2026-04-23T03:00:00+00:00",
         )
         repo.update_ref(
-            "refs/heads/variant/tr-1-speedup",
+            "refs/heads/variant/variant-1-speedup",
             corrupt_commit,
             expected_old_sha=first.variant_commit_sha,
         )
@@ -956,13 +956,13 @@ class TestCorruptVariantTreeRejected:
         # consistent corruption).
         from eden_storage._base import _validated_update
 
-        variant = store.read_variant("tr-1")
-        store._variants["tr-1"] = _validated_update(  # type: ignore[attr-defined]
+        variant = store.read_variant("variant-1")
+        store._variants["variant-1"] = _validated_update(  # type: ignore[attr-defined]
             variant, variant_commit_sha=corrupt_commit
         )
 
         with pytest.raises(CorruptIntegrationState):
-            integrator.integrate("tr-1")
+            integrator.integrate("variant-1")
 
 
 def _force_gc_prune_now(repo: GitRepo) -> None:
@@ -993,20 +993,20 @@ class TestNonFiniteMetricsRejected:
         integ = Integrator(
             store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK
         )
-        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+        commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
         _seed_success_variant(
             store,
-            variant_id="tr-1",
-            idea_id="p-1",
+            variant_id="variant-1",
+            idea_id="idea-1",
             slug="speedup",
             parent=seed_sha,
-            branch="work/tr-1",
+            branch="work/variant-1",
             commit_sha=commit,
             evaluation={"score": float("nan")},
         )
         with pytest.raises(NotReadyForIntegration):
-            integ.integrate("tr-1")
-        _assert_no_side_effects(store, repo, branch="variant/tr-1-speedup")
+            integ.integrate("variant-1")
+        _assert_no_side_effects(store, repo, branch="variant/variant-1-speedup")
 
 
 # ----------------------------------------------------------------------
@@ -1020,23 +1020,23 @@ def test_manifest_committed_blob_is_parseable_json(
     repo: GitRepo,
     seed_sha: str,
 ) -> None:
-    commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+    commit = _make_work_branch(repo, branch="work/variant-1", parent=seed_sha)
     _seed_success_variant(
         store,
-        variant_id="tr-1",
-        idea_id="p-1",
+        variant_id="variant-1",
+        idea_id="idea-1",
         slug="speedup",
         parent=seed_sha,
-        branch="work/tr-1",
+        branch="work/variant-1",
         commit_sha=commit,
     )
-    result = integrator.integrate("tr-1")
+    result = integrator.integrate("variant-1")
     tree = repo.commit_tree_sha(result.variant_commit_sha)
     blob_entry = next(
         e
         for e in repo.ls_tree(tree, recursive=True)
-        if e.path == ".eden/variants/tr-1/evaluation.json"
+        if e.path == ".eden/variants/variant-1/evaluation.json"
     )
     payload = json.loads(repo.read_blob(blob_entry.sha).decode("utf-8"))
-    assert payload["variant_id"] == "tr-1"
+    assert payload["variant_id"] == "variant-1"
     assert payload["commit_sha"] == commit

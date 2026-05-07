@@ -69,8 +69,8 @@ def run_orchestrator_loop(
         reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
         progress = run_orchestrator_iteration(
             store,
-            implement_task_id_factory=implement_factory,
-            evaluate_task_id_factory=evaluate_factory,
+            execution_task_id_factory=implement_factory,
+            evaluation_task_id_factory=evaluate_factory,
             integrate_variant=integrate,
         )
         if reclaimed or progress:

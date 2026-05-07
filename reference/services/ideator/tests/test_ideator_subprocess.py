@@ -12,7 +12,7 @@ from eden_ideator_host import build_subprocess_config, run_ideator_subprocess_lo
 from eden_ideator_host.subprocess_mode import (
     IdeatorSubprocessConfig,
     ProtocolViolation,
-    handle_plan_task,
+    handle_ideation_task,
     start_ideator_subprocess,
 )
 from eden_service_common import StopFlag, seed_bare_repo
@@ -102,11 +102,11 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
-    plan_task = store.list_tasks(kind="ideation", state="pending")[0]
-    assert isinstance(plan_task, IdeationTask)
-    handle_plan_task(
+    ideation_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(ideation_task, IdeationTask)
+    handle_ideation_task(
         store=store,
-        task=plan_task,
+        task=ideation_task,
         worker_id="ideator-1",
         ideator=sub,
         experiment_id=EXPERIMENT_ID,
@@ -125,7 +125,7 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
     assert all(p.state == "ready" for p in ideas)
 
 
-def test_plan_error_terminator(tmp_path: Path) -> None:
+def test_ideation_error_terminator(tmp_path: Path) -> None:
     worker = _write_worker(
         tmp_path,
         """
@@ -145,11 +145,11 @@ def test_plan_error_terminator(tmp_path: Path) -> None:
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
-    plan_task = store.list_tasks(kind="ideation", state="pending")[0]
-    assert isinstance(plan_task, IdeationTask)
-    handle_plan_task(
+    ideation_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(ideation_task, IdeationTask)
+    handle_ideation_task(
         store=store,
-        task=plan_task,
+        task=ideation_task,
         worker_id="ideator-1",
         ideator=sub,
         experiment_id=EXPERIMENT_ID,
@@ -181,12 +181,12 @@ def test_protocol_violation_wrong_task_id(tmp_path: Path) -> None:
     store.create_ideation_task("ideation-1")
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
-    plan_task = store.list_tasks(kind="ideation", state="pending")[0]
-    assert isinstance(plan_task, IdeationTask)
+    ideation_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(ideation_task, IdeationTask)
     with pytest.raises(ProtocolViolation):
-        handle_plan_task(
+        handle_ideation_task(
             store=store,
-            task=plan_task,
+            task=ideation_task,
             worker_id="ideator-1",
             ideator=sub,
             experiment_id=EXPERIMENT_ID,
