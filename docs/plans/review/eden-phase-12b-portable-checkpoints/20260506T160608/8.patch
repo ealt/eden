@@ -1,0 +1,19 @@
+--- docs/plans/review/eden-phase-12b-portable-checkpoints/20260506T160608/7.md	2026-05-06 17:04:22
++++ docs/plans/eden-phase-12b-portable-checkpoints.md	2026-05-06 17:05:22
+@@ -1288,11 +1288,11 @@
+    bundle.
+ 
+ If any check fails, the importer rejects the entire checkpoint
+-with `400 eden://error/checkpoint-invalid` (or `409` if you
+-prefer transactional-precondition framing — pick one and pin
+-it; the reference uses 400 because the request body itself is
+-malformed). NO partial state is committed; the import either
+-fully validates and commits, or rejects entirely.
++with `400 eden://error/checkpoint-invalid`. The 400 status
++reflects that the request body (the uploaded checkpoint) is
++malformed, not that the server is in a bad state. NO partial
++state is committed; the import either fully validates and
++commits, or rejects entirely.
+ 
+ **Test (in `test_checkpoint_endpoints.py`):** craft a
+ deliberately malformed checkpoint where `variants.jsonl` lists

@@ -1,0 +1,84 @@
+--- docs/plans/review/eden-phase-12b-portable-checkpoints/20260506T160608/6.md	2026-05-06 17:01:46
++++ docs/plans/eden-phase-12b-portable-checkpoints.md	2026-05-06 17:03:57
+@@ -1226,7 +1226,81 @@
+ two exports, the second export sees the post-submit state; the
+ two tars differ. Also fine — both reflect a consistent snapshot
+ of the source.
++
++### 7.9 Multiple concurrent imports of the same checkpoint
++
++If two operators trigger `POST /v0/checkpoints/import`
++simultaneously with the same checkpoint bytes (or two different
++checkpoints with the same `experiment_id`), the import endpoint
++serializes them via the Store's experiment-creation transaction.
++Exactly one wins:
++
++- The first import to commit creates the experiment row,
++  populates all referenced objects, and returns 201 with the
++  new `experiment_id`.
++- The second import sees an experiment with that id already
++  exists (per Decision 5's collision rule) and returns
++  `409 eden://error/experiment-id-conflict`. The operator can
++  retry with `as_experiment_id=<new>`.
++
++If both calls supply the same `as_experiment_id=<new>`, the
++same serialization applies — exactly one wins, the other gets
++409. There is no "merge" semantics; concurrent imports are
++mutually exclusive.
++
++Recovery probe (Decision 5) handles the race-loser-recovery
++case: the loser queries `read_experiment(<id>)`, sees
++`imported_from.checkpoint_exported_at` matches the local
++manifest's `exported_at`, and concludes the import already
++succeeded — perhaps via the racing operator. If the timestamps
++mismatch, the loser knows a different import won; they retry
++with `as_experiment_id=<new>`.
++
++**Test (in `test_checkpoint_endpoints.py`):** two threads call
++`POST /v0/checkpoints/import` with the same checkpoint bytes
++simultaneously. Assert: exactly one returns 201; the other
++returns 409 `eden://error/experiment-id-conflict`. Subsequent
++`read_experiment(id)` returns the structurally-imported state
++with `imported_from.checkpoint_exported_at` matching.
++
++### 7.10 Malformed checkpoint: JSONL references refs missing from bundle
+ 
++§7.1 covers the case where the git bundle has refs the JSONL
++files don't reference (legitimate; importer ignores them). The
++opposite direction — JSONL files reference refs that don't
++exist in the bundle — was treated as "impossible per the
++exporter's ordering". That assumption breaks when the
++checkpoint comes from a non-reference implementation (whose
++ordering may differ) OR when the file is corrupted in transit.
++
++**Contract.** The importer MUST validate cross-references
++between the JSONL files and the bundle before committing any
++state. Validation:
++
++1. Walk all variants in `variants.jsonl`. Each variant's
++   `branch` (if set) MUST resolve to a commit in the bundle
++   via `git rev-parse refs/heads/<branch>`.
++2. Each variant's `commit_sha` (if set) MUST be reachable in
++   the bundle.
++3. Each variant's `variant_commit_sha` (if set) MUST be
++   reachable in the bundle.
++4. Each idea's `parent_commits` MUST all be reachable in the
++   bundle.
++
++If any check fails, the importer rejects the entire checkpoint
++with `400 eden://error/checkpoint-invalid` (or `409` if you
++prefer transactional-precondition framing — pick one and pin
++it; the reference uses 400 because the request body itself is
++malformed). NO partial state is committed; the import either
++fully validates and commits, or rejects entirely.
++
++**Test (in `test_checkpoint_endpoints.py`):** craft a
++deliberately malformed checkpoint where `variants.jsonl` lists
++a `commit_sha` that does NOT exist in the bundle. Assert the
++import fails with 400 `eden://error/checkpoint-invalid` and
++no experiment is created (the target `experiment_id` is still
++absent post-call).
++
+ ## 8. Risks
+ 
+ 1. **The atomic transaction holds for the duration of the
