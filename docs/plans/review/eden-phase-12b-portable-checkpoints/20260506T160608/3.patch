@@ -1,0 +1,98 @@
+--- docs/plans/review/eden-phase-12b-portable-checkpoints/20260506T160608/2.md	2026-05-06 16:50:38
++++ docs/plans/eden-phase-12b-portable-checkpoints.md	2026-05-06 16:53:29
+@@ -134,25 +134,37 @@
+ 
+    **Idempotency on retry.** The wire endpoint is non-idempotent
+    in the strict sense (it commits state-mutating writes). To
+-   make safe retry possible after a transport failure, the
+-   importer offers a recovery probe rather than a full
+-   idempotency guarantee:
+-   - Each checkpoint manifest carries `exported_at` (timestamp).
+-     The Store's `read_experiment(id)` op (12a-3 §3.2 onwards)
+-     surfaces an `imported_from: {checkpoint_exported_at:
+-     "<timestamp>"}` field, set on the imported experiment.
+-   - A client whose import call lost its 201 response queries
+-     `read_experiment(id)`. If the experiment exists with
++   make safe retry possible after a transport failure, this
++   chunk extends the 12a-3 `Experiment` shape with one new field
++   and adds one new read op:
++
++   - **Schema extension.** `Experiment.imported_from:
++     ImportProvenance | null` (optional). The
++     `ImportProvenance` shape carries `checkpoint_exported_at:
++     timestamp` and `checkpoint_format_version: string`. Set at
++     import time; absent on natively-created experiments. (The
++     `ImportProvenance` shape is added to
++     `experiment.schema.json` per §5.1 below.)
++   - **Read op.** `read_experiment(experiment_id) → Experiment`
++     extends the 12a-3 `read_experiment_state` op to return the
++     full experiment object (state + created_at + imported_from).
++     The op is added to the Store Protocol per §5.2 and bound
++     in chapter 07 per §5.1.
++
++   With both in place, a client whose import call lost its
++   `201 Created` queries `read_experiment(id)`:
++   - If the experiment exists with
+      `imported_from.checkpoint_exported_at` matching the local
+      manifest's `exported_at`, the import already succeeded;
+      the operator treats the missing 201 as a transport blip.
+-     If the field is absent or mismatched, the import did not
++   - If the field is absent or mismatched, the import did not
+      commit — operator retries with `as_experiment_id=<new>`.
+-   - This is "bounded idempotency": full-fledged
+-     content-addressed-by-bytes idempotency would require the
+-     importer to hash the upload before committing, which
+-     defeats streaming. The exported_at probe gives operators
+-     the recovery path without that cost.
++
++   This is "bounded idempotency": full-fledged
++   content-addressed-by-bytes idempotency would require the
++   importer to hash the upload before committing, which
++   defeats streaming. The exported_at probe gives operators the
++   recovery path without that cost.
+ 
+    The new id is reflected in the import response (which the
+    client may or may not receive — hence the recovery probe
+@@ -237,10 +249,10 @@
+ | `Idea` | chapter 02 §5, 12a-3 §3.6 | `idea_id`, `experiment_id`, `state`, `slug`, `priority`, `parent_commits`, `artifacts_uri` (rewritten to `checkpoint:sha256:<hex>`), `intended_executor`, `created_by`, `created_at` | none | All idea fields are structural. |
+ | `Variant` | chapter 02 §7, 12a-1 §D.4 | `variant_id`, `experiment_id`, `idea_id`, `branch`, `commit_sha`, `variant_commit_sha`, `parent_commits`, `status`, `metrics`, `artifacts_uri` (rewritten), `description`, `executed_by`, `evaluated_by`, `completed_at` | none | All variant fields are structural. |
+ | `Submission` | chapter 04 §4.2 | the full submission payload per role | none | The shape is role-specific but fully serializable. |
+-| `Event` | chapter 05 | `event_id`, `event_type`, `data`, `created_at`, plus the position in the log | none | Event IDs MAY be reassigned on import per chapter 05 (factory is impl-defined); the order MUST be preserved. |
++| `Event` | chapter 05 | `event_id`, `type`, `occurred_at`, `experiment_id`, `data`, plus the position in the log | none | Event IDs MAY be reassigned on import per chapter 05 (factory is impl-defined); the order MUST be preserved. Event field names match `spec/v0/05-event-protocol.md` envelope. |
+ | `Worker` (12a-1 §D.1) | 12a-1 §D.1 | `worker_id`, `experiment_id`, `registered_at`, `registered_by`, `labels` | `auth_credential_hash` | The credential hash is volatile auth material per Decision 10. The receiving deployment mints a fresh credential; the new credential is surfaced in a sidecar file (§3.6). |
+ | `Group` (12a-1 §D.2) | 12a-1 §D.2 | `group_id`, `experiment_id`, `members`, `created_at`, `created_by` | none | All group fields are structural. |
+-| `Experiment` (12a-3 §3.2) | 12a-3 §3.2 | `experiment_id`, `state ∈ {"running", "terminated"}`, `created_at` | none | Runtime state is structural. |
++| `Experiment` (12a-3 §3.2 + 12b extension) | 12a-3 §3.2 (base shape: `experiment_id`, `state`, `created_at`) + 12b extension (`imported_from: ImportProvenance \| null`) | All fields preserved | none | Runtime state is structural. The `imported_from` field is set at import time on the receiving Experiment; the source's `imported_from` (if any) is NOT copied — the new value reflects the most recent import. |
+ | `dispatch_mode` (12a-2 §3.2) | 12a-2 §3.2 | the four-key object on the experiment-config | none | Carried verbatim within the experiment config. |
+ | ExperimentConfig (chapter 02 §2) | chapter 02 §2 | the full YAML/JSON, post-12a-3 (with the four legacy termination fields removed) | n/a | Carried verbatim in `experiment-config.yaml`. |
+ 
+@@ -744,7 +756,9 @@
+ | `spec/v0/10-checkpoints.md` (new) | The full chapter from §3.1 above. ~200 lines. |
+ | `spec/v0/02-data-model.md` | Add note on `artifacts_uri` deployment-local semantics with cross-reference to chapter 10. |
+ | `spec/v0/07-wire-protocol.md` | Add §8 "Checkpoint operations": `POST .../checkpoint` and `POST /v0/checkpoints/import` endpoints. Authority: admins. |
+-| `spec/v0/08-storage.md` | Add `export_checkpoint` and `import_checkpoint` to the Store Protocol's op list. Restate atomicity. |
++| `spec/v0/08-storage.md` | Add `export_checkpoint` and `import_checkpoint` to the Store Protocol's op list. Restate atomicity. **Extend `read_experiment` op** (12a-3 added `read_experiment_state` returning just the state value; 12b promotes it to `read_experiment` returning the full Experiment object including the new `imported_from` field per §2 Decision 5). |
++| `spec/v0/02-data-model.md` (additional) | Extend the Experiment runtime shape (12a-3 §2.5) with `imported_from: ImportProvenance \| null`. Define `ImportProvenance` as `{checkpoint_exported_at: timestamp, checkpoint_format_version: string}`. |
++| `spec/v0/schemas/experiment.schema.json` (extension) | Add the `imported_from` property + `ImportProvenance` definition. |
+ | `spec/v0/09-conformance.md` | Add v1+checkpoints conformance level. Add conformance index entries. |
+ | `spec/v0/schemas/checkpoint-manifest.schema.json` (new) | JSON Schema for the manifest. |
+ 
+@@ -762,8 +776,8 @@
+ 
+ | File | Change |
+ |---|---|
+-| `protocol.py` | Add `export_checkpoint(stream)` and `import_checkpoint(stream, as_experiment_id=None)` to the Store Protocol. |
+-| `_base.py` | Implement export/import skeleton (the heavy lifting is in `eden_checkpoint`; this is a thin wrapper that calls `eden_checkpoint.write_checkpoint` / `read_checkpoint` after taking the atomic snapshot). |
++| `protocol.py` | Add `export_checkpoint(stream)` and `import_checkpoint(stream, as_experiment_id=None)` to the Store Protocol. Add `read_experiment(experiment_id) -> Experiment` (extends 12a-3's `read_experiment_state` to return the full Experiment object). |
++| `_base.py` | Implement export/import skeleton (the heavy lifting is in `eden_checkpoint`; this is a thin wrapper that calls `eden_checkpoint.write_checkpoint` / `read_checkpoint` after taking the atomic snapshot). On import, set `experiment.imported_from = ImportProvenance(checkpoint_exported_at=manifest.exported_at, checkpoint_format_version=manifest.checkpoint_format_version)` atomically with the experiment row. Implement `read_experiment` to return the full object. |
+ | `sqlite.py` | Atomicity via `BEGIN IMMEDIATE`. |
+ | `postgres.py` | Atomicity via `BEGIN ISOLATION LEVEL SERIALIZABLE`. |
+ | `_memory.py` | Atomicity via `copy.deepcopy` under the existing `RLock`. |
+@@ -775,6 +789,7 @@
+ |---|---|
+ | `manifest.py` (new) | The `CheckpointManifest` Pydantic model. |
+ | `worker.py` | The `Worker` and `Group` Pydantic models (12a-1 §D.1 / §D.2) ship as part of 12a-1's contracts package. 12b adds no new fields to either; the export path serializes them with `model_dump(mode="json", exclude={"auth_credential_hash"})` per §2.1's preservation map. |
++| `experiment.py` | The `Experiment` model (12a-3) gains an optional `imported_from: ImportProvenance \| None = None` field. New `ImportProvenance` model with `checkpoint_exported_at: datetime` + `checkpoint_format_version: str`. |
+ 
+ ### 5.5 eden-wire
+ 

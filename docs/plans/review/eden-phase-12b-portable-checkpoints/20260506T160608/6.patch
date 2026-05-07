@@ -1,0 +1,42 @@
+--- docs/plans/review/eden-phase-12b-portable-checkpoints/20260506T160608/5.md	2026-05-06 16:59:20
++++ docs/plans/eden-phase-12b-portable-checkpoints.md	2026-05-06 17:01:28
+@@ -888,8 +888,8 @@
+ 
+ | File | Change |
+ |---|---|
+-| `server.py` | New endpoints: `POST .../checkpoint` (admin auth, streams tar response), `POST /v0/checkpoints/import` (admin auth, accepts tar body). |
+-| `client.py` | `StoreClient.export_checkpoint(path)` (returns checkpoint metadata) and `StoreClient.import_checkpoint(path, as_experiment_id=None)` (returns the new experiment_id as a string). Both use `httpx`'s streaming I/O for memory-friendly transfer. |
++| `server.py` | New endpoints: `POST .../experiments/<E>/checkpoint` (admin auth, streams tar response), `POST /v0/checkpoints/import` (admin auth, accepts tar body), `GET .../experiments/<E>` (admin auth; binds the new `read_experiment` Store op per §2 Decision 5's recovery probe). The import endpoint is the only path under `/v0/checkpoints/`; per the §5.1 chapter 07 §1.3 amendment, this path is not experiment-scoped at the URL level. The handler accepts `X-Eden-Experiment-Id` as OPTIONAL: if absent, the experiment_id comes from the request body's manifest; if present, it MUST match the manifest's `experiment_id` after applying any `as_experiment_id` override (mismatch returns 400 `eden://error/experiment-id-mismatch`). |
++| `client.py` | `StoreClient.export_checkpoint(path)` (returns checkpoint metadata), `StoreClient.import_checkpoint(path, as_experiment_id=None)` (returns the new experiment_id as a string), and `StoreClient.read_experiment(experiment_id)` (returns the full Experiment object including `imported_from`; binds the recovery probe). The export and import paths use `httpx`'s streaming I/O for memory-friendly transfer; `read_experiment` is a tiny GET with no streaming concern. |
+ 
+ ### 5.6 Reference services
+ 
+@@ -962,6 +962,28 @@
+   buffered with `Content-Length` is implementation-defined per
+   Decision 8; the test does NOT assert one or the other. Memory
+   bound asserted via `tracemalloc`.
++- **Recovery probe.** After a successful import, `GET
++  /experiments/<E>` returns the Experiment with
++  `imported_from.checkpoint_exported_at` matching the source
++  manifest's `exported_at`. A natively-created experiment
++  (never imported) has `imported_from = null`. (Tests the
++  Decision 5 recovery contract.)
++- **Lost-201 simulation.** Trigger an import that commits but
++  has its 201 response dropped (use a test-only flag to drop
++  the response before transmission); the client's follow-up
++  `GET /experiments/<E>` returns the imported state with the
++  matching `exported_at`. Operator can detect prior success.
++- **Chapter 07 §1.3 carve-out: header absence.**
++  `POST /v0/checkpoints/import` with NO `X-Eden-Experiment-Id`
++  header → 201 (the experiment_id comes from the manifest).
++- **Chapter 07 §1.3 carve-out: header matches manifest.**
++  `POST /v0/checkpoints/import` with `X-Eden-Experiment-Id:
++  <id>` matching the manifest's `experiment_id` → 201.
++- **Chapter 07 §1.3 carve-out: header mismatches manifest.**
++  `POST /v0/checkpoints/import` with `X-Eden-Experiment-Id:
++  <wrong-id>` → 400 `eden://error/experiment-id-mismatch`. With
++  `as_experiment_id=<override>`, the header MUST match the
++  override (post-rewrite), not the source manifest's id.
+ 
+ ### 6.4 Cross-impl interop test
+ 

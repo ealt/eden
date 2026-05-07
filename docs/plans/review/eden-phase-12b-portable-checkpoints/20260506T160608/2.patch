@@ -1,0 +1,256 @@
+--- docs/plans/review/eden-phase-12b-portable-checkpoints/20260506T160608/1.md	2026-05-06 16:10:11
++++ docs/plans/eden-phase-12b-portable-checkpoints.md	2026-05-06 16:50:19
+@@ -125,14 +125,39 @@
+    the receiving deployment's URI scheme (e.g., `file://` for the
+    reference impl). The artifact bytes are dedup'd at the source.
+ 
+-5. **Experiment-id collision on import is operator-resolved** (open
+-   question 1). The default policy is **reject with 409
+-   `eden://error/experiment-id-conflict`**; the operator passes
+-   `?as_experiment_id=<new_id>` to import under a different id.
+-   Auto-rename was rejected as too magical; the explicit override
+-   makes the operator's intent legible. The new id is reflected
+-   in the import response.
++5. **Experiment-id collision on import is operator-resolved with
++   bounded idempotency** (open question 1). The default policy is
++   **reject with 409 `eden://error/experiment-id-conflict`**; the
++   operator passes `?as_experiment_id=<new_id>` to import under a
++   different id. Auto-rename was rejected as too magical; the
++   explicit override makes the operator's intent legible.
+ 
++   **Idempotency on retry.** The wire endpoint is non-idempotent
++   in the strict sense (it commits state-mutating writes). To
++   make safe retry possible after a transport failure, the
++   importer offers a recovery probe rather than a full
++   idempotency guarantee:
++   - Each checkpoint manifest carries `exported_at` (timestamp).
++     The Store's `read_experiment(id)` op (12a-3 §3.2 onwards)
++     surfaces an `imported_from: {checkpoint_exported_at:
++     "<timestamp>"}` field, set on the imported experiment.
++   - A client whose import call lost its 201 response queries
++     `read_experiment(id)`. If the experiment exists with
++     `imported_from.checkpoint_exported_at` matching the local
++     manifest's `exported_at`, the import already succeeded;
++     the operator treats the missing 201 as a transport blip.
++     If the field is absent or mismatched, the import did not
++     commit — operator retries with `as_experiment_id=<new>`.
++   - This is "bounded idempotency": full-fledged
++     content-addressed-by-bytes idempotency would require the
++     importer to hash the upload before committing, which
++     defeats streaming. The exported_at probe gives operators
++     the recovery path without that cost.
++
++   The new id is reflected in the import response (which the
++   client may or may not receive — hence the recovery probe
++   above).
++
+ 6. **Worker-identity round-trip** (open question 4). The
+    checkpoint carries the source experiment's worker registry +
+    group registry as additional JSONL files (`workers.jsonl`,
+@@ -152,14 +177,23 @@
+    pointing the operator at a separate migration tool. v0 has no
+    migration tool yet; the rejection is the safety net.
+ 
+-8. **Streaming response uses HTTP chunked transfer encoding**
+-   (open question 6). The wire endpoint
++8. **HTTP chunked transfer encoding is RECOMMENDED, not
++   required** (open question 6). The wire endpoint
+    `POST .../checkpoint` returns `Content-Type:
+-   application/x-eden-checkpoint+tar` with `Transfer-Encoding:
+-   chunked`. The body is a tar stream of the checkpoint directory.
+-   For very large experiments, streams avoid buffering the full
+-   archive server-side. Implementations MAY choose buffered
+-   responses for small experiments; clients MUST handle both.
++   application/x-eden-checkpoint+tar`. Servers MAY use
++   `Transfer-Encoding: chunked` (recommended for large
++   checkpoints to avoid memory pressure) or buffered responses
++   with `Content-Length`. Clients MUST handle both. Tests
++   assert "the response is parseable as the checkpoint format",
++   not "the response uses chunked encoding".
++
++   The "export = materialize the artifact" boundary (§3.7
++   below) lives entirely server-side; HTTP delivery happens
++   after materialization is complete. So a server that
++   materializes to a temp file, closes its source-state
++   transaction, and then streams the temp file back is
++   equivalent to a server that streams directly from the
++   transaction — both yield the same atomic snapshot.
+ 
+ 9. **Atomicity is required but mechanism is not.** The exporter
+    MUST snapshot the source state at a single logical instant.
+@@ -437,10 +471,28 @@
+ 4. Mint fresh credentials for each worker via
+    `reissue_credential` (12a-1 §D.1). The new credentials are
+    recorded in a sidecar file the operator gets out-of-band.
+-5. The experiment starts in `state="running"` with all in-flight
+-   tasks reverted to `pending` (since the original claim tokens
+-   are no longer valid).
++5. All `claimed` tasks are reverted to `pending` (since the
++   original claim tokens are no longer valid). The experiment's
++   `state` field is preserved verbatim from the checkpoint
++   manifest's `experiment.json`:
++   - If the source experiment was `running`, the imported
++     experiment is `running`; the reverted-pending tasks are
++     freshly claimable.
++   - If the source experiment was `terminated`, the imported
++     experiment is `terminated`; the reverted-pending tasks are
++     unreachable per 12a-3 §3.2 (terminated experiments reject
++     claim). Integration of `status="success"` variants without
++     `variant_commit_sha` continues to drain post-import per
++     12a-3 §6.2 decision-type 4.
+ 
++   Importing a terminated experiment is therefore "audit/replay-
++   only" with one exception: integration drain. The operator
++   gets the structural state and the event-log replay; they do
++   NOT get a runnable experiment unless they explicitly
++   transition state out of terminated, which is not a v0
++   transition (12a-3 reserves `terminated → running` for a
++   future amendment).
++
+ The credential-reissue side channel (step 4) is implementation-
+ defined: the reference impl writes the new credentials to a temp
+ file and prints the path on stdout. A spec-conformant alternative
+@@ -459,8 +511,12 @@
+ 
+ **Transactional snapshot.** The exporter takes a serializable
+ transaction over the Store + reads the git repo state at the
+-same logical point. The transaction commits at the end of the
+-export. This is the reference impl's strategy:
++same logical point, and **materializes the checkpoint artifact**
++(temp file or in-memory buffer) before closing the transaction.
++"Export complete" in the protocol sense means "the materialized
++artifact is finalized"; HTTP delivery to the client happens
++*after* the transaction closes. This is the reference impl's
++strategy:
+ 
+ ```python
+ with store.read_snapshot() as snapshot:
+@@ -470,7 +526,9 @@
+     variants = snapshot.list_variants()
+     events = snapshot.read_range(0, ...)
+     repo_sha_at_snapshot = repo.head()
+-    # ... write to checkpoint dir
++    materialize_to_tempfile(tasks, ideas, variants, events, ...)
++# transaction closed; temp file is the atomic snapshot artifact
++stream_tempfile_to_client()  # HTTP delivery; not part of atomicity contract
+ ```
+ 
+ For SQLite the snapshot is a `BEGIN IMMEDIATE` transaction with
+@@ -485,31 +543,73 @@
+ 
+ ### 3.8 Round-trip semantics
+ 
+-A checkpoint produced by impl A and imported into impl B MUST
+-yield an experiment from which B can resume the work. Specifically:
++Per §2 Decision 10, the round-trip preserves **structural state**,
++not exact live state. The contract:
+ 
+-- Set of tasks identical: same ids, kinds, states, payloads,
+-  claims, timestamps. Claim tokens MAY be reset on import per the
+-  credential-reissue rule (§3.6).
+-- Set of ideas, variants, submissions identical to their schema-
+-  validated form, except `artifacts_uri` MAY differ (rewritten to
+-  local scheme).
+-- Event log MUST replay in the same order with the same
+-  payloads. Event IDs MAY differ if B's event-id factory differs
+-  (chapter 05 §1).
+-- Git repo MUST contain the same objects reachable from the same
+-  refs (verified by SHA equality on `git rev-parse <ref>` for
+-  every ref in the checkpoint).
+-- `experiment.state` is preserved (a checkpoint of a `terminated`
+-  experiment imports as `terminated`).
+-- Worker + group registries are preserved structurally;
+-  credentials are fresh.
++**Tasks.**
+ 
+-A conforming impl's `import` MUST produce a state from which the
+-experiment can resume (workers can claim, the orchestrator can
+-dispatch, the integrator can integrate). Export immediately
+-followed by import is a no-op modulo URI rewrites and event-id /
+-credential reassignment.
++- Same set: every `task_id` in the source is present in the
++  import.
++- Each task's `kind`, `payload`, `target`, `created_by`,
++  `submitted_by`, `created_at`, `updated_at` are preserved
++  verbatim.
++- Each task's `state` is preserved EXCEPT: `claimed` tasks are
++  imported as `pending` (their original claim tokens are
++  invalidated per Decision 10). All other states (`pending`,
++  `submitted`, `completed`, `failed`) are preserved verbatim.
++- Each task's `claim` field is empty on import. The source's
++  claim token is not preserved.
++
++**Ideas, variants, submissions.**
++
++- Identical to their schema-validated form, except
++  `artifacts_uri` is rewritten to the receiving deployment's
++  URI scheme.
++- Variant `metrics`, `commit_sha`, `variant_commit_sha`,
++  `branch`, `parent_commits`, `description`, `executed_by`,
++  `evaluated_by`, `completed_at`, `status` all preserved.
++
++**Events.**
++
++- Replay in the same order with the same payloads. Event IDs
++  MAY differ if B's event-id factory differs (chapter 05 §1).
++- The event log is treated as audit-trail data; it survives the
++  round-trip in its entirety.
++
++**Git repo.**
++
++- Same objects reachable from the same refs (verified by SHA
++  equality on `git rev-parse <ref>` for every ref in the
++  checkpoint).
++
++**Experiment runtime.**
++
++- `experiment.state` (the 12a-3 lifecycle field) is preserved
++  verbatim from the checkpoint manifest's `experiment.json`. A
++  checkpoint of a `terminated` experiment imports as
++  `terminated`; a checkpoint of a `running` experiment imports
++  as `running`. Per §3.6 the importer behavior diverges based
++  on this value.
++
++**Worker + group registries.**
++
++- Worker `worker_id`, `experiment_id`, `registered_at`,
++  `registered_by`, `labels` preserved verbatim.
++  `auth_credential_hash` stripped; freshly minted credentials
++  recorded in the sidecar file (§3.6).
++- Group `group_id`, `experiment_id`, `members`, `created_at`,
++  `created_by` preserved verbatim.
++
++**Net round-trip property.** Export immediately followed by
++import yields a structurally-equivalent experiment, modulo (a)
++URI rewrites for artifacts, (b) event-id reassignment if the
++importer's factory differs, (c) claim-state normalization
++(claimed → pending), (d) credential reissue. Workers can register
++fresh credentials, claim tasks (if the experiment is `running`),
++submit, and integrate. Resuming in-flight worker activity that
++was holding a source-side claim token is NOT promised — the
++worker is expected to re-claim a now-pending task and start
++over.
+ 
+ ### 3.9 What 12b does NOT do
+ 
+@@ -745,11 +845,15 @@
+   `eden://error/spec-version-mismatch`.
+ - Experiment-id-conflict → 409
+   `eden://error/experiment-id-conflict`.
+-- Streaming: a 10MB checkpoint streams via chunked transfer
+-  encoding without buffering server-side (asserted by checking
+-  the response uses `Transfer-Encoding: chunked` AND the server's
+-  memory peak doesn't grow proportional to the checkpoint size —
+-  use `tracemalloc` for the assertion).
++- Memory bound: a 10MB checkpoint export does not buffer the
++  full archive in server memory. The reference impl materializes
++  to a temp file before HTTP delivery (per §3.7); the test
++  asserts server memory peak during the response phase is
++  bounded (not proportional to checkpoint size). Whether the
++  HTTP body is delivered with chunked transfer-encoding or
++  buffered with `Content-Length` is implementation-defined per
++  Decision 8; the test does NOT assert one or the other. Memory
++  bound asserted via `tracemalloc`.
+ 
+ ### 6.4 Cross-impl interop test
+ 

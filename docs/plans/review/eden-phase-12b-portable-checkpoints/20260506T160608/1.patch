@@ -1,0 +1,90 @@
+--- docs/plans/review/eden-phase-12b-portable-checkpoints/20260506T160608/0.md	2026-05-06 16:06:08
++++ docs/plans/eden-phase-12b-portable-checkpoints.md	2026-05-06 16:09:55
+@@ -169,6 +169,51 @@
+    git repo + artifacts read alongside it). The atomicity rule is
+    normative; the choice of mechanism is implementation-defined.
+ 
++10. **Import preserves resume-safe state, not exact live state.**
++    Cementing this so it's easy to find: a checkpoint preserves
++    *structural* state (every persistent object — task, idea,
++    variant, submission, event, worker, group, experiment runtime
++    record — round-trips with all its protocol-defined fields).
++    It deliberately does NOT preserve *volatile auth + ownership
++    state* (bearer-token hashes, claim tokens, in-flight claim
++    bindings). On import:
++    - Every imported worker MUST have a freshly minted
++      credential (12a-1 §D.1 reissue path); the source's
++      credential hashes are NOT carried.
++    - Every claimed task is reverted to `pending` at import
++      time; the original claim token is invalidated.
++    - In-flight session credentials (12a-1 §D.5b web-ui per-
++      session credentials) are not part of state and not
++      preserved.
++    The receiving deployment can resume the experiment from the
++    imported state — workers register fresh credentials, claim
++    tasks, submit, integrate — but it cannot resume in-flight
++    work that was holding a source-side claim token. This
++    "structural-not-volatile" contract is the import promise.
++
++### 2.1 Field-by-field preservation map
++
++The 12a series introduces several persistent protocol objects
++this chunk must serialize. Authoritative shapes per the 12a
++plans:
++
++| Object | Source | Carry verbatim | Strip | Reason |
++|---|---|---|---|---|
++| `Task` | 12a-1 §D.3, chapter 02 §3 | `task_id`, `kind`, `state`, `payload`, `target`, `created_by`, `submitted_by`, `created_at`, `updated_at` | `claim` (cleared on import; tasks revert to `pending` if `claimed` at export time) | Claim tokens are volatile auth material per Decision 10. |
++| `Idea` | chapter 02 §5, 12a-3 §3.6 | `idea_id`, `experiment_id`, `state`, `slug`, `priority`, `parent_commits`, `artifacts_uri` (rewritten to `checkpoint:sha256:<hex>`), `intended_executor`, `created_by`, `created_at` | none | All idea fields are structural. |
++| `Variant` | chapter 02 §7, 12a-1 §D.4 | `variant_id`, `experiment_id`, `idea_id`, `branch`, `commit_sha`, `variant_commit_sha`, `parent_commits`, `status`, `metrics`, `artifacts_uri` (rewritten), `description`, `executed_by`, `evaluated_by`, `completed_at` | none | All variant fields are structural. |
++| `Submission` | chapter 04 §4.2 | the full submission payload per role | none | The shape is role-specific but fully serializable. |
++| `Event` | chapter 05 | `event_id`, `event_type`, `data`, `created_at`, plus the position in the log | none | Event IDs MAY be reassigned on import per chapter 05 (factory is impl-defined); the order MUST be preserved. |
++| `Worker` (12a-1 §D.1) | 12a-1 §D.1 | `worker_id`, `experiment_id`, `registered_at`, `registered_by`, `labels` | `auth_credential_hash` | The credential hash is volatile auth material per Decision 10. The receiving deployment mints a fresh credential; the new credential is surfaced in a sidecar file (§3.6). |
++| `Group` (12a-1 §D.2) | 12a-1 §D.2 | `group_id`, `experiment_id`, `members`, `created_at`, `created_by` | none | All group fields are structural. |
++| `Experiment` (12a-3 §3.2) | 12a-3 §3.2 | `experiment_id`, `state ∈ {"running", "terminated"}`, `created_at` | none | Runtime state is structural. |
++| `dispatch_mode` (12a-2 §3.2) | 12a-2 §3.2 | the four-key object on the experiment-config | none | Carried verbatim within the experiment config. |
++| ExperimentConfig (chapter 02 §2) | chapter 02 §2 | the full YAML/JSON, post-12a-3 (with the four legacy termination fields removed) | n/a | Carried verbatim in `experiment-config.yaml`. |
++
++The previous prose "may already exist post-12a-1; verify when
++implementing" wording in §5.4 is replaced by this table — the
++plan now pins shapes authoritatively.
++
+ ## 3. Design
+ 
+ ### 3.1 Spec chapter 10 — portable checkpoint format
+@@ -372,16 +417,16 @@
+ 12a-1 introduced worker and group registries. The checkpoint
+ captures both:
+ 
+-- `workers.jsonl`: one line per worker. Each line is a JSON object
+-  with `worker_id`, `created_at`, `groups: [group_id, ...]`. The
+-  `bearer_token_hash` field is **omitted** (secret-portability
+-  non-goal); a separate manifest field
+-  `requires_credential_reissue: true` flags this.
+-- `groups.jsonl`: one line per group, with `group_id`,
+-  `created_at`, `members: [worker_id, ...]`. (Group membership is
+-  derivable from `workers.jsonl[].groups`, but storing it on both
+-  sides is a convenience for importers and survives if the
+-  worker file gets corrupted.)
++- `workers.jsonl`: one line per worker, in the 12a-1 §D.1
++  shape: `{worker_id, experiment_id, registered_at,
++  registered_by, labels}`. The `auth_credential_hash` field
++  defined by 12a-1 is **stripped** (per §2 Decision 10's
++  volatile-auth-material rule); the manifest's
++  `requires_credential_reissue: true` flag signals the importer
++  to reissue.
++- `groups.jsonl`: one line per group, in the 12a-1 §D.2 shape:
++  `{group_id, experiment_id, members, created_at, created_by}`.
++  No fields stripped.
+ 
+ On import:
+ 
+@@ -629,7 +674,7 @@
+ | File | Change |
+ |---|---|
+ | `manifest.py` (new) | The `CheckpointManifest` Pydantic model. |
+-| `worker.py` | The `Worker` model (12a-1) gains a `groups: list[str]` field for export. (May already exist post-12a-1; verify when implementing.) |
++| `worker.py` | The `Worker` and `Group` Pydantic models (12a-1 §D.1 / §D.2) ship as part of 12a-1's contracts package. 12b adds no new fields to either; the export path serializes them with `model_dump(mode="json", exclude={"auth_credential_hash"})` per §2.1's preservation map. |
+ 
+ ### 5.5 eden-wire
+ 
