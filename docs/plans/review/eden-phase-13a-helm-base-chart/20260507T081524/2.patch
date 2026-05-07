@@ -1,0 +1,229 @@
+--- docs/plans/review/eden-phase-13a-helm-base-chart/20260507T081524/1.md	2026-05-07 08:24:30
++++ docs/plans/eden-phase-13a-helm-base-chart.md	2026-05-07 08:29:22
+@@ -236,28 +236,55 @@
+    git data (e.g., backing it with a cloud-managed git
+    forge) lands in 13e; 13a uses cluster-local PVCs.
+ 
+-9. **Orchestrator runs forever via
+-   `EDEN_MAX_QUIESCENT_ITERATIONS=0` on Kubernetes.** Per
+-   §1.0 baseline, the orchestrator's quiescence-exit
+-   lifecycle relies on Compose's `restart: on-failure` policy
+-   to honor exit-0. Kubernetes Deployments support only
++9. **Orchestrator runs forever on Kubernetes — orchestrator
++   CLI/loop change required, not a chart-only switch.** Per
++   §1.0 baseline, the orchestrator currently exits 0 on
++   quiescence. Kubernetes Deployments support only
+    `restartPolicy: Always`, which would restart the
+    orchestrator on every quiescence exit — burning CPU on
+-   restarts for no progress. The chart sets
+-   `EDEN_MAX_QUIESCENT_ITERATIONS=0` (the PR #47 escape hatch)
+-   in the orchestrator's Deployment env, so the
+-   `run_orchestrator_loop` never exits on quiescence; it
+-   runs until SIGTERM (graceful shutdown via Kubernetes pod
+-   termination). Operators who prefer the quiescence-exit
+-   semantics can set the env var to a non-zero value AND set
+-   the Deployment's `spec.template.spec.restartPolicy:
+-   OnFailure` ... wait, that's only valid for Pods/Jobs, not
+-   Deployments. To support quiescence-exit on Kubernetes the
+-   chart would need a CronJob shape (which doesn't fit the
+-   "long-running orchestrator" model). v0 settles on
+-   "run forever; SIGTERM ends it" as the canonical
+-   Kubernetes lifecycle.
++   restarts for no progress.
++
++   The "obvious" fix would be `EDEN_MAX_QUIESCENT_ITERATIONS=0`,
++   but the current CLI rejects values `< 2`
++   ([`reference/services/orchestrator/src/eden_orchestrator/cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)
++   lines 25, 33, 124), and the loop's `quiescent >= max_quiescent_iterations`
++   check would terminate on the FIRST zero-progress
++   iteration if `max == 0`. So the chart cannot just set the
++   env var to 0 — there's no implementation behind it.
++
++   13a therefore BUNDLES a small orchestrator code change:
++   - Accept `--max-quiescent-iterations 0` as a sentinel
++     meaning "never exit on quiescence; run until SIGTERM".
++   - Update the loop's check: `if max == 0: continue;
++     elif quiescent >= max: return`.
++   - Validation in `cli.py` accepts 0 specifically (other
++     values < 2 still rejected).
++
++   The chart sets `EDEN_MAX_QUIESCENT_ITERATIONS=0` (the §5.5
++   default) and the orchestrator runs forever, ending on
++   SIGTERM via Kubernetes pod termination. The Compose
++   stack continues to default to non-zero (preserving
++   quiescence-exit on Compose); the operator who deploys via
++   Helm gets the run-forever lifecycle automatically.
+ 
++10. **Subprocess + DooD worker mode is OUT OF SCOPE for 13a.**
++    The `--mode subprocess` worker hosts (Phase 10d) require
++    `--experiment-dir`, `--artifacts-dir`, `--worktrees-dir` as
++    filesystem paths on the worker host's filesystem. The
++    `--exec-mode docker` path additionally requires
++    `/var/run/docker.sock` mounted into the worker host
++    container — viable on Docker-runtime nodes but not
++    universally on containerd / cri-o clusters
++    (`spec/v0/reference-bindings/worker-host-subprocess.md`
++    §8). 13a ships only the `--mode scripted` worker hosts
++    (the test-fixture-style deterministic workers). User-
++    supplied LLM workers via subprocess + DooD are deferred
++    to a later 13 sub-chunk that defines a Kubernetes-native
++    per-task packaging mechanism (likely "executor as k8s Job"
++    per the roadmap entry; see 13b). v0 13a operators who
++    need user-supplied LLM workers continue using the Compose
++    stack until 13b lands.
++
+ ## 3. Design
+ 
+ ### 3.1 Chart layout
+@@ -286,9 +313,14 @@
+ │   ├── web-ui-statefulset.yaml            # per-replica clone PVC
+ │   ├── web-ui-service.yaml
+ │   ├── web-ui-ingress.yaml               # gated on ingress.enabled
+-│   └── repo-init-job.yaml                # one-shot; gated on
+-│                                          #  repoInit.enabled
++│   └── (no repo-init Job under templates/ —
++│       per §3.5 / Decision regarding ad-hoc bootstrap
++│       Jobs created by setup-experiment-helm.sh)
+ ├── README.md                 # operator-facing docs
++├── bootstrap/                # NOT under templates/ — Helm
++│   │                            doesn't render at install time
++│   └── repo-init-job.yaml.tmpl   # rendered + applied per
++│                                  #  experiment by setup-experiment-helm.sh
+ └── tests/                    # `helm test` resources (smoke)
+     └── test-connection.yaml  # checks every service is reachable
+ ```
+@@ -374,15 +406,20 @@
+   # of scope for v0).
+   maxQuiescentIterations: 0
+   pollIntervalSeconds: 1.0
+-  experimentDirHost: ""                # for subprocess workers
+-  execMode: "host"                     # or "docker"
++  # NOTE: --mode subprocess + --exec-mode docker are OUT OF
++  # SCOPE for 13a (Decision 10). The chart only supports
++  # --mode scripted workers in v0; user-supplied LLM workers
++  # need a Kubernetes-native packaging mechanism (planned for
++  # 13b "executor as k8s Job"). Operators with subprocess +
++  # DooD workloads stay on the Compose stack until 13b lands.
++  workerMode: "scripted"               # only "scripted" in 13a
+ ```
+ 
+ The `values.schema.json` enforces shape: required fields
+ (`secrets.adminToken` etc. unless `existingSecret` is set);
+ type checks (replica counts are positive ints; storage sizes
+-match `[0-9]+(Gi|Mi)`); enum values (`execMode ∈ {host,
+-docker}`).
++match `[0-9]+(Gi|Mi)`); enum values (`workerMode ∈
++{scripted}` for 13a).
+ 
+ ### 3.3 Secrets handling
+ 
+@@ -506,9 +543,23 @@
+ 
+ ### 3.5 Setup workflow
+ 
+-`reference/scripts/setup-experiment-helm.sh` mirrors the
+-existing `setup-experiment.sh` but for Helm:
++The Helm release is **long-lived** and hosts MANY experiments
++over its lifetime (per 12c's multi-experiment control plane).
++That means a chart-managed `repo-init` Job (with one fixed
++release-scoped resource) doesn't fit — a chart-managed
++singleton can't bootstrap experiment 2, 3, 4, ... over time
++with distinct per-experiment inputs.
+ 
++The bootstrap workflow instead uses **ad-hoc Jobs created by
++`setup-experiment-helm.sh`**, not chart-managed Jobs. The
++chart ships a Job *manifest template* under
++`reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl` (NOT
++under `templates/` — Helm doesn't render this file at
++install time); the script renders it per-experiment with
++`envsubst` or `jq`/`yq`, then `kubectl apply`s the resulting
++manifest. Each experiment gets its own Job named
++`eden-repo-init-<experiment_id>`.
++
+ ```bash
+ # Operator workflow:
+ helm install eden ./reference/helm/eden \
+@@ -517,6 +568,8 @@
+   --namespace eden-prod
+ 
+ # Wait for the chart to come up:
++kubectl -n eden-prod rollout status statefulset/eden-postgres
++kubectl -n eden-prod rollout status statefulset/eden-gitea
+ kubectl -n eden-prod rollout status deployment/eden-task-store-server
+ kubectl -n eden-prod rollout status deployment/eden-control-plane
+ 
+@@ -527,25 +580,40 @@
+   --experiment-id exp-1
+ 
+ # The script:
+-# 1. kubectl exec into the control-plane pod, calls
+-#    register_experiment.
+-# 2. Submits a one-shot Job (the chart's repo-init template,
+-#    enabled by --set repoInit.runOnce=true) that seeds the
+-#    bare repo. Waits for completion.
+-# 3. The orchestrator Deployment is already running; it
++# 1. Calls the control-plane register_experiment endpoint via
++#    the API directly (not kubectl exec — uses port-forward
++#    or an Ingress endpoint if available).
++# 2. Renders the bootstrap/repo-init-job.yaml.tmpl with the
++#    experiment_id substituted; kubectl apply -f - to create
++#    the Job. Waits for completion via kubectl wait
++#    --for=condition=complete.
++# 3. The orchestrator StatefulSet is already running; it
+ #    auto-acquires a lease for the new experiment within
+ #    one poll-interval.
+ # 4. Prints the seed SHA + experiment URLs (web-ui ingress
+ #    if enabled, else port-forward instructions).
++
++# To bootstrap a SECOND experiment later:
++bash reference/scripts/setup-experiment-helm.sh \
++  --namespace eden-prod \
++  --experiment-config /path/to/exp-2.yaml \
++  --experiment-id exp-2
++# Creates eden-repo-init-exp-2 Job; same flow.
+ ```
+ 
+-The `--set repoInit.runOnce=true` mechanism: the
+-`repo-init-job.yaml` template is conditional on
+-`.Values.repoInit.enabled`. Setting it to `true` materializes
+-a `kind: Job` that runs once and exits; subsequent
+-`helm upgrade` runs are idempotent (same Job name; if the
+-prior one succeeded, k8s skips).
++Each per-experiment Job is independent: distinct name,
++distinct input experiment-config, distinct seed output. The
++`setup-experiment-helm.sh` script's idempotency rule is
++"run twice with the same `--experiment-id` and the second
++run sees the registry entry exists, the bare repo is already
++seeded, and exits 0 without re-running the Job".
+ 
++A future amendment may move bootstrap into the control
++plane's wire surface as a first-class `bootstrap_experiment`
++op (so operators don't need direct cluster access — just an
++admin-token POST). For 13a, the script-driven flow is the
++canonical mechanism; `kubectl` access is required.
++
+ ### 3.6 Helm smoke CI job
+ 
+ A new `helm-smoke` CI job mirrors `compose-smoke`:
+@@ -708,11 +776,20 @@
+ | `reference/helm/eden/templates/evaluator-host-statefulset.yaml` (new) | StatefulSet (per Decision 3). PVC sized `storage.evaluatorRepoSize`. |
+ | `reference/helm/eden/templates/web-ui-statefulset.yaml` (new) | StatefulSet (per Decision 3 — web-ui's executor module holds a local clone). PVC sized `storage.webUiRepoSize`. The Web UI is operator-singleton in v0 (`replicas: 1`); a future amendment may scale it horizontally with sticky-session ingress routing. |
+ | `reference/helm/eden/templates/web-ui-ingress.yaml` (new) | Ingress; gated on `ingress.enabled`. |
+-| `reference/helm/eden/templates/repo-init-job.yaml` (new) | One-shot Job; gated on `repoInit.enabled`. |
++| `reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl` (new) | NOT in `templates/` — Helm doesn't render at install. Per-experiment Job manifest template that `setup-experiment-helm.sh` renders + applies via `kubectl apply -f -` per §3.5. The chart ships the template but isn't responsible for its lifecycle. |
+ | `reference/helm/eden/templates/tests/test-connection.yaml` (new) | `helm test` connection probes. |
+ | `reference/helm/eden/README.md` (new) | Operator-facing chart docs. |
+ | `reference/helm/eden/ci-values.yaml` (new) | Pinned values for the `helm-smoke` CI job. |
+ 
++### 5.1a Orchestrator code change (Decision 9)
++
++| File | Change |
++|---|---|
++| `reference/services/orchestrator/src/eden_orchestrator/cli.py` | The `--max-quiescent-iterations` validator currently rejects `< 2`; extend it to accept `0` as a sentinel meaning "never exit on quiescence". Other values < 2 (i.e., `1`) still rejected. |
++| `reference/services/orchestrator/src/eden_orchestrator/loop.py` | The `run_orchestrator_loop`'s quiescence check currently terminates on `quiescent >= max_quiescent_iterations`. Update to skip the termination branch entirely when `max == 0`: `if max_quiescent_iterations == 0: return False  # never exit`. (Other behavior unchanged.) |
++| `reference/services/orchestrator/tests/test_loop.py` | New test: with `max_quiescent_iterations=0`, the loop runs through 100 zero-progress iterations without exiting. The existing tests cover `max >= 2` paths. |
++| `reference/compose/.env.example` | Compose default stays `EDEN_MAX_QUIESCENT_ITERATIONS=30` (preserves Compose's quiescence-exit lifecycle). The chart's `values.yaml` default is `0` (k8s "run forever"). |
++
+ ### 5.2 New scripts
+ 
+ | File | Change |

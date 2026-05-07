@@ -1,0 +1,95 @@
+--- docs/plans/review/eden-phase-13a-helm-base-chart/20260507T081524/3.md	2026-05-07 08:33:15
++++ docs/plans/eden-phase-13a-helm-base-chart.md	2026-05-07 08:51:50
+@@ -671,8 +671,91 @@
+ (which run against the wire, not against a substrate) cover
+ the protocol assertions.
+ 
+-### 3.8 What 13a does NOT do
++### 3.8 Alternatives considered
++
++Two architectural choices in this chunk benefit from explicit
++compare-and-reject paragraphs.
++
++**Embedded Postgres + Gitea (chosen) vs. upstream chart
++dependencies.** Decision 1 picked "one chart, no umbrella";
++that decided the EDEN-internal split. A separate question:
++should the chart EMBED its own Postgres + Gitea
++StatefulSets, or DEPEND on the maintained upstream Helm
++charts (e.g., `bitnami/postgresql`, `gitea/gitea`)? The
++upstream charts handle a lot of operational concerns —
++backup hooks, init-container migrations, monitoring
++endpoints, replication options — that the embedded version
++doesn't. For 13a, embedding wins:
++
++1. **13c and 13e replace these anyway.** The Postgres and
++   Gitea bundles in 13a are explicit stopgaps. 13c migrates
++   to a managed external Postgres (chart's `postgres`
++   becomes optional + a connection-string knob); 13e
++   replaces Gitea with a auth-aware version (TBD whether
++   that's still embedded). Investing in upstream-chart
++   plumbing now (which means picking + pinning a chart
++   version, vendoring its values surface, handling its
++   upgrade semantics) creates churn in 13c / 13e for no
++   v0 benefit. A 50-line StatefulSet template is cheaper to
++   replace than a vendored subchart's complete value
++   structure.
++2. **Conformance smoke determinism.** The `helm-smoke` CI
++   job runs against the chart-embedded versions; the
++   versions are pinned to specific Postgres + Gitea image
++   tags that the existing `compose-smoke` already exercises.
++   Depending on an upstream chart introduces another moving
++   piece in CI (the upstream chart's release cadence vs
++   ours).
++3. **Vendoring overhead.** Helm's chart-dependency mechanism
++   (`Chart.yaml`'s `dependencies:` block + `helm dep
++   update`) requires the operator (or the CI pipeline) to
++   resolve + pull dependencies before install. That's a
++   minor friction but real; the embedded approach has zero
++   external dependencies once the chart is cloned.
+ 
++If a future deployment needs production-grade Postgres or
++Gitea operationally (HA, encryption-at-rest, backup
++hooks), 13c and 13e are the right place — not retrofitting
++upstream charts into 13a's stopgap.
++
++**Helm-vanilla (chosen) vs. small operator/controller.** The
++chart pushes a fair amount of lifecycle work outside Helm's
++static install: per-experiment bootstrap Jobs (§3.5),
++script-driven control-plane registration calls, kubectl
++exec-equivalent flows. A small operator (a Custom Resource
++Definition like `Experiment` plus a controller that watches
++it and handles bootstrap + registration + lease assignment)
++would consolidate that lifecycle into a single declarative
++pattern.
++
++Why Helm-vanilla anyway:
++
++1. **One substrate dependency vs. two.** Helm + scripts is
++   "kubectl + bash"; an operator pattern adds a controller
++   binary, RBAC for CRD watch + Pod create, plus operator
++   versioning. For 13a that's significant new substrate.
++   The operator pays off when there are MANY experiments
++   per deployment (each Custom Resource is a tidy
++   declarative entry); in v0 a deployment may host 1-10
++   experiments and the script-driven path is simpler.
++2. **Iteration speed.** Helm + scripts can be edited
++   without an operator-build cycle. The bootstrap flow's
++   shape is still settling (the §3.5 design is plausible
++   but unproven); freezing it into a controller binary too
++   early locks in a design that may need revision in 13b/c.
++   13a's script-driven flow makes those revisions cheap.
++3. **Ecosystem reach.** Operators / controllers require
++   cluster-admin rights to install (CRDs are
++   cluster-scoped). Some shared k8s clusters don't grant
++   that easily. Helm-vanilla works in namespace-only
++   environments.
++
++A future amendment MAY add an operator pattern as a
++deployment option (alongside, not replacing, the Helm
++chart). v0 keeps the substrate footprint minimal.
++
++### 3.9 What 13a does NOT do
++
+ - **Cloud-provider helm extensions.** The chart doesn't ship
+   AWS / GCP / Azure value files. Operators target their
+   cloud's specifics (IRSA, GKE Workload Identity, ingress

@@ -1,0 +1,83 @@
+--- docs/plans/review/eden-phase-13a-helm-base-chart/20260507T081524/5.md	2026-05-07 10:22:12
++++ docs/plans/eden-phase-13a-helm-base-chart.md	2026-05-07 10:24:10
+@@ -1040,15 +1040,73 @@
+ 
+ Operators may want to run only some services (e.g., disable
+ the orchestrator for a manual-UI-only deployment). Setting
+-`.Values.replicas.orchestrator = 0` produces a Deployment with
+-0 replicas — the service is "deployed but idle". This is
+-preferred over conditional template inclusion (which makes
+-upgrade behavior fragile).
++`.Values.replicas.orchestrator = 0` produces a StatefulSet
++(per Decision 3) with 0 replicas — the workload is "deployed
++but idle". This is preferred over conditional template
++inclusion (which makes upgrade behavior fragile, and would
++also delete the Service object operators may be relying on).
++
++The same pattern applies to the other workload-kind-flexible
++services: ideator-host (Deployment), executor-host /
++evaluator-host / web-ui (StatefulSets per Decision 3).
++Postgres and Gitea cannot reasonably scale to 0 in v0 — if
++you don't want them, edit the chart.
+ 
+-The same pattern applies to all stateless services. Stateful
+-services (Postgres, Gitea) cannot reasonably scale to 0 in v0
+-— if you don't want them, edit the chart.
++A StatefulSet at `replicas: 0` keeps its existing PVCs intact
++(Kubernetes does NOT delete PVCs when scaling down a
++StatefulSet, by design). So scaling the orchestrator to 0
++and back to 2 preserves the per-replica clone state — the
++new pods reattach to their old PVCs. This is the right
++behavior for short-term operational pauses.
++
++### 7.3a Coexistence with the Compose deployment
++
++13a is explicitly parallel to the existing Compose deployment
++(§1.1). Operators may have BOTH running on the same
++machine — e.g., Compose stack on the local Docker daemon for
++development, plus a `helm install` on a kind/k3s cluster on
++the same host for k8s testing. A few coexistence rules:
++
++- **Helm release name + namespace.** Each `helm install`
++  carries an operator-chosen release name (e.g.,
++  `eden-dev`, `eden-prod`) and namespace
++  (`eden-dev`, `eden-prod`). The chart's resource names are
++  prefixed by the release name via `eden.fullname` in
++  `_helpers.tpl`, so two releases in different namespaces
++  do not collide on resource names. Two releases in the
++  SAME namespace WILL collide (Service / StatefulSet name
++  conflicts) — operators MUST use distinct namespaces per
++  release.
++- **Ingress hostname collisions.** If two releases (or one
++  release + the Compose stack) both want to expose the Web
++  UI or Gitea on the same hostname, the Ingress controller
++  serves whichever was created first; the second's
++  hostname-bound rules are silently ignored or rejected
++  depending on the controller. The chart's
++  `ingress.hosts.webUi` and `ingress.hosts.gitea` values
++  default to per-release-name templates
++  (`{{ .Release.Name }}-webui.example.com` etc.) rather
++  than shared defaults; operators who deliberately want a
++  shared hostname override per release.
++- **Port-forward port collisions on the local machine.**
++  When operators run BOTH a Compose stack and a Helm
++  release on the same machine and use `kubectl port-forward`
++  to access the Helm release's services, they MUST pick
++  ports that don't conflict with Compose's published ports
++  (the Compose stack's `WEB_UI_HOST_PORT` defaults to 8090,
++  Gitea to 3001). The chart's README example uses
++  port-forward targets at 18090 / 13001 (offset by 10000)
++  to avoid collision.
++- **Pre-existing namespace.** `helm install --create-namespace`
++  is safe against an existing namespace; it succeeds and
++  proceeds. Operators with existing resources in the target
++  namespace risk name collisions (per the first bullet);
++  the README recommends a fresh namespace per release.
+ 
++These rules are deployment-pragmatic, not protocol-level;
++they live in the chart's README rather than chapter 13 of
++the spec.
++
+ ### 7.4 Pod restarts vs lease handoff
+ 
+ A Helm-driven rolling restart of the orchestrator StatefulSet

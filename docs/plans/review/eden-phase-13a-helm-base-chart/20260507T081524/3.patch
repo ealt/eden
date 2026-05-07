@@ -1,0 +1,82 @@
+--- docs/plans/review/eden-phase-13a-helm-base-chart/20260507T081524/2.md	2026-05-07 08:29:46
++++ docs/plans/eden-phase-13a-helm-base-chart.md	2026-05-07 08:32:51
+@@ -159,10 +159,14 @@
+      Gitea expose `Ingress` resources gated on the `ingress`
+      toggle in values; off by default. Operators pick their
+      own ingress controller.
+-   - **Image registry**: defaults to the same
+-     `eden-reference:dev` tag the Compose stack uses. Operators
+-     point at their registry via `image.repository` /
+-     `image.tag` values.
++   - **Image registry**: NO default works on a fresh cluster.
++     The Compose stack builds `eden-reference:dev` locally
++     ([`reference/compose/Dockerfile`](../../reference/compose/Dockerfile));
++     a Kubernetes cluster cannot pull that local image.
++     Operators MUST build + push the image to a registry
++     they control and supply `image.repository` +
++     `image.tag` in `values.yaml`. The chart's
++     `values.schema.json` enforces both as non-empty.
+ 
+ 3. **Stateful services use StatefulSet; truly-stateless
+    services use Deployment.** The current substrate baseline
+@@ -215,15 +219,23 @@
+    stateless service. Default for orchestrator is 2 (HA); for
+    worker hosts it's 1 (operator scales as load demands).
+ 
+-7. **Image build is out of scope.** The chart pulls
+-   `eden-reference:dev` from a registry. Building + pushing the
+-   image is a separate operator step (or a separate CI
+-   pipeline). 13a doesn't add a `Dockerfile.helm` or anything;
+-   the existing `reference/compose/Dockerfile` stays the
+-   single image build, and operators tag/push it for their
+-   cluster's registry. A future amendment MAY add a
+-   `chart/.helmignore` + `helm package` workflow alongside the
+-   existing image build.
++7. **Image build is out of scope; image distribution is the
++   operator's responsibility.** The chart pulls a published
++   image from a registry the operator controls. The Compose
++   stack's local-build target (`eden-reference:dev` from
++   [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile))
++   is NOT pullable by a Kubernetes cluster. Operators must
++   build + push the image (`docker build` + `docker push`,
++   or via their CI) and supply
++   `image.repository=<registry>/<repo>` + `image.tag=<version>`
++   in `values.yaml`. The chart fails install if either is
++   empty (per `values.schema.json`'s `minLength: 1`
++   constraint). The existing `reference/compose/Dockerfile`
++   stays the single canonical image build; 13a doesn't add a
++   `Dockerfile.helm`. A future amendment MAY add a
++   `chart/.helmignore` + `helm package` workflow alongside
++   a published-by-CI image, but v0 keeps the operator-builds-
++   and-pushes posture.
+ 
+ 8. **Per-service local-clone PVCs (4 of them) plus one
+    gitea-side bare repo PVC.** Per §1.0 substrate baseline,
+@@ -337,9 +349,16 @@
+ 
+ ```yaml
+ # Image
++# Image — REQUIRED. The Compose stack builds eden-reference:dev as
++# a local target ([reference/compose/Dockerfile](../../reference/compose/Dockerfile));
++# the chart cannot pull that local image from a Kubernetes
++# cluster. Operators MUST build + push the image to their own
++# registry and supply repository + tag. The chart's
++# values.schema.json enforces `image.repository != ""` AND
++# `image.tag != ""`.
+ image:
+-  repository: ghcr.io/your-org/eden-reference
+-  tag: 0.x.0
++  repository: ""                       # required (e.g., ghcr.io/your-org/eden-reference)
++  tag: ""                              # required (e.g., 0.1.0)
+   pullPolicy: IfNotPresent
+   pullSecrets: []
+ 
+@@ -774,7 +793,7 @@
+ | `reference/helm/eden/templates/ideator-host-deployment.yaml` (new) | Deployment + per-service args. Stateless — does NOT hold a git clone. |
+ | `reference/helm/eden/templates/executor-host-statefulset.yaml` (new) | StatefulSet (per Decision 3). `volumeClaimTemplates` mints one PVC per replica sized `storage.executorRepoSize`. |
+ | `reference/helm/eden/templates/evaluator-host-statefulset.yaml` (new) | StatefulSet (per Decision 3). PVC sized `storage.evaluatorRepoSize`. |
+-| `reference/helm/eden/templates/web-ui-statefulset.yaml` (new) | StatefulSet (per Decision 3 — web-ui's executor module holds a local clone). PVC sized `storage.webUiRepoSize`. The Web UI is operator-singleton in v0 (`replicas: 1`); a future amendment may scale it horizontally with sticky-session ingress routing. |
++| `reference/helm/eden/templates/web-ui-statefulset.yaml` (new) | StatefulSet (per Decision 3 — web-ui's executor module holds a local clone). Two `volumeClaimTemplates`: (1) repo-clone PVC sized `storage.webUiRepoSize`, mounted at `/var/lib/eden/repo` for `--repo-path`; (2) artifacts PVC sized `storage.artifactsSize`, mounted at `/var/lib/eden/artifacts` for `--artifacts-dir` (the Web UI CLI requires this flag — see [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py) line 68). The Web UI is operator-singleton in v0 (`replicas: 1`); a future amendment may scale it horizontally with sticky-session ingress routing AND a `ReadWriteMany` artifacts mount or an external blob backend (13d). |
+ | `reference/helm/eden/templates/web-ui-ingress.yaml` (new) | Ingress; gated on `ingress.enabled`. |
+ | `reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl` (new) | NOT in `templates/` — Helm doesn't render at install. Per-experiment Job manifest template that `setup-experiment-helm.sh` renders + applies via `kubectl apply -f -` per §3.5. The chart ships the template but isn't responsible for its lifecycle. |
+ | `reference/helm/eden/templates/tests/test-connection.yaml` (new) | `helm test` connection probes. |
