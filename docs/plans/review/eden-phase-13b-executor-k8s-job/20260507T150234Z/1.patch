@@ -1,0 +1,269 @@
+--- docs/plans/review/eden-phase-13b-executor-k8s-job/20260507T150234Z/0.md	2026-05-07 15:13:53
++++ docs/plans/eden-phase-13b-executor-k8s-job.md	2026-05-07 15:19:04
+@@ -140,8 +140,9 @@
+   labels — same vocabulary, lets the reaper code share a
+   filter shape).
+ - New module: `reference/services/executor/src/eden_executor_host/k8s_job_mode.py`.
+-- New script: `eden-execute-wrapper` (the in-pod wrapper; ships in
+-  `eden-runtime:dev` per §3.6). The name follows the `execution_command`
++- New script: `eden-execute-wrapper` (the in-pod wrapper; baked
++  into `eden-runtime:dev` AND ConfigMap-mounted from the chart
++  per Decision 8 / §3.6). The name follows the `execution_command`
+   / `evaluation_command` precedent from the experiment YAML.
+ 
+ None of these reintroduce retired vocabulary (`promote`, `eval_error`,
+@@ -158,12 +159,30 @@
+    `completions: 1`, `backoffLimit: 0` (the host owns retry
+    semantics via the existing claim-TTL / sweeper machinery, not
+    k8s). The Job's pod runs the user's `execution_command` and
+-   exits; the Job is then deleted by the host. Job — not Pod —
+-   because the Pod object goes through `Pending → Running →
+-   Succeeded|Failed` and a bare Pod has no resilience on a node
+-   eviction; the Job's controller restarts the Pod on node-loss,
+-   while still capping retries at 0 so an OOM-kill doesn't
+-   silently re-run the user command. (See §3.1 alternatives.)
++   exits; the Job is then deleted by the host. Why Job — not Pod:
++   the Job controller exposes terminal state via
++   `.status.{succeeded, failed, conditions[?].type=="Complete|Failed"}`
++   that's controller-maintained and race-free, gives us
++   `ttlSecondsAfterFinished` for Pod log GC, and is the standard
++   ecosystem shape for "run-to-completion" workloads (kubectl,
++   monitoring, audit tooling all understand `Job`). With
++   `backoffLimit: 0` we explicitly opt out of the controller's
++   retry behavior because the host already owns retry. **What
++   `backoffLimit: 0` does NOT give us:** node-loss resilience.
++   Per the [Kubernetes Job docs](https://kubernetes.io/docs/concepts/workloads/controllers/job/),
++   a pod disruption (node drain, eviction, preemption) on a
++   `backoffLimit: 0` Job marks the Job `Failed` with a
++   `DisruptionTarget` condition rather than rescheduling the pod.
++   The host treats that exactly as it treats any other Job-failed
++   path: submit `VariantSubmission(status="error")` per chapter 3
++   §3.3, the variant terminalizes as `error`, and the next
++   ideation cycle MAY produce a new idea/variant pair that
++   re-attempts the same change. The k8s docs additionally warn
++   that even `completions: 1` Jobs can occasionally start the same
++   user program twice (controller restart edge cases); §8.10
++   covers how the host's existing idempotent-submit machinery
++   (`submissions_equivalent` + `ConflictingResubmission` from
++   chapter 4 §4.2) handles that. (See §3.1 alternatives.)
+ 
+ 2. **Executor-host StatefulSet keeps the claim+submit role.** The
+    host pod's loop continues to claim execution tasks from the
+@@ -242,24 +261,54 @@
+    with 12c (the control plane's policy mechanism is the
+    right place to land per-experiment overrides). See §11.
+ 
+-8. **The wrapper binary lives in `eden-runtime:dev`, not in
+-   the experiment image.** A small Python script
+-   `eden-execute-wrapper` is added to `eden-runtime:dev`
+-   (which already ships `python3 + git + bash + ca-certificates`
+-   per 13a / chunk-10d follow-up A). Even when the operator
+-   supplies an experiment-specific image (per the 13a
+-   substrate-baseline image strategy), the chart's
+-   `initContainer` runs `eden-runtime:dev` for the
+-   clone+worktree step and then the main container runs the
+-   experiment image — which has no eden-specific
+-   responsibilities. The user's `execution_command` is
+-   wrapped by an entrypoint shim in the main container's
+-   spec that runs the user command, captures its outcome
+-   file, and writes the EDEN_OUTCOME line. The shim is
+-   tiny (~30 lines of bash) and is supplied by the chart
+-   via a ConfigMap mounted into the main container at
+-   `/etc/eden/wrapper.sh`; the experiment image doesn't
+-   need to bundle anything eden-specific. See §3.6.
++8. **The Job's main container runs an EDEN-compatible image with
++   a documented minimum surface; the wrapper script is mounted
++   from a chart-managed ConfigMap.** The plan's earlier framing
++   of "experiment image has no eden-specific responsibilities"
++   was wrong; the wrapper.sh shim does need shell + git +
++   python3 + ca-certificates available at runtime, AND it runs
++   git operations against the worktree the init container
++   populated. So the main container's image MUST satisfy a
++   minimum-surface contract:
++   - `/bin/sh` (POSIX shell — not bash; the wrapper is
++     POSIX-shell-only).
++   - `git` ≥ 2.20 on `PATH`.
++   - `python3` ≥ 3.8 on `PATH` (used by the wrapper for
++     outcome JSON parsing — POSIX shell has no JSON parser).
++   - `ca-certificates` (so `git push` to a TLS-fronted Gitea
++     works).
++   - SHOULD: `eden:1000` user matching the executor-host's
++     identity, so commits the user command produces are
++     uid-owned compatibly with the integrator's reads (same
++     posture as the DooD `eden-runtime:dev` image; chunk-10d
++     follow-up A §"Identity").
++
++   Distroless and `FROM scratch` images do NOT satisfy this
++   contract; operators using those substitute a static
++   `eden-execute-wrapper` binary (out of scope for 13b — see
++   §11) or layer `eden-runtime:dev` underneath. The chart's
++   default `executor.jobTemplate.image` points operators at
++   `eden-runtime:dev` (via the 13a operator-built+pushed image
++   strategy), and the README documents the recommended pattern
++   `FROM ghcr.io/<org>/eden-runtime:<tag>` for experiment-
++   specific images.
++
++   The wrapper script itself ships in TWO places by design:
++   - **Baked into `eden-runtime:dev`** at `/usr/local/bin/eden-execute-wrapper`
++     (so an experiment image that derives from `eden-runtime:dev`
++     gets it for free).
++   - **Mounted from a chart-managed ConfigMap** at
++     `/etc/eden/wrapper.sh` and used as the container's
++     `command:`. This makes `command:` always override the
++     image's `entrypoint:` AND lets operators bump the wrapper
++     by re-applying the chart without rebuilding their experiment
++     image. The two copies SHOULD have the same content; the
++     ConfigMap version is the source of truth for the chart's
++     version of EDEN.
++
++   This dual-shipping is the same pattern the 13a base chart
++   uses for the git credential helper (ConfigMap-mounted into
++   workers; 13a §3.3a). See §3.6 for the wrapper itself.
+ 
+ 9. **`executor.mode=scripted` remains the chart default.**
+    13a's hard-coded `--mode scripted` becomes a values knob
+@@ -604,9 +653,20 @@
+ 
+ ### 3.6 Main container: wrapper shim
+ 
+-The chart ships a `ConfigMap` `executor-wrapper-configmap` with
+-a `wrapper.sh` shell script:
++Per Decision 8, the main container's image MUST satisfy the
++EDEN-compatible minimum surface (`/bin/sh`, `git`, `python3`,
++`ca-certificates`). The chart ships a `ConfigMap`
++`executor-wrapper-configmap` with a `wrapper.sh` shell script
++mounted at `/etc/eden/wrapper.sh`; the Job's pod template sets
++`containers[0].command: ["/bin/sh", "/etc/eden/wrapper.sh"]`,
++overriding whatever `entrypoint:` the experiment image has.
+ 
++The same wrapper content is also baked into `eden-runtime:dev`
++at `/usr/local/bin/eden-execute-wrapper` so a derived experiment
++image (`FROM ghcr.io/<org>/eden-runtime:<tag>`) carries it
++inline and can be invoked directly from a non-Helm context (CI
++test, local dev):
++
+ ```bash
+ #!/bin/sh
+ # /etc/eden/wrapper.sh
+@@ -753,8 +813,12 @@
+   with the per-task Job-create/watch/read flow.
+ - Updated CLI: `eden_executor_host.cli.parse_args` accepts
+   `--mode k8s-job` and the eight `--job-*` flags.
+-- New runtime artifact: `wrapper.sh` shipped via ConfigMap
+-  (NOT in `eden-runtime:dev` — the chart owns the version).
++- New runtime artifact: `wrapper.sh` shipped via ConfigMap (the
++  chart's version is authoritative) AND ALSO baked into
++  `eden-runtime:dev` at `/usr/local/bin/eden-execute-wrapper`
++  per Decision 8 (so derived experiment images carry it
++  inline). The ConfigMap-mounted copy is what the Job's
++  `command:` invokes at runtime.
+ - New CI job: `helm-smoke-executor-job` (kind cluster, opt-in
+   GPU label simulation).
+ - Chart upgrade test: `helm-upgrade-smoke` from 13a is
+@@ -1126,17 +1190,23 @@
+ ### 8.7 `wrapper.sh` portability across base images
+ 
+ The wrapper uses POSIX `sh` (not bash) and avoids GNU-only
+-flags so it runs on Alpine, Debian, RHEL, Distroless, and
+-similar. The dependency on `python3 -c '...'` for outcome
+-parsing requires the experiment image to ship Python 3 —
+-which `eden-runtime:dev` does by default, and most ML
+-experiment images do anyway.
++flags so it runs on Alpine, Debian, RHEL, and other
++distributions whose default `/bin/sh` is dash, busybox-sh,
++or similar. The Decision-8 minimum-surface contract ensures
++`/bin/sh`, `git`, `python3`, and `ca-certificates` are
++present on every supported Job image.
+ 
+-For experiment images without Python (e.g., a pure-Go binary
+-with `FROM scratch`), the wrapper's parsing breaks. 13b
+-documents this as a constraint; a follow-up MAY ship a
+-static `eden-execute-wrapper` binary that has no runtime
+-dependencies. Out of scope here.
++Distroless static images (`gcr.io/distroless/static`) and
++`FROM scratch` images do NOT satisfy the contract — they
++lack a shell and `git` outright; the wrapper's first line
++fails to even parse. 13b explicitly does NOT support those
++image bases; operators using them MUST switch to a
++shell-bearing base (`gcr.io/distroless/base` does include
++shell) OR derive from `eden-runtime:dev` directly. A
++follow-up that ships a static `eden-execute-wrapper` Go
++binary (no shell, no python3, no git — the binary calls
++libgit2 internally) would lift this constraint, but is out
++of scope here. See §11.
+ 
+ ### 8.8 Helm-rolling-update vs Job-in-flight
+ 
+@@ -1168,6 +1238,72 @@
+ A 13-followup may add a NetworkPolicy template that confines
+ Jobs to Gitea egress only, narrowing the blast radius. Out of
+ scope here; NetworkPolicy needs cluster CNI support.
++
++### 8.10 Node-disruption + duplicate-Pod semantics
++
++Two distinct Kubernetes-side hazards bear on the chunk's
++correctness story:
++
++**Node disruption (eviction, drain, preemption).** With
++`backoffLimit: 0` (Decision 1), the Job controller does NOT
++reschedule a disrupted Pod; it transitions the Job to
++`status.failed: 1` with a `DisruptionTarget` Pod condition.
++The host's Job watch detects `failed > 0` (the §3.4 step 6
++"Job failed" arm) and runs the existing chapter 3 §3.3
++transport-failure mapping → `VariantSubmission(status="error")`.
++The variant terminalizes as `error`; the next ideation cycle
++MAY produce a successor idea/variant pair that re-attempts.
++This is the same end-state as a `*_command` exit-nonzero or a
++malformed outcome.json — there is no "node-loss" special case
++in the host's submit logic.
++
++A future amendment MAY use `podFailurePolicy` (GA in k8s
++1.31; feature-gated in 1.27-1.30) to *ignore* `DisruptionTarget`
++conditions, allowing the controller to re-create the Pod once
++on infra-shaped failures. The chart targets k8s 1.27+ per 13a
++§7.5, so making `podFailurePolicy` load-bearing would force a
++1.31+ floor. 13b stays at the lower-common-denominator and
++treats every Job-failure as host-visible, accepting
++"variant-error → re-ideate" as the recovery path.
++
++**Duplicate Pod execution.** The Kubernetes Job documentation
++warns that `completions: 1` Jobs may *very rarely* run the
++user program twice on the same Job — typically when the Job
++controller restarts during a Pod's terminating window and
++re-creates a replacement before observing the original's
++exit. Two failure modes follow:
++
++- *Both Pods produce the same outcome.* Both write to the same
++  `work/<slug>-<variant_id>` ref via `git push`; the second
++  push is a no-op (`Already up to date` for an identical SHA).
++  Both emit `EDEN_OUTCOME` lines on stdout; the host reads
++  pod logs from whichever Pod the Job controller selected as
++  the "primary" (Job's pod-template-hash). Outcome: one
++  `VariantSubmission`; chapter 4 §4.2 idempotent-resubmit
++  applies even if both somehow ran the Phase 3 submit.
++- *Pods produce different outcomes.* (E.g., one OOM-killed
++  mid-push, the other completed.) The first Pod's `git push`
++  may leave a different ref-tip than the second Pod
++  attempts. The wrapper's `git push origin` per §3.6 will
++  refuse to overwrite (default `update-refs` rejects
++  non-fast-forward); the second Pod's wrapper writes
++  `outcome=error` to its own outcome.json. The host reads
++  one of the two `EDEN_OUTCOME` lines; whichever it sees, the
++  variant ends up in a coherent state because the host's
++  reachability check (§3.4 step 6) re-runs against the
++  current Gitea ref. If the host's read picks the
++  failed-second-Pod's outcome, the variant terminalizes as
++  `error` even though a valid `commit_sha` was pushed —
++  acceptable correctness loss; the next ideation cycle can
++  re-attempt.
++
++The host does NOT attempt to deduplicate Pods at the k8s
++level (it would have to query `pod-template-hash` and
++arbitrate, which is not idempotent itself). It relies on the
++existing chapter 4 §4.2 submission-equivalence rule plus
++chapter 3 §3.3 reachability to keep the store-side state
++coherent under duplicate-Pod execution. Documented in the
++new reference-binding chapter under "Duplicate Pod handling".
+ 
+ ## 9. Risks
+ 
