@@ -1,0 +1,90 @@
+--- docs/plans/review/eden-phase-12c-control-plane/20260506T174832/3.md	2026-05-06 18:05:00
++++ docs/plans/eden-phase-12c-control-plane.md	2026-05-06 18:07:48
+@@ -925,7 +925,7 @@
+ | `spec/v0/11-control-plane.md` (new) | Full chapter from §3.1 above. ~250 lines. |
+ | `spec/v0/02-data-model.md` | Extend the §2.5 Experiment runtime shape with `lease: ExperimentLease \| null`. Define `ExperimentLease` shape inline or cross-reference chapter 11. |
+ | `spec/v0/03-roles.md` | Add §6.5 "Lease ownership". The orchestrator's five decisions (§6.2) MUST NOT run for an experiment unless the orchestrator holds an active lease. |
+-| `spec/v0/07-wire-protocol.md` | Extend §1.3 carve-out to include `/v0/control/` (parallel to 12b's `/v0/checkpoints/`). Add §9 "Control-plane operations" with per-endpoint authority per Decision 12: `POST /v0/control/experiments` (register; admin-token), `DELETE /v0/control/experiments/<E>` (unregister; admin-token), `GET /v0/control/experiments` (list; any authenticated worker or admin-token), `GET /v0/control/experiments/<E>` (read metadata; same as list), `POST /v0/control/experiments/<E>/leases` (acquire; caller in `orchestrators` group with `holder == authenticated worker_id`), `POST /v0/control/leases/<L>/renew` (caller MUST be the lease's current holder), `POST /v0/control/leases/<L>/release` (caller MUST be the lease's current holder). |
++| `spec/v0/07-wire-protocol.md` | Extend §1.3 carve-out to include `/v0/control/` (parallel to 12b's `/v0/checkpoints/`). Add §9 "Control-plane operations" with per-endpoint authority per Decision 12. **Experiment registry**: `POST /v0/control/experiments` (register; admin-token), `DELETE /v0/control/experiments/<E>` (unregister; admin-token), `GET /v0/control/experiments` (list; any authenticated control-plane worker or admin-token), `GET /v0/control/experiments/<E>` (read metadata; same as list). **Lease ops**: `POST /v0/control/experiments/<E>/leases` (acquire; caller in deployment-scoped `orchestrators` group with `holder == authenticated worker_id`), `POST /v0/control/leases/<L>/renew` (caller MUST be the lease's current holder), `POST /v0/control/leases/<L>/release` (caller MUST be the lease's current holder). **Deployment-scoped worker registry** (per Decision 12): `POST /v0/control/workers` (register; admin-token; mirrors 12a-1 §D.1 shape but at the deployment scope), `POST /v0/control/workers/<W>/reissue-credential` (admin-token), `GET /v0/control/workers` (list; admin-token), `POST /v0/control/groups` (register; admin-token), `POST /v0/control/groups/<G>/members` (add_to_group; admin-token), `DELETE /v0/control/groups/<G>/members/<W>` (remove_from_group; admin-token), `GET /v0/control/groups` (list; admin-token), `POST /v0/control/verify-credential` (authenticated; mirrors 12a-1's verify_worker_credential). |
+ | `spec/v0/09-conformance.md` | Add `v1+multi-experiment` level. |
+ | `spec/v0/schemas/lease.schema.json` (new) | JSON Schema for ExperimentLease. |
+ | `spec/v0/schemas/experiment.schema.json` (extension) | Add `lease` property (oneOf [`null`, `$ref: lease.schema.json`]). |
+@@ -935,19 +935,21 @@
+ | File | Change |
+ |---|---|
+ | `reference/packages/eden-control-plane/src/eden_control_plane/__init__.py` | Public API: `ControlPlaneClient` (http client over the new endpoints). |
+-| `reference/packages/eden-control-plane/src/eden_control_plane/client.py` | The `ControlPlaneClient` class wrapping `httpx`; methods mirror the wire endpoints. |
+-| `reference/packages/eden-control-plane/src/eden_control_plane/models.py` | Pydantic models: `Experiment` (registry entry), `ExperimentLease`, `ImportProvenance` (extended from 12b), shared response shapes. |
+-| `reference/packages/eden-control-plane/tests/` | Unit tests for the client (request shape, response parsing, error handling). |
+-| `reference/services/control-plane/src/eden_control_plane_server/server.py` (new) | FastAPI app. Endpoints per §3.1. Postgres-backed (psycopg). |
+-| `reference/services/control-plane/src/eden_control_plane_server/db.py` | Schema definitions + migrations (a thin idempotent CREATE-TABLE-IF-NOT-EXISTS at startup). |
++| `reference/packages/eden-control-plane/src/eden_control_plane/client.py` | The `ControlPlaneClient` class wrapping `httpx`; methods mirror the wire endpoints (experiments, leases, workers, groups, verify-credential). |
++| `reference/packages/eden-control-plane/src/eden_control_plane/models.py` | Pydantic models: `Experiment` (registry entry), `ExperimentLease`, `ImportProvenance` (extended from 12b), `DeploymentWorker`, `DeploymentGroup`, shared response shapes (including the `warnings` array used by `read_experiment_metadata`'s stale-state warning per §3.4a). |
++| `reference/packages/eden-control-plane/tests/` | Unit tests for the client (request shape, response parsing, error handling for all four endpoint families: experiments, leases, workers, groups). |
++| `reference/services/control-plane/src/eden_control_plane_server/server.py` (new) | FastAPI app. All endpoints per the §5.1 spec table: experiment registry + lease ops + deployment-scoped worker/group registry + verify-credential. Postgres-backed (psycopg). |
++| `reference/services/control-plane/src/eden_control_plane_server/db.py` | Schema definitions + migrations (a thin idempotent CREATE-TABLE-IF-NOT-EXISTS at startup). Tables: `control_plane_experiments`, `control_plane_leases` (§3.4 above), plus `control_plane_workers` and `control_plane_groups` for the Decision 12 deployment-scoped registry (mirroring 12a-1's `workers` / `groups` table shapes but in the control-plane's schema, separate from the per-experiment task-store-server tables). |
+ | `reference/services/control-plane/src/eden_control_plane_server/lease.py` | Lease acquire/renew/release logic per §3.4. The atomic-replace SQL is the load-bearing piece. |
+-| `reference/services/control-plane/tests/` | Unit + integration tests. Postgres-backed integration tests gated on `EDEN_TEST_POSTGRES_DSN` (matching existing pattern from 10b/10c). |
++| `reference/services/control-plane/src/eden_control_plane_server/workers.py` (new) | Deployment-scoped worker + group registry handlers per Decision 12. Reuses 12a-1's argon2id credential-hashing scheme; the Postgres tables are control-plane-scoped (no cross-talk with the task-store-server's per-experiment registries). |
++| `reference/services/control-plane/src/eden_control_plane_server/state_sync.py` (new) | Background poller per §3.4a: every `EDEN_STATE_SYNC_INTERVAL_SECONDS`, walk `list_experiments` and call each experiment's `read_experiment(id)` on the task-store-server. Update `last_known_state` atomically. Track per-experiment "consecutive failures" counter; emit stale-warning entries when threshold (default 10) is exceeded. The `acquire_lease` handler also calls into `state_sync` for an on-demand refresh. |
++| `reference/services/control-plane/tests/` | Unit + integration tests for all four endpoint families. Postgres-backed integration tests gated on `EDEN_TEST_POSTGRES_DSN`. **Specific coverage** (matches §6.1 below): lease semantics, worker/group registration round-trip, state-sync polling convergence, stale-warning emission, acquire-lease-also-refreshes-state. |
+ 
+ ### 5.3 eden-orchestrator
+ 
+ | File | Change |
+ |---|---|
+-| `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Add `--control-plane-url` flag (default `http://control-plane:8080`). Add `--lease-duration-seconds` (default 30). The 12a-2 `--worker-id` flag is **preserved** (no regression): operators MUST supply a unique `worker_id` per replica per 12a-1 §D.1's grammar (default `auto-orchestrator-1`). The single-experiment `--experiment-id` flag is now optional: if set, the orchestrator only attempts to lease that experiment; if absent, it leases any experiment in the registry. |
++| `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Add `--control-plane-url` flag (default `http://control-plane:8080`). Add `--lease-duration-seconds` (default 30). The 12a-2 `--worker-id` flag is **preserved** (no regression): operators MUST supply a unique `worker_id` per replica per 12a-1 §D.1's grammar (default `auto-orchestrator-1`). The single-experiment `--experiment-id` flag is now optional: if set, the orchestrator only attempts to lease that experiment; if absent, it leases any experiment in the registry. **Dual-credential bootstrap inputs (per Decision 12)**: add `--admin-token <path-or-env>` for bootstrap admin operations (control-plane `register_worker` / `add_to_group` for the orchestrator's deployment-scoped identity, plus per-experiment `register_worker` calls when acquiring a new lease). Add `--control-plane-credential-path <path>` and `--task-store-credential-dir <dir>` for persisted credentials (the deployment-scoped credential is one file; per-experiment credentials are one file per leased experiment under the dir). Defaults: `$XDG_STATE_HOME/eden/control-plane/<worker_id>.cred` and `$XDG_STATE_HOME/eden/task-store/<experiment_id>/<worker_id>.cred`. Re-running with the same paths reuses persisted credentials. |
+ | `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Major rework: replace single-experiment loop with multi-experiment lease-driven loop per §3.2. Add `LeaseManager` class managing the held-leases set + renewal thread + acquisition thread. The `run_orchestrator_iteration` per-experiment call **shape** is unchanged from 12a-2 / 12a-3 (still takes one experiment_id at a time); the outer driver instantiates a per-experiment `StoreClient` view (see §5.4 below) per held lease and calls `run_orchestrator_iteration` once per held experiment per outer-loop tick. |
+ | `reference/services/orchestrator/src/eden_orchestrator/leases.py` (new) | `LeaseManager` implementation. |
+ | `reference/services/orchestrator/tests/test_lease_manager.py` (new) | Unit tests covering acquire/renew/release, expiration handling, hand-off detection. |
+@@ -975,7 +977,7 @@
+ | File | Change |
+ |---|---|
+ | `reference/compose/compose.yaml` | New `control-plane` service (FastAPI; port 8081 internal). Existing `orchestrator` service gains `--control-plane-url`. Existing `web-ui` service gains `--control-plane-url`. |
+-| `reference/compose/.env.example` | Add `CONTROL_PLANE_PORT=8081`, `EDEN_LEASE_DURATION_SECONDS=30`. |
++| `reference/compose/.env.example` | Add `CONTROL_PLANE_PORT=8081`, `EDEN_LEASE_DURATION_SECONDS=30`, `EDEN_STATE_SYNC_INTERVAL_SECONDS=30`, `EDEN_STATE_SYNC_FAILURE_THRESHOLD=10` (consecutive-failure count before a stale-warning fires per §3.4a). |
+ | `reference/scripts/setup-experiment/setup-experiment.sh` | After the task-store-server seed, call `control-plane register_experiment` (admin-token-authenticated). Idempotent: re-running setup against an existing experiment is a no-op on the registry side. |
+ | `reference/compose/healthcheck/smoke-multi-experiment.sh` (new) | The §3.8 smoke. |
+ 
+@@ -1005,6 +1007,40 @@
+ - Release → 200; subsequent acquire succeeds.
+ - Acquire over expired lease (no explicit release) → 201 with
+   new `lease_id`, replacing the expired entry atomically.
++
++`eden_control_plane_server.tests.test_workers_registry`
++(parametrized SQLite + Postgres; mirrors 12a-1's worker-registry
++tests but at the deployment scope):
++
++- `register_worker(worker_id)` succeeds; second call with the
++  same `worker_id` is idempotent (returns the same record
++  without minting a new credential).
++- `verify_worker_credential` succeeds with the issued
++  credential; rejects with bad credential.
++- `reissue_credential` mints a fresh credential and invalidates
++  the prior one.
++- `register_group` + `add_to_group` round-trip; `list_groups`
++  returns the membership.
++- Authority: `register_worker` without admin-token → 403;
++  `verify_worker_credential` without authentication → 401.
++
++`eden_control_plane_server.tests.test_state_sync` (per §3.4a):
++
++- Polling loop: register experiment E; task-store-server's
++  `experiment.state` is `"running"`; wait one polling
++  interval; assert `last_known_state == "running"`. Transition
++  the task-store-server's state to `"terminated"`; wait one
++  more polling interval; assert
++  `last_known_state == "terminated"`.
++- Stale warning: simulate task-store-server unreachable for >
++  N polling intervals; assert `read_experiment_metadata`
++  surfaces a stale-state warning in its `warnings` array.
++- `acquire_lease` triggers state refresh: register experiment;
++  set task-store-server state to `"terminated"` between two
++  polling ticks; immediately call `acquire_lease`; assert the
++  acquire response carries the up-to-date
++  `last_known_state == "terminated"` (the on-demand refresh
++  ran).
+ 
+ `eden_orchestrator.tests.test_lease_manager`:
+ 

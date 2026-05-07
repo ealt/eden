@@ -1,0 +1,121 @@
+--- docs/plans/review/eden-phase-12c-control-plane/20260506T174832/2.md	2026-05-06 18:01:46
++++ docs/plans/eden-phase-12c-control-plane.md	2026-05-06 18:04:43
+@@ -684,8 +684,117 @@
+ - Stops one orchestrator replica mid-run; the other replica
+   picks up its leases. Both experiments still complete.
+ 
+-### 3.9 What 12c does NOT do
++### 3.9 Alternatives considered
++
++Three architectural choices in this chunk benefit from explicit
++compare-and-reject paragraphs.
+ 
++**Per-experiment leases (chosen) vs. deployment-level leader
++election.** Decision 7 explicitly accepts "greedy with
++stand-bys" — one replica may hold all leases, others sit idle.
++That makes the chosen design primarily an HA/failover
++mechanism rather than a scaling one. The natural alternative
++is a single deployment-wide leader: one replica is elected
++leader, runs all dispatch loops for all experiments, others
++stand by for failover.
++
++Why per-experiment leases anyway:
++
++1. **Future scaling story.** A future v1 amendment can add
++   active load-rebalancing across replicas (cross-replica
++   gossip, lease-stealing, etc.) without changing the lease
++   primitive. A leader-election design forecloses that path —
++   moving from "one leader" to "leader-per-experiment" is a
++   larger refactor than evolving v0's "greedy" acquisition
++   into "rebalanced".
++2. **Operator visibility.** Per-experiment leases let
++   operators see "experiment E is owned by replica A" in the
++   dashboard and alert on per-experiment failures. With a
++   single leader, the only visible state is "leader is
++   replica X" — useful but coarser.
++3. **Failure domains.** If one experiment's dispatch loop
++   misbehaves (e.g., a poorly-written termination policy
++   raises every iteration), it's contained to its lease
++   holder. With a single leader, a misbehaving experiment
++   crashes the leader's process and re-elects.
++
++The cost is the lease machinery itself — acquire/renew/release
++plus the per-experiment registry. v0 accepts that cost as the
++investment that pays off in v1's scaling story.
++
++**Greedy acquisition (chosen) vs. deterministic sharding by
++`experiment_id`.** §3.2's acquisition loop has every replica
++polling `list_experiments` and opportunistically trying to
++acquire anything unheld. The alternative is consistent-hash
++sharding: `experiment_id → hash → replica index`, so each
++experiment has a deterministic owner. Pros of sharding:
++predictable distribution; no acquisition scans; "replica A
++owns E1, replica B owns E2" is contract, not coincidence.
++
++Why greedy anyway:
++
++1. **Replica-set churn is hard with sharding.** Adding a
++   replica reshards experiments, which means leases must be
++   handed off to new owners. The hand-off coordination is
++   non-trivial — every replica needs to know the current
++   replica-set membership, and adding a replica means every
++   experiment whose hash now points elsewhere must be
++   released by its current holder. Greedy acquisition
++   sidesteps this: replicas come and go; leases drift
++   greedily; the system converges naturally.
++2. **HA simplicity.** A failed replica's leases expire and
++   get re-acquired greedily. With sharding, a failed
++   replica's leases need a fallback rule (next replica in
++   the hash ring, etc.) which adds yet another mechanism.
++3. **Fairness is OK at v0 scale.** A deployment with 10
++   experiments and 3 replicas may end up with one replica
++   holding all 10 leases. That's idle capacity — not data
++   corruption. v1 can add active rebalancing on top of the
++   greedy mechanism.
++
++If a future deployment hits a real load-imbalance problem,
++the right path is to add rebalancing (lease-stealing across
++replicas) on top of the existing lease primitive, not to
++replace the primitive with sharding.
++
++**Separate control-plane service + deployment-scoped worker
++registry (chosen) vs. sidecar in task-store-server vs.
++admin-only lease ops.** Decision 1 picks a separate service;
++Decision 12 adds a deployment-scoped worker registry distinct
++from 12a-1's per-experiment registry. The combined complexity
++is meaningful. Two narrower alternatives:
++
++- **Sidecar in the shared task-store-server.** The
++  task-store-server adds endpoints under `/v0/control/...`
++  alongside its existing `/v0/experiments/...`. Pros: one
++  service to deploy + auth-policy. Cons: muddles the
++  task-store-server's role (it becomes the data plane AND
++  the coordination plane); a control-plane crash takes the
++  data plane down with it. The plan's separation-of-concerns
++  argument (Decision 1) is the load-bearing reason to split;
++  the cost is one extra service. Net: separate service wins.
++
++- **Admin-only lease ops, no deployment-scoped worker
++  registry.** Every orchestrator replica uses the deployment
++  admin-token directly to call `acquire_lease` etc. Pros:
++  no deployment-scoped registry; orchestrator startup is
++  simpler. Cons: every replica holds full deployment-admin
++  power for its lifetime, which is a much weaker security
++  posture than 12a-1's per-worker credentials offer for
++  every other op. A compromised orchestrator could
++  unregister experiments, force-release leases, etc. The
++  deployment-scoped registry confines orchestrator authority
++  to lease ops over its own holds.
++
++The chosen design (separate service + deployment-scoped
++worker registry) is the most expensive of the three but
++offers the best operational separation + security posture
++for v0. A future amendment may collapse the deployment-
++scoped registry into 12a-1's worker model if 12a-1 widens
++to support deployment-scoped workers natively.
++
++### 3.10 What 12c does NOT do
++
+ - **Sub-experiment leases.** A future need might be "lease
+   parts of an experiment to different replicas" (e.g., one
+   replica handles ideation, another handles integration). v0

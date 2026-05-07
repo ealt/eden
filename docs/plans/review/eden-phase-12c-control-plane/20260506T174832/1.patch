@@ -1,0 +1,226 @@
+--- docs/plans/review/eden-phase-12c-control-plane/20260506T174832/0.md	2026-05-06 17:48:32
++++ docs/plans/eden-phase-12c-control-plane.md	2026-05-06 17:56:06
+@@ -153,12 +153,18 @@
+    proportional to operator-driven reads, not worker-driven
+    writes.
+ 
+-7. **Multi-replica orchestrator behavior** (the 12a-2 multi-
+-   instance HA model is reframed). Replicas no longer race per-
+-   experiment; they each acquire leases for one or more
+-   experiments and run the loop only for their leased
+-   experiments. A deployment with N orchestrator replicas + M
+-   experiments has up to min(N, M) parallel loops.
++7. **Multi-replica orchestrator behavior — greedy with
++   stand-bys** (the 12a-2 multi-instance HA model is reframed
++   as redundancy, not as parallelism). Replicas no longer race
++   per-experiment; instead, the first replica to call
++   `acquire_lease` for an experiment wins, others wait on
++   stand-by. A deployment with N orchestrator replicas + M
++   experiments may end up with one replica holding all M
++   leases and N-1 replicas idle — that's HA via redundancy. If
++   the active replica fails, a stand-by acquires the orphaned
++   leases. Active load-rebalancing across replicas (so all N
++   share the M-leases workload) is a future improvement;
++   v0 ships greedy-with-stand-bys.
+ 
+ 8. **Lease scoping**. Leases are PER experiment, not per
+    decision type. A single lease grants the holder authority
+@@ -167,13 +173,27 @@
+    `termination`) for that experiment. Per-decision-type leases
+    would be more flexible but add complexity for no v0 use case.
+ 
+-9. **Checkpoint import via control plane.** A 12b checkpoint
+-   import (`POST /v0/checkpoints/import`) creates the
+-   experiment in the task-store-server. 12c extends the import
+-   flow to also register the new experiment with the control
+-   plane — atomic with the import. Without this, an imported
+-   experiment would be invisible to the cross-experiment views
+-   until an operator manually registered it.
++9. **Checkpoint import auto-registers with the control plane —
++   best-effort, not atomic.** 12b's
++   `POST /v0/checkpoints/import` creates the experiment in the
++   task-store-server. 12c extends the import flow to ALSO call
++   `control_plane.register_experiment` after the
++   task-store-server commit succeeds. The two operations are
++   NOT atomic across the two services (true 2PC across
++   independent Postgres connections is heavy and out of scope
++   for v0); the import handler treats control-plane
++   registration failure as a recoverable partial success per
++   12b's existing `warnings` array. The operator's recovery is
++   `POST /v0/control/experiments/<id>` with the
++   experiment_id from the partial-success warning. Without
++   recovery, the imported experiment exists in the
++   task-store-server but is invisible to `list_experiments`
++   and therefore invisible to lease acquisition — orchestrator
++   replicas will not pick it up. This is a deliberate weak-
++   contract choice; the alternative (block the import on
++   control-plane availability) was rejected because it
++   couples export/import to control-plane uptime more
++   tightly than necessary.
+ 
+ 10. **The control plane has no orchestrator-decision authority
+     of its own.** It is purely a registry + coordination layer.
+@@ -182,6 +202,42 @@
+     does NOT, e.g., issue dispatch commands; it only assigns
+     leases and lets the lease-holder do its job.
+ 
++11. **One multi-experiment task-store-server in v0**
++    (data-plane topology). The current task-store-server is
++    constructed with a single `experiment_id` per
++    [`reference/services/task-store-server/src/eden_task_store_server/app.py`](../../reference/services/task-store-server/src/eden_task_store_server/app.py).
++    12c extends the Store Protocol + backends to be
++    multi-experiment-aware: the task-store-server hosts ALL of
++    a deployment's experiments behind one HTTP endpoint, and
++    the wire layer's existing `experiments/{id}/...` path
++    structure routes per-call. The control plane's
++    `config_uri` field (§3.1 below) names the
++    *experiment-config resource*, not the task-store-server
++    URL — there is one task-store-server URL deployment-wide.
++    A future amendment MAY add per-experiment task-store-server
++    sharding (the registry would carry the URL); v0 stays
++    single-deployment-single-task-store-server.
++
++12. **Lease ops authenticate as the orchestrator worker, not
++    the deployment admin.** The control plane's lease
++    endpoints (`acquire_lease`, `renew_lease`, `release_lease`)
++    accept worker credentials per 12a-1 §D.5. Authority rules:
++    - `acquire_lease`: caller MUST be in the `orchestrators`
++      group; `holder` field MUST equal the authenticated
++      `worker_id` (no impersonation).
++    - `renew_lease`: caller MUST be the lease's current
++      `holder`.
++    - `release_lease`: caller MUST be the lease's current
++      `holder`.
++    - `register_experiment` / `unregister_experiment`:
++      admin-token only.
++    - `list_experiments` / `read_experiment_metadata`:
++      authenticated worker (any group) OR admin-token.
++    This preserves 12a-2's worker-credential model: the
++    orchestrator boots with the admin token (to register
++    itself + join `orchestrators`) but uses its own worker
++    credential for ongoing lease ops.
++
+ ## 3. Design
+ 
+ ### 3.1 Spec chapter 11 — control plane
+@@ -288,9 +344,12 @@
+ 
+ ```text
+ on startup:
+-  worker_id = "auto-orchestrator-<host>"
+-  register_worker(worker_id)               # 12a-1
+-  add_to_group(worker_id, "orchestrators") # 12a-2
++  # worker_id is supplied per replica via --worker-id (12a-2 §3.8);
++  # operators MUST give each replica a unique id. Default
++  # "auto-orchestrator-1" is OK only when running a single replica.
++  register_worker(worker_id)               # 12a-1; admin token at boot
++  add_to_group(worker_id, "orchestrators") # 12a-2; admin token at boot
++  # Subsequent ops use the worker's own credential, not the admin token.
+   for experiment_id in list_experiments():
+     try:
+       lease = acquire_lease(experiment_id, holder=worker_id)
+@@ -304,10 +363,20 @@
+   for lease in self.held_leases:
+     try:
+       renew_lease(lease.lease_id)
+-    except LeaseNotHeld:        # we lost it (clock skew, network blip)
++      lease.last_successful_renew = now
++    except LeaseNotHeld:        # we lost it (clock skew, control-plane mutation)
+       drop_experiment(lease.experiment_id)
+     except TransportError:
+-      log warning; retry on next tick
++      log warning
++      # Self-fence: if we cannot reach the control plane for >= lease_duration,
++      # we MUST stop dispatching even though we never got LeaseNotHeld.
++      # This bounds the split-brain window during a control-plane partition:
++      # the control plane will issue the lease to another replica after
++      # lease_duration; we must self-stop within the same window so we
++      # don't continue dispatching against an experiment another replica
++      # now owns.
++      if now - lease.last_successful_renew >= lease_duration:
++        drop_experiment(lease.experiment_id)
+ 
+ dispatch_loop (every poll_interval):
+   for experiment_id in self.held_experiments:
+@@ -349,19 +418,33 @@
+ 
+ - B can run all five decisions for the experiment.
+ - A (if still alive) attempts to renew its lease, gets
+-  `LeaseNotHeld`, drops the experiment from its owned set, and
+-  stops running decisions.
++  `LeaseNotHeld`, drops the experiment from its owned set,
++  and stops running decisions. (If A is partitioned and
++  cannot reach the control plane at all, A's renewal-thread
++  self-fence — see the §3.2 pseudocode — drops the experiment
++  after `lease_duration` of consecutive transport failures,
++  bounding the split-brain window even without an explicit
++  `LeaseNotHeld`.)
+ - The hand-off window — between A's lease expiring and A
+-  observing the renewal failure — is bounded by A's renewal
+-  interval (`lease_duration / 3`). During this window, both A
+-  and B might be running decisions for the experiment. The
+-  12a-2 idempotent-decisions model handles this: A's writes
+-  either commit before B's (and B's see them via Store CAS) or
+-  vice versa. No data corruption.
++  observing the renewal failure (or hitting the self-fence) —
++  is bounded by `lease_duration` worst-case. During this
++  window, both A and B might be running decisions for the
++  experiment. The 12a-2 idempotent-decisions model handles
++  this for the four exact-idempotent decisions
++  (`execution_dispatch`, `evaluation_dispatch`, `integration`,
++  termination): one CAS commit wins; the other is no-ops. The
++  fifth decision (`ideation_creation`) is bounded-overshoot
++  per 12a-2 §6.4, not exact-idempotent: a hand-off race may
++  produce up to `N * T` ideation tasks (where `T` is the
++  policy target, `N` is the count of replicas racing — usually
++  2 during hand-off). The next iteration self-corrects per
++  12a-2's §3.4 worked example. No data corruption; one-
++  iteration overshoot is the documented bound.
+ 
+ This is the "rare race" 12a-2 §3.4 describes; 12c's lease model
+ makes it rare-by-construction (only during hand-offs), with
+-12a-2 as the safety net.
++12a-2's exact-idempotent + bounded-overshoot guarantees as the
++safety net.
+ 
+ ### 3.4 Control plane storage
+ 
+@@ -567,8 +650,18 @@
+   endpoints, used by the orchestrator + Web UI.
+ - `eden_orchestrator.loop`: lease-acquire + renewal threads;
+   decision gating per §3.2.
+-- `eden_storage.Store`: no changes (control plane has its own
+-  Postgres, not coupled to the Store backends).
++- `eden_storage.Store`: extend the Protocol + backends to be
++  multi-experiment-aware per Decision 11. Today the Store is
++  constructed with one `experiment_id` baked in
++  ([`reference/services/task-store-server/src/eden_task_store_server/app.py`](../../reference/services/task-store-server/src/eden_task_store_server/app.py)
++  lines 21-57); 12c lifts that to a per-call parameter (every
++  Store op gains an `experiment_id` argument) AND a Store
++  factory that owns multiple experiments at once. The
++  task-store-server constructs ONE Store factory at startup
++  and routes incoming wire requests' `experiments/{id}/...`
++  paths to the right experiment's data via the factory. The
++  control plane has its own separate Postgres (per §3.4
++  Option A).
+ - `eden_wire.server.py` / `client.py`: extend the import
+   endpoint per §3.5 to call the control plane.
+ - `eden_web_ui.routes.admin`: experiment switcher in top nav;
+@@ -638,7 +731,7 @@
+ | `spec/v0/11-control-plane.md` (new) | Full chapter from §3.1 above. ~250 lines. |
+ | `spec/v0/02-data-model.md` | Extend the §2.5 Experiment runtime shape with `lease: ExperimentLease \| null`. Define `ExperimentLease` shape inline or cross-reference chapter 11. |
+ | `spec/v0/03-roles.md` | Add §6.5 "Lease ownership". The orchestrator's five decisions (§6.2) MUST NOT run for an experiment unless the orchestrator holds an active lease. |
+-| `spec/v0/07-wire-protocol.md` | Extend §1.3 carve-out to include `/v0/control/` (parallel to 12b's `/v0/checkpoints/`). Add §9 "Control-plane operations": `POST /v0/control/experiments` (register), `DELETE /v0/control/experiments/<E>` (unregister), `GET /v0/control/experiments` (list), `GET /v0/control/experiments/<E>` (read metadata), `POST /v0/control/experiments/<E>/leases` (acquire), `POST /v0/control/leases/<L>/renew`, `POST /v0/control/leases/<L>/release`. Authority: admin-token. |
++| `spec/v0/07-wire-protocol.md` | Extend §1.3 carve-out to include `/v0/control/` (parallel to 12b's `/v0/checkpoints/`). Add §9 "Control-plane operations" with per-endpoint authority per Decision 12: `POST /v0/control/experiments` (register; admin-token), `DELETE /v0/control/experiments/<E>` (unregister; admin-token), `GET /v0/control/experiments` (list; any authenticated worker or admin-token), `GET /v0/control/experiments/<E>` (read metadata; same as list), `POST /v0/control/experiments/<E>/leases` (acquire; caller in `orchestrators` group with `holder == authenticated worker_id`), `POST /v0/control/leases/<L>/renew` (caller MUST be the lease's current holder), `POST /v0/control/leases/<L>/release` (caller MUST be the lease's current holder). |
+ | `spec/v0/09-conformance.md` | Add `v1+multi-experiment` level. |
+ | `spec/v0/schemas/lease.schema.json` (new) | JSON Schema for ExperimentLease. |
+ | `spec/v0/schemas/experiment.schema.json` (extension) | Add `lease` property (oneOf [`null`, `$ref: lease.schema.json`]). |
+@@ -660,7 +753,7 @@
+ 
+ | File | Change |
+ |---|---|
+-| `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Add `--control-plane-url` flag (default `http://control-plane:8080`). Add `--lease-duration-seconds` (default 30). The single-experiment `--experiment-id` flag is now optional: if set, the orchestrator only attempts to lease that experiment; if absent, it leases any experiment in the registry. |
++| `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Add `--control-plane-url` flag (default `http://control-plane:8080`). Add `--lease-duration-seconds` (default 30). The 12a-2 `--worker-id` flag is **preserved** (no regression): operators MUST supply a unique `worker_id` per replica per 12a-1 §D.1's grammar (default `auto-orchestrator-1`). The single-experiment `--experiment-id` flag is now optional: if set, the orchestrator only attempts to lease that experiment; if absent, it leases any experiment in the registry. |
+ | `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Major rework: replace single-experiment loop with multi-experiment lease-driven loop per §3.2. Add `LeaseManager` class managing the held-leases set + renewal thread + acquisition thread. The `run_orchestrator_iteration` per-experiment call is unchanged from 12a-2 / 12a-3; only the outer driver changes. |
+ | `reference/services/orchestrator/src/eden_orchestrator/leases.py` (new) | `LeaseManager` implementation. |
+ | `reference/services/orchestrator/tests/test_lease_manager.py` (new) | Unit tests covering acquire/renew/release, expiration handling, hand-off detection. |
