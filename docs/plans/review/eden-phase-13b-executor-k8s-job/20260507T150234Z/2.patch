@@ -1,0 +1,279 @@
+--- docs/plans/review/eden-phase-13b-executor-k8s-job/20260507T150234Z/1.md	2026-05-07 15:19:16
++++ docs/plans/eden-phase-13b-executor-k8s-job.md	2026-05-07 15:23:42
+@@ -350,12 +350,21 @@
+ 
+ - *Pod-per-task (rejected):* the host creates a bare `Pod`
+   resource directly. Pros: simplest mental model; no
+-  controller in the loop. Cons: a node eviction during
+-  pod execution is silently lost (the Pod just disappears;
+-  the host has to detect the disappearance and submit
+-  `error`). The Job controller handles eviction-with-restart
+-  for free, and we still get the no-restart-policy via
+-  `backoffLimit: 0`. So Job is strictly better than Pod.
++  controller in the loop. Cons: terminal state has to be
++  inferred from `.status.phase` transitions plus container
++  exit codes, with no controller-maintained invariant; the
++  host has to GC the Pod itself (no `ttlSecondsAfterFinished`
++  on bare Pods); ecosystem tooling (kubectl, monitoring)
++  reasons in terms of higher-level controllers. None of
++  these are showstoppers, but Job's controller-maintained
++  status fields and standard ecosystem shape are
++  meaningfully easier to integrate against. The
++  *eviction-resilience* argument that earlier drafts of
++  this plan cited is NOT a Job advantage with `backoffLimit: 0`
++  (per Decision 1 / §8.10 — disrupted Pods fail the Job, so
++  Job and bare-Pod have the same recovery story under
++  disruption: host treats it as transport-failure → submit
++  `error` → the next ideation cycle re-attempts).
+ - *Job-per-task (chosen):* see Decision 1.
+ - *Deployment-per-task (rejected):* a Deployment is the
+   wrong shape — it implies steady-state replicas. We'd
+@@ -480,6 +489,11 @@
+     # poll interval the host uses to watch Job status; applies only
+     # to mode=k8sJob. Default 1s; smaller values increase k8s API load.
+     pollIntervalSeconds: 1.0
++    # If a Job's pod is stuck in ImagePullBackOff / ErrImagePull /
++    # InvalidImageName for longer than this many seconds since pod
++    # creation, the host gives up early (instead of waiting for
++    # activeDeadlineSeconds). See §8.2.
++    imagePullDeadlineSeconds: 60.0
+ ```
+ 
+ #### 3.2.2 `values.schema.json` clauses
+@@ -541,6 +555,7 @@
+ --job-template-config PATH    # JSON file with nodeSelector/tolerations/resources/env
+ --job-active-deadline-seconds FLOAT  # default 600.0
+ --job-poll-interval FLOAT     # default 1.0
++--job-image-pull-deadline-seconds FLOAT  # default 60.0; see §8.2
+ ```
+ 
+ The argparse-time validation mirrors `--mode subprocess`: when
+@@ -812,7 +827,7 @@
+   `reference/services/executor/src/eden_executor_host/k8s_job_mode.py`
+   with the per-task Job-create/watch/read flow.
+ - Updated CLI: `eden_executor_host.cli.parse_args` accepts
+-  `--mode k8s-job` and the eight `--job-*` flags.
++  `--mode k8s-job` and the nine `--job-*` flags.
+ - New runtime artifact: `wrapper.sh` shipped via ConfigMap (the
+   chart's version is authoritative) AND ALSO baked into
+   `eden-runtime:dev` at `/usr/local/bin/eden-execute-wrapper`
+@@ -918,7 +933,7 @@
+ | `reference/helm/eden/values.schema.json` | Add the if/then clause per §3.2.2 enforcing `image.repository` + `image.tag` non-empty when `mode=k8sJob`. Reject `mode=subprocess` with a clear error pointing at this plan's §11. |
+ | `reference/helm/eden/templates/executor-rbac.yaml` (new) | `ServiceAccount` + `Role` + `RoleBinding` rendered when `mode=k8sJob` AND `rbac.create=true`. Verbs scoped per §3.2.3. |
+ | `reference/helm/eden/templates/executor-wrapper-configmap.yaml` (new) | `ConfigMap` containing `wrapper.sh` per §3.6. Rendered unconditionally; small footprint. |
+-| `reference/helm/eden/templates/executor-host-statefulset.yaml` (modify) | Add a `{{- if eq .Values.executor.mode "k8sJob" -}}` branch in `args:` that passes the eight `--job-*` flags. Set `serviceAccountName: {{ include "eden.executorServiceAccountName" . }}` (gated on the same conditional). |
++| `reference/helm/eden/templates/executor-host-statefulset.yaml` (modify) | Add a `{{- if eq .Values.executor.mode "k8sJob" -}}` branch in `args:` that passes the nine `--job-*` flags. Set `serviceAccountName: {{ include "eden.executorServiceAccountName" . }}` (gated on the same conditional). |
+ | `reference/helm/eden/templates/_helpers.tpl` (modify) | Add `eden.executorServiceAccountName` helper. Add `eden.assertExecutorMode` that raises `fail "..."` on `subprocess` mode. |
+ | `reference/helm/eden/ci-values.yaml` (modify) | Keep `mode: scripted` for the existing `helm-smoke` job; the new `helm-smoke-executor-job` job uses `ci-values-k8sjob.yaml`. |
+ | `reference/helm/eden/ci-values-k8sjob.yaml` (new) | Pinned values for the k8s-Job smoke: `executor.mode: k8sJob`, `jobTemplate.image.repository: ghcr.io/eden-protocol/eden-runtime`, `tag: dev`, no GPU asks, no nodeSelector (kind has one node). |
+@@ -928,10 +943,10 @@
+ 
+ | File | Change |
+ |---|---|
+-| `reference/services/executor/src/eden_executor_host/cli.py` | Extend `--mode` to accept `k8s-job`. Add the eight `--job-*` flags. Argparse-time validation: when `--mode k8s-job`, require `--job-namespace` + `--job-image-repository` + `--job-image-tag`. Add a top-level branch in `main()` that, when `args.mode == "k8s-job"`, calls `run_executor_k8s_job_loop(...)` from the new module. |
+-| `reference/services/executor/src/eden_executor_host/k8s_job_mode.py` (new) | Per-task Job create/watch/read flow per §3.4. Public entry point `run_executor_k8s_job_loop(*, store, worker_id, repo_path, gitea_url, credential_helper, k8s_config, poll_interval, stop)`. Internal helpers: `_build_job_manifest`, `_watch_job_terminal`, `_read_outcome_from_pod_logs`, `_handle_one`, `_orphan_reap`. Mirrors the structure of `subprocess_mode.py` but the inner work is k8s-API-bound. |
++| `reference/services/executor/src/eden_executor_host/cli.py` | Extend `--mode` to accept `k8s-job`. Add the nine `--job-*` flags. Argparse-time validation: when `--mode k8s-job`, require `--job-namespace` + `--job-image-repository` + `--job-image-tag`. Add a top-level branch in `main()` that, when `args.mode == "k8s-job"`, calls `run_executor_k8s_job_loop(...)` from the new module. |
++| `reference/services/executor/src/eden_executor_host/k8s_job_mode.py` (new) | Per-task Job create/watch/read flow per §3.4. Public entry point `run_executor_k8s_job_loop(*, store, worker_id, repo_path, gitea_url, credential_helper, k8s_config, poll_interval, image_pull_deadline_seconds, stop)`. Internal helpers: `_build_job_manifest`, `_watch_job_terminal`, `_select_outcome_pod`, `_read_outcome_from_pod_logs`, `_check_image_pull_stuck`, `_handle_one`, `_orphan_reap`. Mirrors the structure of `subprocess_mode.py` but the inner work is k8s-API-bound. |
+ | `reference/services/executor/pyproject.toml` | Add `kubernetes>=29.0.0,<30` to `[project].dependencies`. (The official client; pinned major to avoid surprise breaks.) |
+-| `reference/services/executor/tests/test_k8s_job_mode.py` (new) | Unit tests against a fake `kubernetes.client` mocked via `unittest.mock`. Coverage: happy-path success outcome, parse-failure outcome → error, missing-sentinel-line outcome → error, Job timeout → error, reachability failure → error, orphan reap on host startup, host SIGTERM mid-task → Job deleted, claim-TTL expiry → sweeper recovers, image-pull-backoff → activeDeadlineSeconds eventually fires. |
++| `reference/services/executor/tests/test_k8s_job_mode.py` (new) | Unit tests against a fake `kubernetes.client` mocked via `unittest.mock`. Coverage: happy-path success outcome, parse-failure outcome → error, missing-sentinel-line outcome → error, Job timeout (activeDeadline) → error, reachability failure → error, orphan reap on host startup, host SIGTERM mid-task → Job deleted, claim-TTL expiry → sweeper recovers, image-pull-stuck-past-deadline → host gives up early per §8.2, duplicate-Pod selection rule §8.10 (one pod Succeeded + one Failed → success; two pods Succeeded with same SHA → success; two pods Succeeded with different SHA → error; only Failed pods → error; phase-Unknown after settle → error). |
+ | `reference/services/_common/src/eden_service_common/k8s.py` (new) | Tiny module exposing `make_k8s_clients()` (in-cluster config via `kubernetes.config.load_incluster_config`; falls back to `load_kube_config` for `pytest.mark.e2e` tests run from a kind context). Returns `(BatchV1Api, CoreV1Api)`. Avoids spreading the kubernetes-client import across multiple modules. |
+ 
+ ### 5.3 New scripts / CI
+@@ -1000,14 +1015,26 @@
+   - ≥9 `task.completed` events.
+   - ≥3 ideation-task `task.completed` events.
+   - **New:** ≥3 `Job` resources with
+-    `metadata.labels.eden.role=executor` were created during
+-    the run (via a kubectl-side audit log, not just current
+-    state, since the host deletes them on success).
++    `metadata.labels.eden.role=executor` were observed
++    during the run. Mechanism (concrete; no audit-log
++    hand-wave): the smoke script runs `kubectl get jobs
++    -n eden-test -l eden.role=executor -w
++    -o jsonpath='{.metadata.name} {.metadata.creationTimestamp}'`
++    in the background as soon as the namespace exists,
++    appending each observed Job to a file. After
++    quiescence the script counts unique Job names in
++    that file. This catches Jobs that were created and
++    then deleted by the host even if `kubectl get` at
++    end-of-run returns 0 rows.
+   - **New:** zero `Job` resources with `eden.role=executor`
+-    remain after quiescence (cleanup actually fired).
++    remain after quiescence (cleanup actually fired —
++    point-in-time `kubectl get jobs -l eden.role=executor`
++    returns 0 rows).
+   - **New:** zero `Pod` resources with `eden.role=executor`
+     remain after quiescence (Job ttlSecondsAfterFinished
+-    eventually fired).
++    eventually fired — point-in-time `kubectl get pods
++    -l eden.role=executor` returns 0 rows; allow up to
++    `ttlSecondsAfterFinished + 30s` slack).
+ - `helm uninstall eden -n eden-test && kind delete cluster`.
+ 
+ CI runtime budget: 8 minutes (vs 5 minutes for 13a's helm-smoke,
+@@ -1113,12 +1140,18 @@
+ `image.tag` value, that's a long time.
+ 
+ Mitigation: the host's Job watch checks the *Pod's*
+-`status.containerStatuses[*].state.waiting.reason` in addition
+-to the Job's status. When the reason is one of
++`status.containerStatuses[*].state.waiting.reason` (the
++init container's status block AND the main container's
++status block — image-pull stalls happen on either) in
++addition to the Job's status. When the reason is one of
+ `{ImagePullBackOff, ErrImagePull, InvalidImageName}` AND the
+ Pod has been `Pending` for more than `--job-image-pull-deadline-seconds`
+-(default 60), the host deletes the Job and submits `error`.
+-Operators with slow registries override the deadline.
++(default 60s; chart value `executor.jobTemplate.imagePullDeadlineSeconds`),
++the host deletes the Job and submits `VariantSubmission(status="error")`.
++Operators with slow registries override via the chart value
++or the host's CLI flag. The flag is wired through §3.3 (CLI),
++§3.2.1 (chart values), §5.1 (StatefulSet args), and §6.1
++(unit-test coverage of the early-give-up path).
+ 
+ This logic is asymmetric (we proactively give up on
+ image-pull failures but trust k8s for runtime issues) because
+@@ -1196,17 +1229,21 @@
+ `/bin/sh`, `git`, `python3`, and `ca-certificates` are
+ present on every supported Job image.
+ 
+-Distroless static images (`gcr.io/distroless/static`) and
+-`FROM scratch` images do NOT satisfy the contract — they
+-lack a shell and `git` outright; the wrapper's first line
+-fails to even parse. 13b explicitly does NOT support those
+-image bases; operators using them MUST switch to a
+-shell-bearing base (`gcr.io/distroless/base` does include
+-shell) OR derive from `eden-runtime:dev` directly. A
+-follow-up that ships a static `eden-execute-wrapper` Go
+-binary (no shell, no python3, no git — the binary calls
+-libgit2 internally) would lift this constraint, but is out
+-of scope here. See §11.
++All distroless images (`gcr.io/distroless/static`,
++`gcr.io/distroless/base`, `gcr.io/distroless/cc`,
++`gcr.io/distroless/python3`, etc.) lack `/bin/sh` by default
++per the [distroless project's own README](https://github.com/GoogleContainerTools/distroless)
++(only the `:debug` variants ship a shell, and those are not
++intended for production use). `FROM scratch` images
++similarly lack everything. 13b explicitly does NOT support
++those image bases for the Job's main container; operators
++using them MUST switch to a shell-bearing distribution
++(Alpine, Debian-slim, Ubuntu-minimal, RHEL-UBI-minimal) OR
++derive from `eden-runtime:dev` directly. A follow-up that
++ships a static `eden-execute-wrapper` Go binary (no shell,
++no python3, no git — the binary calls libgit2 internally)
++would lift this constraint, but is out of scope here. See
++§11.
+ 
+ ### 8.8 Helm-rolling-update vs Job-in-flight
+ 
+@@ -1271,39 +1308,68 @@
+ user program twice on the same Job — typically when the Job
+ controller restarts during a Pod's terminating window and
+ re-creates a replacement before observing the original's
+-exit. Two failure modes follow:
++exit. The host therefore cannot assume "one Job → one Pod →
++read its log". The §3.4 step 6 log-read sub-step is more
++precisely:
+ 
+-- *Both Pods produce the same outcome.* Both write to the same
+-  `work/<slug>-<variant_id>` ref via `git push`; the second
+-  push is a no-op (`Already up to date` for an identical SHA).
+-  Both emit `EDEN_OUTCOME` lines on stdout; the host reads
+-  pod logs from whichever Pod the Job controller selected as
+-  the "primary" (Job's pod-template-hash). Outcome: one
+-  `VariantSubmission`; chapter 4 §4.2 idempotent-resubmit
+-  applies even if both somehow ran the Phase 3 submit.
+-- *Pods produce different outcomes.* (E.g., one OOM-killed
+-  mid-push, the other completed.) The first Pod's `git push`
+-  may leave a different ref-tip than the second Pod
+-  attempts. The wrapper's `git push origin` per §3.6 will
+-  refuse to overwrite (default `update-refs` rejects
+-  non-fast-forward); the second Pod's wrapper writes
+-  `outcome=error` to its own outcome.json. The host reads
+-  one of the two `EDEN_OUTCOME` lines; whichever it sees, the
+-  variant ends up in a coherent state because the host's
+-  reachability check (§3.4 step 6) re-runs against the
+-  current Gitea ref. If the host's read picks the
+-  failed-second-Pod's outcome, the variant terminalizes as
+-  `error` even though a valid `commit_sha` was pushed —
+-  acceptable correctness loss; the next ideation cycle can
+-  re-attempt.
++```text
++1. List pods filtered by the well-known Job labels:
++     batch.kubernetes.io/job-name=<job-name>
++     batch.kubernetes.io/controller-uid=<job uid>
++   (Older clusters expose `job-name` / `controller-uid`
++   without the prefix; the host's selector uses BOTH so
++   1.27+ and pre-1.27 clusters both resolve.)
++2. Partition pods by `.status.phase`:
++     A = phase Succeeded
++     B = phase Failed
++     C = phase Running | Pending | Unknown
++   The host runs this read AFTER observing
++   Job.status.{succeeded > 0 OR failed > 0}, so |C| should be
++   0 or transient. If |C| > 0 after a 5-second settle, the
++   host treats the Job as `error` (transport-shaped — k8s
++   itself is in an inconsistent state) and proceeds to
++   submit error.
++3. Selection rule:
++     |A| == 0 AND |B| > 0 → Job-failed; pick the most-
++       recently-created Pod in B; read its log; classify per
++       §3.4 step 6 (failed → error).
++     |A| == 1 AND |B| == 0 → happy path; read that Pod's
++       log; classify per §3.4 step 6 (success path).
++     |A| == 1 AND |B| > 0 → one succeeded, one or more
++       failed (the canonical "duplicate-Pod ran but at
++       least one finished cleanly" case); read the
++       succeeded Pod's log AND verify the commit_sha is
++       reachable on the current Gitea ref tip (§3.4 step
++       6 reachability). If reachable, treat as success.
++     |A| > 1 → at least two Pods both reported Succeeded
++       independently; this is the anomaly the k8s docs
++       warn about. The host reads ALL succeeded Pods'
++       EDEN_OUTCOME lines, requires byte-equality across
++       them, and submits success only if all agree on the
++       same commit_sha. Otherwise submits error.
++```
+ 
+-The host does NOT attempt to deduplicate Pods at the k8s
+-level (it would have to query `pod-template-hash` and
+-arbitrate, which is not idempotent itself). It relies on the
+-existing chapter 4 §4.2 submission-equivalence rule plus
+-chapter 3 §3.3 reachability to keep the store-side state
+-coherent under duplicate-Pod execution. Documented in the
+-new reference-binding chapter under "Duplicate Pod handling".
++What this gives:
++
++- *Both Pods produce the same outcome.* `|A|` is 1 or 2;
++  selection rule lands on success; chapter 4 §4.2
++  idempotent-resubmit applies if Phase 3 also got duplicated.
++- *Pods produce different outcomes.* `|A|` is 0 or 1;
++  selection rule prefers Succeeded; the `|A|>1`-with-
++  disagreement branch terminalizes as error, deliberately
++  conservative.
++- *Both Pods OOM mid-push.* `|A|` is 0; both Pods are in B;
++  selection rule reads the most recent failed Pod's log;
++  treats as error.
++
++The host does NOT attempt to dedupe Pods at the k8s level
++(it would have to do leader-election among Pods, which is
++not idempotent itself). It relies on the chapter 4 §4.2
++submission-equivalence rule plus chapter 3 §3.3 reachability
++plus the explicit `|A|>1`-with-disagreement-fails-closed
++rule above to keep store-side state coherent under
++duplicate-Pod execution. Documented in the new reference-
++binding chapter under "Duplicate Pod handling".
+ 
+ ## 9. Risks
+ 
+@@ -1395,7 +1461,7 @@
+    shape for the chunk.
+ 
+ 2. **Executor-host code PR.** New `k8s_job_mode.py` plus the
+-   `cli.py` extensions (`--mode k8s-job`, eight `--job-*`
++   `cli.py` extensions (`--mode k8s-job`, nine `--job-*`
+    flags). New `_common/k8s.py`. New unit tests. The
+    executor-host StatefulSet is unchanged at the chart level;
+    this PR exercises the new mode only via unit tests.

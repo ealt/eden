@@ -1,0 +1,21 @@
+**Findings**
+
+- **High:** The plan does not define a coherent runtime contract for the Job’s main container. It says the wrapper “lives in `eden-runtime:dev`” and that the experiment image has “no eden-specific responsibilities” in [eden-phase-13b-executor-k8s-job.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13b-executor-k8s-job.md:245), but the actual design runs `["sh", "/etc/eden/wrapper.sh"]` inside the experiment image and uses `python3` and `git` there in [eden-phase-13b-executor-k8s-job.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13b-executor-k8s-job.md:611), while scope later says the wrapper is *not* in `eden-runtime:dev` in [eden-phase-13b-executor-k8s-job.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13b-executor-k8s-job.md:756). That also conflicts with 13a’s “operator must supply a pullable image” posture in [eden-phase-13a-helm-base-chart.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13a-helm-base-chart.md:162). As written, I can’t tell whether the Job image may be arbitrary, must include `sh`/`git`/`python3`, or must derive from an EDEN-provided base. The “runs on Distroless” claim in [eden-phase-13b-executor-k8s-job.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13b-executor-k8s-job.md:1128) is specifically incompatible with invoking `sh`.
+  Suggestion: choose one model and state it explicitly. Either the Job image is EDEN-compatible with a documented minimum surface (`sh`, `git`, `python3`, certs, helper mount), or all EDEN-specific logic moves into a known helper image/sidecar so the experiment image can truly stay arbitrary.
+
+- **High:** The Job-resiliency argument relies on Kubernetes behavior that the docs do not support. The plan says `backoffLimit: 0` still gives node-loss resilience in [eden-phase-13b-executor-k8s-job.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13b-executor-k8s-job.md:155) and then hard-codes `backoffLimit: 0` in the manifest in [eden-phase-13b-executor-k8s-job.md](/Users/ericalt/Documents/eden-worktrees/phase-13b-executor-k8s-job/docs/plans/eden-phase-13b-executor-k8s-job.md:524). Kubernetes’ docs say that with `backoffLimit: 0`, a pod disruption terminates the Job unless you add a `podFailurePolicy` rule that ignores `DisruptionTarget`, and they also warn that even a single-completion Job may sometimes start the same program twice. That makes the current “Job not Pod because eviction resilience” justification unsound and leaves duplicate execution semantics unaccounted for.
+  Suggestion: either add explicit disruption handling plus a duplicate-run story, or remove the node-loss-resilience claim and treat disruptions as EDEN-level task failures to be retried outside the Job controller.
+
+**Level Assessments**
+
+- **1. Missing context:** Significant concern. The plan is not yet well-defined around the most important contract in the design: what exactly the per-task Job image must contain and who owns the EDEN-specific execution/push logic.
+
+- **2. Feasibility:** Significant concern. The current Kubernetes Job semantics are misstated, so the chosen mechanism does not yet deliver the reliability properties the plan claims.
+
+- **3-5:** I’d stop here for this round. Alternatives, completeness, and edge-case review depend on first resolving the image contract and Job-failure model.
+
+**Overall assessment**
+
+The direction is plausible and it extends 13a in the right area, but this draft is not implementation-ready yet. I would revise it around a single, explicit container contract and a Kubernetes-accurate disruption/retry model before spending time on the later review levels.
+
+Sources checked for the feasibility points: [Kubernetes Job docs](https://kubernetes.io/docs/concepts/workloads/controllers/job/), [Kubernetes pod failure policy docs](https://kubernetes.io/docs/tasks/job/pod-failure-policy/), [Distroless README](https://github.com/GoogleContainerTools/distroless).

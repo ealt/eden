@@ -1,0 +1,53 @@
+--- docs/plans/review/eden-phase-13b-executor-k8s-job/20260507T150234Z/2.md	2026-05-07 15:23:53
++++ docs/plans/eden-phase-13b-executor-k8s-job.md	2026-05-07 15:25:08
+@@ -609,20 +609,28 @@
+      one `configMap` mount for the credential helper.
+ 5. **Job create (host).** `kubernetes.client.BatchV1Api.create_namespaced_job(...)`.
+ 6. **Job watch (host).** Loop with `--job-poll-interval` cadence:
+-   `read_namespaced_job_status(...)`. Three terminal cases:
+-   - `status.succeeded == 1`: read pod logs, parse the last
+-     `EDEN_OUTCOME ...` line as JSON. Validate shape: `status`
+-     ∈ {success, error}; if `success`, `commit_sha` is a valid
+-     hex SHA. Validate reachability via the host's local clone
+-     (`fetch_ref(branch)` against Gitea, then
+-     `repo.is_ancestor(parent, commit_sha)` for every parent —
+-     same shape as `subprocess_mode._validate_commit`). On
+-     reachability failure, treat as `error`. On parse failure
+-     (no sentinel line, JSON malformed), treat as `error`.
+-   - `status.failed > 0`: treat as `error` (capture last 1KB
+-     of pod logs to host structured log for diagnostics, per
++   `read_namespaced_job_status(...)`. The pod selection that
++   underpins each "read pod logs" sub-step below follows the
++   §8.10 duplicate-Pod selection algorithm (label-filter on
++   `batch.kubernetes.io/job-name` + `controller-uid`, partition
++   by `.status.phase`, prefer Succeeded, fail closed on
++   contradictory Succeeded outcomes). Three terminal cases:
++   - `status.succeeded == 1`: select the Succeeded pod per
++     §8.10, read its log, parse the last `EDEN_OUTCOME ...`
++     line as JSON. Validate shape: `status` ∈ {success, error};
++     if `success`, `commit_sha` is a valid hex SHA. Validate
++     reachability via the host's local clone (`fetch_ref(branch)`
++     against Gitea, then `repo.is_ancestor(parent, commit_sha)`
++     for every parent — same shape as
++     `subprocess_mode._validate_commit`). On reachability
++     failure, treat as `error`. On parse failure (no sentinel
++     line, JSON malformed), treat as `error`.
++   - `status.failed > 0`: select the most-recent Failed pod
++     per §8.10, capture last 1KB of its log to host structured
++     log for diagnostics (per
+      [`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md)
+-     §5 — failure context goes to the host log, not the wire).
++     §5 — failure context goes to the host log, not the wire),
++     then submit `error`.
+    - `Job.spec.activeDeadlineSeconds` exceeded: same as failed.
+ 7. **Phase 3 (host).** Run the existing `_submit_with_readback`
+    path with `VariantSubmission(status, variant_id, commit_sha)`.
+@@ -954,7 +962,7 @@
+ | File | Change |
+ |---|---|
+ | `reference/helm/eden/ci-values-k8sjob.yaml` (new) | See §5.1. |
+-| `reference/helm/eden/healthcheck/smoke-executor-job.sh` (new) | Mirrors `13a's` ci-smoke shape: kind up; `helm install` with `ci-values-k8sjob.yaml`; run `setup-experiment-helm.sh` with the fixture; wait for quiescence; assert ≥3 `variant.integrated` events, ≥9 `task.completed` events, ≥3 ideation-task `task.completed` events. Additionally asserts: ≥3 `Job` resources with `eden.role=executor` were created in the namespace during the run, AND ≥0 such Jobs remain after quiescence (the host's cleanup deleted them all). |
++| `reference/helm/eden/healthcheck/smoke-executor-job.sh` (new) | Mirrors `13a's` ci-smoke shape: kind up; `helm install` with `ci-values-k8sjob.yaml`; run `setup-experiment-helm.sh` with the fixture; wait for quiescence; assert ≥3 `variant.integrated` events, ≥9 `task.completed` events, ≥3 ideation-task `task.completed` events. Additionally asserts: ≥3 `Job` resources with `eden.role=executor` were created in the namespace during the run, AND zero such Jobs remain after quiescence (the host's cleanup deleted them all — point-in-time `kubectl get jobs -l eden.role=executor` returns 0 rows; full assertion shape in §6.2). |
+ | `.github/workflows/ci.yml` (modify) | Add `helm-smoke-executor-job` GitHub Actions job that runs `smoke-executor-job.sh`. Matrix-skip on PRs that don't touch `reference/helm/`, `reference/services/executor/`, or `reference/services/_common/k8s.py` (cost control — kind-on-CI is slow). |
+ 
+ ### 5.4 Spec / docs
