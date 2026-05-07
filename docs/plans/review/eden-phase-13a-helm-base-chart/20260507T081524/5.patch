@@ -1,0 +1,142 @@
+--- docs/plans/review/eden-phase-13a-helm-base-chart/20260507T081524/4.md	2026-05-07 09:09:08
++++ docs/plans/eden-phase-13a-helm-base-chart.md	2026-05-07 10:21:55
+@@ -784,13 +784,25 @@
+ - New `reference/helm/eden/` chart (full layout from §3.1).
+ - `values.yaml` + `values.schema.json` mirroring `.env.example`
+   per §3.2.
+-- Templates for all nine services (task-store-server,
+-  control-plane, orchestrator, ideator-host, executor-host,
+-  evaluator-host, web-ui, postgres, gitea).
+-- `repo-init-job.yaml` for the bootstrap repo seed (parallel
+-  to Compose's `eden-repo-init` profile service).
++- Templates for all nine services. Deployments:
++  task-store-server, control-plane, ideator-host.
++  StatefulSets per Decision 3: orchestrator, executor-host,
++  evaluator-host, web-ui, postgres, gitea.
++- `bootstrap/repo-init-job.yaml.tmpl` (NOT under `templates/`
++  per §3.5) — rendered + applied per-experiment by
++  `setup-experiment-helm.sh`.
+ - `_helpers.tpl` with `eden.fullname`, `eden.labels`,
+   `eden.secretName`, `eden.image`.
++
++**Code change (per Decision 9):**
++
++- Orchestrator CLI/loop edit so
++  `--max-quiescent-iterations 0` means "never exit"
++  (replacing the current `< 2` rejection). Details in §5.1a.
++- Per-loop-test in `reference/services/orchestrator/tests/`.
++- Compose-side `.env.example` keeps the existing default 30
++  (Compose's quiescence-exit lifecycle is preserved); the
++  chart's `values.yaml` defaults to 0 (k8s "run forever").
+ - `templates/tests/test-connection.yaml` for `helm test`.
+ - New `reference/scripts/setup-experiment-helm.sh` per §3.5.
+ - New `reference/helm/eden/ci-values.yaml` for the CI smoke.
+@@ -1039,9 +1051,10 @@
+ 
+ ### 7.4 Pod restarts vs lease handoff
+ 
+-A Helm-driven rolling restart of the orchestrator Deployment
+-(e.g., from `helm upgrade --recreate-pods`) terminates pods
+-one at a time. Each terminating pod's leases expire (per 12c
++A Helm-driven rolling restart of the orchestrator StatefulSet
++(per Decision 3 — `kubectl rollout restart statefulset/...`)
++terminates pods one at a time, ordered (StatefulSet's default
++rolling-update is `OrderedReady`, decreasing-ordinal). Each terminating pod's leases expire (per 12c
+ §3.2); during the brief window before re-acquisition by the
+ new pod, the experiment is un-leased and no dispatch happens.
+ 
+@@ -1122,56 +1135,69 @@
+    `README.md`. Lints clean, but contains no service
+    templates yet. Reviewable as a structural foundation.
+ 
+-2. **Stateful services PR.** Postgres + Gitea StatefulSets +
++2. **Orchestrator code change PR (Decision 9).** The
++   `--max-quiescent-iterations 0` "never exit" sentinel
++   lands in the orchestrator service per §5.1a. This must
++   precede the chart PRs since the chart's k8s-default
++   value depends on it.
++
++3. **Stateful infra PR.** Postgres + Gitea StatefulSets +
+    their Services. Operators can `helm install` and have the
+    stores up.
+ 
+-3. **Stateless control-plane services PR.**
++4. **Stateless control-plane services PR.**
+    task-store-server + control-plane Deployments + Services.
+    The protocol-level coordination layer is up.
+ 
+-4. **Orchestrator + worker hosts PR.** orchestrator,
+-   ideator-host, executor-host, evaluator-host Deployments.
+-   Multi-replica orchestrator + worker fleet.
++5. **Orchestrator + worker hosts PR.** orchestrator
++   StatefulSet, executor-host StatefulSet, evaluator-host
++   StatefulSet (each with per-replica clone PVCs via
++   volumeClaimTemplates per Decision 3); ideator-host
++   Deployment. Multi-replica orchestrator + worker fleet.
+ 
+-5. **Web UI + ingress PR.** web-ui Deployment + Service +
++6. **Web UI + ingress PR.** web-ui StatefulSet (per
++   Decision 3 — repo-clone + artifacts PVCs) + Service +
+    optional Ingress. Full operator surface.
+ 
+-6. **Repo-init Job + setup script PR.** `repo-init-job.yaml`
++7. **Bootstrap-template + setup script PR.**
++   `bootstrap/repo-init-job.yaml.tmpl` (NOT under templates/)
+    plus `setup-experiment-helm.sh`. End-to-end operator
+    workflow.
+ 
+-7. **CI PR.** `helm-lint`, `helm-smoke`, `helm-upgrade-smoke`
+-   jobs. Validation in CI.
++8. **CI PR.** `helm-lint`, `helm-smoke`,
++   `helm-upgrade-smoke` jobs. Validation in CI.
+ 
+-8. **Docs PR.** `docs/deployment/helm.md` + AGENTS.md
++9. **Docs PR.** `docs/deployment/helm.md` + AGENTS.md
+    commands + roadmap delta.
+ 
+-A reviewer going from PR 1 to PR 8 should expect the
+-`helm-smoke` job to go red around PR 4 (when the orchestrator
++A reviewer going from PR 1 to PR 9 should expect the
++`helm-smoke` job to go red around PR 5 (when the orchestrator
+ is added but worker hosts aren't all green yet) and come back
+-green at PR 6.
++green at PR 7.
+ 
+ ## 10. Estimated effort
+ 
+ - **Chart skeleton** (PR 1): ~1 day. Helpers + values schema +
+   README outline.
+-- **Stateful services** (PR 2): ~1.5 days. Postgres + Gitea
++- **Orchestrator code change** (PR 2): ~0.5 day. Small
++  CLI/loop tweak + one new test (§5.1a).
++- **Stateful infra** (PR 3): ~1.5 days. Postgres + Gitea
+   StatefulSets — fiddly because of PVC / Service / network
+   topology.
+-- **Stateless control-plane services** (PR 3): ~1 day.
++- **Stateless control-plane services** (PR 4): ~1 day.
+   task-store-server + control-plane are simple Deployments.
+-- **Orchestrator + worker hosts** (PR 4): ~2 days. Four
+-  Deployments + per-service args + the POD_NAME / worker_id
+-  wiring.
+-- **Web UI + ingress** (PR 5): ~1 day.
+-- **Repo-init Job + setup script** (PR 6): ~1 day. The script
+-  is the bulk; the Job template is small.
+-- **CI** (PR 7): ~1.5 days. kind setup, Helm install, end-state
+-  assertions, plus the chart upgrade test.
+-- **Docs** (PR 8): ~1 day. Helm docs are detail-heavy.
++- **Orchestrator + worker hosts** (PR 5): ~2 days. Three
++  StatefulSets (orchestrator, executor-host, evaluator-host)
++  plus one Deployment (ideator-host); per-service args +
++  the StatefulSet POD_NAME / worker_id wiring.
++- **Web UI + ingress** (PR 6): ~1 day.
++- **Bootstrap template + setup script** (PR 7): ~1 day.
++  The script is the bulk; the Job template is small.
++- **CI** (PR 8): ~1.5 days. kind setup, Helm install,
++  end-state assertions, plus the chart upgrade test.
++- **Docs** (PR 9): ~1 day. Helm docs are detail-heavy.
+ 
+-**Realistic total: ~10 working days** of focused work. The
++**Realistic total: ~10.5 working days** of focused work. The
+ heaviest single item is the orchestrator + worker hosts PR —
+ mostly the per-service args and the worker_id-from-POD_NAME
+ wiring.
