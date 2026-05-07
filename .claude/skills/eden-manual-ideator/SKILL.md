@@ -1,14 +1,9 @@
 ---
-name: eden-manual-planner
-description: 'Drive the EDEN ideator role end-to-end from the terminal. Trigger phrases: "play ideator", "play planner", "draft an idea", "draft a plan", "act as ideator", "submit an idea", "I want to ideate", "I want to plan".'
+name: eden-manual-ideator
+description: 'Drive the EDEN ideator role end-to-end from the terminal. Trigger phrases: "play ideator", "draft an idea", "act as ideator", "submit an idea", "I want to ideate".'
 ---
 
 # EDEN Manual — Ideator Role (CLI)
-
-(Terminology note: "ideator" is the canonical role name per
-[`docs/glossary.md`](../../../docs/glossary.md). Older skill references
-to "planner" / "proposal" / "plan task" map to ideator / idea / ideation
-task. Trigger phrases keep both forms during the transition.)
 
 ## When to use
 
@@ -25,23 +20,7 @@ priority, parent_commits, rationale), and submits them. Each ready idea
 becomes an `execution` task once the orchestrator dispatches it.
 
 Everything below runs from the terminal. Do not ask the user to open the
-web UI unless the CLI gap below bites.
-
-## CLI rename gap (current limitation)
-
-The `eden-manual` CLI script under
-`reference/scripts/manual-ui/` has not yet been updated for the
-directed-evolution vocab rename. It still uses the legacy
-`--kind plan/implement/evaluate`, `plan-submit`, `implement-submit`, and
-`eval_error` spellings. The wire and web UI are fully on canonical
-vocab. Until the CLI catches up:
-
-- The commands in this skill below use the canonical vocab. If a
-  subcommand or `--kind` value is rejected by `eden-manual` as
-  "unknown", you've hit the gap.
-- Workaround for the gap: drive the role flow through
-  http://localhost:8090/ideator/ in a browser. The web UI is on
-  canonical vocab and works end-to-end.
+web UI.
 
 ## Workflow
 

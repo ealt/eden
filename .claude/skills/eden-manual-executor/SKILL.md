@@ -1,14 +1,9 @@
 ---
-name: eden-manual-implementer
-description: 'Drive the EDEN executor role end-to-end from the terminal — claim, clone at parent, let user edit, then commit/push/submit via CLI. Trigger phrases: "play executor", "play implementer", "execute an idea", "implement a proposal", "act as executor", "I want to execute", "I want to implement".'
+name: eden-manual-executor
+description: 'Drive the EDEN executor role end-to-end from the terminal — claim, clone at parent, let user edit, then commit/push/submit via CLI. Trigger phrases: "play executor", "execute an idea", "act as executor", "I want to execute".'
 ---
 
 # EDEN Manual — Executor Role (CLI)
-
-(Terminology note: "executor" is the canonical role name per
-[`docs/glossary.md`](../../../docs/glossary.md). Older skill references
-to "implementer" / "trial" / "implement task" map to executor / variant /
-execution task. Trigger phrases keep both forms during the transition.)
 
 ## When to use
 
@@ -24,22 +19,7 @@ pushes that commit + the canonical `work/<slug>-<variant_id>` ref to
 gitea, and records the variant.
 
 Everything below runs from the terminal. Don't ask the user to open the
-web UI unless the CLI gap below bites.
-
-## CLI rename gap (current limitation)
-
-The `eden-manual` CLI script under `reference/scripts/manual-ui/` has
-not yet been updated for the directed-evolution vocab rename. It still
-uses the legacy `--kind plan/implement/evaluate`, `plan-submit`,
-`implement-submit`, and `eval_error` spellings. The wire and web UI are
-fully on canonical vocab. Until the CLI catches up:
-
-- The commands in this skill below use the canonical vocab. If a
-  subcommand or `--kind` value is rejected by `eden-manual` as
-  "unknown", you've hit the gap.
-- Workaround for the gap: drive the role flow through
-  http://localhost:8090/executor/ in a browser. The web UI is on
-  canonical vocab and works end-to-end.
+web UI.
 
 ## Workflow
 

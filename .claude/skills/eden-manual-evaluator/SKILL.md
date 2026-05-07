@@ -1,14 +1,9 @@
 ---
 name: eden-manual-evaluator
-description: 'Drive the EDEN evaluator role end-to-end from the terminal — clone at variant commit, help the user inspect, then submit evaluation via CLI. Trigger phrases: "play evaluator", "evaluate a variant", "evaluate a trial", "act as evaluator", "score a variant", "I want to evaluate".'
+description: 'Drive the EDEN evaluator role end-to-end from the terminal — clone at variant commit, help the user inspect, then submit evaluation via CLI. Trigger phrases: "play evaluator", "evaluate a variant", "act as evaluator", "score a variant", "I want to evaluate".'
 ---
 
 # EDEN Manual — Evaluator Role (CLI)
-
-(Terminology note: "evaluator" is unchanged in the directed-evolution
-vocab. What it evaluates was renamed: "trial" → "variant", and the
-evaluator's submission carries an `evaluation` dict, not `metrics`. See
-[`docs/glossary.md`](../../../docs/glossary.md).)
 
 ## When to use
 
@@ -34,22 +29,7 @@ variant from `starting` to `success` and the integrator integrates it
 (creating the canonical `refs/heads/variant/<id>-<slug>`).
 
 Everything below runs from the terminal. Don't ask the user to open the
-web UI unless the CLI gap below bites.
-
-## CLI rename gap (current limitation)
-
-The `eden-manual` CLI script under `reference/scripts/manual-ui/` has
-not yet been updated for the directed-evolution vocab rename. It still
-uses the legacy `--kind plan/implement/evaluate`, `plan-submit`,
-`implement-submit`, and `eval_error` spellings. The wire and web UI are
-fully on canonical vocab. Until the CLI catches up:
-
-- The commands in this skill below use the canonical vocab. If a
-  subcommand or `--kind` value is rejected by `eden-manual` as
-  "unknown", you've hit the gap.
-- Workaround for the gap: drive the role flow through
-  http://localhost:8090/evaluator/ in a browser. The web UI is on
-  canonical vocab and works end-to-end.
+web UI.
 
 ## Workflow
 

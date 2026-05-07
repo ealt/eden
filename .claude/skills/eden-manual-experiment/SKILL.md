@@ -10,7 +10,7 @@ description: 'Spin up, tear down, or reset a manual-UI EDEN experiment. Trigger 
 The user wants to start a fresh manual-UI experiment, tear an existing
 one down, or wipe and start over. Trigger phrases above. Don't use this
 skill for in-experiment work (claiming, drafting, submitting) — those
-are `eden-manual-{planner,implementer,evaluator}`.
+are `eden-manual-{ideator,executor,evaluator}`.
 
 ## What it does
 
@@ -95,7 +95,7 @@ Confirm to the user that the gitea repo has the expected files.
 
 Tell the user the experiment is ready, the URL of the web-ui (in case
 they want to peek), and which role skills they can drive next:
-`/eden-manual-planner` is the natural starting point.
+`/eden-manual-ideator` is the natural starting point.
 
 ## Workflow: tear down
 
