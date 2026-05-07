@@ -646,7 +646,7 @@ A new `helm-smoke` CI job mirrors `compose-smoke`:
   variants → 3 integrations.
 - Asserts (via `kubectl exec` into the task-store-server pod
   and querying the wire endpoint): ≥3 `variant.integrated`
-  events, ≥9 `task.completed` events, ≥3 ideate-task
+  events, ≥9 `task.completed` events, ≥3 ideation-task
   `task.completed` events. Same shape as `compose-smoke`.
 - Tears down with `helm uninstall eden && kind delete cluster`.
 
@@ -963,7 +963,7 @@ Per §3.6:
   --rm -it ... -- python -c "..."` curl-equivalent):
   - ≥3 `variant.integrated` events
   - ≥9 `task.completed` events
-  - ≥3 ideate-task `task.completed` events
+  - ≥3 ideation-task `task.completed` events
 - `helm uninstall eden -n eden-test && kind delete cluster`.
 
 ### 6.3 Chart upgrade test
