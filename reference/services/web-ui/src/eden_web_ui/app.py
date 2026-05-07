@@ -54,6 +54,7 @@ def make_app(
     now: Callable[[], datetime] | None = None,
     repo: GitRepo | None = None,
     clone_url: str | None = None,
+    base_commit_sha: str | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -84,6 +85,7 @@ def make_app(
     app.state.templates = templates
     app.state.repo = repo
     app.state.clone_url = clone_url
+    app.state.base_commit_sha = base_commit_sha
 
     app.include_router(index_routes.router)
     app.include_router(auth_routes.router)

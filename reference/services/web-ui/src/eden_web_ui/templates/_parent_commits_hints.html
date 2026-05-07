@@ -1,0 +1,70 @@
+{# Parent-commit SHA hints rendered above the ideator's draft form.
+   Issue #52: surface the seed/base SHA and recent integrated variant
+   SHAs so the operator has something to paste into the parent_commits
+   field. Click a SHA to copy it; pasting works without JS. #}
+<section class="parent-commits-hints" aria-label="parent commit hints">
+    <h2>parent commit hints</h2>
+    <p>Click a SHA to copy it. Paste into the
+        <code>parent commit SHAs</code> field below
+        (comma-separate multiple).</p>
+    {% if base_commit_sha %}
+    <p class="hint-row">
+        <strong>Base:</strong>
+        <code class="copyable-sha"
+              data-copy="{{ base_commit_sha }}"
+              tabindex="0"
+              role="button"
+              title="click to copy">{{ base_commit_sha }}</code>
+    </p>
+    {% else %}
+    <p class="hint-row hint-row-muted">
+        <strong>Base:</strong> not configured
+        (deployment did not pass <code>--base-commit-sha</code>).
+    </p>
+    {% endif %}
+    {% if integrated_variants %}
+    <h3>recent integrated variants</h3>
+    <table>
+        <thead>
+            <tr><th>variant</th><th>variant_commit_sha</th></tr>
+        </thead>
+        <tbody>
+            {% for v in integrated_variants %}
+            <tr>
+                <td><code>{{ v.variant_id }}</code></td>
+                <td>
+                    <code class="copyable-sha"
+                          data-copy="{{ v.variant_commit_sha }}"
+                          tabindex="0"
+                          role="button"
+                          title="click to copy">{{ v.variant_commit_sha }}</code>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="hint-row-muted">no integrated variants yet — only the base
+        SHA is available as a parent.</p>
+    {% endif %}
+</section>
+{# Vanilla click-to-copy: progressive enhancement. Without JS the SHA
+   is still selectable + copyable manually from the rendered <code>. #}
+<script>
+(function () {
+    document.querySelectorAll('.copyable-sha').forEach(function (el) {
+        function copy() {
+            var sha = el.getAttribute('data-copy') || el.textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(sha);
+            }
+            el.classList.add('copied');
+            setTimeout(function () { el.classList.remove('copied'); }, 800);
+        }
+        el.addEventListener('click', copy);
+        el.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(); }
+        });
+    });
+})();
+</script>
