@@ -1,4 +1,4 @@
-"""Canonical 8b scripted `plan_fn` / `implement_fn` / `evaluate_fn`.
+"""Canonical 8b scripted `ideation_fn` / `execution_fn` / `evaluation_fn`.
 
 These fixed profiles are what the reference worker hosts use when no
 other behavior is configured. They match the deterministic shape the
@@ -47,7 +47,7 @@ _IMPL_DATE = "2026-04-01T00:00:00+00:00"
 def make_plan_fn(
     *, base_commit_sha: str, ideas_per_ideation: int = 1
 ) -> ScriptedPlanFn:
-    """Build a plan_fn that drafts ``ideas_per_ideation`` ideas per ideation task.
+    """Build a ideation_fn that drafts ``ideas_per_ideation`` ideas per ideation task.
 
     Each idea carries ``parent_commits=(base_commit_sha,)``,
     satisfying the schema's ``min_length=1`` constraint.
@@ -72,7 +72,7 @@ def make_plan_fn(
 def make_implement_fn(
     *, repo_path: str, fail_every: int | None = None
 ) -> ScriptedImplementFn:
-    """Build an implement_fn that writes a real git commit per task.
+    """Build an execution_fn that writes a real git commit per task.
 
     The commit's parents come directly from ``idea.parent_commits``
     (supporting both single-parent and merge shapes). The commit's
@@ -142,7 +142,7 @@ def make_implement_fn(
 def make_evaluate_fn(
     *, evaluation_schema: EvaluationSchema, fail_every: int | None = None
 ) -> ScriptedEvaluateFn:
-    """Build an evaluate_fn that emits deterministic metrics.
+    """Build an evaluation_fn that emits deterministic metrics.
 
     Keys come from ``evaluation_schema`` so the metrics validate against
     the experiment's schema. Every real-valued key gets a fixed

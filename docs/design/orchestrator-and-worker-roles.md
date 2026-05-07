@@ -57,7 +57,7 @@ Mapping examples:
 | "Any ideator" | ``null`` |
 | "Teammate Alice specifically" | ``alice`` |
 
-### 2. Ideate-task creation: shared between auto-orchestrator and humans
+### 2. Ideation-task creation: shared between auto-orchestrator and humans
 
 Today the orchestrator pre-seeds N ideation tasks at startup and never
 creates more. This conflates "experiment planning capacity" with
@@ -86,7 +86,7 @@ execution task derived from this idea, that hint becomes the
 created task's ``target``. ``null`` means "no preference; orchestrator
 default policy applies".
 
-The hint is at idea granularity, not ideate-submission granularity,
+The hint is at idea granularity, not ideation-submission granularity,
 because each idea is dispatched independently and may want a
 different executor.
 
@@ -149,7 +149,7 @@ If the auto-orchestrator was faster and already dispatched, operator
 uses ``reassign(task_id, new_target)`` instead.
 
 The pause is per-decision-type, not global. Humans pausing "evaluate
-dispatch" doesn't stop "execute-task dispatch" or integration.
+dispatch" doesn't stop "execution-task dispatch" or integration.
 
 ### 7. Task reassignment
 
@@ -371,7 +371,7 @@ is a working list.
 The following entries in `MANUAL_UI_ISSUES.md` are consolidated into
 this doc:
 
-- #9 — Plan-task budget is statically pre-allocated
+- #9 — Ideation-task budget is statically pre-allocated
 - #10 — No worker affinity
 - #11 — Orchestrator should be a role
 - #12 — Worker attribution should survive on tasks/variants/ideas

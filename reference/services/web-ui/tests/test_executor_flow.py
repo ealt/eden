@@ -224,14 +224,14 @@ class TestErrorSubmission:
 class TestPerSessionClaimIsolation:
     def test_second_session_cannot_draft_first_sessions_claim(
         self,
-        impl_app,
+        exec_app,
         store: InMemoryStore,
         base_sha: str,
     ) -> None:
         # Open two sessions sharing the same configured worker_id.
         from fastapi.testclient import TestClient as TC
 
-        with TC(impl_app) as a, TC(impl_app) as b:
+        with TC(exec_app) as a, TC(exec_app) as b:
             a.post("/signin", follow_redirects=False)
             b.post("/signin", follow_redirects=False)
             task_id, _ = seed_implement_task(store, base_sha=base_sha)

@@ -47,7 +47,7 @@ def test_resubmit_divergent_returns_409(wire_client: WireClient) -> None:
     assert r2.json().get("type") == "eden://error/conflicting-resubmission"
 
 
-def test_plan_idea_ids_compared_as_set(wire_client: WireClient) -> None:
+def test_ideation_idea_ids_compared_as_set(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.2 — plan resubmit compares idea_ids as a set."""
     pid_a, pid_b = _setup_idea_chain(wire_client)
     tid = _seed.create_ideation_task(wire_client)

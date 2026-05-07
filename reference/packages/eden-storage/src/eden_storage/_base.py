@@ -367,14 +367,14 @@ class _StoreBase:
             )
         if task.kind == "ideation":
             assert isinstance(task, IdeationTask)
-            return self._insert_plan_task(task)
+            return self._insert_ideation_task(task)
         if task.kind == "execution":
             assert isinstance(task, ExecutionTask)
-            return self._insert_implement_task(task)
+            return self._insert_execution_task(task)
         assert isinstance(task, EvaluationTask)
-        return self._insert_evaluate_task(task)
+        return self._insert_evaluation_task(task)
 
-    def _insert_plan_task(self, task: IdeationTask) -> IdeationTask:
+    def _insert_ideation_task(self, task: IdeationTask) -> IdeationTask:
         if task.payload.experiment_id != self._experiment_id:
             raise InvalidPrecondition(
                 f"ideation task payload.experiment_id={task.payload.experiment_id!r} "
@@ -390,7 +390,7 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def _insert_implement_task(self, task: ExecutionTask) -> ExecutionTask:
+    def _insert_execution_task(self, task: ExecutionTask) -> ExecutionTask:
         with self._atomic_operation():
             self._require_no_task(task.task_id)
             idea_id = task.payload.idea_id
@@ -417,7 +417,7 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def _insert_evaluate_task(self, task: EvaluationTask) -> EvaluationTask:
+    def _insert_evaluation_task(self, task: EvaluationTask) -> EvaluationTask:
         with self._atomic_operation():
             self._require_no_task(task.task_id)
             variant_id = task.payload.variant_id
@@ -940,7 +940,7 @@ class _StoreBase:
         reason = self._validate_ideation_acceptance(submission)
         if reason is not None:
             raise IllegalTransition(
-                f"cannot accept ideate {task.task_id!r}: {reason}"
+                f"cannot accept ideation task {task.task_id!r}: {reason}"
             )
         now = self._ts()
         tx = _Tx()
@@ -1128,10 +1128,10 @@ class _StoreBase:
 
         Per ``04-task-protocol.md`` §4.1, the submission's result
         payload is scoped to the task it is being submitted against.
-        An ideate-task submission's idea_ids must reference existing
-        ideas (03-roles §2.4); an execute-task submission's
+        An ideation-task submission's idea_ids must reference existing
+        ideas (03-roles §2.4); an execution-task submission's
         variant_id must refer to a variant under the task's idea
-        (03-roles §3.4); an evaluate-task submission's variant_id must
+        (03-roles §3.4); an evaluation-task submission's variant_id must
         equal the task payload's variant_id (03-roles §4.4).
         """
         if isinstance(submission, IdeaSubmission):
@@ -1139,11 +1139,11 @@ class _StoreBase:
                 idea = self._get_idea(pid)
                 if idea is None:
                     raise IllegalTransition(
-                        f"ideate-task submission references unknown idea {pid!r}"
+                        f"ideation-task submission references unknown idea {pid!r}"
                     )
                 if idea.state == "drafting":
                     raise IllegalTransition(
-                        f"ideate-task submission references drafting idea {pid!r}; "
+                        f"ideation-task submission references drafting idea {pid!r}; "
                         "ideator MUST NOT submit while ideas are in drafting "
                         "(03-roles.md §2.4)"
                     )
@@ -1152,12 +1152,12 @@ class _StoreBase:
             variant = self._get_variant(submission.variant_id)
             if variant is None:
                 raise IllegalTransition(
-                    f"execute-task submission references unknown variant "
+                    f"execution-task submission references unknown variant "
                     f"{submission.variant_id!r}"
                 )
             if variant.idea_id != task.payload.idea_id:
                 raise IllegalTransition(
-                    f"execute-task submission variant_id={submission.variant_id!r} "
+                    f"execution-task submission variant_id={submission.variant_id!r} "
                     f"belongs to idea {variant.idea_id!r}, not the "
                     f"task's idea {task.payload.idea_id!r}"
                 )
@@ -1165,7 +1165,7 @@ class _StoreBase:
             assert isinstance(task, EvaluationTask)
             if submission.variant_id != task.payload.variant_id:
                 raise IllegalTransition(
-                    f"evaluate-task submission variant_id={submission.variant_id!r} "
+                    f"evaluation-task submission variant_id={submission.variant_id!r} "
                     f"does not match task's variant {task.payload.variant_id!r}"
                 )
 
@@ -1240,7 +1240,7 @@ class _StoreBase:
     def _validate_evaluate_error(
         self, task: EvaluationTask, submission: EvaluationSubmission
     ) -> str | None:
-        """Validate fields that a `status=error` evaluate-task submission would write."""
+        """Validate fields that a `status=error` evaluation-task submission would write."""
         if submission.variant_id != task.payload.variant_id:
             return "submission variant_id does not match task's variant_id"
         variant = self._get_variant(submission.variant_id)

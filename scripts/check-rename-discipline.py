@@ -68,7 +68,6 @@ ALLOWLIST_PATHS: tuple[str, ...] = (
     "docs/plans/rename-to-directed-evolution.md",
     "docs/plans/eden-protocol-bootstrap.md",
     "MANUAL_UI_ISSUES.md",
-    "tests/fixtures/experiment/README.md",
     "scripts/check-rename-discipline.py",  # this file documents the names
 )
 
@@ -83,6 +82,28 @@ INCLUDE_EXTS: tuple[str, ...] = (
     ".toml", ".sh", ".cfg", ".ini", ".css",
 )
 INCLUDE_BASENAMES_PREFIX: tuple[str, ...] = ("Dockerfile",)
+
+
+# Shared sub-patterns used by multiple groups below.
+_SHOUTING_SUFFIXES = (
+    r"(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|"
+    r"PREFIX|COUNT|IDS?)"
+)
+_KEBAB_SUFFIXES = (
+    r"(?:task|tasks|completed|started|errored|fn|command|prefix|test)"
+)
+_KEBAB_SUFFIXES_IDEATE = (
+    r"(?:task|tasks|completed|started|errored|fn|command|prefix|"
+    r"test|done|outcome)"
+)
+_VERB_ID_SUFFIXES = (
+    r"(?:pending|completed|submitted|in_progress|failed|errored|"
+    r"task[a-z_]*|then_[a-z_]*)"
+)
+_VERB_ID_SUFFIXES_ACCEPT = (
+    r"(?:pending|completed|submitted|in_progress|failed|errored|"
+    r"task[a-z_]*|acceptance)"
+)
 
 
 # Patterns labelled by category. Each is a compiled regex; a hit on
@@ -201,7 +222,152 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # The integrator integrates; chapter 6 §2 + §3 use "Integration
     # trigger" / "Integration output" as the canonical headings. Any
     # surviving "promote" usage is legacy and should be renamed.
-    ("promote*",          re.compile(r"\bpromot(?:e|es|ed|ing|ion|ions)\b", re.IGNORECASE)),
+    ("promot*",          re.compile(r"\bpromot(?:e|es|ed|ing|ion|ions)\b", re.IGNORECASE)),
+
+    # ---------------------------------------------------------------
+    # Pattern classes added by the comprehensive audit (May 2026):
+    # the prior pattern set enumerated full-word forms only and missed
+    # whole categories of legacy. The following classes derive each
+    # pattern from the rename map mechanically rather than per-instance.
+    # ---------------------------------------------------------------
+
+    # Verb-form snake_case identifiers. The rename retired
+    # plan/implement/ideate/execute as task-kind names in favor of
+    # gerund nouns (ideation/execution/evaluation), which means any
+    # snake_case identifier prefixed with the verb is legacy:
+    # `plan_task`, `_plan_task`, `plan_fn`, `make_plan_fn`,
+    # `_insert_plan_task`, `handle_plan_task`, `_claim_plan_task`,
+    # `plan_task_id_factory`, etc. The leading-underscore variant is
+    # included because private helpers and test-fixture factories use
+    # it. The trailing-context list is broad on purpose: anything that
+    # could plausibly be a noun-suffix in the codebase.
+    ("plan_<noun>",      re.compile(
+        r"\b_?plan_(?:task|tasks|task_id|task_ids|fn|command|payload|outcome|"
+        r"draft|completed|submitted|in_progress|pending|failed|errored|"
+        r"reclamation|prefix|spec|count|seed|ids?|then_implement)\b"
+    )),
+    ("implement_<noun>", re.compile(
+        r"\b_?implement_(?:task|tasks|task_id|task_ids|fn|command|payload|"
+        r"outcome|draft|completed|submitted|in_progress|pending|failed|"
+        r"errored|reclamation|prefix|spec|count|seed|ids?|acceptance)\b"
+    )),
+    ("evaluate_<noun>",  re.compile(
+        r"\b_?evaluate_(?:task|tasks|task_id|task_ids|fn|command|payload|"
+        r"outcome|draft|completed|submitted|in_progress|pending|failed|"
+        r"errored|reclamation|prefix|spec|count|seed|ids?|acceptance)\b"
+    )),
+    ("ideate_<noun>",    re.compile(
+        r"\b_?ideate_(?:task|tasks|task_id|task_ids|fn|command|payload|"
+        r"outcome|draft|completed|submitted|in_progress|pending|failed|"
+        r"errored|reclamation|prefix|spec|count|seed|ids?)\b"
+    )),
+    ("execute_<noun>",   re.compile(
+        r"\b_?execute_(?:task|tasks|task_id|task_ids|fn|command|payload|"
+        r"outcome|draft|completed|submitted|in_progress|pending|failed|"
+        r"errored|reclamation|prefix|spec|count|seed|ids?|acceptance)\b"
+    )),
+
+    # Verb-form CamelCase types. Parallel to snake_case above, the
+    # gerund-rename retired Plan/Implement/Evaluate as type prefixes for
+    # task-protocol shapes. ``Idea`` and ``Variant`` (artifact nouns) are
+    # kept where they're submission classes, but the **callback type
+    # aliases** (``PlanFn`` / ``ImplementFn`` / ``EvaluateFn``) and the
+    # web-ui form ``ImplementDraft`` violate the gerund-coherence rule.
+    # ``Ideate<X>`` / ``Execute<X>`` / ``Evaluate<X>`` and the new
+    # ``Plan<Fn|Driver|Spec>`` / ``Implement<Fn|Driver|Spec|Config>`` set
+    # below extend the prior coverage.
+    ("Plan<X>",          re.compile(r"\bPlan(?:Fn|Driver|Spec|Config|Worker|Host)\b")),
+    ("Implement<X>",     re.compile(r"\bImplement(?:Fn|Draft|Driver|Spec|Config|Worker|Host)\b")),
+    ("Evaluate<X>",      re.compile(r"\bEvaluate(?:Fn|Draft|Driver|Spec|Config|Worker|Host)\b")),
+    ("Ideate<X>",        re.compile(r"\bIdeate(?:Fn|Draft|Driver|Spec|Config|Worker|Host)\b")),
+    ("Execute<X>",       re.compile(r"\bExecute(?:Fn|Draft|Driver|Spec|Config|Worker|Host)\b")),
+
+    # Verb-form SHOUTING_CASE shell / env vars (PLAN_COMPLETED is the
+    # smoke-test family). Same gerund-vs-verb rule applies: the
+    # canonical form is IDEATION_*, EXECUTION_*, EVALUATION_*.
+    ("PLAN_<X>",         re.compile(r"\bPLAN_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("IMPLEMENT_<X>",    re.compile(r"\bIMPLEMENT_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("EVALUATE_<X>",     re.compile(r"\bEVALUATE_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("IDEATE_<X>",       re.compile(r"\bIDEATE_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("EXECUTE_<X>",      re.compile(r"\bEXECUTE_" + _SHOUTING_SUFFIXES + r"\b")),
+
+    # Abbreviation: `impl` always parses to either `implement` (retired
+    # verb) or `implementation` (English noun, not a canonical EDEN
+    # noun). Either way it's legacy; the canonical abbreviation for the
+    # ``execution`` task kind is `exec`. Distinguish from English
+    # "implementation" by requiring identifier context (``impl_X`` /
+    # ``ImplX`` / ``IMPL_X``).
+    #
+    # Counterexample by design: ``eval`` is a legitimate abbreviation
+    # of the canonical ``evaluation`` gerund and stays. ``prop`` was
+    # retired with ``proposal`` → ``idea``, so prop_X is legacy.
+    ("impl_<X>",         re.compile(r"\bimpl_[a-z][a-zA-Z_]*\b")),
+    ("Impl<X>",          re.compile(r"\bImpl[A-Z][a-zA-Z]*\b")),
+    ("IMPL_<X>",         re.compile(r"\bIMPL_[A-Z]")),
+    ("prop_<X>",         re.compile(r"\bprop_[a-z][a-zA-Z_]*\b")),
+    ("PROP_<X>",         re.compile(r"\bPROP_[A-Z]")),
+
+    # Test-fixture ID slugs (string literals). These embed retired
+    # stems in test data: `"tr-1"` (trial), `"prop-x"` (proposal),
+    # `"p-1"` (proposal abbrev). Each catches the legacy slug shapes
+    # we found in tests/.
+    #
+    # `"properties":` is a JSON Schema keyword and a known false
+    # positive of `prop`-prefix matching; we narrow `prop-` to require a
+    # quote/hyphen separator that JSON Schema's `properties` doesn't have.
+    ("\"tr-N\" slug",    re.compile(r"['\"]tr-[0-9a-z]+['\"]")),
+    ("\"prop-X\" slug",  re.compile(r"['\"][a-z0-9-]*prop-[a-z0-9-]+['\"]")),
+    ("\"p-N\" idea slug",re.compile(r"['\"]p-[0-9]+['\"]")),
+
+    # Verb-form kebab-case event-topic prefixes and prose. Parallel to
+    # snake_case rule: gerund is canonical for the task-kind family.
+    # `ideate-task.completed` → `ideation-task.completed`,
+    # `execute-task` → `execution-task`, `evaluate-task` →
+    # `evaluation-task`. Catches the bare kebab form too
+    # (`ideate-something`).
+    ("ideate-<X>",       re.compile(r"\bideate-" + _KEBAB_SUFFIXES_IDEATE + r"\b", re.IGNORECASE)),
+    ("execute-<X>",      re.compile(r"\bexecute-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+    ("evaluate-<X>",     re.compile(r"\bevaluate-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+    ("plan-<X>",         re.compile(r"\bplan-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+    ("implement-<X>",    re.compile(r"\bimplement-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+
+    # Test-function names embedding retired verbs. `def
+    # test_implement_*` and `def test_plan_*` should follow the
+    # gerund-rename: `test_execution_*` / `test_ideation_*`. Note the
+    # rule pivots on whether the test exercises the **process / task**
+    # (gerund wins) or the **artifact** (idea/variant wins) — and the
+    # current test-suite naming is process-side, so gerund is the
+    # right replacement.
+    ("def test_plan_",   re.compile(r"\bdef test_[a-zA-Z_]*\bplan[a-z_]*\b")),
+    ("def test_implement_", re.compile(r"\bdef test_[a-zA-Z_]*\bimplement[a-z_]*\b")),
+    ("def test_ideate_", re.compile(r"\bdef test_[a-zA-Z_]*\bideate[a-z_]*\b")),
+    ("def test_execute_", re.compile(r"\bdef test_[a-zA-Z_]*\bexecute[a-z_]*\b")),
+
+    # Bare retired verb in citation-like contexts (`"plan_pending"` case-id,
+    # `"plan_command"` config key). The string-form catches conformance
+    # `cases.py` IDs that embed the retired verb plus a behavioral suffix.
+    ("\"plan_<verb>\" id",
+        re.compile(r"['\"]plan_" + _VERB_ID_SUFFIXES + r"['\"]")),
+    ("\"implement_<verb>\" id",
+        re.compile(r"['\"]implement_" + _VERB_ID_SUFFIXES_ACCEPT + r"['\"]")),
+    ("\"evaluate_<verb>\" id",
+        re.compile(r"['\"]evaluate_" + _VERB_ID_SUFFIXES_ACCEPT + r"['\"]")),
+
+    # Filename citations. `plan.py`, `implement.py` (verb-form fixture
+    # names) were renamed to `ideation.py`, `execution.py`. Anywhere
+    # docs/tests/docstrings cite the old names is legacy. ``eval.py``
+    # was a separate retired form; the fixture is now ``evaluation.py``
+    # so cite-form `eval.py` is also legacy. (The runtime artifact
+    # ``eval-task.json`` / ``eval-outcome.json`` is unrelated and stays
+    # since `eval` is fine as an abbreviation of `evaluation`.)
+    ("plan.py cite",     re.compile(r"\bplan\.py\b")),
+    ("implement.py cite",re.compile(r"\bimplement\.py\b")),
+    ("eval.py cite",     re.compile(r"\beval\.py\b")),
+
+    # Worker-id slug "eval-w" violates the role-based "<role>-w"
+    # convention used elsewhere (ideator-w / executor-w /
+    # evaluator-w). Should be `evaluator-w`.
+    ("\"eval-w\" worker", re.compile(r"['\"]eval-w['\"]")),
 ]
 
 # Per-line opt-out marker for legitimate citations of legacy patterns

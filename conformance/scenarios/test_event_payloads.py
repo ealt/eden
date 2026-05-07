@@ -115,12 +115,12 @@ def test_idea_dispatched_carries_task_id(
     """spec/v0/05-event-protocol.md §3.2 — idea.dispatched data has idea_id, task_id."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     [event] = _by_type_for(
         event_log.replay_all(), "idea.dispatched", idea_id=pid
     )
     assert event["data"]["idea_id"] == pid
-    assert event["data"]["task_id"] == impl_tid
+    assert event["data"]["task_id"] == exec_tid
 
 
 def test_idea_completed_carries_task_id(
@@ -165,10 +165,10 @@ def test_variant_errored_carries_variant_id(
     """spec/v0/05-event-protocol.md §3.3 — variant.errored data has variant_id."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
-    _seed.claim(wire_client, impl_tid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    _seed.claim(wire_client, exec_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
-    _seed.reclaim(wire_client, impl_tid, cause="operator")
+    _seed.reclaim(wire_client, exec_tid, cause="operator")
     [event] = _by_type_for(event_log.replay_all(), "variant.errored", variant_id=variant_id)
     assert event["data"]["variant_id"] == variant_id
 
@@ -183,17 +183,17 @@ def test_variant_eval_errored_carries_variant_id(
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
-    impl_claim = _seed.claim(wire_client, impl_tid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    exec_claim = _seed.claim(wire_client, exec_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     _seed.submit_variant(
         wire_client,
-        impl_tid,
-        token=impl_claim["token"],
+        exec_tid,
+        token=exec_claim["token"],
         variant_id=variant_id,
         commit_sha="b" * 40,
     )
-    _seed.accept(wire_client, impl_tid)
+    _seed.accept(wire_client, exec_tid)
     r = _seed.declare_variant_evaluation_error(wire_client, variant_id)
     assert 200 <= r.status_code < 300, r.text
     [event] = _by_type_for(

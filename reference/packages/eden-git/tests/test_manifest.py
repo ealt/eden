@@ -12,12 +12,12 @@ from eden_git._manifest import ManifestFieldMissing, build_manifest
 
 def _base_variant(**overrides: Any) -> Variant:
     defaults: dict[str, Any] = {
-        "variant_id": "tr-1",
+        "variant_id": "variant-1",
         "experiment_id": "exp-1",
-        "idea_id": "p-1",
+        "idea_id": "idea-1",
         "status": "success",
         "parent_commits": ["a" * 40],
-        "branch": "work/tr-1",
+        "branch": "work/variant-1",
         "commit_sha": "b" * 40,
         "evaluation": {"score": 42, "latency": 1.5},
         "started_at": "2026-04-23T00:00:00Z",
@@ -44,8 +44,8 @@ class TestRequiredFields:
         variant = _base_variant()
         manifest = json.loads(build_manifest(variant).decode("utf-8"))
         assert manifest == {
-            "variant_id": "tr-1",
-            "idea_id": "p-1",
+            "variant_id": "variant-1",
+            "idea_id": "idea-1",
             "commit_sha": "b" * 40,
             "parent_commits": ["a" * 40],
             "evaluation": {"score": 42, "latency": 1.5},

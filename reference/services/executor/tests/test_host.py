@@ -95,7 +95,7 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
         committer=ident,
     )
 
-    # Seed a store with one plan→idea(2 parents)→implement_task.
+    # Seed a store with one plan→idea(2 parents)→execution_task.
     store = InMemoryStore(
         experiment_id="exp-mp",
         evaluation_schema=EvaluationSchema({"loss": "real"}),

@@ -14,7 +14,7 @@ next.
 
 Finalization honors ``04-task-protocol.md`` §4.3: a submission that
 declared ``success`` but does not satisfy the role's success contract,
-or a `status="error"` evaluate-task submission whose metrics/artifacts_uri
+or a `status="error"` evaluation-task submission whose metrics/artifacts_uri
 would fail validation, turns into ``task.failed`` with
 ``reason=validation_error``. The orchestrator asks the store via
 ``validate_terminal`` which terminal transition to issue — accept,
@@ -36,8 +36,8 @@ _log = logging.getLogger(__name__)
 def run_orchestrator_iteration(
     store: Store,
     *,
-    implement_task_id_factory: Callable[[], str],
-    evaluate_task_id_factory: Callable[[], str],
+    execution_task_id_factory: Callable[[], str],
+    evaluation_task_id_factory: Callable[[], str],
     integrate_variant: Callable[[str], object] | None = None,
 ) -> bool:
     """Run one orchestrator pass: finalize + dispatch + integrate.
@@ -52,9 +52,9 @@ def run_orchestrator_iteration(
     """
     progress = False
     progress |= _finalize_submitted(store, kind="ideation")
-    progress |= _dispatch_execution_tasks(store, implement_task_id_factory)
+    progress |= _dispatch_execution_tasks(store, execution_task_id_factory)
     progress |= _finalize_submitted(store, kind="execution")
-    progress |= _dispatch_evaluation_tasks(store, evaluate_task_id_factory)
+    progress |= _dispatch_evaluation_tasks(store, evaluation_task_id_factory)
     progress |= _finalize_submitted(store, kind="evaluation")
     if integrate_variant is not None:
         progress |= _integrate_successful_variants(store, integrate_variant)

@@ -65,19 +65,19 @@ class TestStateSurvivesReopen:
         claim = first.claim("t-exec", "executor-w")
         first.create_variant(
             Variant(
-                variant_id="tr-1",
+                variant_id="variant-1",
                 experiment_id="exp-r",
                 idea_id="p1",
                 status="starting",
                 parent_commits=["a" * 40],
-                branch="work/feat-a-tr-1",
+                branch="work/feat-a-variant-1",
                 started_at="2026-04-23T00:01:00.000Z",
             )
         )
         first.submit(
             "t-exec",
             claim.token,
-            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         first.accept("t-exec")
         first_events = first.events()
@@ -87,7 +87,7 @@ class TestStateSurvivesReopen:
         assert [e.type for e in second.events()] == [e.type for e in first_events]
         assert second.read_task("t-exec").state == "completed"
         assert second.read_idea("p1").state == "completed"
-        variant = second.read_variant("tr-1")
+        variant = second.read_variant("variant-1")
         assert variant.status == "starting"
         assert variant.commit_sha == "b" * 40
         second.close()
@@ -97,18 +97,18 @@ class TestStateSurvivesReopen:
     ) -> None:
         path = tmp_path / "eden.db"
         first = SqliteStore("exp-r", path, token_factory=_token_seq())
-        first.create_ideation_task("t-ideate")
-        claim = first.claim("t-ideate", "ideator-w")
+        first.create_ideation_task("t-ideation")
+        claim = first.claim("t-ideation", "ideator-w")
         first.close()
 
         second = SqliteStore("exp-r", path)
-        task = second.read_task("t-ideate")
+        task = second.read_task("t-ideation")
         assert task.state == "claimed"
         assert task.claim is not None
         assert task.claim.token == claim.token
         # The persisted token authorizes a fresh submit on the reopened store.
-        second.submit("t-ideate", claim.token, IdeaSubmission(status="success"))
-        assert second.read_task("t-ideate").state == "submitted"
+        second.submit("t-ideation", claim.token, IdeaSubmission(status="success"))
+        assert second.read_task("t-ideation").state == "submitted"
         second.close()
 
     def test_event_order_total_and_preserved(self, tmp_path: Path) -> None:
@@ -242,7 +242,7 @@ class TestExperimentIdentityIsEnforced:
         first.close()
 
         second = SqliteStore("exp-a", path, token_factory=_token_seq())
-        # Drive a full variant to the point of an evaluate-task submission and
+        # Drive a full variant to the point of an evaluation-task submission and
         # assert the inherited schema rejects a wrong-type metric.
         second.create_idea(
             Idea(
@@ -261,29 +261,29 @@ class TestExperimentIdentityIsEnforced:
         c = second.claim("t-exec", "executor-w")
         second.create_variant(
             Variant(
-                variant_id="tr-1",
+                variant_id="variant-1",
                 experiment_id="exp-a",
                 idea_id="p1",
                 status="starting",
                 parent_commits=["a" * 40],
-                branch="work/feat-a-tr-1",
+                branch="work/feat-a-variant-1",
                 started_at="2026-04-23T00:01:00.000Z",
             )
         )
         second.submit(
             "t-exec",
             c.token,
-            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         second.accept("t-exec")
-        second.create_evaluation_task("t-eval", "tr-1")
-        ec = second.claim("t-eval", "eval-w")
+        second.create_evaluation_task("t-eval", "variant-1")
+        ec = second.claim("t-eval", "evaluator-w")
         second.submit(
             "t-eval",
             ec.token,
             EvaluationSubmission(
                 status="success",
-                variant_id="tr-1",
+                variant_id="variant-1",
                 evaluation={"score": "not-an-int"},
             ),
         )
@@ -351,19 +351,19 @@ class TestCrashRecoveryRollsBackPartialWrites:
 class TestRunExperimentAcrossRestarts:
     """End-to-end: an experiment paused mid-flight resumes on reopen."""
 
-    def test_plan_then_implement_then_restart_then_evaluate(
+    def test_ideation_then_execution_then_restart_then_evaluation(
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "eden.db"
         token_factory = _token_seq()
 
-        idea_ids = iter([f"p-{i:02d}" for i in range(1, 10)])
-        variant_ids = iter([f"tr-{i:02d}" for i in range(1, 10)])
-        impl_task_ids = iter([f"t-exec-{i:02d}" for i in range(1, 10)])
+        idea_ids = iter([f"idea-{i:02d}" for i in range(1, 10)])
+        variant_ids = iter([f"variant-{i:02d}" for i in range(1, 10)])
+        exec_task_ids = iter([f"t-exec-{i:02d}" for i in range(1, 10)])
         eval_task_ids = iter([f"t-eval-{i:02d}" for i in range(1, 10)])
         commit_shas = iter([f"{i:02d}" + "b" * 38 for i in range(1, 10)])
 
-        def plan_fn(_task):
+        def ideation_fn(_task):
             return [
                 IdeaTemplate(
                     slug="feat-a",
@@ -373,7 +373,7 @@ class TestRunExperimentAcrossRestarts:
                 )
             ]
 
-        def impl_fn(_task, _idea):
+        def exec_fn(_task, _idea):
             return ExecutionOutcome(status="success", commit_sha=next(commit_shas))
 
         def eval_fn(_task, _trial):
@@ -387,22 +387,22 @@ class TestRunExperimentAcrossRestarts:
 
         now = _now_factory()
         ideator = ScriptedIdeator(
-            "ideator-1", plan_fn, idea_id_factory=lambda: next(idea_ids), now=now
+            "ideator-1", ideation_fn, idea_id_factory=lambda: next(idea_ids), now=now
         )
         executor = ScriptedExecutor(
-            "execution-1", impl_fn, variant_id_factory=lambda: next(variant_ids), now=now
+            "execution-1", exec_fn, variant_id_factory=lambda: next(variant_ids), now=now
         )
 
         first = SqliteStore("exp-r", path, token_factory=token_factory)
         # Run ideator + executor only; leave variant awaiting evaluation.
-        first.create_ideation_task("t-ideate-01")
+        first.create_ideation_task("t-ideation-01")
         ideator.run_pending(first)
-        # Finalize ideate-task submission manually (normally the orchestrator service does this).
-        decision, _ = first.validate_terminal("t-ideate-01")
+        # Finalize ideation-task submission manually (normally the orchestrator service does this).
+        decision, _ = first.validate_terminal("t-ideation-01")
         assert decision == "accept"
-        first.accept("t-ideate-01")
+        first.accept("t-ideation-01")
         # Dispatch implement
-        first.create_execution_task(next(impl_task_ids), "p-01")
+        first.create_execution_task(next(exec_task_ids), "idea-01")
         executor.run_pending(first)
         decision, _ = first.validate_terminal("t-exec-01")
         assert decision == "accept"
@@ -412,19 +412,19 @@ class TestRunExperimentAcrossRestarts:
         # Reopen; finish the experiment with a fresh evaluator.
         evaluator = ScriptedEvaluator("eval-1", eval_fn)
         second = SqliteStore("exp-r", path, token_factory=token_factory)
-        second.create_evaluation_task(next(eval_task_ids), "tr-01")
+        second.create_evaluation_task(next(eval_task_ids), "variant-01")
         evaluator.run_pending(second)
         decision, _ = second.validate_terminal("t-eval-01")
         assert decision == "accept"
         second.accept("t-eval-01")
 
         # Integrate.
-        second.integrate_variant("tr-01", "c" * 40)
+        second.integrate_variant("variant-01", "c" * 40)
 
         # Final state: all tasks completed, idea completed, variant success + integrated.
         assert [t.state for t in second.list_tasks()] == ["completed"] * 3
-        assert second.read_idea("p-01").state == "completed"
-        variant = second.read_variant("tr-01")
+        assert second.read_idea("idea-01").state == "completed"
+        variant = second.read_variant("variant-01")
         assert variant.status == "success"
         assert variant.variant_commit_sha == "c" * 40
 

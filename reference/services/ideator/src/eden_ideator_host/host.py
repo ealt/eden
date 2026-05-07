@@ -15,7 +15,7 @@ from eden_storage import IllegalTransition, Store, WrongToken
 from .subprocess_mode import (
     IdeatorSubprocess,
     IdeatorSubprocessConfig,
-    handle_plan_task,
+    handle_ideation_task,
     start_ideator_subprocess,
 )
 
@@ -49,7 +49,7 @@ def run_ideator_loop(
     """
     ideator = ScriptedIdeator(
         worker_id=worker_id,
-        plan_fn=make_plan_fn(
+        ideation_fn=make_plan_fn(
             base_commit_sha=base_commit_sha,
             ideas_per_ideation=ideas_per_ideation,
         ),
@@ -126,7 +126,7 @@ def run_ideator_subprocess_loop(
                     return
                 assert isinstance(task, IdeationTask)
                 try:
-                    handle_plan_task(
+                    handle_ideation_task(
                         store=store,
                         task=task,
                         worker_id=worker_id,

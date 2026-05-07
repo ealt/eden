@@ -291,8 +291,8 @@ def drive_to_starting_variant(
     """
     pid = idea_id or create_idea(client)
     mark_idea_ready(client, pid)
-    impl_tid = create_execution_task(client, idea_id=pid)
-    impl_claim = claim(client, impl_tid, worker_id="impl-worker")
+    exec_tid = create_execution_task(client, idea_id=pid)
+    exec_claim = claim(client, exec_tid, worker_id="impl-worker")
     variant_id = fresh_variant_id()
     # Executor creates the starting variant before submitting (chapter 3 §3.2 step 1).
     create_variant(
@@ -303,13 +303,13 @@ def drive_to_starting_variant(
     )
     r = submit_variant(
         client,
-        impl_tid,
-        token=impl_claim["token"],
+        exec_tid,
+        token=exec_claim["token"],
         variant_id=variant_id,
         commit_sha=commit_sha,
     )
     r.raise_for_status()
-    accepted = accept(client, impl_tid)
+    accepted = accept(client, exec_tid)
     accepted.raise_for_status()
     # Sanity-check that the accept actually wrote commit_sha onto the
     # variant — a setup regression that silently leaves the variant in an
@@ -340,8 +340,8 @@ def drive_to_error_variant(
     """
     pid = idea_id or create_idea(client)
     mark_idea_ready(client, pid)
-    impl_tid = create_execution_task(client, idea_id=pid)
-    impl_claim = claim(client, impl_tid, worker_id="impl-worker")
+    exec_tid = create_execution_task(client, idea_id=pid)
+    exec_claim = claim(client, exec_tid, worker_id="impl-worker")
     variant_id = fresh_variant_id()
     create_variant(
         client,
@@ -351,13 +351,13 @@ def drive_to_error_variant(
     )
     r = submit_variant(
         client,
-        impl_tid,
-        token=impl_claim["token"],
+        exec_tid,
+        token=exec_claim["token"],
         variant_id=variant_id,
         status="error",
     )
     r.raise_for_status()
-    rejected = reject(client, impl_tid, reason="worker_error")
+    rejected = reject(client, exec_tid, reason="worker_error")
     rejected.raise_for_status()
     variant = read_variant(client, variant_id)
     assert variant.get("status") == "error", (

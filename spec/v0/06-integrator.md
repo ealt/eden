@@ -176,7 +176,7 @@ Because the evaluation manifest lives inside the `variant/*` commit's tree, it i
 
 ### 5.1 Evaluation-schema violation at integration time
 
-If the integrator re-validates the evaluation (per §2) and finds it in violation of the experiment's `evaluation_schema`, the integrator MUST NOT produce a `variant/*` commit, MUST NOT write `variant_commit_sha`, and MUST NOT append `variant.integrated`. It MUST surface the problem through an implementation-defined operator channel; since the variant's `status` was written to `success` by the orchestrator at the evaluate-task terminal, the integration-side rejection is a protocol-level drift between the two that an operator MUST resolve. A conforming orchestrator makes this case rare by enforcing schema conformance at the evaluate-task terminal.
+If the integrator re-validates the evaluation (per §2) and finds it in violation of the experiment's `evaluation_schema`, the integrator MUST NOT produce a `variant/*` commit, MUST NOT write `variant_commit_sha`, and MUST NOT append `variant.integrated`. It MUST surface the problem through an implementation-defined operator channel; since the variant's `status` was written to `success` by the orchestrator at the evaluation-task terminal, the integration-side rejection is a protocol-level drift between the two that an operator MUST resolve. A conforming orchestrator makes this case rare by enforcing schema conformance at the evaluation-task terminal.
 
 ### 5.2 Partial git write
 

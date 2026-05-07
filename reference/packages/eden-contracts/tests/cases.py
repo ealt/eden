@@ -183,7 +183,7 @@ _VALID_CLAIM = {
 
 TASK_CASES: list[Case] = [
     Case(
-        "plan_pending",
+        "ideation_pending",
         {
             "task_id": "t-1",
             "kind": "ideation",
@@ -195,12 +195,12 @@ TASK_CASES: list[Case] = [
         True,
     ),
     Case(
-        "implement_claimed",
+        "execution_claimed",
         {
             "task_id": "t-2",
             "kind": "execution",
             "state": "claimed",
-            "payload": {"idea_id": "p-1"},
+            "payload": {"idea_id": "idea-1"},
             "claim": _VALID_CLAIM,
             "created_at": _DT,
             "updated_at": _DT,
@@ -208,7 +208,7 @@ TASK_CASES: list[Case] = [
         True,
     ),
     Case(
-        "evaluate_submitted",
+        "evaluation_submitted",
         {
             "task_id": "t-3",
             "kind": "evaluation",
@@ -221,7 +221,7 @@ TASK_CASES: list[Case] = [
         True,
     ),
     Case(
-        "plan_completed_no_claim",
+        "ideation_completed_no_claim",
         {
             "task_id": "t-4",
             "kind": "ideation",
@@ -233,7 +233,7 @@ TASK_CASES: list[Case] = [
         True,
     ),
     Case(
-        "plan_failed_no_claim",
+        "ideation_failed_no_claim",
         {
             "task_id": "t-5",
             "kind": "ideation",
@@ -295,7 +295,7 @@ TASK_CASES: list[Case] = [
         False,
     ),
     Case(
-        "plan_task_missing_experiment_id",
+        "ideation_task_missing_experiment_id",
         {
             "task_id": "t-10",
             "kind": "ideation",
@@ -307,7 +307,7 @@ TASK_CASES: list[Case] = [
         False,
     ),
     Case(
-        "implement_task_missing_idea_id",
+        "execution_task_missing_idea_id",
         {
             "task_id": "t-11",
             "kind": "execution",
@@ -564,7 +564,7 @@ EVENT_CASES: list[Case] = [
     Case(
         "task_reclaimed_ok",
         {
-            "event_id": "evt-tr-1",
+            "event_id": "evt-variant-1",
             "type": "task.reclaimed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
@@ -575,7 +575,7 @@ EVENT_CASES: list[Case] = [
     Case(
         "task_reclaimed_bad_cause",
         {
-            "event_id": "evt-tr-2",
+            "event_id": "evt-variant-2",
             "type": "task.reclaimed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
@@ -591,7 +591,7 @@ EVENT_CASES: list[Case] = [
             "type": "idea.drafted",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"idea_id": "p-1"},
+            "data": {"idea_id": "idea-1"},
         },
         True,
     ),
@@ -602,7 +602,7 @@ EVENT_CASES: list[Case] = [
             "type": "idea.ready",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"idea_id": "p-1"},
+            "data": {"idea_id": "idea-1"},
         },
         True,
     ),
@@ -613,7 +613,7 @@ EVENT_CASES: list[Case] = [
             "type": "idea.dispatched",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"idea_id": "p-1", "task_id": "t-1"},
+            "data": {"idea_id": "idea-1", "task_id": "t-1"},
         },
         True,
     ),
@@ -624,7 +624,7 @@ EVENT_CASES: list[Case] = [
             "type": "idea.dispatched",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"idea_id": "p-1"},
+            "data": {"idea_id": "idea-1"},
         },
         False,
     ),
@@ -635,7 +635,7 @@ EVENT_CASES: list[Case] = [
             "type": "idea.completed",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"idea_id": "p-1", "task_id": "t-1"},
+            "data": {"idea_id": "idea-1", "task_id": "t-1"},
         },
         True,
     ),
@@ -647,7 +647,7 @@ EVENT_CASES: list[Case] = [
             "type": "variant.started",
             "occurred_at": _DT,
             "experiment_id": "exp-1",
-            "data": {"variant_id": "variant-1", "idea_id": "p-1"},
+            "data": {"variant_id": "variant-1", "idea_id": "idea-1"},
         },
         True,
     ),
@@ -724,7 +724,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "drafting",
         {
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "experiment_id": "exp-1",
             "slug": "improve-tokenizer",
             "priority": 0.5,
@@ -738,7 +738,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "completed_sha256",
         {
-            "idea_id": "p-2",
+            "idea_id": "idea-2",
             "experiment_id": "exp-1",
             "slug": "x",
             "priority": -1.0,
@@ -752,7 +752,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "slug_uppercase",
         {
-            "idea_id": "p-3",
+            "idea_id": "idea-3",
             "experiment_id": "exp-1",
             "slug": "Improve-Tokenizer",
             "priority": 0.0,
@@ -766,7 +766,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "slug_leading_dash",
         {
-            "idea_id": "p-4",
+            "idea_id": "idea-4",
             "experiment_id": "exp-1",
             "slug": "-improve",
             "priority": 0.0,
@@ -780,7 +780,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "bad_state",
         {
-            "idea_id": "p-5",
+            "idea_id": "idea-5",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -794,7 +794,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "empty_parent_commits",
         {
-            "idea_id": "p-6",
+            "idea_id": "idea-6",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -808,7 +808,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "bad_commit_sha_length",
         {
-            "idea_id": "p-7",
+            "idea_id": "idea-7",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -822,7 +822,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "bad_commit_sha_uppercase",
         {
-            "idea_id": "p-8",
+            "idea_id": "idea-8",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -836,7 +836,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "priority_bool",
         {
-            "idea_id": "p-9",
+            "idea_id": "idea-9",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": True,
@@ -850,7 +850,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "priority_string",
         {
-            "idea_id": "p-10",
+            "idea_id": "idea-10",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": "1.5",
@@ -864,7 +864,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "artifacts_uri_no_scheme",
         {
-            "idea_id": "p-11",
+            "idea_id": "idea-11",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -878,7 +878,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "artifacts_uri_space_in_host",
         {
-            "idea_id": "p-13",
+            "idea_id": "idea-13",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -892,7 +892,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "artifacts_uri_bad_percent_encoding",
         {
-            "idea_id": "p-14",
+            "idea_id": "idea-14",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -906,7 +906,7 @@ IDEA_CASES: list[Case] = [
     Case(
         "created_at_impossible",
         {
-            "idea_id": "p-12",
+            "idea_id": "idea-12",
             "experiment_id": "exp-1",
             "slug": "s",
             "priority": 0.0,
@@ -926,7 +926,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-1",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -938,7 +938,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-2",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "branch": "work/variant-2",
@@ -957,7 +957,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-3",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "evaluation_error",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -969,7 +969,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-4",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "branch": "feature/foo",
@@ -982,7 +982,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-5",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "running",
             "parent_commits": [_SHA1],
             "started_at": _DT,
@@ -994,7 +994,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-6",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "commit_sha": "not-hex",
@@ -1007,7 +1007,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-7",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "starting",
             "parent_commits": [],
             "started_at": _DT,
@@ -1019,7 +1019,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-8",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "evaluation": None,
@@ -1032,7 +1032,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-9",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "artifacts_uri": "not a uri",
@@ -1045,7 +1045,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-11",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "success",
             "parent_commits": [_SHA1],
             "artifacts_uri": "http://exa mple.com/path",
@@ -1058,7 +1058,7 @@ VARIANT_CASES: list[Case] = [
         {
             "variant_id": "variant-10",
             "experiment_id": "exp-1",
-            "idea_id": "p-1",
+            "idea_id": "idea-1",
             "status": "starting",
             "parent_commits": [_SHA1],
             "started_at": _DT,

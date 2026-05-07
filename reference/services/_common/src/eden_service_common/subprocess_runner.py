@@ -222,7 +222,7 @@ def spawn(
     """Launch ``command`` via ``shell=True`` with a fresh process group.
 
     The command is interpreted by the user's shell so expressions
-    like ``python3 ${EDEN_EXPERIMENT_DIR}/plan.py`` expand against
+    like ``python3 ${EDEN_EXPERIMENT_DIR}/ideation.py`` expand against
     the supplied env. Stdout lines flow into a queue; stderr lines
     are forwarded to the host logger at info, tagged with ``role``
     and (if provided) ``task_id`` for downstream filtering.

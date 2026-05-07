@@ -100,36 +100,36 @@ class TestImplementTerminalComposite:
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
         types = _type_sequence(store)
         assert types[-2:] == ["task.completed", "idea.completed"]
         assert store.read_idea("p1").state == "completed"
-        assert store.read_variant("tr-1").commit_sha == "b" * 40
+        assert store.read_variant("variant-1").commit_sha == "b" * 40
 
     def test_reject_with_starting_variant_triples_composite(
         self, make_store: Callable[..., Store]
     ) -> None:
-        """Execute-task reject + variant.errored + idea.completed all commit together."""
+        """Execution-task reject + variant.errored + idea.completed all commit together."""
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            VariantSubmission(status="error", variant_id="tr-1"),
+            VariantSubmission(status="error", variant_id="variant-1"),
         )
         store.reject("t-exec", "worker_error")
         types = _type_sequence(store)
         assert types[-3:] == ["task.failed", "idea.completed", "variant.errored"]
-        assert store.read_variant("tr-1").status == "error"
+        assert store.read_variant("variant-1").status == "error"
         assert store.read_idea("p1").state == "completed"
 
 
@@ -140,28 +140,30 @@ class TestEvaluateTerminalComposite:
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
 
     def test_evaluate_success_composite(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         self._advance_to_variant_with_commit(store)
-        store.create_evaluation_task("t-eval", "tr-1")
-        claim = store.claim("t-eval", "eval-w")
+        store.create_evaluation_task("t-eval", "variant-1")
+        claim = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
             claim.token,
-            EvaluationSubmission(status="success", variant_id="tr-1", evaluation={"score": 0.9}),
+            EvaluationSubmission(
+                status="success", variant_id="variant-1", evaluation={"score": 0.9}
+            ),
         )
         store.accept("t-eval")
         types = _type_sequence(store)
         assert types[-2:] == ["task.completed", "variant.succeeded"]
-        variant = store.read_variant("tr-1")
+        variant = store.read_variant("variant-1")
         assert variant.status == "success"
         assert variant.evaluation == {"score": 0.9}
         assert variant.completed_at is not None
@@ -169,17 +171,17 @@ class TestEvaluateTerminalComposite:
     def test_evaluate_error_composite(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
         self._advance_to_variant_with_commit(store)
-        store.create_evaluation_task("t-eval", "tr-1")
-        claim = store.claim("t-eval", "eval-w")
+        store.create_evaluation_task("t-eval", "variant-1")
+        claim = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
             claim.token,
-            EvaluationSubmission(status="error", variant_id="tr-1", evaluation={"score": 0.0}),
+            EvaluationSubmission(status="error", variant_id="variant-1", evaluation={"score": 0.0}),
         )
         store.reject("t-eval", "worker_error")
         types = _type_sequence(store)
         assert types[-2:] == ["task.failed", "variant.errored"]
-        variant = store.read_variant("tr-1")
+        variant = store.read_variant("variant-1")
         assert variant.status == "error"
         assert variant.evaluation == {"score": 0.0}
 
@@ -189,20 +191,20 @@ class TestEvaluateTerminalComposite:
         """§4.4: evaluation_error MUST NOT write metrics/artifacts; variant stays in starting."""
         store = make_store()
         self._advance_to_variant_with_commit(store)
-        store.create_evaluation_task("t-eval", "tr-1")
-        claim = store.claim("t-eval", "eval-w")
+        store.create_evaluation_task("t-eval", "variant-1")
+        claim = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
             claim.token,
             EvaluationSubmission(
                 status="evaluation_error",
-                variant_id="tr-1",
+                variant_id="variant-1",
                 evaluation={"score": 0.5},
                 artifacts_uri="https://artifacts.example/discard",
             ),
         )
         store.reject("t-eval", "worker_error")
-        variant = store.read_variant("tr-1")
+        variant = store.read_variant("variant-1")
         assert variant.status == "starting"
         assert variant.evaluation is None
         assert variant.artifacts_uri is None
@@ -222,11 +224,11 @@ class TestImplementReclaimComposite:
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
         store.claim("t-exec", "executor-w")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         store.reclaim("t-exec", "health_policy")
         types = _type_sequence(store)
         assert types[-2:] == ["task.reclaimed", "variant.errored"]
-        assert store.read_variant("tr-1").status == "error"
+        assert store.read_variant("variant-1").status == "error"
         assert store.read_task("t-exec").state == "pending"
 
 
@@ -238,17 +240,17 @@ class TestEvalErrorTerminalComposite:
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.declare_variant_evaluation_error("tr-1")
+        store.declare_variant_evaluation_error("variant-1")
         types = _type_sequence(store)
         assert types[-1] == "variant.evaluation_errored"
-        variant = store.read_variant("tr-1")
+        variant = store.read_variant("variant-1")
         assert variant.status == "evaluation_error"
         assert variant.completed_at is not None
         assert variant.evaluation is None
@@ -263,50 +265,52 @@ class TestIntegrationComposite:
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
         claim = store.claim("t-exec", "executor-w")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
             claim.token,
-            VariantSubmission(status="success", variant_id="tr-1", commit_sha="b" * 40),
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
-        store.create_evaluation_task("t-eval", "tr-1")
-        ec = store.claim("t-eval", "eval-w")
+        store.create_evaluation_task("t-eval", "variant-1")
+        ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
             ec.token,
-            EvaluationSubmission(status="success", variant_id="tr-1", evaluation={"score": 0.9}),
+            EvaluationSubmission(
+                status="success", variant_id="variant-1", evaluation={"score": 0.9}
+            ),
         )
         store.accept("t-eval")
-        store.integrate_variant("tr-1", "c" * 40)
-        variant = store.read_variant("tr-1")
+        store.integrate_variant("variant-1", "c" * 40)
+        variant = store.read_variant("variant-1")
         assert variant.variant_commit_sha == "c" * 40
         events = store.events()
         assert events[-1].type == "variant.integrated"
-        assert events[-1].data == {"variant_id": "tr-1", "variant_commit_sha": "c" * 40}
+        assert events[-1].data == {"variant_id": "variant-1", "variant_commit_sha": "c" * 40}
 
     def test_integrate_non_success_rejected(
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        _starting_variant(store, "tr-1", "p1")
+        _starting_variant(store, "variant-1", "p1")
         with pytest.raises(InvalidPrecondition):
-            store.integrate_variant("tr-1", "c" * 40)
+            store.integrate_variant("variant-1", "c" * 40)
 
 
 class TestPlanSubmissionNoCompositeIdeaEvent:
-    """Plan-task terminal transitions emit `task.completed` alone."""
+    """Ideation-task terminal transitions emit `task.completed` alone."""
 
-    def test_plan_accept_emits_only_task_completed(
+    def test_ideation_accept_emits_only_task_completed(
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
-        store.create_ideation_task("t-ideate")
-        claim = store.claim("t-ideate", "ideator-w")
-        store.submit("t-ideate", claim.token, IdeaSubmission(status="success"))
-        store.accept("t-ideate")
+        store.create_ideation_task("t-ideation")
+        claim = store.claim("t-ideation", "ideator-w")
+        store.submit("t-ideation", claim.token, IdeaSubmission(status="success"))
+        store.accept("t-ideation")
         types = _type_sequence(store)
-        # ideate-task terminal transitions aren't in the composite list;
+        # ideation-task terminal transitions aren't in the composite list;
         # the only event is task.completed.
         assert types[-1] == "task.completed"

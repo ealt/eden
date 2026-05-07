@@ -29,7 +29,7 @@ from eden_storage import (
 )
 
 
-def _plan_task(experiment_id: str, task_id: str = "t-ideate") -> IdeationTask:
+def _ideation_task(experiment_id: str, task_id: str = "t-ideation") -> IdeationTask:
     return IdeationTask(
         task_id=task_id,
         kind="ideation",
@@ -90,7 +90,7 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
             started_at="2026-04-23T00:00:00.000Z",
         )
     )
-    # Set commit_sha via a round-trip through execute-task dispatch/accept
+    # Set commit_sha via a round-trip through execution-task dispatch/accept
     from eden_storage import VariantSubmission
 
     store.create_execution_task(f"t-bootstrap-{variant_id}", idea_id)
@@ -106,15 +106,15 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
 class TestCreateTaskSpecLiteral:
     """Chapter 8 §1.1: create_task accepts a fully-formed pending task."""
 
-    def test_plan_task_inserted(self, make_store: Callable[..., Store]) -> None:
+    def test_ideation_task_inserted(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
-        task = store.create_task(_plan_task(store.experiment_id))
-        assert task.task_id == "t-ideate"
+        task = store.create_task(_ideation_task(store.experiment_id))
+        assert task.task_id == "t-ideation"
         assert task.state == "pending"
-        assert store.read_task("t-ideate").state == "pending"
+        assert store.read_task("t-ideation").state == "pending"
         assert [e.type for e in store.events()] == ["task.created"]
 
-    def test_implement_task_composite_commits_idea_dispatched(
+    def test_execution_task_composite_commits_idea_dispatched(
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
@@ -130,30 +130,30 @@ class TestCreateTaskSpecLiteral:
     ) -> None:
         store = make_store()
         _ready_idea(store, "p1")
-        _starting_variant_with_commit(store, "tr-1", "p1")
-        store.create_task(_eval_task("t-eval", "tr-1"))
+        _starting_variant_with_commit(store, "variant-1", "p1")
+        store.create_task(_eval_task("t-eval", "variant-1"))
         assert store.read_task("t-eval").state == "pending"
 
     def test_duplicate_task_id_rejected(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
-        store.create_task(_plan_task(store.experiment_id))
+        store.create_task(_ideation_task(store.experiment_id))
         with pytest.raises(AlreadyExists):
-            store.create_task(_plan_task(store.experiment_id))
+            store.create_task(_ideation_task(store.experiment_id))
 
     def test_non_pending_state_rejected(self, make_store: Callable[..., Store]) -> None:
         store = make_store()
-        task = _plan_task(store.experiment_id).model_copy(update={"state": "claimed"})
+        task = _ideation_task(store.experiment_id).model_copy(update={"state": "claimed"})
         with pytest.raises(InvalidPrecondition, match="pending"):
             store.create_task(task)
 
-    def test_implement_without_ready_idea_rejected(
+    def test_execution_submit_without_ready_idea_rejected(
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store()
         with pytest.raises(NotFound):
             store.create_task(_impl_task("t-exec", "does-not-exist"))
 
-    def test_plan_task_cross_experiment_payload_rejected(
+    def test_ideation_task_cross_experiment_payload_rejected(
         self, make_store: Callable[..., Store]
     ) -> None:
         """IdeationPayload.experiment_id MUST match the store's experiment_id.
@@ -164,7 +164,7 @@ class TestCreateTaskSpecLiteral:
         round-1 review).
         """
         store = make_store("exp-a")
-        task = _plan_task("exp-b", "t-ideate")
+        task = _ideation_task("exp-b", "t-ideation")
         with pytest.raises(InvalidPrecondition, match="experiment"):
             store.create_task(task)
 

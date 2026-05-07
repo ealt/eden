@@ -25,7 +25,7 @@ def run_evaluator_loop(
     """
     evaluator = ScriptedEvaluator(
         worker_id=worker_id,
-        evaluate_fn=make_evaluate_fn(
+        evaluation_fn=make_evaluate_fn(
             evaluation_schema=evaluation_schema,
             fail_every=fail_every,
         ),

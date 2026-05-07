@@ -70,7 +70,7 @@ class TestAdminVariantDetailFromEvaluatorFlow:
         assert resp.status_code == 200
         assert "variant-F" in resp.text
         assert "idea-flow" in resp.text
-        # Execute-task events for the parent idea should be in the
+        # Execution-task events for the parent idea should be in the
         # related-events table.
         assert "task.created" in resp.text
 

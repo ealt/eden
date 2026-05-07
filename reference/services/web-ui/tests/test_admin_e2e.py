@@ -179,7 +179,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            seed.create_ideation_task("t-ideate-1")
+            seed.create_ideation_task("t-ideation-1")
         finally:
             seed.close()
 
@@ -194,7 +194,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             csrf = m.group(1)
 
             resp = ui.post(
-                "/ideator/t-ideate-1/claim",
+                "/ideator/t-ideation-1/claim",
                 content=urlencode({"csrf_token": csrf}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -203,10 +203,10 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
 
             resp = ui.get("/admin/tasks/?state=claimed")
             assert resp.status_code == 200, resp.text
-            assert "t-ideate-1" in resp.text
+            assert "t-ideation-1" in resp.text
 
             resp = ui.post(
-                "/admin/tasks/t-ideate-1/reclaim",
+                "/admin/tasks/t-ideation-1/reclaim",
                 content=urlencode({"csrf_token": csrf}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -224,7 +224,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             token=token,
         )
         try:
-            task = verify.read_task("t-ideate-1")
+            task = verify.read_task("t-ideation-1")
             assert task.state == "pending"
             events = verify.replay()
             reclaim_events = [e for e in events if e.type == "task.reclaimed"]

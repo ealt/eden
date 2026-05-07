@@ -63,18 +63,18 @@ def test_reclaim_expired_against_submitted_rejected(wire_client: WireClient) -> 
     assert r.json().get("type") == "eden://error/illegal-transition"
 
 
-def test_implement_reclaim_sets_starting_variant_to_error(
+def test_execution_reclaim_sets_starting_variant_to_error(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
     """spec/v0/04-task-protocol.md §5.4 — implement reclaim composes variant → error."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
-    _seed.claim(wire_client, impl_tid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    _seed.claim(wire_client, exec_tid)
     variant_id = _seed.create_variant(
         wire_client, idea_id=pid, status="starting"
     )
-    r = _seed.reclaim(wire_client, impl_tid, cause="operator")
+    r = _seed.reclaim(wire_client, exec_tid, cause="operator")
     assert 200 <= r.status_code < 300, r.text
     variant = _seed.read_variant(wire_client, variant_id)
     assert variant["status"] == "error"
@@ -82,7 +82,7 @@ def test_implement_reclaim_sets_starting_variant_to_error(
     reclaimed = [
         e
         for e in event_log.find_by_type(events, "task.reclaimed")
-        if e["data"].get("task_id") == impl_tid
+        if e["data"].get("task_id") == exec_tid
     ]
     errored = [
         e

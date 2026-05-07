@@ -76,12 +76,12 @@ Lines emitted before `ready` are treated as debug-only and dropped.
 If `ready` is not received within the host's startup deadline, the
 host kills the subprocess.
 
-### 2.2 Ideate-task dispatch
+### 2.2 Ideation-task dispatch
 
 For each ideation task, the host writes one stdin line of the form:
 
 ```json
-{"event": "ideation", "task_id": "ideate-…", "experiment_id": "exp-1",
+{"event": "ideation", "task_id": "ideation-…", "experiment_id": "exp-1",
  "objective": {"expr": "score", "direction": "maximize"},
  "evaluation_schema": {"score": "real"},
  "history": [
@@ -91,7 +91,7 @@ For each ideation task, the host writes one stdin line of the form:
  ]}
 ```
 
-`history` is a flat list of recently completed evaluate-task
+`history` is a flat list of recently completed evaluation-task
 results, newest first, capped at 50 entries by the reference host.
 
 ### 2.3 Worker response
@@ -101,11 +101,11 @@ exactly one terminator (`ideation-done` or `ideation-error`). All lines
 MUST carry the same `task_id` as the dispatch.
 
 ```json
-{"event": "idea", "task_id": "ideate-…",
+{"event": "idea", "task_id": "ideation-…",
  "slug": "p0", "priority": 1.0,
  "parent_commits": ["abc…"],
  "rationale": "free-form markdown text"}
-{"event": "ideation-done", "task_id": "ideate-…"}
+{"event": "ideation-done", "task_id": "ideation-…"}
 ```
 
 If `rationale` is present, the host writes it to

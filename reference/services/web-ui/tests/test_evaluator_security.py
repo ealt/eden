@@ -190,9 +190,9 @@ class TestArtifactRendering:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        eval_id, _, _ = seed_evaluate_task(store, slug="evil-prop")
+        eval_id, _, _ = seed_evaluate_task(store, slug="evil")
         # Patch the idea's artifacts_uri to a javascript: URI.
-        idea_id = "idea-evil-prop"
+        idea_id = "idea-evil"
         idea = store.read_idea(idea_id)
         # We need to mutate the in-memory store; since ideas are
         # frozen after creation, swap in a new one via the internal

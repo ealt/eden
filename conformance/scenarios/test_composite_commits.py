@@ -1,7 +1,7 @@
 """Composite-commit invariants — chapter 05 §2.2.
 
 Covers the §2.2 composite-commit cases observable through task-store
-wire endpoints (execute-task dispatch, execute-task terminal,
+wire endpoints (execution-task dispatch, execution-task terminal,
 evaluate-terminal cases, retry-exhausted evaluation_error terminalization,
 implement-reclaim with starting variant). The variant-integration §2.2 case
 is covered separately in test_integrate_idempotency.py because the
@@ -35,18 +35,18 @@ def _types_for(events: list[dict], task_or_variant_id: str) -> set[str]:
     }
 
 
-def test_implement_dispatch_atomic(
+def test_execution_dispatch_atomic(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
     """spec/v0/05-event-protocol.md §2.2 — implement create + idea dispatch atomic."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
     events = event_log.replay_all()
     created = [
         e
         for e in event_log.find_by_type(events, "task.created")
-        if e["data"].get("task_id") == impl_tid
+        if e["data"].get("task_id") == exec_tid
     ]
     dispatched = [
         e
@@ -59,10 +59,10 @@ def test_implement_dispatch_atomic(
     assert idea["state"] == "dispatched"
 
 
-def test_implement_terminal_completes_idea(
+def test_execution_terminal_completes_idea(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
-    """spec/v0/05-event-protocol.md §2.2 — execute-task terminal + idea-completed atomic.
+    """spec/v0/05-event-protocol.md §2.2 — execution-task terminal + idea-completed atomic.
 
     Asserts BOTH `task.completed` (on the execution task) AND
     `idea.completed` (on the referenced idea) appear; per
@@ -72,7 +72,7 @@ def test_implement_terminal_completes_idea(
     variant = _seed.read_variant(wire_client, variant_id)
     pid = variant["idea_id"]
     events = event_log.replay_all()
-    impl_completed = [
+    exec_completed = [
         e
         for e in event_log.find_by_type(events, "task.completed")
         if e["data"].get("task_id", "").startswith("execution-")
@@ -82,7 +82,7 @@ def test_implement_terminal_completes_idea(
         for e in event_log.find_by_type(events, "idea.completed")
         if e["data"].get("idea_id") == pid
     ]
-    assert len(impl_completed) == 1, (
+    assert len(exec_completed) == 1, (
         "expected exactly one task.completed for the execution task"
     )
     assert len(completed_props) == 1
@@ -90,7 +90,7 @@ def test_implement_terminal_completes_idea(
     assert idea["state"] == "completed"
 
 
-def test_implement_terminal_fails_idea(
+def test_execution_terminal_fails_idea(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
     """spec/v0/05-event-protocol.md §2.2 — execution task.failed + idea.completed atomic.
@@ -100,22 +100,22 @@ def test_implement_terminal_fails_idea(
     """
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
-    impl_claim = _seed.claim(wire_client, impl_tid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    exec_claim = _seed.claim(wire_client, exec_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
     _seed.submit_variant(
         wire_client,
-        impl_tid,
-        token=impl_claim["token"],
+        exec_tid,
+        token=exec_claim["token"],
         variant_id=variant_id,
         status="error",
     )
-    _seed.reject(wire_client, impl_tid, reason="worker_error")
+    _seed.reject(wire_client, exec_tid, reason="worker_error")
     events = event_log.replay_all()
     failed = [
         e
         for e in event_log.find_by_type(events, "task.failed")
-        if e["data"].get("task_id") == impl_tid
+        if e["data"].get("task_id") == exec_tid
     ]
     assert len(failed) == 1
     completed_props = [
@@ -239,21 +239,21 @@ def test_retry_exhausted_eval_error_terminalization(
     ]
 
 
-def test_implement_reclaim_with_starting_variant(
+def test_execution_reclaim_with_starting_variant(
     wire_client: WireClient, event_log: EventLog
 ) -> None:
     """spec/v0/05-event-protocol.md §2.2 — implement reclaim + variant.errored atomic."""
     pid = _seed.create_idea(wire_client)
     _seed.mark_idea_ready(wire_client, pid)
-    impl_tid = _seed.create_execution_task(wire_client, idea_id=pid)
-    _seed.claim(wire_client, impl_tid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    _seed.claim(wire_client, exec_tid)
     variant_id = _seed.create_variant(wire_client, idea_id=pid, status="starting")
-    _seed.reclaim(wire_client, impl_tid, cause="operator")
+    _seed.reclaim(wire_client, exec_tid, cause="operator")
     events = event_log.replay_all()
     [_reclaimed] = [
         e
         for e in event_log.find_by_type(events, "task.reclaimed")
-        if e["data"].get("task_id") == impl_tid
+        if e["data"].get("task_id") == exec_tid
     ]
     [_errored] = [
         e
