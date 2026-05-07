@@ -1,25 +1,45 @@
 ---
 name: eden-manual-implementer
-description: 'Drive the EDEN implementer role end-to-end from the terminal — claim, clone at parent, let user edit, then commit/push/submit via CLI. Trigger phrases: "play implementer", "implement a proposal", "act as implementer", "I want to implement".'
+description: 'Drive the EDEN executor role end-to-end from the terminal — claim, clone at parent, let user edit, then commit/push/submit via CLI. Trigger phrases: "play executor", "play implementer", "execute an idea", "implement a proposal", "act as executor", "I want to execute", "I want to implement".'
 ---
 
-# EDEN Manual — Implementer Role (CLI)
+# EDEN Manual — Executor Role (CLI)
+
+(Terminology note: "executor" is the canonical role name per
+[`docs/glossary.md`](../../../docs/glossary.md). Older skill references
+to "implementer" / "trial" / "implement task" map to executor / variant /
+execution task. Trigger phrases keep both forms during the transition.)
 
 ## When to use
 
 User is running the EDEN reference Compose stack with no automated
-implementer-host and wants to play the implementer role from the terminal.
+executor-host and wants to play the executor role from the terminal.
 Trigger phrases above.
 
-## What "implementer" means
+## What "executor" means
 
-The implementer takes one `implement` task (which references a proposal),
-realizes the proposal as a git commit on top of `proposal.parent_commits`,
-pushes that commit + the canonical `work/<slug>-<trial_id>` ref to gitea,
-and records the trial.
+The executor takes one `execution` task (which references an idea),
+realizes the idea as a git commit on top of `idea.parent_commits`,
+pushes that commit + the canonical `work/<slug>-<variant_id>` ref to
+gitea, and records the variant.
 
 Everything below runs from the terminal. Don't ask the user to open the
-web UI.
+web UI unless the CLI gap below bites.
+
+## CLI rename gap (current limitation)
+
+The `eden-manual` CLI script under `reference/scripts/manual-ui/` has
+not yet been updated for the directed-evolution vocab rename. It still
+uses the legacy `--kind plan/implement/evaluate`, `plan-submit`,
+`implement-submit`, and `eval_error` spellings. The wire and web UI are
+fully on canonical vocab. Until the CLI catches up:
+
+- The commands in this skill below use the canonical vocab. If a
+  subcommand or `--kind` value is rejected by `eden-manual` as
+  "unknown", you've hit the gap.
+- Workaround for the gap: drive the role flow through
+  http://localhost:8090/executor/ in a browser. The web UI is on
+  canonical vocab and works end-to-end.
 
 ## Workflow
 
@@ -30,11 +50,11 @@ EDEN=/Users/ericalt/Documents/eden-worktrees/test-main/reference/scripts/manual-
 ### Phase 1: Pick a task (automatic)
 
 ```bash
-$EDEN list-tasks --kind implement --state pending
+$EDEN list-tasks --kind execution --state pending
 ```
 
 Default: pick the first pending. If zero pending, suggest the user play
-planner first.
+ideator first.
 
 ### Phase 2: Inspect (automatic)
 
@@ -42,9 +62,9 @@ planner first.
 $EDEN show <task-id>
 ```
 
-This returns task + proposal + (if reachable) inline rationale text.
+This returns task + idea + (if reachable) inline rationale text.
 Present a digest:
-- proposal slug, priority, parent_commits
+- idea slug, priority, parent_commits
 - the **rationale text in full** — the user needs to see the spec
 - the experiment's objective from `experiment-config.yaml`
 
@@ -54,8 +74,8 @@ Present a digest:
 $EDEN claim <task-id> --worker-id eden-manual
 ```
 
-Token + trial_id are persisted to `/tmp/eden-manual/.claims.json`. The
-trial_id is stable for the life of this claim.
+Token + variant_id are persisted to `/tmp/eden-manual/.claims.json`.
+The variant_id is stable for the life of this claim.
 
 ### Phase 4: Clone at the parent commit (automatic)
 
@@ -64,7 +84,7 @@ $EDEN checkout <task-id>
 ```
 
 Clones gitea (with creds embedded) into `/tmp/eden-manual/<task-id>` and
-checks out `proposal.parent_commits[0]` in detached HEAD. Surface the
+checks out `idea.parent_commits[0]` in detached HEAD. Surface the
 workdir path.
 
 Offer to open it in the user's editor — ask "Cursor or VS Code?" if you
@@ -78,7 +98,7 @@ cursor /tmp/eden-manual/<task-id>
 ### Phase 5: Wait for the user (judgment)
 
 Wait for the user to say "done" / "ready to submit" / similar. Don't
-write code unless the user explicitly asks — the user IS the implementer.
+write code unless the user explicitly asks — the user IS the executor.
 
 When they're ready, optionally show what's about to be committed:
 
@@ -89,9 +109,9 @@ git -C /tmp/eden-manual/<task-id> diff --stat
 
 ### Phase 6: Commit + push + submit (automatic)
 
-Ask the user briefly for a commit message (default: derive from
-proposal slug, e.g. "implement: <slug>"). Use `proposal.slug` as the
-local branch name to mirror the canonical work-branch shape.
+Ask the user briefly for a commit message (default: derive from idea
+slug, e.g. "execute: <slug>"). Use `idea.slug` as the local branch name
+to mirror the canonical work-branch shape.
 
 ```bash
 $EDEN push /tmp/eden-manual/<task-id> --branch <slug> --message "<msg>"
@@ -100,40 +120,41 @@ $EDEN push /tmp/eden-manual/<task-id> --branch <slug> --message "<msg>"
 Capture the SHA from the JSON output. Then submit:
 
 ```bash
-$EDEN implement-submit <task-id> --sha <sha> --description "<short note>"
+$EDEN execution-submit <task-id> --sha <sha> --description "<short note>"
 ```
 
 This:
 1. Fetches origin in the workdir.
 2. Verifies commit exists + descends from declared parent_commits.
-3. Creates a `Trial(starting, branch=work/<slug>-<trial_id>, commit_sha=<sha>)`
-   in the store.
-4. Pushes `<sha>:refs/heads/work/<slug>-<trial_id>` to gitea.
-5. Submits the implement task with status=success.
+3. Creates a `Variant(starting, branch=work/<slug>-<variant_id>,
+   commit_sha=<sha>)` in the store.
+4. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to gitea.
+5. Submits the execution task with status=success.
 
 ### Phase 7: Verify (automatic)
 
-The orchestrator dispatches an `evaluate` task within ~1 second; the
-trial transitions to `success` when the evaluator submits, and the
-integrator promotes only after that.
+The orchestrator dispatches an `evaluation` task within ~1 second; the
+variant transitions to `success` when the evaluator submits, and the
+integrator integrates it only after that.
 
 ```bash
-$EDEN list-tasks --kind evaluate --state pending
+$EDEN list-tasks --kind evaluation --state pending
 ```
 
-Confirm an evaluate task for *this* trial appeared. Note the task_id —
-the user can play evaluator next via `/eden-manual-evaluator`.
+Confirm an evaluation task for *this* variant appeared. Note the
+task_id — the user can play evaluator next via `/eden-manual-evaluator`.
 
 ## Best practices
 
 - **Don't pre-empt the user's code changes.** The whole value of the
-  manual implementer is human judgment. Wait for "done".
-- **Use `proposal.slug` as the local branch name.** It matches the
-  canonical work-branch shape and avoids confusion when looking at gitea.
-- **Errors after `claim` but before `implement-submit`** leave the task
+  manual executor is human judgment. Wait for "done".
+- **Use `idea.slug` as the local branch name.** It matches the
+  canonical work-branch shape and avoids confusion when looking at
+  gitea.
+- **Errors after `claim` but before `execution-submit`** leave the task
   claimed. The orchestrator's expired-claim sweeper recovers it
   automatically when `--ttl-seconds` is set; without TTL, use
   admin-reclaim or the `tasks/<id>/reclaim` wire endpoint.
 - **If reachability check fails** (`commit X not reachable in workdir`):
   the user almost certainly forgot to push. Run `git -C <workdir> push
-  origin <branch>` and retry implement-submit.
+  origin <branch>` and retry execution-submit.

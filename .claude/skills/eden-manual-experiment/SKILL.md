@@ -56,12 +56,12 @@ Ask the user — concisely, one prompt — for:
 
 2. **Experiment config** (required). Default: the fixture at
    `tests/fixtures/experiment/.eden/config.yaml`. If the user wants a
-   custom objective / metrics_schema, they need a YAML at that shape;
+   custom objective / evaluation_schema, they need a YAML at that shape;
    if they have one, ask for the path. If not, default to the fixture
    and note that.
 
 3. **Seed contents** (optional). Three choices:
-   - Empty stub (no `--seed-from`) — every trial starts from a blank repo.
+   - Empty stub (no `--seed-from`) — every variant starts from a blank repo.
      Good for "build me a thing" experiments.
    - `--seed-from <host-dir>` — snapshot of an existing host directory.
      If the source is a git repo, honors its `.gitignore` (skips
@@ -157,14 +157,14 @@ service start.
 
 - Before experimenting with a destructive action you might want to roll
   back from.
-- At known-good milestones (e.g., "after first integrated trial").
+- At known-good milestones (e.g., "after first integrated variant").
 - Before tearing down for a context switch.
 
 ### What checkpoint does NOT capture
 
 - The manual-CLI scratch state (`/tmp/eden-manual/`) — operator's local
   claim cache. Reproducible from postgres state if needed.
-- Worker repo clones (`eden-{orchestrator,implementer,evaluator,web-ui}-repo`).
+- Worker repo clones (`eden-{orchestrator,executor,evaluator,web-ui}-repo`).
   These are derivative; rebuilt from gitea on next service start.
 - In-memory state on running services (web-ui session cookies, etc.).
   Lost on container restart by design.
