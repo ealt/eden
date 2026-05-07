@@ -52,7 +52,7 @@ The v1 scenario groups, with their primary spec citations:
 | Per-type event payloads | Each registered type's required fields. | [`05-event-protocol.md`](05-event-protocol.md) §3 |
 | Composite commits | Execution-task dispatch, execution-task terminal, evaluate-terminal cases, retry-exhausted `evaluation_error` terminalization, execution-task reclaim with in-flight variant. | [`04-task-protocol.md`](04-task-protocol.md) §4.3; [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
 | Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §6.2 |
-| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §7 status mappings exercised through duplicate-create / bad-request paths and the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §2, §3, §4, §5, §6, §7 |
+| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §7 status mappings exercised through duplicate-create / bad-request paths, the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding, and the [`07-wire-protocol.md`](07-wire-protocol.md) §1.1 empty-body rule on 2xx responses without a payload. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §1.1, §2, §3, §4, §5, §6, §7 |
 | Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
 | Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
@@ -65,7 +65,7 @@ The v1+roles scenario groups (added in chunk 11c), with their primary spec citat
 | Group | Scope | Spec citations |
 |---|---|---|
 | Ideator submission | Drafting-idea precondition; status vocabulary; idea-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
-| Executor submission | Submission-shape preconditions; variant-binding; status vocabulary. | [`03-roles.md`](03-roles.md) §3.4 |
+| Executor submission | Submission-shape preconditions; variant-binding; status vocabulary; worker-branch uniqueness. | [`03-roles.md`](03-roles.md) §3.3, §3.4 |
 | Evaluator submission | Status vocabulary; evaluation-schema validation; per-status variant-side writes; evaluation_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
 
 The v1+roles+integrator scenario groups (added in chunk 11d), with their primary spec citations:

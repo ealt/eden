@@ -121,6 +121,40 @@ def test_replay_returns_200_with_cursor(wire_client: WireClient) -> None:
     assert isinstance(body.get("cursor"), int)
 
 
+def test_integrate_success_response_body_is_empty(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §1.1 — empty 2xx responses MUST NOT carry a body.
+
+    The §5 integrate-variant endpoint is documented to respond
+    `200, empty body` on success and on same-value idempotent retries.
+    The transport-level §1.1 MUST forbids any payload on such empty
+    responses (a regression that emitted `null` or `{}` would
+    masquerade as a body and violate the rule). Asserts both that
+    the response carries zero bytes and — when the server advertises
+    a length — that `Content-Length: 0`.
+    """
+    variant_id = _seed.drive_to_success_variant(wire_client)
+    sha = "a" * 40
+    r = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha=sha)
+    assert 200 <= r.status_code < 300, r.text
+    assert r.content == b"", (
+        f"spec/v0/07-wire-protocol.md §1.1 forbids body on empty 2xx "
+        f"responses; integrate /accept returned {r.content!r}"
+    )
+    cl = r.headers.get("content-length")
+    if cl is not None:
+        assert cl == "0", (
+            f"Content-Length must be 0 on empty 2xx; got {cl!r}"
+        )
+    # The §5 same-value idempotent retry MUST also return an empty
+    # body — the rule is on the response shape, not on the first call.
+    r2 = _seed.integrate_variant(wire_client, variant_id, variant_commit_sha=sha)
+    assert 200 <= r2.status_code < 300, r2.text
+    assert r2.content == b"", (
+        f"spec/v0/07-wire-protocol.md §1.1 forbids body on empty 2xx "
+        f"responses; integrate /accept idempotent retry returned {r2.content!r}"
+    )
+
+
 def test_reclaim_cause_vocabulary_closed(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.6 — invalid reclaim cause returns 400 bad-request.
 
