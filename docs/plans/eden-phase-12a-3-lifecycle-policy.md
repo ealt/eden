@@ -112,7 +112,7 @@ discipline" section apply unchanged. Specific check for this
 chunk: `termination` (noun/verb) and `terminated` (state) are the
 canonical forms; "abort" / "halt" / "stop" are NOT used as
 synonyms for the experiment-level transition (they may still
-appear in policy callable names like `abort_on_eval_error_rate`,
+appear in policy callable names like `abort_on_evaluation_error_rate`,
 where "abort" is the policy author's word, not a spec term).
 
 ## 2. Decisions

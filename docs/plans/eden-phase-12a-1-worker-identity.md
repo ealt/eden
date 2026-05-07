@@ -1024,7 +1024,7 @@ step 2 and come back green around step 8.
   because it depends on the orchestrator-as-role contract.
 - **`intended_executor` hint on ideas** (12a-3). Per §D.4 there's
   no `intended_executor` field on ideas in 12a-1; it lands in
-  12a-3 alongside the operator-driven ideate-task creation flow.
+  12a-3 alongside the operator-driven ideation-task creation flow.
 - **Per-decision dispatch_mode flags** (12a-2). Tasks gain
   `target` here, but the orchestrator doesn't yet honor a
   per-decision-type opt-out for auto-dispatch.
