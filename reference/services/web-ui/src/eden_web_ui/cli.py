@@ -118,6 +118,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "informational — affects only template rendering."
         ),
     )
+    parser.add_argument(
+        "--base-commit-sha",
+        default=None,
+        help=(
+            "Optional seed/base commit SHA written by setup-experiment "
+            "(EDEN_BASE_COMMIT_SHA). Surfaced on the ideator page as a "
+            "click-to-copy hint for the parent_commits field. Purely "
+            "informational — affects only template rendering."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -191,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         secure_cookies=args.secure_cookies,
         repo=repo,
         clone_url=args.clone_url,
+        base_commit_sha=args.base_commit_sha,
     )
     uv_config = uvicorn.Config(
         app,

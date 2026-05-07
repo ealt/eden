@@ -74,6 +74,39 @@ def client(app: FastAPI) -> Iterator[TestClient]:
         yield c
 
 
+BASE_SHA_FIXTURE = "a" * 40
+
+
+@pytest.fixture
+def app_with_base_sha(
+    store: InMemoryStore, artifacts_dir: Path
+) -> FastAPI:
+    """``app`` plus a ``base_commit_sha`` so the parent_commits hint
+    panel renders with a base SHA. Issue #52."""
+    return make_app(
+        store=store,
+        experiment_id=EXPERIMENT_ID,
+        experiment_config=_config(),
+        worker_id=WORKER_ID,
+        session_secret=SESSION_SECRET,
+        claim_ttl_seconds=3600,
+        artifacts_dir=artifacts_dir,
+        secure_cookies=False,
+        now=_now,
+        base_commit_sha=BASE_SHA_FIXTURE,
+    )
+
+
+@pytest.fixture
+def signed_in_client_with_base_sha(
+    app_with_base_sha: FastAPI,
+) -> Iterator[TestClient]:
+    with TestClient(app_with_base_sha) as c:
+        resp = c.post("/signin", follow_redirects=False)
+        assert resp.status_code == 303
+        yield c
+
+
 @pytest.fixture
 def signed_in_client(client: TestClient) -> TestClient:
     """A client that has POSTed /signin and holds a fresh session cookie."""
@@ -155,6 +188,29 @@ def exec_app(
     )
 
 
+GITEA_CLONE_URL_FIXTURE = "http://localhost:3001/eden/exp-web-ui.git"
+
+
+@pytest.fixture
+def exec_app_with_clone_url(
+    store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
+) -> FastAPI:
+    """``exec_app`` plus a ``clone_url`` so the gitea instructions render."""
+    return make_app(
+        store=store,
+        experiment_id=EXPERIMENT_ID,
+        experiment_config=_config(),
+        worker_id=WORKER_ID,
+        session_secret=SESSION_SECRET,
+        claim_ttl_seconds=3600,
+        artifacts_dir=artifacts_dir,
+        secure_cookies=False,
+        now=_now,
+        repo=bare_repo,
+        clone_url=GITEA_CLONE_URL_FIXTURE,
+    )
+
+
 @pytest.fixture
 def exec_client(exec_app: FastAPI) -> Iterator[TestClient]:
     with TestClient(exec_app) as c:
@@ -166,6 +222,16 @@ def signed_in_impl_client(exec_client: TestClient) -> TestClient:
     resp = exec_client.post("/signin", follow_redirects=False)
     assert resp.status_code == 303
     return exec_client
+
+
+@pytest.fixture
+def signed_in_impl_client_with_clone_url(
+    exec_app_with_clone_url: FastAPI,
+) -> Iterator[TestClient]:
+    with TestClient(exec_app_with_clone_url) as c:
+        resp = c.post("/signin", follow_redirects=False)
+        assert resp.status_code == 303
+        yield c
 
 
 def seed_implement_task(

@@ -109,3 +109,38 @@ button.danger { background: var(--error); }
 }
 .actions { display: flex; gap: 0.5rem; }
 .actions button { min-width: 10rem; }
+
+/* Issue #52: parent_commits hint panel + click-to-copy chip. */
+.parent-commits-hints {
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.02);
+}
+.parent-commits-hints h3 { margin-top: 0.75rem; font-size: 1em; }
+.parent-commits-hints table {
+    margin-top: 0.4rem;
+    font-size: 0.9em;
+    border-collapse: collapse;
+}
+.parent-commits-hints th,
+.parent-commits-hints td {
+    text-align: left;
+    padding: 0.2rem 0.6rem 0.2rem 0;
+}
+.hint-row-muted { color: #777; font-style: italic; }
+.copyable-sha {
+    cursor: pointer;
+    user-select: all;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.06);
+    transition: background 0.15s;
+}
+.copyable-sha:hover,
+.copyable-sha:focus {
+    background: rgba(0, 0, 0, 0.12);
+    outline: none;
+}
+.copyable-sha.copied { background: #b9f1c1; }

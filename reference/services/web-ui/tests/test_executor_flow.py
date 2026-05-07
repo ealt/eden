@@ -221,6 +221,114 @@ class TestErrorSubmission:
         assert variant.status == "error"
 
 
+class TestFetchBeforeCommitExists:
+    """Issue #53: ``submit`` must call ``repo.fetch_all_heads()`` before
+    ``repo.commit_exists(...)`` so a SHA the user just pushed to gitea
+    is visible in the web-ui's local clone.
+
+    Mirrors the integrator's per-integrate fetch (Phase 10d follow-up B).
+    """
+
+    def test_fetch_runs_before_commit_exists_on_success_submit(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        bare_repo: GitRepo,
+        base_sha: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Force the "origin is configured" arm regardless of the test
+        # repo's actual remote config.
+        monkeypatch.setattr(
+            executor_routes, "_repo_has_origin", lambda _repo: True
+        )
+
+        calls: list[str] = []
+        # Simulate "remote has the SHA but local clone hasn't fetched
+        # yet": commit_exists returns False until fetch_all_heads runs,
+        # then True. If submit calls commit_exists BEFORE fetch_all_heads,
+        # validation fails and the test fails loudly.
+        fetched = {"done": False}
+        real_commit_exists = bare_repo.commit_exists
+
+        def spy_fetch_all_heads() -> None:
+            calls.append("fetch_all_heads")
+            fetched["done"] = True
+
+        def spy_commit_exists(sha: str) -> bool:
+            calls.append("commit_exists")
+            if not fetched["done"]:
+                return False
+            return real_commit_exists(sha)
+
+        monkeypatch.setattr(bare_repo, "fetch_all_heads", spy_fetch_all_heads)
+        monkeypatch.setattr(bare_repo, "commit_exists", spy_commit_exists)
+        # Stub push_ref: the test fixture's bare repo has no real
+        # origin, but _repo_has_origin is forced True above, so the
+        # route would try to push.  No-op the push so the success path
+        # reaches the assertions.
+        monkeypatch.setattr(bare_repo, "push_ref", lambda _ref: None)
+
+        task_id = _claim(signed_in_impl_client, store, base_sha, slug="fetchy")
+        csrf = get_csrf(signed_in_impl_client)
+        child_sha = make_child_commit(bare_repo, base_sha, "fetchy-tip")
+
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/executor/{task_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("commit_sha", child_sha),
+                ("description", ""),
+            ],
+        )
+        assert resp.status_code == 200, resp.text
+        # fetch_all_heads MUST appear before the first commit_exists call.
+        assert "fetch_all_heads" in calls, calls
+        first_fetch = calls.index("fetch_all_heads")
+        first_check = calls.index("commit_exists")
+        assert first_fetch < first_check, calls
+
+    def test_fetch_skipped_when_no_origin_configured(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        bare_repo: GitRepo,
+        base_sha: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # When the local clone has no origin remote (e.g. dev-only
+        # standalone deployment), skip the fetch — there is no remote
+        # to fetch from and an erroring fetch would be noise.
+        monkeypatch.setattr(
+            executor_routes, "_repo_has_origin", lambda _repo: False
+        )
+        called = {"fetch": False}
+
+        def spy_fetch_all_heads() -> None:
+            called["fetch"] = True
+
+        monkeypatch.setattr(bare_repo, "fetch_all_heads", spy_fetch_all_heads)
+
+        task_id = _claim(signed_in_impl_client, store, base_sha, slug="noorig")
+        csrf = get_csrf(signed_in_impl_client)
+        child_sha = make_child_commit(bare_repo, base_sha, "noorig-tip")
+
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/executor/{task_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("commit_sha", child_sha),
+                ("description", ""),
+            ],
+        )
+        assert resp.status_code == 200, resp.text
+        assert called["fetch"] is False
+
+
 class TestPerSessionClaimIsolation:
     def test_second_session_cannot_draft_first_sessions_claim(
         self,

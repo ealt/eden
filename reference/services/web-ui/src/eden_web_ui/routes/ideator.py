@@ -71,6 +71,36 @@ def _list_recent_variants(store: Any, *, limit: int = 20) -> list[Any]:
     return items[-limit:]
 
 
+def _list_recent_integrated_variants(
+    store: Any, *, limit: int = 10
+) -> list[Any]:
+    """Return the most recent variants with a ``variant_commit_sha`` set.
+
+    Surfaces SHAs the operator can paste into the ideator form's
+    ``parent_commits`` field. Filters to ``status == "success"`` AND
+    ``variant_commit_sha is not None`` — i.e. variants the integrator
+    has produced a canonical squash commit for, per chapter 6 §3.4.
+    """
+    items = store.list_variants(status="success")
+    integrated = [v for v in items if v.variant_commit_sha is not None]
+    return integrated[-limit:]
+
+
+def _hint_context(request: Any, store: Any) -> dict[str, Any]:
+    """Shared parent_commits-hint context for ideator pages.
+
+    Returns ``{"base_commit_sha", "integrated_variants"}`` — the
+    seed/base SHA from the deployment env (CLI ``--base-commit-sha``)
+    and the most recent integrated variant SHAs. Both are intended
+    as click-to-copy hints for the ``parent_commits`` field. Either
+    may be empty/None in degenerate deployments.
+    """
+    return {
+        "base_commit_sha": getattr(request.app.state, "base_commit_sha", None),
+        "integrated_variants": _list_recent_integrated_variants(store),
+    }
+
+
 @router.get("/", response_class=HTMLResponse, response_model=None)
 async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
@@ -79,18 +109,20 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     store = request.app.state.store
     pending = store.list_tasks(kind="ideation", state="pending")
     config = request.app.state.experiment_config
+    ctx: dict[str, Any] = {
+        "session": session,
+        "pending": pending,
+        "objective": config.objective,
+        "evaluation_schema": config.evaluation_schema.root,
+        "recent_ideas": _list_recent_ideas(store),
+        "recent_variants": _list_recent_variants(store),
+        "banner": request.query_params.get("banner"),
+    }
+    ctx.update(_hint_context(request, store))
     return request.app.state.templates.TemplateResponse(
         request,
         "ideator_list.html",
-        {
-            "session": session,
-            "pending": pending,
-            "objective": config.objective,
-            "evaluation_schema": config.evaluation_schema.root,
-            "recent_ideas": _list_recent_ideas(store),
-            "recent_variants": _list_recent_variants(store),
-            "banner": request.query_params.get("banner"),
-        },
+        ctx,
     )
 
 
@@ -134,18 +166,21 @@ async def draft_form(
     config = request.app.state.experiment_config
     buffered = _DRAFT_BUFFERS.get(_claim_key(session.csrf, task_id))
     form_state = buffered if buffered else [_empty_row()]
+    store = request.app.state.store
+    ctx: dict[str, Any] = {
+        "session": session,
+        "task_id": task_id,
+        "objective": config.objective,
+        "evaluation_schema": config.evaluation_schema.root,
+        "errors": None,
+        "form_state": form_state,
+        "row_indices": list(range(len(form_state))),
+    }
+    ctx.update(_hint_context(request, store))
     return request.app.state.templates.TemplateResponse(
         request,
         "ideator_claim.html",
-        {
-            "session": session,
-            "task_id": task_id,
-            "objective": config.objective,
-            "evaluation_schema": config.evaluation_schema.root,
-            "errors": None,
-            "form_state": form_state,
-            "row_indices": list(range(len(form_state))),
-        },
+        ctx,
     )
 
 
@@ -207,18 +242,21 @@ async def add_row(task_id: str, request: Request):
         )
 
     config = request.app.state.experiment_config
+    store = request.app.state.store
+    ctx: dict[str, Any] = {
+        "session": session,
+        "task_id": task_id,
+        "objective": config.objective,
+        "evaluation_schema": config.evaluation_schema.root,
+        "errors": None,
+        "form_state": state,
+        "row_indices": list(range(len(state))),
+    }
+    ctx.update(_hint_context(request, store))
     return request.app.state.templates.TemplateResponse(
         request,
         "ideator_claim.html",
-        {
-            "session": session,
-            "task_id": task_id,
-            "objective": config.objective,
-            "evaluation_schema": config.evaluation_schema.root,
-            "errors": None,
-            "form_state": state,
-            "row_indices": list(range(len(state))),
-        },
+        ctx,
     )
 
 
@@ -263,18 +301,20 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         # Buffer typed state so a navigation away + return to GET
         # /draft re-hydrates the form (issue #2 in MANUAL_UI_ISSUES).
         _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
+        ctx: dict[str, Any] = {
+            "session": session,
+            "task_id": task_id,
+            "objective": config.objective,
+            "evaluation_schema": config.evaluation_schema.root,
+            "errors": errors,
+            "form_state": form_state,
+            "row_indices": list(range(max(1, len(slugs) or 1))),
+        }
+        ctx.update(_hint_context(request, store))
         return request.app.state.templates.TemplateResponse(
             request,
             "ideator_claim.html",
-            {
-                "session": session,
-                "task_id": task_id,
-                "objective": config.objective,
-                "evaluation_schema": config.evaluation_schema.root,
-                "errors": errors,
-                "form_state": form_state,
-                "row_indices": list(range(max(1, len(slugs) or 1))),
-            },
+            ctx,
             status_code=400,
         )
 

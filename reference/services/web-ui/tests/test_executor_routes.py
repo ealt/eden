@@ -11,6 +11,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 from conftest import (
+    GITEA_CLONE_URL_FIXTURE,
     get_csrf,
     seed_implement_task,
 )
@@ -275,3 +276,79 @@ class TestRepoExposure:
         )
         resp = signed_in_impl_client.get(f"/executor/{task_id}/draft")
         assert str(bare_repo.path) in resp.text
+
+
+class TestCloneUrlInstructions:
+    """Issue #54: instructions must point at the gitea remote, not the
+    container-internal bare-repo path. When ``clone_url`` is configured
+    (the production / Compose path), the rendered instructions show the
+    clone URL and do NOT reference the in-container bare-repo path as
+    a push destination."""
+
+    def _claim(
+        self,
+        client: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+        slug: str = "demo",
+    ) -> str:
+        task_id, _ = seed_implement_task(store, base_sha=base_sha, slug=slug)
+        csrf = get_csrf(client)
+        resp = _post_form(
+            client,
+            f"/executor/{task_id}/claim",
+            [("csrf_token", csrf)],
+        )
+        assert resp.status_code == 303
+        return task_id
+
+    def test_clone_url_renders_clone_command(
+        self,
+        signed_in_impl_client_with_clone_url: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        task_id = self._claim(
+            signed_in_impl_client_with_clone_url, store, base_sha
+        )
+        resp = signed_in_impl_client_with_clone_url.get(
+            f"/executor/{task_id}/draft"
+        )
+        assert resp.status_code == 200
+        assert GITEA_CLONE_URL_FIXTURE in resp.text
+        assert "git clone" in resp.text
+        assert "git push origin" in resp.text
+
+    def test_clone_url_block_does_not_advertise_legacy_push_path(
+        self,
+        signed_in_impl_client_with_clone_url: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        task_id = self._claim(
+            signed_in_impl_client_with_clone_url, store, base_sha
+        )
+        resp = signed_in_impl_client_with_clone_url.get(
+            f"/executor/{task_id}/draft"
+        )
+        assert resp.status_code == 200
+        # The legacy instruction "Push your tip commit ... to the bare
+        # repo at <container path>" must not appear when clone_url is
+        # configured.  Issue #54.
+        assert "Push your tip commit" not in resp.text
+        assert "/var/lib/eden/repo" not in resp.text
+
+    def test_no_clone_url_warns_about_missing_clone_endpoint(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        task_id = self._claim(signed_in_impl_client, store, base_sha)
+        resp = signed_in_impl_client.get(f"/executor/{task_id}/draft")
+        assert resp.status_code == 200
+        # Fallback path: clearly tells the operator the deployment is
+        # incomplete rather than instructing the user to push to a
+        # local-fs path.
+        assert "no <code>--clone-url</code> configured" in resp.text
+        assert "not a URL you can push to from a workstation" in resp.text
