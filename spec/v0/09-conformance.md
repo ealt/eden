@@ -17,7 +17,7 @@ An IUT MUST:
 - Expose the chapter-7 HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md)) at a deployment-chosen base URL.
 - Accept an experiment configuration whose shape matches [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json).
 
-Anything else — language, deployment topology, persistence, auth scheme, scaling profile — is a deployment choice. Further latitude is enumerated in [`07-wire-protocol.md`](07-wire-protocol.md) §11.
+Anything else — language, deployment topology, persistence, scaling profile — is a deployment choice. The [`07-wire-protocol.md`](07-wire-protocol.md) §13 authentication scheme is normative as of 12a-1; further latitude is enumerated in [`07-wire-protocol.md`](07-wire-protocol.md) §14.
 
 ## 3. Assertion vocabulary
 
@@ -51,10 +51,10 @@ The v1 scenario groups, with their primary spec citations:
 | Event envelope | Envelope shape; uniqueness. | [`05-event-protocol.md`](05-event-protocol.md) §1, §1.1 |
 | Per-type event payloads | Each registered type's required fields. | [`05-event-protocol.md`](05-event-protocol.md) §3 |
 | Composite commits | Execution-task dispatch, execution-task terminal, evaluate-terminal cases, retry-exhausted `evaluation_error` terminalization, execution-task reclaim with in-flight variant. | [`04-task-protocol.md`](04-task-protocol.md) §4.3; [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
-| Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §6.2 |
-| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §7 status mappings exercised through duplicate-create / bad-request paths, the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding, and the [`07-wire-protocol.md`](07-wire-protocol.md) §1.1 empty-body rule on 2xx responses without a payload. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §1.1, §2, §3, §4, §5, §6, §7 |
-| Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
-| Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
+| Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §8.2 |
+| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §9 status mappings exercised through duplicate-create / bad-request paths, the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding, and the [`07-wire-protocol.md`](07-wire-protocol.md) §1.1 empty-body rule on 2xx responses without a payload. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §1.1, §2, §3, §4, §5, §8, §9 |
+| Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §9 |
+| Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §9 |
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
 | Integrate idempotency | Same-value / different-value / preconditions. | [`07-wire-protocol.md`](07-wire-protocol.md) §5 |
 

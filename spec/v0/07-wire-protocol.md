@@ -49,11 +49,13 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 
 ### 2.3 Claim
 
-`POST /v0/experiments/{E}/tasks/{T}/claim` accepts a JSON body with at minimum the field `worker_id` and an OPTIONAL `expires_at` timestamp. On success the server returns 200 with a `claim` object matching the shape from [`02-data-model.md`](02-data-model.md) §3.4 (see also [`schemas/task.schema.json`](schemas/task.schema.json)) — notably including the fresh `token`. On a non-`pending` task the server returns 409 `eden://error/illegal-transition`. The claim-token secrecy rule ([`04-task-protocol.md`](04-task-protocol.md) §3.2) implies that intermediary proxies and logs MUST NOT persist claim tokens in plaintext; that is a deployment concern and the binding does not enforce it.
+`POST /v0/experiments/{E}/tasks/{T}/claim` accepts a JSON body with an OPTIONAL `expires_at` timestamp. The claimant's `worker_id` is taken from the authenticated bearer (§13); the server MUST NOT accept a `worker_id` field in the request body that disagrees with the authenticated identity. On success the server returns 200 with a `claim` object matching the shape from [`02-data-model.md`](02-data-model.md) §3.4 (see also [`schemas/task.schema.json`](schemas/task.schema.json)). The [`04-task-protocol.md`](04-task-protocol.md) §3.5 target-eligibility check is performed atomically with the claim write: a non-`pending` task returns 409 `eden://error/illegal-transition`; a non-registered authenticated worker returns 403 `eden://error/worker-not-registered`; a registered worker who fails the target check returns 403 `eden://error/worker-not-eligible`.
 
 ### 2.4 Submit
 
-`POST /v0/experiments/{E}/tasks/{T}/submit` accepts a JSON body containing the current `token` and a role-specific `payload` (matching the claim's task `kind`). Atomicity, idempotency, and content-equivalence rules from [`04-task-protocol.md`](04-task-protocol.md) §4 apply unchanged. A resubmit with a content-equivalent payload MUST return 200; a resubmit with a divergent payload MUST return 409 `eden://error/conflicting-resubmission`. A wrong token MUST return 403 `eden://error/wrong-token`.
+`POST /v0/experiments/{E}/tasks/{T}/submit` accepts a JSON body containing only the role-specific `payload` (matching the claim's task `kind`). The submitting `worker_id` is taken from the authenticated bearer (§13); the server MUST forward the authenticated `worker_id` to `Store.submit(task_id, worker_id, payload)`, which performs the [`04-task-protocol.md`](04-task-protocol.md) §4.1 atomic claim-match. The binding MUST NOT issue its own pre-flight `read_task → compare` check (the prior token model has been removed; see [`04-task-protocol.md`](04-task-protocol.md) §4.1).
+
+Atomicity, idempotency, and content-equivalence rules from [`04-task-protocol.md`](04-task-protocol.md) §4 apply unchanged. A resubmit by the same authenticated worker with a content-equivalent payload MUST return 200; a resubmit with a divergent payload MUST return 409 `eden://error/conflicting-resubmission`. A submit by a different authenticated worker than the recorded claimant MUST return 403 `eden://error/wrong-claimant`. A submit against a task whose `claim` has been cleared (because of reclamation or a terminal transition) MUST return 409 `eden://error/not-claimed`.
 
 ### 2.5 Accept and reject
 
@@ -102,14 +104,75 @@ A client that issues `integrate_variant` and does not receive a 2xx response (co
 - observed `variant_commit_sha` is set but differs → raise the same atomicity-violation error the server would have;
 - observed `variant_commit_sha` is absent, or the read-back itself fails → raise an indeterminate-result error. Absence does **not** prove the request failed; it may still be in flight.
 
-## 6. Event log
+## 6. Worker registry operations
+
+Per-experiment worker registry endpoints. Mutating operations are admin-gated (§13.3); read operations are accessible to any authenticated principal — admin or registered worker — for the experiment.
+
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `register_worker` | `POST` | `/v0/experiments/{E}/workers` | admin |
+| `list_workers` | `GET` | `/v0/experiments/{E}/workers` | admin or worker |
+| `read_worker` | `GET` | `/v0/experiments/{E}/workers/{W}` | admin or worker |
+| `reissue_credential` | `POST` | `/v0/experiments/{E}/workers/{W}/reissue-credential` | admin |
+| `verify_worker_credential` | `GET` | `/v0/experiments/{E}/whoami` | worker |
+
+### 6.1 Register
+
+`POST /v0/experiments/{E}/workers` accepts a JSON body `{worker_id, labels?}`. On success the server returns 200 with `{worker_id, registration_token, ...}` — `registration_token` is the plaintext credential, returned **exactly once**, and the client MUST persist it locally; subsequent reads MUST NOT return it. The response also carries the `Worker` shape ([`schemas/worker.schema.json`](schemas/worker.schema.json)).
+
+If `worker_id` is already registered, the server MUST return 200 with the existing `Worker` and MUST NOT include `registration_token` (idempotent re-registration; [`02-data-model.md`](02-data-model.md) §6.3). If the supplied `worker_id` violates the §6.1 grammar in [`02-data-model.md`](02-data-model.md) or names a reserved value, the server returns 400 `eden://error/bad-request` (grammar) or 409 `eden://error/reserved-identifier` (reservation).
+
+### 6.2 List and read
+
+- `GET /v0/experiments/{E}/workers` returns `{"workers": [Worker, ...]}` filtered by optional `label_<key>=<value>` query params. The wire-visible Worker shape MUST NOT include any credential or hash field ([`02-data-model.md`](02-data-model.md) §6.2).
+- `GET /v0/experiments/{E}/workers/{W}` returns the named Worker or 404 `eden://error/not-found`.
+
+### 6.3 Reissue credential
+
+`POST /v0/experiments/{E}/workers/{W}/reissue-credential` accepts an empty body. On success the server mints a fresh `registration_token`, replaces the stored credential record, and returns 200 with `{worker_id, registration_token}`. The prior credential is **invalidated** by this operation: any subsequent wire call presenting the prior bearer MUST be rejected with 401.
+
+This is the canonical credential-recovery path. Hosts MUST NOT call `register_worker` to recover a lost credential — `register_worker` is idempotent on the existing record and would not mint a new token (§6.1; [`02-data-model.md`](02-data-model.md) §6.3).
+
+### 6.4 Verify credential (whoami)
+
+`GET /v0/experiments/{E}/whoami` is the authenticated probe used by host startup recovery ([`02-data-model.md`](02-data-model.md) §6.3 + reference-binding flow). On success the server returns 200 with `{"worker_id": "<id>"}` — the `worker_id` the presented bearer authenticates as. Bad/missing credentials return 401 `eden://error/unauthorized`. The `read_worker` endpoint is **not** an auth probe; it returns the worker record without re-authenticating the credential against that specific worker.
+
+A host whose persisted credential authenticates as a `worker_id` other than the one it expects (e.g., the registry was rebuilt with the same id but a different credential generation) MUST treat that as failure-of-equivalent-severity to a 401 and recover via `reissue_credential`.
+
+## 7. Group operations
+
+Per-experiment group registry endpoints. All mutating ops are admin-gated; reads are accessible to any authenticated principal.
+
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `register_group` | `POST` | `/v0/experiments/{E}/groups` | admin |
+| `list_groups` | `GET` | `/v0/experiments/{E}/groups` | admin or worker |
+| `read_group` | `GET` | `/v0/experiments/{E}/groups/{G}` | admin or worker |
+| `add_to_group` | `POST` | `/v0/experiments/{E}/groups/{G}/members` | admin |
+| `remove_from_group` | `DELETE` | `/v0/experiments/{E}/groups/{G}/members/{M}` | admin |
+| `delete_group` | `DELETE` | `/v0/experiments/{E}/groups/{G}` | admin |
+
+### 7.1 Register
+
+`POST /v0/experiments/{E}/groups` accepts `{group_id, members?}`. On success returns 200 with the `Group` ([`schemas/group.schema.json`](schemas/group.schema.json)). Cycle violations return 409 `eden://error/cycle-detected`. Reserved identifiers return 409 `eden://error/reserved-identifier`. Duplicate registration returns 409 `eden://error/already-exists`.
+
+### 7.2 Mutate
+
+`add_to_group`, `remove_from_group`, and `delete_group` MUST detect cycles atomically with the write per [`02-data-model.md`](02-data-model.md) §7.3. Any mutation that would close a cycle MUST be rejected with `eden://error/cycle-detected`.
+
+### 7.3 List and read
+
+- `GET /v0/experiments/{E}/groups` returns `{"groups": [Group, ...]}`.
+- `GET /v0/experiments/{E}/groups/{G}` returns the named Group or 404.
+
+## 8. Event log
 
 | Operation | HTTP | Path |
 |---|---|---|
 | `read_range` / `replay` | `GET` | `/v0/experiments/{E}/events` |
 | `subscribe` | `GET` | `/v0/experiments/{E}/events/subscribe` |
 
-### 6.1 Read-range and replay
+### 8.1 Read-range and replay
 
 `GET /v0/experiments/{E}/events` returns the log in order. It accepts one query parameter:
 
@@ -117,15 +180,15 @@ A client that issues `integrate_variant` and does not receive a 2xx response (co
 
 The response is `{"events": [...], "cursor": N}` where `events` is the delivered batch (possibly empty) and `cursor` is the new cumulative count the caller should pass to the next call. The endpoint does not block; it returns whatever is available immediately.
 
-### 6.2 Long-poll subscribe
+### 8.2 Long-poll subscribe
 
-`GET /v0/experiments/{E}/events/subscribe` binds the chapter 8 §2.1 `subscribe` operation as an HTTP long-poll. It accepts the same `cursor` query parameter. The server holds the connection open until one or more events are available after `cursor`, then returns them. If no event arrives within a server-chosen timeout (RECOMMENDED: 30 seconds), the server returns an empty batch so the caller can reconnect. The response body shape is identical to §6.1.
+`GET /v0/experiments/{E}/events/subscribe` binds the chapter 8 §2.1 `subscribe` operation as an HTTP long-poll. It accepts the same `cursor` query parameter. The server holds the connection open until one or more events are available after `cursor`, then returns them. If no event arrives within a server-chosen timeout (RECOMMENDED: 30 seconds), the server returns an empty batch so the caller can reconnect. The response body shape is identical to §8.1.
 
 Subscribers iterate this endpoint in a loop, advancing `cursor` by the length of each returned batch. The at-least-once and total- order guarantees from [`05-event-protocol.md`](05-event-protocol.md) §4 are preserved because the underlying `read_range` semantics preserve them.
 
 Push transports (Server-Sent Events, WebSocket) are OPTIONAL alternatives a deployment MAY expose alongside long-poll. They do not change the normative `subscribe` contract.
 
-## 7. Error envelope
+## 9. Error envelope
 
 Every non-2xx response MUST use media type `application/problem+json; charset=utf-8` with a body matching [`schemas/wire/error.schema.json`](schemas/wire/error.schema.json):
 
@@ -145,30 +208,37 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 |---|---|---|
 | `eden://error/bad-request` | 400 | request body fails schema validation |
 | `eden://error/experiment-id-mismatch` | 400 | header-vs-path experiment-ID disagreement (§1.3) |
-| `eden://error/wrong-token` | 403 | presented claim token ≠ stored token ([`04-task-protocol.md`](04-task-protocol.md) §3.3) |
+| `eden://error/unauthorized` | 401 | authentication failed (missing / malformed / invalid bearer; §13) |
+| `eden://error/forbidden` | 403 | authentication succeeded but the principal is not authorized for this endpoint (e.g., a worker bearer on an admin-gated route; §13.3) |
+| `eden://error/worker-not-registered` | 403 | the authenticated `worker_id` is not registered for the experiment ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 2, §10) |
+| `eden://error/worker-not-eligible` | 403 | the authenticated worker is registered but does not satisfy `Task.target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 3, §10) |
+| `eden://error/wrong-claimant` | 403 | submit's authenticated `worker_id` does not match `task.claim.worker_id` ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §10) |
 | `eden://error/not-found` | 404 | referenced entity does not exist |
 | `eden://error/already-exists` | 409 | insert collided with existing id |
 | `eden://error/illegal-transition` | 409 | state-machine violation |
+| `eden://error/not-claimed` | 409 | submit against a task whose claim has been cleared ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §10) |
 | `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
 | `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_variant` (§5) |
+| `eden://error/reserved-identifier` | 409 | `register_worker` / `register_group` rejected the supplied id per [`02-data-model.md`](02-data-model.md) §6.1 |
+| `eden://error/cycle-detected` | 409 | a group mutation would introduce a cycle ([`02-data-model.md`](02-data-model.md) §7.3) |
 
-A server MUST NOT emit a `type` outside this vocabulary for a v0 endpoint. Implementations MAY add custom error types at non-`/v0/` paths (e.g. `/_reference/...`) using the same envelope.
+A server MUST NOT emit a `type` outside this vocabulary for a v0 endpoint. Implementations MAY add custom error types at non-`/v0/` paths (e.g. `/_reference/...`) using the same envelope. The pre-12a-1 `eden://error/wrong-token` is **removed**: per-claim tokens no longer exist.
 
-## 8. Idempotency and retry
+## 10. Idempotency and retry
 
-### 8.1 Submit
+### 10.1 Submit
 
-The [`04-task-protocol.md`](04-task-protocol.md) §4.2 submit-idempotency rule is preserved by the binding: a retry of `POST /v0/experiments/{E}/tasks/{T}/submit` carrying the same token and content-equivalent payload MUST return 200 identically to the original call. This lets a worker retry a submit after a transport error without risk of double- advance. No HTTP-level `Idempotency-Key` header is required.
+The [`04-task-protocol.md`](04-task-protocol.md) §4.2 submit-idempotency rule is preserved by the binding: a retry of `POST /v0/experiments/{E}/tasks/{T}/submit` by the same authenticated worker, carrying a content-equivalent payload, MUST return 200 identically to the original call. This lets a worker retry a submit after a transport error without risk of double-advance. Bindings MAY accept an optional caller-supplied `submission_id` field on the wire payload as an explicit idempotency key; the content-equivalence rule is the protocol-level backstop. No HTTP-level `Idempotency-Key` header is required.
 
-### 8.2 Integrate
+### 10.2 Integrate
 
 Same-value idempotency on `integrate_variant` is pinned in §5.
 
-### 8.3 Other mutations
+### 10.3 Other mutations
 
-Claim, reject, reclaim, and accept are **not** blindly retry-safe on transport failures. A retry after the server already committed the transition will return `illegal-transition`, but that error is not uniquely distinguishable from a racing actor or a reclaim that interleaved between attempts. The binding does **not** standardize an HTTP-level retry convention for these endpoints; a client MUST resolve ambiguous failures via a follow-up `GET /v0/experiments/{E}/tasks/{T}` read and apply operation- specific knowledge. A future spec lineage MAY introduce per- operation idempotency tokens.
+Claim, reject, reclaim, and accept are **not** blindly retry-safe on transport failures. A retry after the server already committed the transition will return `illegal-transition`, but that error is not uniquely distinguishable from a racing actor or a reclaim that interleaved between attempts. The binding does **not** standardize an HTTP-level retry convention for these endpoints; a client MUST resolve ambiguous failures via a follow-up `GET /v0/experiments/{E}/tasks/{T}` read and apply operation-specific knowledge. A future spec lineage MAY introduce per-operation idempotency tokens.
 
-## 9. Reference-only helpers (non-normative)
+## 11. Reference-only helpers (non-normative)
 
 The reference `eden_wire` server also exposes:
 
@@ -179,41 +249,73 @@ These are conveniences for the Phase-5 dispatch driver and are **not** part of t
 
 Future phases MAY integrate individual helpers into the normative binding if conformance testing requires it; such integrations follow the same versioning discipline as any other binding change.
 
-## 10. Conformance
+## 12. Conformance
 
 A conforming server:
 
-- Implements §§2–7 with the normative semantics of [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md).
+- Implements §§2–8 with the normative semantics of [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md).
 - Exposes `/v0/` with the exact URL shapes listed above.
-- Returns problem+json with `type` from the §7 vocabulary on every non-2xx response.
+- Returns problem+json with `type` from the §9 vocabulary on every non-2xx response.
 - Preserves the task-protocol, event-protocol, and integrator-atomicity invariants unchanged by the HTTP transport.
+- Implements the §13 authentication scheme: per-worker bearer + admin bearer, with the authenticated principal forwarded to the Store as `worker_id` (or as the admin sentinel for admin-gated operations).
 
 A conforming client:
 
 - Keys retry and recovery on the `type` URI, not on HTTP status alone.
 - Resolves transport-indeterminate `integrate_variant` failures via the read-back procedure in §5 and does not compensate ref writes without positive confirmation of server-side non-commit.
 - Does not depend on `/_reference/` endpoints.
+- Persists per-worker credentials locally; treats credential rotation as a §6.3 operation, not as a re-registration.
 
-## 11. Implementation latitude
+## 13. Authentication
+
+Authentication is normative in v0. Every request to a `/v0/` endpoint MUST carry an `Authorization: Bearer <credential>` header; the server MUST reject requests without one (or with a malformed one) using `eden://error/unauthorized` (HTTP 401).
+
+### 13.1 Bearer format
+
+A bearer is the concatenation `<principal>:<secret>`, parsed by splitting on the first `:`. There are two principal namespaces:
+
+- **`admin`** — the deployment's admin principal. The secret half is a deployment-wide admin token (recorded in the deployment's environment as `EDEN_ADMIN_TOKEN`). Rotating this token invalidates all in-flight admin sessions but does NOT invalidate per-worker credentials.
+- **`<worker_id>`** — a registered worker's id (matching the §6.1 grammar of [`02-data-model.md`](02-data-model.md)). The secret half is the `registration_token` issued by `register_worker` (§6.1) or `reissue_credential` (§6.3). The server MUST verify the secret against the stored argon2id hash for `<worker_id>` and MUST reject mismatches with `eden://error/unauthorized`.
+
+### 13.2 Worker-id grammar disjointness
+
+The §6.1 worker-id grammar excludes `:` so that the bearer parser can safely split on the first colon. The principal name `admin` is reserved by [`02-data-model.md`](02-data-model.md) §6.1 from being used as a `worker_id`, so a bearer's principal half unambiguously names either the admin principal or a worker.
+
+### 13.3 Authorization
+
+The server MUST classify every endpoint as **admin-gated**, **worker-gated**, or **either** (denoted in §6 / §7 tables). The wire dispatcher:
+
+- Accepts the request only if the authenticated principal class matches the endpoint class.
+- Returns `eden://error/forbidden` (HTTP 403) for principal-class mismatches (e.g., a worker bearer hitting an admin-gated route).
+- Forwards the authenticated `worker_id` to the Store on `claim` / `submit` so that §3 / §4 enforcement runs against the verified identity, not against a request-body field.
+
+The [`04-task-protocol.md`](04-task-protocol.md) §3.3 requirement that the binding verify the credential before invoking the Store is satisfied by this dispatcher.
+
+### 13.4 Credential lifecycle
+
+- Issued by `register_worker` (§6.1), exactly once per registration.
+- Rotated by `reissue_credential` (§6.3); the prior credential is invalidated atomically with the rotation.
+- Revoked implicitly when an admin deletes the worker (out-of-scope for v0).
+- Persisted by the worker locally; the binding does not provide any "fetch my credential" operation.
+
+### 13.5 Token storage hygiene
+
+Bearer tokens are sensitive: any logging that captures HTTP request headers MUST redact the `Authorization` value. A conforming server's structured request logger MUST NOT emit the bearer in plaintext; deployments are responsible for proxy / sidecar log discipline.
+
+## 14. Implementation latitude
 
 The binding leaves to implementations:
 
 - The concrete HTTP server (FastAPI, Starlette, bespoke); the reference impl uses FastAPI.
 - The SSE/WebSocket push transport, if any.
 - The RECOMMENDED long-poll timeout; the reference impl uses 30 seconds.
-- Transport-level concerns outside the binding's scope (TLS, compression, authentication). Authentication scaffolding is a later-phase concern.
+- The credential-hash function (the reference impl uses argon2id; bindings MAY adopt a different KDF as long as it is offline-comparison-resistant).
+- Transport-level concerns outside the binding's scope (TLS, compression).
 
 What the binding does **not** leave to implementations:
 
-- The URL shapes (§§2–6).
-- The problem+json error vocabulary (§7).
+- The URL shapes (§§2–8).
+- The problem+json error vocabulary (§9).
 - The same-value idempotency on `integrate_variant` (§5).
+- The §13 authentication scheme (per-worker bearer + admin bearer; verified before Store invocation).
 - Preservation of the [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md) invariants through the HTTP transport.
-
-## 12. Reference-only extensions — authentication (informative)
-
-§11 restates that authentication is outside the normative binding. The reference implementation in [`reference/packages/eden-wire/`](../../reference/packages/eden-wire/) ships an optional shared-token check: when configured, the server requires `Authorization: Bearer <token>` on every request and rejects others with a problem+json response whose `type` is `eden://reference-error/unauthorized` and `status` is 401.
-
-Conforming servers MAY adopt this scheme, adopt a different scheme, or require no authentication at all. The only constraint §7 imposes on any authentication scheme is that it MUST NOT emit error `type` values inside the normative `eden://error/…` namespace — the v0 vocabulary there is closed, and overloading one of those values with an authentication outcome would force clients to disambiguate auth rejections from store-state rejections on HTTP status alone.
-
-This section is informative; it does not extend the closed error vocabulary in §7.

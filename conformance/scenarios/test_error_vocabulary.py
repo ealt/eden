@@ -36,7 +36,7 @@ _V0_VOCABULARY: frozenset[str] = frozenset(
 def test_observed_types_are_in_v0_vocabulary(
     session_observed_problem_types: set[str],
 ) -> None:
-    """spec/v0/07-wire-protocol.md §7 — every observed `type` is in the §7 closed table."""
+    """spec/v0/07-wire-protocol.md §9 — every observed `type` is in the §7 closed table."""
     extras = session_observed_problem_types - _V0_VOCABULARY
     assert not extras, f"observed `type` URIs outside §7 vocabulary: {sorted(extras)}"
 
@@ -45,7 +45,7 @@ def test_observed_types_are_in_v0_vocabulary(
 def test_v0_vocabulary_each_observed_at_least_once(
     session_observed_problem_types: set[str],
 ) -> None:
-    """spec/v0/07-wire-protocol.md §7 — every §7 entry is exercised by some scenario."""
+    """spec/v0/07-wire-protocol.md §9 — every §7 entry is exercised by some scenario."""
     missing = _V0_VOCABULARY - session_observed_problem_types
     assert not missing, (
         f"§7 vocabulary entries never observed during the run: {sorted(missing)}"

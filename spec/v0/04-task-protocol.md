@@ -64,24 +64,39 @@ A worker MAY rely on these preconditions ([`03-roles.md`](03-roles.md) §1.1). A
 
 The `pending → claimed` transition MUST be atomic with respect to competing claim attempts: at most one worker MAY succeed for any given task. A conforming task store MUST provide this guarantee as part of its durability contract ([`08-storage.md`](08-storage.md)).
 
-### 3.2 Claim token
+### 3.2 Claim record
 
 A successful claim issues a `claim` object ([`02-data-model.md`](02-data-model.md) §3.4) containing:
 
-- `token` — an opaque value that MUST be:
-  - **unique** — no two distinct claims (on the same or different tasks) share the same token within an experiment;
-  - **unforgeable** — a worker that did not receive the token MUST NOT be able to construct a byte-equal value with practical effort. Implementations commonly use a cryptographically random value; the protocol does not mandate the mechanism.
-- `worker_id` — an identifier the worker supplies at claim time. The task store MAY record it for audit but MUST NOT use it as a substitute for the token when authorizing subsequent operations.
+- `worker_id` — the registered worker's id ([`02-data-model.md`](02-data-model.md) §6) on whose behalf the claim was made. The task store records this value as the canonical claim ownership; it is the sole identity the §4 submit transition matches against.
 - `claimed_at` — the time the claim was issued.
 - `expires_at` — OPTIONAL. If present, the task store MAY reclaim the task when the current time exceeds this value (§5).
 
-### 3.3 Authorization by token
+The pre-12a-1 opaque per-claim `token` is **removed**: claim ownership is no longer authenticated by token equality. Authentication of the calling actor is a binding-layer concern (§3.3); claim-ownership matching is a Store-layer invariant on the submit transition (§4).
 
-Every subsequent operation on a claimed task (progress update, submit, release) MUST present the current claim token. The task store MUST reject any such operation whose token does not match the token currently recorded on the task. This is the sole mechanism the protocol relies on to guarantee single-writer access to a claimed task.
+### 3.3 Authentication is a binding-layer concern
+
+The Store Protocol takes `worker_id` as input on `claim` and `submit`; it trusts the binding to have already authenticated the caller as that worker. A conforming binding (HTTP wire, in-process, gRPC, …) MUST verify the presented credential and reject mismatched authenticated-id-vs-Store-call-id BEFORE invoking `Store.claim` or `Store.submit`. The set of credential schemes is binding-defined; for the reference HTTP binding, [`07-wire-protocol.md`](07-wire-protocol.md) §13 defines per-worker bearer + admin-bearer auth. In-process callers (tests and other adapters that bypass the binding) pass `worker_id` directly; the trust boundary is the binding edge.
 
 ### 3.4 No re-claim while claimed
 
 A conforming task store MUST reject a claim attempt against a task whose `state` is not `pending`. In particular, a claimed task cannot be "re-claimed" by a different worker; the prior claim must first be released (by submission) or invalidated (by reclamation).
+
+### 3.5 Target eligibility
+
+In addition to the §3.4 state precondition, a `claim(task_id, worker_id)` operation MUST satisfy the task's `Task.target` constraint ([`02-data-model.md`](02-data-model.md) §3.5). The store MUST evaluate the following preconditions in order, atomically with the claim write:
+
+1. The task is in state `pending` (§3.4).
+2. `worker_id` names a worker registered for the experiment ([`02-data-model.md`](02-data-model.md) §6). A claim by a non-registered `worker_id` MUST be rejected with `WorkerNotRegistered`.
+3. `worker_id` satisfies `Task.target`:
+   - if `target` is absent → pass;
+   - if `target.kind == "worker"` → pass iff `worker_id == target.id`;
+   - if `target.kind == "group"` → pass iff `worker_id` is transitively a member of `target.id` ([`02-data-model.md`](02-data-model.md) §7.2).
+
+   A claim that fails this step MUST be rejected with `WorkerNotEligible`.
+4. The atomic claim-write per §3.1.
+
+`WorkerNotRegistered` and `WorkerNotEligible` are typed errors at the Store layer ([§10](#10-worker-eligibility-errors)). The binding maps them to HTTP statuses per [`07-wire-protocol.md`](07-wire-protocol.md).
 
 ## 4. Submit
 
@@ -90,16 +105,26 @@ A conforming task store MUST reject a claim attempt against a task whose `state`
 A submit operation requires:
 
 - The `task_id`.
-- The current claim `token`.
+- The `worker_id` of the claimant on whose behalf the submit is being made — supplied by the binding from the authenticated identity (§3.3); in-process callers pass it directly.
 - A result payload whose shape depends on `kind` ([`03-roles.md`](03-roles.md) §2.4, §3.4, §4.4).
 
-A successful submit transitions `claimed → submitted` atomically with persisting the result payload. The terminal transition to `completed` or `failed` is the orchestrator's subsequent step (§4.3), even when the submission itself declared failure.
+A successful submit transitions `claimed → submitted` atomically with persisting the result payload, with three preconditions checked AS PART OF the same store transaction:
+
+1. The task's current `state` is `claimed`. Otherwise the store raises `NotClaimed`.
+2. `task.claim.worker_id == worker_id` (the call-supplied claimant matches the recorded claim). Otherwise the store raises `WrongClaimant`. The atomicity requirement is load-bearing: a non-atomic "read claim, compare, then write" sequence introduces a TOCTOU race where another actor could reclaim between the binding's check and the store's write.
+3. The role-specific payload shape and content-equivalence rules in §4.2.
+
+The store MUST atomically also write `task.submitted_by = worker_id` ([`02-data-model.md`](02-data-model.md) §3.1) so that the claimant identity is preserved across the terminal transitions that clear `claim`.
+
+The terminal transition to `completed` or `failed` is the orchestrator's subsequent step (§4.3), even when the submission itself declared failure.
+
+The binding MUST NOT perform a pre-flight read-then-compare against `task.claim.worker_id`; it MUST only authenticate the request and forward the authenticated `worker_id` to `Store.submit`. The Store performs the claim-match atomically.
 
 ### 4.2 Idempotency
 
-A resubmission is a second submit carrying the token recorded on the task's `claim` object (which is retained through `submitted` per [`02-data-model.md`](02-data-model.md) §3.4). A resubmit against a task whose claim has been cleared — because the task was reclaimed or reached a terminal state — MUST be rejected regardless of the presented token (§4.4, §5.2).
+A resubmission is a second submit, on behalf of the same claimant, against a task still in `submitted` (i.e. `task.claim.worker_id` is unchanged). A resubmit against a task whose claim has been cleared — because the task was reclaimed or reached a terminal state — MUST be rejected regardless of the presented `worker_id` (§4.4, §5.2). A resubmit by a different `worker_id` than the recorded claimant MUST be rejected with `WrongClaimant`.
 
-When the token matches, the task store MUST handle the resubmission as follows:
+When the claimant matches, the task store MUST handle the resubmission as follows:
 
 - If the resubmission's result payload is **content-equivalent** to the already-recorded payload, the task store MUST accept it and MUST NOT change the task's state or recorded result. "Content equivalence" means the normative fields identified per role agree:
   - `ideation` — the set of `idea_ids` (compared as sets; order is not significant per [`03-roles.md`](03-roles.md) §2.4) and `status`.
@@ -107,7 +132,7 @@ When the token matches, the task store MUST handle the resubmission as follows:
   - `evaluation` — `variant_id`, `status`, and `metrics` (compared as JSON values; key order does not matter).
 - If the resubmission's result payload is **not** content-equivalent, the task store MUST reject it. The first submission's result is the committed result.
 
-This rule exists so that a worker may safely retry a submit after a network or process failure without risk of advancing state twice or corrupting the recorded result.
+This rule exists so that a worker may safely retry a submit after a network or process failure without risk of advancing state twice or corrupting the recorded result. Bindings MAY additionally accept an optional caller-supplied `submission_id` field on the wire payload to act as an explicit idempotency key; that is a binding-layer extension and does not weaken the content-equivalence rule.
 
 ### 4.3 From `submitted` to terminal
 
@@ -122,7 +147,7 @@ Every terminal transition produces exactly one state-change event in the log ([`
 
 ### 4.4 Post-terminal writes prohibited
 
-Once a task is `completed` or `failed`, no further writes to its task fields are permitted beyond audit-only metadata that a task store chooses to expose outside the normative schema ([`02-data-model.md`](02-data-model.md) §3.1). In particular, a resubmission against a terminal task MUST be rejected regardless of content equivalence; the claim token that produced the terminal transition is no longer valid.
+Once a task is `completed` or `failed`, no further writes to its task fields are permitted beyond audit-only metadata that a task store chooses to expose outside the normative schema ([`02-data-model.md`](02-data-model.md) §3.1). In particular, a resubmission against a terminal task MUST be rejected regardless of content equivalence; the claim that produced the terminal transition has been cleared and the recorded `submitted_by` is the authoritative claimant identity.
 
 ## 5. Reclamation
 
@@ -142,16 +167,15 @@ A task store MUST NOT reclaim a task in a terminal state.
 
 Reclamation:
 
-1. Invalidates the prior claim token. Subsequent operations presenting it MUST be rejected.
-2. Clears the `claim` object from the task.
-3. Sets the task's `state` back to `pending`.
-4. Is accompanied by a `task.reclaimed` event in the event log ([`05-event-protocol.md`](05-event-protocol.md)), atomically with the state change.
+1. Clears the `claim` object from the task. Subsequent submit operations against the task fail `NotClaimed` until a fresh claim is taken.
+2. Sets the task's `state` back to `pending`.
+3. Is accompanied by a `task.reclaimed` event in the event log ([`05-event-protocol.md`](05-event-protocol.md)), atomically with the state change.
 
 Any partial result a worker had assembled before reclamation is no longer observable through the task protocol. If the worker created store-resident objects (drafting ideas, starting variants), those objects persist per their own lifecycle and are subject to role-level cleanup rules; reclamation itself does not delete them.
 
 ### 5.3 Worker detection of reclamation
 
-A worker that wishes to detect its own reclamation MAY observe its task's state or subscribe to events. If a worker discovers its token has been invalidated, it MUST discontinue work on the task and MUST NOT submit ([`03-roles.md`](03-roles.md) §1 step 5).
+A worker that wishes to detect its own reclamation MAY observe its task's state or subscribe to events. If a worker discovers its `claim` has been cleared (or replaced by a different `worker_id`'s claim), it MUST discontinue work on the task and MUST NOT submit ([`03-roles.md`](03-roles.md) §1 step 5).
 
 ### 5.4 Reclamation effect on role outputs
 
@@ -177,7 +201,7 @@ A subscriber that reads the event log MUST be able to reconstruct every task's s
 
 ## 7. Idea and variant lifecycle interactions
 
-The task state machine is not the only lifecycle in the system. Ideas ([`02-data-model.md`](02-data-model.md) §5.1) and variants ([`02-data-model.md`](02-data-model.md) §7) have their own state fields. The task protocol interacts with these lifecycles at the following points:
+The task state machine is not the only lifecycle in the system. Ideas ([`02-data-model.md`](02-data-model.md) §5.1) and variants ([`02-data-model.md`](02-data-model.md) §9) have their own state fields. The task protocol interacts with these lifecycles at the following points:
 
 - **Ideation-task submission.** A successful ideation-task submission MAY reference ideas that have been transitioned to `state == "ready"` by the ideator ([`03-roles.md`](03-roles.md) §2.2). The task protocol does not itself transition idea state; it treats the idea as a value produced by the ideator.
 - **Execution-task submission.** A successful execution-task submission requires a variant created and advanced by the executor ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition of the execution task (whether `submitted → completed` or `submitted → failed`), the orchestrator MUST transition the referenced idea's `state` from `"dispatched"` to `"completed"`, atomically with the task's terminal event. The idea's `"completed"` state therefore means *"the executor's attempt on this idea has finished"*, not *"the attempt succeeded"*; the variant's `status` field records the outcome. An idea in `"dispatched"` always names a non-terminal execution task; no idea remains in `"dispatched"` after its execution task has reached a terminal state.
@@ -188,14 +212,34 @@ The task state machine is not the only lifecycle in the system. Ideas ([`02-data
 The protocol leaves to implementations:
 
 - The mechanism by which a worker discovers claimable tasks (polling, subscription, dispatch).
-- The representation of claim tokens, worker IDs, and task IDs.
+- The representation of worker IDs and task IDs (within the §6.1 grammar of [`02-data-model.md`](02-data-model.md)).
 - The timeout and reclamation policy, including whether to set `expires_at` by default.
 - Whether retries are automatic (new task on reclamation) or operator-driven.
 - Whether `submitted → completed` is fully synchronous with submit or a subsequent orchestrator step, as long as the observable state machine above is preserved.
+- The credential scheme used by the binding to authenticate the calling actor (§3.3); the §3 / §4 contracts only require that the binding produce a verified `worker_id` for the Store call.
 
 What the protocol does **not** leave to implementations:
 
 - The set of states and the permitted transitions among them (§1).
-- The atomicity of claim (§3.1) and the token-authorization rule (§3.3).
+- The atomicity of claim (§3.1) and the §3.5 target-eligibility check.
+- The atomic claim-match on submit (§4.1 step 2) and its error vocabulary (§10).
 - The idempotency rule for resubmission (§4.2).
 - The requirement that every state change be accompanied by an atomic event (§1.3) and that the event log is the normative observability channel (§6.3).
+
+## 9. Worker registry preconditions
+
+Before a worker can claim or submit, it MUST be registered in the experiment's worker registry ([`02-data-model.md`](02-data-model.md) §6). `Store.claim` enforces this at §3.5 step 2; `Store.submit` likewise rejects calls whose `worker_id` is not registered (the binding's authentication step typically catches this earlier, but the Store MUST defend against in-process callers that bypass the binding).
+
+## 10. Worker eligibility errors
+
+The Store-layer typed errors raised on §3 / §4 enforcement form a closed vocabulary. Wire bindings map them to transport-specific status codes ([`07-wire-protocol.md`](07-wire-protocol.md) §7).
+
+| Error | Raised by | Meaning |
+|---|---|---|
+| `WorkerNotRegistered` | `claim`, `submit` | The supplied `worker_id` is not registered in the experiment's registry. |
+| `WorkerNotEligible` | `claim` | The worker is registered but does not satisfy `Task.target` per §3.5 step 3. |
+| `NotClaimed` | `submit` | The task is not in `claimed` state — it is `pending` (no claim), `submitted` with a different submission already in flight whose claim has been cleared, or terminal. |
+| `WrongClaimant` | `submit` | The supplied `worker_id` does not match `task.claim.worker_id`. The atomic match is performed as part of the submit transition; pre-flight binding-side checks would race. |
+| `ReservedIdentifier` | `register_worker`, `register_group` | The supplied id is one of the reserved values (`admin`, `system`, `internal`) or otherwise excluded by the §6.1 grammar / reservation rules. |
+| `WorkerAlreadyRegistered` | `register_worker` | A different actor attempted to register a `worker_id` whose record already exists. (Idempotent re-registration by the same caller is a non-error per [`02-data-model.md`](02-data-model.md) §6.3.) |
+| `CycleDetected` | `register_group`, group-mutation ops | The mutation would introduce a cycle in the group DAG ([`02-data-model.md`](02-data-model.md) §7.3). |

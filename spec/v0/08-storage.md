@@ -14,12 +14,12 @@ The task store holds the set of tasks and their current state for an experiment.
 
 | Operation | Arguments | Effect |
 |---|---|---|
-| `create_task` | fully-formed `task` object with `state == "pending"` | Atomically inserts the task and appends `task.created` to the event log ([§6](#6-transactional-guarantees)). |
-| `claim` | `task_id`, `worker_id`, OPTIONAL `expires_at` | Atomically transitions a `pending` task to `claimed`, issues a fresh claim token, and appends `task.claimed`. |
-| `submit` | `task_id`, `token`, role-specific result | Atomically transitions a `claimed` task to `submitted`, persists the result, and appends `task.submitted`. Idempotent per [`04-task-protocol.md`](04-task-protocol.md) §4.2. |
-| `accept` | `task_id`, role-specific acceptance payload | Atomically transitions `submitted → completed`, applies the role-specific effect (e.g. idea completion, variant status write), clears `claim`, and appends `task.completed` plus any composite events. |
-| `reject` | `task_id`, `reason`, role-specific failure payload | Atomically transitions `submitted → failed`, applies the role-specific effect, clears `claim`, and appends `task.failed` plus any composite events. |
-| `reclaim` | `task_id`, OPTIONAL `cause` | Atomically transitions `claimed`/`submitted` back to `pending` (where permitted; [`04-task-protocol.md`](04-task-protocol.md) §5.1), invalidates the token, clears `claim`, performs §2.2 composite effects where applicable, and appends `task.reclaimed`. |
+| `create_task` | fully-formed `task` object with `state == "pending"` | Atomically inserts the task and appends `task.created` to the event log ([§6](#6-transactional-guarantees)). The optional `target` field is set here and not mutated again in v0. |
+| `claim` | `task_id`, `worker_id`, OPTIONAL `expires_at` | Atomically transitions a `pending` task to `claimed`, records `claim.worker_id`, and appends `task.claimed`. Enforces [`04-task-protocol.md`](04-task-protocol.md) §3.5 (`WorkerNotRegistered` / `WorkerNotEligible`) atomically. |
+| `submit` | `task_id`, `worker_id`, role-specific result | Atomically transitions a `claimed` task to `submitted`, persists the result, writes `task.submitted_by = worker_id`, and appends `task.submitted`. Atomically rejects mismatches with `WrongClaimant` / `NotClaimed` per [`04-task-protocol.md`](04-task-protocol.md) §4.1. Idempotent per [`04-task-protocol.md`](04-task-protocol.md) §4.2. |
+| `accept` | `task_id`, role-specific acceptance payload | Atomically transitions `submitted → completed`, applies the role-specific effect (e.g. idea completion, variant status write), clears `claim` (preserving `submitted_by`), and appends `task.completed` plus any composite events. |
+| `reject` | `task_id`, `reason`, role-specific failure payload | Atomically transitions `submitted → failed`, applies the role-specific effect, clears `claim` (preserving `submitted_by`), and appends `task.failed` plus any composite events. |
+| `reclaim` | `task_id`, OPTIONAL `cause` | Atomically transitions `claimed`/`submitted` back to `pending` (where permitted; [`04-task-protocol.md`](04-task-protocol.md) §5.1), clears `claim`, performs §2.2 composite effects where applicable, and appends `task.reclaimed`. |
 | `read_task` | `task_id` | Returns the current task object or a well-defined not-found signal. |
 | `list_tasks` | filter (`kind`, `state`, `experiment_id`, …) | Returns matching tasks. Ordering is implementation-defined. |
 
@@ -31,13 +31,15 @@ For any given `pending` task, at most one concurrent `claim` invocation MUST suc
 
 The serialization mechanism (row lock + update, compare-and-set on version, `SELECT … FOR UPDATE SKIP LOCKED`) is implementation-defined. The observable guarantee is not.
 
-### 1.3 Token-authorization rule
+### 1.3 Atomic claim-match on submit
 
-`submit` and any other claim-holder operation MUST reject calls whose presented token does not equal the token currently recorded on the task's `claim` object ([`04-task-protocol.md`](04-task-protocol.md) §3.3). A conforming task store MUST NOT use `worker_id` as a substitute for the token when authorizing.
+`submit` MUST reject calls whose supplied `worker_id` does not equal the `worker_id` currently recorded on the task's `claim` object, **as part of the same store transaction that performs the state transition** ([`04-task-protocol.md`](04-task-protocol.md) §4.1). A non-atomic "read claim, compare, then write" sequence is non-conforming because it introduces a TOCTOU window (another actor could reclaim between the read and the write). The Store-layer typed errors raised on mismatches are `WrongClaimant` (claim exists, different worker) and `NotClaimed` (claim cleared / task not in `claimed`).
+
+The Store trusts the supplied `worker_id` as data; authentication of the *caller* against that `worker_id` is a binding-layer concern ([`04-task-protocol.md`](04-task-protocol.md) §3.3), not a Store concern.
 
 ### 1.4 Idempotent resubmit
 
-The idempotency rule for `submit` is specified normatively in [`04-task-protocol.md`](04-task-protocol.md) §4.2. A conforming task store MUST implement it: a resubmit carrying the current token, with a content-equivalent payload, MUST succeed without mutating state; an inconsistent resubmit MUST be rejected.
+The idempotency rule for `submit` is specified normatively in [`04-task-protocol.md`](04-task-protocol.md) §4.2. A conforming task store MUST implement it: a resubmit by the same claimant, with a content-equivalent payload, MUST succeed without mutating state; an inconsistent resubmit MUST be rejected.
 
 ### 1.5 Terminal immutability
 
@@ -49,7 +51,7 @@ All mutating operations on a single task MUST be serialized: the observable hist
 
 ### 1.7 Idea and variant persistence
 
-Ideas ([`02-data-model.md`](02-data-model.md) §5) and variants ([`02-data-model.md`](02-data-model.md) §7) are persisted alongside tasks. A conforming deployment MAY back them with the task store itself, with a separate store, or with any combination; the protocol constrains the observable contract, not the physical layout. Every conforming deployment MUST expose, for both ideas and variants, at minimum:
+Ideas ([`02-data-model.md`](02-data-model.md) §5) and variants ([`02-data-model.md`](02-data-model.md) §9) are persisted alongside tasks. A conforming deployment MAY back them with the task store itself, with a separate store, or with any combination; the protocol constrains the observable contract, not the physical layout. Every conforming deployment MUST expose, for both ideas and variants, at minimum:
 
 - **Create** — durably insert a new object whose fields validate against the corresponding schema ([`schemas/idea.schema.json`](schemas/idea.schema.json), [`schemas/variant.schema.json`](schemas/variant.schema.json)).
 - **Read** — return the current object or a well-defined not-found signal.
@@ -109,7 +111,7 @@ A store MUST NOT materialize an event, a task, an idea, or a variant from nothin
 
 ## 4. Per-experiment metrics schemas
 
-Every experiment declares an evaluation schema in its `experiment_config` ([`02-data-model.md`](02-data-model.md) §6, [`schemas/evaluation-schema.schema.json`](schemas/evaluation-schema.schema.json)). The task store (or an equivalently-scoped component in a conforming deployment) MUST enforce the following at every write that touches variant metrics.
+Every experiment declares an evaluation schema in its `experiment_config` ([`02-data-model.md`](02-data-model.md) §8, [`schemas/evaluation-schema.schema.json`](schemas/evaluation-schema.schema.json)). The task store (or an equivalently-scoped component in a conforming deployment) MUST enforce the following at every write that touches variant metrics.
 
 ### 4.1 Registration
 
@@ -127,9 +129,9 @@ A successful write of a `variant.evaluation` payload MUST satisfy:
 
 - Every key in `metrics` is present in the experiment's evaluation schema.
 - Every value either satisfies the declared type of its key — per the type mapping in [`02-data-model.md`](02-data-model.md) §1.3 (`integer`, `real`, `text`) — or is `null`.
-- No reserved name ([`02-data-model.md`](02-data-model.md) §6.2) appears as a key.
+- No reserved name ([`02-data-model.md`](02-data-model.md) §8.2) appears as a key.
 
-A write that violates any of these MUST be rejected; the store MUST NOT record a variant as `success` with an invalid evaluation payload ([`02-data-model.md`](02-data-model.md) §7.2).
+A write that violates any of these MUST be rejected; the store MUST NOT record a variant as `success` with an invalid evaluation payload ([`02-data-model.md`](02-data-model.md) §9.2).
 
 ## 5. Artifact store
 
@@ -186,12 +188,52 @@ The protocol leaves to implementations:
 - The wire transport for store access (local library call, HTTP, gRPC, direct SQL).
 - Whether the three stores are backed by three separate systems, one system serving all three, or any combination (e.g. a single RDBMS whose outbox table is the event log).
 - The retention policies for events, work branches, and artifacts, provided the minimum retention floors in §2.4, §5.2, and [`06-integrator.md`](06-integrator.md) §1.3 are met.
-- The concrete representation of claim tokens, event IDs, and URIs.
+- The concrete representation of event IDs and URIs.
+- The credential-hash function and storage layout for the worker registry (§9), as long as the credential is recoverable only through a fresh issuance (no plaintext storage, no reversible encoding).
 
 What the protocol does **not** leave to implementations:
 
-- The set of operations each store MUST expose (§1.1, §2.1, §5.1).
+- The set of operations each store MUST expose (§1.1, §2.1, §5.1, §9.1).
 - The atomicity contract of each operation (§1, §6).
 - The read-after-write and crash-recovery guarantees (§3).
 - The evaluation-schema enforcement rules (§4).
 - The content-immutability rule on artifacts referenced by protocol-owned objects (§5.4).
+- The worker-registry registration discipline (§9.2) and the cycle-detection invariant on group writes (§9.3).
+
+## 8. Per-experiment registry scope
+
+The worker registry (§9) and the group registry (§9.3) are **per-experiment**: each experiment owns a separate, isolated set of workers and groups. A `worker_id` registered for experiment `E1` and a `worker_id` of the same string registered for experiment `E2` name two distinct registry rows. A conforming deployment MUST NOT share registry state across experiments. (Cross-experiment identity is a deployment-level orchestration concern, not a protocol concept.)
+
+## 9. Worker registry
+
+The worker registry holds the set of registered workers and groups for a single experiment ([`02-data-model.md`](02-data-model.md) §6, §7). It MAY share its physical storage with the task store, the event log, both, or neither; the protocol constrains the observable contract.
+
+### 9.1 Operations
+
+| Operation | Arguments | Effect |
+|---|---|---|
+| `register_worker` | `worker_id`, OPTIONAL `labels` | If `worker_id` already exists, returns the existing record and does NOT mint a new credential (idempotent on existing record). Otherwise, atomically inserts the worker, mints a fresh `registration_token` (≥256 bits of entropy), stores its argon2id hash on the row, and returns `{worker_id, registration_token, ...}`. Rejects reserved or grammar-violating ids per [`02-data-model.md`](02-data-model.md) §6.1. |
+| `reissue_credential` | `worker_id` | Atomically generates a fresh `registration_token`, replaces the stored hash on the existing record, and returns the new plaintext token. The prior credential becomes invalid atomically with this write. The worker registry row's `worker_id` and `registered_at` are unchanged. |
+| `verify_worker_credential` | presented `<worker_id>:<token>` | Returns the `worker_id` whose stored hash matches the presented token, or a well-defined unauthorized signal. The Store MUST use a constant-time comparison against the hash output to defend against timing oracles. |
+| `read_worker` | `worker_id` | Returns the wire-visible Worker shape (no credential / hash). |
+| `list_workers` | OPTIONAL filter (labels, etc.) | Returns matching workers in implementation-defined order. |
+| `register_group` | `group_id`, OPTIONAL `members` | Atomically creates the group; MUST reject cycles (§9.3). |
+| `add_to_group`, `remove_from_group` | `group_id`, `member_id` | Atomically mutate the membership list; MUST reject cycles. |
+| `read_group`, `list_groups`, `delete_group` | as named | Read / enumerate / remove a group. `delete_group` does not affect membership of its members in other groups (members are referenced by id, not owned). |
+| `resolve_worker_in_group` | `worker_id`, `group_id` | Returns whether `worker_id` is transitively a member of `group_id` ([`02-data-model.md`](02-data-model.md) §7.2). MUST terminate. |
+
+The credential-bearing operations (`register_worker` and `reissue_credential`) return the plaintext `registration_token` to the caller exactly once. A conforming Store MUST NOT expose a "fetch credential" operation; recovery from credential loss is via `reissue_credential`.
+
+### 9.2 Registration discipline
+
+`register_worker` is **idempotent on the existing record**: a second registration of an already-registered `worker_id` MUST return the existing record and MUST NOT generate or rotate a credential. This is what makes service-restart-after-crash cheap. Credential rotation is a separate explicit operation (`reissue_credential`).
+
+### 9.3 Cycle detection on group writes
+
+The set of group definitions for an experiment forms a directed graph ([`02-data-model.md`](02-data-model.md) §7.2). A conforming Store MUST reject any group-mutation operation that would close a cycle, **atomically with the write attempt**. Detection MUST be performed at write time; resolution at read time is therefore safe by construction. Rejected mutations raise `CycleDetected`.
+
+A non-atomic "read graph, check, then write" detector is non-conforming because two concurrent mutations whose individual graphs are cycle-free can compose into a cycle if both writes commit. Implementations typically detect via DFS-on-write inside the same transaction that performs the membership update.
+
+### 9.4 Durability and read-after-write
+
+The §3 durability and read-after-write rules apply to registry operations uniformly: a `register_worker` that returns success guarantees the record (and its credential hash) survive a host crash; a subsequent `verify_worker_credential` MUST see the hash that the registration just stored.

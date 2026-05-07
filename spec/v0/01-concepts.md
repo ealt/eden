@@ -75,11 +75,11 @@ An experiment declares:
 
 Conforming implementations MUST validate every reported evaluation payload against the experiment's declared schema. A evaluation payload that names a field absent from the schema, or that supplies a value incompatible with the declared type, MUST be rejected.
 
-## 8. Claim token
+## 8. Claim ownership
 
-A **claim token** is a value issued when a worker claims a task. It accompanies every subsequent request the worker makes about that task (progress reports, completion submissions, artifact uploads). The token is the system's mechanism for guaranteeing that two workers cannot complete the same task: once a task is claimed, the task store MUST reject any completion attempt that does not present the same token. A task store MAY reclaim a task from a worker that has become unresponsive; reclamation invalidates the prior token.
+When a worker claims a task, the task store records the worker's `worker_id` on the task's `claim` object. Subsequent operations on the claimed task (submit, etc.) are authorized by matching the **authenticated worker's id** (verified by the binding) against `claim.worker_id` atomically with the state transition. A task store MAY reclaim a task from a worker that has become unresponsive; reclamation clears the `claim` object so any in-flight submit by the prior claimant fails the atomic match.
 
-The token's concrete shape is implementation-defined; the protocol requires only that it be unforgeable by other workers and bound to a single claim.
+This replaces the pre-12a-1 per-claim opaque-token model: claim ownership is now identity-keyed, not token-keyed. Per-worker credentials and the binding-layer authentication that uses them are specified in [`07-wire-protocol.md`](07-wire-protocol.md) §13. As a consequence, a worker with the right credential can act on its claim from any application that authenticates as the same worker — the claim travels with the worker's identity, not with the application instance that produced it.
 
 ## 9. Canonical variant lineage
 
@@ -105,7 +105,15 @@ The protocol defines what each store's operations guarantee; it does not define 
 
 The **orchestrator** is the component that dispatches tasks to workers and advances the protocol's state machine in response to submissions. It has no unique authority beyond what the protocol grants it: in particular, it MUST persist state changes through the task store and event log like any other component, and an experiment MAY run with multiple cooperating orchestrators provided they share a conforming task store and event log.
 
-## 12. Relationships
+## 12. Workers and groups
+
+A **worker** is a registered identity that participates in the task protocol. Each experiment owns its own per-experiment worker registry; workers are not shared across experiments. A **group** is a named, recursively-resolved set of workers (and other groups) within a single experiment, used to express routing intents broader than a single worker. Both worker and group ids share the same grammar (defined in [`02-data-model.md`](02-data-model.md) §6.1), and both registries support cycle-free transitive resolution.
+
+A task's optional `target` field constrains which workers may claim it: a specific worker, a group, or unrestricted. Claim-time eligibility is enforced by the task store ([`04-task-protocol.md`](04-task-protocol.md) §3.5).
+
+Authentication of workers and the admin principal is normative as of v0+12a-1 in the chapter-7 HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md) §13).
+
+## 13. Relationships
 
 The concepts above fit together as follows. A full specification chapter exists for each of the behavioral contracts implied here.
 

@@ -14,6 +14,9 @@ DATETIME_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0
 
 COMMIT_SHA_PATTERN = r"^[0-9a-f]{40}([0-9a-f]{24})?$"
 
+WORKER_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+"""Grammar for `worker_id` and `group_id` (spec/v0/02-data-model.md §6.1)."""
+
 
 def _check_datetime(value: str) -> str:
     # The regex shape is a necessary pre-filter, but accepts impossible values
@@ -47,6 +50,12 @@ DateTimeStr = Annotated[
 
 CommitSha = Annotated[str, StringConstraints(pattern=COMMIT_SHA_PATTERN)]
 """Lowercase hex SHA-1 (40 chars) or SHA-256 (64 chars) commit identifier."""
+
+WorkerId = Annotated[
+    str,
+    StringConstraints(pattern=WORKER_ID_PATTERN, min_length=1, max_length=64),
+]
+"""Worker / group identifier (spec/v0/02-data-model.md §6.1)."""
 
 UriStr = Annotated[str, AfterValidator(_check_uri)]
 """URI string — must have a scheme, per RFC 3986 (schema ``format: uri``)."""

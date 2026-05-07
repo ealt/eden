@@ -28,7 +28,7 @@ def test_create_task_returns_200(wire_client: WireClient) -> None:
 def test_create_duplicate_task_returns_409_already_exists(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/07-wire-protocol.md §7 — duplicate create returns 409 already-exists.
+    """spec/v0/07-wire-protocol.md §9 — duplicate create returns 409 already-exists.
 
     Without this scenario the §7 vocabulary-closure test would have no
     producer for `eden://error/already-exists`.
@@ -98,7 +98,7 @@ def test_integrate_different_sha_returns_409(wire_client: WireClient) -> None:
 
 
 def test_bad_request_body_returns_400(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §7 — malformed body returns 400 bad-request."""
+    """spec/v0/07-wire-protocol.md §9 — malformed body returns 400 bad-request."""
     r = wire_client.post(
         wire_client.tasks_path(), json={"this": "is not a valid task body"}
     )

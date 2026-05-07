@@ -40,7 +40,7 @@ def _assert_content_type(resp_headers) -> None:
 
 
 def test_problem_json_400_bad_request(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §7 — 400 returns problem+json envelope."""
+    """spec/v0/07-wire-protocol.md §9 — 400 returns problem+json envelope."""
     r = wire_client.post(wire_client.tasks_path(), json={"bogus": True})
     assert r.status_code == 400
     _assert_content_type(r.headers)
@@ -48,7 +48,7 @@ def test_problem_json_400_bad_request(wire_client: WireClient) -> None:
 
 
 def test_problem_json_403_wrong_token(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §7 — 403 wrong-token returns problem+json envelope."""
+    """spec/v0/07-wire-protocol.md §9 — 403 wrong-token returns problem+json envelope."""
     tid = _seed.create_ideation_task(wire_client)
     _seed.claim(wire_client, tid)
     r = _seed.submit_idea(wire_client, tid, token="WRONG")
@@ -58,7 +58,7 @@ def test_problem_json_403_wrong_token(wire_client: WireClient) -> None:
 
 
 def test_problem_json_404_not_found(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §7 — 404 returns problem+json envelope."""
+    """spec/v0/07-wire-protocol.md §9 — 404 returns problem+json envelope."""
     r = wire_client.get(wire_client.tasks_path("nope"))
     assert r.status_code == 404
     _assert_content_type(r.headers)
@@ -66,7 +66,7 @@ def test_problem_json_404_not_found(wire_client: WireClient) -> None:
 
 
 def test_problem_json_409_illegal_transition(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §7 — 409 illegal-transition returns problem+json."""
+    """spec/v0/07-wire-protocol.md §9 — 409 illegal-transition returns problem+json."""
     tid = _seed.create_ideation_task(wire_client)
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409

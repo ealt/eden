@@ -110,7 +110,7 @@ Payload field definitions:
 
 ### 3.3 Variant events
 
-Produced atomically with variant `status` transitions and with the integrator's integration write. The variant's lifecycle is defined in [`02-data-model.md`](02-data-model.md) §7 and [`03-roles.md`](03-roles.md) §3–§4; the integration step is in [`06-integrator.md`](06-integrator.md).
+Produced atomically with variant `status` transitions and with the integrator's integration write. The variant's lifecycle is defined in [`02-data-model.md`](02-data-model.md) §9 and [`03-roles.md`](03-roles.md) §3–§4; the integration step is in [`06-integrator.md`](06-integrator.md).
 
 | Type | Transition | `data` required fields |
 |---|---|---|
@@ -123,8 +123,8 @@ Produced atomically with variant `status` transitions and with the integrator's 
 Payload field definitions:
 
 - `variant_id` — the `variant_id` of the transitioning variant.
-- `idea_id` — the variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §7.1).
-- `commit_sha` — the worker-branch tip recorded on the variant at the moment of success ([`02-data-model.md`](02-data-model.md) §7.1).
+- `idea_id` — the variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §9.1).
+- `commit_sha` — the worker-branch tip recorded on the variant at the moment of success ([`02-data-model.md`](02-data-model.md) §9.1).
 - `variant_commit_sha` — the canonical-lineage SHA the integrator wrote ([`06-integrator.md`](06-integrator.md)). A 40-hex SHA-1 or a 64-hex SHA-256; the same pattern as commits elsewhere in the data model.
 
 `variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks integration so subscribers can reconstruct the canonical lineage without reading git directly.

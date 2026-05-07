@@ -41,6 +41,8 @@ host-supplied environment.
 | `EDEN_TASK_JSON` | Relative path (under cwd) to a JSON file the host wrote describing the current task. |
 | `EDEN_OUTPUT` | Relative path (under cwd) the subprocess MUST write its outcome JSON to. |
 | `EDEN_WORKTREE` | (executor / evaluator only) Absolute path to the per-task git worktree (also equals cwd, redundant for convenience). |
+| `EDEN_WORKER_ID` | The host's registered `worker_id` ([chapter 2 §6](../02-data-model.md)). The subprocess MAY include this in any wire calls it makes on its own; the host uses it for `EDEN_WORKER_CREDENTIAL` look-up. |
+| `EDEN_WORKER_CREDENTIAL` | The bearer credential the host authenticates with — formatted as `<worker_id>:<token>` per [chapter 7 §13.1](../07-wire-protocol.md). The reference subprocesses do not make wire calls themselves; the credential is forwarded for user code that does. Treat as sensitive: do not log; do not pass through to nested processes that don't need it. |
 
 User-supplied env from a `--*-env-file` flag is also injected
 (intended for LLM API keys etc.).

@@ -84,7 +84,7 @@ An executor receives:
 
 ### 3.2 Outputs
 
-The executor produces a **variant** object ([`02-data-model.md`](02-data-model.md) §7). It MUST:
+The executor produces a **variant** object ([`02-data-model.md`](02-data-model.md) §9). It MUST:
 
 1. Persist a variant with `status == "starting"`, `experiment_id == P.experiment_id`, `idea_id == P`, and `parent_commits == P.parent_commits`, before making any repository write observable to other roles.
 2. Write the implementation on a branch under `work/*` ([`01-concepts.md`](01-concepts.md) §9) whose parent(s) are the idea's `parent_commits`. Set the variant's `branch` field to this branch name.
@@ -127,7 +127,7 @@ An evaluator receives:
 
 The evaluator MUST:
 
-1. Produce a `metrics` object whose keys are a subset of the declared `evaluation_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §7.2).
+1. Produce a `metrics` object whose keys are a subset of the declared `evaluation_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §9.2).
 2. Optionally upload supporting artifacts (logs, captured outputs, diagnostic files).
 
 The evaluator MUST NOT modify the worker branch or any protocol-owned mutable state other than the variant fields the submission writes (§4.4) and the task it holds a claim on. In particular, the evaluator MUST NOT write to the variant's `completed_at`, `metrics`, `artifacts_uri`, `description`, or `status` directly; those writes are performed by the orchestrator when the submitted task reaches its terminal state (§4.4, [`04-task-protocol.md`](04-task-protocol.md) §4.3).
