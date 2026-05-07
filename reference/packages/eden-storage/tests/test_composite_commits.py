@@ -156,7 +156,9 @@ class TestEvaluateTerminalComposite:
         store.submit(
             "t-eval",
             claim.token,
-            EvaluationSubmission(status="success", variant_id="variant-1", evaluation={"score": 0.9}),
+            EvaluationSubmission(
+                status="success", variant_id="variant-1", evaluation={"score": 0.9}
+            ),
         )
         store.accept("t-eval")
         types = _type_sequence(store)
@@ -275,7 +277,9 @@ class TestIntegrationComposite:
         store.submit(
             "t-eval",
             ec.token,
-            EvaluationSubmission(status="success", variant_id="variant-1", evaluation={"score": 0.9}),
+            EvaluationSubmission(
+                status="success", variant_id="variant-1", evaluation={"score": 0.9}
+            ),
         )
         store.accept("t-eval")
         store.integrate_variant("variant-1", "c" * 40)

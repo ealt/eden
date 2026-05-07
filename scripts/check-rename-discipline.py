@@ -84,6 +84,28 @@ INCLUDE_EXTS: tuple[str, ...] = (
 INCLUDE_BASENAMES_PREFIX: tuple[str, ...] = ("Dockerfile",)
 
 
+# Shared sub-patterns used by multiple groups below.
+_SHOUTING_SUFFIXES = (
+    r"(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|"
+    r"PREFIX|COUNT|IDS?)"
+)
+_KEBAB_SUFFIXES = (
+    r"(?:task|tasks|completed|started|errored|fn|command|prefix|test)"
+)
+_KEBAB_SUFFIXES_IDEATE = (
+    r"(?:task|tasks|completed|started|errored|fn|command|prefix|"
+    r"test|done|outcome)"
+)
+_VERB_ID_SUFFIXES = (
+    r"(?:pending|completed|submitted|in_progress|failed|errored|"
+    r"task[a-z_]*|then_[a-z_]*)"
+)
+_VERB_ID_SUFFIXES_ACCEPT = (
+    r"(?:pending|completed|submitted|in_progress|failed|errored|"
+    r"task[a-z_]*|acceptance)"
+)
+
+
 # Patterns labelled by category. Each is a compiled regex; a hit on
 # any one of them outside the allowlist is a CI failure.
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -263,11 +285,11 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Verb-form SHOUTING_CASE shell / env vars (PLAN_COMPLETED is the
     # smoke-test family). Same gerund-vs-verb rule applies: the
     # canonical form is IDEATION_*, EXECUTION_*, EVALUATION_*.
-    ("PLAN_<X>",         re.compile(r"\bPLAN_(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|PREFIX|COUNT|IDS?)\b")),
-    ("IMPLEMENT_<X>",    re.compile(r"\bIMPLEMENT_(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|PREFIX|COUNT|IDS?)\b")),
-    ("EVALUATE_<X>",     re.compile(r"\bEVALUATE_(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|PREFIX|COUNT|IDS?)\b")),
-    ("IDEATE_<X>",       re.compile(r"\bIDEATE_(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|PREFIX|COUNT|IDS?)\b")),
-    ("EXECUTE_<X>",      re.compile(r"\bEXECUTE_(?:TASKS?|COMPLETED|PENDING|IN_PROGRESS|FAILED|ERRORED|FN|COMMAND|PREFIX|COUNT|IDS?)\b")),
+    ("PLAN_<X>",         re.compile(r"\bPLAN_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("IMPLEMENT_<X>",    re.compile(r"\bIMPLEMENT_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("EVALUATE_<X>",     re.compile(r"\bEVALUATE_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("IDEATE_<X>",       re.compile(r"\bIDEATE_" + _SHOUTING_SUFFIXES + r"\b")),
+    ("EXECUTE_<X>",      re.compile(r"\bEXECUTE_" + _SHOUTING_SUFFIXES + r"\b")),
 
     # Abbreviation: `impl` always parses to either `implement` (retired
     # verb) or `implementation` (English noun, not a canonical EDEN
@@ -303,11 +325,11 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # `execute-task` → `execution-task`, `evaluate-task` →
     # `evaluation-task`. Catches the bare kebab form too
     # (`ideate-something`).
-    ("ideate-<X>",       re.compile(r"\bideate-(?:task|tasks|completed|started|errored|fn|command|prefix|test|done|outcome)\b", re.IGNORECASE)),
-    ("execute-<X>",      re.compile(r"\bexecute-(?:task|tasks|completed|started|errored|fn|command|prefix|test)\b", re.IGNORECASE)),
-    ("evaluate-<X>",     re.compile(r"\bevaluate-(?:task|tasks|completed|started|errored|fn|command|prefix|test)\b", re.IGNORECASE)),
-    ("plan-<X>",         re.compile(r"\bplan-(?:task|tasks|completed|started|errored|fn|command|prefix|test)\b", re.IGNORECASE)),
-    ("implement-<X>",    re.compile(r"\bimplement-(?:task|tasks|completed|started|errored|fn|command|prefix|test)\b", re.IGNORECASE)),
+    ("ideate-<X>",       re.compile(r"\bideate-" + _KEBAB_SUFFIXES_IDEATE + r"\b", re.IGNORECASE)),
+    ("execute-<X>",      re.compile(r"\bexecute-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+    ("evaluate-<X>",     re.compile(r"\bevaluate-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+    ("plan-<X>",         re.compile(r"\bplan-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
+    ("implement-<X>",    re.compile(r"\bimplement-" + _KEBAB_SUFFIXES + r"\b", re.IGNORECASE)),
 
     # Test-function names embedding retired verbs. `def
     # test_implement_*` and `def test_plan_*` should follow the
@@ -324,9 +346,12 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Bare retired verb in citation-like contexts (`"plan_pending"` case-id,
     # `"plan_command"` config key). The string-form catches conformance
     # `cases.py` IDs that embed the retired verb plus a behavioral suffix.
-    ("\"plan_<verb>\" id", re.compile(r"['\"]plan_(?:pending|completed|submitted|in_progress|failed|errored|task[a-z_]*|then_[a-z_]*)['\"]")),
-    ("\"implement_<verb>\" id", re.compile(r"['\"]implement_(?:pending|completed|submitted|in_progress|failed|errored|task[a-z_]*|acceptance)['\"]")),
-    ("\"evaluate_<verb>\" id", re.compile(r"['\"]evaluate_(?:pending|completed|submitted|in_progress|failed|errored|task[a-z_]*|acceptance)['\"]")),
+    ("\"plan_<verb>\" id",
+        re.compile(r"['\"]plan_" + _VERB_ID_SUFFIXES + r"['\"]")),
+    ("\"implement_<verb>\" id",
+        re.compile(r"['\"]implement_" + _VERB_ID_SUFFIXES_ACCEPT + r"['\"]")),
+    ("\"evaluate_<verb>\" id",
+        re.compile(r"['\"]evaluate_" + _VERB_ID_SUFFIXES_ACCEPT + r"['\"]")),
 
     # Filename citations. `plan.py`, `implement.py` (verb-form fixture
     # names) were renamed to `ideation.py`, `execution.py`. Anywhere
