@@ -1,0 +1,210 @@
+--- docs/plans/review/eden-phase-12c-control-plane/20260506T174832/1.md	2026-05-06 17:56:24
++++ docs/plans/eden-phase-12c-control-plane.md	2026-05-06 18:01:26
+@@ -184,7 +184,7 @@
+    for v0); the import handler treats control-plane
+    registration failure as a recoverable partial success per
+    12b's existing `warnings` array. The operator's recovery is
+-   `POST /v0/control/experiments/<id>` with the
++   `POST /v0/control/experiments` with a body carrying the
+    experiment_id from the partial-success warning. Without
+    recovery, the imported experiment exists in the
+    task-store-server but is invisible to `list_experiments`
+@@ -219,12 +219,28 @@
+     single-deployment-single-task-store-server.
+ 
+ 12. **Lease ops authenticate as the orchestrator worker, not
+-    the deployment admin.** The control plane's lease
+-    endpoints (`acquire_lease`, `renew_lease`, `release_lease`)
+-    accept worker credentials per 12a-1 §D.5. Authority rules:
+-    - `acquire_lease`: caller MUST be in the `orchestrators`
+-      group; `holder` field MUST equal the authenticated
+-      `worker_id` (no impersonation).
++    the deployment admin.** Workers in 12a-1 are
++    *per-experiment*: a `worker_id` is unique within an
++    experiment, not deployment-wide. 12c needs
++    deployment-scoped identity for orchestrator replicas (a
++    single replica may hold leases for multiple experiments,
++    so its identity must transcend any single experiment).
++    The control plane therefore maintains its OWN
++    deployment-scoped worker registry, distinct from the
++    per-experiment registries in the task-store-server. This
++    separate registry lives in the control plane's Postgres
++    schema (§3.4); registration is admin-token-gated. An
++    orchestrator replica authenticates against the control
++    plane using its deployment-scoped credential and against
++    the task-store-server using its per-experiment credentials
++    (one credential per experiment it holds a lease for, all
++    minted from the same admin bootstrap).
++
++    Authority rules on the control plane:
++    - `acquire_lease`: caller MUST be in the deployment-
++      scoped `orchestrators` group; `holder` field MUST equal
++      the authenticated deployment-scoped `worker_id` (no
++      impersonation).
+     - `renew_lease`: caller MUST be the lease's current
+       `holder`.
+     - `release_lease`: caller MUST be the lease's current
+@@ -232,12 +248,26 @@
+     - `register_experiment` / `unregister_experiment`:
+       admin-token only.
+     - `list_experiments` / `read_experiment_metadata`:
+-      authenticated worker (any group) OR admin-token.
+-    This preserves 12a-2's worker-credential model: the
+-    orchestrator boots with the admin token (to register
+-    itself + join `orchestrators`) but uses its own worker
+-    credential for ongoing lease ops.
++      authenticated deployment-scoped worker OR admin-token.
++    - `register_worker` / `add_to_group` (deployment-scoped):
++      admin-token only.
++    The orchestrator's startup flow: register a
++    deployment-scoped worker (admin-token) → join the
++    deployment-scoped `orchestrators` group (admin-token) →
++    for each experiment it acquires a lease for, also
++    register a per-experiment worker (admin-token, mints a
++    per-experiment credential) → use the per-experiment
++    credential for task-store-server calls about that
++    experiment, and the deployment-scoped credential for all
++    control-plane calls.
+ 
++    The double-registration is unfortunate complexity but
++    follows from 12a-1's per-experiment-worker design. A
++    future amendment MAY collapse the two if 12a-1's worker
++    model is widened to support deployment-scoped workers
++    natively; v0 keeps them separate to avoid breaking 12a-1's
++    existing contract.
++
+ ## 3. Design
+ 
+ ### 3.1 Spec chapter 11 — control plane
+@@ -263,6 +293,8 @@
+ >   resource (typically a path served by the task-store-server)
+ > - `created_at`
+ > - `last_known_state` — `running` or `terminated`; mirrors the
++>   task-store-server's authoritative `experiment.state` value
++>   per the §3.4a sync mechanism below. Mirrors the
+ >   task-store-server's `experiment.state` (eventually
+ >   consistent; the task-store-server's value is authoritative)
+ > - `lease` — current `ExperimentLease | null`
+@@ -335,8 +367,11 @@
+ > Aggregated *task/idea/variant/event* reads are NOT in the
+ > control plane's surface (Decision 4: no proxy). UI code that
+ > wants to show "all running variants across all experiments"
+-> calls `list_experiments` to enumerate, then calls each
+-> task-store-server in turn.
++> calls `list_experiments` to enumerate, then calls the
++> deployment's single task-store-server (per Decision 11) once
++> per experiment via the multi-experiment Store factory. There
++> is one task-store-server URL deployment-wide; the calls vary
++> only by `experiment_id`.
+ 
+ ### 3.2 Lease acquisition + renewal flow
+ 
+@@ -501,7 +536,44 @@
+ which atomically replaces an expired lease or fails on an
+ active one. Postgres SERIALIZABLE isolation + the row-level
+ PRIMARY KEY constraint together give the §11.4 invariant.
++
++### 3.4a `last_known_state` sync mechanism
++
++The control plane's `last_known_state` field is a cache of the
++task-store-server's authoritative `experiment.state` (12a-3
++§3.2). The sync is **pull-based** from the control plane:
+ 
++- A background worker thread in the control plane service
++  polls each registered experiment's task-store-server every
++  `EDEN_STATE_SYNC_INTERVAL_SECONDS` (default 30s) by calling
++  `read_experiment(<id>)`.
++- If the task-store-server returns `state="terminated"` and the
++  registry's `last_known_state` is `"running"`, the control
++  plane updates the registry row atomically. No event is
++  emitted at the control-plane level (it's a cache update, not
++  a state transition).
++- If the task-store-server returns `state="running"`, no
++  change.
++- Transport errors are logged + retried on the next tick;
++  consecutive failures > N (default 10) trigger an
++  operator-visible warning in `read_experiment_metadata`'s
++  response (`{warnings: ["state-sync-stale: last successful
++  read at <timestamp>"]}`).
++
++This means `last_known_state` may lag the authoritative value
++by up to one polling interval (30s). For UI dashboard purposes
++this is acceptable; for `unregister_experiment`'s gating check
++it means an operator may briefly need to wait after termination
++before unregistering. The alternative (push from the
++task-store-server on every `terminate_experiment`) would
++couple the two services more tightly. Pull-based with bounded
++staleness is the v0 choice; push-based with explicit ack is a
++future amendment.
++
++A second sync trigger: every `acquire_lease` call also pulls
++the latest state, so a freshly-leased experiment has up-to-
++date `last_known_state` regardless of polling cadence.
++
+ ### 3.5 Experiment registration on checkpoint import
+ 
+ 12b's `POST /v0/checkpoints/import` creates the experiment in
+@@ -577,9 +649,22 @@
+   `create_execution_task` for the same idea. The 12a-2 §6.4
+   exact-idempotent contract ensures exactly one task is
+   created.
+-- **Checkpoint import + auto-register.** Importing a
+-  checkpoint via `POST /v0/checkpoints/import` results in the
+-  imported experiment appearing in `list_experiments`.
++- **Checkpoint import + auto-register (control plane
++  reachable).** Importing a checkpoint via
++  `POST /v0/checkpoints/import` while the control plane is
++  reachable results in the imported experiment appearing in
++  `list_experiments`. (Per Decision 9, this is best-effort,
++  not atomic; the test's precondition is that the control
++  plane is reachable AND register succeeds. A separate
++  scenario covers the partial-success path.)
++- **Checkpoint import + control-plane-unreachable.** Importing
++  a checkpoint while the control plane is unreachable
++  (simulated via a network-error fixture) results in (a) the
++  experiment present in the task-store-server, (b) absent from
++  `list_experiments`, (c) the import response's `warnings`
++  array carries an explicit "control-plane-register-failed"
++  entry. After bringing the control plane back, an explicit
++  `POST /v0/control/experiments` recovers the registry entry.
+ 
+ ### 3.8 Compose smoke for multi-experiment
+ 
+@@ -754,7 +839,7 @@
+ | File | Change |
+ |---|---|
+ | `reference/services/orchestrator/src/eden_orchestrator/cli.py` | Add `--control-plane-url` flag (default `http://control-plane:8080`). Add `--lease-duration-seconds` (default 30). The 12a-2 `--worker-id` flag is **preserved** (no regression): operators MUST supply a unique `worker_id` per replica per 12a-1 §D.1's grammar (default `auto-orchestrator-1`). The single-experiment `--experiment-id` flag is now optional: if set, the orchestrator only attempts to lease that experiment; if absent, it leases any experiment in the registry. |
+-| `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Major rework: replace single-experiment loop with multi-experiment lease-driven loop per §3.2. Add `LeaseManager` class managing the held-leases set + renewal thread + acquisition thread. The `run_orchestrator_iteration` per-experiment call is unchanged from 12a-2 / 12a-3; only the outer driver changes. |
++| `reference/services/orchestrator/src/eden_orchestrator/loop.py` | Major rework: replace single-experiment loop with multi-experiment lease-driven loop per §3.2. Add `LeaseManager` class managing the held-leases set + renewal thread + acquisition thread. The `run_orchestrator_iteration` per-experiment call **shape** is unchanged from 12a-2 / 12a-3 (still takes one experiment_id at a time); the outer driver instantiates a per-experiment `StoreClient` view (see §5.4 below) per held lease and calls `run_orchestrator_iteration` once per held experiment per outer-loop tick. |
+ | `reference/services/orchestrator/src/eden_orchestrator/leases.py` (new) | `LeaseManager` implementation. |
+ | `reference/services/orchestrator/tests/test_lease_manager.py` (new) | Unit tests covering acquire/renew/release, expiration handling, hand-off detection. |
+ | `reference/services/orchestrator/tests/test_e2e.py` | Add a multi-experiment scenario that drives 2 experiments through 2 orchestrator replicas. |
+@@ -764,7 +849,7 @@
+ | File | Change |
+ |---|---|
+ | `server.py` | Extend the `POST /v0/checkpoints/import` handler per §3.5: after the task-store-server side commits, call `control_plane.register_experiment`. Failures here add to the `warnings` array in the response. The handler reads the control plane URL from a new `--control-plane-url` flag. |
+-| `client.py` | No changes (the existing `StoreClient` doesn't talk to the control plane). The new `ControlPlaneClient` lives in its own package. |
++| `client.py` | The existing experiment-bound `StoreClient(base_url, experiment_id, ...)` constructor signature is **preserved** (so 12a-2 / 12a-3 / 12b-shaped callers don't break). 12c adds a thin factory pattern: `StoreClientFactory(base_url, ...)` produces per-experiment `StoreClient` views on demand. Multi-experiment callers (orchestrator's `LeaseManager`, the cross-experiment Web UI dashboard) construct one `StoreClient` per held experiment via the factory. The Store Protocol's per-call `experiment_id` parameter (Decision 11 + §5.2) lives at the Store layer; the `StoreClient` layer keeps the experiment-bound view for callers that don't need multi-experiment access. The new `ControlPlaneClient` (separate package) is unchanged. |
+ 
+ ### 5.5 Reference services
+ 
+@@ -893,12 +978,13 @@
+ 
+ ### 7.2 Lease + checkpoint-import atomicity
+ 
+-§3.5 has the import endpoint atomically (a) commit the
+-task-store-server data and (b) register the experiment with the
+-control plane. These are two separate services with separate
+-Postgres connections. True atomicity (XA/2PC) is heavy. The
+-plan's "partial success with warnings" approach is a soft
+-guarantee.
++§3.5 has the import endpoint sequentially (a) commit the
++task-store-server data and (b) call the control plane to
++register the experiment. These are two separate services with
++separate Postgres connections. True atomicity (XA/2PC) is
++heavy and out of scope for v0; the plan's "partial success
++with warnings" approach (Decision 9) is a soft guarantee, NOT
++an atomicity claim.
+ 
+ The risk: an import that commits to the task-store-server but
+ fails to register with the control plane leaves the experiment

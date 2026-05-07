@@ -1,0 +1,189 @@
+--- docs/plans/review/eden-phase-12c-control-plane/20260506T174832/4.md	2026-05-06 18:08:06
++++ docs/plans/eden-phase-12c-control-plane.md	2026-05-06 18:12:51
+@@ -316,6 +316,10 @@
+ >   lease_id: string         (opaque; assigned by control plane)
+ >   experiment_id: string
+ >   holder: worker_id        (the orchestrator replica's worker_id)
++>   holder_instance: string  (per-process UUID generated at
++>                             startup by the orchestrator process;
++>                             defends against duplicate worker_id
++>                             across replicas — see §11.6)
+ >   acquired_at: timestamp
+ >   expires_at: timestamp    (acquired_at + lease_duration)
+ >   renewed_at: timestamp    (last successful renew)
+@@ -329,15 +333,17 @@
+ >
+ > Lease lifecycle:
+ >
+-> - `acquire_lease(experiment_id, holder)` — creates a lease.
+->   Succeeds iff no active lease exists for the experiment OR
+->   the existing lease's `expires_at < now`. Returns the new
+->   lease. Atomic.
+-> - `renew_lease(lease_id)` — extends `expires_at` to
+->   `now + lease_duration`. Succeeds iff the lease is the
+->   currently-active one (matches `lease_id`). Atomic.
+-> - `release_lease(lease_id)` — explicitly relinquishes the
+->   lease. Used at orchestrator shutdown. Atomic.
++> - `acquire_lease(experiment_id, holder, holder_instance)` —
++>   creates a lease. Succeeds iff no active lease exists for
++>   the experiment OR the existing lease's `expires_at < now`.
++>   Returns the new lease. Atomic.
++> - `renew_lease(lease_id, holder_instance)` — extends
++>   `expires_at` to `now + lease_duration`. Succeeds iff the
++>   lease is the currently-active one AND
++>   `holder_instance` matches the stored value. Atomic.
++> - `release_lease(lease_id, holder_instance)` — explicitly
++>   relinquishes the lease. Same `holder_instance` check as
++>   renew. Used at orchestrator shutdown. Atomic.
+ > - Implicit expiration: if `expires_at < now`, the lease is
+ >   "expired" but not deleted; it occupies the experiment's
+ >   `lease` field until acquired by another replica (which
+@@ -372,6 +378,64 @@
+ > per experiment via the multi-experiment Store factory. There
+ > is one task-store-server URL deployment-wide; the calls vary
+ > only by `experiment_id`.
++>
++> #### 11.6 Holder-instance fencing
++>
++> The `worker_id` field in a lease identifies the *replica's
++> registered identity*, not its *running process*. Two
++> replicas misconfigured to share a `worker_id` would otherwise
++> appear to the control plane as a single principal — both
++> could renew the same lease, both could release it, and both
++> could "recover" it after restart. To prevent this, every
++> orchestrator process generates a fresh `holder_instance` UUID
++> at startup and supplies it on `acquire_lease`. The control
++> plane stores it on the lease record. `renew_lease` and
++> `release_lease` both require the caller's `holder_instance`
++> to match the stored value; mismatch returns
++> `409 eden://error/lease-instance-mismatch`. Effects:
++>
++> - A second process started with the same `worker_id` calls
++>   `acquire_lease` with a fresh `holder_instance`. The control
++>   plane sees an active lease with a *different*
++>   `holder_instance` and returns `LeaseHeldByOther` — the
++>   second replica cannot acquire (correct).
++> - On lease expiration, either process can re-acquire (the
++>   acquire-over-expired path); whichever succeeds gets the
++>   lease with its own `holder_instance`. The other process
++>   cannot renew the lease with its old `holder_instance`.
++> - On restart of the original process, it generates a NEW
++>   `holder_instance`. Its old leases are stranded under the
++>   old `holder_instance` value — those leases naturally expire
++>   per §11.3. The recovered process then acquires fresh leases
++>   under its new instance UUID.
++>
++> The runtime defense is the orchestrator's startup probe (see
++> §3.2 below): on startup, query the control plane for
++> existing leases held by `worker_id == self.worker_id` AND
++> `holder_instance != self.holder_instance` AND
++> `expires_at >= now`. Any such lease indicates a duplicate
++> live replica; the orchestrator MUST exit with a clear error
++> rather than running.
++>
++> #### 11.7 Lease-release after termination drain
++>
++> Per 12a-3 §3.5, a `terminated` experiment's loop runs only
++> the integration decision until no `status="success"`
++> variants without `variant_commit_sha` remain. After the
++> drain completes, the lease holder MUST `release_lease` for
++> the terminated experiment, AND MUST add the experiment_id
++> to a local "drained-terminated" set so the
++> `new_lease_acquisition_thread` skips re-acquiring it. The
++> drained-terminated set is cleared when the operator runs
++> `unregister_experiment` (which removes the registry entry
++> entirely) OR when a deployment-side reset happens (e.g.,
++> the orchestrator process restarts with a fresh in-memory
++> set; the experiment will then be skipped at first iteration
++> if the drain check still passes, immediately released). This
++> rule unblocks the §11.2 `unregister_experiment` precondition
++> ("`last_known_state == terminated` AND no active lease") for
++> drained terminated experiments without operator
++> intervention.
+ 
+ ### 3.2 Lease acquisition + renewal flow
+ 
+@@ -382,12 +446,24 @@
+   # worker_id is supplied per replica via --worker-id (12a-2 §3.8);
+   # operators MUST give each replica a unique id. Default
+   # "auto-orchestrator-1" is OK only when running a single replica.
++  self.holder_instance = uuid4()  # per-process UUID; §11.6 fence
++  self.drained_terminated = set()  # §11.7 skip set
+   register_worker(worker_id)               # 12a-1; admin token at boot
+   add_to_group(worker_id, "orchestrators") # 12a-2; admin token at boot
++  # §11.6 startup fence: any active lease held by self.worker_id
++  # under a DIFFERENT holder_instance means another live replica
++  # is misconfigured to share our worker_id. Exit hard rather
++  # than running.
++  for lease in list_active_leases(holder=worker_id):
++    if lease.holder_instance != self.holder_instance \
++       and lease.expires_at >= now:
++      log error "duplicate worker_id detected; another replica is live"
++      exit(2)
+   # Subsequent ops use the worker's own credential, not the admin token.
+   for experiment_id in list_experiments():
+     try:
+-      lease = acquire_lease(experiment_id, holder=worker_id)
++      lease = acquire_lease(experiment_id, holder=worker_id,
++                            holder_instance=self.holder_instance)
+       claim_experiment(lease)              # adds to local owned set
+     except LeaseHeldByOther:
+       pass
+@@ -397,10 +473,12 @@
+ renewal_thread (every lease_duration / 3):
+   for lease in self.held_leases:
+     try:
+-      renew_lease(lease.lease_id)
++      renew_lease(lease.lease_id, self.holder_instance)
+       lease.last_successful_renew = now
+     except LeaseNotHeld:        # we lost it (clock skew, control-plane mutation)
+       drop_experiment(lease.experiment_id)
++    except LeaseInstanceMismatch:  # §11.6: another replica took over with a fresh instance
++      drop_experiment(lease.experiment_id)
+     except TransportError:
+       log warning
+       # Self-fence: if we cannot reach the control plane for >= lease_duration,
+@@ -417,23 +495,37 @@
+   for experiment_id in self.held_experiments:
+     state = read_experiment_state(experiment_id)
+     if state == "terminated":
+-      run_integration_only(experiment_id)  # 12a-3 §3.5 drain
++      drained = run_integration_only(experiment_id)  # 12a-3 §3.5 drain
++      # §11.7: once integration drains and no success variants remain
++      # without variant_commit_sha, release the lease and mark this
++      # experiment as drained-terminated so the acquisition thread
++      # doesn't pick it back up.
++      if drained:
++        try:
++          release_lease(lease_for(experiment_id), self.holder_instance)
++        except: pass
++        self.held_experiments.remove(experiment_id)
++        self.drained_terminated.add(experiment_id)
+     else:
+       run_orchestrator_iteration(experiment_id, ...)
+ 
+ on shutdown:
+   for lease in self.held_leases:
+     try:
+-      release_lease(lease.lease_id)
++      release_lease(lease.lease_id, self.holder_instance)
+     except: pass
+ 
+ # every poll_interval, also try to acquire leases for unleased experiments:
+ new_lease_acquisition_thread (every poll_interval):
+   for experiment_id in list_experiments():
+-    if experiment_id not in self.held_experiments:
+-      try:
+-        lease = acquire_lease(experiment_id, holder=worker_id)
+-        self.held_experiments.add(experiment_id)
++    if experiment_id in self.held_experiments:
++      continue
++    if experiment_id in self.drained_terminated:
++      continue  # §11.7: drained terminated; don't re-acquire
++    try:
++      lease = acquire_lease(experiment_id, holder=worker_id,
++                            holder_instance=self.holder_instance)
++      self.held_experiments.add(experiment_id)
+       except LeaseHeldByOther:
+         pass
+ ```

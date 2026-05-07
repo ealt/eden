@@ -1,0 +1,82 @@
+--- docs/plans/review/eden-phase-12c-control-plane/20260506T174832/5.md	2026-05-06 18:13:10
++++ docs/plans/eden-phase-12c-control-plane.md	2026-05-06 18:16:00
+@@ -613,12 +613,14 @@
+   experiment_id text PRIMARY KEY REFERENCES control_plane_experiments(experiment_id),
+   lease_id text NOT NULL,
+   holder text NOT NULL,
++  holder_instance text NOT NULL,    -- §11.6 fencing: per-process UUID
+   acquired_at timestamptz NOT NULL,
+   expires_at timestamptz NOT NULL,
+   renewed_at timestamptz NOT NULL
+ );
+ 
+ CREATE INDEX idx_leases_expires ON control_plane_leases (expires_at);
++CREATE INDEX idx_leases_holder ON control_plane_leases (holder);  -- for list_active_leases(holder=...)
+ ```
+ 
+ The `experiment_id` PRIMARY KEY on `control_plane_leases`
+@@ -1017,7 +1019,7 @@
+ | `spec/v0/11-control-plane.md` (new) | Full chapter from §3.1 above. ~250 lines. |
+ | `spec/v0/02-data-model.md` | Extend the §2.5 Experiment runtime shape with `lease: ExperimentLease \| null`. Define `ExperimentLease` shape inline or cross-reference chapter 11. |
+ | `spec/v0/03-roles.md` | Add §6.5 "Lease ownership". The orchestrator's five decisions (§6.2) MUST NOT run for an experiment unless the orchestrator holds an active lease. |
+-| `spec/v0/07-wire-protocol.md` | Extend §1.3 carve-out to include `/v0/control/` (parallel to 12b's `/v0/checkpoints/`). Add §9 "Control-plane operations" with per-endpoint authority per Decision 12. **Experiment registry**: `POST /v0/control/experiments` (register; admin-token), `DELETE /v0/control/experiments/<E>` (unregister; admin-token), `GET /v0/control/experiments` (list; any authenticated control-plane worker or admin-token), `GET /v0/control/experiments/<E>` (read metadata; same as list). **Lease ops**: `POST /v0/control/experiments/<E>/leases` (acquire; caller in deployment-scoped `orchestrators` group with `holder == authenticated worker_id`), `POST /v0/control/leases/<L>/renew` (caller MUST be the lease's current holder), `POST /v0/control/leases/<L>/release` (caller MUST be the lease's current holder). **Deployment-scoped worker registry** (per Decision 12): `POST /v0/control/workers` (register; admin-token; mirrors 12a-1 §D.1 shape but at the deployment scope), `POST /v0/control/workers/<W>/reissue-credential` (admin-token), `GET /v0/control/workers` (list; admin-token), `POST /v0/control/groups` (register; admin-token), `POST /v0/control/groups/<G>/members` (add_to_group; admin-token), `DELETE /v0/control/groups/<G>/members/<W>` (remove_from_group; admin-token), `GET /v0/control/groups` (list; admin-token), `POST /v0/control/verify-credential` (authenticated; mirrors 12a-1's verify_worker_credential). |
++| `spec/v0/07-wire-protocol.md` | Extend §1.3 carve-out to include `/v0/control/` (parallel to 12b's `/v0/checkpoints/`). Add §9 "Control-plane operations" with per-endpoint authority per Decision 12. **Experiment registry**: `POST /v0/control/experiments` (register; admin-token), `DELETE /v0/control/experiments/<E>` (unregister; admin-token), `GET /v0/control/experiments` (list; any authenticated control-plane worker or admin-token), `GET /v0/control/experiments/<E>` (read metadata; same as list). **Lease ops** (per §11.6 holder-instance fencing — every lease op carries `holder_instance: string` in addition to `lease_id`): `POST /v0/control/experiments/<E>/leases` (acquire; body includes `holder_instance`; caller in deployment-scoped `orchestrators` group with `holder == authenticated worker_id`); `GET /v0/control/leases?holder=<worker_id>` (list active leases held by `worker_id`; used by the §3.2 startup-fence probe; caller MUST be authenticated as `worker_id`); `POST /v0/control/leases/<L>/renew` (body includes `holder_instance`; returns 409 `eden://error/lease-instance-mismatch` if the stored value differs); `POST /v0/control/leases/<L>/release` (body includes `holder_instance`; same mismatch rule). **Deployment-scoped worker registry** (per Decision 12): `POST /v0/control/workers` (register; admin-token; mirrors 12a-1 §D.1 shape but at the deployment scope), `POST /v0/control/workers/<W>/reissue-credential` (admin-token), `GET /v0/control/workers` (list; admin-token), `POST /v0/control/groups` (register; admin-token), `POST /v0/control/groups/<G>/members` (add_to_group; admin-token), `DELETE /v0/control/groups/<G>/members/<W>` (remove_from_group; admin-token), `GET /v0/control/groups` (list; admin-token), `POST /v0/control/verify-credential` (authenticated; mirrors 12a-1's verify_worker_credential). |
+ | `spec/v0/09-conformance.md` | Add `v1+multi-experiment` level. |
+ | `spec/v0/schemas/lease.schema.json` (new) | JSON Schema for ExperimentLease. |
+ | `spec/v0/schemas/experiment.schema.json` (extension) | Add `lease` property (oneOf [`null`, `$ref: lease.schema.json`]). |
+@@ -1032,7 +1034,7 @@
+ | `reference/packages/eden-control-plane/tests/` | Unit tests for the client (request shape, response parsing, error handling for all four endpoint families: experiments, leases, workers, groups). |
+ | `reference/services/control-plane/src/eden_control_plane_server/server.py` (new) | FastAPI app. All endpoints per the §5.1 spec table: experiment registry + lease ops + deployment-scoped worker/group registry + verify-credential. Postgres-backed (psycopg). |
+ | `reference/services/control-plane/src/eden_control_plane_server/db.py` | Schema definitions + migrations (a thin idempotent CREATE-TABLE-IF-NOT-EXISTS at startup). Tables: `control_plane_experiments`, `control_plane_leases` (§3.4 above), plus `control_plane_workers` and `control_plane_groups` for the Decision 12 deployment-scoped registry (mirroring 12a-1's `workers` / `groups` table shapes but in the control-plane's schema, separate from the per-experiment task-store-server tables). |
+-| `reference/services/control-plane/src/eden_control_plane_server/lease.py` | Lease acquire/renew/release logic per §3.4. The atomic-replace SQL is the load-bearing piece. |
++| `reference/services/control-plane/src/eden_control_plane_server/lease.py` | Lease acquire/renew/release logic per §3.4 + §11.6 fencing. The atomic-replace SQL on acquire is the load-bearing piece. The lease row schema includes the `holder_instance` column; renew/release verify it and raise `LeaseInstanceMismatch` (409 `eden://error/lease-instance-mismatch`) on a mismatch. The new `list_active_leases(holder=worker_id)` op (used by the §3.2 startup-fence probe) selects leases by holder + `expires_at >= now`. |
+ | `reference/services/control-plane/src/eden_control_plane_server/workers.py` (new) | Deployment-scoped worker + group registry handlers per Decision 12. Reuses 12a-1's argon2id credential-hashing scheme; the Postgres tables are control-plane-scoped (no cross-talk with the task-store-server's per-experiment registries). |
+ | `reference/services/control-plane/src/eden_control_plane_server/state_sync.py` (new) | Background poller per §3.4a: every `EDEN_STATE_SYNC_INTERVAL_SECONDS`, walk `list_experiments` and call each experiment's `read_experiment(id)` on the task-store-server. Update `last_known_state` atomically. Track per-experiment "consecutive failures" counter; emit stale-warning entries when threshold (default 10) is exceeded. The `acquire_lease` handler also calls into `state_sync` for an on-demand refresh. |
+ | `reference/services/control-plane/tests/` | Unit + integration tests for all four endpoint families. Postgres-backed integration tests gated on `EDEN_TEST_POSTGRES_DSN`. **Specific coverage** (matches §6.1 below): lease semantics, worker/group registration round-trip, state-sync polling convergence, stale-warning emission, acquire-lease-also-refreshes-state. |
+@@ -1099,6 +1101,14 @@
+ - Release → 200; subsequent acquire succeeds.
+ - Acquire over expired lease (no explicit release) → 201 with
+   new `lease_id`, replacing the expired entry atomically.
++- **§11.6 holder-instance fencing**: a renew with the wrong
++  `holder_instance` (same `lease_id` and same `worker_id` but
++  different UUID) returns 409
++  `eden://error/lease-instance-mismatch`. Same for release.
++- **§11.6 startup-fence probe**: `list_active_leases(holder=W)`
++  returns only leases where holder == W AND expires_at >= now.
++  Verifies the orchestrator's startup duplicate-`worker_id`
++  detection.
+ 
+ `eden_control_plane_server.tests.test_workers_registry`
+ (parametrized SQLite + Postgres; mirrors 12a-1's worker-registry
+@@ -1136,13 +1146,30 @@
+ 
+ `eden_orchestrator.tests.test_lease_manager`:
+ 
+-- Manager acquires available leases on startup.
++- Manager acquires available leases on startup; each lease
++  carries a fresh `holder_instance` UUID per process.
+ - Renewal thread renews held leases on schedule.
+ - Renewal failure → drop experiment from owned set.
+ - Acquisition thread retries on `LeaseHeldByOther`.
+ - Shutdown → all leases released.
+ - Decision gating: an iteration with no held leases produces
+   no Store writes (mock the Store to assert).
++- **§11.6 startup duplicate-`worker_id` detection**: with the
++  control plane reporting an active lease held by
++  `self.worker_id` AND a different `holder_instance`, the
++  manager's `_startup_fence_check()` exits the process with
++  code 2.
++- **§11.6 instance-mismatch handling**: renew thread receives
++  `LeaseInstanceMismatch` from the control plane (a different
++  replica took over with a fresh instance UUID); manager
++  drops the experiment from its owned set without retrying.
++- **§11.7 release-after-drain**: when `run_integration_only`
++  reports `drained=True` for a terminated experiment, the
++  manager releases the lease, removes the experiment_id from
++  `held_experiments`, and adds it to `drained_terminated`.
++- **§11.7 acquisition skip**: with experiment_id in
++  `drained_terminated`, the acquisition thread does NOT call
++  `acquire_lease` for it on subsequent ticks.
+ 
+ ### 6.2 Cross-request flow tests
+ 
