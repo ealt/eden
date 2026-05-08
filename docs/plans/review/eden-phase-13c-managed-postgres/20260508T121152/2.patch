@@ -1,0 +1,233 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/1.md	2026-05-08 12:19:45
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:23:35
+@@ -529,11 +529,18 @@
+   password value the chart owns. The TLS suffix (if any) is
+   appended in the same `printf` call.
+ - **Embedded mode, `secrets.existingSecret`.** The operator's
+-  pre-created Secret MUST already contain `EDEN_STORE_URL`
+-  (the existing 13a §3.3 production-secret contract — verified
+-  by the chart's `existingSecret` documentation). The chart
+-  does NOT compose anything; it just references the
+-  operator-supplied key.
++  pre-created Secret MUST contain `EDEN_STORE_URL`. **This is
++  a NEW contract introduced by 13c** — 13a's chart composed
++  the DSN at template time from `secrets.postgresPassword`,
++  so 13a operators using `existingSecret` did NOT need to
++  populate `EDEN_STORE_URL`. 13c shifts DSN composition into
++  the Secret value to avoid the urlquery-without-the-password
++  failure mode (§3.2.2 motivation), so 13a operators upgrading
++  to chart 0.2.0 with `secrets.existingSecret` set MUST add
++  the `EDEN_STORE_URL` key before the upgrade. See §8.3b for
++  the upgrade-trap details and the NOTES.txt warning the
++  chart emits. The chart itself does NOT compose anything;
++  it just references the operator-supplied key.
+ - **External mode, `external.connectionString`.** The chart's
+   `secret.yaml` writes the operator-supplied DSN into the
+   chart-managed Secret as `EDEN_STORE_URL`. No reformatting,
+@@ -962,19 +969,29 @@
+ between the operator's workstation and BOTH endpoints. The
+ runbook step-by-step:
+ 
+-1. **Drain workers.** Sequencing matters: claim-TTL expiration
+-   is operationalized by the orchestrator's
+-   `sweep_expired_claims` step in
+-   [`reference/services/orchestrator/src/eden_orchestrator/loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
+-   line 67. If the orchestrator is scaled to zero before
+-   in-flight claims expire, no sweeper runs and the
+-   `state=claimed` tasks stay claimed forever. So the drain is
+-   a two-phase scale-down:
++1. **Drain workers.** Sequencing matters because the worker
++   hosts (executor / evaluator / ideator) claim tasks WITHOUT
++   an `expires_at` deadline (verified at
++   [`reference/packages/eden-dispatch/src/eden_dispatch/workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)
++   lines 123, 201;
++   [`reference/services/executor/src/eden_executor_host/subprocess_mode.py`](../../reference/services/executor/src/eden_executor_host/subprocess_mode.py)
++   line 164 + sibling files), so the orchestrator's
++   `sweep_expired_claims` at
++   [`reference/packages/eden-dispatch/src/eden_dispatch/sweep.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/sweep.py)
++   lines 32-67 SKIPS them — only the Web UI's claim path
++   (which carries a TTL per
++   [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py)
++   line 58) is affected by the sweeper. So the drain is
++   **operator-driven**, not TTL-based. The pattern is:
++   scale workers to 0 (graceful SIGTERM lets each worker
++   finish its in-flight task and submit, transitioning
++   `claimed` → `submitted` for the work that completed
++   within `terminationGracePeriodSeconds`), then operator-
++   reclaim any tasks that didn't finish.
+ 
+-   First, scale the worker hosts (which are the only services
+-   that can newly claim tasks) to zero. Per 13a Decision 3,
+-   `executor-host` / `evaluator-host` / `web-ui` are
+-   StatefulSets and `ideator-host` is a Deployment:
++   Per 13a Decision 3, `executor-host` / `evaluator-host` /
++   `web-ui` are StatefulSets and `ideator-host` is a
++   Deployment:
+ 
+    ```bash
+    kubectl scale statefulset -n eden-prod \
+@@ -985,27 +1002,64 @@
+      --replicas=0
+    ```
+ 
+-   Wait for in-flight tasks to settle. While this drain
+-   proceeds, the orchestrator's running sweeper reclaims
+-   stale claims as TTLs expire. Confirm via the wire
+-   `/admin/tasks/` endpoint that no tasks remain in
+-   `state=claimed`. Budget at least 2× the configured
+-   `claim_ttl_seconds` for the wait. Then scale the
+-   orchestrator to zero:
++   Wait for the StatefulSet / Deployment to report 0 ready
++   replicas (`kubectl rollout status` or polling
++   `kubectl get`). Workers have up to
++   `terminationGracePeriodSeconds` (default 30s) to finish
++   their in-flight task on SIGTERM; any task that did finish
++   transitions to `submitted` via the existing submit path.
++
++   Then operator-reclaim any tasks still in `state=claimed`.
++   Two equivalent paths:
++
++   - **Web-UI admin route** (preferred when operators have
++     UI access): the 9e admin module's per-task detail page
++     exposes a "reclaim" / "force-reclaim (replays work)"
++     button per
++     [`reference/services/web-ui/src/eden_web_ui/routes/admin.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py)
++     (the `Store.reclaim(task_id, "operator")` path per
++     [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md)
++     §5.1). The runbook walks the operator through it
++     task-by-task. The Web UI is still scaled up at this
++     point (scale it to 0 in step 1's third sub-phase).
++   - **Direct API** (for headless operators or when the
++     Web UI is already down): `curl` against the
++     task-store-server's `reclaim` endpoint with the admin
++     bearer:
++
++     ```bash
++     for tid in $(kubectl exec -n eden-prod \
++       deployment/eden-task-store-server -- \
++       curl -s -H "Authorization: Bearer $TOKEN" \
++       'http://localhost:8080/v1/tasks?state=claimed' \
++       | jq -r '.[].task_id'); do
++       kubectl exec -n eden-prod deployment/eden-task-store-server -- \
++         curl -X POST -H "Authorization: Bearer $TOKEN" \
++         "http://localhost:8080/v1/tasks/$tid/reclaim?cause=operator"
++     done
++     ```
++
++   Confirm `state=claimed` is empty via the wire
++   `/admin/tasks/` endpoint or
++   `curl ...?state=claimed | jq length`. Then scale the
++   orchestrator to zero, and the web-ui:
+ 
+    ```bash
+    kubectl scale statefulset -n eden-prod \
+-     eden-orchestrator --replicas=0
++     eden-orchestrator eden-web-ui --replicas=0
+    ```
+ 
+    The `task-store-server` keeps running so we can read its
+    state for the final consistency check before snapshotting.
+-   The web-ui (which can also do operator-driven reclaim per
+-   the 9e admin module) MAY stay up during this window if
+-   operators want to manually reclaim any stuck claim that
+-   hasn't aged out within the budget. Scale it to zero after
+-   the orchestrator if so.
+ 
++   Note that an alternative shape — leaving workers running
++   and capturing `pg_dump` against an active state — is NOT
++   safe: `pg_dump --format=custom` produces an internally
++   consistent snapshot of the SQL state but the Gitea-side
++   git refs the workers may push during the dump are NOT
++   captured, breaking the chapter-6 §3.4 atomicity invariant
++   on restore. The drain is mandatory.
++
+ 2. **Snapshot embedded Postgres via pg_dump.** Run from the
+    operator's workstation:
+ 
+@@ -1581,33 +1635,61 @@
+ is `Delete`. The runbook flags this and recommends `helm
+ upgrade` (NOT `--force`) for the cutover.
+ 
+-### 8.3a Sweeper / drain ordering in the migration runbook
++### 8.3a Drain procedure: operator-driven reclaim, not TTL
+ 
+-The `sweep_expired_claims` step that converts expired
+-`claimed` tasks back to `pending` runs inside the
+-orchestrator's loop iteration
+-([`reference/services/orchestrator/src/eden_orchestrator/loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
+-line 67). If the migration runbook scaled the orchestrator
+-to zero before workers' claims aged out, the claims would
+-stay `claimed` indefinitely and the snapshot would capture
+-"in-flight" state that the post-restore deployment cannot
+-recover from cleanly (the tasks would be claim-stale on the
+-new instance with no orchestrator history to know who held
+-them).
+-
+-§3.8.2 step 1 mitigates this by phasing the scale-down:
+-worker hosts to 0 first, wait while the still-running
+-orchestrator sweeper drains claims, THEN orchestrator to 0.
+-The wait budget is 2× `claim_ttl_seconds` to absorb the
+-worst-case "claim made one tick before scale-down". The
+-web-ui's admin-reclaim path is a manual escape hatch for any
+-claim that hasn't aged out within budget.
++Worker-host claims (executor / evaluator / ideator hosts)
++carry NO `expires_at` field — verified at
++[`reference/packages/eden-dispatch/src/eden_dispatch/workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)
++lines 123 and 201, plus the three subprocess hosts'
++`subprocess_mode.py` files. The orchestrator's
++`sweep_expired_claims` at
++[`reference/packages/eden-dispatch/src/eden_dispatch/sweep.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/sweep.py)
++lines 44-46 explicitly skips claims without an `expires_at`,
++so worker-host claims are NOT TTL-reclaimable. Only the Web
++UI's claim path (per
++[`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py)
++line 58's `--claim-ttl-seconds`) carries an expiry that the
++sweeper acts on.
+ 
+-A future amendment MAY add an explicit "drain" CLI to the
+-orchestrator that sets a "no new claims; finish in-flight
+-work; quiesce" mode and exits cleanly, which would let the
+-runbook collapse the two-phase scale-down. Out of scope for
+-13c; the manual sequence is workable.
++§3.8.2 step 1 reflects this by drainin via two mechanisms,
++not TTL:
++
++1. **Graceful SIGTERM submit.** Scaling worker hosts to 0
++   sends SIGTERM; each pod has up to
++   `terminationGracePeriodSeconds` (k8s default 30s) to
++   finish its in-flight task and submit. Tasks that finish
++   transition `claimed` → `submitted` via the existing
++   wire-side submit path; no operator action needed.
++2. **Operator reclaim for stuck claims.** Any task still in
++   `state=claimed` after worker pods terminate gets
++   reclaimed by the operator via the 9e admin module's
++   `Store.reclaim(task_id, "operator")` path or via direct
++   API call. The orchestrator's sweeper plays no role.
++
++This is materially different from the Web-UI session-
++abandonment recovery flow (which IS TTL-based, per the
++chunk-1 §A "stranded-claim recovery via the sweeper"
++pattern). Operator-driven reclaim is the right mechanism
++for migration drains because it's deterministic + bounded
++in time + doesn't depend on a sweeper that may have already
++been scaled down.
++
++A future amendment MAY add `expires_at` to worker-host
++claims (the spec already supports it on the wire side; only
++the worker-host claim invocation paths omit it), which
++would let the sweeper handle worker-host stuck claims too
++and simplify the runbook. That would be a code change in
++the executor/evaluator/ideator hosts plus the Web UI's
++implementer/evaluator/ideator routes (which currently emit
++TTLs only on the operator-claim path), and a behavior change
++operators would need to opt into. Out of scope for 13c; the
++operator-reclaim path is workable today.
++
++A second future amendment MAY add an explicit "drain" CLI
++to the orchestrator + worker hosts that sets a "no new
++claims; finish in-flight work; quiesce" mode and exits
++cleanly, which would let the runbook collapse the two-phase
++scale-down. Out of scope for 13c.
+ 
+ ### 8.3b `EDEN_STORE_URL` Secret-key contract — chart upgrade trap
+ 

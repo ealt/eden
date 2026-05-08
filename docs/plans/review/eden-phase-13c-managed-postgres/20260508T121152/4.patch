@@ -1,0 +1,63 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/3.md	2026-05-08 12:25:37
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:26:53
+@@ -1134,17 +1134,36 @@
+ 7. **Post-migration verification.** Hit the wire endpoint
+    directly. Endpoint shapes per
+    [`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py)
+-   lines 183-508 (and the `/healthz` endpoint added in 9e):
++   lines 183-508 (and the `/healthz` endpoint added in 9e).
++   The `/v0/experiments/{E}/events` endpoint paginates via a
++   `cursor` query param (not `limit`); to confirm event-count
++   parity with the pre-snapshot state, walk the cursor or
++   simply count the response on a fresh deployment where it
++   fits in one page.
+ 
+    ```bash
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+      curl -s http://localhost:8080/healthz
+-   # plus read_range to confirm event count matches the pre-snapshot count:
++   # Walk the events cursor to count total events, comparing
++   # against the pre-snapshot count captured before pg_dump.
++   # cursor=0 returns the first batch; the response includes a
++   # forward `cursor` to feed the next call.
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+-     curl -s -H "Authorization: Bearer $TOKEN" \
+-       "http://localhost:8080/v0/experiments/$EID/events?limit=1" \
+-     | jq '.events[0].seq // .events[0].event_id'
+-   # variants in success/integrated state:
++     bash -c '
++       count=0; cursor=0;
++       while :; do
++         resp=$(curl -s -H "Authorization: Bearer $TOKEN" \
++           "http://localhost:8080/v0/experiments/'$EID'/events?cursor=$cursor")
++         batch=$(echo "$resp" | jq ".events | length")
++         count=$((count + batch))
++         next=$(echo "$resp" | jq ".cursor")
++         [ "$batch" = "0" ] && break
++         [ "$next" = "$cursor" ] && break
++         cursor=$next
++       done
++       echo "events: $count"'
++   # Variants in success status (sanity-check a non-zero count
++   # for any non-trivial experiment):
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+      curl -s -H "Authorization: Bearer $TOKEN" \
+        "http://localhost:8080/v0/experiments/$EID/variants?status=success" \
+@@ -1301,10 +1320,13 @@
+ 
+ The `kind` cluster's network is `kind` (Docker network created
+ by kind-action); a sibling container on the same network is
+-reachable from kind pods at `eden-ci-pg:5432`. This bypasses
+-the kind-cluster Service abstraction and proves the
+-external-DSN path works against a Postgres the chart did NOT
+-create.
++reachable from kind pods at the container's IP on that network
++(captured into `${EDEN_CI_PG_IP}` above). The kind cluster's
++CoreDNS does NOT resolve sibling-container names — see §8.6 —
++so the DSN MUST embed the IP, not `eden-ci-pg`. The IP-based
++path bypasses the kind-cluster Service abstraction and proves
++the external-DSN path works against a Postgres the chart did
++NOT create.
+ 
+ `ci-values-managed-postgres.yaml` (new) sets:
+ 
