@@ -1,0 +1,42 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/4.md	2026-05-08 12:27:09
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:29:03
+@@ -1148,12 +1148,20 @@
+    # against the pre-snapshot count captured before pg_dump.
+    # cursor=0 returns the first batch; the response includes a
+    # forward `cursor` to feed the next call.
+-   kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+-     bash -c '
++   #
++   # Both $TOKEN and $EID are operator-side env vars; pass them
++   # explicitly via `env` to the kubectl-exec'd shell so the
++   # double-quoted bash -c string sees the right values. (A
++   # single-quoted bash -c body would not expand $TOKEN at all;
++   # a double-quoted body with no `env` would expand $TOKEN on
++   # the operator side, which is what we want — but using `env`
++   # makes the boundary explicit.)
++   kubectl exec -n eden-prod deployment/eden-task-store-server \
++     -- env "TOKEN=${TOKEN}" "EID=${EID}" bash -c '
+        count=0; cursor=0;
+        while :; do
+          resp=$(curl -s -H "Authorization: Bearer $TOKEN" \
+-           "http://localhost:8080/v0/experiments/'$EID'/events?cursor=$cursor")
++           "http://localhost:8080/v0/experiments/$EID/events?cursor=$cursor")
+          batch=$(echo "$resp" | jq ".events | length")
+          count=$((count + batch))
+          next=$(echo "$resp" | jq ".cursor")
+@@ -1163,10 +1171,12 @@
+        done
+        echo "events: $count"'
+    # Variants in success status (sanity-check a non-zero count
+-   # for any non-trivial experiment):
++   # for any non-trivial experiment). Operator-side $TOKEN and
++   # $EID expansion (no `env` passthrough needed — single curl
++   # call resolved by the outer shell):
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+-     curl -s -H "Authorization: Bearer $TOKEN" \
+-       "http://localhost:8080/v0/experiments/$EID/variants?status=success" \
++     curl -s -H "Authorization: Bearer ${TOKEN}" \
++       "http://localhost:8080/v0/experiments/${EID}/variants?status=success" \
+      | jq length
+    ```
+ 

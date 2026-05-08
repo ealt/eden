@@ -1,0 +1,87 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/5.md	2026-05-08 12:29:27
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:31:33
+@@ -1068,10 +1068,51 @@
+    captured, breaking the chapter-6 §3.4 atomicity invariant
+    on restore. The drain is mandatory.
+ 
+-2. **Snapshot embedded Postgres via pg_dump.** Run from the
+-   operator's workstation:
++2. **Capture pre-snapshot baselines, then `pg_dump`.** Before
++   `pg_dump` runs, record the event count and the highest event
++   seq from the embedded Postgres. Step 4's SQL verification
++   and step 7's wire-endpoint verification both compare against
++   these baselines. The `task-store-server` is still running at
++   this point.
+ 
+    ```bash
++   # SQL-side baseline (queried directly against the embedded pod):
++   EVENT_COUNT_BEFORE=$(kubectl exec -n eden-prod eden-postgres-0 -- \
++     psql --user=eden --dbname=eden -tAc 'SELECT count(*) FROM event;')
++   MAX_SEQ_BEFORE=$(kubectl exec -n eden-prod eden-postgres-0 -- \
++     psql --user=eden --dbname=eden -tAc 'SELECT COALESCE(MAX(seq), 0) FROM event;')
++   echo "baseline: events=$EVENT_COUNT_BEFORE max_seq=$MAX_SEQ_BEFORE"
++
++   # Wire-side baseline (cursor walk; same shape as step 7's
++   # post-migration check). Captures the same count via the
++   # public surface so the post-migration verification can be
++   # apples-to-apples even if the operator can't shell into
++   # the new Postgres directly.
++   WIRE_COUNT_BEFORE=$(kubectl exec -n eden-prod deployment/eden-task-store-server \
++     -- env "TOKEN=${TOKEN}" "EID=${EID}" bash -c '
++       count=0; cursor=0;
++       while :; do
++         resp=$(curl -s -H "Authorization: Bearer $TOKEN" \
++           "http://localhost:8080/v0/experiments/$EID/events?cursor=$cursor")
++         batch=$(echo "$resp" | jq ".events | length")
++         count=$((count + batch))
++         next=$(echo "$resp" | jq ".cursor")
++         [ "$batch" = "0" ] && break
++         [ "$next" = "$cursor" ] && break
++         cursor=$next
++       done
++       echo "$count"')
++   echo "wire-baseline events: $WIRE_COUNT_BEFORE"
++   ```
++
++   Save these three numbers. (Wire-side count and SQL-side
++   count SHOULD match for a quiesced experiment; if they
++   diverge, investigate before snapshotting — likely indicates
++   an in-flight write that the step-1 drain didn't catch.)
++
++   Then run `pg_dump`:
++
++   ```bash
+    kubectl exec -n eden-prod eden-postgres-0 -- \
+      pg_dump --format=custom --no-owner --no-acl \
+        --user=eden --dbname=eden \
+@@ -1095,13 +1136,16 @@
+    non-superusers, ensure the database exists first.
+ 
+ 4. **Verify the schema_version round-trip.** Connect to the
+-   managed instance and confirm:
++   managed instance and confirm against the baselines captured
++   in step 1a:
+ 
+    ```sql
+    SELECT MAX(version) FROM schema_version;
+    -- expects 1
+    SELECT count(*) FROM event;
+-   -- expects same count as before
++   -- expects EVENT_COUNT_BEFORE
++   SELECT COALESCE(MAX(seq), 0) FROM event;
++   -- expects MAX_SEQ_BEFORE
+    ```
+ 
+ 5. **Swap the chart values.** Edit `values.yaml` to set
+@@ -1144,8 +1188,9 @@
+    ```bash
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+      curl -s http://localhost:8080/healthz
+-   # Walk the events cursor to count total events, comparing
+-   # against the pre-snapshot count captured before pg_dump.
++   # Walk the events cursor to count total events. Compare
++   # the result against the wire-side baseline captured in
++   # step 1a (the "wire-baseline events:" line).
+    # cursor=0 returns the first batch; the response includes a
+    # forward `cursor` to feed the next call.
+    #

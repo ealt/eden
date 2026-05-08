@@ -1,0 +1,17 @@
+**1. Missing Context**
+
+The problem is mostly well-defined, but two inherited constraints need to be stated explicitly before the plan is safe to execute.
+
+- The plan treats `postgres.external.connectionString` as “whatever psycopg/libpq accepts” in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:363), but the current server only dispatches `postgresql://` and `postgres://` URLs in [app.py](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/reference/services/task-store-server/src/eden_task_store_server/app.py:21). A libpq keyword DSN would currently be misread as a SQLite path. The plan should either narrow the accepted format to URL DSNs only, or make a code change in scope.
+- The migration runbook assumes claims “expire” after scaling workers and the orchestrator down in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:894), but expiration is only operationalized by the orchestrator’s sweeper in [loop.py](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/reference/services/orchestrator/src/eden_orchestrator/loop.py:67). The plan needs to explain who performs reclaim during drain, otherwise the “wait until no tasks are claimed” step is underspecified.
+
+**2. Feasibility**
+
+I have significant concerns here, so I would stop at this level and not evaluate alternatives/completeness/risk yet.
+
+- The embedded-mode DSN construction is not implementable as written. The plan says embedded mode builds `postgresql://eden:$(POSTGRES_PASSWORD)@...` in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:499) while also saying Helm will URI-encode the password with `urlquery` in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:530). Those two claims conflict, especially under 13a’s `secrets.existingSecret` model where Helm never sees the password value at all ([eden-phase-13a-helm-base-chart.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13a-helm-base-chart.md:456)). This needs a different design, not just better wording.
+- The migration runbook is not executable as written. Step 1 scales `ideator-host` as a StatefulSet in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:897), but 13a explicitly defined `ideator-host` as a Deployment in [eden-phase-13a-helm-base-chart.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13a-helm-base-chart.md:171). More importantly, scaling the orchestrator to zero before waiting for claimed tasks to clear conflicts with the sweeper dependency above, so the drain procedure can stall.
+
+**Overall Assessment**
+
+The plan has the right high-level target and most of the substrate concerns are identified, but it is not ready for implementation yet. I would resolve the store-URL contract, redesign the embedded-mode secret/DSN composition, and fix the migration drain/runbook mechanics first; after that, a second review round on alternatives/completeness would make sense.

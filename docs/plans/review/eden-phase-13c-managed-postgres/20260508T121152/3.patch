@@ -1,0 +1,83 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/2.md	2026-05-08 12:23:51
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:25:22
+@@ -1028,14 +1028,22 @@
+      bearer:
+ 
+      ```bash
++     # Note: $EID is the chart's --experiment-id (per
++     # setup-experiment-helm.sh / chart values). The actual wire
++     # endpoints live at /v0/experiments/{experiment_id}/... — see
++     # reference/packages/eden-wire/src/eden_wire/server.py line 183
++     # for the base. The reclaim body is a POST JSON body
++     # ({"cause": "operator"}), not a query param.
+      for tid in $(kubectl exec -n eden-prod \
+        deployment/eden-task-store-server -- \
+        curl -s -H "Authorization: Bearer $TOKEN" \
+-       'http://localhost:8080/v1/tasks?state=claimed' \
++       "http://localhost:8080/v0/experiments/$EID/tasks?state=claimed" \
+        | jq -r '.[].task_id'); do
+        kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+          curl -X POST -H "Authorization: Bearer $TOKEN" \
+-         "http://localhost:8080/v1/tasks/$tid/reclaim?cause=operator"
++         -H "Content-Type: application/json" \
++         -d '{"cause": "operator"}' \
++         "http://localhost:8080/v0/experiments/$EID/tasks/$tid/reclaim"
+      done
+      ```
+ 
+@@ -1124,15 +1132,23 @@
+    already populated and is a no-op.
+ 
+ 7. **Post-migration verification.** Hit the wire endpoint
+-   directly:
++   directly. Endpoint shapes per
++   [`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py)
++   lines 183-508 (and the `/healthz` endpoint added in 9e):
+ 
+    ```bash
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+      curl -s http://localhost:8080/healthz
+-   # plus read_range to confirm event count matches:
++   # plus read_range to confirm event count matches the pre-snapshot count:
+    kubectl exec -n eden-prod deployment/eden-task-store-server -- \
+      curl -s -H "Authorization: Bearer $TOKEN" \
+-       http://localhost:8080/v1/events/range
++       "http://localhost:8080/v0/experiments/$EID/events?limit=1" \
++     | jq '.events[0].seq // .events[0].event_id'
++   # variants in success/integrated state:
++   kubectl exec -n eden-prod deployment/eden-task-store-server -- \
++     curl -s -H "Authorization: Bearer $TOKEN" \
++       "http://localhost:8080/v0/experiments/$EID/variants?status=success" \
++     | jq length
+    ```
+ 
+ 8. **Scale workers back up.** Reverse-order from step 1: bring
+@@ -1241,6 +1257,12 @@
+           docker exec eden-ci-pg pg_isready -U eden -d eden && break
+           sleep 1
+         done
++        # Capture the sibling container's IP on the kind network — kind's
++        # CoreDNS does NOT resolve sibling-container names by default
++        # (per §8.6), so the DSN must reference the IP directly. Stash
++        # the IP in $GITHUB_ENV so later steps see it.
++        PG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' eden-ci-pg)
++        echo "EDEN_CI_PG_IP=${PG_IP}" >> "$GITHUB_ENV"
+     - name: Build + load chart's image into kind
+       run: |
+         docker build -t eden-reference:dev \
+@@ -1249,9 +1271,14 @@
+     - name: Helm install with mode=external
+       run: |
+         kubectl create namespace eden-test
++        # Use the sibling Postgres' IP (captured above), NOT
++        # `eden-ci-pg`. CoreDNS in kind resolves only Service DNS
++        # for in-cluster Services; a host on the kind Docker network
++        # is reachable by IP but not by docker container name from
++        # inside pods. See §8.6.
+         kubectl create secret generic eden-managed-pg \
+           -n eden-test \
+-          --from-literal=EDEN_STORE_URL='postgresql://eden:ci-test-password@eden-ci-pg:5432/eden'
++          --from-literal=EDEN_STORE_URL="postgresql://eden:ci-test-password@${EDEN_CI_PG_IP}:5432/eden"
+         helm install eden ./reference/helm/eden \
+           -f reference/helm/eden/ci-values-managed-postgres.yaml \
+           -n eden-test --wait --timeout 5m

@@ -1,0 +1,20 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/6.md	2026-05-08 12:31:48
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:32:31
+@@ -1137,7 +1137,7 @@
+ 
+ 4. **Verify the schema_version round-trip.** Connect to the
+    managed instance and confirm against the baselines captured
+-   in step 1a:
++   in step 2:
+ 
+    ```sql
+    SELECT MAX(version) FROM schema_version;
+@@ -1190,7 +1190,7 @@
+      curl -s http://localhost:8080/healthz
+    # Walk the events cursor to count total events. Compare
+    # the result against the wire-side baseline captured in
+-   # step 1a (the "wire-baseline events:" line).
++   # step 2 (the "wire-baseline events:" line).
+    # cursor=0 returns the first batch; the response includes a
+    # forward `cursor` to feed the next call.
+    #

@@ -1,0 +1,533 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13c-managed-postgres/20260508T121152/0.md	2026-05-08 12:11:52
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md	2026-05-08 12:19:27
+@@ -180,6 +180,7 @@
+   `postgres.external.connectionString`,
+   `postgres.external.existingSecret`,
+   `postgres.external.connectionStringKey`,
++  `postgres.external.tlsAlreadyEncodedInSecret`,
+   `postgres.tls.enabled`, `postgres.tls.caBundleSecret`,
+   `postgres.tls.caBundleKey`, `postgres.tls.mode`.
+ - Helm helpers: `eden.storeUrl` (in `_helpers.tpl`).
+@@ -361,9 +362,17 @@
+     # (chart-managed Secret) or secrets.existingSecret (13a §3.3).
+ 
+   external:
+-    # The libpq DSN. REQUIRED when mode=external (and no
+-    # existingSecret). The DSN format is whatever psycopg/libpq
+-    # accepts — postgresql://[user[:pass]@]host[:port][/dbname][?param=value...].
++    # The libpq URL-form DSN. REQUIRED when mode=external (and no
++    # existingSecret). Format MUST be URL-style:
++    #   postgresql://[user[:pass]@]host[:port][/dbname][?param=value...]
++    # (or `postgres://...`). Libpq's alternate keyword form
++    # (`host=foo port=5432 dbname=eden user=eden ...`) is NOT
++    # accepted — the task-store-server dispatches store URLs by
++    # scheme prefix at
++    # [`reference/services/task-store-server/src/eden_task_store_server/app.py`](../../reference/services/task-store-server/src/eden_task_store_server/app.py)
++    # lines 37-57; a keyword DSN would be misread as a SQLite
++    # bare-path. The values.schema.json regex enforces the
++    # url-form prefix (§3.2.1).
+     # NOTE: do NOT inline this in a public values.yaml; prefer
+     # existingSecret for production. The chart accepts inline only
+     # for ergonomic dev use. Prefer to URI-encode special chars in
+@@ -431,21 +440,26 @@
+ ```
+ 
+ The `task-store-server` Deployment template stops hard-coding
+-the embedded host name. Instead, it sources `EDEN_STORE_URL` via
+-a new `eden.storeUrl` helper that returns:
+-
+-- For `embedded`: the chart-built URL pointing at
+-  `<release>-eden-postgres:5432/eden` plus credentials from
+-  the chart-managed Secret.
+-- For `external`: either the operator-supplied
+-  `connectionString` value rendered into the chart-managed
+-  Secret, OR a `valueFrom: secretKeyRef:` pointing at
+-  `existingSecret + connectionStringKey`.
++the embedded host name. Per §3.2.2, the
++`EDEN_STORE_URL` env var sources from a Secret as a single
++pre-composed URL string in all four sub-cases (embedded with
++chart-managed secrets; embedded with `existingSecret`;
++external with `connectionString`; external with
++`existingSecret`). The new `_helpers.tpl` helpers
++`eden.storeUrlSecretName` and `eden.storeUrlSecretKey` resolve
++to the right name/key per sub-case; the Pod spec wires those
++into a single `env: - name: EDEN_STORE_URL; valueFrom:
++secretKeyRef: {name: ..., key: ...}` entry.
+ 
+-In BOTH modes, the rendered Pod spec uses
+-`envFrom: secretRef:` (or `env: valueFrom: secretKeyRef:`) so
+-the DSN is never visible in `kubectl get pod -o yaml`'s spec
+-section — only in the Secret it references.
++In all sub-cases, the rendered Pod spec uses `valueFrom:
++secretKeyRef:` so the DSN is never visible in `kubectl get pod
++-o yaml`'s spec section — only in the Secret it references.
++The other deployment credentials (`EDEN_SHARED_TOKEN`, etc.)
++keep using `envFrom: secretRef:` from 13a; only
++`EDEN_STORE_URL` switches to `valueFrom` (per §8.5's env-
++ordering note: with `valueFrom` we control resolution order
++explicitly, and we don't need `$(VAR)`-expansion across env
++entries).
+ 
+ ### 3.2 DSN handling and `values.schema.json` enforcement
+ 
+@@ -462,7 +476,11 @@
+             "anyOf": [
+               {
+                 "properties": {
+-                  "connectionString": { "type": "string", "minLength": 1 }
++                  "connectionString": {
++                    "type": "string",
++                    "minLength": 1,
++                    "pattern": "^postgres(ql)?://"
++                  }
+                 },
+                 "required": ["connectionString"]
+               },
+@@ -491,60 +509,99 @@
+ set fails with a clear error — per the AGENTS.md
+ substrate-plan pitfall on operator-required values.
+ 
+-#### 3.2.2 DSN rendering helper
++#### 3.2.2 DSN composition — Secret holds the full URL
+ 
+-The `eden.storeUrl` helper in `_helpers.tpl` returns a string
+-suitable for `EDEN_STORE_URL`:
++Both modes converge on the same Pod-spec shape: the
++`task-store-server`'s `EDEN_STORE_URL` env var sources from a
++Kubernetes Secret as a SINGLE pre-composed URL string. The
++chart never composes the DSN at template time from separate
++host/user/password fields — that posture would break under
++`secrets.existingSecret` (13a §3.3) where Helm doesn't see
++the password value at template time and therefore couldn't
++URI-encode it. Instead:
+ 
+-```text
+-{{- define "eden.storeUrl" -}}
+-{{- if eq .Values.postgres.mode "embedded" -}}
+-  {{- $host := printf "%s-eden-postgres" (include "eden.fullname" .) -}}
+-  {{- /* DSN built from secrets.postgresPassword; emitted with
+-         placeholder password that the runtime substitutes via
+-         envFrom. The actual password comes from the Secret;
+-         this helper just renders the host/port/db/user shape
+-         and the optional sslmode/sslrootcert suffix. */ -}}
+-  postgresql://eden:$(POSTGRES_PASSWORD)@{{ $host }}:5432/eden{{ include "eden.tlsSuffix" . }}
+-{{- else if eq .Values.postgres.mode "external" -}}
+-  {{- /* For external, the FULL DSN comes from the Secret; this
+-         helper returns a sentinel that the Pod spec replaces via
+-         envFrom. The TLS suffix is appended only if the operator
+-         hasn't already encoded sslmode in their DSN; see §3.3.4. */ -}}
+-  $(EDEN_STORE_URL_RAW){{ include "eden.tlsSuffix" . }}
+-{{- end -}}
+-{{- end -}}
+-```
+-
+-The Pod spec uses two envs to compose the final URL safely:
+-
+-- `EDEN_STORE_URL_RAW`: from Secret (either chart-managed or
+-  external).
+-- `EDEN_STORE_URL`: command-line arg using shell-style
+-  expansion to reference `$(EDEN_STORE_URL_RAW)` (Kubernetes
+-  expands `$(VAR)` syntax in container args/env).
++- **Embedded mode, chart-managed secrets.** The chart's
++  `secret.yaml` template URL-composes the DSN at template
++  time using `printf "postgresql://eden:%s@%s-eden-postgres:5432/eden"
++  (urlquery .Values.secrets.postgresPassword) (include "eden.fullname" .)`
++  and writes the result into the chart-managed Secret as the
++  `EDEN_STORE_URL` key. `urlquery` runs against the literal
++  password value the chart owns. The TLS suffix (if any) is
++  appended in the same `printf` call.
++- **Embedded mode, `secrets.existingSecret`.** The operator's
++  pre-created Secret MUST already contain `EDEN_STORE_URL`
++  (the existing 13a §3.3 production-secret contract — verified
++  by the chart's `existingSecret` documentation). The chart
++  does NOT compose anything; it just references the
++  operator-supplied key.
++- **External mode, `external.connectionString`.** The chart's
++  `secret.yaml` writes the operator-supplied DSN into the
++  chart-managed Secret as `EDEN_STORE_URL`. No reformatting,
++  no `urlquery` (the operator owns their password's encoding;
++  see §3.2.3). If `tls.enabled=true`, the `eden.tlsSuffix`
++  helper is appended at write time using the same
++  `?`-or-`&` discrimination logic.
++- **External mode, `external.existingSecret`.** The chart
++  references the operator-supplied Secret directly. The TLS
++  suffix CANNOT be appended at chart-template time (the chart
++  doesn't see the value). When `tls.enabled=true` AND
++  `external.existingSecret` is set, the operator MUST encode
++  the sslmode/sslrootcert in their pre-supplied DSN; the
++  chart's `values.schema.json` enforces that
++  `tls.enabled=false` is the only legal combination with
++  `external.existingSecret` UNLESS the operator confirms via
++  a separate value `external.tlsAlreadyEncodedInSecret: true`
++  (acknowledgement-style flag — sets a discriminator the
++  schema can require). This avoids silent mis-match where the
++  chart appends `?sslmode=...` after the operator already
++  encoded `?sslmode=disable` and produces `?sslmode=disable&sslmode=verify-full`.
+ 
+-This keeps the actual password out of the container's
+-`spec.containers[0].args` and out of `kubectl get pod -o yaml`.
++In all four cases, the rendered Pod's env block contains a
++single `EDEN_STORE_URL` entry sourced via
++`valueFrom: secretKeyRef:` (chart-managed or
++operator-supplied Secret per the case). `EDEN_STORE_URL` is
++then passed through to the `task-store-server` `--store-url`
++flag via `args: ["--store-url", "$(EDEN_STORE_URL)"]`. K8s
++expands the `$(VAR)` syntax in args; the secret value never
++appears in `spec.containers[0].args` literal text or in
++`kubectl get pod -o yaml`. (The
++[Kubernetes env expansion docs](https://kubernetes.io/docs/tasks/inject-data-application/define-environment-variable-container/)
++specify that `$(VAR)` in `args` resolves against env vars
++defined for the container.)
+ 
++The `eden.storeUrl` helper, then, is NOT a runtime DSN
++composer — it's a template-time helper that picks the right
++SecretKeyRef (chart-managed name vs `existingSecret`) for the
++Pod spec to reference.
++
+ #### 3.2.3 Password URI-encoding
+ 
+ The compose `setup-experiment.sh` URI-encodes the password into
+ the DSN ([`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)
+-line 292). The chart's embedded path needs the same posture
++line 292). The chart's embedded path mirrors that posture
+ because user-supplied passwords may contain `@`, `:`, `/`, `?`,
+-`#` reserved characters. The `eden.storeUrl` helper for
+-embedded mode uses `(urlquery .Values.secrets.postgresPassword)`
+-when rendering the placeholder. For external mode, the operator
+-supplies the DSN directly and is responsible for their own
+-encoding (just like setup-experiment's CLI override path); the
+-runbook flags this.
++`#` reserved characters. Per §3.2.2, the chart's `secret.yaml`
++template runs `urlquery .Values.secrets.postgresPassword` at
++template time, before composing the embedded DSN. This applies
++ONLY to the embedded-mode + chart-managed-secrets case (where
++Helm sees the password value); for `secrets.existingSecret`
++the operator pre-encoded the value when they wrote the secret
++key.
+ 
+-The chart's `values.schema.json` does NOT validate that an
+-external DSN parses as a libpq URL; that's psycopg's job at
+-connection time. A malformed DSN surfaces as a connection error
+-in the task-store-server's startup logs, which is tolerable.
++For external mode, the operator supplies the DSN directly
++(either inline in `connectionString` or pre-baked in
++`existingSecret`) and is responsible for their own password
++encoding — just like setup-experiment's CLI-password override
++path at line 292. The runbook + values comment flag this
++explicitly.
+ 
++The chart's `values.schema.json` partially validates external
++DSNs via the `^postgres(ql)?://` URL-prefix regex (§3.2.1). It
++does NOT fully parse the DSN; that's psycopg's job at
++connection time. A malformed DSN surfaces as a connection
++error in the task-store-server's startup logs, which is
++tolerable.
++
+ ### 3.3 TLS posture
+ 
+ #### 3.3.1 The `postgres.tls` block
+@@ -569,6 +626,20 @@
+   weaker modes).
+ - When `tls.enabled=true` AND `tls.mode ∈ {verify-ca,
+   verify-full}`, `tls.caBundleSecret` MUST be non-empty.
++- When `tls.enabled=true` AND `postgres.mode=external` AND
++  `postgres.external.existingSecret` is set, the operator
++  MUST also set `postgres.external.tlsAlreadyEncodedInSecret:
++  true` to acknowledge that the chart cannot append the
++  sslmode/sslrootcert query suffix to a Secret it doesn't
++  read at template time (per §3.2.2). Otherwise the chart
++  would silently mis-match — appending `?sslmode=verify-full`
++  to a DSN whose operator already encoded a different mode.
++  When the flag is set, the chart skips its `eden.tlsSuffix`
++  injection and the operator's pre-baked DSN is the
++  authoritative source. The chart STILL mounts the CA bundle
++  Secret at the documented path so the operator's DSN can
++  reference it via `?sslrootcert=/etc/eden/postgres-ca/<key>`
++  if they choose.
+ 
+ #### 3.3.2 CA bundle mounting
+ 
+@@ -891,20 +962,49 @@
+ between the operator's workstation and BOTH endpoints. The
+ runbook step-by-step:
+ 
+-1. **Drain workers.** Scale the orchestrator + worker hosts to
+-   zero replicas:
++1. **Drain workers.** Sequencing matters: claim-TTL expiration
++   is operationalized by the orchestrator's
++   `sweep_expired_claims` step in
++   [`reference/services/orchestrator/src/eden_orchestrator/loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
++   line 67. If the orchestrator is scaled to zero before
++   in-flight claims expire, no sweeper runs and the
++   `state=claimed` tasks stay claimed forever. So the drain is
++   a two-phase scale-down:
+ 
++   First, scale the worker hosts (which are the only services
++   that can newly claim tasks) to zero. Per 13a Decision 3,
++   `executor-host` / `evaluator-host` / `web-ui` are
++   StatefulSets and `ideator-host` is a Deployment:
++
+    ```bash
+    kubectl scale statefulset -n eden-prod \
+-     eden-orchestrator eden-executor-host eden-evaluator-host \
+-     eden-ideator-host --replicas=0
++     eden-executor-host eden-evaluator-host \
++     --replicas=0
++   kubectl scale deployment -n eden-prod \
++     eden-ideator-host \
++     --replicas=0
+    ```
+ 
++   Wait for in-flight tasks to settle. While this drain
++   proceeds, the orchestrator's running sweeper reclaims
++   stale claims as TTLs expire. Confirm via the wire
++   `/admin/tasks/` endpoint that no tasks remain in
++   `state=claimed`. Budget at least 2× the configured
++   `claim_ttl_seconds` for the wait. Then scale the
++   orchestrator to zero:
++
++   ```bash
++   kubectl scale statefulset -n eden-prod \
++     eden-orchestrator --replicas=0
++   ```
++
+    The `task-store-server` keeps running so we can read its
+-   state for a final consistency check. Wait for in-flight
+-   tasks to settle (claim TTLs expire); confirm via the wire
+-   `/admin/tasks/` endpoint that no tasks are in
+-   `state=claimed`.
++   state for the final consistency check before snapshotting.
++   The web-ui (which can also do operator-driven reclaim per
++   the 9e admin module) MAY stay up during this window if
++   operators want to manually reclaim any stuck claim that
++   hasn't aged out within the budget. Scale it to zero after
++   the orchestrator if so.
+ 
+ 2. **Snapshot embedded Postgres via pg_dump.** Run from the
+    operator's workstation:
+@@ -981,14 +1081,21 @@
+        http://localhost:8080/v1/events/range
+    ```
+ 
+-8. **Scale workers back up.**
++8. **Scale workers back up.** Reverse-order from step 1: bring
++   the orchestrator up first so its sweeper is running before
++   workers start claiming, then bring the workers back. The
++   ideator-host is a Deployment per 13a Decision 3; the rest
++   are StatefulSets:
+ 
+    ```bash
+    kubectl scale statefulset -n eden-prod \
+      eden-orchestrator --replicas=2
+    kubectl scale statefulset -n eden-prod \
+      eden-executor-host eden-evaluator-host \
+-     eden-ideator-host --replicas=1
++     --replicas=1
++   kubectl scale deployment -n eden-prod \
++     eden-ideator-host \
++     --replicas=1
+    ```
+ 
+    Workers re-acquire leases on the live experiment(s) within
+@@ -1263,13 +1370,13 @@
+ 
+ | File | Change |
+ |---|---|
+-| `reference/helm/eden/values.yaml` | Add `postgres.mode` (default `embedded`); move `postgres.image.*` / `postgres.storage.*` under `postgres.embedded.*` (with §3.1.2 fallback); add `postgres.external.*` block (`connectionString`, `existingSecret`, `connectionStringKey`); add `postgres.tls.*` block (`enabled`, `mode`, `caBundleSecret`, `caBundleKey`). Comment-document the `existingSecret` recommended posture. |
+-| `reference/helm/eden/values.schema.json` | Add `postgres.mode` enum; add `if/then` requiring non-empty `connectionString` OR `existingSecret + connectionStringKey` when mode=external; add `tls.mode ∈ {require, verify-ca, verify-full}` enum + the `caBundleSecret` requirement when mode ∈ {verify-ca, verify-full}. |
+-| `reference/helm/eden/templates/_helpers.tpl` | Add `eden.storeUrl` (returns DSN per mode); add `eden.tlsSuffix` (renders sslmode + sslrootcert); update `eden.postgres.image` / `eden.postgres.storageSize` to use embedded namespace with legacy fallback. |
++| `reference/helm/eden/values.yaml` | Add `postgres.mode` (default `embedded`); move `postgres.image.*` / `postgres.storage.*` under `postgres.embedded.*` (with §3.1.2 fallback); add `postgres.external.*` block (`connectionString`, `existingSecret`, `connectionStringKey`, `tlsAlreadyEncodedInSecret`); add `postgres.tls.*` block (`enabled`, `mode`, `caBundleSecret`, `caBundleKey`). Comment-document the `existingSecret` recommended posture and the URL-form DSN constraint. |
++| `reference/helm/eden/values.schema.json` | Add `postgres.mode` enum; add `if/then` requiring non-empty `connectionString` (matching `^postgres(ql)?://`) OR `existingSecret + connectionStringKey` when mode=external; add `tls.mode ∈ {require, verify-ca, verify-full}` enum + the `caBundleSecret` requirement when mode ∈ {verify-ca, verify-full}; add the `tlsAlreadyEncodedInSecret: true` requirement when both `tls.enabled=true` and `external.existingSecret` are set. |
++| `reference/helm/eden/templates/_helpers.tpl` | Add `eden.storeUrlSecretName` (returns chart-managed name OR `secrets.existingSecret` OR `external.existingSecret` per mode + sub-case); add `eden.storeUrlSecretKey` (returns the literal `EDEN_STORE_URL` for chart-managed paths OR `external.connectionStringKey` for external+existingSecret); add `eden.embeddedDsn` (the embedded-mode template-time DSN composer using `urlquery` on the password and the optional TLS suffix); add `eden.tlsSuffix` (renders `?sslmode=...&sslrootcert=...` with `?`-vs-`&` discrimination); update `eden.postgres.image` / `eden.postgres.storageSize` to use embedded namespace with legacy fallback. |
+ | `reference/helm/eden/templates/postgres-statefulset.yaml` | Wrap entire body in `{{- if eq .Values.postgres.mode "embedded" -}}`. |
+ | `reference/helm/eden/templates/postgres-service.yaml` | Same conditional. |
+-| `reference/helm/eden/templates/task-store-server-deployment.yaml` | Switch DSN env from hard-coded embedded host to `eden.storeUrl` helper output. Add conditional `volumes: caBundle` + `volumeMounts` for `postgres.tls.caBundleSecret`. Add `EDEN_STORE_URL_RAW` from secret + compute final `EDEN_STORE_URL` via `$(EDEN_STORE_URL_RAW){{ include "eden.tlsSuffix" . }}`. |
+-| `reference/helm/eden/templates/secret.yaml` | Conditionally add `EDEN_STORE_URL` to the chart-managed Secret only when `postgres.mode=embedded` OR (`postgres.mode=external` AND `postgres.external.existingSecret == ""`). Otherwise the operator's existingSecret is the source. |
++| `reference/helm/eden/templates/task-store-server-deployment.yaml` | Replace any hard-coded embedded DSN with a single `env: - name: EDEN_STORE_URL; valueFrom: secretKeyRef: {name: <eden.storeUrlSecretName>, key: <eden.storeUrlSecretKey>}` block (per §3.2.2). Add conditional `volumes: caBundle` + `volumeMounts` for `postgres.tls.caBundleSecret`. Other secret keys (`EDEN_SHARED_TOKEN`, etc.) keep using `envFrom: secretRef:` from 13a. |
++| `reference/helm/eden/templates/secret.yaml` | Conditionally add `EDEN_STORE_URL` to the chart-managed Secret in three sub-cases: (1) `postgres.mode=embedded` AND `secrets.existingSecret == ""` — value is `eden.embeddedDsn` (URL-composed with urlquery'd password + TLS suffix when applicable); (2) `postgres.mode=external` AND `postgres.external.existingSecret == ""` AND `postgres.external.connectionString != ""` — value is the operator-supplied DSN with `eden.tlsSuffix` appended when `tls.enabled=true`; (3) other cases (any `existingSecret`) — the chart-managed Secret omits `EDEN_STORE_URL`; the operator's Secret is the source. |
+ | `reference/helm/eden/templates/NOTES.txt` | Add legacy-key-deprecation warning per §3.1.2; add a "you're using mode=external" confirmation block when relevant. |
+ | `reference/helm/eden/ci-values-managed-postgres.yaml` (new) | CI values pinning mode=external + minimal storage + TLS off. |
+ | `reference/helm/eden/ci-values.yaml` (existing) | Unchanged — still tests embedded. |
+@@ -1300,22 +1407,38 @@
+ 
+ `helm template` with each combination:
+ 
+-- `mode=embedded` (default): renders the StatefulSet + Service.
+-- `mode=external` + `connectionString`: omits StatefulSet;
+-  task-store-server's `EDEN_STORE_URL_RAW` references chart-
+-  managed Secret.
++- `mode=embedded` (default): renders the StatefulSet +
++  Service; the chart-managed Secret has an `EDEN_STORE_URL`
++  key whose value is the URL-composed DSN with the
++  `urlquery`-encoded password; the task-store-server Pod's
++  `EDEN_STORE_URL` env sources this key.
++- `mode=external` + `connectionString`: omits StatefulSet;
++  the chart-managed Secret has an `EDEN_STORE_URL` key whose
++  value is the operator-supplied DSN (with the TLS suffix
++  appended at template time when `tls.enabled=true`).
+ - `mode=external` + `existingSecret`: omits StatefulSet;
+-  Secret is referenced via `valueFrom: secretKeyRef:`; chart-
+-  managed Secret omits the `EDEN_STORE_URL` key.
++  the chart-managed Secret omits the `EDEN_STORE_URL` key;
++  the Pod's env sources from
++  `<external.existingSecret>/<external.connectionStringKey>`.
+ - `mode=external` + `tls.enabled=true` + `tls.mode=verify-full`
+-  with `caBundleSecret`: includes the volume mount;
+-  `EDEN_STORE_URL` has
++  with `caBundleSecret` and inline `connectionString`:
++  includes the CA-bundle volume mount; the chart-managed
++  Secret's `EDEN_STORE_URL` value has
+   `?sslmode=verify-full&sslrootcert=/etc/eden/postgres-ca/ca.crt`
+-  appended (verified via grep on the rendered Pod spec).
++  appended (verified via decoded-Secret grep, since the
++  literal value is base64'd in the rendered Secret YAML).
++- `mode=external` + `tls.enabled=true` + `existingSecret`
++  WITHOUT `tlsAlreadyEncodedInSecret=true`: install fails at
++  lint time per §3.3.1.
+ - `mode=external` + `tls.enabled=true` but `caBundleSecret=""`
+   AND `tls.mode=verify-ca`: install fails at lint time.
+ - `mode=external` + neither `connectionString` nor
+   `existingSecret`: install fails at lint time.
++- `mode=external` + `connectionString=foo`: install fails at
++  lint time (URL-prefix regex rejects).
++- `mode=external` + libpq keyword DSN
++  (`host=foo dbname=eden user=eden`): install fails at lint
++  time (URL-prefix regex rejects).
+ 
+ Each combination gets a fixture values file under
+ `reference/helm/eden/tests/values/` and a small bash test
+@@ -1458,6 +1581,86 @@
+ is `Delete`. The runbook flags this and recommends `helm
+ upgrade` (NOT `--force`) for the cutover.
+ 
++### 8.3a Sweeper / drain ordering in the migration runbook
++
++The `sweep_expired_claims` step that converts expired
++`claimed` tasks back to `pending` runs inside the
++orchestrator's loop iteration
++([`reference/services/orchestrator/src/eden_orchestrator/loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
++line 67). If the migration runbook scaled the orchestrator
++to zero before workers' claims aged out, the claims would
++stay `claimed` indefinitely and the snapshot would capture
++"in-flight" state that the post-restore deployment cannot
++recover from cleanly (the tasks would be claim-stale on the
++new instance with no orchestrator history to know who held
++them).
++
++§3.8.2 step 1 mitigates this by phasing the scale-down:
++worker hosts to 0 first, wait while the still-running
++orchestrator sweeper drains claims, THEN orchestrator to 0.
++The wait budget is 2× `claim_ttl_seconds` to absorb the
++worst-case "claim made one tick before scale-down". The
++web-ui's admin-reclaim path is a manual escape hatch for any
++claim that hasn't aged out within budget.
++
++A future amendment MAY add an explicit "drain" CLI to the
++orchestrator that sets a "no new claims; finish in-flight
++work; quiesce" mode and exits cleanly, which would let the
++runbook collapse the two-phase scale-down. Out of scope for
++13c; the manual sequence is workable.
++
++### 8.3b `EDEN_STORE_URL` Secret-key contract — chart upgrade trap
++
++Per §3.2.2, the `task-store-server` always sources
++`EDEN_STORE_URL` from a Secret as a single composed URL —
++never composes one at runtime. The contract is uniform:
++the consumed Secret (chart-managed OR `secrets.existingSecret`
++OR `postgres.external.existingSecret`) MUST contain a key
++whose value is a complete `postgresql://...` URL. The chart's
++`secret.yaml` template builds this for the embedded
++chart-managed case; all other cases require the operator to
++pre-populate the key.
++
++**Chart upgrade trap.** 13a's chart did NOT populate
++`EDEN_STORE_URL` in its existingSecret contract — 13a's
++secret.yaml carried postgresPassword + adminToken +
++giteaAdminPassword + giteaRemotePassword + webUiSessionSecret
++(13a §3.2 / §3.3) and built the DSN at chart-template time
++from `postgresPassword`. 13c moves the DSN composition into
++the Secret value itself, which means a 13a operator using
++`secrets.existingSecret=my-secret` upgrading to chart 0.2.0
++MUST add an `EDEN_STORE_URL` key to `my-secret` before the
++upgrade — otherwise the chart-template-time build of the DSN
++no longer happens (because it can't see the password) and the
++task-store-server pod fails to start with an empty
++`EDEN_STORE_URL`.
++
++Mitigations:
++
++- The chart's NOTES.txt at upgrade time emits an explicit
++  warning when `secrets.existingSecret` is set in
++  `mode=embedded`, instructing the operator to add the
++  `EDEN_STORE_URL` key. (Helm has no visibility into Secret
++  contents from the chart, so this is documentation only,
++  not enforcement.)
++- The `migrating-to-managed-postgres.md` runbook adds a
++  pre-upgrade checklist item: "if you use
++  `secrets.existingSecret`, run `kubectl get secret <name> -o
++  jsonpath='{.data.EDEN_STORE_URL}'` and confirm it's
++  populated; if empty, patch the Secret with the
++  pre-composed DSN before `helm upgrade`".
++- The §6.1 helm-template matrix asserts that the rendered
++  Pod spec's `EDEN_STORE_URL` env entry references a Secret;
++  it cannot assert the Secret's contents.
++
++This trap is the price of the §3.2.2 design choice. The
++alternative — keep template-time DSN composition for
++embedded + chart-managed-secrets, switch to
++"pre-composed-in-Secret" only for external — would split the
++design into two patterns the chart has to maintain. The
++single-pattern shape is worth the one-time upgrade
++documentation.
++
+ ### 8.4 `ensure_schema` on a non-empty managed database
+ 
+ If the operator points `postgres.mode=external` at a
+@@ -1478,25 +1681,29 @@
+ 
+ ### 8.5 `EDEN_STORE_URL` envFrom vs valueFrom
+ 
+-The Pod spec composes `EDEN_STORE_URL` from
+-`EDEN_STORE_URL_RAW` (from secret) and the TLS suffix.
+-Kubernetes' `$(VAR)` expansion in env values requires
+-`EDEN_STORE_URL_RAW` to be defined BEFORE `EDEN_STORE_URL` in
+-the env list — the
+-[Kubernetes env reference](https://kubernetes.io/docs/tasks/inject-data-application/define-environment-variable-container/)
+-defines `$(VAR)` as expanded against the env vars defined
+-earlier in the same `env:` list. The chart's template MUST
+-order accordingly; ordering will be tested via a `helm
+-template + grep` assertion.
++Per §3.2.2 the chart sources `EDEN_STORE_URL` from a Secret
++as a single pre-composed URL — no template-time DSN
++composition, no `$(VAR)` expansion across env entries, no
++runtime-side string assembly. The chart uses an explicit
++`env: - name: EDEN_STORE_URL; valueFrom: secretKeyRef:
++{name: ..., key: ...}` entry for this specific variable. The
++other deployment credentials (`EDEN_SHARED_TOKEN`,
++`EDEN_SESSION_SECRET`) keep coming through `envFrom:
++secretRef:` from 13a.
+ 
+-If `EDEN_STORE_URL_RAW` comes from `envFrom: secretRef:`, its
+-position in the env-resolution order is implementation-
+-defined. To avoid that risk, the chart uses explicit
+-`env: - name: EDEN_STORE_URL_RAW; valueFrom: secretKeyRef: ...`
+-(NOT `envFrom`) for this specific variable, even when other
+-secrets come through `envFrom`. The other Secret keys
+-(`EDEN_SHARED_TOKEN`, `EDEN_SESSION_SECRET`, etc.) keep using
+-`envFrom`.
++This sidesteps the env-ordering trap that arose when an
++earlier draft tried to compose `EDEN_STORE_URL` from
++`EDEN_STORE_URL_RAW` plus a TLS suffix via `$(VAR)`-expansion
++in `args:`: Kubernetes' `$(VAR)` resolution requires the
++referenced variable to be defined earlier in the same `env:`
++list (per the
++[Kubernetes env reference](https://kubernetes.io/docs/tasks/inject-data-application/define-environment-variable-container/)),
++which made the helm-template ordering load-bearing. The
++"single pre-composed value in the Secret" approach removes
++that fragility entirely. The TLS suffix is always baked into
++the Secret value at template time (or, for external +
++`existingSecret` + `tls.enabled`, baked in by the operator
++per §3.3.1's `tlsAlreadyEncodedInSecret` flag).
+ 
+ ### 8.6 Cluster-IP reachability of the sibling Postgres in CI
+ 

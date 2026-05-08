@@ -1,0 +1,16 @@
+**1. Missing Context**
+
+Brief assessment: the key context gaps from the prior rounds are addressed. The plan now clearly states the URL-form DSN constraint and correctly frames embedded+`existingSecret` `EDEN_STORE_URL` as a new 13c contract, not inherited from 13a. ([eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:531))
+
+No significant missing-context issues remain.
+
+**2. Feasibility**
+
+Brief assessment: the design is now broadly feasible, but there are still a couple of concrete binding/example mismatches that I would treat as blocking until fixed, because they sit in the operator runbook and CI shape.
+
+- The direct API reclaim example in the migration runbook does not match the actual wire binding. The plan uses `/v1/tasks?state=claimed` and `POST .../reclaim?cause=operator` in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:1030), but the real binding is `GET /v0/experiments/{E}/tasks?state=claimed` and `POST /v0/experiments/{E}/tasks/{T}/reclaim` with JSON body `{"cause":"operator"}` per [07-wire-protocol.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/spec/v0/07-wire-protocol.md:31) and [client.py](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/reference/packages/eden-wire/src/eden_wire/client.py:301). The post-migration verification example has the same issue: it uses `/v1/events/range` in [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:1126), but the actual endpoint is `GET /v0/experiments/{E}/events` with optional `cursor` ([07-wire-protocol.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/spec/v0/07-wire-protocol.md:109), [client.py](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/reference/packages/eden-wire/src/eden_wire/client.py:195)).
+- The CI section still contradicts its own reachability fix. §8.6 correctly says the sibling Postgres must be addressed by container IP, not `eden-ci-pg` DNS ([eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:1790)), but §3.10’s example still creates the Secret with `postgresql://...@eden-ci-pg:5432/eden` and says that host is reachable from pods ([eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:1223), [eden-phase-13c-managed-postgres.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13c-managed-postgres.md:1254)). Those two sections need to converge on the IP-based example.
+
+**Overall Assessment**
+
+The substantive design issues from the first two rounds are resolved. What remains is narrower: the plan still has a few operator/CI examples that do not match the actual wire protocol or the CI networking constraint. I would fix those command-level drifts, then the plan should be ready for a fuller pass on alternatives, completeness, and edge cases.
