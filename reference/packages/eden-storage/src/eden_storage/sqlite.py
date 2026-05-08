@@ -42,10 +42,12 @@ from typing import Any
 from eden_contracts import (
     EvaluationSchema,
     Event,
+    Group,
     Idea,
     Task,
     TaskAdapter,
     Variant,
+    Worker,
 )
 
 from . import _schema
@@ -390,6 +392,40 @@ class SqliteStore(_StoreBase):
         rows = self._conn.execute("SELECT data FROM event ORDER BY seq")
         return [Event.model_validate_json(row[0]) for row in rows]
 
+    def _get_worker(self, worker_id: str) -> Worker | None:
+        row = self._conn.execute(
+            "SELECT data FROM worker WHERE worker_id = ?", (worker_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Worker.model_validate_json(row[0])
+
+    def _get_worker_credential_hash(self, worker_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT credential_hash FROM worker WHERE worker_id = ?", (worker_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0]
+
+    def _iter_workers(self) -> Iterable[Worker]:
+        rows = self._conn.execute("SELECT data FROM worker ORDER BY worker_id")
+        return [Worker.model_validate_json(row[0]) for row in rows]
+
+    def _get_group(self, group_id: str) -> Group | None:
+        row = self._conn.execute(
+            "SELECT data FROM worker_group WHERE group_id = ?", (group_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Group.model_validate_json(row[0])
+
+    def _iter_groups(self) -> Iterable[Group]:
+        rows = self._conn.execute(
+            "SELECT data FROM worker_group ORDER BY group_id"
+        )
+        return [Group.model_validate_json(row[0]) for row in rows]
+
     # ------------------------------------------------------------------
     # Commit
     # ------------------------------------------------------------------
@@ -411,6 +447,25 @@ class SqliteStore(_StoreBase):
         for task_id in tx.task_deletes_submission:
             self._conn.execute(
                 "DELETE FROM submission WHERE task_id = ?", (task_id,)
+            )
+        for worker_id, worker in tx.workers.items():
+            self._upsert_worker(
+                worker_id, worker, tx.worker_credentials.get(worker_id)
+            )
+        # Credential rotations on a worker that wasn't otherwise re-staged.
+        for worker_id, credential_hash in tx.worker_credentials.items():
+            if worker_id in tx.workers:
+                continue
+            self._update_worker_credential(worker_id, credential_hash)
+        for worker_id in tx.worker_deletes:
+            self._conn.execute(
+                "DELETE FROM worker WHERE worker_id = ?", (worker_id,)
+            )
+        for group_id, group in tx.groups.items():
+            self._upsert_group(group_id, group)
+        for group_id in tx.group_deletes:
+            self._conn.execute(
+                "DELETE FROM worker_group WHERE group_id = ?", (group_id,)
             )
         for event in tx.events:
             self._insert_event(event)
@@ -475,3 +530,64 @@ class SqliteStore(_StoreBase):
                 _serialize_model(event),
             ),
         )
+
+    def _upsert_worker(
+        self, worker_id: str, worker: Worker, credential_hash: str | None
+    ) -> None:
+        # `register_worker` always stages the credential alongside the
+        # worker row; `reissue_credential` stages a fresh hash plus the
+        # unchanged Worker. The branch below preserves the prior hash
+        # when the staged tx didn't supply one (defensive — the public
+        # API never exercises that path today).
+        if credential_hash is None:
+            existing = self._conn.execute(
+                "SELECT credential_hash FROM worker WHERE worker_id = ?",
+                (worker_id,),
+            ).fetchone()
+            credential_hash = existing[0] if existing is not None else ""
+        self._conn.execute(
+            """
+            INSERT INTO worker(worker_id, data, credential_hash)
+            VALUES(?, ?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET
+                data = excluded.data,
+                credential_hash = excluded.credential_hash
+            """,
+            (worker_id, _serialize_model(worker), credential_hash),
+        )
+
+    def _update_worker_credential(
+        self, worker_id: str, credential_hash: str
+    ) -> None:
+        # Used by reissue paths that do NOT also re-stage the Worker
+        # row. `_StoreBase.reissue_credential` always re-stages the
+        # row, so this branch is currently dead but kept for symmetry.
+        self._conn.execute(
+            "UPDATE worker SET credential_hash = ? WHERE worker_id = ?",
+            (credential_hash, worker_id),
+        )
+
+    def _upsert_group(self, group_id: str, group: Group) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO worker_group(group_id, data) VALUES(?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET data = excluded.data
+            """,
+            (group_id, _serialize_model(group)),
+        )
+        # Refresh the denormalized membership index so future filtered
+        # queries (e.g. "which groups contain member X") can run from
+        # SQL. Membership semantics (transitive resolution, cycle
+        # detection) live in `_base.py`; the table here is purely an
+        # implementation aid.
+        self._conn.execute(
+            "DELETE FROM group_membership WHERE group_id = ?", (group_id,)
+        )
+        for position, member in enumerate(group.members):
+            self._conn.execute(
+                """
+                INSERT INTO group_membership(group_id, member_id, position)
+                VALUES(?, ?, ?)
+                """,
+                (group_id, member, position),
+            )

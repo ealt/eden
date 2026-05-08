@@ -76,7 +76,39 @@ def _apply_v1(cur: Any) -> None:
         cur.execute(stmt)
 
 
-_MIGRATIONS: list[Callable[[Any], None]] = [_apply_v1]
+_V2_STATEMENTS: list[str] = [
+    """
+    CREATE TABLE worker (
+        worker_id text NOT NULL PRIMARY KEY,
+        data text NOT NULL,
+        credential_hash text NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE worker_group (
+        group_id text NOT NULL PRIMARY KEY,
+        data text NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE group_membership (
+        group_id text NOT NULL,
+        member_id text NOT NULL,
+        position integer NOT NULL,
+        PRIMARY KEY (group_id, member_id),
+        FOREIGN KEY (group_id) REFERENCES worker_group(group_id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX group_membership_by_member ON group_membership(member_id)",
+]
+
+
+def _apply_v2(cur: Any) -> None:
+    for stmt in _V2_STATEMENTS:
+        cur.execute(stmt)
+
+
+_MIGRATIONS: list[Callable[[Any], None]] = [_apply_v1, _apply_v2]
 
 
 def current_version(cur: Any) -> int:

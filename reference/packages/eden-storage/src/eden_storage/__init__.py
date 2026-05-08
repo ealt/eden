@@ -7,15 +7,22 @@ three reference backends. Error types and submission dataclasses
 live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 """
 
-from ._base import iter_events_by_type
+from ._base import RESERVED_IDENTIFIERS, iter_events_by_type
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,
+    CycleDetected,
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     NotFound,
+    ReservedIdentifier,
     StorageError,
+    WorkerAlreadyRegistered,
+    WorkerNotEligible,
+    WorkerNotRegistered,
+    WrongClaimant,
     WrongToken,
 )
 from .memory import InMemoryStore
@@ -33,19 +40,27 @@ from .submissions import (
 __all__ = [
     "AlreadyExists",
     "ConflictingResubmission",
+    "CycleDetected",
     "DispatchError",
     "EvaluationSubmission",
     "IllegalTransition",
     "VariantSubmission",
     "InMemoryStore",
     "InvalidPrecondition",
+    "NotClaimed",
     "NotFound",
     "IdeaSubmission",
     "PostgresStore",
+    "RESERVED_IDENTIFIERS",
+    "ReservedIdentifier",
     "SqliteStore",
     "StorageError",
     "Store",
     "Submission",
+    "WorkerAlreadyRegistered",
+    "WorkerNotEligible",
+    "WorkerNotRegistered",
+    "WrongClaimant",
     "WrongToken",
     "iter_events_by_type",
     "submissions_equivalent",

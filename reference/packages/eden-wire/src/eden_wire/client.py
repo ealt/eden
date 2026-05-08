@@ -20,7 +20,7 @@ caller's responsibility per the binding's §8.3.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
@@ -31,6 +31,7 @@ from eden_contracts import (
     Event,
     ExecutionTask,
     FailReason,
+    Group,
     Idea,
     IdeationTask,
     ReclaimCause,
@@ -38,6 +39,7 @@ from eden_contracts import (
     TaskAdapter,
     TaskClaim,
     Variant,
+    Worker,
 )
 from eden_storage.errors import InvalidPrecondition
 from eden_storage.submissions import (
@@ -404,6 +406,76 @@ class StoreClient:
             "POST",
             f"{self._ref_base}/validate/evaluation",
             json={"evaluation": evaluation},
+        )
+
+    # ------------------------------------------------------------------
+    # Worker registry (12a-1) — wire endpoints land in wave 3
+    # ------------------------------------------------------------------
+    #
+    # `StoreClient` is declared as Protocol-compatible; the §13 worker /
+    # group endpoints from `spec/v0/07-wire-protocol.md` and the
+    # corresponding HTTP-binding implementation here both land in wave
+    # 3. The stubs below preserve type-conformance with the `Store`
+    # Protocol so wave-2 callsites (which still talk to backends
+    # directly) continue to typecheck. Calling these on a `StoreClient`
+    # in wave 2 is a programmer error and surfaces at runtime.
+
+    def register_worker(
+        self,
+        worker_id: str,
+        *,
+        labels: dict[str, str] | None = None,
+        registered_by: str | None = None,
+    ) -> tuple[Worker, str | None]:
+        raise NotImplementedError("StoreClient.register_worker lands in 12a-1 wave 3")
+
+    def reissue_credential(self, worker_id: str) -> str:
+        raise NotImplementedError(
+            "StoreClient.reissue_credential lands in 12a-1 wave 3"
+        )
+
+    def verify_worker_credential(
+        self, worker_id: str, registration_token: str
+    ) -> bool:
+        raise NotImplementedError(
+            "StoreClient.verify_worker_credential lands in 12a-1 wave 3"
+        )
+
+    def read_worker(self, worker_id: str) -> Worker:
+        raise NotImplementedError("StoreClient.read_worker lands in 12a-1 wave 3")
+
+    def list_workers(self) -> list[Worker]:
+        raise NotImplementedError("StoreClient.list_workers lands in 12a-1 wave 3")
+
+    def register_group(
+        self,
+        group_id: str,
+        *,
+        members: Iterable[str] | None = None,
+        created_by: str | None = None,
+    ) -> Group:
+        raise NotImplementedError("StoreClient.register_group lands in 12a-1 wave 3")
+
+    def add_to_group(self, group_id: str, member_id: str) -> Group:
+        raise NotImplementedError("StoreClient.add_to_group lands in 12a-1 wave 3")
+
+    def remove_from_group(self, group_id: str, member_id: str) -> Group:
+        raise NotImplementedError(
+            "StoreClient.remove_from_group lands in 12a-1 wave 3"
+        )
+
+    def delete_group(self, group_id: str) -> None:
+        raise NotImplementedError("StoreClient.delete_group lands in 12a-1 wave 3")
+
+    def read_group(self, group_id: str) -> Group:
+        raise NotImplementedError("StoreClient.read_group lands in 12a-1 wave 3")
+
+    def list_groups(self) -> list[Group]:
+        raise NotImplementedError("StoreClient.list_groups lands in 12a-1 wave 3")
+
+    def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
+        raise NotImplementedError(
+            "StoreClient.resolve_worker_in_group lands in 12a-1 wave 3"
         )
 
 

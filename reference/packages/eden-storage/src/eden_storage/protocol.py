@@ -39,6 +39,7 @@ enough. Two reference backends satisfy it — ``InMemoryStore`` and
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -47,12 +48,14 @@ from eden_contracts import (
     Event,
     ExecutionTask,
     FailReason,
+    Group,
     Idea,
     IdeationTask,
     ReclaimCause,
     Task,
     TaskClaim,
     Variant,
+    Worker,
 )
 
 from .submissions import Submission
@@ -272,4 +275,82 @@ class Store(Protocol):
         both depend on this guard. Raises ``InvalidPrecondition`` on
         violation; no-op when the store has no registered schema.
         """
+        ...
+
+    # ------------------------------------------------------------------
+    # Worker registry (12a-1)
+    # ------------------------------------------------------------------
+
+    def register_worker(
+        self,
+        worker_id: str,
+        *,
+        labels: dict[str, str] | None = None,
+        registered_by: str | None = None,
+    ) -> tuple[Worker, str | None]:
+        """Register ``worker_id``; return ``(worker, registration_token)``.
+
+        Idempotent on existing record per
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §6.3: re-registration of an existing ``worker_id`` returns the
+        existing Worker and ``registration_token=None`` (no new token).
+        ``StoreClient`` ships this method as a wave-3 stub that raises
+        ``NotImplementedError`` until the wire endpoint lands.
+        """
+        ...
+
+    def reissue_credential(self, worker_id: str) -> str:
+        """Mint a fresh credential; invalidates the prior one. Returns plaintext token."""
+        ...
+
+    def verify_worker_credential(
+        self, worker_id: str, registration_token: str
+    ) -> bool:
+        """Return whether the presented token is the worker's current credential."""
+        ...
+
+    def read_worker(self, worker_id: str) -> Worker:
+        """Return the wire-visible Worker shape, or raise ``NotFound``."""
+        ...
+
+    def list_workers(self) -> list[Worker]:
+        """Return all registered workers sorted by ``worker_id``."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Group registry (12a-1)
+    # ------------------------------------------------------------------
+
+    def register_group(
+        self,
+        group_id: str,
+        *,
+        members: Iterable[str] | None = None,
+        created_by: str | None = None,
+    ) -> Group:
+        """Register a new group; raises ``CycleDetected`` on cycle."""
+        ...
+
+    def add_to_group(self, group_id: str, member_id: str) -> Group:
+        """Add ``member_id`` to ``group_id``; raises ``CycleDetected`` on cycle."""
+        ...
+
+    def remove_from_group(self, group_id: str, member_id: str) -> Group:
+        """Remove ``member_id`` from ``group_id``."""
+        ...
+
+    def delete_group(self, group_id: str) -> None:
+        """Delete ``group_id``; dangling references in other groups resolve to ``False``."""
+        ...
+
+    def read_group(self, group_id: str) -> Group:
+        """Return the group, or raise ``NotFound``."""
+        ...
+
+    def list_groups(self) -> list[Group]:
+        """Return all groups sorted by ``group_id``."""
+        ...
+
+    def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
+        """Return whether ``worker_id`` is transitively in ``group_id``."""
         ...
