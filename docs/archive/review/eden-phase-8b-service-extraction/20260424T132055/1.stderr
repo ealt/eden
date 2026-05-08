@@ -1,0 +1,1276 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc127-333f-7f72-8703-93293641e56d
+--------
+user
+I've updated the plan based on your feedback. The key changes:
+
+1. Resolved the scripted-behavior-across-subprocess-boundary CRITICAL: one built-in profile baked into each worker host. The existing ScriptedX callable-injected classes stay for in-process tests; only the new service wrappers use the fixed profile. Knobs exposed as CLI flags (--proposals-per-plan, --fail-every). A --profile flag is deliberately NOT introduced.
+
+2. Resolved the implementer-repo CRITICAL: implementer host gets --repo-path, writes real orphan commits on work/* branches using GitRepo, and the planner emits proposals with parent_commits=() so the Integrator's reachability check passes trivially. Orchestrator and implementer share the bare-repo path. No --base-ref needed.
+
+3. Resolved the ID-allocation suggestion: worker-generated IDs are <role>-<uuid>, prefix-based flags dropped for proposals/trials. Orchestrator-allocated task IDs keep readable prefixes but append a short UUID.
+
+4. Rewrote the auth addendum without the 'MAY, but MUST NOT' contradiction — now reads as a plain MAY with the one real constraint (no overloading of the normative eden://error/... vocabulary for auth outcomes).
+
+Please review the updated plan at /Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md.
+codex
+I’m reviewing the updated plan against the same review criteria, starting with the revised worker/config, repo, and ID-allocation sections to see whether the previous blockers are actually closed.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '261,560p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '561,860p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN Phase 8b — Service Extraction & Standalone Workers
+     2	
+     3	## Goal
+     4	
+     5	Finish the cross-process reference deployment started in Phase 8a by landing
+     6	four things together:
+     7	
+     8	1. **Worker host services.** Extract planner, implementer, and evaluator
+     9	   into independent subprocesses that claim tasks over the `eden-wire` HTTP
+    10	   surface — the roadmap's literal definition of Phase 8b.
+    11	2. **Task-store-server and orchestrator entrypoints.** The two CLI
+    12	   entrypoints that Phase 8a deferred (decision recorded in the 8a plan's
+    13	   "Services" section: the directories and `__main__.py` modules were
+    14	   scoped for 8b so all three service shapes could share one CLI / logging
+    15	   / signal-handling / config-loading surface rather than landing the
+    16	   task-store server in 8a and re-designing it when workers arrived).
+    17	3. **Shared-token auth scaffolding.** The roadmap's "Each authenticates
+    18	   via a shared token (scaffolding; real auth is Milestone 3 work)"
+    19	   requirement, intentionally framed as reference-only so nothing about
+    20	   authentication enters the normative protocol ahead of Milestone 3.
+    21	4. **First real-subprocess end-to-end test.** A pytest that forks five
+    22	   processes on ephemeral ports, drives a 3-trial experiment to
+    23	   quiescence, asserts the event log and bare-repo state, and tears
+    24	   down cleanly on both success and failure.
+    25	
+    26	At the end of Phase 8b the 3-trial experiment runs with each role in its
+    27	own OS process, communicating only through the wire binding from
+    28	[`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md).
+    29	Removing the in-process dispatch path remains Phase 8c.
+    30	
+    31	## Non-goals (deferred)
+    32	
+    33	- **Cut-over (Phase 8c).** `run_experiment` in-process with a direct
+    34	  `Store` and scripted workers is still supported at the end of 8b.
+    35	  Removing that code path and the tests that depend on it is 8c.
+    36	- **Push-based event delivery.** SSE / WebSocket remain a later
+    37	  transport optimization; long-poll over `GET /events/subscribe` from
+    38	  8a is sufficient for workers. Workers in 8b poll
+    39	  `GET /tasks?kind=X&state=pending` on a configurable interval — this
+    40	  is even simpler than subscribing to events and filtering, and makes
+    41	  worker teardown (kill on SIGTERM with no inflight long-poll) trivial.
+    42	- **Real authentication.** Shared-token is scaffolding only; it has no
+    43	  per-worker identity, no rotation, no expiry, no transport security
+    44	  (loopback only), and lives under `eden://reference-error/...` rather
+    45	  than the normative `eden://error/...` namespace so it does not
+    46	  commit the spec to an auth shape. Milestone 3 supersedes it.
+    47	- **Artifact store transport.** Phase 10.
+    48	- **Web UI.** Phase 9.
+    49	- **Compose packaging.** Phase 10.
+    50	- **`healthz` endpoint.** Orchestrator and workers establish readiness
+    51	  by retrying `GET /v0/experiments/{E}/events` with bounded backoff;
+    52	  a dedicated liveness endpoint is a Phase 10 / 13 deployment concern.
+    53	- **Multi-experiment.** Each service process hosts exactly one
+    54	  experiment; multi-experiment routing is Phase 12 (control plane).
+    55	
+    56	## Protocol-first framing
+    57	
+    58	The normative wire binding was fully defined in Phase 8a. Phase 8b is
+    59	pure reference-implementation work: service entrypoints, a dispatch-loop
+    60	refactor, and an auth middleware. The only spec edit is a single
+    61	**informative** section appended to chapter 07 documenting the
+    62	reference-only auth extension as a non-normative convention — so that
+    63	a reader tracing the wire from reference-impl logs to the chapter can
+    64	find the `Authorization: Bearer …` shape, but a conforming server
+    65	that implements OAuth2 or mTLS is in no way constrained by it.
+    66	
+    67	## What gets created
+    68	
+    69	### Services
+    70	
+    71	Five new directories under `reference/services/`, each a workspace
+    72	member with its own `pyproject.toml`, a module package, and a
+    73	`__main__.py` that parses argv and runs. All five share a small amount
+    74	of common scaffolding extracted into `reference/services/_common/`:
+    75	
+    76	- **Structured logging**. JSON-line logs to stdout, fields
+    77	  `{ts, level, service, experiment_id, message, **ctx}`. Avoids each
+    78	  service inventing its own format.
+    79	- **Signal handling**. Install SIGTERM and SIGINT handlers that flip a
+    80	  `stopping` flag; the main loop checks it between iterations. Workers
+    81	  and orchestrator exit cleanly; task-store-server calls
+    82	  `uvicorn.Server.should_exit = True` to trigger graceful shutdown.
+    83	- **Readiness probe**. `wait_for_task_store(base_url, experiment_id,
+    84	  token, deadline)` retries `GET /v0/experiments/{E}/events` with
+    85	  capped backoff until 200 or deadline. Used by orchestrator +
+    86	  workers at startup.
+    87	- **Arg parsing helpers**. A thin wrapper around argparse so every
+    88	  service shares `--task-store-url`, `--experiment-id`,
+    89	  `--shared-token`, and `--log-level`. Service-specific args layer on
+    90	  top.
+    91	
+    92	Rationale for extracting `_common`: three nearly-identical CLIs with
+    93	divergent flag spellings is the cost of not doing this. The same
+    94	argument applies to logging — every debugging session otherwise
+    95	starts with "what format is *this* service emitting?"
+    96	
+    97	#### 1. `reference/services/task-store-server/`
+    98	
+    99	Package: `eden_task_store_server/`.
+   100	
+   101	```text
+   102	eden_task_store_server/
+   103	  __init__.py
+   104	  __main__.py        # `python -m eden_task_store_server …`
+   105	  cli.py             # argparse + main()
+   106	  app.py             # build_store(), build_app() helpers (unit-testable)
+   107	```
+   108	
+   109	CLI:
+   110	
+   111	- `--db-path PATH` — SQLite path, or `:memory:` for `InMemoryStore`.
+   112	  Required.
+   113	- `--experiment-id ID` — required.
+   114	- `--experiment-config PATH` — YAML file matching
+   115	  `experiment-config.schema.json`. Used on first open to seed
+   116	  `metrics_schema`. On reopen of an existing DB, mismatch is an error
+   117	  (existing `SqliteStore` behavior).
+   118	- `--host HOST` — default `127.0.0.1`.
+   119	- `--port PORT` — default `0` (ephemeral; printed on startup so the
+   120	  harness can read it from stdout).
+   121	- `--shared-token TOKEN` — optional. When set, the auth middleware
+   122	  requires `Authorization: Bearer TOKEN` on every request. `None`
+   123	  disables auth.
+   124	- `--log-level LEVEL` — default `info`.
+   125	
+   126	Startup:
+   127	
+   128	1. Load `--experiment-config` into a `ExperimentConfig` Pydantic
+   129	   model; extract `experiment_id` (must match `--experiment-id`) and
+   130	   `metrics_schema`.
+   131	2. `SqliteStore.open(db_path, experiment_id=..., metrics_schema=...)`
+   132	   (or `InMemoryStore(...)` for `:memory:`).
+   133	3. `app = make_app(store, shared_token=args.shared_token)`.
+   134	4. `uvicorn.Server(Config(app, host, port, log_config=None))` run
+   135	   via `server.run()` in the main thread.
+   136	5. On SIGTERM/SIGINT set `server.should_exit = True`; uvicorn drains
+   137	   active requests then returns from `run()`. After return, close the
+   138	   store.
+   139	
+   140	Stdout protocol: first line after binding is
+   141	`EDEN_TASK_STORE_LISTENING host=<host> port=<port>` so a test harness
+   142	can read the ephemeral port without scraping logs.
+   143	
+   144	#### 2. `reference/services/orchestrator/`
+   145	
+   146	Reuses the existing Phase 0 stub directory (blessed in
+   147	[`reference/README.md`](../../reference/README.md) as "Per-experiment
+   148	dispatch + integrator").
+   149	
+   150	Package: `eden_orchestrator/`.
+   151	
+   152	```text
+   153	eden_orchestrator/
+   154	  __init__.py
+   155	  __main__.py
+   156	  cli.py
+   157	  loop.py           # run_orchestrator() — the extracted driver half
+   158	```
+   159	
+   160	CLI:
+   161	
+   162	- `--task-store-url URL` — required.
+   163	- `--experiment-id ID` — required.
+   164	- `--shared-token TOKEN` — optional.
+   165	- `--repo-path PATH` — required; bare git repo the Integrator writes
+   166	  `trial/*` refs into.
+   167	- `--integrator-author NAME <EMAIL>` — default
+   168	  `EDEN Integrator <integrator@eden.invalid>`.
+   169	- `--plan-tasks SPEC` — either an integer N (creates
+   170	  `plan-0001` … `plan-N`) or a comma-separated list of explicit IDs.
+   171	- `--implement-task-prefix PREFIX` — default `implement-`. Concrete
+   172	  task IDs become `<prefix><short-uuid>`.
+   173	- `--evaluate-task-prefix PREFIX` — default `evaluate-`. Same
+   174	  pattern.
+   175	- `--poll-interval SECONDS` — default `0.1`. How long to sleep
+   176	  between orchestrator iterations that made no progress.
+   177	- `--max-quiescent-iterations N` — default `3`. Number of
+   178	  back-to-back zero-progress iterations before exiting 0. >1 so we
+   179	  don't exit immediately if a worker is mid-submit during our read.
+   180	- `--startup-timeout SECONDS` — default `30`. Max wait for the
+   181	  task-store to become ready on boot.
+   182	- `--log-level LEVEL`.
+   183	
+   184	Startup:
+   185	
+   186	1. `wait_for_task_store(...)` until ready.
+   187	2. `client = StoreClient(url, experiment_id, token=...)`.
+   188	3. `repo = GitRepo(repo_path)`; `integrator = Integrator(client, repo,
+   189	   author=...)`.
+   190	4. Seed plan tasks via `client.create_plan_task(...)` for each ID in
+   191	   the expanded `--plan-tasks` spec.
+   192	5. Loop `run_orchestrator_iteration(client, integrator, ...)` with a
+   193	   quiescence counter: each iteration that made progress resets the
+   194	   counter to 0; each that didn't increments it. Sleep
+   195	   `--poll-interval` between iterations. Exit 0 when the counter
+   196	   reaches `--max-quiescent-iterations`.
+   197	6. On SIGTERM/SIGINT, break the loop and exit 0 immediately.
+   198	
+   199	The orchestrator service does **not** run any worker logic.
+   200	`run_orchestrator_iteration` only performs:
+   201	
+   202	- `_finalize_submitted(client, kind=...)` for each of plan / implement
+   203	  / evaluate — accept, reject(worker_error), or reject(validation_error)
+   204	  based on `validate_terminal`.
+   205	- `_dispatch_implement_tasks(client, factory)` — one implement task
+   206	  per ready proposal.
+   207	- `_dispatch_evaluate_tasks(client, factory)` — one evaluate task per
+   208	  starting trial with commit_sha and no extant evaluate task.
+   209	- `_promote_successful_trials(client, integrator.integrate)` — promote
+   210	  any success trial lacking `trial_commit_sha`.
+   211	
+   212	This is the existing `run_experiment` body minus the three
+   213	`worker.run_pending(...)` calls.
+   214	
+   215	#### 3. `reference/services/planner/`, `implementer/`, `evaluator/`
+   216	
+   217	Package names: `eden_planner_host`, `eden_implementer_host`,
+   218	`eden_evaluator_host`.
+   219	
+   220	Each has the same shape:
+   221	
+   222	```text
+   223	eden_<role>_host/
+   224	  __init__.py
+   225	  __main__.py
+   226	  cli.py
+   227	  host.py            # the poll loop + scripted functions
+   228	```
+   229	
+   230	Common CLI across all three:
+   231	
+   232	- `--task-store-url URL`.
+   233	- `--experiment-id ID`.
+   234	- `--shared-token TOKEN`.
+   235	- `--worker-id ID` — required. Distinct per-process identifier.
+   236	- `--poll-interval SECONDS` — default `0.1`.
+   237	- `--startup-timeout SECONDS` — default `30`.
+   238	- `--log-level LEVEL`.
+   239	
+   240	Role-specific args:
+   241	
+   242	- Planner: `--proposals-per-plan N` (default `1`). Controls the
+   243	  fixed `plan_fn`'s drafted-proposal count per plan task.
+   244	- Implementer: `--repo-path PATH` (required) + `--fail-every N`
+   245	  (optional, default never). See "Implementer repo model" above.
+   246	- Evaluator: `--experiment-config PATH` (required, to know the
+   247	  metrics schema and emit matching keys) + `--fail-every N`
+   248	  (optional).
+   249	
+   250	Startup: readiness probe, construct `StoreClient`, construct
+   251	`ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` with
+   252	the existing scripted `plan_fn` / `implement_fn` / `evaluate_fn` (see
+   253	"Scripted logic" below). Loop: `run_pending(client)`; if it returned 0,
+   254	sleep `--poll-interval`; else loop again immediately (drain bursts
+   255	without sleeping).
+   256	
+   257	Workers never self-terminate on empty work. They exit on SIGTERM
+   258	only. This matches the Phase 9 UI-driven model too — a worker's
+   259	lifecycle is owned by its supervisor, not by task availability.
+   260	
+
+ succeeded in 0ms:
+   561	
+   562	   Test is decorated `@pytest.mark.e2e` so it can be selected /
+   563	   skipped independently; runs by default in the test suite, since
+   564	   without it Phase 8b has no integration coverage of the whole
+   565	   stack. Marked platform-skipped on Windows (signal handling is
+   566	   different; not worth supporting in v0).
+   567	
+   568	### Build & CI
+   569	
+   570	- Add 5 service directories + `reference/services/_common/` (not a
+   571	  service; a shared utility package) to the workspace members list in
+   572	  the root `pyproject.toml`.
+   573	- Each service's `pyproject.toml` declares its own dependencies
+   574	  (`eden-wire`, `eden-dispatch`, `eden-storage`, `eden-git`, plus
+   575	  `uvicorn[standard]` for task-store-server).
+   576	- Add `reference/services/*/tests/` to `testpaths` and
+   577	  `pyright.include`.
+   578	- New third-party dependency: `uvicorn[standard]` (already implicit
+   579	  via `fastapi` but now explicit because task-store-server actually
+   580	  runs a server). No other new deps — `httpx`, `pydantic`, `fastapi`
+   581	  all already in the workspace.
+   582	- No new CI jobs; existing `python-lint`, `python-typecheck`,
+   583	  `python-test`, `schema-validity`, `schema-parity` all cover the new
+   584	  code (no new schemas; the error type is reference-only).
+   585	- `spec-xref-check.py` picks up the new §8 automatically.
+   586	- The E2E test takes ~5–10 seconds when healthy; still well inside CI
+   587	  budget.
+   588	
+   589	## Algorithm — what the 3-trial experiment looks like across 5 processes
+   590	
+   591	```text
+   592	harness
+   593	  ├─> task-store-server (uvicorn, SqliteStore, shared_token=T)
+   594	  │       bound to 127.0.0.1:$PORT after printing EDEN_TASK_STORE_LISTENING
+   595	  ├─> planner-host  (StoreClient, ScriptedPlanner, worker-id=planner-1)
+   596	  ├─> implementer-host (StoreClient, ScriptedImplementer, worker-id=implementer-1)
+   597	  ├─> evaluator-host   (StoreClient, ScriptedEvaluator, worker-id=evaluator-1)
+   598	  └─> orchestrator (StoreClient, Integrator, plan-tasks=plan-1,plan-2,plan-3)
+   599	```
+   600	
+   601	1. Harness boots task-store-server, reads its port from stdout.
+   602	2. Harness boots the 3 workers and orchestrator in parallel with the
+   603	   URL and shared token. Each waits on readiness probe.
+   604	3. Orchestrator seeds plan-1, plan-2, plan-3.
+   605	4. Planner's next poll returns the 3 pending plan tasks. It claims
+   606	   each, drafts `N` proposals (scripted), marks each ready, submits.
+   607	5. Orchestrator's next iteration: finalizes plan tasks (accepts
+   608	   each), dispatches an implement task per ready proposal.
+   609	6. Implementer claims each, writes a real commit on
+   610	   `refs/heads/work/<slug>-<trial_id>` in the shared bare repo via
+   611	   `GitRepo`, creates a trial carrying that branch + SHA, and
+   612	   submits `status=success`.
+   613	7. Orchestrator accepts implement tasks, dispatches evaluate tasks.
+   614	8. Evaluator claims each, submits metrics.
+   615	9. Orchestrator accepts evaluate tasks (this also writes metrics on
+   616	   the trial per the §2.2 composite commit). Trials are now
+   617	   `success`.
+   618	10. Orchestrator calls `Integrator.integrate(trial_id)` for each:
+   619	    writes `refs/heads/trial/<id>-<slug>` via zero-oid CAS into the
+   620	    bare repo, then `POST /trials/{id}/integrate` → store writes
+   621	    `trial_commit_sha` + `trial.integrated` event.
+   622	11. Next iteration finds no progress. Counter increments. After
+   623	    `--max-quiescent-iterations` zero-progress iterations in a row,
+   624	    orchestrator exits 0.
+   625	12. Harness observes the exit, asserts DB + repo state, SIGTERMs the
+   626	    workers + task-store-server, waits for them, tears down temp
+   627	    dirs.
+   628	
+   629	## Migration from 8a
+   630	
+   631	- `eden-wire.server.make_app(store)` → `make_app(store, *,
+   632	  shared_token=None)`. Default `None` preserves existing call sites.
+   633	- `eden-wire.client.StoreClient(base_url, experiment_id)` →
+   634	  `StoreClient(base_url, experiment_id, *, token=None)`. Default
+   635	  `None` preserves existing call sites.
+   636	- `eden_dispatch.run_experiment` keeps its signature; internally
+   637	  splits into `_run_orchestrator_iteration` that the new
+   638	  orchestrator also uses. All Phase 5 / 7b end-to-end tests
+   639	  keep running unchanged.
+   640	- Existing `reference/services/orchestrator/` and
+   641	  `reference/services/planner/` etc. stubs: replaced with real
+   642	  service packages (no alias directories; the existing names are
+   643	  the ones the roadmap blessed).
+   644	
+   645	## Files to reference
+   646	
+   647	- `reference/packages/eden-wire/src/eden_wire/{server,client,errors}.py`
+   648	  — extension points for auth + the reference-only error namespace.
+   649	- `reference/packages/eden-dispatch/src/eden_dispatch/{driver,workers}.py`
+   650	  — refactor target; workers are unchanged in shape, driver splits.
+   651	- `reference/packages/eden-git/src/eden_git/integrator.py` — consumed
+   652	  by the orchestrator CLI unchanged.
+   653	- `spec/v0/07-wire-protocol.md` §7 — closed error vocabulary that the
+   654	  reference-only `unauthorized` type is deliberately kept outside of.
+   655	  Add §8 as the only normative edit in this phase.
+   656	- `tests/fixtures/experiment/.eden/config.yaml` — input to the E2E
+   657	  test's `--experiment-config` flag.
+   658	
+   659	## Verification
+   660	
+   661	1. `uv run pytest -q` passes (new unit + integration tests included).
+   662	2. `uv run pytest -m e2e` runs only the subprocess E2E.
+   663	3. `uv run ruff check .` + `uv run pyright` pass.
+   664	4. `python3 scripts/spec-xref-check.py` passes.
+   665	5. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" …` passes on the new
+   666	   plan file, `07-wire-protocol.md` addendum, each service README,
+   667	   and AGENTS.md + CLAUDE.md + roadmap updates.
+   668	6. Manual: start task-store-server on a real port, curl
+   669	   `GET /v0/experiments/exp-1/events` without an `Authorization`
+   670	   header — returns 401 problem+json with `type:
+   671	   eden://reference-error/unauthorized`. Same request with
+   672	   `Authorization: Bearer <token>` returns 200 empty events.
+   673	7. Manual: kill the task-store-server with `kill -TERM` and confirm
+   674	   clean exit (no tracebacks, SQLite file well-formed).
+   675	
+   676	## Out of scope for 8b
+   677	
+   678	(Already listed in Non-goals; restated here as the commit guardrail.)
+   679	
+   680	- Removing in-process dispatch paths (Phase 8c).
+   681	- SSE / WebSocket push.
+   682	- Real auth (per-worker identities, rotation, expiry, transport
+   683	  security). Milestone 3.
+   684	- Artifact store transport (Phase 10).
+   685	- UI (Phase 9).
+   686	- Compose packaging (Phase 10).
+   687	- `healthz` endpoint.
+   688	- Multi-experiment (Phase 12).
+   689	- Worker claim-expiry / health-policy reclaim (spec-supported but
+   690	  not exercised by the E2E harness; it's not 8b's job to harden the
+   691	  reclaim path).
+   692	
+   693	## Known risks
+   694	
+   695	- **Subprocess-based integration tests are easy to write wrong.** The
+   696	  E2E spec above is explicit about: ephemeral ports announced on
+   697	  stdout; stderr capture on failure; bounded timeouts at every wait
+   698	  point; SIGKILL fallback on SIGTERM timeout; tempdir teardown on
+   699	  every exit path. Missing any of these yields a test that hangs CI
+   700	  or produces unrunnable "red for unknown reason" failures. These
+   701	  are codified in the test, not left to diligence.
+   702	- **Auth in the non-normative namespace is a cross-concern edit.**
+   703	  `eden_wire.errors._TYPE_BY_EXC` currently maps only `StorageError`
+   704	  subclasses to `eden://error/…`. The new `Unauthorized` exception
+   705	  lives outside that map because (a) it's not a `StorageError`, and
+   706	  (b) it's reference-only. Keep the two tables clearly separated so
+   707	  no future refactor accidentally leaks a reference-only type into
+   708	  the normative vocabulary.
+   709	- **Workers don't self-terminate.** Anything that boots a worker
+   710	  (test harness, future deployment) is responsible for killing it.
+   711	  SIGTERM triggers a clean exit within one poll interval; SIGKILL
+   712	  is the fallback after 10 seconds. Documented in each service's
+   713	  README.
+   714	- **Shared-token auth has no transport security.** The server is
+   715	  loopback-only in tests and documented as such. A real deployment
+   716	  of shared-token auth over a non-TLS link leaks the token. Auth
+   717	  scaffolding has a big caveat in its README pointing at Milestone
+   718	  3.
+   719	- **Windows signal handling.** `signal.SIGTERM` on Windows is
+   720	  missing; uvicorn's shutdown path uses `SIGBREAK` / SIGINT. The
+   721	  E2E test is `pytest.mark.skipif(sys.platform == "win32", …)`.
+   722	  Non-test code paths also work on Windows (uvicorn handles it),
+   723	  just not exercised in CI.
+   724	- **Quiescence counter ≥ 2.** If
+   725	  `--max-quiescent-iterations` is 1, the orchestrator can exit
+   726	  while a worker is mid-submit (the orchestrator reads tasks, sees
+   727	  nothing pending, exits; the worker's submit lands a moment
+   728	  later, orphaned). Default of 3 plus a poll interval of 0.1s
+   729	  means we wait ~0.2s of no-progress, which empirically covers
+   730	  scripted-worker latency with a wide margin. Documented as a
+   731	  tunable.
+   732	- **Ephemeral port assignment race.** We bind `--port 0`, read the
+   733	  port from stdout, then launch other processes pointing at it.
+   734	  Between `listen()` and the port being printed there's a
+   735	  flush-timing window where the harness might read an empty line;
+   736	  the harness must `readline()` in a loop until it gets the
+   737	  `EDEN_TASK_STORE_LISTENING` prefix. Harness code handles this.
+   738	- **`--plan-tasks N` (integer) vs explicit list.** The integer form
+   739	  is the common case; the explicit-list form exists so tests can
+   740	  pin deterministic IDs that assertions can reference.
+   741	- **Scripted `plan_fn` / `implement_fn` / `evaluate_fn` now live in
+   742	  shared code.** Tests that used to inject their own fn still can,
+   743	  by importing and parameterizing — no lock-in. The shared
+   744	  defaults are the deterministic "3 trials, all succeed" shape
+   745	  that the Phase 5 / 7b E2E uses.
+   746	
+   747	## Execution order
+   748	
+   749	This is execution-only; no scope decisions are deferred to here.
+   750	
+   751	1. Spec addendum: append §8 "Reference-only extensions" to
+   752	   [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md).
+   753	   Run `python3 scripts/spec-xref-check.py` to confirm no broken
+   754	   xrefs. Lint with markdownlint.
+   755	2. Refactor `eden-dispatch.driver`: extract
+   756	   `_run_orchestrator_iteration` (private) and keep
+   757	   `run_experiment` calling it. Add
+   758	   `reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`.
+   759	3. Extend `eden-wire.server.make_app` with the `shared_token`
+   760	   kwarg + middleware. Extend `eden-wire.client.StoreClient` with
+   761	   `token` kwarg. Add `Unauthorized` exception + reference-only
+   762	   entry to `eden_wire.errors`. Add
+   763	   `reference/packages/eden-wire/tests/test_auth.py` covering
+   764	   server middleware + client header + error round-trip.
+   765	4. Land `reference/services/_common/` with logging, signal
+   766	   handling, readiness probe, arg parsing, and the scripted
+   767	   `plan_fn`/`implement_fn`/`evaluate_fn` extraction.
+   768	5. Land `reference/services/task-store-server/` with its tests
+   769	   (unit `test_app.py`).
+   770	6. Land `reference/services/orchestrator/` with its unit
+   771	   tests but not the E2E yet.
+   772	7. Land `reference/services/planner/`, `implementer/`,
+   773	   `evaluator/` with their host unit tests.
+   774	8. Land the E2E test
+   775	   `reference/services/orchestrator/tests/test_e2e.py`.
+   776	   Run locally — it is the acceptance gate for 8b. Capture stderr
+   777	   on failure from the beginning; do not add that feature as a
+   778	   "v2" polish.
+   779	9. Update `reference/README.md`: mark the five service directories
+   780	   as Phase 8b-complete.
+   781	10. Update `AGENTS.md` "Current phase" and the Commands table
+   782	    (python module invocation hints for the new services).
+   783	11. Update `docs/roadmap.md` Phase 8 section: mark 8b complete.
+   784	12. Run the full verification list above.
+   785	13. `/codex-review references/implementation.md` on the branch.
+   786	14. Codify findings; commit; PR.
+   787	
+   788	## Review gate
+   789	
+   790	Before handing to `/codex-review`:
+   791	
+   792	- The plan answers, for each of the five design decisions, what the
+   793	  chosen option is and why the alternatives were rejected:
+   794	  - **Quiescence by iteration counter vs by event subscription.**
+   795	    Counter chosen because (a) it matches how `run_experiment`
+   796	    already detects quiescence and (b) doesn't require the worker
+   797	    hosts to distinguish "I'm idle" from "I exited" on the
+   798	    subscriber end.
+   799	  - **Workers poll tasks vs subscribe to events.** Polling chosen
+   800	    for 8b because teardown (kill at any moment) is trivial and
+   801	    because the poll interval is a single tunable. Event-subscribe
+   802	    remains a future optimization.
+   803	  - **Shared-token in normative vocabulary vs reference-only
+   804	    namespace.** Reference-only chosen because the spec chapter
+   805	    07 explicitly defers auth to Milestone 3 and committing to a
+   806	    shape now would force rework then.
+   807	  - **Common scaffolding extracted vs inlined per service.**
+   808	    Extracted because three divergent CLIs are the predictable
+   809	    failure mode and because the extraction is small (< 200 LOC).
+   810	  - **Service directories — reuse stubs vs new names.** Reuse the
+   811	    four existing Phase 0 stubs (`planner/`, `implementer/`,
+   812	    `evaluator/`, `orchestrator/`) — they are the roadmap's blessed
+   813	    names and [`reference/README.md`](../../reference/README.md)
+   814	    already documents them. Add one new directory
+   815	    (`task-store-server/`) for the process that holds the store;
+   816	    there is no stub because Phase 0 didn't anticipate splitting
+   817	    the store off. The Phase 8a plan's tentative
+   818	    `orchestrator-service/` name was a placeholder while the
+   819	    directory didn't yet exist; now that it's being created for
+   820	    real, the shorter stub name is the better pick.
+   821	
+   822	(The last decision is flagged for codex review to push back if the
+   823	rename is the wrong tradeoff.)
+
+ succeeded in 0ms:
+   261	**Scripted logic across the subprocess boundary.** Today
+   262	`ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` take
+   263	user-supplied Python callables (`plan_fn`, `implement_fn`,
+   264	`evaluate_fn`) at construction. That arrangement does not survive
+   265	being put behind a CLI — Python callables don't cross a
+   266	`python -m eden_planner_host …` boundary.
+   267	
+   268	8b resolves this by **baking one built-in profile into each worker
+   269	host**. A new module `reference/services/_common/scripted.py` owns
+   270	the canonical 8b profile: the same deterministic "3 trials, all
+   271	succeed" shape the Phase 5 / 7b in-process tests use today, with a
+   272	couple of knobs configurable via CLI rather than by injecting a
+   273	function:
+   274	
+   275	- Planner host: fixed `plan_fn` that drafts `--proposals-per-plan`
+   276	  proposals per task (default `1`) with deterministic slugs derived
+   277	  from the plan task ID.
+   278	- Implementer host: fixed `implement_fn` that writes a real git
+   279	  commit to the shared bare repo (see "Implementer repo model"
+   280	  below) and returns its SHA. `--fail-every N` (default: never
+   281	  fail) flips occasional trials to `status=error` to exercise
+   282	  rejection paths in tests.
+   283	- Evaluator host: fixed `evaluate_fn` that returns scripted metrics
+   284	  matching the experiment's `metrics_schema` (read from
+   285	  `--experiment-config` so the evaluator knows what keys to emit).
+   286	  `--fail-every N` flips occasional evaluations to
+   287	  `status=error` / `status=eval_error` if a test wants them.
+   288	
+   289	The `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator`
+   290	classes stay callable-injected for Phase 5 / 7b in-process tests —
+   291	the worker hosts are the only callers that wrap them in the fixed
+   292	profile. This way nothing about the in-process test surface changes.
+   293	
+   294	Selector: a `--profile NAME` CLI flag is **not** introduced in 8b —
+   295	the fixed profile is the only option. When real LLM-backed workers
+   296	land (Phase 10 LLM hosts), they ship as separate worker hosts
+   297	(`eden_llm_planner_host`, etc.) rather than as a `--profile llm`
+   298	switch on the scripted host. Keeping the split explicit at the
+   299	binary level means the scripted and LLM hosts don't share
+   300	configuration surfaces that each only half-understands.
+   301	
+   302	**Implementer repo model.** The `Integrator` requires that the
+   303	`commit_sha` an implementer submits be a real, reachable commit on
+   304	a branch it can read
+   305	([integrator.py](../../reference/packages/eden-git/src/eden_git/integrator.py) §2
+   306	preconditions). Today's Phase 7b E2E fixture satisfies this by
+   307	prebuilding real `work/*` branches before running the experiment
+   308	and returning those real SHAs from the scripted `implement_fn`.
+   309	Phase 8b needs the equivalent inside a standalone process.
+   310	
+   311	Decision: the implementer host writes real commits directly, via a
+   312	`GitRepo` opened against the **same bare repo** the orchestrator's
+   313	`Integrator` reads from.
+   314	
+   315	- Implementer CLI gains `--repo-path PATH` — the bare repo it
+   316	  writes to. Same path the orchestrator passes to `--repo-path`.
+   317	- Implementer's scripted flow per task writes an **orphan commit**
+   318	  (no parents) on a fresh `work/*` branch. This matches the
+   319	  scripted planner's proposals, which emit empty
+   320	  `parent_commits=()`, and keeps planner and implementer decoupled
+   321	  from any shared base-ref convention:
+   322	  1. Build a tree containing one deterministic blob (filename
+   323	     derived from the proposal slug, content derived from the
+   324	     trial ID) via `GitRepo.write_blob` + `write_tree_from_entries`.
+   325	  2. `commit_tree` with that tree, **no parents**, fixed author /
+   326	     committer identity, deterministic message derived from the
+   327	     proposal slug + trial ID.
+   328	  3. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
+   329	  4. Submit the new SHA on the implement task.
+   330	
+   331	  Because proposals carry `parent_commits=()`, the Integrator's
+   332	  §1.4 reachability check over `trial.parent_commits` iterates an
+   333	  empty sequence and trivially passes; the §2 check that
+   334	  `commit_sha` is reachable from `branch` is satisfied by the
+   335	  branch ref the implementer just wrote pointing at that SHA.
+   336	
+   337	This keeps the implementer host's write path identical to how the
+   338	Phase 7b test prebuilds branches, just inside the service loop
+   339	rather than in a test fixture. Concurrency is fine: worker hosts
+   340	only write `work/*` refs; the orchestrator's `Integrator` only
+   341	writes `trial/*` refs and reads `work/*` refs. Git's packed-refs +
+   342	loose-refs arrangement is safe under concurrent writers in
+   343	distinct ref namespaces.
+   344	
+   345	**ID allocation across restarts.** Counter-based prefixes
+   346	(`proposal-1`, `proposal-2`, …) collide on restart because a fresh
+   347	worker has no knowledge of persisted state. Decision: worker-
+   348	generated IDs (`proposal_id`, `trial_id`) are short UUIDv4 hex
+   349	strings prefixed by a role tag — `proposal-<uuid>`, `trial-<uuid>`.
+   350	The `--proposal-prefix` / `--trial-prefix` flags are dropped; the
+   351	orchestrator-allocated task IDs keep `--implement-task-prefix` /
+   352	`--evaluate-task-prefix` (because those are used for human-readable
+   353	IDs in logs and E2E assertions), but the per-iteration uniqueness
+   354	comes from appending a short UUID.
+   355	
+   356	The E2E test asserts on the *count* and *shape* of produced IDs,
+   357	not specific values — so UUIDs are fine. Plan task IDs remain
+   358	explicit (`--plan-tasks plan-1,plan-2,plan-3`) because the harness
+   359	needs to reference them in assertions.
+   360	
+   361	### Shared-token auth scaffolding (reference-only)
+   362	
+   363	**Server-side extension** in `eden_wire.server`:
+   364	
+   365	```python
+   366	def make_app(
+   367	    store: Store,
+   368	    *,
+   369	    subscribe_timeout: float = 30.0,
+   370	    subscribe_poll_interval: float = 0.1,
+   371	    shared_token: str | None = None,
+   372	) -> FastAPI:
+   373	    ...
+   374	    if shared_token is not None:
+   375	        app.add_middleware(_SharedTokenMiddleware, token=shared_token)
+   376	    ...
+   377	```
+   378	
+   379	The middleware runs before endpoint dispatch. It:
+   380	
+   381	- Accepts any request whose `Authorization: Bearer <value>` matches
+   382	  `shared_token` byte-for-byte (constant-time compare via
+   383	  `hmac.compare_digest`).
+   384	- Rejects any other request (missing header, wrong scheme, wrong
+   385	  value) with a problem+json envelope:
+   386	
+   387	  ```json
+   388	  {
+   389	    "type": "eden://reference-error/unauthorized",
+   390	    "title": "Unauthorized",
+   391	    "status": 401,
+   392	    "detail": "missing or invalid Authorization header",
+   393	    "instance": "…request URL…"
+   394	  }
+   395	  ```
+   396	
+   397	Notes:
+   398	
+   399	- The `type` URI namespace `eden://reference-error/…` is **separate**
+   400	  from the normative `eden://error/…` namespace in
+   401	  [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)
+   402	  §7. A conforming server that uses a different auth mechanism is
+   403	  free to emit whatever type it likes (or no auth at all).
+   404	- The middleware does not guard the `/docs` / `/openapi.json` routes
+   405	  any differently; both require the token when auth is enabled.
+   406	- When `shared_token is None`, no middleware is installed; the server
+   407	  behaves exactly as today. Every existing `make_app(store)` call site
+   408	  works unchanged.
+   409	
+   410	**Client-side extension** in `eden_wire.client`:
+   411	
+   412	```python
+   413	class StoreClient:
+   414	    def __init__(
+   415	        self,
+   416	        base_url: str,
+   417	        experiment_id: str,
+   418	        *,
+   419	        token: str | None = None,
+   420	        ...
+   421	    ) -> None:
+   422	        ...
+   423	```
+   424	
+   425	When `token` is set, every request carries
+   426	`Authorization: Bearer <token>`. The client also recognizes the
+   427	reference-only error type and raises a new
+   428	`eden_wire.errors.Unauthorized(ReferenceError)` subclass, so calling
+   429	code can catch it explicitly. `Unauthorized` is not a `StorageError`
+   430	subclass — authentication is transport-level, not store-level.
+   431	
+   432	**Spec addendum.** A new informative subsection §8 "Reference-only
+   433	extensions" in `spec/v0/07-wire-protocol.md`, ~10 lines:
+   434	
+   435	> Authentication is outside the normative binding (§7 restates
+   436	> this). The reference implementation in
+   437	> [`reference/packages/eden-wire/`](../../reference/packages/eden-wire/)
+   438	> ships an optional shared-token check: when configured, the server
+   439	> requires `Authorization: Bearer <token>` on every request and
+   440	> rejects others with a problem+json response whose `type` is
+   441	> `eden://reference-error/unauthorized`. Conforming servers MAY
+   442	> adopt this scheme, adopt a different scheme, or require no
+   443	> authentication at all. The only constraint §7 imposes on any
+   444	> auth scheme is that it MUST NOT emit error `type` values inside
+   445	> the normative `eden://error/…` namespace — the v0 vocabulary
+   446	> there is closed, and an auth-outcome type overloading one of
+   447	> those values would force clients to disambiguate auth from
+   448	> store-state errors on HTTP status alone.
+   449	
+   450	### `eden-dispatch` refactor
+   451	
+   452	Today `run_experiment(store, planner, implementer, evaluator, ...)`
+   453	interleaves:
+   454	
+   455	1. `planner.run_pending(store)`
+   456	2. `_finalize_submitted(store, kind="plan")`
+   457	3. `_dispatch_implement_tasks(store, ...)`
+   458	4. `implementer.run_pending(store)`
+   459	5. `_finalize_submitted(store, kind="implement")`
+   460	6. `_dispatch_evaluate_tasks(store, ...)`
+   461	7. `evaluator.run_pending(store)`
+   462	8. `_finalize_submitted(store, kind="evaluate")`
+   463	9. `_promote_successful_trials(store, integrate_trial)` (optional)
+   464	
+   465	Steps 2, 3, 5, 6, 8, 9 are orchestrator-only; 1, 4, 7 are worker-only.
+   466	Factor out `_run_orchestrator_iteration(store, *, integrate_trial,
+   467	implement_task_factory, evaluate_task_factory)` that does steps
+   468	2, 3, 5, 6, 8, 9 and returns `progress: bool`.
+   469	
+   470	`run_experiment` becomes:
+   471	
+   472	```python
+   473	def run_experiment(store, planner, implementer, evaluator, *, ...):
+   474	    for task_id in plan_task_ids:
+   475	        store.create_plan_task(task_id)
+   476	    while True:
+   477	        progress = False
+   478	        progress |= planner.run_pending(store) > 0
+   479	        progress |= implementer.run_pending(store) > 0
+   480	        progress |= evaluator.run_pending(store) > 0
+   481	        progress |= _run_orchestrator_iteration(store, ...)
+   482	        if not progress:
+   483	            return
+   484	```
+   485	
+   486	— identical behavior, but the orchestrator half is now importable
+   487	from a single function that the new orchestrator can call.
+   488	
+   489	The worker-host processes consume `planner.run_pending(client)` etc.
+   490	directly and don't touch `run_experiment`.
+   491	
+   492	### Tests
+   493	
+   494	New test files, in rough order of ambition:
+   495	
+   496	1. **Unit — auth middleware**
+   497	   (`reference/packages/eden-wire/tests/test_auth.py`). Requests with
+   498	   correct / missing / wrong-scheme / wrong-value headers hit a
+   499	   `make_app(store, shared_token="T")` via `TestClient`; assert the
+   500	   status + problem+json envelope shape. Also assert that
+   501	   `make_app(store)` without `shared_token` admits anonymous
+   502	   requests (regression guard on the default path).
+   503	
+   504	2. **Unit — StoreClient auth header**
+   505	   (`reference/packages/eden-wire/tests/test_auth.py` same file). A
+   506	   `StoreClient(token="T")` routed through `MockTransport` captures
+   507	   the outgoing `Authorization` header; with no token, no
+   508	   `Authorization` header is sent.
+   509	
+   510	3. **Unit — `run_orchestrator_iteration` against a seeded store**
+   511	   (`reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`).
+   512	   For each of the six transitions the function performs, pre-seed a
+   513	   store so exactly one transition is applicable, call the function,
+   514	   assert the expected state change plus `progress is True`. Then a
+   515	   fully-quiesced store returns `progress is False`.
+   516	
+   517	4. **Unit — each worker host in isolation**
+   518	   (`reference/services/<role>/tests/test_host.py`). Boot the
+   519	   service's `host.run(...)` in a thread with a `StoreClient` backed
+   520	   by an in-process `TestClient`, seed a pending task, wait for the
+   521	   terminal state, assert outcome, `stopping.set()` to tear down.
+   522	   Proves the host's poll loop honors SIGTERM semantics without
+   523	   forking subprocesses.
+   524	
+   525	5. **Unit — task-store-server app construction**
+   526	   (`reference/services/task-store-server/tests/test_app.py`). Loads
+   527	   the fixture experiment config, calls
+   528	   `app.build_app(args)`, asserts the returned FastAPI has the
+   529	   middleware installed iff `--shared-token` was passed.
+   530	
+   531	6. **Integration — real-subprocess E2E**
+   532	   (`reference/services/orchestrator/tests/test_e2e.py`).
+   533	   Uses `subprocess.Popen` with `python -m eden_task_store_server`,
+   534	   `python -m eden_planner_host`, etc. The harness:
+   535	
+   536	   - Creates a tempdir; `git init --bare` inside. The implementer
+   537	     writes orphan commits on `work/*` branches, so no seed commit
+   538	     is required.
+   539	   - Creates a tempdir for the sqlite DB (`--db-path` pointing at a
+   540	     file, not `:memory:` — this exercises the SQLite path end-to-end).
+   541	   - Boots task-store-server on `--port 0`, reads
+   542	     `EDEN_TASK_STORE_LISTENING` from stdout to learn the port, then
+   543	     boots 3 workers + orchestrator against
+   544	     `http://127.0.0.1:<port>`. The implementer and orchestrator
+   545	     both point `--repo-path` at the bare repo; the planner and
+   546	     evaluator don't touch it. All 5 subprocesses share
+   547	     `--shared-token test-token` to exercise auth.
+   548	   - Waits up to 60 seconds for the orchestrator to exit 0.
+   549	   - On timeout or non-zero exit, dumps every subprocess's stderr
+   550	     into the pytest failure output (this is non-negotiable — the
+   551	     one thing that makes subprocess tests diagnosable is capturing
+   552	     every process's stderr on failure).
+   553	   - SIGTERMs the workers and task-store-server; awaits each for up
+   554	     to 10 seconds, then SIGKILLs.
+   555	   - Opens the DB with a fresh `SqliteStore`, asserts:
+   556	     - 3 accepted plan tasks, 3 accepted implement tasks, 3 accepted
+   557	       evaluate tasks.
+   558	     - 3 trials with `status="success"` and `trial_commit_sha` set.
+   559	     - Each `trial_commit_sha` is a valid git commit in the bare repo.
+   560	   - Tears down tempdirs.
+
+codex
+The new subprocess-boundary explanation is much clearer. I’m checking the proposed orphan-commit / empty-parent model against the actual contracts now, because that’s the part most likely to determine whether I can move on from feasibility into alternatives/completeness.
+exec
+/bin/zsh -lc "sed -n '1,160p' tests/fixtures/experiment/.eden/config.yaml" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+planner_root: "./planner"
+workspace: "./workspace"
+parallel_trials: 1
+evaluate_command: "python3 eval.py"
+implement_command: "python3 implement.py"
+plan_command: "python3 plan.py"
+max_trials: 20
+max_wall_time: "10m"
+metrics_schema:
+  score: real
+objective:
+  expr: "score"
+  direction: "maximize"
+
+exec
+/bin/zsh -lc "rg -n \"metrics_schema|EvaluateOutcome|validate_metrics|score|emit matching keys|experiment-config\" reference/packages/eden-dispatch/src reference/packages/eden-contracts/src reference/packages/eden-storage/src tests/fixtures/experiment/.eden/config.yaml -g '*.{py,yaml}'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "rg -n \"short UUID|uuid4|proposal-<uuid>|trial-<uuid>|task ids\" docs/plans/eden-phase-8b-service-extraction.md reference/packages/eden-contracts/src spec/v0 -g '*.{md,py,json}'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "rg -n \"parent_commits|minItems|proposal.*parent|trial.*parent|orphan\" spec/v0 reference/packages/eden-contracts/src reference/packages/eden-storage/src -g '*.{md,json,py}'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+docs/plans/eden-phase-8b-service-extraction.md:348:generated IDs (`proposal_id`, `trial_id`) are short UUIDv4 hex
+docs/plans/eden-phase-8b-service-extraction.md:349:strings prefixed by a role tag — `proposal-<uuid>`, `trial-<uuid>`.
+docs/plans/eden-phase-8b-service-extraction.md:354:comes from appending a short UUID.
+
+ succeeded in 0ms:
+tests/fixtures/experiment/.eden/config.yaml:9:metrics_schema:
+tests/fixtures/experiment/.eden/config.yaml:10:  score: real
+tests/fixtures/experiment/.eden/config.yaml:12:  expr: "score"
+reference/packages/eden-storage/src/eden_storage/protocol.py:268:    def validate_metrics(self, metrics: dict[str, Any]) -> None:
+reference/packages/eden-storage/src/eden_storage/protocol.py:269:        """Validate metrics against the experiment's ``metrics_schema``.
+reference/packages/eden-storage/src/eden_storage/sqlite.py:125:    raises ``InvalidPrecondition``. ``metrics_schema`` MUST NOT be
+reference/packages/eden-storage/src/eden_storage/sqlite.py:140:        metrics_schema: MetricsSchema | None = None,
+reference/packages/eden-storage/src/eden_storage/sqlite.py:147:            metrics_schema=metrics_schema,
+reference/packages/eden-storage/src/eden_storage/sqlite.py:174:        self._initialize_experiment(experiment_id, metrics_schema)
+reference/packages/eden-storage/src/eden_storage/sqlite.py:190:        self, experiment_id: str, metrics_schema: MetricsSchema | None
+reference/packages/eden-storage/src/eden_storage/sqlite.py:194:        On first open inserts the experiment + metrics_schema. On
+reference/packages/eden-storage/src/eden_storage/sqlite.py:200:            "SELECT experiment_id, metrics_schema FROM experiment"
+reference/packages/eden-storage/src/eden_storage/sqlite.py:208:        if metrics_schema is not None:
+reference/packages/eden-storage/src/eden_storage/sqlite.py:210:                metrics_schema.model_dump(mode="json"), sort_keys=True
+reference/packages/eden-storage/src/eden_storage/sqlite.py:214:                "INSERT INTO experiment(experiment_id, metrics_schema) VALUES (?, ?)",
+reference/packages/eden-storage/src/eden_storage/sqlite.py:230:        if metrics_schema is None:
+reference/packages/eden-storage/src/eden_storage/sqlite.py:235:                self._metrics_schema = MetricsSchema.model_validate_json(stored_schema)
+reference/packages/eden-storage/src/eden_storage/sqlite.py:238:                "metrics_schema MUST NOT change for the lifetime of an "
+reference/packages/eden-contracts/src/eden_contracts/trial.py:4:is constrained by the experiment's ``metrics_schema``; this model does not
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:56:class EvaluateOutcome:
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:66:EvaluateFn = Callable[[EvaluateTask, Trial], EvaluateOutcome]
+reference/packages/eden-contracts/src/eden_contracts/config.py:3:Mirrors ``spec/v0/schemas/experiment-config.schema.json``.
+reference/packages/eden-contracts/src/eden_contracts/config.py:45:    metrics_schema: MetricsSchema
+reference/packages/eden-contracts/src/eden_contracts/metrics.py:4:``metrics_schema`` on :class:`ExperimentConfig` and constrains every
+reference/packages/eden-contracts/src/eden_contracts/metrics.py:48:            raise ValueError("metrics_schema MUST declare at least one metric")
+reference/packages/eden-storage/src/eden_storage/_schema.py:30:        metrics_schema TEXT
+reference/packages/eden-storage/src/eden_storage/_base.py:164:        metrics_schema: MetricsSchema | None = None,
+reference/packages/eden-storage/src/eden_storage/_base.py:170:        self._metrics_schema = metrics_schema
+reference/packages/eden-storage/src/eden_storage/_base.py:1108:                    self._validate_metrics(submission.metrics)
+reference/packages/eden-storage/src/eden_storage/_base.py:1220:            self._validate_metrics(submission.metrics)
+reference/packages/eden-storage/src/eden_storage/_base.py:1249:                self._validate_metrics(submission.metrics)
+reference/packages/eden-storage/src/eden_storage/_base.py:1264:    def validate_metrics(self, metrics: dict[str, Any]) -> None:
+reference/packages/eden-storage/src/eden_storage/_base.py:1270:        store was constructed without a ``metrics_schema``.
+reference/packages/eden-storage/src/eden_storage/_base.py:1272:        self._validate_metrics(metrics)
+reference/packages/eden-storage/src/eden_storage/_base.py:1274:    def _validate_metrics(self, metrics: dict[str, Any]) -> None:
+reference/packages/eden-storage/src/eden_storage/_base.py:1276:        if self._metrics_schema is None:
+reference/packages/eden-storage/src/eden_storage/_base.py:1278:        schema = self._metrics_schema.root
+reference/packages/eden-storage/src/eden_storage/_base.py:1282:                    f"metric key {key!r} is not in the experiment's metrics_schema"
+
+ succeeded in 0ms:
+spec/v0/02-data-model.md:159:| `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
+spec/v0/02-data-model.md:166:`parent_commits` MUST contain at least one SHA. Each SHA MUST name a commit reachable from the experiment's starting commit on `main` or from an already-completed trial on the canonical trial lineage.
+spec/v0/02-data-model.md:184:The names `trial_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the trial object and MUST NOT appear in a metrics schema.
+spec/v0/02-data-model.md:200:| `parent_commits` | yes | array of SHA | Inherited from the proposal. |
+reference/packages/eden-contracts/src/eden_contracts/proposal.py:31:    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/trial.py:32:    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+spec/v0/06-integrator.md:16:- MUST be present at experiment registration time and MUST name a commit reachable by every proposal's `parent_commits` ([`02-data-model.md`](02-data-model.md) §5.2).
+spec/v0/06-integrator.md:35:Every commit on a `work/*` branch MUST descend from the proposal's declared `parent_commits` ([`03-roles.md`](03-roles.md) §3.3). The integrator MUST reject a trial whose `commit_sha` does not satisfy this rule; rejection produces no `trial/*` commit and no `trial.integrated` event. The orchestrator MAY transition the trial to `error` via the normal channels if a reachability violation is discovered, but the integrator MUST NOT fabricate a `trial.errored` event itself — events are paired with state changes, and the integrator is not the writer for trial `status`.
+spec/v0/06-integrator.md:61:where `<trial_id>` is the trial's `trial_id` ([`02-data-model.md`](02-data-model.md) §7.1) and `<slug>` is the `slug` of the trial's parent proposal ([`02-data-model.md`](02-data-model.md) §5.1). The slug is already constrained to `^[a-z0-9][a-z0-9-]*$`, and `trial_id` is opaque; the resulting branch name MUST be valid under git's ref-format rules ([git check-ref-format]). If an implementation's `trial_id` choice could violate ref-format rules, the implementation MUST choose a different `trial_id` representation — it MUST NOT mutate the stored `trial_id` in the trial object to accommodate its branch-naming scheme.
+spec/v0/06-integrator.md:72:- `parents(T) == <parent_commits>` of the trial, in the order recorded on the trial ([`02-data-model.md`](02-data-model.md) §7.1 inherits from the proposal, §5.1).
+spec/v0/06-integrator.md:77:The squash is a single merge-commit-shaped object (parents may be one or many, per the proposal's `parent_commits`); intermediate work-branch commits MUST NOT appear in `T`'s ancestor chain along a first-parent path when read from `trial/*`. Readers of the canonical lineage see one commit per trial, not the worker's intermediate history.
+spec/v0/06-integrator.md:89:The subject MUST carry both the `trial_id` and the parent proposal's `slug`, separated by a single space. The body MAY include additional human-readable context. The machine-parseable header allows a subscriber reading git alone — without the event log — to recover the `trial_id` of any `trial/*` commit.
+spec/v0/06-integrator.md:127:| `parent_commits` | array of string | The trial's `parent_commits`, in order ([`02-data-model.md`](02-data-model.md) §7.1). |
+reference/packages/eden-contracts/src/eden_contracts/metrics.py:25:        "parent_commits",
+spec/v0/01-concepts.md:23:The **planner** proposes what to try. Its output is a **proposal** — a document describing a change to attempt, along with metadata (parent commits, priority, artifacts) needed to execute it. Planners are free in their internal strategy (LLM, search, human); the protocol constrains only what a proposal looks like and when one is considered ready.
+spec/v0/05-event-protocol.md:136:Registered event payloads carry only the fields needed to *identify* the transitioning entity and any cross-entity references (e.g. `proposal.dispatched` carries the implement `task_id`). They do not carry full entity snapshots. A subscriber that needs the content of an entity (the proposal's `parent_commits` and `artifacts_uri`, the trial's `metrics` and `completed_at`) MUST read that entity from its store using the identifier the event carries; the read returns the entity's current state ([`08-storage.md`](08-storage.md) §1.7). This boundary is deliberate: events mark what happened; the entity stores hold what the entity *is*. Coupling the two into a full event-sourced projection — a subscriber reconstructing every intermediate entity value from events alone — is a deployment MAY implement on top of v0 but is not a protocol requirement, since v0 does not mandate historical reads on the entity stores.
+spec/v0/schemas/trial.schema.json:11:    "parent_commits",
+spec/v0/schemas/trial.schema.json:31:    "parent_commits": {
+spec/v0/schemas/trial.schema.json:33:      "minItems": 1,
+spec/v0/schemas/proposal.schema.json:11:    "parent_commits",
+spec/v0/schemas/proposal.schema.json:32:    "parent_commits": {
+spec/v0/schemas/proposal.schema.json:34:      "minItems": 1,
+spec/v0/design-notes/integrator-atomicity.md:31:The integrator performs, in order: write the commit object (an orphan, content-addressed write visible only via the ref), create the `trial/*` ref via a compare-and-swap against the zero-oid, then call the store's atomic operation that writes `trial_commit_sha` and appends `trial.integrated` together. If the store operation raises, the integrator compensates by deleting the ref with an expected-old-sha precondition.
+spec/v0/03-roles.md:23:Before a task is dispatched to a worker-role queue, the orchestrator MUST ensure the task's payload references (proposal, trial, parent commits) satisfy the dispatch preconditions listed per role below. A worker MAY therefore rely on those preconditions and is not required to re-validate them. A worker that nevertheless discovers a violation (e.g. a referenced proposal has been retracted) MUST fail the task with an error status; it MUST NOT repair store state itself.
+spec/v0/03-roles.md:59:- `parent_commits` MUST contain at least one SHA that names a commit reachable from either the experiment's starting commit on `main` or a completed trial on the canonical lineage ([`01-concepts.md`](01-concepts.md) §9).
+spec/v0/03-roles.md:82:- Read and write access to the git repository associated with `P.experiment_id`, at a revision reachable from `P.parent_commits`. How the repository is located and how access is granted is a role-binding concern (§6, [`02-data-model.md`](02-data-model.md) §2.4); the protocol constrains only that the implementer's writes land under `work/*` and that no commit is introduced whose history does not descend from `P.parent_commits` (§3.3).
+spec/v0/03-roles.md:89:1. Persist a trial with `status == "starting"`, `experiment_id == P.experiment_id`, `proposal_id == P`, and `parent_commits == P.parent_commits`, before making any repository write observable to other roles.
+spec/v0/03-roles.md:90:2. Write the implementation on a branch under `work/*` ([`01-concepts.md`](01-concepts.md) §9) whose parent(s) are the proposal's `parent_commits`. Set the trial's `branch` field to this branch name.
+spec/v0/03-roles.md:98:- Every commit on the worker branch MUST be reachable from the declared `parent_commits`. An implementer MUST NOT introduce commits whose history does not descend from the proposal's declared parents.
+spec/v0/schemas/metrics-schema.schema.json:14:        "parent_commits",
+
+codex
+The biggest new issue is in feasibility, not missing context: the plan now defines the worker behavior, but the chosen repo model may violate the current spec/contracts. I’m checking the ID and ref-format constraints too before I write up findings.
+exec
+/bin/zsh -lc "nl -ba spec/v0/02-data-model.md | sed -n '150,210p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   150	
+   151	### 5.1 Fields
+   152	
+   153	| Field | Required | Type | Description |
+   154	|---|---|---|---|
+   155	| `proposal_id` | yes | string | Unique identifier. |
+   156	| `experiment_id` | yes | string | The experiment this proposal belongs to. |
+   157	| `slug` | yes | string | Human-readable short label. MUST match `^[a-z0-9][a-z0-9-]*$`. |
+   158	| `priority` | yes | number | Ordering hint; higher dispatches earlier. |
+   159	| `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
+   160	| `artifacts_uri` | yes | string (URI) | Where the planner's output documents live. |
+   161	| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the implementer's attempt has finished (successfully or not); the trial's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
+   162	| `created_at` | yes | timestamp | When the proposal was created. |
+   163	
+   164	### 5.2 Parent commits
+   165	
+   166	`parent_commits` MUST contain at least one SHA. Each SHA MUST name a commit reachable from the experiment's starting commit on `main` or from an already-completed trial on the canonical trial lineage.
+   167	
+   168	## 6. Metrics schema
+   169	
+   170	Schema: [`schemas/metrics-schema.schema.json`](schemas/metrics-schema.schema.json).
+   171	
+   172	A metrics schema is a mapping from metric name to storage type. It appears as the `metrics_schema` field of an experiment config and is used to validate every metrics payload the evaluator produces.
+   173	
+   174	### 6.1 Shape
+   175	
+   176	The metrics schema is a JSON object whose keys are metric names and whose values are type strings.
+   177	
+   178	- A metric name MUST match `^[A-Za-z_][A-Za-z0-9_]*$`.
+   179	- A type value MUST be one of `"integer"`, `"real"`, `"text"`.
+   180	- A metrics schema MUST have at least one entry.
+   181	
+   182	### 6.2 Reserved names
+   183	
+   184	The names `trial_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the trial object and MUST NOT appear in a metrics schema.
+   185	
+   186	## 7. Trial
+   187	
+   188	Schema: [`schemas/trial.schema.json`](schemas/trial.schema.json).
+   189	
+   190	A trial is one completed attempt.
+   191	
+   192	### 7.1 Fields
+   193	
+   194	| Field | Required | Type | Description |
+   195	|---|---|---|---|
+   196	| `trial_id` | yes | string | Unique identifier. |
+   197	| `experiment_id` | yes | string | The experiment this trial belongs to. |
+   198	| `proposal_id` | yes | string | The proposal that produced this trial. |
+   199	| `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"eval_error"`. |
+   200	| `parent_commits` | yes | array of SHA | Inherited from the proposal. |
+   201	| `branch` | no | string | Worker branch under `work/*`. Present once the implementer starts. |
+   202	| `commit_sha` | no | string | Worker-branch tip SHA. Present once the implementer completes. |
+   203	| `trial_commit_sha` | no | string | Canonical-lineage SHA under `trial/*`. Present once the integrator has promoted the trial. |
+   204	| `artifacts_uri` | no | string (URI) | Where the trial's artifacts live. |
+   205	| `description` | no | string | Human-readable summary. |
+   206	| `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
+   207	| `started_at` | yes | timestamp | When the implementer began. |
+   208	| `completed_at` | no | timestamp | Set when the trial reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+   209	
+   210	### 7.2 Metrics payload
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-contracts/src/eden_contracts/trial.py | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Trial — one in-flight or completed attempt to improve the objective.
+     2	
+     3	Mirrors ``spec/v0/schemas/trial.schema.json``. The ``metrics`` object's shape
+     4	is constrained by the experiment's ``metrics_schema``; this model does not
+     5	reproduce that constraint because metrics keys are per-experiment.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	from typing import Annotated, Any, Literal
+    11	
+    12	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    13	
+    14	from ._common import CommitSha, DateTimeStr, NotNone, UriStr
+    15	
+    16	TrialStatus = Literal["starting", "success", "error", "eval_error"]
+    17	"""Trial lifecycle statuses; ``success``, ``error``, ``eval_error`` are terminal."""
+    18	
+    19	WORK_BRANCH_PATTERN = r"^work/.+$"
+    20	WorkBranch = Annotated[str, StringConstraints(pattern=WORK_BRANCH_PATTERN)]
+    21	
+    22	
+    23	class Trial(BaseModel):
+    24	    """One attempt, in flight or terminal."""
+    25	
+    26	    model_config = ConfigDict(strict=True, extra="allow")
+    27	
+    28	    trial_id: Annotated[str, Field(min_length=1)]
+    29	    experiment_id: Annotated[str, Field(min_length=1)]
+    30	    proposal_id: Annotated[str, Field(min_length=1)]
+    31	    status: TrialStatus
+    32	    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+    33	    branch: Annotated[WorkBranch | None, NotNone] = None
+    34	    commit_sha: Annotated[CommitSha | None, NotNone] = None
+    35	    trial_commit_sha: Annotated[CommitSha | None, NotNone] = None
+    36	    artifacts_uri: Annotated[UriStr | None, NotNone] = None
+    37	    description: Annotated[str | None, NotNone] = None
+    38	    metrics: Annotated[dict[str, Any] | None, NotNone] = None
+    39	    started_at: DateTimeStr
+    40	    completed_at: Annotated[DateTimeStr | None, NotNone] = None
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-contracts/src/eden_contracts/proposal.py | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Proposal — planner output; implementation-work dispatch metadata.
+     2	
+     3	Mirrors ``spec/v0/schemas/proposal.schema.json``. Lifecycle semantics are
+     4	in spec/v0/04-task-protocol.md.
+     5	"""
+     6	
+     7	from __future__ import annotations
+     8	
+     9	from typing import Annotated, Literal
+    10	
+    11	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    12	
+    13	from ._common import CommitSha, DateTimeStr, UriStr
+    14	
+    15	ProposalState = Literal["drafting", "ready", "dispatched", "completed"]
+    16	"""Proposal lifecycle states; ``completed`` is terminal and covers both success and failure."""
+    17	
+    18	SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
+    19	Slug = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+    20	
+    21	
+    22	class Proposal(BaseModel):
+    23	    """Planner-produced proposal."""
+    24	
+    25	    model_config = ConfigDict(strict=True, extra="allow")
+    26	
+    27	    proposal_id: Annotated[str, Field(min_length=1)]
+    28	    experiment_id: Annotated[str, Field(min_length=1)]
+    29	    slug: Slug
+    30	    priority: float
+    31	    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+    32	    artifacts_uri: UriStr
+    33	    state: ProposalState
+    34	    created_at: DateTimeStr
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '50,110p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    50	2. Upload any artifacts (plan text, rationale, supporting files) to the artifact store and populate the proposal's `artifacts_uri`.
+    51	3. Transition the proposal's `state` to `"ready"` once the proposal is dispatchable. The transition from `drafting` to `ready` signals that the proposal's metadata is stable and that the implementer MAY consume it.
+    52	
+    53	A planner MAY create multiple proposals under a single `plan` task. A planner MAY also produce zero proposals if it has no viable change to suggest; the task still completes normally (see §2.4).
+    54	
+    55	### 2.3 Proposal invariants
+    56	
+    57	The planner MUST honor the structural invariants of proposals ([`02-data-model.md`](02-data-model.md) §5):
+    58	
+    59	- `parent_commits` MUST contain at least one SHA that names a commit reachable from either the experiment's starting commit on `main` or a completed trial on the canonical lineage ([`01-concepts.md`](01-concepts.md) §9).
+    60	- `slug` MUST match the documented pattern.
+    61	- `priority` is the planner's own ordering hint; higher values SHOULD dispatch earlier.
+    62	
+    63	### 2.4 Submission
+    64	
+    65	When its work on a `plan` task is complete, the planner MUST submit the task (§1 step 4). The submission payload MUST include:
+    66	
+    67	- `proposal_ids` — the set of identifiers of every proposal the planner created under this task. Order is not significant; dispatch ordering is determined by each proposal's `priority` field ([`02-data-model.md`](02-data-model.md) §5.1). MAY be empty.
+    68	- `status` — one of `"success"` (the planner completed normally, regardless of proposal count) or `"error"` (the planner could not complete; any partially-written proposals MUST remain in `"drafting"` state and MUST NOT be dispatched).
+    69	
+    70	A planner MUST NOT submit a `plan` task while any of its referenced proposals is still in `"drafting"` state.
+    71	
+    72	## 3. Implementer
+    73	
+    74	The implementer realizes a proposal as a working-tree change on a per-trial branch.
+    75	
+    76	### 3.1 Inputs
+    77	
+    78	An implementer receives:
+    79	
+    80	- The task object (`kind == "implement"`, `payload.proposal_id == P`).
+    81	- Read access to the proposal `P`. The orchestrator MUST ensure `P.state == "ready"` before dispatch.
+    82	- Read and write access to the git repository associated with `P.experiment_id`, at a revision reachable from `P.parent_commits`. How the repository is located and how access is granted is a role-binding concern (§6, [`02-data-model.md`](02-data-model.md) §2.4); the protocol constrains only that the implementer's writes land under `work/*` and that no commit is introduced whose history does not descend from `P.parent_commits` (§3.3).
+    83	- Read access to the artifacts at `P.artifacts_uri`.
+    84	
+    85	### 3.2 Outputs
+    86	
+    87	The implementer produces a **trial** object ([`02-data-model.md`](02-data-model.md) §7). It MUST:
+    88	
+    89	1. Persist a trial with `status == "starting"`, `experiment_id == P.experiment_id`, `proposal_id == P`, and `parent_commits == P.parent_commits`, before making any repository write observable to other roles.
+    90	2. Write the implementation on a branch under `work/*` ([`01-concepts.md`](01-concepts.md) §9) whose parent(s) are the proposal's `parent_commits`. Set the trial's `branch` field to this branch name.
+    91	3. On successful completion, set the trial's `commit_sha` to the tip of the `work/*` branch. Optionally set `artifacts_uri` and `description`.
+    92	
+    93	The implementer MUST NOT write to `trial/*` or `main`; those are owned by the integrator. The `trial_commit_sha` field on the trial MUST NOT be set by the implementer.
+    94	
+    95	### 3.3 Worker-branch invariants
+    96	
+    97	- The `work/*` branch MUST be unique to this trial. Two trials MUST NOT share a worker branch name.
+    98	- Every commit on the worker branch MUST be reachable from the declared `parent_commits`. An implementer MUST NOT introduce commits whose history does not descend from the proposal's declared parents.
+    99	- The implementer MAY produce multiple commits on the worker branch. The evaluator consumes only the tip (`commit_sha`); the integrator's squash rule is defined in [`06-integrator.md`](06-integrator.md).
+   100	
+   101	### 3.4 Submission
+   102	
+   103	The implementer submits with:
+   104	
+   105	- `trial_id` — the trial it created.
+   106	- `status` — one of:
+   107	  - `"success"` — the `work/*` branch tip is `commit_sha` and is ready to be evaluated.
+   108	  - `"error"` — the implementer could not realize the proposal. The trial MUST be persisted with `status == "error"`. No evaluate task is dispatched against an errored trial.
+   109	- `commit_sha` — required when `status == "success"`; MUST equal the tip of the worker branch.
+   110	
+
+exec
+/bin/zsh -lc "rg -n \"trial_id|proposal_id|pattern|slug\" spec/v0/schemas reference/packages/eden-contracts/src -g '*.{json,py}'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-contracts/src/eden_contracts/trial.py:20:WorkBranch = Annotated[str, StringConstraints(pattern=WORK_BRANCH_PATTERN)]
+reference/packages/eden-contracts/src/eden_contracts/trial.py:28:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/trial.py:30:    proposal_id: Annotated[str, Field(min_length=1)]
+spec/v0/schemas/wire/claim-response.schema.json:20:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/wire/claim-response.schema.json:25:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+reference/packages/eden-contracts/src/eden_contracts/task.py:50:    proposal_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/task.py:58:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/_common.py:3:Every pattern here mirrors a pattern in the spec/v0 JSON Schemas. When a
+reference/packages/eden-contracts/src/eden_contracts/_common.py:43:    StringConstraints(pattern=DATETIME_PATTERN),
+reference/packages/eden-contracts/src/eden_contracts/_common.py:48:CommitSha = Annotated[str, StringConstraints(pattern=COMMIT_SHA_PATTERN)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:33:    type: Annotated[str, StringConstraints(pattern=EVENT_TYPE_PATTERN)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:122:    proposal_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:141:    proposal_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:161:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:162:    proposal_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:174:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:187:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:206:    trial_id: Annotated[str, Field(min_length=1)]
+spec/v0/schemas/trial.schema.json:7:    "trial_id",
+spec/v0/schemas/trial.schema.json:9:    "proposal_id",
+spec/v0/schemas/trial.schema.json:15:    "trial_id": {
+spec/v0/schemas/trial.schema.json:23:    "proposal_id": {
+spec/v0/schemas/trial.schema.json:36:        "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+spec/v0/schemas/trial.schema.json:41:      "pattern": "^work/.+$",
+spec/v0/schemas/trial.schema.json:46:      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+spec/v0/schemas/trial.schema.json:51:      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+spec/v0/schemas/trial.schema.json:68:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/trial.schema.json:73:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+reference/packages/eden-contracts/src/eden_contracts/proposal.py:19:Slug = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+reference/packages/eden-contracts/src/eden_contracts/proposal.py:27:    proposal_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/proposal.py:29:    slug: Slug
+spec/v0/schemas/proposal.schema.json:7:    "proposal_id",
+spec/v0/schemas/proposal.schema.json:9:    "slug",
+spec/v0/schemas/proposal.schema.json:17:    "proposal_id": {
+spec/v0/schemas/proposal.schema.json:25:    "slug": {
+spec/v0/schemas/proposal.schema.json:27:      "pattern": "^[a-z0-9][a-z0-9-]*$"
+spec/v0/schemas/proposal.schema.json:37:        "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+spec/v0/schemas/proposal.schema.json:53:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+reference/packages/eden-contracts/src/eden_contracts/config.py:19:WallTime = Annotated[str, StringConstraints(pattern=WALL_TIME_PATTERN)]
+spec/v0/schemas/task.schema.json:38:          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:43:          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:50:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:55:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:79:            "required": ["proposal_id"],
+spec/v0/schemas/task.schema.json:81:              "proposal_id": {"type": "string", "minLength": 1}
+spec/v0/schemas/task.schema.json:93:            "required": ["trial_id"],
+spec/v0/schemas/task.schema.json:95:              "trial_id": {"type": "string", "minLength": 1}
+spec/v0/schemas/event.schema.json:15:      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+spec/v0/schemas/event.schema.json:21:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+spec/v0/schemas/event.schema.json:39:    "commitSha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+spec/v0/schemas/event.schema.json:138:            "required": ["proposal_id"],
+spec/v0/schemas/event.schema.json:140:              "proposal_id": {"$ref": "#/$defs/proposalId"}
+spec/v0/schemas/event.schema.json:152:            "required": ["proposal_id"],
+spec/v0/schemas/event.schema.json:154:              "proposal_id": {"$ref": "#/$defs/proposalId"}
+spec/v0/schemas/event.schema.json:166:            "required": ["proposal_id", "task_id"],
+spec/v0/schemas/event.schema.json:168:              "proposal_id": {"$ref": "#/$defs/proposalId"},
+spec/v0/schemas/event.schema.json:181:            "required": ["proposal_id", "task_id"],
+spec/v0/schemas/event.schema.json:183:              "proposal_id": {"$ref": "#/$defs/proposalId"},
+spec/v0/schemas/event.schema.json:196:            "required": ["trial_id", "proposal_id"],
+spec/v0/schemas/event.schema.json:198:              "trial_id": {"$ref": "#/$defs/trialId"},
+spec/v0/schemas/event.schema.json:199:              "proposal_id": {"$ref": "#/$defs/proposalId"}
+spec/v0/schemas/event.schema.json:211:            "required": ["trial_id", "commit_sha"],
+spec/v0/schemas/event.schema.json:213:              "trial_id": {"$ref": "#/$defs/trialId"},
+spec/v0/schemas/event.schema.json:226:            "required": ["trial_id"],
+spec/v0/schemas/event.schema.json:228:              "trial_id": {"$ref": "#/$defs/trialId"}
+spec/v0/schemas/event.schema.json:240:            "required": ["trial_id"],
+spec/v0/schemas/event.schema.json:242:              "trial_id": {"$ref": "#/$defs/trialId"}
+spec/v0/schemas/event.schema.json:254:            "required": ["trial_id", "trial_commit_sha"],
+spec/v0/schemas/event.schema.json:256:              "trial_id": {"$ref": "#/$defs/trialId"},
+spec/v0/schemas/wire/integrate-request.schema.json:11:      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+reference/packages/eden-contracts/src/eden_contracts/metrics.py:23:        "trial_id",
+reference/packages/eden-contracts/src/eden_contracts/metrics.py:37:MetricName = Annotated[str, StringConstraints(pattern=METRIC_NAME_PATTERN)]
+spec/v0/schemas/wire/claim-request.schema.json:17:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+spec/v0/schemas/metrics-schema.schema.json:9:    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+spec/v0/schemas/metrics-schema.schema.json:12:        "trial_id",
+spec/v0/schemas/experiment-config.schema.json:26:      "pattern": "^[1-9][0-9]*[smhd]$",
+
+codex
+**Missing Context**
+
+Assessment: materially improved. The updated plan now explains the subprocess worker profile, the repo ownership model, and the ID-allocation story well enough to review the design itself. I don’t see a remaining blocking missing-context issue.
+
+**Feasibility**
+
+Assessment: significant concern remains here, so I would stop at this level and not evaluate alternatives, completeness, or later risks yet.
+
+- `CRITICAL` The new orphan-commit / empty-parents design conflicts with the current protocol and models. The plan says the planner emits `parent_commits=()` and the implementer writes an orphan `work/*` commit with no parents ([plan lines 317-335](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:317)). But the current spec requires `parent_commits` to contain at least one SHA ([02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:159), [02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:166)), the role contract requires implementer writes to descend from those parents ([03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:89)), and the Pydantic bindings enforce `min_length=1` for both proposals and trials ([proposal.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/proposal.py:31), [trial.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/trial.py:32)). As written, this plan cannot pass against the current contracts.
+
+- `CRITICAL` Relatedly, the planner still has no source of a valid parent commit. Its CLI only exposes `--proposals-per-plan` ([plan lines 242-243](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:242)), and the current experiment config fixture carries no starting commit SHA ([config.yaml](/Users/ericalt/Documents/eden/tests/fixtures/experiment/.eden/config.yaml:1)). So even if the empty-list issue were removed, the plan still does not give the planner enough information to produce spec-valid `parent_commits`.
+
+Suggestion: keep the “real commit in shared repo” fix, but restore a non-empty parent lineage. The cleanest path is to seed the repo with a starting commit and have proposals carry that SHA (or an already-completed trial SHA later); then implementer `work/*` commits use that SHA as parent. If you don’t want planner repo access, pass the starting SHA explicitly via config/CLI, but `parent_commits` cannot be empty under the current spec.
+
+**Overall Assessment**
+
+This revision closes the earlier subprocess-boundary concerns and is much closer. The remaining blocker is now narrow but fundamental: the proposed repo model violates the current `parent_commits` contract, so the plan is still not implementation-ready until that lineage model is corrected.
+tokens used
+111,076

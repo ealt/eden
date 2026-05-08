@@ -1,0 +1,13 @@
+**Findings**
+- Bug — [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:258), §4.2 still contradicts itself. It first says the evaluator “MUST” populate trial outputs, including “Set the trial’s `completed_at` timestamp,” then immediately says: “The evaluator MUST NOT modify the worker branch or any other protocol-owned mutable state.” The trial is protocol-owned mutable state, so this still forbids the writes the same section requires.
+
+- Gap — [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:266), §4.2 says the evaluator must set `completed_at`; [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:291), §4.4 and [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:217), §4.3 now allow multiple evaluate attempts while the trial remains `starting`; [02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:302), §7.1 still defines a single `completed_at` field as “When the evaluator submitted.” The spec does not say whether `completed_at` records the first eval attempt, the last attempt, or only the terminal one. The same ambiguity now exists for `artifacts_uri` and any partial `metrics` produced before an `eval_error` retry.
+
+- Gap — [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:357), §7 now correctly says a successful implement task completion must move the proposal from `dispatched` to `completed`, but [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:360) also says that on implement-task failure “the proposal’s state is unchanged; higher-level retry or abandonment policy is out of this chapter’s scope.” With only `drafting`, `ready`, `dispatched`, and `completed` in [01-concepts.md](/Users/ericalt/Documents/eden/spec/v0/01-concepts.md:71) and [proposal.schema.json](/Users/ericalt/Documents/eden/spec/v0/schemas/proposal.schema.json:46), a permanently failed or abandoned proposal can still get stuck in `dispatched` with no defined terminal meaning.
+
+- Nit — [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:343), §7 says the task protocol interacts with proposal/trial lifecycles “at two points,” but the section now lists three bullets.
+
+**Assessment**
+Most of the previous blockers are fixed. The state-machine contradiction, claim retention through `submitted`, plan idempotency semantics, `eval_error` reachability, reclaim-from-submitted tightening, and the host-model wording all look materially better.
+
+I would still hold merge on the two lifecycle gaps above plus the lingering evaluator self-contradiction. After those are resolved, this pair looks close to ready.

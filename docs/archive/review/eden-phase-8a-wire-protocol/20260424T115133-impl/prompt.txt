@@ -1,0 +1,32 @@
+Please review the Phase 8a implementation against the plan at docs/plans/eden-phase-8a-wire-protocol.md and the new spec chapter at spec/v0/07-wire-protocol.md.
+
+Context: EDEN is a spec + reference impl repo. Phases 0-7b are complete. Phase 8a introduces an HTTP binding for the Store operations and same-value-idempotent integrate_trial semantics. The plan went through 6 codex-review rounds; now the implementation needs review.
+
+Key implementation files:
+- spec/v0/07-wire-protocol.md (new normative chapter)
+- spec/v0/schemas/wire/*.schema.json (new wire schemas)
+- reference/packages/eden-wire/src/eden_wire/models.py
+- reference/packages/eden-wire/src/eden_wire/errors.py (problem+json serde)
+- reference/packages/eden-wire/src/eden_wire/server.py (FastAPI app; thin adapters)
+- reference/packages/eden-wire/src/eden_wire/client.py (StoreClient; §5 three-outcome reconciliation)
+- reference/packages/eden-wire/tests/test_wire_roundtrip.py (16 tests)
+- reference/packages/eden-storage/src/eden_storage/_base.py (integrate_trial same-value idempotent)
+- reference/packages/eden-git/src/eden_git/integrator.py (different-SHA branch detection)
+
+Before reviewing, read: CLAUDE.md; the plan; 07-wire-protocol.md; 04/05/06/08 chapters.
+
+Evaluation criteria:
+
+1. Plan-vs-impl parity (standalone service entrypoints + subprocess e2e were explicitly deferred to 8b).
+2. Spec-binding correctness: every §§2-6 endpoint server-routed + client-mapped; §7 error vocabulary round-trips.
+3. Integrate-over-HTTP atomicity: server same-value idempotency + client three-outcome read-back + Integrator NOT compensating on different-SHA.
+4. StoreClient structurally satisfies the Store Protocol (every method present, signatures match).
+5. Error envelope: every StorageError subclass round-trips; InvalidPrecondition is 409.
+6. Impl-review lenses: mutable-model leak, model_copy validator bypass, validation-failure terminalization, status-vs-reason keying, aspirational brief framing, silent-skip on missing input.
+7. Subscribe binding: spec says long-poll; server.py treats /subscribe like /events (non-blocking). Is that acceptable for 8a or does it break §6.2?
+8. NotNone/Pydantic hazards: are there other response-building paths with the same bug pattern?
+9. Test coverage: TestIndeterminateIntegration three-outcome tests — do they faithfully exercise the reconciliation logic?
+10. Dead code / scope creep: unused models or exports?
+11. Ruff/pyright exceptions in pyproject.toml: per-file-ignores for server.py (D, B008) and client.py (D102) — defensible?
+
+Provide an overall assessment.

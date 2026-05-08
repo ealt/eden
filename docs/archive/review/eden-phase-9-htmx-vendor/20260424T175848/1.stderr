@@ -1,0 +1,1100 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc225-fcd7-70a3-bb3a-2a5c985d58ec
+--------
+user
+Round 1 follow-up addresses your medium finding plus the low.
+
+Medium fix: the add_row redirect/error branches (no session, claim missing) now use a new htmx_aware_redirect() helper in routes/_helpers.py. For HTMX requests it returns 204 with HX-Redirect: <url> + empty body so htmx does a real client-side navigation; for non-HTMX it stays as RedirectResponse 303 to /signin or /planner/?banner=...  Three new tests:
+
+- test_add_row_htmx_no_session_returns_hx_redirect_to_signin: HTMX without session -> 204 + HX-Redirect: /signin + empty body.
+- test_add_row_htmx_missing_claim_returns_hx_redirect: HTMX with session but no claim -> 204 + HX-Redirect: /planner/?banner=claim+missing+... + empty body.
+- test_add_row_no_js_no_session_303_to_signin: regression test pinning the no-JS path stays as 303.
+
+Low fix: alternatives §B verdict in the plan now names the row-append flow as the load-bearing chunk-1 use case (with a parenthetical noting the original wording). The main tech-stack section already names the same use case, so the doc is now self-consistent.
+
+CSRF, claim isolation, fragment shape — all unchanged from your round-0 review. 452 tests pass; ruff, pyright, markdownlint all clean.
+
+Has the medium been resolved? Anything new?
+codex
+Checking the follow-up diff around the HTMX redirect helper, the new tests, and the plan text. I’m verifying the actual branch behavior rather than relying on the summary, then I’ll call out whether the medium is closed or if any new regression showed up.
+exec
+/bin/zsh -lc 'git diff --stat -- reference/services/web-ui/src/eden_web_ui/routes/_helpers.py reference/services/web-ui/src/eden_web_ui/routes/planner.py reference/services/web-ui/tests/test_routes.py reference/services/web-ui/tests/test_planner_flow.py docs/plans/eden-phase-9-web-ui.md' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'git diff --unified=80 -- reference/services/web-ui/src/eden_web_ui/routes/_helpers.py reference/services/web-ui/src/eden_web_ui/routes/planner.py reference/services/web-ui/tests/test_routes.py reference/services/web-ui/tests/test_planner_flow.py docs/plans/eden-phase-9-web-ui.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ docs/plans/eden-phase-9-web-ui.md                  | 11 +++--
+ .../web-ui/src/eden_web_ui/routes/_helpers.py      | 22 +++++++++
+ .../web-ui/src/eden_web_ui/routes/planner.py       | 22 +++++----
+ .../services/web-ui/tests/test_planner_flow.py     | 56 ++++++++++++++++++++++
+ 4 files changed, 98 insertions(+), 13 deletions(-)
+
+ succeeded in 0ms:
+diff --git a/docs/plans/eden-phase-9-web-ui.md b/docs/plans/eden-phase-9-web-ui.md
+index d4407e2..89549bb 100644
+--- a/docs/plans/eden-phase-9-web-ui.md
++++ b/docs/plans/eden-phase-9-web-ui.md
+@@ -80,163 +80,168 @@ HTMX is **vendored** at
+ `449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452`)
+ so the UI works offline and in CI without external network.
+ 
+ ### Why this stack
+ 
+ 1. **No new toolchain.** FastAPI, Jinja2, and httpx are already direct
+    or transitive dependencies of `eden-wire` and the existing services.
+    HTMX is a single CDN-hosted JS file (or vendored under `static/`).
+    No Node, no Vite, no npm lockfile in a Python-first repo.
+ 2. **One language end-to-end.** Server-side rendering keeps planner /
+    implementer / evaluator forms in Python, where the typed
+    `PlanSubmission` / `ImplementSubmission` / `EvaluateSubmission`
+    payloads they construct already live (`eden_storage.submissions`).
+    No duplicate validation logic in a JS layer.
+ 3. **`StoreClient` already satisfies the `Store` Protocol.** The UI
+    service consumes the same surface the orchestrator and worker
+    hosts use. We don't add a second client implementation; we don't
+    expose the wire protocol directly to the browser.
+ 4. **Reference-impl ethos.** The repo's job is to demonstrate one
+    conforming implementation, readable to someone evaluating whether
+    to build a different one. An SPA buries the role-contract logic
+    behind JSON-over-fetch plumbing; server-rendered forms keep the
+    spec-to-code mapping legible.
+ 5. **Auth surface stays small.** The browser holds a session cookie
+    only; it never gets the shared bearer. The threat model is
+    deliberately spelled out in §B (a leaked cookie can act as the
+    named worker_id through the UI but cannot bypass the UI service
+    to talk to the task-store directly); the goal here is to keep
+    the wire-protocol auth surface unchanged, not to claim the
+    cookie is unforgeable.
+ 
+ ### Alternatives considered
+ 
+ #### A. BFF-backed SPA (React / Vue / Svelte talking to the UI service's JSON API)
+ 
+ - **Pros:** Richer interactions; separates view logic from server
+   state cleanly; idiomatic for production webapps; the BFF split
+   preserves the shared-bearer-stays-server-side property.
+ - **Cons:**
+   - Adds a Node toolchain, a build step, and a JS lockfile to a repo
+     whose every other artifact is Python or Markdown. Doubles the CI
+     matrix (frontend lint / build / test alongside `uv run …`).
+   - Duplicates validation: form fields validated client-side, then
+     re-validated server-side, then re-validated by the wire schemas.
+     Three sources of truth for "is this submission well-formed."
+   - The role-contract logic — "for plan submission, create N proposals,
+     mark them ready, submit with their ids" — moves into JS, away
+     from where `PlanSubmission` is defined.
+ - **Verdict:** Defensible if a richer client experience is the
+   primary goal. For a reference impl whose job is to make the
+   spec-to-code mapping legible, the costs outweigh the benefits.
+ 
+ #### A'. Browser-direct SPA (no BFF; browser holds the shared bearer)
+ 
+ Listed separately because it's the failure mode of a careless SPA
+ choice, not a defensible alternative on its own.
+ 
+ - **Cons:** Exposes the chapter 07 §12 shared bearer to the browser;
+   forces a CORS story; deletes the wire/UI auth boundary the BFF
+   preserves.
+ - **Verdict:** Explicitly out — included only to flag that picking
+   "SPA" without the BFF is strictly worse than either A or the
+   chosen stack.
+ 
+ #### B. Plain server-rendered Jinja with progressive enhancement (no HTMX)
+ 
+ This is the closest neighbor to the chosen stack.
+ 
+ - **Pros:** Exactly the same dependency graph minus 14 KB of JS;
+   forms degrade to full-page POST + 303 redirect on every action;
+   no client-side state to reason about; trivially testable with a
+   plain HTTP client.
+ - **Cons:**
+   - Claim-then-show-form needs either a server-side redirect or a
+     two-page flow; not a deal-breaker but it's clunkier.
+   - Any partial update — e.g. "you claimed task X, now this row
+     moves out of pending" — either reflows the whole page or
+     requires hand-rolled `fetch` + `outerHTML` swaps. HTMX
+     automates exactly that with `hx-target` / `hx-swap`.
+ - **Verdict:** Live alternative, not a strawman. We pick HTMX for
+-  the partial-update ergonomics it gives the planner-list →
+-  claim-form transition; if HTMX adds friction during impl, the
+-  fallback is this option, not a heavier framework.
++  the partial-update ergonomics it gives the multi-row
++  proposal-authoring flow ("add another row" without losing
++  in-progress input); if HTMX adds friction during impl, the
++  fallback is this option, not a heavier framework. (Originally
++  this verdict named the planner-list → claim-form transition;
++  during implementation that transition turned out to be a
++  natural full-page navigation, so the load-bearing chunk-1 use
++  case is the row-append flow instead.)
+ 
+ #### C. Plain HTML + vanilla `fetch` + manual DOM replacement
+ 
+ - **Pros:** No JS dependency at all.
+ - **Cons:** Reimplements HTMX badly. Every form ends up reinventing
+   the same `fetch → response.text() → element.outerHTML = …`
+   plumbing. The bug surface and code volume both grow per route.
+ - **Verdict:** Strictly dominated by option B (drop the JS entirely
+   and reload) or the chosen stack (use HTMX for the swap).
+ 
+ #### D. Phoenix-LiveView-style server-pushed UI (e.g. via SSE/WebSocket)
+ 
+ - **Pros:** "Live" feel without a JS framework; great fit for the
+   observability views in 9e.
+ - **Cons:** Phase 9 chunk 1 is request-response by scope. Pulling
+   the live-update transport in now adds complexity (subscribe
+   endpoint, reconnect logic) without a place to use it; a stranded
+   human claim doesn't push, it times out. Revisit specifically for
+   9e.
+ - **Verdict:** Right tool for 9e, wrong scope for 9a + 9b.
+ 
+ #### E. Server-side React via Next.js (or Remix)
+ 
+ - **Pros:** Server-rendered HTML at first paint, hydrates to an SPA;
+   best-of-both for a production product.
+ - **Cons:** Brings the entire Node toolchain (and a build step) for
+   marginal benefit over plain Jinja in a reference UI. The
+   hydration step needs a JSON API anyway, recreating most of the
+   SPA cost.
+ - **Verdict:** Wrong fit for a reference impl whose readers are
+   evaluating spec conformance, not frontend architecture.
+ 
+ #### F. Server-side framework with built-in templates (Starlette, Quart, Flask)
+ 
+ - **Pros:** Same shape as FastAPI for our purposes.
+ - **Cons:** FastAPI is already in the dependency graph for
+   `eden-wire`. Adding a second Python web framework just for the UI
+   doubles the surface for "how does this differ from `eden-wire`?"
+   questions in review.
+ - **Verdict:** No reason to introduce a second framework.
+ 
+ #### G. Embed the UI in `task-store-server`
+ 
+ - **Pros:** One fewer process to run.
+ - **Cons:**
+   - Conflates the normative wire-protocol surface (chapter 07) with
+     a non-normative UI; reviewing one no longer means reviewing
+     only one. A third-party task-store-server reimplementation
+     could not be expected to ship a UI.
+   - The UI service holds the shared token on the browser's behalf
+     and adds session-cookie state; baking that into the task-store
+     pollutes a clean wire-protocol service.
+ - **Verdict:** Separate process is the right boundary.
+ 
+ #### H. CLI-only for Phase 9 chunk 1
+ 
+ - **Pros:** No new service at all.
+ - **Cons:** The roadmap exit criterion for Phase 9 is "a human can
+   fully play any one role for at least one trial via the Web UI."
+   CLI-only doesn't satisfy that, and Phase 10 (Compose)
+   presupposes the UI service exists to dockerize.
+ - **Verdict:** Doesn't meet the phase exit bar.
+ 
+ ### What this decision does **not** preclude
+ 
+ - A third-party SPA-style implementation against the same wire
+   protocol — this is the whole point of the protocol-first repo.
+ - Switching off HTMX later if it turns out to be friction; the
+   templates would still render fine on full-page submits.
+ - Phase 9e revisiting the request-response model with SSE for the
+   observability view, which has the strongest case for live updates.
+ 
+ ## What gets built
+ 
+ ### A. New service: `reference/services/web-ui/`
+ 
+ - `pyproject.toml` — `eden-web-ui`, depends on `eden-contracts`,
+   `eden-storage`, `eden-wire`, `eden-service-common`,
+   `eden-task-store-server` (for `load_experiment_config` —
+   matching the evaluator host's dependency list), plus `fastapi`,
+diff --git a/reference/services/web-ui/src/eden_web_ui/routes/_helpers.py b/reference/services/web-ui/src/eden_web_ui/routes/_helpers.py
+index 64a9d46..ae5c840 100644
+--- a/reference/services/web-ui/src/eden_web_ui/routes/_helpers.py
++++ b/reference/services/web-ui/src/eden_web_ui/routes/_helpers.py
+@@ -1,38 +1,60 @@
+ """Shared helpers for route handlers (session/CSRF lookup + cookie shape)."""
+ 
+ from __future__ import annotations
+ 
+ from fastapi import Request, Response
++from fastapi.responses import RedirectResponse
+ 
+ from ..sessions import SESSION_COOKIE_NAME, Session, SessionCodec, verify_csrf
+ 
+ 
++def is_htmx_request(request: Request) -> bool:
++    """True iff the request was made by htmx (carries ``HX-Request: true``)."""
++    return request.headers.get("hx-request", "").lower() == "true"
++
++
++def htmx_aware_redirect(request: Request, url: str) -> Response:
++    """Redirect appropriately for both htmx and no-JS clients.
++
++    HTMX does not process 3xx responses — it follows the redirect
++    transparently and swaps the redirected target's HTML into the
++    configured target. For an ``add_row`` button targeted at
++    ``#proposal-rows`` that produces a full ``<html>`` document
++    inside the rows container. The fix is to send back ``HX-Redirect``
++    on a 200/204 instead; htmx intercepts that header and does a
++    full client-side navigation.
++    """
++    if is_htmx_request(request):
++        return Response(status_code=204, headers={"hx-redirect": url})
++    return RedirectResponse(url=url, status_code=303)
++
++
+ def get_session(request: Request) -> Session | None:
+     """Return the decoded session for ``request``, or ``None`` if missing/invalid."""
+     raw = request.cookies.get(SESSION_COOKIE_NAME)
+     if raw is None:
+         return None
+     codec: SessionCodec = request.app.state.session_codec
+     return codec.decode(raw)
+ 
+ 
+ def write_session_cookie(
+     response: Response,
+     *,
+     encoded: str,
+     secure: bool,
+ ) -> None:
+     """Set the signed session cookie on ``response`` with pinned attributes."""
+     response.set_cookie(
+         key=SESSION_COOKIE_NAME,
+         value=encoded,
+         httponly=True,
+         secure=secure,
+         samesite="lax",
+         path="/",
+     )
+ 
+ 
+ def csrf_ok(session: Session, presented: str | None) -> bool:
+     """Constant-time CSRF token check, exposed for routes."""
+     return verify_csrf(session, presented)
+diff --git a/reference/services/web-ui/src/eden_web_ui/routes/planner.py b/reference/services/web-ui/src/eden_web_ui/routes/planner.py
+index 49a435c..d7752ea 100644
+--- a/reference/services/web-ui/src/eden_web_ui/routes/planner.py
++++ b/reference/services/web-ui/src/eden_web_ui/routes/planner.py
+@@ -1,247 +1,249 @@
+ """Planner-module routes.
+ 
+ Implements the spec-to-code map pinned in section §C of the Phase
+ 9 plan: list pending plan tasks, claim with a TTL, draft proposals,
+ submit. Errors propagate as canonical wire-error names so the user
+ sees an honest banner.
+ 
+ The Phase-3 retry policy on ``submit`` leverages chapter 07 §2.4 /
+ §8.1: a content-equivalent resubmit returns 200, so transport
+ failures are retried up to 3 times with exponential backoff before
+ the orphaned-proposals error page is reached.
+ """
+ 
+ from __future__ import annotations
+ 
+ import time
+ import uuid
+ from collections.abc import Callable
+ from datetime import timedelta
+ from typing import Any
+ 
+ from eden_contracts import Proposal
+ from eden_storage import (
+     ConflictingResubmission,
+     DispatchError,
+     IllegalTransition,
+     InvalidPrecondition,
+     PlanSubmission,
+     WrongToken,
+ )
+ from fastapi import APIRouter, Form, Request
+ from fastapi.responses import HTMLResponse, RedirectResponse
+ 
+ from ..artifacts import write_proposal_artifact
+ from ..forms import ProposalDraft, parse_proposal_rows
+-from ._helpers import csrf_ok, get_session
++from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
+ 
+ router = APIRouter(prefix="/planner")
+ 
+ 
+ # In-memory mapping of (csrf_token, task_id) -> claim token. The CSRF
+ # token is per-session (rotates on session-secret rotation), so two
+ # browser sessions with the same configured worker_id cannot reuse
+ # each other's claims. We deliberately do not persist this across
+ # restarts — a UI restart drops claim tokens and the TTL sweep
+ # recovers stranded tasks (eden_dispatch.sweep_expired_claims).
+ _CLAIMS: dict[tuple[str, str], str] = {}
+ 
+ 
+ def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
+     return (session_csrf, task_id)
+ 
+ 
+ def _list_recent_proposals(store: Any, *, limit: int = 20) -> list[Any]:
+     items = store.list_proposals()
+     return items[-limit:]
+ 
+ 
+ def _list_recent_trials(store: Any, *, limit: int = 20) -> list[Any]:
+     items = store.list_trials()
+     return items[-limit:]
+ 
+ 
+ @router.get("/", response_class=HTMLResponse, response_model=None)
+ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     store = request.app.state.store
+     pending = store.list_tasks(kind="plan", state="pending")
+     config = request.app.state.experiment_config
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_list.html",
+         {
+             "session": session,
+             "pending": pending,
+             "objective": config.objective,
+             "metrics_schema": config.metrics_schema.root,
+             "recent_proposals": _list_recent_proposals(store),
+             "recent_trials": _list_recent_trials(store),
+             "banner": request.query_params.get("banner"),
+         },
+     )
+ 
+ 
+ @router.post("/{task_id}/claim", response_model=None)
+ async def claim(
+     task_id: str,
+     request: Request,
+     csrf_token: str = Form(""),
+ ) -> RedirectResponse | HTMLResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     if not csrf_ok(session, csrf_token):
+         return _csrf_failure_response()
+     store = request.app.state.store
+     now: Callable[[], Any] = request.app.state.now
+     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
+     try:
+         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
+     except (IllegalTransition, InvalidPrecondition) as exc:
+         banner = _wire_error_banner(exc)
+         return RedirectResponse(url=f"/planner/?banner={banner}", status_code=303)
+     _CLAIMS[_claim_key(session.csrf, task_id)] = result.token
+     return RedirectResponse(url=f"/planner/{task_id}/draft", status_code=303)
+ 
+ 
+ @router.get("/{task_id}/draft", response_class=HTMLResponse, response_model=None)
+ async def draft_form(
+     task_id: str,
+     request: Request,
+ ) -> HTMLResponse | RedirectResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     token = _CLAIMS.get(_claim_key(session.csrf, task_id))
+     if token is None:
+         return RedirectResponse(
+             url="/planner/?banner=claim+missing+from+session",
+             status_code=303,
+         )
+     config = request.app.state.experiment_config
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_claim.html",
+         {
+             "session": session,
+             "task_id": task_id,
+             "objective": config.objective,
+             "metrics_schema": config.metrics_schema.root,
+             "errors": None,
+             "form_state": [_empty_row()],
+             "row_indices": [0],
+         },
+     )
+ 
+ 
+ @router.post("/{task_id}/add_row", response_model=None)
+-async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
++async def add_row(task_id: str, request: Request):
+     """Append one empty proposal row to the draft form.
+ 
+     Two transports, same end state:
+ 
+     - With JS, htmx posts here with ``HX-Request: true``. We respond
+       with the rendered ``_proposal_row.html`` fragment for the new
+       row only; htmx swaps it as ``beforeend`` of ``#proposal-rows``
+-      so the user's existing input is untouched.
++      so the user's existing input is untouched. Redirect/error
++      branches send ``HX-Redirect`` on a 204 so htmx does a full
++      client-side navigation rather than swapping a redirected page
++      into the rows container.
+     - Without JS, the same button submits the form normally and we
+       re-render the whole ``planner_claim.html`` with the
+-      collected state plus one more empty row.
++      collected state plus one more empty row, or 303 to the
++      sign-in / planner list on auth/claim failures.
+     """
+     session = get_session(request)
+     if session is None:
+-        return RedirectResponse(url="/signin", status_code=303)
++        return htmx_aware_redirect(request, "/signin")
+     form = await request.form()
+     if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+         return _csrf_failure_response()
+     if _CLAIMS.get(_claim_key(session.csrf, task_id)) is None:
+-        return RedirectResponse(
+-            url="/planner/?banner=claim+missing+from+session",
+-            status_code=303,
++        return htmx_aware_redirect(
++            request, "/planner/?banner=claim+missing+from+session"
+         )
+-    is_htmx = request.headers.get("hx-request", "").lower() == "true"
+ 
+-    if is_htmx:
++    if is_htmx_request(request):
+         # The htmx-enhanced path: figure out where the new row goes
+         # by counting existing rows in the form, then render only
+         # the partial. The user's existing rows are already on the
+         # page; htmx appends ours to ``#proposal-rows``.
+         existing = max(
+             len(form.getlist("slug")),
+             len(form.getlist("priority")),
+             len(form.getlist("parent_commits")),
+             len(form.getlist("rationale")),
+         )
+         return request.app.state.templates.TemplateResponse(
+             request,
+             "_proposal_row.html",
+             {"i": existing, "row_state": _empty_row(), "row_errs": {}},
+         )
+ 
+     config = request.app.state.experiment_config
+     slugs = [str(v) for v in form.getlist("slug")]
+     priorities = [str(v) for v in form.getlist("priority")]
+     parents = [str(v) for v in form.getlist("parent_commits")]
+     rationales = [str(v) for v in form.getlist("rationale")]
+     state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+     state.append(_empty_row())
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_claim.html",
+         {
+             "session": session,
+             "task_id": task_id,
+             "objective": config.objective,
+             "metrics_schema": config.metrics_schema.root,
+             "errors": None,
+             "form_state": state,
+             "row_indices": list(range(len(state))),
+         },
+     )
+ 
+ 
+ @router.post("/{task_id}/submit", response_model=None)
+ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     form = await request.form()
+     if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+         return _csrf_failure_response()
+     status = form.get("status")
+     if status not in ("success", "error"):
+         return _bad_request("invalid submit status")
+ 
+     token = _CLAIMS.get(_claim_key(session.csrf, task_id))
+     if token is None:
+         return RedirectResponse(
+             url="/planner/?banner=claim+missing+from+session",
+             status_code=303,
+         )
+ 
+     store = request.app.state.store
+     config = request.app.state.experiment_config
+ 
+     if status == "error":
+         try:
+             store.submit(task_id, token, PlanSubmission(status="error"))
+         except DispatchError as exc:
+             return _render_error(request, _wire_error_banner(exc))
+         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+         return _render_submitted(request, task_id, status="error", proposal_ids=())
+ 
+     slugs = [str(v) for v in form.getlist("slug")]
+     priorities = [str(v) for v in form.getlist("priority")]
+     parents = [str(v) for v in form.getlist("parent_commits")]
+     rationales = [str(v) for v in form.getlist("rationale")]
+     drafts, errors = parse_proposal_rows(slugs, priorities, parents, rationales)
+     if errors:
+         return request.app.state.templates.TemplateResponse(
+             request,
+             "planner_claim.html",
+             {
+                 "session": session,
+                 "task_id": task_id,
+diff --git a/reference/services/web-ui/tests/test_planner_flow.py b/reference/services/web-ui/tests/test_planner_flow.py
+index 3dc13e8..cdf8d9e 100644
+--- a/reference/services/web-ui/tests/test_planner_flow.py
++++ b/reference/services/web-ui/tests/test_planner_flow.py
+@@ -68,160 +68,216 @@ class TestHappyPath:
+             "/planner/t-err/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         resp = signed_in_client.post(
+             "/planner/t-err/submit",
+             data={"csrf_token": token, "status": "error"},
+         )
+         assert resp.status_code == 200
+         assert store.read_task("t-err").state == "submitted"
+         assert store.list_proposals() == []
+ 
+ 
+ class TestValidationRecovery:
+     def test_invalid_form_re_renders_with_errors_and_input_preserved(
+         self, signed_in_client: TestClient, store: InMemoryStore
+     ) -> None:
+         store.create_plan_task("t-bad")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-bad/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         # priority is not a number; rationale empty; parent_commits invalid.
+         resp = signed_in_client.post(
+             "/planner/t-bad/submit",
+             data={
+                 "csrf_token": token,
+                 "status": "success",
+                 "slug": "good-slug",
+                 "priority": "not-a-number",
+                 "parent_commits": "not-a-sha",
+                 "rationale": "",
+             },
+         )
+         assert resp.status_code == 400
+         # User input preserved.
+         assert "good-slug" in resp.text
+         assert "not-a-number" in resp.text
+         assert "not-a-sha" in resp.text
+         # Field errors surfaced.
+         assert "priority must be a number" in resp.text
+         assert "rationale markdown is required" in resp.text
+         # No store mutation.
+         assert store.list_proposals() == []
+         assert store.read_task("t-bad").state == "claimed"
+ 
+ 
+ class TestMultiRow:
+     def test_add_row_full_page_returns_form_with_one_more_empty_row(
+         self, signed_in_client: TestClient, store: InMemoryStore
+     ) -> None:
+         """No-JS path: add_row returns the full draft page with one more row."""
+         store.create_plan_task("t-add")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-add/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         resp = signed_in_client.post(
+             "/planner/t-add/add_row",
+             data={
+                 "csrf_token": token,
+                 "slug": "feat-1",
+                 "priority": "1.0",
+                 "parent_commits": "a" * 40,
+                 "rationale": "first proposal rationale",
+             },
+         )
+         assert resp.status_code == 200
+         # First row's input is preserved.
+         assert "feat-1" in resp.text
+         assert "first proposal rationale" in resp.text
+         # The form now has 2 rows — count textareas as a per-row marker.
+         assert resp.text.count('name="rationale"') == 2
+         # Full page: includes the base layout (topbar nav).
+         assert "<header" in resp.text
+ 
++    def test_add_row_htmx_no_session_returns_hx_redirect_to_signin(
++        self, client: TestClient, store: InMemoryStore
++    ) -> None:
++        """HTMX request with no session must use HX-Redirect, not 303 to a full page.
++
++        HTMX follows 3xx transparently and swaps the redirected
++        response into the configured target — for the add_row
++        button (``hx-target="#proposal-rows"``) that would dump
++        ``<html>...</html>`` of the sign-in page into the rows
++        container. Returning ``HX-Redirect`` instead makes htmx
++        do a real navigation.
++        """
++        store.create_plan_task("t-noses")
++        resp = client.post(
++            "/planner/t-noses/add_row",
++            data={"slug": "x"},
++            headers={"hx-request": "true"},
++        )
++        assert resp.status_code == 204
++        assert resp.headers.get("hx-redirect") == "/signin"
++        # Empty body is what htmx wants for HX-Redirect — it must NOT
++        # contain a <header> or anything else that could end up
++        # swapped into #proposal-rows.
++        assert resp.text == ""
++
++    def test_add_row_htmx_missing_claim_returns_hx_redirect(
++        self, signed_in_client: TestClient, store: InMemoryStore
++    ) -> None:
++        """HTMX request without an active claim must HX-Redirect to /planner/."""
++        store.create_plan_task("t-noclaim")
++        token = get_csrf(signed_in_client)
++        # Note: we never call /planner/{id}/claim, so the in-memory
++        # _CLAIMS dict has no entry for this (csrf, task) pair.
++        resp = signed_in_client.post(
++            "/planner/t-noclaim/add_row",
++            data={"csrf_token": token, "slug": "x"},
++            headers={"hx-request": "true"},
++        )
++        assert resp.status_code == 204
++        loc = resp.headers.get("hx-redirect", "")
++        assert loc.startswith("/planner/?banner=claim+missing")
++        assert resp.text == ""
++
++    def test_add_row_no_js_no_session_303_to_signin(
++        self, client: TestClient, store: InMemoryStore
++    ) -> None:
++        """The no-JS path keeps the conventional 303-to-/signin behavior."""
++        store.create_plan_task("t-nojs")
++        resp = client.post(
++            "/planner/t-nojs/add_row",
++            data={"slug": "x"},
++            follow_redirects=False,
++        )
++        assert resp.status_code == 303
++        assert resp.headers["location"] == "/signin"
++
+     def test_add_row_htmx_returns_partial_only(
+         self, signed_in_client: TestClient, store: InMemoryStore
+     ) -> None:
+         """JS path: add_row with HX-Request: true returns only the row partial."""
+         store.create_plan_task("t-htmx")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-htmx/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         resp = signed_in_client.post(
+             "/planner/t-htmx/add_row",
+             data={
+                 "csrf_token": token,
+                 "slug": "feat-1",
+                 "priority": "1.0",
+                 "parent_commits": "a" * 40,
+                 "rationale": "first",
+             },
+             headers={"hx-request": "true"},
+         )
+         assert resp.status_code == 200
+         # Just the new (empty) row partial — no <header>, no <html>.
+         assert "<header" not in resp.text
+         assert "<html" not in resp.text
+         # Contains exactly one textarea (the new row's rationale field).
+         assert resp.text.count('name="rationale"') == 1
+         # The new row's index is 1 (zero-based; row 1 is the second row,
+         # since the user already had 1 row before adding).
+         assert 'data-row-index="1"' in resp.text
+ 
+     def test_skip_fully_blank_row_on_submit(
+         self,
+         signed_in_client: TestClient,
+         store: InMemoryStore,
+     ) -> None:
+         """Submitting with a trailing blank row only persists the filled rows."""
+         from urllib.parse import urlencode
+ 
+         store.create_plan_task("t-skip")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-skip/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         body = urlencode(
+             [
+                 ("csrf_token", token),
+                 ("status", "success"),
+                 ("slug", "feat-only"),
+                 ("priority", "1.0"),
+                 ("parent_commits", "a" * 40),
+                 ("rationale", "real proposal"),
+                 ("slug", ""),
+                 ("priority", "1.0"),
+                 ("parent_commits", ""),
+                 ("rationale", ""),
+             ]
+         )
+         resp = signed_in_client.post(
+             "/planner/t-skip/submit",
+             content=body,
+             headers={"content-type": "application/x-www-form-urlencoded"},
+         )
+         assert resp.status_code == 200
+         ready = store.list_proposals(state="ready")
+         assert len(ready) == 1
+         assert ready[0].slug == "feat-only"
+ 
+     def test_all_blank_rejected(
+         self,
+         signed_in_client: TestClient,
+         store: InMemoryStore,
+     ) -> None:
+         """If every row is blank, submit re-renders with a form-level error."""
+         store.create_plan_task("t-all-blank")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M docs/plans/eden-phase-9-web-ui.md
+ M reference/services/web-ui/src/eden_web_ui/routes/_helpers.py
+ M reference/services/web-ui/src/eden_web_ui/routes/planner.py
+ M reference/services/web-ui/tests/test_planner_flow.py
+?? docs/plans/review/eden-phase-9-htmx-vendor/
+
+codex
+The patch shape looks right. I’m running the touched planner tests plus a couple of direct requests to confirm the helper actually produces `HX-Redirect`/empty-body behavior and that the no-JS branch still stays on `303`.
+exec
+/bin/zsh -lc 'uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -q' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path('reference/services/web-ui/tests').resolve()))
+from conftest import _config, _now, EXPERIMENT_ID, SESSION_SECRET, WORKER_ID, get_csrf
+from fastapi.testclient import TestClient
+from eden_storage import InMemoryStore
+from eden_web_ui import make_app
+
+store = InMemoryStore(experiment_id=EXPERIMENT_ID, metrics_schema=_config().metrics_schema)
+artifacts_dir = Path('/tmp/eden-review-artifacts-2')
+artifacts_dir.mkdir(parents=True, exist_ok=True)
+app = make_app(
+    store=store,
+    experiment_id=EXPERIMENT_ID,
+    experiment_config=_config(),
+    worker_id=WORKER_ID,
+    session_secret=SESSION_SECRET,
+    claim_ttl_seconds=3600,
+    artifacts_dir=artifacts_dir,
+    secure_cookies=False,
+    now=_now,
+)
+with TestClient(app) as c:
+    store.create_plan_task('t-no-session')
+    r1 = c.post('/planner/t-no-session/add_row', data={'slug': 'x'}, headers={'hx-request': 'true'}, follow_redirects=False)
+    print('htmx-no-session', r1.status_code, r1.headers.get('hx-redirect'), repr(r1.text))
+    c.post('/signin', follow_redirects=False)
+    csrf = get_csrf(c)
+    store.create_plan_task('t-no-claim')
+    r2 = c.post('/planner/t-no-claim/add_row', data={'csrf_token': csrf, 'slug': 'x'}, headers={'hx-request': 'true'}, follow_redirects=False)
+    print('htmx-no-claim', r2.status_code, r2.headers.get('hx-redirect'), repr(r2.text))
+    r3 = c.post('/planner/t-no-claim/add_row', data={'slug': 'x'}, follow_redirects=False)
+    print('nojs-bad-csrf', r3.status_code, repr(r3.text[:80]))
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 489ms:
+htmx-no-session 204 /signin ''
+htmx-no-claim 204 /planner/?banner=claim+missing+from+session ''
+nojs-bad-csrf 403 'CSRF token missing or invalid'
+
+ succeeded in 1580ms:
+.................                                                        [100%]
+
+codex
+The redirect behavior is now doing the right thing in practice. I’m pulling exact line refs for the helper and the new tests, then I’ll close with whether there are any remaining review findings in this round.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/_helpers.py | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Shared helpers for route handlers (session/CSRF lookup + cookie shape)."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	from fastapi import Request, Response
+     6	from fastapi.responses import RedirectResponse
+     7	
+     8	from ..sessions import SESSION_COOKIE_NAME, Session, SessionCodec, verify_csrf
+     9	
+    10	
+    11	def is_htmx_request(request: Request) -> bool:
+    12	    """True iff the request was made by htmx (carries ``HX-Request: true``)."""
+    13	    return request.headers.get("hx-request", "").lower() == "true"
+    14	
+    15	
+    16	def htmx_aware_redirect(request: Request, url: str) -> Response:
+    17	    """Redirect appropriately for both htmx and no-JS clients.
+    18	
+    19	    HTMX does not process 3xx responses — it follows the redirect
+    20	    transparently and swaps the redirected target's HTML into the
+    21	    configured target. For an ``add_row`` button targeted at
+    22	    ``#proposal-rows`` that produces a full ``<html>`` document
+    23	    inside the rows container. The fix is to send back ``HX-Redirect``
+    24	    on a 200/204 instead; htmx intercepts that header and does a
+    25	    full client-side navigation.
+    26	    """
+    27	    if is_htmx_request(request):
+    28	        return Response(status_code=204, headers={"hx-redirect": url})
+    29	    return RedirectResponse(url=url, status_code=303)
+    30	
+    31	
+    32	def get_session(request: Request) -> Session | None:
+    33	    """Return the decoded session for ``request``, or ``None`` if missing/invalid."""
+    34	    raw = request.cookies.get(SESSION_COOKIE_NAME)
+    35	    if raw is None:
+    36	        return None
+    37	    codec: SessionCodec = request.app.state.session_codec
+    38	    return codec.decode(raw)
+    39	
+    40	
+    41	def write_session_cookie(
+    42	    response: Response,
+    43	    *,
+    44	    encoded: str,
+    45	    secure: bool,
+    46	) -> None:
+    47	    """Set the signed session cookie on ``response`` with pinned attributes."""
+    48	    response.set_cookie(
+    49	        key=SESSION_COOKIE_NAME,
+    50	        value=encoded,
+    51	        httponly=True,
+    52	        secure=secure,
+    53	        samesite="lax",
+    54	        path="/",
+    55	    )
+    56	
+    57	
+    58	def csrf_ok(session: Session, presented: str | None) -> bool:
+    59	    """Constant-time CSRF token check, exposed for routes."""
+    60	    return verify_csrf(session, presented)
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/planner.py | sed -n '136,190p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   136	        },
+   137	    )
+   138	
+   139	
+   140	@router.post("/{task_id}/add_row", response_model=None)
+   141	async def add_row(task_id: str, request: Request):
+   142	    """Append one empty proposal row to the draft form.
+   143	
+   144	    Two transports, same end state:
+   145	
+   146	    - With JS, htmx posts here with ``HX-Request: true``. We respond
+   147	      with the rendered ``_proposal_row.html`` fragment for the new
+   148	      row only; htmx swaps it as ``beforeend`` of ``#proposal-rows``
+   149	      so the user's existing input is untouched. Redirect/error
+   150	      branches send ``HX-Redirect`` on a 204 so htmx does a full
+   151	      client-side navigation rather than swapping a redirected page
+   152	      into the rows container.
+   153	    - Without JS, the same button submits the form normally and we
+   154	      re-render the whole ``planner_claim.html`` with the
+   155	      collected state plus one more empty row, or 303 to the
+   156	      sign-in / planner list on auth/claim failures.
+   157	    """
+   158	    session = get_session(request)
+   159	    if session is None:
+   160	        return htmx_aware_redirect(request, "/signin")
+   161	    form = await request.form()
+   162	    if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+   163	        return _csrf_failure_response()
+   164	    if _CLAIMS.get(_claim_key(session.csrf, task_id)) is None:
+   165	        return htmx_aware_redirect(
+   166	            request, "/planner/?banner=claim+missing+from+session"
+   167	        )
+   168	
+   169	    if is_htmx_request(request):
+   170	        # The htmx-enhanced path: figure out where the new row goes
+   171	        # by counting existing rows in the form, then render only
+   172	        # the partial. The user's existing rows are already on the
+   173	        # page; htmx appends ours to ``#proposal-rows``.
+   174	        existing = max(
+   175	            len(form.getlist("slug")),
+   176	            len(form.getlist("priority")),
+   177	            len(form.getlist("parent_commits")),
+   178	            len(form.getlist("rationale")),
+   179	        )
+   180	        return request.app.state.templates.TemplateResponse(
+   181	            request,
+   182	            "_proposal_row.html",
+   183	            {"i": existing, "row_state": _empty_row(), "row_errs": {}},
+   184	        )
+   185	
+   186	    config = request.app.state.experiment_config
+   187	    slugs = [str(v) for v in form.getlist("slug")]
+   188	    priorities = [str(v) for v in form.getlist("priority")]
+   189	    parents = [str(v) for v in form.getlist("parent_commits")]
+   190	    rationales = [str(v) for v in form.getlist("rationale")]
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9-web-ui.md | sed -n '144,170p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_planner_flow.py | sed -n '117,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   144	#### B. Plain server-rendered Jinja with progressive enhancement (no HTMX)
+   145	
+   146	This is the closest neighbor to the chosen stack.
+   147	
+   148	- **Pros:** Exactly the same dependency graph minus 14 KB of JS;
+   149	  forms degrade to full-page POST + 303 redirect on every action;
+   150	  no client-side state to reason about; trivially testable with a
+   151	  plain HTTP client.
+   152	- **Cons:**
+   153	  - Claim-then-show-form needs either a server-side redirect or a
+   154	    two-page flow; not a deal-breaker but it's clunkier.
+   155	  - Any partial update — e.g. "you claimed task X, now this row
+   156	    moves out of pending" — either reflows the whole page or
+   157	    requires hand-rolled `fetch` + `outerHTML` swaps. HTMX
+   158	    automates exactly that with `hx-target` / `hx-swap`.
+   159	- **Verdict:** Live alternative, not a strawman. We pick HTMX for
+   160	  the partial-update ergonomics it gives the multi-row
+   161	  proposal-authoring flow ("add another row" without losing
+   162	  in-progress input); if HTMX adds friction during impl, the
+   163	  fallback is this option, not a heavier framework. (Originally
+   164	  this verdict named the planner-list → claim-form transition;
+   165	  during implementation that transition turned out to be a
+   166	  natural full-page navigation, so the load-bearing chunk-1 use
+   167	  case is the row-append flow instead.)
+   168	
+   169	#### C. Plain HTML + vanilla `fetch` + manual DOM replacement
+   170	
+
+ succeeded in 0ms:
+   117	class TestMultiRow:
+   118	    def test_add_row_full_page_returns_form_with_one_more_empty_row(
+   119	        self, signed_in_client: TestClient, store: InMemoryStore
+   120	    ) -> None:
+   121	        """No-JS path: add_row returns the full draft page with one more row."""
+   122	        store.create_plan_task("t-add")
+   123	        token = get_csrf(signed_in_client)
+   124	        signed_in_client.post(
+   125	            "/planner/t-add/claim",
+   126	            data={"csrf_token": token},
+   127	            follow_redirects=False,
+   128	        )
+   129	        resp = signed_in_client.post(
+   130	            "/planner/t-add/add_row",
+   131	            data={
+   132	                "csrf_token": token,
+   133	                "slug": "feat-1",
+   134	                "priority": "1.0",
+   135	                "parent_commits": "a" * 40,
+   136	                "rationale": "first proposal rationale",
+   137	            },
+   138	        )
+   139	        assert resp.status_code == 200
+   140	        # First row's input is preserved.
+   141	        assert "feat-1" in resp.text
+   142	        assert "first proposal rationale" in resp.text
+   143	        # The form now has 2 rows — count textareas as a per-row marker.
+   144	        assert resp.text.count('name="rationale"') == 2
+   145	        # Full page: includes the base layout (topbar nav).
+   146	        assert "<header" in resp.text
+   147	
+   148	    def test_add_row_htmx_no_session_returns_hx_redirect_to_signin(
+   149	        self, client: TestClient, store: InMemoryStore
+   150	    ) -> None:
+   151	        """HTMX request with no session must use HX-Redirect, not 303 to a full page.
+   152	
+   153	        HTMX follows 3xx transparently and swaps the redirected
+   154	        response into the configured target — for the add_row
+   155	        button (``hx-target="#proposal-rows"``) that would dump
+   156	        ``<html>...</html>`` of the sign-in page into the rows
+   157	        container. Returning ``HX-Redirect`` instead makes htmx
+   158	        do a real navigation.
+   159	        """
+   160	        store.create_plan_task("t-noses")
+   161	        resp = client.post(
+   162	            "/planner/t-noses/add_row",
+   163	            data={"slug": "x"},
+   164	            headers={"hx-request": "true"},
+   165	        )
+   166	        assert resp.status_code == 204
+   167	        assert resp.headers.get("hx-redirect") == "/signin"
+   168	        # Empty body is what htmx wants for HX-Redirect — it must NOT
+   169	        # contain a <header> or anything else that could end up
+   170	        # swapped into #proposal-rows.
+   171	        assert resp.text == ""
+   172	
+   173	    def test_add_row_htmx_missing_claim_returns_hx_redirect(
+   174	        self, signed_in_client: TestClient, store: InMemoryStore
+   175	    ) -> None:
+   176	        """HTMX request without an active claim must HX-Redirect to /planner/."""
+   177	        store.create_plan_task("t-noclaim")
+   178	        token = get_csrf(signed_in_client)
+   179	        # Note: we never call /planner/{id}/claim, so the in-memory
+   180	        # _CLAIMS dict has no entry for this (csrf, task) pair.
+   181	        resp = signed_in_client.post(
+   182	            "/planner/t-noclaim/add_row",
+   183	            data={"csrf_token": token, "slug": "x"},
+   184	            headers={"hx-request": "true"},
+   185	        )
+   186	        assert resp.status_code == 204
+   187	        loc = resp.headers.get("hx-redirect", "")
+   188	        assert loc.startswith("/planner/?banner=claim+missing")
+   189	        assert resp.text == ""
+   190	
+   191	    def test_add_row_no_js_no_session_303_to_signin(
+   192	        self, client: TestClient, store: InMemoryStore
+   193	    ) -> None:
+   194	        """The no-JS path keeps the conventional 303-to-/signin behavior."""
+   195	        store.create_plan_task("t-nojs")
+   196	        resp = client.post(
+   197	            "/planner/t-nojs/add_row",
+   198	            data={"slug": "x"},
+   199	            follow_redirects=False,
+   200	        )
+   201	        assert resp.status_code == 303
+   202	        assert resp.headers["location"] == "/signin"
+   203	
+   204	    def test_add_row_htmx_returns_partial_only(
+   205	        self, signed_in_client: TestClient, store: InMemoryStore
+   206	    ) -> None:
+   207	        """JS path: add_row with HX-Request: true returns only the row partial."""
+   208	        store.create_plan_task("t-htmx")
+   209	        token = get_csrf(signed_in_client)
+   210	        signed_in_client.post(
+   211	            "/planner/t-htmx/claim",
+   212	            data={"csrf_token": token},
+   213	            follow_redirects=False,
+   214	        )
+   215	        resp = signed_in_client.post(
+   216	            "/planner/t-htmx/add_row",
+   217	            data={
+   218	                "csrf_token": token,
+   219	                "slug": "feat-1",
+   220	                "priority": "1.0",
+
+codex
+No findings in the follow-up scope.
+
+The medium is resolved. [htmx_aware_redirect()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/_helpers.py:16) fixes the exact failure mode from round 0 by returning `204` + `HX-Redirect` for HTMX requests, and [add_row()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:140) now uses it on both the no-session and missing-claim branches at [160](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:160) and [165](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:165). The new tests in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:148) pin the HTMX redirect behavior and the no-JS `303` regression path. I also spot-checked the behavior directly: HTMX no-session and missing-claim requests now return `204`, the expected `HX-Redirect`, and an empty body.
+
+The low doc issue is also resolved. The alternatives verdict in [docs/plans/eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:159) now names the row-append flow as the chunk-1 load-bearing use case, which matches the main tech-stack section.
+
+I did not find anything new. Residual note only: the HTMX invalid-CSRF branch is still generic `403` text rather than a redirect, and it still is not covered by an HTMX-specific test, but that was unchanged and I would treat it as optional hardening, not a blocking issue for this fix.
+
+Verification: `uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -q` passed, and the direct request checks matched the intended semantics.
+2026-04-25T01:06:26.395343Z ERROR codex_core::session: failed to record rollout items: thread 019dc225-fcd7-70a3-bb3a-2a5c985d58ec not found
+tokens used
+247,580

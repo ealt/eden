@@ -1,0 +1,94 @@
+Reading prompt from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc0e3-55cd-7d11-83fc-e69f3650ab1d
+--------
+user
+Round 2. _integrate_trial now returns Response(status_code=200) with an empty body per §5 "200, empty body." No other changes. Please confirm this resolves the last finding.
+
+codex
+I’m checking the updated `integrate_trial` handler directly and verifying the observable HTTP response shape, since the last open item was specifically “200 with an actually empty body.”
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/src/eden_wire/server.py | sed -n '440,462p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   440	        store.declare_trial_eval_error(trial_id)
+   441	        return Response(status_code=204)
+   442	
+   443	    @app.post(f"{base}/trials/{{trial_id}}/integrate")
+   444	    async def _integrate_trial(
+   445	        experiment_id: str,
+   446	        trial_id: str,
+   447	        body: IntegrateRequest,
+   448	        x_eden_experiment_id: str | None = Header(None),
+   449	    ) -> Response:
+   450	        _check_experiment(
+   451	            experiment_id,
+   452	            x_eden_experiment_id,
+   453	            f"/v0/experiments/{experiment_id}/trials/{trial_id}/integrate",
+   454	        )
+   455	        # §5: 200 + empty body on success and same-value idempotent
+   456	        # retries; 409 invalid-precondition on different-SHA divergence
+   457	        # (raised by Store.integrate_trial).
+   458	        store.integrate_trial(trial_id, body.trial_commit_sha)
+   459	        return Response(status_code=200)
+   460	
+   461	    # ------------------------------------------------------------------
+   462	    # Events
+
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from fastapi.testclient import TestClient
+from eden_contracts import MetricsSchema, Proposal, Trial
+from eden_storage import InMemoryStore
+from eden_wire import make_app
+
+EXP='exp-wire'
+store=InMemoryStore(EXP, metrics_schema=MetricsSchema.model_validate({'loss':'real','acc':'real'}))
+client=TestClient(make_app(store), base_url='http://wire.test')
+H={'X-Eden-Experiment-Id':EXP}
+
+proposal = {
+ 'proposal_id':'p1','experiment_id':EXP,'state':'drafting','slug':'p1','parent_commits':['a'*40],
+ 'rationale':'x','priority':1.0,'artifacts_uri':'file:///tmp/a','created_at':'2026-04-24T00:00:00Z','updated_at':'2026-04-24T00:00:00Z'
+}
+trial = {
+ 'trial_id':'t1','experiment_id':EXP,'proposal_id':'p1','branch':'work/t1','parent_commits':['a'*40],
+ 'status':'starting','started_at':'2026-04-24T00:00:00Z'
+}
+client.post(f'/v0/experiments/{EXP}/proposals', headers=H, json=proposal)
+client.post(f'/v0/experiments/{EXP}/proposals/p1/mark-ready', headers=H)
+client.post(f'/v0/experiments/{EXP}/trials', headers=H, json=trial)
+store._trials['t1'] = store._trials['t1'].model_copy(update={'status':'success','commit_sha':'b'*40,'metrics':{'loss':0.1,'acc':0.9},'completed_at':'2026-04-24T01:00:00Z'})
+resp = client.post(f'/v0/experiments/{EXP}/trials/t1/integrate', headers=H, json={'trial_commit_sha':'c'*40})
+print('status', resp.status_code)
+print('content_len', resp.headers.get('content-length'))
+print('body_repr', repr(resp.text))
+print('content_type', resp.headers.get('content-type'))
+PY" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run pytest -q reference/packages/eden-wire/tests/test_wire_roundtrip.py -k 'integrate_returns_200 or same_sha_idempotent or different_sha_rejected or confirmed_success_after_response_lost or confirmed_divergence or indeterminate_when_no_sha'" in /Users/ericalt/Documents/eden
+ succeeded in 432ms:
+status 200
+content_len 0
+body_repr ''
+content_type None
+
+ succeeded in 623ms:
+......                                                                   [100%]
+6 passed, 17 deselected in 0.30s
+
+codex
+No findings.
+
+I confirmed [server.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/server.py:443) now returns `Response(status_code=200)`, and a direct probe against the FastAPI app showed `status=200`, `content-length=0`, and `body=''`, so the last spec mismatch is resolved.
+
+I also reran the targeted wire cases around `integrate_trial`; they passed (`6 passed`).
+tokens used
+211,709

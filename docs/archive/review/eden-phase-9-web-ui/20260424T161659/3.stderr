@@ -1,0 +1,165 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc1df-b851-71c3-997b-09babefd433d
+--------
+user
+Round 3: pure cleanup of the three round-2 items.
+1. Added eden-task-store-server to the web-ui dependency list.
+2. Removed the stale 'experiment_id mismatch check catches the loud cases' sentence in Risks; replaced with a 'no operational cross-check until Phase 12' note.
+3. Fixed §F-below references to §D-below for the sweeper, and swapped the chapter 07 §6 citation to §2.4 / §8.1 (where submit idempotency actually lives).
+
+Please confirm convergence — anything substantive still left, or is this ready to implement?
+codex
+Checking the three cleanup points directly in the updated plan, then doing one quick pass for any remaining substantive inconsistency.
+exec
+/bin/zsh -lc "sed -n '1,40p' reference/services/evaluator/pyproject.toml" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9-web-ui.md | sed -n '223,260p;452,470p;643,670p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+[project]
+name = "eden-evaluator-host"
+version = "0.0.1"
+description = "Reference evaluator worker host (standalone process)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "eden-contracts",
+    "eden-dispatch",
+    "eden-service-common",
+    "eden-storage",
+    "eden-task-store-server",
+    "eden-wire",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eden_evaluator_host"]
+
+ succeeded in 0ms:
+   223	### A. New service: `reference/services/web-ui/`
+   224	
+   225	- `pyproject.toml` — `eden-web-ui`, depends on `eden-contracts`,
+   226	  `eden-storage`, `eden-wire`, `eden-service-common`,
+   227	  `eden-task-store-server` (for `load_experiment_config` —
+   228	  matching the evaluator host's dependency list), plus `fastapi`,
+   229	  `uvicorn`, `jinja2`, `itsdangerous` (for signed session
+   230	  cookies).
+   231	- `README.md` — what the service is, how to run it, the auth model,
+   232	  the request flow for a planner submission.
+   233	- `src/eden_web_ui/__init__.py`
+   234	- `src/eden_web_ui/__main__.py` — launch via `python3 -m eden_web_ui`.
+   235	- `src/eden_web_ui/cli.py` — argparse with `add_common_arguments`
+   236	  (gives us `--task-store-url`, `--experiment-id`, `--shared-token`,
+   237	  `--log-level`) plus:
+   238	  - `--experiment-config <path>` — required. YAML loaded via
+   239	    `eden_task_store_server.load_experiment_config` (the same
+   240	    function the `evaluator` host uses). Provides
+   241	    `metrics_schema` and `objective` to the planner module per
+   242	    spec/v0/03-roles.md §2 ("Read access to the experiment config
+   243	    for `E`, including the `metrics_schema` and `objective`").
+   244	    Drift between this file and the task-store-server's copy is a
+   245	    known reference-impl limitation; Phase 12's control plane is
+   246	    the proper fix. `ExperimentConfig` does not currently carry
+   247	    its own `experiment_id` field, so a content-equivalence check
+   248	    against `--experiment-id` is not implementable in this chunk;
+   249	    the drift risk is documented and the cross-check waits for the
+   250	    Phase-12 control plane.
+   251	  - `--host` / `--port` — UI listener.
+   252	  - `--session-secret` — required, signs session cookies.
+   253	  - `--worker-id` — value passed to `Store.claim(worker_id=…)` for
+   254	    every UI-initiated claim. Defaults to `web-ui-1`.
+   255	  - `--claim-ttl-seconds` — default `3600` (1 hour). Every UI
+   256	    claim is issued with `expires_at = now + claim_ttl`. By
+   257	    itself this is metadata; the actual recovery requires a
+   258	    sweeper (see §D below) that the orchestrator service runs
+   259	    once per iteration. Together, the TTL + sweeper close the
+   260	    stranded-claim gap codex flagged: the task-store's `expired`
+   452	   The error page on Phase-3 failure surfaces the orphaned
+   453	   proposal IDs explicitly so an operator can manually reclaim
+   454	   the plan task and let the orchestrator re-dispatch a fresh
+   455	   plan attempt.
+   456	4. **Submit error** (`POST /planner/{task_id}/submit?status=error`):
+   457	   - CSRF check.
+   458	   - `store.submit(task_id, token, PlanSubmission(status="error"))`.
+   459	   - No proposals are written.
+   460	   - Drop the token. Render `planner_submitted.html`.
+   461	5. **Phase-3 retry-before-orphan.** Per
+   462	   `spec/v0/07-wire-protocol.md` §2.4 (and §8.1 on idempotency) the
+   463	   resubmit semantics are defined: a content-equivalent resubmit
+   464	   returns 200, a divergent resubmit returns 409
+   465	   `eden://error/conflicting-resubmission`. Before declaring
+   466	   proposals orphaned, the UI retries the same `submit` call up
+   467	   to 3 times with exponential backoff on transport failures,
+   468	   and on a clean response treats the submission as committed.
+   469	   The orphaned-proposals error page is reached only after the
+   470	   retries are exhausted with an indeterminate result, or the
+   643	12. `/codex-review` on the implementation; iterate to
+   644	    convergence.
+   645	13. PR, CI green, squash-merge.
+   646	
+   647	## Risks
+   648	
+   649	- **Stranded human claims.** Mitigated end-to-end: the UI sets
+   650	  `expires_at = now + --claim-ttl-seconds` on every claim, and the
+   651	  new §D sweeper (`eden_dispatch.sweep.sweep_expired_claims`,
+   652	  invoked from the orchestrator service's loop) actually issues
+   653	  the `expired` reclaim. Phase 9e adds an explicit
+   654	  operator-reclaim button as a faster recovery path. The UI must
+   655	  not retry claims server-side for a user who doesn't return —
+   656	  that would mask the issue.
+   657	- **Partial proposal writes.** The Phase 1 → Phase 2 → Phase 3
+   658	  ordering in §C narrows the unsafe window to "ready proposals
+   659	  not yet referenced by a submitted plan task." The Phase-3
+   660	  retry-before-orphan policy (per chapter 07 §8.1 idempotent resubmit)
+   661	  collapses transport-only failures into successes; only a
+   662	  definitive divergent-payload server response or 3 indeterminate
+   663	  retries in a row falls through to the operator-recovery error
+   664	  page. A spec-level fix (atomic `mark_ready_and_submit`) is out
+   665	  of scope for Phase 9 chunk 1; the residual gap applies equally
+   666	  to the existing scripted planner host.
+   667	- **Experiment-config drift.** The UI loads its own copy of
+   668	  `experiment-config.yaml`; if it diverges from the
+   669	  task-store-server's copy, planner-side validation could pass on
+   670	  inputs the evaluator's metrics_schema would later reject. Phase
+
+exec
+/bin/zsh -lc "rg -n \"eden-task-store-server|experiment_id mismatch|Phase 12|§D below|§F below|§2.4|§8.1|submit idempotency|idempotent resubmit|§6\" docs/plans/eden-phase-9-web-ui.md | sed -n '1,240p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+29:- **Multi-experiment switcher.** Phase 12 introduces the control plane;
+227:  `eden-task-store-server` (for `load_experiment_config` —
+245:    known reference-impl limitation; Phase 12's control plane is
+258:    sweeper (see §D below) that the orchestrator service runs
+462:   `spec/v0/07-wire-protocol.md` §2.4 (and §8.1 on idempotency) the
+660:  retry-before-orphan policy (per chapter 07 §8.1 idempotent resubmit)
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9-web-ui.md | sed -n '667,676p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   667	- **Experiment-config drift.** The UI loads its own copy of
+   668	  `experiment-config.yaml`; if it diverges from the
+   669	  task-store-server's copy, planner-side validation could pass on
+   670	  inputs the evaluator's metrics_schema would later reject. Phase
+   671	  12's control plane is the right fix. Until then there is no
+   672	  operational cross-check (`ExperimentConfig` carries no
+   673	  `experiment_id` field, so a content-equivalence comparison is
+   674	  not implementable today — §A documents this explicitly).
+   675	- **CSRF / cookie attribute regressions.** The cookie/CSRF policy
+   676	  is enforced by `tests/test_security_invariants.py`. Any change
+
+codex
+This has converged. The three round-2 cleanup items are fixed in the current plan, and I do not see any new substantive issues.
+
+The only meaningful caveat still in the document is the already-acknowledged Phase-2→Phase-3 residual window for `ready` proposals before plan submit commits. That is now clearly documented as an accepted reference-impl limitation rather than an accidental gap. Given that, this is ready to implement.
+tokens used
+172,006

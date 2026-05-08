@@ -1,0 +1,642 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dd664-cf48-79e2-9d9c-709b8545a8cb
+--------
+user
+I've updated the plan based on your feedback. Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md.
+codex
+Reviewing the revised plan with a narrow pass on the last open points: the socket-GID strategy, the subprocess cleanup API, and whether the Docker-backed test coverage is now concretely specified. I’m reading the updated file and checking the affected sections for internal consistency.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-a-container-isolation.md | sed -n '320,620p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-a-container-isolation.md | sed -n '1,320p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   320	(same).
+   321	
+   322	`EDEN_DOCKER_GID` is written into `.env`. The compose overlay's
+   323	`group_add: ["${EDEN_DOCKER_GID:?}"]` resolves it at compose-up
+   324	time.
+   325	
+   326	### D.7 What does NOT change
+   327	
+   328	- The worker-host-subprocess **JSON-line protocol** is unchanged.
+   329	  Implementations of `plan.py` / `implement.py` / `eval.py` written
+   330	  against the chunk-10d reference binding work identically when
+   331	  wrapped.
+   332	- Spec normative chapters 03 and 04 are unchanged.
+   333	- `subprocess_runner.spawn()` signature stays back-compat (new
+   334	  optional kwarg only).
+   335	- The `--mode scripted` path is untouched (no docker dependency for
+   336	  scripted profiles; the existing `compose-smoke` job stays green).
+   337	
+   338	## Implementation surface
+   339	
+   340	Files added:
+   341	
+   342	- `reference/compose/Dockerfile.runtime` — minimal default
+   343	  `eden-runtime:dev`. python3 + git + bash + ca-certificates.
+   344	- `reference/services/_common/src/eden_service_common/container_exec.py`:
+   345	  - `wrap_command(*, original_command, image, cwd_target,
+   346	    cidfile, role, task_id, host_id, mounts, binds, env_keys) -> str`
+   347	    returning the shell command string.
+   348	  - `mounts` and `binds` are typed lists (a small NamedTuple each)
+   349	    parsed from `--exec-volume` / `--exec-bind` flags.
+   350	  - `kill_via_cidfile(cidfile: Path) -> None`.
+   351	  - `cleanup_cidfile(cidfile: Path) -> None`.
+   352	  - `reap_orphaned_containers(*, role: str, host: str) -> None`.
+   353	- `reference/services/_common/tests/test_container_exec.py` — unit
+   354	  tests, see §F.
+   355	- `tests/fixtures/experiment/Dockerfile` — proves the experiment-
+   356	  specific image build path runs in CI. `FROM eden-runtime:dev`,
+   357	  no further layers.
+   358	
+   359	Files modified:
+   360	
+   361	- `reference/services/_common/src/eden_service_common/__init__.py` —
+   362	  re-export the new helpers.
+   363	- `reference/services/_common/src/eden_service_common/subprocess_runner.py`:
+   364	  - `Subprocess` gains two new fields:
+   365	    `_post_kill_callback: Callable[[], None] | None` and
+   366	    `cleanup_callbacks: list[Callable[[], None]]`.
+   367	  - New `Subprocess.run_cleanups()` — calls each callback and
+   368	    clears the list. Safe to call multiply (idempotent because of
+   369	    the clear).
+   370	  - `Subprocess.terminate()` signature is unchanged. On every exit
+   371	    branch (SIGTERM-graceful, SIGTERM-via-ProcessLookupError-fast-
+   372	    path, SIGKILL-escalation), it calls `run_cleanups()`. On the
+   373	    SIGKILL-escalation branch only, it also calls
+   374	    `self._post_kill_callback()` (if set) **before**
+   375	    `run_cleanups()` so the cidfile cleanup is callback-ordered
+   376	    after the docker container is killed.
+   377	  - `spawn()` gains two new kwargs:
+   378	    `post_kill_callback: Callable[[], None] | None = None` and
+   379	    `cleanup_callbacks: list[Callable[[], None]] | None = None`.
+   380	    Both are stashed on the `Subprocess` instance.
+   381	- `reference/services/_common/src/eden_service_common/cli.py` — add
+   382	  `--exec-mode {host,docker}` (default `host`), `--exec-image`
+   383	  (default from `EDEN_EXEC_IMAGE` env), `--exec-volume` (repeatable,
+   384	  format `<vol-name>:<target>[:ro]`), `--exec-bind` (repeatable,
+   385	  format `<host-abs-path>:<target>[:ro]`), `--cidfile-dir` (default
+   386	  `/var/lib/eden/cidfiles`). Validation: docker-mode requires an
+   387	  image. Same flags shared by all three subprocess-mode hosts.
+   388	- `reference/services/planner/src/eden_planner_host/cli.py` — when
+   389	  `--exec-mode docker`, build the wrapped command via
+   390	  `container_exec.wrap_command(...)` (cwd = experiment-dir target;
+   391	  cidfile path = `<cidfile-dir>/planner-<spawn-uuid>.cid`) and pass
+   392	  that as `subprocess_config.command`. The `post_kill_callback`
+   393	  + cleanup callback are registered on the spawn so the long-
+   394	  running planner subprocess's container is cleaned up on host
+   395	  shutdown.
+   396	- `reference/services/implementer/src/eden_implementer_host/cli.py`
+   397	  + `subprocess_mode.py` — the wrap is built per-task in
+   398	  `_run_subprocess` because cwd = per-task worktree path. The
+   399	  passed `cwd` to `subprocess_runner.spawn` stays on the worker host
+   400	  (so `docker run` inherits it locally); the wrapper's `-w` is the
+   401	  same path inside the container, since the worktrees volume is
+   402	  mounted at the same target. The cleanup callback is registered
+   403	  via the new `cleanup_callbacks` kwarg.
+   404	- `reference/services/evaluator/src/eden_evaluator_host/cli.py`
+   405	  + `subprocess_mode.py` — same.
+   406	- All three `subprocess_mode.py` files: the `_run_subprocess`
+   407	  helpers gain new fields on their `*SubprocessConfig` dataclasses
+   408	  to carry the docker mode params (image, mounts, binds, cidfile-
+   409	  dir). When mode is host, the existing path is unchanged.
+   410	- `reference/services/{planner,implementer,evaluator}/src/eden_*_host/cli.py`
+   411	  — at host-process startup, when `--exec-mode docker`, call
+   412	  `reap_orphaned_containers(role=…, host=socket.gethostname())`
+   413	  before entering the loop.
+   414	- `reference/compose/Dockerfile` — install the `docker-cli` package
+   415	  (`apt-get install -y --no-install-recommends docker.io` is the
+   416	  Debian path; for the slim image we install `docker-ce-cli` from
+   417	  Docker's repo, OR pull the static binary in. Pick whichever
+   418	  installs faster in the existing builder stage; default plan: the
+   419	  static binary copied in via a separate FROM stage to keep the
+   420	  runtime layers small).
+   421	- `reference/compose/compose.subprocess.yaml`:
+   422	  - For each subprocess-mode service: add
+   423	    `group_add: ["${EDEN_DOCKER_GID:?}"]` and
+   424	    `volumes: - /var/run/docker.sock:/var/run/docker.sock`.
+   425	  - Pass `--exec-mode docker`, `--exec-image ${EDEN_EXEC_IMAGE:?}`,
+   426	    `--exec-volume eden-bare-repo:/var/lib/eden/repo`, etc.
+   427	    (Repeatable flags → multiple list entries in the `command:`
+   428	    array.)
+   429	  - Add a host-side bind mount for the cidfile dir so cidfiles
+   430	    survive a worker-host container restart — `${EDEN_CIDFILES_DIR_HOST}:/var/lib/eden/cidfiles`.
+   431	- `reference/scripts/setup-experiment/setup-experiment.sh`:
+   432	  - new `--exec-mode {host,docker}` flag (default `host` to keep
+   433	    the chunk-10d smoke-subprocess path green).
+   434	  - When `docker`:
+   435	    - resolve `EDEN_DOCKER_GID` via `stat`.
+   436	    - `docker build -t eden-runtime:dev -f reference/compose/Dockerfile.runtime .`
+   437	      (idempotent; cached after first build).
+   438	    - if `${EDEN_EXPERIMENT_DIR}/Dockerfile` exists, build
+   439	      `eden-experiment-${EXPERIMENT_ID}:dev` and set
+   440	      `EDEN_EXEC_IMAGE` to that; otherwise set to
+   441	      `eden-runtime:dev`.
+   442	    - mkdir a host-side cidfiles dir
+   443	      (`${COMPOSE_DIR}/.cidfiles-${EXPERIMENT_ID}`) and write
+   444	      `EDEN_CIDFILES_DIR_HOST=…` into `.env`.
+   445	- `reference/compose/healthcheck/smoke-subprocess-docker.sh` (new) —
+   446	  forks from `smoke-subprocess.sh`, calls setup-experiment with
+   447	  `--exec-mode docker`, and asserts the same end state.
+   448	- `.github/workflows/ci.yml` — new `compose-smoke-subprocess-docker`
+   449	  job using `actions/setup-python` (PEP 668 fix already established
+   450	  for chunk-10e). docker is pre-installed on `ubuntu-latest`.
+   451	- `spec/v0/reference-bindings/worker-host-subprocess.md` — new §7
+   452	  "Container-isolated reference deployment" describing the wrap
+   453	  shape, mount strategy (named-volume forwarding + bind-host-paths),
+   454	  cidfile lifecycle, the DooD soft-boundary caveat, and the
+   455	  experiment-image build path. Informative; nothing in chapters 3 /
+   456	  4 changes.
+   457	- `AGENTS.md` — phase summary update; new commands row for
+   458	  `smoke-subprocess-docker.sh`; note in plan-writing-pitfalls about
+   459	  DooD socket-mount being a soft security boundary worth flagging
+   460	  in reviews.
+   461	- `docs/roadmap.md` — mark sub-chunk A complete.
+   462	
+   463	## E. Tests
+   464	
+   465	Three tiers. Each has at least one assertion targeting a specific
+   466	high-risk failure mode codex round-0 flagged.
+   467	
+   468	### E.1 Unit (`reference/services/_common/tests/test_container_exec.py`)
+   469	
+   470	- `wrap_command` produces a string starting with `docker run --rm -i --init`.
+   471	- All required `--mount` / `-w` / `-e` / `--label` / `--cidfile`
+   472	  flags are present in correct order.
+   473	- The user command is shell-quoted via `shlex.quote` (test:
+   474	  `*_command` containing `'` and `$` round-trips).
+   475	- `kill_via_cidfile` is no-op when cidfile is absent or empty.
+   476	- `cleanup_cidfile` is idempotent.
+   477	- Round-trip parsing of `--exec-volume name:target:ro` produces
+   478	  the right Mount tuple; malformed inputs raise `ValueError`.
+   479	
+   480	### E.2 Integration (`reference/services/_common/tests/test_container_exec_integration.py`, marked `pytest.mark.docker`)
+   481	
+   482	These run only when `docker` is on PATH and the daemon is reachable
+   483	(skipped otherwise — same posture as the existing
+   484	`pytest.mark.e2e` tests). They run **inline as a pytest step in the
+   485	new `compose-smoke-subprocess-docker` CI job** (added to the same
+   486	`uv run pytest -m docker` invocation in that job; not a separate
+   487	GitHub-Actions step). Locally, `uv run pytest -m docker` runs them
+   488	when docker is present.
+   489	
+   490	- **Mount shape works for git.** Spawn a container via
+   491	  wrap_command, run `git status` on a bind-mounted scratch git repo
+   492	  (mirroring the chapter-3 implementer setup: bare repo + worktree
+   493	  with `.git` file pointing back), assert exit 0. Closes the codex
+   494	  round-0 high finding directly.
+   495	- **Stale cidfile rejection.** Pre-create a stale cidfile, spawn
+   496	  another wrap with the SAME path, assert `docker run --cidfile`
+   497	  errors. Then call `cleanup_cidfile` first and assert spawn
+   498	  succeeds. Closes the cidfile-reuse risk.
+   499	- **SIGKILL-escalation actually kills the container.** Spawn a
+   500	  long-running detached `sleep 600` container via the same path
+   501	  the production code uses, kill the local docker-run client with
+   502	  SIGKILL (bypassing the `post_kill_callback`), assert the
+   503	  container is still running. Then call `kill_via_cidfile` and
+   504	  assert the container is gone within 5s. Proves the post-kill
+   505	  cleanup actually does what it's supposed to.
+   506	- **Orphan reaping.** Spawn a container directly with the right
+   507	  labels (`eden.role=test`, `eden.host=<gethostname()>`), detached
+   508	  + sleeping. Call `reap_orphaned_containers(role="test",
+   509	  host=socket.gethostname())`. Assert the container is gone.
+   510	  Proves `reap_orphaned_containers` actually reaps — closes the
+   511	  worker-host-crash-mid-task risk at unit speed without needing
+   512	  a full compose orchestration.
+   513	
+   514	### E.3 Smoke (`reference/compose/healthcheck/smoke-subprocess-docker.sh`)
+   515	
+   516	Same end-state assertions as `smoke-subprocess.sh`:
+   517	- ≥3 `trial.integrated`,
+   518	- ≥9 `task.completed`,
+   519	- ≥3 plan-task `task.completed`.
+   520	
+   521	Plus one new assertion specific to the new path:
+   522	- After the orchestrator exits, run
+   523	  `docker ps -aq --filter label=eden.host=<each-worker-hostname>`
+   524	  for each subprocess-mode service and assert empty (no leftover
+   525	  containers).
+   526	
+   527	The **smoke does not** include the kill-host-mid-experiment
+   528	scenario. The `reap_orphaned_containers` integration test in §E.2
+   529	covers it deterministically at unit speed; an end-to-end mid-task
+   530	kill in compose would add 60-90s of CI time and a flaky failure
+   531	mode (the killed container's claim has to expire, the sweeper has
+   532	to pick it up, etc.) that doesn't exercise additional code beyond
+   533	what the unit-level test already covers.
+   534	
+   535	## F. Verification
+   536	
+   537	1. `uv run pytest reference/services/_common/tests` — unit tests
+   538	   pass (including new `test_container_exec.py`).
+   539	2. `bash reference/compose/healthcheck/smoke-subprocess.sh` — host
+   540	   mode still green.
+   541	3. `bash reference/compose/healthcheck/smoke-subprocess-docker.sh`
+   542	   — new docker-mode smoke green locally.
+   543	4. `bash reference/compose/healthcheck/e2e.sh` and `smoke.sh` —
+   544	   unchanged (host mode).
+   545	5. `npx markdownlint-cli2 …` — markdown is clean.
+   546	6. `uv run ruff check .` and `uv run pyright` — Python clean.
+   547	7. CI (PR): all 10 existing jobs green; new
+   548	   `compose-smoke-subprocess-docker` green.
+   549	
+   550	## G. Out of scope for this sub-chunk
+   551	
+   552	- **Network policy on subprocess containers** — `--network` is
+   553	  default. Operators who want network egress restricted set it via
+   554	  the experiment image or compose override.
+   555	- **Resource limits** (`--memory` / `--cpus` / `--pids-limit`).
+   556	  Same: operator-configured via the image or compose override.
+   557	- **Non-root execution inside the subprocess container.** The
+   558	  default `eden-runtime:dev` image runs as root; experiments that
+   559	  want a non-root uid set `USER` in their experiment Dockerfile.
+   560	- **DinD instead of DooD.** The wrap shape is the same; only the
+   561	  daemon socket origin differs. Out of scope.
+   562	- **Hardening the DooD security boundary** (sysbox, Kata, per-
+   563	  worker daemons). Out of scope; documented as the reference
+   564	  posture.
+   565	- **Sub-chunk B (Gitea-as-actual-git-remote).** Independent plan;
+   566	  this work doesn't change how implementers reach the bare repo.
+   567	- **Updating branch protection to require
+   568	  `compose-smoke-subprocess-docker`.** Same posture chunks 10a /
+   569	  10b / 10c / 10d / 10e took for newly-added compose jobs: ship
+   570	  the job, watch a few clean runs, then promote in a follow-up.
+   571	
+   572	## H. Risks / things to watch
+   573	
+   574	- **Mount-target collision with worker host's own cwd.** If a
+   575	  worker host's cwd happens to fall outside any forwarded mount,
+   576	  the spawned child sees an empty `cwd`. This isn't possible in
+   577	  the planned compose deployment (every cwd is on a forwarded
+   578	  mount), but the wrap should reject such configs at build time
+   579	  for safety: `wrap_command` validates that `cwd_target` falls
+   580	  under at least one mount target, and raises `ValueError`
+   581	  otherwise.
+   582	- **Stale containers on host crash.** Mitigated by the
+   583	  `eden.host=<hostname>` label + startup-time
+   584	  `reap_orphaned_containers`. Cidfile dir is host-side mounted so
+   585	  cidfiles survive worker-host restart.
+   586	- **`docker run --cidfile` errors on existing path.** Cidfile paths
+   587	  are unique-per-spawn (uuid suffix); never reused. The reaper
+   588	  best-effort-removes orphaned cidfiles whose container is gone.
+   589	- **`bash -lc` and login-shell side effects.** A user's `~/.bashrc`
+   590	  may fail in a fresh container (no home dir). Mitigation:
+   591	  `eden-runtime:dev` ships an empty `/root/.bashrc`. Experiment
+   592	  images that override `USER` should likewise.
+   593	- **DooD security boundary is soft.** Documented in §D.5 and §7 of
+   594	  the reference-binding chapter and called out in AGENTS.md as a
+   595	  review checkpoint.
+   596	- **macOS Docker Desktop GID quirk.** Desktop runs a Linux VM and
+   597	  bind-forwards the socket into it with a VM-internal gid that's
+   598	  not visible to a host-side stat. The probe-from-inside detection
+   599	  in §D.6 handles this uniformly across Linux native, Desktop,
+   600	  and Colima.
+
+ succeeded in 0ms:
+     1	# Phase 10d follow-up A — container isolation of `*_command` subprocesses
+     2	
+     3	## Context
+     4	
+     5	Chunk 10d shipped `--mode subprocess` for the planner / implementer / evaluator
+     6	hosts: each host invokes a user-supplied command from
+     7	`experiment-config.yaml` (`plan_command` / `implement_command` /
+     8	`evaluate_command`) via `subprocess.Popen(shell=True)`. The
+     9	host supplies `EDEN_EXPERIMENT_DIR`, `EDEN_TASK_JSON`, `EDEN_OUTPUT`,
+    10	and (for implement / evaluate) `EDEN_WORKTREE`. Stdout/stderr are
+    11	piped (long-running JSON-line protocol for planner; per-task short-
+    12	lived for implementer / evaluator).
+    13	
+    14	The shipped surface runs the user's command **in the worker host
+    15	container itself** — so a malicious or buggy `implement_command`
+    16	inherits the worker host's filesystem (writable bare repo + worktree
+    17	volume + artifacts), env (shared-token bearer, all `EDEN_*` vars),
+    18	and process namespace. The 10d plan deferred container isolation to
+    19	this follow-up; the subprocess.Popen call is the wrappable layer and
+    20	the JSON-line protocol stays unchanged when wrapped.
+    21	
+    22	This plan covers **only** isolation. Sub-chunk B (Gitea-as-actual-
+    23	git-remote so workers don't share a writable bare-repo volume) is a
+    24	separate plan.
+    25	
+    26	## Design
+    27	
+    28	### D.1 Where to inject containerization
+    29	
+    30	The 10d plan hinted at "wrap `subprocess.Popen` with `docker run`" as
+    31	the wrappable layer. There are three reasonable injection points:
+    32	
+    33	1. **Inside `subprocess_runner.spawn()`** — make the helper itself
+    34	   container-aware.
+    35	2. **At each call site** — each role's `subprocess_mode.py`
+    36	   transforms the command before passing to `spawn`.
+    37	3. **At config-construction time in each host's `cli.py`** — build
+    38	   the wrapped command once, pass through the existing
+    39	   `*SubprocessConfig.command` field unchanged.
+    40	
+    41	We pick **2/3 mixed**: the planner's command is built once at CLI
+    42	time (long-running subprocess, cwd = experiment dir, no per-task
+    43	state in the wrap). The implementer / evaluator wraps must be built
+    44	per task (cwd = per-task worktree path), so they live in
+    45	`subprocess_mode.py`'s `_run_subprocess`. The shared
+    46	command-builder + cidfile-lifecycle helpers go into a new
+    47	`reference/services/_common/src/eden_service_common/container_exec.py`
+    48	module.
+    49	
+    50	### D.2 Wrap shape and DooD mount strategy
+    51	
+    52	**The mount paths the wrap emits are seen by the host docker
+    53	daemon, NOT by the worker host container.** Under DooD (Docker
+    54	outside of Docker), the worker calls `/var/run/docker.sock`, which
+    55	talks to the *host* daemon, which resolves all `--mount source=…`
+    56	references against its own filesystem. So a naïve `-v <cwd>:<cwd>`
+    57	where cwd lives on a docker-managed named volume **does not work**:
+    58	the host daemon sees the named volume name in its catalog, not the
+    59	mount path inside the worker.
+    60	
+    61	Two correct ways to give the spawned child container access to the
+    62	same files the worker host sees:
+    63	
+    64	1. **Forward each named volume by name** (`--mount type=volume,
+    65	   source=<vol-name>,target=<path>`). The host daemon resolves the
+    66	   volume directly from its catalog. The child sees the same files
+    67	   as the worker because both mount the same underlying volume.
+    68	2. **Forward bind-mounts by host-side absolute path**
+    69	   (`--mount type=bind,source=<host-abs-path>,target=<path>`).
+    70	   Used for the experiment dir, where the host-side path is already
+    71	   captured by setup-experiment as `EDEN_EXPERIMENT_DIR_HOST`.
+    72	
+    73	We use both, driven by deployment-supplied env vars rather than
+    74	hard-coded constants in code. The host CLI accepts:
+    75	
+    76	- `--exec-volume <vol-name>:<target-path>[:ro]` (repeatable)
+    77	- `--exec-bind <host-abs-path>:<target-path>[:ro]` (repeatable)
+    78	
+    79	The compose overlay sets these from the existing volume names
+    80	(`eden-bare-repo`, `eden-worktrees`, `eden-artifacts-data`) and from
+    81	`EDEN_EXPERIMENT_DIR_HOST`. Mount targets inside the child match
+    82	the worker host's own targets exactly — `/var/lib/eden/repo`,
+    83	`/var/lib/eden/worktrees`, `/var/lib/eden/artifacts`,
+    84	`/etc/eden/experiment-dir` — so the worker-internal paths the
+    85	worker passed via env (`EDEN_TASK_JSON`, `EDEN_OUTPUT`,
+    86	`EDEN_WORKTREE`, `EDEN_EXPERIMENT_DIR`) resolve to the same files
+    87	inside the child.
+    88	
+    89	This is critical for git: the implementer's worktree under
+    90	`/var/lib/eden/worktrees/<host>/<task_id>/` contains a `.git` file
+    91	pointing into `/var/lib/eden/repo`. The child needs *both* the
+    92	worktrees volume AND the bare-repo volume mounted at those exact
+    93	paths or `git` inside the child fails. The plan's wrap mounts
+    94	both. (For the evaluator, ditto. The planner doesn't need either —
+    95	it only needs the experiment-dir bind.)
+    96	
+    97	The wrap shape per task:
+    98	
+    99	```bash
+   100	docker run --rm -i --init \
+   101	  --cidfile <unique-cidfile> \
+   102	  --label eden.host=<container-hostname> \
+   103	  --label eden.task_id=<task-id-or-host-id-for-planner> \
+   104	  --label eden.role=<role> \
+   105	  --mount type=volume,source=eden-bare-repo,target=/var/lib/eden/repo \
+   106	  --mount type=volume,source=eden-worktrees,target=/var/lib/eden/worktrees \
+   107	  --mount type=volume,source=eden-artifacts-data,target=/var/lib/eden/artifacts,readonly \
+   108	  --mount type=bind,source=<EDEN_EXPERIMENT_DIR_HOST>,target=/etc/eden/experiment-dir,readonly \
+   109	  -w <cwd-target-path-inside-container> \
+   110	  -e EDEN_TASK_JSON -e EDEN_OUTPUT -e EDEN_EXPERIMENT_DIR \
+   111	  [-e EDEN_WORKTREE]              # implementer/evaluator only
+   112	  [-e <USER-ENV-KEY>]…             # one per parsed --*-env-file key
+   113	  <image> \
+   114	  bash -lc '<original-command>'
+   115	```
+   116	
+   117	The exact set of `--mount` entries per role:
+   118	
+   119	| role | mounts | cwd inside child |
+   120	|---|---|---|
+   121	| planner | `experiment-dir` bind ro | `/etc/eden/experiment-dir` |
+   122	| implementer | `eden-bare-repo` rw, `eden-worktrees` rw, `eden-artifacts-data` ro, `experiment-dir` bind ro | `/var/lib/eden/worktrees/<host>/<task_id>/` |
+   123	| evaluator | `eden-bare-repo` rw, `eden-worktrees` rw, `experiment-dir` bind ro | `/var/lib/eden/worktrees/<host>/<task_id>/` |
+   124	
+   125	(The implementer's `eden-artifacts-data` mount is read-only — same
+   126	posture as today's worker host gets per `compose.subprocess.yaml`,
+   127	because the implementer reads the planner-written rationale only.
+   128	The evaluator does not get the artifacts mount because the chunk-9d
+   129	evaluator subprocess does not consult planner artifacts.)
+   130	
+   131	### D.3 Container lifecycle and cidfile discipline
+   132	
+   133	Three concerns: (a) reliable cleanup on SIGKILL, (b) reliable cleanup
+   134	on the happy path, (c) recovery from worker-host crash mid-task.
+   135	
+   136	**(a) SIGKILL escalation.** `subprocess_runner.terminate()` already
+   137	sends SIGTERM → wait → SIGKILL. The local `docker run` process
+   138	forwards SIGTERM to the container (PID 1 = `tini` via `--init`),
+   139	which gives the workload `shutdown_deadline` to exit. On SIGKILL
+   140	escalation, the local docker-run client is killed but the container
+   141	keeps running until the workload exits or is killed externally.
+   142	
+   143	**API:** the SIGKILL-escalation cleanup is stored on the `Subprocess`
+   144	instance, not threaded through every `terminate()` call. Concretely:
+   145	
+   146	- `spawn()` gains a `post_kill_callback: Callable[[], None] | None
+   147	  = None` kwarg. The value is stashed as `Subprocess._post_kill_callback`.
+   148	- `Subprocess.terminate()` takes **no** new parameters. On the
+   149	  SIGKILL-escalation branch (after `os.killpg(SIGKILL)`), if
+   150	  `self._post_kill_callback is not None`, it is called.
+   151	- The container_exec spawn helper sets the callback to a closure
+   152	  over the cidfile path:
+   153	
+   154	```python
+   155	def _kill_via_cidfile(cidfile: Path) -> None:
+   156	    cid = cidfile.read_text().strip() if cidfile.is_file() else ""
+   157	    if cid:
+   158	        subprocess.run(["docker", "kill", cid], check=False, timeout=10)
+   159	        subprocess.run(["docker", "rm", "-f", cid], check=False, timeout=10)
+   160	```
+   161	
+   162	`check=False` because the container may already be gone via `--rm`.
+   163	
+   164	This means call sites never see `post_kill_callback` directly — it's
+   165	configured at spawn time and runs automatically on terminate-with-
+   166	escalation. There is exactly one API surface (`spawn`), no per-call
+   167	threading, no ambiguity about who calls what.
+   168	
+   169	**(b) Happy-path cleanup.** `--rm` removes the container on its own
+   170	exit, but the cidfile on the host filesystem stays. Reuse of a
+   171	cidfile path is fatal: `docker run --cidfile <path>` errors if the
+   172	file exists. So:
+   173	
+   174	- Cidfile paths are unique per spawn: `<cidfile_dir>/<role>-<spawn-
+   175	  uuid>.cid`. (Not derived from task id — a reclaimed task may
+   176	  re-spawn after orphan-reaping, and we want a fresh path.)
+   177	- `Subprocess` gains a `cleanup_callbacks: list[Callable[[], None]]`
+   178	  field. The container_exec spawn helper appends a small
+   179	  `lambda: cidfile.unlink(missing_ok=True)` to it. Both the SIGTERM-
+   180	  ladder happy path inside `terminate()` and the call sites that
+   181	  drain the subprocess to natural EOF (the implementer/evaluator
+   182	  `_run_subprocess` while-loop) call a new
+   183	  `Subprocess.run_cleanups()` after `popen.wait()` completes.
+   184	  Idempotent — safe to call from multiple paths.
+   185	
+   186	**(c) Worker-host crash mid-task.** A startup-time helper
+   187	`reap_orphaned_containers(*, role, host)` runs:
+   188	
+   189	```bash
+   190	docker ps -aq \
+   191	  --filter label=eden.role=<role> \
+   192	  --filter label=eden.host=<host>
+   193	```
+   194	
+   195	and `docker rm -f` everything that comes back. The
+   196	`eden.host=<container-hostname>` filter scopes to the calling
+   197	worker host's hostname only — mirrors the cross-host worktree
+   198	isolation already in place at chapter 6 of
+   199	`spec/v0/reference-bindings/worker-host-subprocess.md`. It also
+   200	removes any leftover cidfiles in the cidfile dir that don't
+   201	correspond to a live container (best-effort; non-fatal).
+   202	
+   203	### D.4 Image strategy
+   204	
+   205	Two layers, in priority order:
+   206	
+   207	1. **Experiment-specific image** (preferred, optional) —
+   208	   `setup-experiment.sh` checks for a `Dockerfile` in
+   209	   `EDEN_EXPERIMENT_DIR`. If present, it builds:
+   210	
+   211	   ```bash
+   212	   docker build -t "eden-experiment-${EXPERIMENT_ID}:dev" \
+   213	     "$EDEN_EXPERIMENT_DIR"
+   214	   ```
+   215	
+   216	   and writes `EDEN_EXEC_IMAGE=eden-experiment-${EXPERIMENT_ID}:dev`
+   217	   into `.env`.
+   218	
+   219	2. **Default runtime image** — if no experiment Dockerfile, fall back
+   220	   to a small `eden-runtime:dev` image we build alongside
+   221	   `eden-reference:dev`. This image has python3 + git + bash +
+   222	   ca-certificates and is meant for fixture experiments that don't
+   223	   need exotic deps.
+   224	
+   225	The default is built from a new
+   226	`reference/compose/Dockerfile.runtime`. It is *separate* from
+   227	`reference/compose/Dockerfile` (the `eden-reference:dev` image, which
+   228	must stay tightly scoped to the EDEN service code).
+   229	
+   230	The CLI flag is `--exec-image <name>`, required when
+   231	`--exec-mode docker` is selected and falling back to
+   232	`$EDEN_EXEC_IMAGE` if unset (to make the compose overlay symmetric).
+   233	
+   234	### D.5 Auth-secret flow and the boundary it does NOT provide
+   235	
+   236	User secrets (LLM API keys etc.) flow via the `--*-env-file` flags.
+   237	With containerization, the file is read on the worker host as
+   238	before, parsed by `parse_env_file`, and merged into the spawn env.
+   239	The wrap lists each parsed key as a `-e KEY` flag (no `=value`),
+   240	so docker copies it from the docker-run process's env. Net effect:
+   241	the secret never appears on the docker run command line (so it
+   242	doesn't show in `ps` output on the docker daemon's host or in shell
+   243	history of the worker host).
+   244	
+   245	What this **does NOT do**:
+   246	
+   247	- Secrets ARE visible in `docker inspect <container>` output to
+   248	  anyone with daemon access.
+   249	- Under DooD (the reference deployment), any other `*_command`
+   250	  running concurrently on the same host has full daemon access via
+   251	  the shared socket and can therefore read every other container's
+   252	  inspect output. So `*_command` instances are NOT isolated from
+   253	  each other's secrets.
+   254	- A malicious `*_command` can `docker run` arbitrary containers,
+   255	  read host files via volume mounts, etc. — DooD with a shared
+   256	  socket is a soft security boundary against bugs, not a hard one
+   257	  against malice.
+   258	
+   259	This is documented plainly in §7 of the reference-binding chapter
+   260	update. The reference deployment trades that boundary for
+   261	operational simplicity; hardened deployments substitute sysbox /
+   262	Kata / a dedicated docker daemon per worker (invisible to EDEN
+   263	because the host just calls `docker run` either way).
+   264	
+   265	### D.6 Docker socket access (DooD) — permissions
+   266	
+   267	The current `eden-reference:dev` image runs as `USER eden` (uid
+   268	1000). The host docker socket on Linux is conventionally
+   269	`root:docker` mode `0660` — so a bare `eden` user inside the
+   270	container cannot use it.
+   271	
+   272	Two options:
+   273	
+   274	1. **GID-matching `group_add`** — at compose-load time, set
+   275	   `EDEN_DOCKER_GID` to the gid the worker container will see on
+   276	   the bind-mounted socket, and use
+   277	   `group_add: ["${EDEN_DOCKER_GID}"]` on each subprocess-mode
+   278	   service. The container's `eden` user inherits that gid as a
+   279	   supplementary group → the socket is rw without changing the
+   280	   user.
+   281	2. **`user: root`** — simpler, but expands the worker container's
+   282	   privilege. Acceptable for the reference because (per §D.5) DooD
+   283	   is already a soft security boundary, but option 1 is preferred.
+   284	
+   285	We pick **option 1**.
+   286	
+   287	**Detection: probe-from-inside.** A host-side `stat
+   288	/var/run/docker.sock` returns the gid in the host kernel's view,
+   289	which on Linux native is the same gid the worker sees, but on
+   290	Docker Desktop (macOS / Windows) is *not* — Desktop runs a Linux
+   291	VM, the socket is bind-forwarded into the VM with a VM-internal
+   292	gid, and the host-side stat returns the host user's gid (often
+   293	20 / staff on macOS), which is meaningless inside the worker.
+   294	
+   295	setup-experiment.sh therefore detects the gid by probing from
+   296	inside a throwaway container that bind-mounts the socket:
+   297	
+   298	```bash
+   299	if [[ "$EXEC_MODE" = "docker" ]]; then
+   300	    if [[ ! -S /var/run/docker.sock ]]; then
+   301	        echo "setup-experiment: --exec-mode docker requires /var/run/docker.sock" >&2
+   302	        exit 2
+   303	    fi
+   304	    EDEN_DOCKER_GID="$(
+   305	        docker run --rm \
+   306	            -v /var/run/docker.sock:/var/run/docker.sock \
+   307	            alpine:3.20 \
+   308	            stat -c '%g' /var/run/docker.sock
+   309	    )"
+   310	    if [[ -z "$EDEN_DOCKER_GID" ]]; then
+   311	        echo "setup-experiment: failed to probe docker socket gid" >&2
+   312	        exit 2
+   313	    fi
+   314	fi
+   315	```
+   316	
+   317	This single method works on Linux native (the in-container gid
+   318	equals the host's, both come from the same kernel), on Docker
+   319	Desktop (the in-VM gid is what counts), and on Colima / lima / etc.
+   320	(same).
+
+exec
+/bin/zsh -lc 'git diff --no-ext-diff -- docs/plans/eden-phase-10d-followup-a-container-isolation.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+codex
+**Findings**
+
+- Medium: The plan still has one leftover contradiction on `EDEN_DOCKER_GID` detection. Section D.6 now correctly chooses the probe-from-inside method ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:287>)), and the risks section is consistent with that ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:596>)), but the implementation surface still says `setup-experiment.sh` will resolve `EDEN_DOCKER_GID` “via `stat`” ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:431>)). That should be updated to the same probe-from-inside approach or the plan remains ambiguous on Docker Desktop/macOS.
+
+- Medium: The per-task implementer/evaluator timeout path is still not explicitly wired to the SIGKILL cleanup callback. The API section makes `post_kill_callback` a spawn-time property on `Subprocess` ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:143>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:377>)), and the planner implementation note says both the `post_kill_callback` and cleanup callback are registered ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:388>)). But the implementer/evaluator note mentions only the cleanup callback ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:396>)). Those are the roles that already call `terminate()` on task deadline expiry, so the plan should explicitly say they register both callbacks as well; otherwise the original orphan-container risk can reappear on timeout.
+
+**Assessment**
+
+This is very close. The mount strategy, cidfile discipline, socket-permission model, and concrete Docker-backed test coverage are now in much better shape.
+
+I would still make the two revisions above before implementation. After that, I’d consider the plan ready.
+2026-04-28T23:30:53.516146Z ERROR codex_core::session: failed to record rollout items: thread 019dd664-cf48-79e2-9d9c-709b8545a8cb not found
+tokens used
+155,223

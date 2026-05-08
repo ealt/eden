@@ -1,0 +1,1705 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019ddb44-a74d-7d61-ba5b-d3d21aad35e4
+--------
+user
+I've revised the plan based on your round-0 findings. Summary of changes:
+1. Auth: switched to plain HTTP (matches existing reference soft-isolation posture; Gitea is in-network only). Added explicit eden-user-create-with-password step + idempotent password update on re-run. Documented the soft-boundary widening alongside DooD §7.
+2. Integrator rollback: now an explicit four-step ladder: local create_ref → remote push_ref → store.integrate_trial → on store failure, remote delete_ref + local delete_ref. Added GitRepo.delete_remote_ref as a fourth new operation. Trial.integrated emits AFTER step 3 (committed-and-published).
+3. Crash recovery: startup-time reconciliation walks BOTH work/* AND trial/* local refs and prunes orphans (those without remote backing). Added per-operation read-before-write/read-before-display fetch policy for long-lived clones (orchestrator + web-ui).
+4. Tests: replaced argv-only credential test with a real http.server roundtrip via the helper script. Added explicit Integrator.integrate() failure-mode tests (push race, store failure post-push, compensating-delete failure). Smoke now asserts via git ls-remote against the actual Gitea remote.
+5. Sequencing: committed to option (a). setup-experiment now brings Gitea up + provisions before printing operator next-steps. Added new §F-T 'Cutover blast-radius inventory' with concrete file counts.
+
+Please re-review.
+codex
+Re-reviewing the revised plan against the same invariants, with focus on whether the previously-missing pieces are now specified in the actual implementation path. I’m reading the updated plan text and cross-checking it against the existing integrator, worker, web-ui, and setup-experiment seams.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-b-gitea-remote.md | sed -n '1,420p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Phase 10d follow-up B — Gitea as the workers' git remote
+     2	
+     3	## Context
+     4	
+     5	Chunks 10b/10c shipped a Compose stack where Gitea runs but is
+     6	idle. Workers (orchestrator's integrator + the implementer host
+     7	across both subprocess-mode wrappers) all read and write through
+     8	the **shared `eden-bare-repo` named volume**. That works for a
+     9	single-host reference deployment but doesn't reflect the
+    10	multi-host topology spec chapter 06 contemplates: each worker
+    11	should own a private working copy and exchange refs with a
+    12	**central git remote** that's the sole source of truth.
+    13	
+    14	This sub-chunk closes that delta. Workers stop touching the shared
+    15	bare-repo volume; they `git fetch` / `git push` against Gitea over
+    16	HTTPS instead. The orchestrator's integrator does the same for
+    17	`trial/*` promotion. setup-experiment provisions Gitea (admin,
+    18	HTTPS-Basic credentials, repo creation, seed push).
+    19	
+    20	Direction confirmed with the user before drafting:
+    21	
+    22	- **A. Full cutover** — no shared bare-repo fallback. Cleaner
+    23	  blast radius; the volume gets removed.
+    24	- **B. HTTPS Basic auth** via per-experiment credential helper —
+    25	  matches the existing reference soft-isolation posture.
+    26	- **C. Extend `eden_git.GitRepo` with a remote-aware variant** —
+    27	  `GitRepo` itself stays additive; existing `create_ref` and
+    28	  related local ops keep working for in-process tests, plus a
+    29	  new `push_ref` and `fetch_ref` (and a few helpers) on top.
+    30	
+    31	## Design
+    32	
+    33	### D.1 Topology after cutover
+    34	
+    35	Before:
+    36	
+    37	```
+    38	            ┌──────────────────────┐
+    39	            │  eden-bare-repo vol  │ ←── orchestrator/integrator
+    40	            │  (shared, writable)  │ ←── implementer-host
+    41	            └──────────────────────┘ ←── evaluator-host (read-only)
+    42	```
+    43	
+    44	After:
+    45	
+    46	```
+    47	                    ┌─────────────┐
+    48	                    │   Gitea     │
+    49	                    │   HTTPS     │   <─── source of truth
+    50	                    └─────────────┘
+    51	                  fetch │ ▲ push
+    52	            ┌───────────┘ │ └───────────┐
+    53	       ┌────▼────┐  ┌─────▼────┐  ┌─────▼────┐
+    54	       │ implem. │  │ integ.   │  │ eval.    │
+    55	       │ (clone) │  │ (clone)  │  │ (clone)  │
+    56	       └─────────┘  └──────────┘  └──────────┘
+    57	```
+    58	
+    59	Each role-host container holds a **private clone** under
+    60	`/var/lib/eden/repo` (still bind-mounted for persistence, but the
+    61	volume is per-service, not shared). The clone is initialized at
+    62	host startup from Gitea: clean state on first boot, recovered
+    63	on restart.
+    64	
+    65	### D.2 `eden_git.GitRepo` extensions
+    66	
+    67	Three new public methods (all dispatch through the existing
+    68	`subprocess.run(["git", ...])` plumbing — no shellouts to a new
+    69	binary, no new dependency):
+    70	
+    71	- `clone_from(*, url: str, dest: Path, credential_helper: str | None) -> GitRepo`
+    72	  — `git clone --bare` (for the integrator) or `git clone`
+    73	  (for implementer/evaluator). When `credential_helper` is set,
+    74	  threads it through `git -c credential.helper=<…>` so HTTPS
+    75	  Basic creds don't have to land in `~/.git-credentials`.
+    76	- `push_ref(ref: str, expected_old_sha: str | None) -> None` —
+    77	  `git push origin <ref>` with `--force-with-lease=<ref>:<sha>`
+    78	  when `expected_old_sha` is supplied. Maps daemon-side rejections
+    79	  to the same `RefRefused` exception `create_ref` raises today,
+    80	  so call sites stay structurally identical.
+    81	- `fetch_ref(ref: str) -> str | None` — `git fetch origin
+    82	  <ref>:<ref>` with `--prune=false`; returns the fetched SHA.
+    83	  Used by the integrator to re-read `work/*` and `trial/*` it
+    84	  doesn't have locally.
+    85	
+    86	`create_ref` / `update_ref` / `delete_ref` stay on the local repo;
+    87	the integrator and implementer call `push_ref` immediately after
+    88	the local ref-write to publish. This keeps the existing local
+    89	discipline (CAS via zero-oid on create, expected-old-sha on update)
+    90	intact, and adds publication as a strictly-additive step.
+    91	
+    92	### D.3 Auth flow — HTTP Basic via per-experiment credential helper
+    93	
+    94	The reference Gitea is exposed on plain HTTP inside the compose
+    95	network (no TLS). That matches the existing soft-isolation
+    96	posture documented in §7 of
+    97	[`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md):
+    98	the reference deployment trades isolation for operational
+    99	simplicity, and a hardened deployment substitutes a TLS-fronted
+   100	Gitea behind the same `git://` URL. We document this caveat
+   101	alongside the existing DooD soft boundary; the secret-handling
+   102	boundary widens by exactly one channel (now the eden user's
+   103	Gitea password is also visible to anyone with daemon access).
+   104	
+   105	setup-experiment.sh, after starting Gitea + waiting for healthy:
+   106	
+   107	1. Generate a per-experiment password `GITEA_REMOTE_PASSWORD`
+   108	   (32 hex bytes; same shape as other reference secrets).
+   109	2. Provision the eden user (idempotent — first checks via
+   110	   `gitea admin user list`):
+   111	
+   112	   ```bash
+   113	   docker compose exec -T gitea gitea admin user create \
+   114	       --username eden \
+   115	       --password "${GITEA_REMOTE_PASSWORD}" \
+   116	       --email eden@invalid \
+   117	       --admin
+   118	   ```
+   119	
+   120	   Re-running with a different password updates the existing
+   121	   user (`gitea admin user change-password`) so re-runs of
+   122	   setup-experiment with new env files don't desync.
+   123	3. Generate a per-experiment access token (used only by
+   124	   setup-experiment for repo creation, NOT by workers; workers
+   125	   use Basic auth):
+   126	
+   127	   ```bash
+   128	   curl -fsS -u "eden:${GITEA_REMOTE_PASSWORD}" \
+   129	       -X POST http://localhost:${GITEA_HOST_PORT}/api/v1/users/eden/tokens \
+   130	       -d '{"name":"setup","scopes":["write:repository"]}'
+   131	   ```
+   132	4. Create the repo `eden/<EXPERIMENT_ID>.git` via
+   133	   `POST /api/v1/user/repos` (idempotent — handle 409).
+   134	5. Write the **credential-helper script** to a host-side path
+   135	   `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/credential-helper.sh`,
+   136	   substituting the password into a template. The script:
+   137	
+   138	   ```sh
+   139	   #!/bin/sh
+   140	   case "$1" in
+   141	     get)
+   142	       cat <<EOF
+   143	   username=eden
+   144	   password=__GITEA_REMOTE_PASSWORD__
+   145	   EOF
+   146	       ;;
+   147	   esac
+   148	   ```
+   149	
+   150	   Mode 0755. Mounted read-only into every worker host container
+   151	   at `/etc/eden/credential-helper.sh`.
+   152	
+   153	Workers configure git to use the helper via repo-local config
+   154	written at clone time (NOT global config — keeps the secret out
+   155	of the worker's home dir):
+   156	
+   157	```bash
+   158	git -c credential.helper="/etc/eden/credential-helper.sh" \
+   159	    -c http.extraHeader="" \
+   160	    clone http://gitea:3000/eden/<EXPERIMENT_ID>.git \
+   161	    /var/lib/eden/repo
+   162	git -C /var/lib/eden/repo config credential.helper \
+   163	    "/etc/eden/credential-helper.sh"
+   164	```
+   165	
+   166	Subsequent `git fetch` / `git push` invocations from that repo
+   167	pick up the helper automatically. The chunk-10d-followup-A
+   168	soft-boundary caveat (§7) is extended to cover this: the eden
+   169	user's Gitea password is on the host filesystem at
+   170	`${COMPOSE_DIR}/.gitea-creds-<id>/credential-helper.sh` mode 0755,
+   171	readable by anyone on the host and (under DooD) by any
+   172	concurrent `*_command`.
+   173	
+   174	### D.4 setup-experiment.sh sequencing — option (a) selected
+   175	
+   176	`setup-experiment.sh` already runs the bare-repo seed step
+   177	synchronously via `compose run --rm --no-deps eden-repo-init`.
+   178	This sub-chunk extends that pattern: setup-experiment now also
+   179	**brings Gitea up** synchronously (before the rest of the stack)
+   180	and provisions it before writing the operator's next-step
+   181	instructions. No deferred work in the operator's own
+   182	`compose up`.
+   183	
+   184	Concrete sequence (replaces the current "seed bare repo, write
+   185	.env, exit" flow):
+   186	
+   187	1. Generate / preserve all secrets (existing flow), including
+   188	   the new `GITEA_REMOTE_PASSWORD`.
+   189	2. Write the partial `.env` (without `EDEN_BASE_COMMIT_SHA` —
+   190	   filled in step 7).
+   191	3. **Bring Gitea up:**
+   192	   `docker compose --env-file "$ENV_FILE" up -d --wait gitea`
+   193	   (uses Gitea's existing healthcheck).
+   194	4. **Provision Gitea** per §D.3 (eden user, access token, repo).
+   195	5. **Write the credential-helper script** under
+   196	   `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/`.
+   197	6. **Seed + push** via `compose run --rm --no-deps eden-repo-init`,
+   198	   which now takes a `--push-to <url>` flag and pushes the seed
+   199	   commit to Gitea after creating the local bare repo.
+   200	7. Capture the seed SHA, replace the `.env` placeholder
+   201	   (existing pattern).
+   202	8. Print operator next-steps (existing — `compose up -d --wait`).
+   203	
+   204	The shared `eden-bare-repo` volume is removed from `compose.yaml`
+   205	in the cutover; `eden-repo-init` keeps writing to it locally only
+   206	so the seed-and-push step is self-contained, then the volume is
+   207	discarded by the existing `compose down -v` posture.
+   208	
+   209	**Idempotency:** all four provisioning operations (user create,
+   210	token mint, repo create, ref push) are idempotent. Re-running
+   211	setup-experiment with the same env file is a no-op for Gitea
+   212	state. Re-running with a NEW env file (different
+   213	`GITEA_REMOTE_PASSWORD`) updates the user's password via
+   214	`gitea admin user change-password`.
+   215	
+   216	### D.5 Per-service compose changes
+   217	
+   218	Each worker host gains:
+   219	
+   220	- A *private* named volume for its clone:
+   221	  `eden-implementer-repo`, `eden-evaluator-repo`,
+   222	  `eden-orchestrator-repo` (no shared `eden-bare-repo` anymore).
+   223	- The credential-helper script bind-mounted RO at
+   224	  `/etc/eden/credential-helper.sh`.
+   225	- A new `--gitea-url <https-url>` CLI flag on each host.
+   226	
+   227	Each worker host's startup logic:
+   228	
+   229	1. If `/var/lib/eden/repo` is not yet a git repo, `clone_from`
+   230	   from Gitea (use `--bare` for the orchestrator/integrator and
+   231	   the web-ui's implementer module; non-bare otherwise so
+   232	   worktrees can be added).
+   233	2. Otherwise, `git fetch origin '+refs/heads/*:refs/heads/*'` to
+   234	   refresh ALL local heads to match remote.
+   235	3. **Reconcile local-only refs.** Walk every local `work/*` and
+   236	   `trial/*` ref. For each, `git ls-remote origin <ref>` —
+   237	   if the remote doesn't have it, `delete_ref` locally (it's an
+   238	   orphan from a pre-crash run). This handles both the
+   239	   §D.7-implementer crash window AND the §D.6-step-4a-failed
+   240	   case from a prior integrator crash.
+   241	4. Enter the normal poll loop.
+   242	
+   243	**Per-operation freshness for long-lived clones.** The orchestrator
+   244	loop and the web-ui's admin/implementer modules are long-lived;
+   245	remote refs change under their feet between the startup fetch and
+   246	the next operation. Two policies:
+   247	
+   248	- **Read-before-write:** any service path that's about to write a
+   249	  ref via `repo.create_ref` first runs `git fetch origin <ref>`
+   250	  to refresh its local view. This keeps `--force-with-lease`'s
+   251	  expected-old-sha aligned with the remote.
+   252	- **Read-before-display:** the web-ui admin work-refs GC page
+   253	  (chunk-9e) runs `git fetch origin '+refs/heads/work/*:refs/heads/work/*'`
+   254	  on every GET so the operator's view matches the remote. The
+   255	  per-op fetch budget here is one HTTP roundtrip + a small ref
+   256	  list, well under 100ms in the reference deployment.
+   257	
+   258	Failure mode: if Gitea is unreachable at startup, the host exits
+   259	non-zero and compose's `restart: on-failure` (existing posture)
+   260	retries until healthy. Mid-operation Gitea unreachability raises
+   261	`GitTransportError` from `eden_git`; service-level handlers catch
+   262	it and submit `status="error"` for the in-flight task.
+   263	
+   264	### D.6 Integrator (orchestrator) changes — explicit four-step flow
+   265	
+   266	The current integrator at
+   267	[`reference/packages/eden-git/src/eden_git/integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py)
+   268	does (chapter 6 §3.2 / §3.4):
+   269	
+   270	```text
+   271	1. local create_ref     # CAS-guarded
+   272	2. store.integrate_trial
+   273	3. on store failure: local delete_ref (compensating)
+   274	```
+   275	
+   276	After this sub-chunk, the flow becomes a literal four-step
+   277	publish-then-commit-then-rollback ladder:
+   278	
+   279	```text
+   280	1. local create_ref           # CAS-guarded local
+   281	2. remote push_ref            # publish to Gitea (force-with-lease)
+   282	3. store.integrate_trial      # writes trial_commit_sha + trial.integrated
+   283	4. on store failure:
+   284	   4a. remote delete_ref      # compensating remote delete
+   285	   4b. local delete_ref       # compensating local delete
+   286	```
+   287	
+   288	The new step 4a — **remote compensating delete** — is load-bearing
+   289	under chapter 6 §3.4: leaving `trial/*` on Gitea without the
+   290	matching `trial.integrated` event in the store is a protocol
+   291	violation, because the next replay of the event log would see a
+   292	ref that no event explains. We MUST run step 4a before step 4b
+   293	so a re-tried integration sees a clean Gitea slate.
+   294	
+   295	`GitRepo` therefore needs a fourth new method:
+   296	
+   297	- `delete_remote_ref(ref: str, expected_sha: str | None) -> None`
+   298	  — `git push origin --delete <ref>` with a CAS guard via
+   299	  `--force-with-lease=<ref>:<sha>`. If the remote ref has
+   300	  diverged (someone else integrated a different commit on the
+   301	  same trial id), raise `RefRefused` and let the caller decide.
+   302	
+   303	If step 2 fails (push rejected — concurrent integrator won
+   304	the race), only step 1's local ref exists; we run step 4b
+   305	(local delete) and skip 4a. If step 3 fails after step 2
+   306	succeeded, we run BOTH 4a and 4b. If step 4a itself fails (Gitea
+   307	unreachable), we log a critical-severity diagnostic and leave
+   308	the local ref in place — the next integrator startup's
+   309	fetch-and-reconcile pass (§D.7c below) cleans up.
+   310	
+   311	**Important:** `trial.integrated` is emitted by step 3 (atomically
+   312	with the trial's `trial_commit_sha` write). Step 1 alone does NOT
+   313	emit anything — only the *committed-and-published* ref counts.
+   314	This preserves chapter 5 §2.2's "events emit only on committed
+   315	state changes."
+   316	
+   317	### D.7 Implementer changes
+   318	
+   319	The implementer's existing flow per [chapter 03 §3.2](../../spec/v0/03-roles.md):
+   320	
+   321	```text
+   322	1. Store.create_trial(status="starting")
+   323	2. git worktree add <path> <parent>
+   324	3. <user command writes commits>
+   325	4. repo.create_ref("refs/heads/work/<…>", commit_sha)
+   326	5. Store.submit(...)
+   327	```
+   328	
+   329	becomes:
+   330	
+   331	```text
+   332	1. Store.create_trial(status="starting")
+   333	2. git worktree add <path> <parent>      # local
+   334	3. <user command writes commits>
+   335	4. repo.create_ref("refs/heads/work/<…>")  # local
+   336	5. repo.push_ref("refs/heads/work/<…>")    # publish to Gitea
+   337	6. Store.submit(...)
+   338	```
+   339	
+   340	The submit's `commit_sha` is the local SHA that we just pushed.
+   341	If push fails, we roll back the local ref (so the trial doesn't
+   342	linger as a "starting" trial that references a non-published
+   343	commit) and submit `status="error"`.
+   344	
+   345	### D.8 Evaluator changes
+   346	
+   347	The evaluator currently does `git worktree add <path>
+   348	<trial.commit_sha>`. After cutover it must `git fetch
+   349	origin trial/<id>` first so the local clone has the trial
+   350	commit. The chapter-3 contract is unchanged; only the local
+   351	fetch is added. Evaluator never pushes.
+   352	
+   353	### D.9 What does NOT change
+   354	
+   355	- Spec chapters 03 / 04 / 06 — the role contracts and integrator
+   356	  invariants are silent on whether the workers share storage or
+   357	  use a remote. Both fit the existing prose.
+   358	- The `Store` Protocol — entirely separate from git.
+   359	- The chunk-10d JSON-line `*_command` protocol — unchanged.
+   360	- `eden-runtime:dev` and the experiment image — git is already
+   361	  installed.
+   362	
+   363	## Implementation surface
+   364	
+   365	Files added:
+   366	
+   367	- `reference/scripts/setup-experiment/provision-gitea.sh` —
+   368	  idempotent Gitea admin + repo + token provisioning. Called
+   369	  by `setup-experiment.sh` when Gitea is healthy.
+   370	- `reference/scripts/setup-experiment/credential-helper.sh.tmpl`
+   371	  — template; setup-experiment substitutes the password and
+   372	  writes it under `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/`.
+   373	- `reference/packages/eden-git/tests/test_remote_ops.py` —
+   374	  unit-level tests for `clone_from` / `push_ref` / `fetch_ref`
+   375	  against a local file URL (no Gitea daemon needed for unit).
+   376	- `reference/compose/healthcheck/smoke-gitea-remote.sh` (or
+   377	  extend an existing smoke — TBD at impl time, see §F).
+   378	
+   379	Files modified:
+   380	
+   381	- `reference/packages/eden-git/src/eden_git/repo.py` — three
+   382	  new methods + a small `RemoteConfig` helper.
+   383	- `reference/packages/eden-git/src/eden_git/integrator.py` —
+   384	  fold `push_ref` into the integrator flow per §D.6.
+   385	- `reference/services/_common/src/eden_service_common/repo_init.py`
+   386	  — `--push-to <url>` flag for the seed step.
+   387	- `reference/services/{implementer,evaluator}/src/eden_*_host/`
+   388	  — startup-time clone/fetch + per-task fetch/push as per §D.7,
+   389	  §D.8.
+   390	- `reference/services/orchestrator/src/eden_orchestrator/cli.py`
+   391	  — same startup-time clone/fetch.
+   392	- `reference/services/web-ui/src/eden_web_ui/cli.py` — same
+   393	  (the chunk-9c web-ui implementer module also writes refs).
+   394	- `reference/scripts/setup-experiment/setup-experiment.sh` —
+   395	  call provision-gitea after healthcheck; wire env vars; mount
+   396	  credential helper.
+   397	- `reference/compose/compose.yaml` — add per-service repo
+   398	  volumes; remove `eden-bare-repo` from the shared services
+   399	  list; mount credential-helper into each worker.
+   400	- `reference/compose/compose.subprocess.yaml` and
+   401	  `compose.docker-exec.yaml` — propagate the credential-helper
+   402	  mount to spawned children **only** in the implementer/evaluator
+   403	  case where the user `*_command` may run git commands. (For
+   404	  the planner, no git ops happen in the user command.)
+   405	- Test fixtures: see §F-T (Cutover blast-radius inventory)
+   406	  below for the concrete file count.
+   407	
+   408	## Tests
+   409	
+   410	Three tiers, each driving the **public entry point** the
+   411	production code calls (per the AGENTS.md "test the actual code
+   412	path" pitfall) — no helper-only assertions.
+   413	
+   414	### Unit (`reference/packages/eden-git/tests/test_remote_ops.py`)
+   415	
+   416	Run against a local file-URL git remote (`file:///path/to/bare`)
+   417	— no Gitea daemon, no http. Sufficient because git's transport
+   418	abstraction makes file:// share the same ref-update code path as
+   419	http:// for our four new operations.
+   420	
+
+exec
+/bin/zsh -lc "rg -n \"credential helper|delete_remote_ref|delete remote|remote delete|trial.integrated|ls-remote|blast-radius|option \\(a\\)|http.server|read-before-write|read-before-display|prune orphans|HTTP Basic|plain HTTP|password update|Gitea up|provision\" docs/plans/eden-phase-10d-followup-b-gitea-remote.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+17:`trial/*` promotion. setup-experiment provisions Gitea (admin,
+24:- **B. HTTPS Basic auth** via per-experiment credential helper —
+92:### D.3 Auth flow — HTTP Basic via per-experiment credential helper
+94:The reference Gitea is exposed on plain HTTP inside the compose
+120:   Re-running with a different password updates the existing
+174:### D.4 setup-experiment.sh sequencing — option (a) selected
+179:**brings Gitea up** synchronously (before the rest of the stack)
+180:and provisions it before writing the operator's next-step
+191:3. **Bring Gitea up:**
+209:**Idempotency:** all four provisioning operations (user create,
+236:   `trial/*` ref. For each, `git ls-remote origin <ref>` —
+282:3. store.integrate_trial      # writes trial_commit_sha + trial.integrated
+284:   4a. remote delete_ref      # compensating remote delete
+290:matching `trial.integrated` event in the store is a protocol
+297:- `delete_remote_ref(ref: str, expected_sha: str | None) -> None`
+311:**Important:** `trial.integrated` is emitted by step 3 (atomically
+367:- `reference/scripts/setup-experiment/provision-gitea.sh` —
+368:  idempotent Gitea admin + repo + token provisioning. Called
+395:  call provision-gitea after healthcheck; wire env vars; mount
+396:  credential helper.
+405:- Test fixtures: see §F-T (Cutover blast-radius inventory)
+428:- `GitRepo.delete_remote_ref(ref, expected_sha)` succeeds when
+435:  via Python's `http.server` + the helper script generated by
+448:  `trial.integrated` event all present.
+451:  rolled back, remote untouched, no `trial.integrated` event.
+455:  no `trial.integrated` event.
+457:  `delete_remote_ref` to raise `GitTransportError`. Assert:
+469:git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EXPERIMENT_ID}.git \
+473:≥3 (matches the existing `trial.integrated` event count
+478:work-refs GC page driving a `delete_remote_ref` against Gitea
+500:up a tiny http server in-process so the auth round-trip is real,
+503:## F-T. Cutover blast-radius inventory
+607:  AND ensure no `trial.integrated` event was emitted for that
+608:  trial yet. The fix is structural: emit `trial.integrated`
+615:- **Setup-experiment ordering.** Gitea provisioning depends on
+618:  itself before provisioning, or (b) defers provisioning until
+619:  the operator runs `compose up`. Cleanest: option (a) — the
+
+codex
+The revised sections address most of the earlier structural gaps, but I’m checking for internal contradictions now: old HTTPS wording, remote delete semantics, and whether the blast-radius section matches the actual test surface in the repo.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-b-gitea-remote.md | sed -n '420,660p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   420	
+   421	- `GitRepo.clone_from(url=file://…, dest=…)` produces a working
+   422	  clone at `dest`.
+   423	- `GitRepo.push_ref(ref, expected_old_sha)` succeeds when the
+   424	  remote ref matches `expected_old_sha`; raises `RefRefused`
+   425	  when the remote has diverged.
+   426	- `GitRepo.fetch_ref(ref)` updates the local ref to match
+   427	  remote; returns the fetched SHA.
+   428	- `GitRepo.delete_remote_ref(ref, expected_sha)` succeeds when
+   429	  the remote matches; raises `RefRefused` on divergence; raises
+   430	  `RefRefused` (not silent success) when the remote ref is
+   431	  already gone (idempotency caveat: callers handle the
+   432	  already-gone case explicitly because chapter-6 §3.4
+   433	  rollback semantics distinguish "no-op" from "won the race").
+   434	- Credential-helper roundtrip: drive a real `git http-backend`
+   435	  via Python's `http.server` + the helper script generated by
+   436	  setup-experiment's template. Assert that without the helper
+   437	  the push fails 401, with the helper the push succeeds. This
+   438	  proves the helper is wired correctly end-to-end at unit
+   439	  speed; argv-only inspection would NOT.
+   440	
+   441	### Integration (`reference/packages/eden-git/tests/test_remote_integrator.py`)
+   442	
+   443	Drive the **public `Integrator.integrate(trial_id)` method**
+   444	through each failure mode, using a real local-file remote +
+   445	a monkey-patched Store:
+   446	
+   447	- Happy path: `integrate` succeeds → local ref + remote ref +
+   448	  `trial.integrated` event all present.
+   449	- Push race (step 2 fails): set the remote `trial/<id>` ref to
+   450	  a different SHA before `integrate` runs. Assert: local ref
+   451	  rolled back, remote untouched, no `trial.integrated` event.
+   452	- Store failure after push (step 3 fails): monkeypatch
+   453	  `Store.integrate_trial` to raise `DispatchError`. Assert:
+   454	  remote ref deleted (compensating push), local ref deleted,
+   455	  no `trial.integrated` event.
+   456	- Compensating delete itself fails (step 4a fails): monkeypatch
+   457	  `delete_remote_ref` to raise `GitTransportError`. Assert:
+   458	  the integrator logs a critical-severity diagnostic AND the
+   459	  next-startup reconciliation pass (§D.7c) cleans up the orphan
+   460	  on Gitea. (Tested via a second `Integrator()` instance after
+   461	  the first's failure.)
+   462	
+   463	### Smoke (`compose-smoke-*` extensions)
+   464	
+   465	Extends both `compose-smoke` and `compose-smoke-subprocess(-docker)`
+   466	with one new post-quiescence assertion:
+   467	
+   468	```bash
+   469	git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EXPERIMENT_ID}.git \
+   470	    | grep -E 'refs/heads/trial/' | wc -l
+   471	```
+   472	
+   473	≥3 (matches the existing `trial.integrated` event count
+   474	assertion). Proves the remote actually has the integrated trial
+   475	refs, not just the local clones.
+   476	
+   477	A new `compose-e2e` extension covers the chunk-9e admin
+   478	work-refs GC page driving a `delete_remote_ref` against Gitea
+   479	(asserts the remote ref is gone after the operator-clicks-delete
+   480	flow).
+   481	
+   482	### `eden_git` testing scope: file-URL is enough
+   483	
+   484	The new unit + integration tests use `file://` URLs for the
+   485	remote. We do NOT add a `pytest.mark.gitea` marker. Justification:
+   486	
+   487	- `git push --force-with-lease` and `git push --delete` use the
+   488	  same wire protocol over file:// as over http://. The CAS
+   489	  semantics are server-side (the remote's reflog), not transport-
+   490	  dependent.
+   491	- HTTP transport is exercised end-to-end by the smoke scripts
+   492	  against the real Gitea container — that's where any
+   493	  http-specific issue (auth, redirect, content-length, etc.)
+   494	  surfaces.
+   495	- A separate marker would split coverage and require yet another
+   496	  CI service container (Gitea), with no proof that http exposes
+   497	  bugs the file:// path doesn't already catch.
+   498	
+   499	The credential-helper unit test is the one exception: it spins
+   500	up a tiny http server in-process so the auth round-trip is real,
+   501	no external dependency needed.
+   502	
+   503	## F-T. Cutover blast-radius inventory
+   504	
+   505	Concrete file count from `grep -l "init_bare\|GitRepo.*bare"`
+   506	across the repo (excluding READMEs):
+   507	
+   508	- **`reference/packages/eden-git/tests/`** (4 files —
+   509	  `test_repo_branches_worktrees.py`, `test_repo_plumbing.py`,
+   510	  `test_environment_isolation.py`, `conftest.py`) — these
+   511	  exercise local-only `GitRepo` ops; they STAY on local-only
+   512	  paths because the new ops are tested separately in
+   513	  `test_remote_ops.py`.
+   514	- **`reference/packages/eden-git/src/eden_git/repo.py`** — the
+   515	  module under modification. New methods land here.
+   516	- **Service tests that init a local bare repo:**
+   517	  - `reference/services/_common/tests/test_worktrees.py` — pure
+   518	    worktree behavior, no remote — STAYS local.
+   519	  - `reference/services/planner/tests/test_planner_subprocess.py`
+   520	    — planner doesn't touch git refs (only proposals) — STAYS
+   521	    local.
+   522	  - `reference/services/implementer/tests/test_implementer_subprocess.py`,
+   523	    `test_host.py` — these exercise `_run_subprocess` and
+   524	    submit flows. The implementer change in §D.7 adds a single
+   525	    `repo.push_ref` call after the existing `repo.create_ref`.
+   526	    Tests gain a tiny bare-repo `init --bare` as the local
+   527	    "remote" + assertion that `push_ref` was invoked. Net
+   528	    change per test: ~5 lines.
+   529	  - `reference/services/evaluator/tests/test_evaluator_subprocess.py`
+   530	    — evaluator gains `fetch_ref` before worktree-add. Same
+   531	    pattern: local "remote" + one-line assertion.
+   532	  - `reference/services/orchestrator/tests/test_e2e.py`,
+   533	    `test_subprocess_e2e.py` — these are the heavyweights.
+   534	    Each spawns the full 5-process stack against an in-memory /
+   535	    sqlite store. Adding a real local file-URL remote here
+   536	    means: setUp creates `tmp_path/remote.git` as a bare repo,
+   537	    the test's `seed_bare_repo` pushes to it, each spawned
+   538	    service gets `--gitea-url file://<path>` instead of
+   539	    `--repo-path <path>`. Net change per file: ~30 lines, no
+   540	    new processes. Both tests are already `pytest.mark.e2e`,
+   541	    skipped on Windows.
+   542	
+   543	**Total file changes for the cutover:** ~14 source files modified
+   544	+ ~3 new files. Tests that don't touch a real bare repo
+   545	(everything in `_common/tests/test_common.py`, web-ui non-flow
+   546	tests, contracts tests, storage tests) are entirely unaffected.
+   547	
+   548	The "most existing tests can stay on local-only paths" claim is
+   549	defensible because the **only** tests that previously exercised
+   550	the implementer/evaluator/integrator flows did so against an
+   551	in-process bare repo on disk; switching that bare repo to be
+   552	the remote (via `file://`) and adding a tiny local working clone
+   553	is mechanical — no new architecture surfaces.
+   554	
+   555	## Verification
+   556	
+   557	1. `uv run pytest -q` — full suite + new unit tests pass.
+   558	2. `uv run pytest -m gitea` — integration tests pass (locally,
+   559	   when a test Gitea is up).
+   560	3. `bash healthcheck/smoke.sh` — host-mode smoke passes,
+   561	   workers actually push to Gitea, integrator promotes via
+   562	   Gitea.
+   563	4. `bash healthcheck/smoke-subprocess.sh` and
+   564	   `bash healthcheck/smoke-subprocess-docker.sh` — same.
+   565	5. `bash healthcheck/e2e.sh` — Web UI flow still passes; Web UI
+   566	   implementer module now pushes to Gitea on submit.
+   567	6. CI: all 11 jobs green; no new required jobs in this chunk
+   568	   (per the chunk-10d / 10e posture).
+   569	
+   570	## Out of scope
+   571	
+   572	- **Gitea HA / multi-instance.** Single Gitea, single bare-repo
+   573	  there. HA is a Phase 12+ control-plane concern.
+   574	- **SSH instead of HTTPS.** SSH key management is its own
+   575	  follow-up; HTTPS Basic is enough for the reference.
+   576	- **Gitea webhooks.** The orchestrator polls `Store` directly
+   577	  for state; Gitea doesn't need to notify anyone.
+   578	- **Multi-experiment Gitea.** This chunk creates ONE repo per
+   579	  experiment, named after the experiment id. Coexistence of
+   580	  multiple experiments on the same Gitea works naturally
+   581	  (different repo names) but no special wiring.
+   582	- **Branch protection inside Gitea.** The reference relies on
+   583	  CAS at the git layer (`--force-with-lease`); a Gitea-side
+   584	  branch protection rule would be redundant.
+   585	- **Updating branch protection on the GitHub side** to require
+   586	  any new CI job. Same posture as 10c/10d/10e/follow-up-A.
+   587	
+   588	## Risks
+   589	
+   590	- **Local ref + remote push atomicity.** Between the local
+   591	  `create_ref` and the remote `push_ref` there's a window
+   592	  where the local ref exists but the remote doesn't. If the
+   593	  worker host crashes there, the next startup's `git fetch`
+   594	  gives it a stale local view. Mitigation: at startup, after
+   595	  fetch, trim any local-only `work/*` refs that aren't on
+   596	  the remote (they're orphans by definition under the
+   597	  full-cutover model).
+   598	- **Credential exposure.** The credential-helper script lives
+   599	  on the host filesystem with mode 0644 (mounted ro into the
+   600	  worker). Any process on the host with read access can grab
+   601	  the password. This matches the existing soft-isolation
+   602	  posture; we document it in §7 of the reference-binding
+   603	  chapter alongside the existing DooD caveats.
+   604	- **Push-rejected during integration.** If two integrators race
+   605	  and one's push gets `RefRefused`, the loser must run the
+   606	  chapter-6 §3.4 compensating delete on its local trial ref
+   607	  AND ensure no `trial.integrated` event was emitted for that
+   608	  trial yet. The fix is structural: emit `trial.integrated`
+   609	  only AFTER the push succeeds; before then, only the local
+   610	  ref exists and the loser's compensating delete is local-only.
+   611	- **Gitea downtime.** Workers exit on Gitea-unreachable; compose
+   612	  restarts them. Brief Gitea downtime should not lose data
+   613	  (workers just re-fetch when Gitea comes back). Long downtime
+   614	  is operator concern.
+   615	- **Setup-experiment ordering.** Gitea provisioning depends on
+   616	  Gitea being healthy, which depends on `compose up`. So
+   617	  `setup-experiment.sh` either (a) runs `compose up gitea --wait`
+   618	  itself before provisioning, or (b) defers provisioning until
+   619	  the operator runs `compose up`. Cleanest: option (a) — the
+   620	  script already runs blob-init synchronously, this is the
+   621	  same shape.
+
+exec
+/bin/zsh -lc "rg -n \"delete_remote_ref|force-with-lease|push origin --delete|ls-remote origin|GitTransportError|read-before-display|read-before-write|credential.helper=|http.server|file://|blast-radius\" reference/packages/eden-git/src/eden_git/repo.py reference/packages/eden-git/tests reference/services reference/compose reference/scripts -g '"'!**/.venv/**'"'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-git/tests/test_integrator.py:91:            artifacts_uri="file:///tmp/artifacts/",
+reference/services/implementer/tests/test_implementer_subprocess.py:40:        artifacts_uri=f"file://{artifacts_dir.resolve()}",
+reference/services/implementer/tests/test_host.py:113:        artifacts_uri="file:///tmp/artifacts",
+reference/services/implementer/src/eden_implementer_host/subprocess_mode.py:446:    if not isinstance(uri, str) or not uri.startswith("file://"):
+reference/services/implementer/src/eden_implementer_host/subprocess_mode.py:448:    path = uri.removeprefix("file://")
+reference/services/web-ui/src/eden_web_ui/routes/_helpers.py:78:    - Only ``file://`` URIs are eligible. Any other scheme returns
+reference/services/planner/src/eden_planner_host/subprocess_mode.py:287:    """Write rationale.md and return its file:// URI."""
+reference/services/web-ui/tests/test_evaluator_e2e.py:175:                artifacts_uri=f"file://{artifact_path.resolve()}",
+reference/services/evaluator/tests/test_evaluator_subprocess.py:41:        artifacts_uri="file:///tmp/x",
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:242:            assert uri.startswith("file://")
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:243:            assert Path(uri.removeprefix("file://")).read_text(
+reference/services/_common/tests/test_common.py:105:        artifacts_uri="file:///tmp/artifacts",
+reference/services/_common/src/eden_service_common/scripted.py:64:                    artifacts_uri=f"file:///tmp/artifacts/{task.task_id}/{i}",
+reference/services/_common/src/eden_service_common/scripted.py:145:                artifacts_uri=f"file:///tmp/artifacts/{trial.trial_id}",
+reference/services/_common/src/eden_service_common/scripted.py:153:            artifacts_uri=f"file:///tmp/artifacts/{trial.trial_id}",
+reference/services/web-ui/tests/conftest.py:181:    Builds a `file://` artifacts_uri inside ``artifacts_dir`` so the
+reference/services/web-ui/tests/conftest.py:191:        artifacts_uri = f"file://{path.resolve()}"
+reference/services/web-ui/tests/conftest.py:241:        artifacts_uri = f"file://{path.resolve()}"
+reference/services/web-ui/tests/conftest.py:274:        trial_kwargs["artifacts_uri"] = f"file://{trial_artifact_path.resolve()}"
+reference/services/web-ui/tests/test_evaluator_security.py:294:        uri = f"file://{target.resolve()}"
+reference/services/web-ui/tests/test_evaluator_security.py:302:        uri = f"file://{outside.resolve()}"
+reference/services/web-ui/tests/test_evaluator_security.py:311:        uri = f"file://{traversal}"
+reference/services/web-ui/tests/test_evaluator_security.py:323:        uri = f"file://{target.resolve()}"
+reference/services/web-ui/tests/test_evaluator_security.py:329:        uri = f"file://{sub.resolve()}"
+reference/services/web-ui/tests/test_implementer_e2e.py:219:                artifacts_uri=f"file://{artifact_path.resolve()}",
+reference/services/web-ui/tests/test_implementer_security.py:7:- Artifact-rendering trust boundary (per §A.1): only ``file://``
+reference/services/web-ui/tests/test_implementer_security.py:173:        proposal = self._make_proposal(f"file://{target.resolve()}")
+reference/services/web-ui/tests/test_implementer_security.py:181:        proposal = self._make_proposal(f"file://{outside.resolve()}")
+reference/services/web-ui/tests/test_implementer_security.py:187:        # file://<artifacts_dir>/../escape — resolved escapes
+reference/services/web-ui/tests/test_implementer_security.py:192:        proposal = self._make_proposal(f"file://{traversal}")
+reference/services/web-ui/tests/test_implementer_security.py:202:        proposal = self._make_proposal(f"file://{target.resolve()}")
+reference/services/web-ui/tests/test_implementer_security.py:208:        proposal = self._make_proposal(f"file://{sub.resolve()}")
+reference/services/web-ui/README.md:91:   tmp-and-rename), build a `file://` URI, then call
+reference/services/web-ui/README.md:182:starts with `file://`, (b) the resolved path is contained within
+reference/services/web-ui/README.md:270:surface. The envelope is identical: `file://` only, contained in
+reference/services/web-ui/src/eden_web_ui/artifacts.py:5:and emit a ``file://`` URI. Phase 10 swaps in real blob storage.
+reference/services/web-ui/src/eden_web_ui/artifacts.py:22:    """Write ``markdown`` to ``artifacts_dir/<proposal_id>.md`` and return a file:// URI.
+reference/services/web-ui/src/eden_web_ui/templates/implementer_claim.html:40:    <p class="rationale-note">rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html:72:    <p class="rationale-note">proposal rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+reference/services/web-ui/src/eden_web_ui/templates/admin_trial_detail.html:33:    <p><em>(not inlined: scheme not file://, outside artifacts-dir, or &gt; 1 MiB)</em></p>
+
+codex
+I found a couple of internal inconsistencies in the revised prose, and I’m verifying one git-behavior assumption against git’s own help because it directly affects whether the credential-helper and remote-delete design will actually work.
+exec
+/bin/zsh -lc "git help credentials 2>/dev/null | col -b | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "git help config 2>/dev/null | col -b | rg -n \"credential\\.helper|If the helper string begins|git credential-\" -C 2" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'git help push 2>/dev/null | col -b | rg -n "force-with-lease|--delete" -C 3' in /Users/ericalt/Documents/eden
+ succeeded in 224ms:
+GITCREDENTIALS(7)		  Git Manual		     GITCREDENTIALS(7)
+
+NAME
+       gitcredentials - Providing usernames and passwords to Git
+
+SYNOPSIS
+       git config credential.https://example.com.username myusername
+       git config credential.helper "$helper $options"
+
+DESCRIPTION
+       Git will sometimes need credentials from the user in order to perform
+       operations; for example, it may need to ask for a username and password
+       in order to access a remote repository over HTTP. Some remotes accept a
+       personal access token or OAuth access token as a password. This manual
+       describes the mechanisms Git uses to request these credentials, as well
+       as some features to avoid inputting these credentials repeatedly.
+
+REQUESTING CREDENTIALS
+       Without any credential helpers defined, Git will try the following
+       strategies to ask the user for usernames and passwords:
+
+	1. If the GIT_ASKPASS environment variable is set, the program
+	   specified by the variable is invoked. A suitable prompt is provided
+	   to the program on the command line, and the user’s input is read
+	   from its standard output.
+
+	2. Otherwise, if the core.askPass configuration variable is set, its
+	   value is used as above.
+
+	3. Otherwise, if the SSH_ASKPASS environment variable is set, its
+	   value is used as above.
+
+	4. Otherwise, the user is prompted on the terminal.
+
+AVOIDING REPETITION
+       It can be cumbersome to input the same credentials over and over. Git
+       provides two methods to reduce this annoyance:
+
+	1. Static configuration of usernames for a given authentication
+	   context.
+
+	2. Credential helpers to cache or store passwords, or to interact with
+	   a system password wallet or keychain.
+
+       The first is simple and appropriate if you do not have secure storage
+       available for a password. It is generally configured by adding this to
+       your config:
+
+	   [credential "https://example.com"]
+		   username = me
+
+       Credential helpers, on the other hand, are external programs from which
+       Git can request both usernames and passwords; they typically interface
+       with secure storage provided by the OS or other programs.
+       Alternatively, a credential-generating helper might generate
+       credentials for certain servers via some API.
+
+       To use a helper, you must first select one to use (see below for a
+       list).
+
+       You may also have third-party helpers installed; search for
+       credential-* in the output of git help -a, and consult the
+       documentation of individual helpers. Once you have selected a helper,
+       you can tell Git to use it by putting its name into the
+       credential.helper variable.
+
+	1. Find a helper.
+
+	       $ git help -a | grep credential-
+	       credential-foo
+
+	2. Read its description.
+
+	       $ git help credential-foo
+
+	3. Tell Git to use it.
+
+	       $ git config --global credential.helper foo
+
+   Available helpers
+       Git currently includes the following helpers:
+
+       cache
+	   Cache credentials in memory for a short period of time. See git-
+	   credential-cache(1) for details.
+
+       store
+	   Store credentials indefinitely on disk. See git-credential-store(1)
+	   for details.
+
+       Popular helpers with secure persistent storage include:
+
+       •   git-credential-libsecret (Linux)
+
+       •   git-credential-osxkeychain (macOS)
+
+       •   git-credential-wincred (Windows)
+
+       •   Git Credential Manager[1] (cross platform, included in Git for
+	   Windows)
+
+       The community maintains a comprehensive list of Git credential helpers
+       at https://git-scm.com/doc/credential-helpers.
+
+   OAuth
+       An alternative to inputting passwords or personal access tokens is to
+       use an OAuth credential helper. Initial authentication opens a browser
+       window to the host. Subsequent authentication happens in the
+       background. Many popular Git hosts support OAuth.
+
+       Popular helpers with OAuth support include:
+
+       •   Git Credential Manager[1] (cross platform, included in Git for
+	   Windows)
+
+       •   git-credential-oauth[2] (cross platform, included in many Linux
+	   distributions)
+
+CREDENTIAL CONTEXTS
+       Git considers each credential to have a context defined by a URL. This
+       context is used to look up context-specific configuration, and is
+       passed to any helpers, which may use it as an index into secure
+       storage.
+
+       For instance, imagine we are accessing https://example.com/foo.git.
+       When Git looks into a config file to see if a section matches this
+       context, it will consider the two a match if the context is a
+       more-specific subset of the pattern in the config file. For example, if
+       you have this in your config file:
+
+	   [credential "https://example.com"]
+		   username = foo
+
+       then we will match: both protocols are the same, both hosts are the
+       same, and the "pattern" URL does not care about the path component at
+       all. However, this context would not match:
+
+	   [credential "https://kernel.org"]
+		   username = foo
+
+       because the hostnames differ. Nor would it match foo.example.com; Git
+       compares hostnames exactly, without considering whether two hosts are
+       part of the same domain. Likewise, a config entry for
+       http://example.com would not match: Git compares the protocols exactly.
+       However, you may use wildcards in the domain name and other pattern
+       matching techniques as with the http.<URL>.* options.
+
+       If the "pattern" URL does include a path component, then this too must
+       match exactly: the context https://example.com/bar/baz.git will match a
+       config entry for https://example.com/bar/baz.git (in addition to
+       matching the config entry for https://example.com) but will not match a
+       config entry for https://example.com/bar.
+
+CONFIGURATION OPTIONS
+       Options for a credential context can be configured either in
+       credential.* (which applies to all credentials), or credential.<URL>.*,
+       where <URL> matches the context as described above.
+
+       The following options are available in either location:
+
+       helper
+	   The name of an external credential helper, and any associated
+	   options. If the helper name is not an absolute path, then the
+	   string git credential- is prepended. The resulting string is
+	   executed by the shell (so, for example, setting this to foo
+	   --option=bar will execute git credential-foo --option=bar via the
+	   shell. See the manual of specific helpers for examples of their
+	   use.
+
+	   If there are multiple instances of the credential.helper
+	   configuration variable, each helper will be tried in turn, and may
+	   provide a username, password, or nothing. Once Git has acquired
+	   both a username and a non-expired password, no more helpers will be
+	   tried.
+
+	   If credential.helper is configured to the empty string, this resets
+	   the helper list to empty (so you may override a helper set by a
+	   lower-priority config file by configuring the empty-string helper,
+	   followed by whatever set of helpers you would like).
+
+       username
+	   A default username, if one is not provided in the URL.
+
+       useHttpPath
+	   By default, Git does not consider the "path" component of an http
+	   URL to be worth matching via external helpers. This means that a
+	   credential stored for https://example.com/foo.git will also be used
+	   for https://example.com/bar.git. If you do want to distinguish
+	   these cases, set this option to true.
+
+CUSTOM HELPERS
+       You can write your own custom helpers to interface with any system in
+       which you keep credentials.
+
+       Credential helpers are programs executed by Git to fetch or save
+       credentials from and to long-term storage (where "long-term" is simply
+       longer than a single Git process; e.g., credentials may be stored
+       in-memory for a few minutes, or indefinitely on disk).
+
+       Each helper is specified by a single string in the configuration
+       variable credential.helper (and others, see git-config(1)). The string
+       is transformed by Git into a command to be executed using these rules:
+
+	1. If the helper string begins with "!", it is considered a shell
+	   snippet, and everything after the "!" becomes the command.
+
+	2. Otherwise, if the helper string begins with an absolute path, the
+	   verbatim helper string becomes the command.
+
+	3. Otherwise, the string "git credential-" is prepended to the helper
+	   string, and the result becomes the command.
+
+       The resulting command then has an "operation" argument appended to it
+       (see below for details), and the result is executed by the shell.
+
+       Here are some example specifications:
+
+	   # run "git credential-foo"
+	   [credential]
+		   helper = foo
+
+ succeeded in 212ms:
+5-
+6-SYNOPSIS
+7-       git push [--all | --branches | --mirror | --tags] [--follow-tags] [--atomic] [-n | --dry-run] [--receive-pack=<git-receive-pack>]
+8:		  [--repo=<repository>] [-f | --force] [-d | --delete] [--prune] [-q | --quiet] [-v | --verbose]
+9-		  [-u | --set-upstream] [-o <string> | --push-option=<string>]
+10-		  [--[no-]signed|--signed=(true|false|if-asked)]
+11:		  [--force-with-lease[=<refname>[:<expect>]] [--force-if-includes]]
+12-		  [--no-verify] [<repository> [<refspec>...]]
+13-
+14-DESCRIPTION
+--
+163-	   ref will be tab-separated and sent to stdout instead of stderr. The
+164-	   full symbolic names of the refs will be given.
+165-
+166:       -d, --delete
+167-	   All listed refs are deleted from the remote repository. This is the
+168-	   same as prefixing all refs with a colon.
+169-
+--
+207-	   useful when pushing to a remote repository over ssh, and you do not
+208-	   have the program in a directory on the default $PATH.
+209-
+210:       --[no-]force-with-lease, --force-with-lease=<refname>,
+211:       --force-with-lease=<refname>:<expect>
+212-	   Usually, "git push" refuses to update a remote ref that is not an
+213-	   ancestor of the local ref used to overwrite it.
+214-
+--
+230-	   on the ref without explicitly locking it, and the remote ref is
+231-	   updated only if the "lease" is still valid.
+232-
+233:	   --force-with-lease alone, without specifying the details, will
+234-	   protect all remote refs that are going to be updated by requiring
+235-	   their current value to be the same as the remote-tracking branch we
+236-	   have for them.
+237-
+238:	   --force-with-lease=<refname>, without specifying the expected
+239-	   value, will protect the named ref (alone), if it is going to be
+240-	   updated, by requiring its current value to be the same as the
+241-	   remote-tracking branch we have for it.
+242-
+243:	   --force-with-lease=<refname>:<expect> will protect the named ref
+244-	   (alone), if it is going to be updated, by requiring its current
+245-	   value to be the same as the specified value <expect> (which is
+246-	   allowed to be different from the remote-tracking branch we have for
+--
+249-	   then the named ref must not already exist.
+250-
+251-	   Note that all forms other than
+252:	   --force-with-lease=<refname>:<expect> that specifies the expected
+253-	   current value of the ref explicitly are still experimental and
+254-	   their semantics may change as we gain experience with this feature.
+255-
+256:	   "--no-force-with-lease" will cancel all the previous
+257:	   --force-with-lease on the command line.
+258-
+259-	   A general note on safety: supplying this option without an expected
+260:	   value, i.e. as --force-with-lease or --force-with-lease=<refname>
+261-	   interacts very badly with anything that implicitly runs git fetch
+262-	   on the remote to be pushed to in the background, e.g.  git fetch
+263-	   origin on your repository in a cronjob.
+--
+279-	   Now when the background process runs git fetch origin the
+280-	   references on origin-push won’t be updated, and thus commands like:
+281-
+282:	       git push --force-with-lease origin-push
+283-
+284-	   Will fail unless you manually run git fetch origin-push. This
+285-	   method is of course entirely defeated by something that runs git
+--
+289-	       git fetch	      # update 'master' from remote
+290-	       git tag base master    # mark our base point
+291-	       git rebase -i master   # rewrite some commits
+292:	       git push --force-with-lease=master:base master:master
+293-
+294-	   I.e. create a base tag for versions of the upstream code that
+295-	   you’ve seen and are willing to overwrite, then rewrite history, and
+--
+298-	   been updated to in the background.
+299-
+300-	   Alternatively, specifying --force-if-includes as an ancillary
+301:	   option along with --force-with-lease[=<refname>] (i.e., without
+302-	   saying what exact commit the ref on the remote side must be
+303-	   pointing at, or which refs on the remote side are being protected)
+304-	   at the time of "push" will verify if updates from the
+--
+308-       -f, --force
+309-	   Usually, the command refuses to update a remote ref that is not an
+310-	   ancestor of the local ref used to overwrite it. Also, when
+311:	   --force-with-lease option is used, the command refuses to update a
+312-	   remote ref whose current value does not match what is expected.
+313-
+314-	   This flag disables these checks, and can cause the remote
+--
+333-	   that any updates from the remote have been incorporated locally by
+334-	   rejecting the forced update if that is not the case.
+335-
+336:	   If the option is passed without specifying --force-with-lease, or
+337:	   specified along with --force-with-lease=<refname>:<expect>, it is a
+338-	   "no-op".
+339-
+340-	   Specifying --no-force-if-includes disables this behavior.
+
+ succeeded in 236ms:
+2674-	   default is 2048.
+2675-
+2676:       credential.helper
+2677-	   Specify an external helper to be called when a username or password
+2678-	   credential is needed; the helper may consult external storage to
+
+codex
+I’ve found one likely protocol-level bug in the revised worker flow and one recovery path that still looks under-specified. I’m checking one git fetch behavior with a minimal local repro because the plan’s “refresh all local heads” step may fail on non-bare clones.
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '120,160p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   120	
+   121	- The task object (`kind == "evaluate"`, `payload.trial_id == T`).
+   122	- Read access to the trial `T`. The orchestrator MUST ensure `T.status == "starting"` and `T.commit_sha` is set before dispatch.
+   123	- Read access to the git repository at `T.commit_sha` on the worker branch (`T.branch`). Repository location and access are a role-binding concern, as for the implementer (§3.1).
+   124	- Read access to the experiment's `metrics_schema` and `objective`.
+   125	
+   126	### 4.2 Outputs
+   127	
+   128	The evaluator MUST:
+   129	
+   130	1. Produce a `metrics` object whose keys are a subset of the declared `metrics_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §7.2).
+   131	2. Optionally upload supporting artifacts (logs, captured outputs, diagnostic files).
+   132	
+   133	The evaluator MUST NOT modify the worker branch or any protocol-owned mutable state other than the trial fields the submission writes (§4.4) and the task it holds a claim on. In particular, the evaluator MUST NOT write to the trial's `completed_at`, `metrics`, `artifacts_uri`, `description`, or `status` directly; those writes are performed by the orchestrator when the submitted task reaches its terminal state (§4.4, [`04-task-protocol.md`](04-task-protocol.md) §4.3).
+   134	
+   135	### 4.3 Non-interference
+   136	
+   137	The evaluator reads the repository at the trial's worker-branch tip but MUST NOT push, rewrite, or delete that branch, and MUST NOT write to the canonical trial lineage. Any side effects of evaluation (test caches, build outputs, captured logs) MUST NOT be observable through any protocol-owned store, ref, or artifact location except via the evaluator's declared outputs (§4.2).
+   138	
+   139	### 4.4 Submission
+   140	
+   141	The evaluator submits with:
+   142	
+   143	- `trial_id` — the trial it evaluated.
+   144	- `status` — one of:
+   145	  - `"success"` — the trial ran and produced metrics.
+   146	  - `"error"` — the trial could not be evaluated for reasons attributable to the trial's own code (build failure, test failure, etc.). The evaluator MAY still include partial metrics.
+   147	  - `"eval_error"` — the evaluator itself failed for reasons unrelated to the trial's code (infrastructure fault, evaluator bug). While a fresh evaluate task MAY still be created for this trial, the trial's status MUST remain `"starting"`. If the orchestrator's retry policy is exhausted (or the operator abandons evaluation), the orchestrator MUST transition the trial's status to `"eval_error"`, making that status terminal for the trial ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
+   148	- `metrics` — the metrics object described in §4.2. MAY be absent when `status == "eval_error"`.
+   149	- `artifacts_uri` — OPTIONAL. A URI the evaluator uploaded supporting artifacts to.
+   150	
+   151	On a `submitted → completed` or `submitted → failed` transition (per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the orchestrator MUST write the following trial fields atomically with the event:
+   152	
+   153	- `status` — the trial status implied by the submission: `"success"` when the submission's `status == "success"`; `"error"` when the submission's `status == "error"`; unchanged from `"starting"` when the submission's `status == "eval_error"` (see §4.4 above for the terminal-retry case).
+   154	- `metrics` — set to the submission's `metrics` when `status ∈ {"success", "error"}`. When `status == "eval_error"` the orchestrator MUST NOT write `metrics` on the trial; any submission-carried `metrics` is discarded.
+   155	- `artifacts_uri` — set to the submission's `artifacts_uri` when provided and `status ∈ {"success", "error"}`. When `status == "eval_error"` the orchestrator MUST NOT write `artifacts_uri` on the trial; any submission-carried `artifacts_uri` is discarded. (An evaluator that wishes to retain diagnostic artifacts from a failed attempt MAY reference them in the `task.failed` event for that evaluate task; that channel is defined in [`05-event-protocol.md`](05-event-protocol.md).)
+   156	- `completed_at` — set to the time of the terminal trial transition, i.e. written exactly once, when the trial's status leaves `"starting"` (either on a `"success"`/`"error"` submission, or on the retry-exhausted `"eval_error"` transition). Intermediate `eval_error` submissions MUST NOT advance `completed_at`.
+   157	
+   158	On the retry-exhausted `"eval_error"` terminal transition itself, the orchestrator MUST NOT graft metrics or artifacts from any prior `eval_error` submission onto the trial; the trial's `metrics` and `artifacts_uri` fields remain unset. This keeps the trial object canonical: a trial either carries the outputs of a successful or code-level-failed evaluation, or it carries nothing.
+   159	
+   160	Resubmission is idempotent under the same rules as §3.4: identical `trial_id` + `status` + `metrics` + `artifacts_uri` MUST be accepted; inconsistent resubmission MUST be rejected.
+
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d); cd "$tmp"; git init --bare remote.git >/dev/null; git init src >/dev/null; cd src; git config user.name a; git config user.email a@a; echo hi>f; git add f; git commit -m init >/dev/null; git branch -M main; git remote add origin "$tmp/remote.git"; git push origin main >/dev/null; cd "$tmp"; git clone "$tmp/remote.git" clone >/dev/null; cd clone; git fetch origin '"'+refs/heads/*:refs/heads/*' ; rc="'$?; echo RC=$rc' in /Users/ericalt/Documents/eden
+ succeeded in 189ms:
+error: 1Password: Could not connect to socket. Is the agent running?
+
+fatal: failed to write commit object
+error: src refspec main does not match any
+error: failed to push some refs to '/var/folders/65/ss4wp3492vx_cnzv1gn995y80000gn/T/tmp.wnURVqdnhr/remote.git'
+Cloning into 'clone'...
+warning: You appear to have cloned an empty repository.
+done.
+RC=0
+
+codex
+The evaluator status contract confirms one service-level error path in the plan is still too broad. I’m re-running the git fetch check with a clean env, because if the non-bare clone refresh step is invalid that affects every implementer/evaluator host startup.
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d)
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+git init --bare "$tmp/remote.git" >/dev/null
+git init "$tmp/src" >/dev/null
+cd "$tmp/src"
+git config user.name a
+git config user.email a@a
+echo hi>f
+git add f
+git commit -m init >/dev/null
+git branch -M main
+git remote add origin "$tmp/remote.git"
+git push origin main >/dev/null
+cd "$tmp"
+git clone "$tmp/remote.git" clone >/dev/null
+cd clone
+set +e
+git fetch origin '"'+refs/heads/*:refs/heads/*'
+rc="'$?
+set -e
+echo RC=$rc
+' in /Users/ericalt/Documents/eden
+ succeeded in 189ms:
+To /var/folders/65/ss4wp3492vx_cnzv1gn995y80000gn/T/tmp.2hiJJMNAJ8/remote.git
+ * [new branch]      main -> main
+Cloning into 'clone'...
+done.
+warning: remote HEAD refers to nonexistent ref, unable to checkout
+From /var/folders/65/ss4wp3492vx_cnzv1gn995y80000gn/T/tmp.2hiJJMNAJ8/remote
+ * [new branch]      main       -> main
+RC=0
+
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d)
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+git init --bare "$tmp/remote.git" >/dev/null
+git init "$tmp/src" >/dev/null
+cd "$tmp/src"
+git config user.name a
+git config user.email a@a
+echo hi>f
+git add f
+git commit -m init >/dev/null
+git branch -M main
+git remote add origin "$tmp/remote.git"
+git push origin main >/dev/null
+git --git-dir="$tmp/remote.git" symbolic-ref HEAD refs/heads/main
+cd "$tmp"
+git clone "$tmp/remote.git" clone >/dev/null
+cd clone
+git branch --show-current
+set +e
+git fetch origin '"'+refs/heads/*:refs/heads/*'
+rc="'$?
+set -e
+echo RC=$rc
+' in /Users/ericalt/Documents/eden
+ succeeded in 283ms:
+To /var/folders/65/ss4wp3492vx_cnzv1gn995y80000gn/T/tmp.mgcI6lKTw0/remote.git
+ * [new branch]      main -> main
+Cloning into 'clone'...
+done.
+main
+fatal: refusing to fetch into branch 'refs/heads/main' checked out at '/private/var/folders/65/ss4wp3492vx_cnzv1gn995y80000gn/T/tmp.mgcI6lKTw0/clone'
+RC=128
+
+codex
+The git check exposed a concrete issue: the proposed `git fetch origin '+refs/heads/*:refs/heads/*'` refresh step fails on a normal clone with `main` checked out. I’m checking the current worktree helper now, because the plan may be changing bare/non-bare topology unnecessarily.
+exec
+/bin/zsh -lc "nl -ba reference/services/_common/src/eden_service_common/worktrees.py | sed -n '1,180p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/implementer/src/eden_implementer_host/cli.py | sed -n '1,180p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""CLI for the implementer worker host."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import argparse
+     6	import socket
+     7	from pathlib import Path
+     8	
+     9	from eden_service_common import (
+    10	    StopFlag,
+    11	    add_common_arguments,
+    12	    add_exec_arguments,
+    13	    configure_logging,
+    14	    get_logger,
+    15	    install_stop_handlers,
+    16	    load_experiment_config,
+    17	    parse_env_file,
+    18	    parse_log_level,
+    19	    reap_orphaned_containers,
+    20	    require_command,
+    21	    resolve_exec_args,
+    22	    wait_for_task_store,
+    23	)
+    24	from eden_wire import StoreClient
+    25	
+    26	from .host import run_implementer_loop
+    27	from .subprocess_mode import (
+    28	    ImplementerSubprocessConfig,
+    29	    run_implementer_subprocess_loop,
+    30	)
+    31	
+    32	
+    33	def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    34	    """Parse CLI args for the implementer host."""
+    35	    parser = argparse.ArgumentParser(
+    36	        prog="eden-implementer-host",
+    37	        description="EDEN reference implementer worker host.",
+    38	    )
+    39	    add_common_arguments(parser)
+    40	    parser.add_argument("--worker-id", required=True)
+    41	    parser.add_argument(
+    42	        "--mode",
+    43	        choices=["scripted", "subprocess"],
+    44	        default="scripted",
+    45	    )
+    46	    parser.add_argument(
+    47	        "--repo-path",
+    48	        required=True,
+    49	        help="Bare git repo the implementer writes work/* refs into.",
+    50	    )
+    51	    parser.add_argument(
+    52	        "--fail-every",
+    53	        type=int,
+    54	        default=None,
+    55	        help="If set, fail every Nth task (1-indexed). Default: never fail.",
+    56	    )
+    57	    # Subprocess-mode flags.
+    58	    parser.add_argument("--experiment-config", default=None)
+    59	    parser.add_argument("--experiment-dir", default=None)
+    60	    parser.add_argument(
+    61	        "--worktrees-dir",
+    62	        default="/var/lib/eden/worktrees",
+    63	        help="Root directory for per-task worktrees (host subdir created underneath).",
+    64	    )
+    65	    parser.add_argument("--implement-task-deadline", type=float, default=600.0)
+    66	    parser.add_argument("--implement-shutdown-deadline", type=float, default=10.0)
+    67	    parser.add_argument("--implement-env-file", default=None)
+    68	    parser.add_argument("--poll-interval", type=float, default=0.1)
+    69	    parser.add_argument("--startup-timeout", type=float, default=30.0)
+    70	    add_exec_arguments(parser)
+    71	    args = parser.parse_args(argv)
+    72	    if args.mode == "subprocess":
+    73	        for attr in ("experiment_config", "experiment_dir"):
+    74	            if getattr(args, attr) is None:
+    75	                parser.error(
+    76	                    f"--{attr.replace('_', '-')} is required in --mode subprocess"
+    77	                )
+    78	    return args
+    79	
+    80	
+    81	def main(argv: list[str] | None = None) -> int:
+    82	    """Entry point for ``python -m eden_implementer_host``."""
+    83	    args = parse_args(argv)
+    84	    configure_logging(
+    85	        service="implementer-host",
+    86	        experiment_id=args.experiment_id,
+    87	        level=parse_log_level(args.log_level),
+    88	    )
+    89	    log = get_logger(__name__)
+    90	    stop = StopFlag()
+    91	    install_stop_handlers(stop)
+    92	    log.info("waiting_for_task_store")
+    93	    wait_for_task_store(
+    94	        base_url=args.task_store_url,
+    95	        experiment_id=args.experiment_id,
+    96	        token=args.shared_token,
+    97	        deadline_seconds=args.startup_timeout,
+    98	    )
+    99	    log.info("starting", worker_id=args.worker_id, repo=args.repo_path, mode=args.mode)
+   100	    with StoreClient(
+   101	        args.task_store_url,
+   102	        args.experiment_id,
+   103	        token=args.shared_token,
+   104	    ) as client:
+   105	        if args.mode == "scripted":
+   106	            run_implementer_loop(
+   107	                store=client,
+   108	                worker_id=args.worker_id,
+   109	                repo_path=args.repo_path,
+   110	                fail_every=args.fail_every,
+   111	                poll_interval=args.poll_interval,
+   112	                stop=stop,
+   113	            )
+   114	        else:
+   115	            config = load_experiment_config(args.experiment_config)
+   116	            command = require_command(config, "implement_command")
+   117	            env = {}
+   118	            if args.implement_env_file:
+   119	                env.update(parse_env_file(args.implement_env_file))
+   120	            try:
+   121	                exec_args = resolve_exec_args(args)
+   122	            except ValueError as exc:
+   123	                raise SystemExit(f"eden-implementer-host: {exc}") from exc
+   124	            host_id = socket.gethostname()
+   125	            if exec_args.mode == "docker":
+   126	                reap_orphaned_containers(role="implementer", host=host_id)
+   127	            sub_config = ImplementerSubprocessConfig(
+   128	                command=command,
+   129	                experiment_dir=Path(args.experiment_dir).resolve(),
+   130	                env=env,
+   131	                repo_path=Path(args.repo_path).resolve(),
+   132	                worktrees_root=Path(args.worktrees_dir),
+   133	                task_deadline=args.implement_task_deadline,
+   134	                shutdown_deadline=args.implement_shutdown_deadline,
+   135	                exec_mode=exec_args.mode,
+   136	                exec_image=exec_args.image,
+   137	                exec_volumes=tuple(exec_args.volumes),
+   138	                exec_binds=tuple(exec_args.binds),
+   139	                cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
+   140	                host_id=host_id,
+   141	            )
+   142	            run_implementer_subprocess_loop(
+   143	                store=client,
+   144	                worker_id=args.worker_id,
+   145	                config=sub_config,
+   146	                poll_interval=args.poll_interval,
+   147	                stop=stop,
+   148	            )
+   149	    log.info("implementer host exited")
+   150	    return 0
+   151	
+   152	
+   153	if __name__ == "__main__":  # pragma: no cover
+   154	    raise SystemExit(main())
+
+ succeeded in 0ms:
+     1	"""Per-task git worktrees for the subprocess worker hosts.
+     2	
+     3	The implementer / evaluator hosts (Phase 10d subprocess mode) run a
+     4	user-supplied command inside a per-task worktree of the bare repo.
+     5	The host owns the worktree lifecycle: create at a known commit,
+     6	hand cwd to the subprocess, read HEAD afterward, then remove. A
+     7	crashed host leaves orphaned worktrees behind; ``sweep_host_worktrees``
+     8	runs at startup to remove them in a path-scoped manner that never
+     9	touches another host's subdir.
+    10	"""
+    11	
+    12	from __future__ import annotations
+    13	
+    14	import logging
+    15	from pathlib import Path
+    16	
+    17	from eden_git import GitRepo
+    18	from eden_git.errors import GitError
+    19	
+    20	log = logging.getLogger(__name__)
+    21	
+    22	
+    23	class TaskWorktree:
+    24	    """Ephemeral detached worktree of a bare repo, scoped to one task.
+    25	
+    26	    The worktree path is ``<base_dir>/<task_id>/`` — callers compose
+    27	    ``base_dir`` from a host-private prefix (typically
+    28	    ``<worktrees_root>/<container_hostname>``) so cross-host sweeps
+    29	    cannot collide.
+    30	    """
+    31	
+    32	    def __init__(
+    33	        self, *, repo_path: Path | str, base_dir: Path | str, task_id: str
+    34	    ) -> None:
+    35	        self._repo = GitRepo(repo_path)
+    36	        self._path = Path(base_dir) / task_id
+    37	        self._task_id = task_id
+    38	
+    39	    @property
+    40	    def path(self) -> Path:
+    41	        """Absolute filesystem path of the worktree directory."""
+    42	        return self._path
+    43	
+    44	    def create(self, *, commit: str) -> Path:
+    45	        """Create the worktree as a detached checkout of ``commit``."""
+    46	        self._path.parent.mkdir(parents=True, exist_ok=True)
+    47	        return self._repo.add_worktree(self._path, start_point=commit, detach=True)
+    48	
+    49	    def head_sha(self) -> str:
+    50	        """Return the worktree's current HEAD commit SHA."""
+    51	        return GitRepo(self._path).rev_parse("HEAD")
+    52	
+    53	    def remove(self) -> None:
+    54	        """Remove the worktree (best effort).
+    55	
+    56	        Failures are logged but not raised; callers run inside a
+    57	        submit handler whose primary job is to terminalize the task,
+    58	        not to scrub the filesystem.
+    59	        """
+    60	        try:
+    61	            self._repo.remove_worktree(self._path, force=True)
+    62	        except GitError as exc:
+    63	            log.warning(
+    64	                "worktree_remove_failed",
+    65	                extra={"task_id": self._task_id, "path": str(self._path), "error": str(exc)},
+    66	            )
+    67	
+    68	
+    69	def sweep_host_worktrees(*, repo_path: Path | str, host_subdir: Path | str) -> None:
+    70	    """Remove every leftover worktree directory under ``host_subdir``.
+    71	
+    72	    Walks the immediate children of ``host_subdir``; for each child
+    73	    that has a ``.git`` file (the marker git writes when a worktree
+    74	    is registered against a bare repo), runs
+    75	    ``git worktree remove --force <path>`` against the bare repo.
+    76	
+    77	    Path-scoped: never touches admin entries outside ``host_subdir``,
+    78	    so a sweep in one host can't race a ``git worktree add`` in
+    79	    another host whose ``host_subdir`` differs.
+    80	
+    81	    Malformed leftovers (a directory under ``host_subdir`` without a
+    82	    ``.git`` marker, or one whose marker doesn't point at the bare
+    83	    repo's worktrees admin dir) are logged at warning and left in
+    84	    place for operator cleanup. The sweep deliberately does not
+    85	    delete arbitrary on-disk content.
+    86	    """
+    87	    host_root = Path(host_subdir)
+    88	    if not host_root.is_dir():
+    89	        return
+    90	    repo = GitRepo(repo_path)
+    91	    bare_admin = Path(repo_path).resolve() / "worktrees"
+    92	    for child in sorted(host_root.iterdir()):
+    93	        if not child.is_dir():
+    94	            continue
+    95	        marker = child / ".git"
+    96	        if not marker.is_file():
+    97	            log.warning(
+    98	                "worktree_sweep_skipped_no_marker",
+    99	                extra={"path": str(child)},
+   100	            )
+   101	            continue
+   102	        try:
+   103	            marker_text = marker.read_text(encoding="utf-8").strip()
+   104	        except OSError:
+   105	            log.warning(
+   106	                "worktree_sweep_skipped_unreadable_marker",
+   107	                extra={"path": str(child)},
+   108	            )
+   109	            continue
+   110	        # Marker shape: ``gitdir: /abs/path/to/bare/worktrees/<name>``
+   111	        # (a relative form is also legal for non-bare main repos but
+   112	        # not what `add_worktree` produces against a bare repo).
+   113	        marker_target = marker_text.removeprefix("gitdir:").strip()
+   114	        if not marker_target:
+   115	            log.warning(
+   116	                "worktree_sweep_skipped_empty_marker_target",
+   117	                extra={"path": str(child)},
+   118	            )
+   119	            continue
+   120	        try:
+   121	            target_resolved = Path(marker_target).resolve()
+   122	        except (OSError, RuntimeError):
+   123	            log.warning(
+   124	                "worktree_sweep_skipped_bad_marker_target",
+   125	                extra={"path": str(child), "marker": marker_target},
+   126	            )
+   127	            continue
+   128	        try:
+   129	            target_resolved.relative_to(bare_admin)
+   130	        except ValueError:
+   131	            log.warning(
+   132	                "worktree_sweep_skipped_marker_outside_repo",
+   133	                extra={"path": str(child), "marker_target": str(target_resolved)},
+   134	            )
+   135	            continue
+   136	        try:
+   137	            repo.remove_worktree(child, force=True)
+   138	        except GitError as exc:
+   139	            log.warning(
+   140	                "worktree_sweep_remove_failed",
+   141	                extra={"path": str(child), "error": str(exc)},
+   142	            )
+
+exec
+/bin/zsh -lc "nl -ba reference/services/evaluator/src/eden_evaluator_host/cli.py | sed -n '1,180p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""CLI for the evaluator worker host."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import argparse
+     6	import socket
+     7	from pathlib import Path
+     8	
+     9	from eden_service_common import (
+    10	    StopFlag,
+    11	    add_common_arguments,
+    12	    add_exec_arguments,
+    13	    configure_logging,
+    14	    get_logger,
+    15	    install_stop_handlers,
+    16	    parse_env_file,
+    17	    parse_log_level,
+    18	    reap_orphaned_containers,
+    19	    require_command,
+    20	    resolve_exec_args,
+    21	    wait_for_task_store,
+    22	)
+    23	from eden_task_store_server import load_experiment_config
+    24	from eden_wire import StoreClient
+    25	
+    26	from .host import run_evaluator_loop
+    27	from .subprocess_mode import (
+    28	    EvaluatorSubprocessConfig,
+    29	    run_evaluator_subprocess_loop,
+    30	)
+    31	
+    32	
+    33	def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    34	    """Parse CLI args for the evaluator host."""
+    35	    parser = argparse.ArgumentParser(
+    36	        prog="eden-evaluator-host",
+    37	        description="EDEN reference evaluator worker host.",
+    38	    )
+    39	    add_common_arguments(parser)
+    40	    parser.add_argument("--worker-id", required=True)
+    41	    parser.add_argument(
+    42	        "--mode",
+    43	        choices=["scripted", "subprocess"],
+    44	        default="scripted",
+    45	    )
+    46	    parser.add_argument(
+    47	        "--experiment-config",
+    48	        required=True,
+    49	        help=(
+    50	            "YAML experiment-config file — read for metrics_schema so "
+    51	            "emitted metrics validate."
+    52	        ),
+    53	    )
+    54	    parser.add_argument(
+    55	        "--fail-every",
+    56	        type=int,
+    57	        default=None,
+    58	    )
+    59	    # Subprocess-mode flags.
+    60	    parser.add_argument("--experiment-dir", default=None)
+    61	    parser.add_argument(
+    62	        "--repo-path",
+    63	        default=None,
+    64	        help="Bare git repo (required in --mode subprocess).",
+    65	    )
+    66	    parser.add_argument(
+    67	        "--worktrees-dir",
+    68	        default="/var/lib/eden/worktrees",
+    69	    )
+    70	    parser.add_argument("--evaluate-task-deadline", type=float, default=300.0)
+    71	    parser.add_argument("--evaluate-shutdown-deadline", type=float, default=10.0)
+    72	    parser.add_argument("--evaluate-env-file", default=None)
+    73	    parser.add_argument("--poll-interval", type=float, default=0.1)
+    74	    parser.add_argument("--startup-timeout", type=float, default=30.0)
+    75	    add_exec_arguments(parser)
+    76	    args = parser.parse_args(argv)
+    77	    if args.mode == "subprocess":
+    78	        for attr in ("experiment_dir", "repo_path"):
+    79	            if getattr(args, attr) is None:
+    80	                parser.error(
+    81	                    f"--{attr.replace('_', '-')} is required in --mode subprocess"
+    82	                )
+    83	    return args
+    84	
+    85	
+    86	def main(argv: list[str] | None = None) -> int:
+    87	    """Entry point for ``python -m eden_evaluator_host``."""
+    88	    args = parse_args(argv)
+    89	    configure_logging(
+    90	        service="evaluator-host",
+    91	        experiment_id=args.experiment_id,
+    92	        level=parse_log_level(args.log_level),
+    93	    )
+    94	    log = get_logger(__name__)
+    95	    stop = StopFlag()
+    96	    install_stop_handlers(stop)
+    97	    log.info("waiting_for_task_store")
+    98	    wait_for_task_store(
+    99	        base_url=args.task_store_url,
+   100	        experiment_id=args.experiment_id,
+   101	        token=args.shared_token,
+   102	        deadline_seconds=args.startup_timeout,
+   103	    )
+   104	    config = load_experiment_config(args.experiment_config)
+   105	    log.info("starting", worker_id=args.worker_id, mode=args.mode)
+   106	    with StoreClient(
+   107	        args.task_store_url,
+   108	        args.experiment_id,
+   109	        token=args.shared_token,
+   110	    ) as client:
+   111	        if args.mode == "scripted":
+   112	            run_evaluator_loop(
+   113	                store=client,
+   114	                worker_id=args.worker_id,
+   115	                metrics_schema=config.metrics_schema,
+   116	                fail_every=args.fail_every,
+   117	                poll_interval=args.poll_interval,
+   118	                stop=stop,
+   119	            )
+   120	        else:
+   121	            command = require_command(config, "evaluate_command")
+   122	            env = {}
+   123	            if args.evaluate_env_file:
+   124	                env.update(parse_env_file(args.evaluate_env_file))
+   125	            try:
+   126	                exec_args = resolve_exec_args(args)
+   127	            except ValueError as exc:
+   128	                raise SystemExit(f"eden-evaluator-host: {exc}") from exc
+   129	            host_id = socket.gethostname()
+   130	            if exec_args.mode == "docker":
+   131	                reap_orphaned_containers(role="evaluator", host=host_id)
+   132	            sub_config = EvaluatorSubprocessConfig(
+   133	                command=command,
+   134	                experiment_dir=Path(args.experiment_dir).resolve(),
+   135	                env=env,
+   136	                repo_path=Path(args.repo_path).resolve(),
+   137	                worktrees_root=Path(args.worktrees_dir),
+   138	                task_deadline=args.evaluate_task_deadline,
+   139	                shutdown_deadline=args.evaluate_shutdown_deadline,
+   140	                exec_mode=exec_args.mode,
+   141	                exec_image=exec_args.image,
+   142	                exec_volumes=tuple(exec_args.volumes),
+   143	                exec_binds=tuple(exec_args.binds),
+   144	                cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
+   145	                host_id=host_id,
+   146	            )
+   147	            run_evaluator_subprocess_loop(
+   148	                store=client,
+   149	                worker_id=args.worker_id,
+   150	                experiment_config=config,
+   151	                config=sub_config,
+   152	                poll_interval=args.poll_interval,
+   153	                stop=stop,
+   154	            )
+   155	    log.info("evaluator host exited")
+   156	    return 0
+   157	
+   158	
+   159	if __name__ == "__main__":  # pragma: no cover
+   160	    raise SystemExit(main())
+
+codex
+**Findings**
+1. The evaluator flow is still pointed at the wrong ref namespace. The revised plan says the evaluator should `git fetch origin trial/<id>` before worktree creation, but evaluation happens before integration; the evaluator must read the worker branch at `trial.branch` / `trial.commit_sha`, not `trial/*`. As written, this breaks chapter 3’s evaluator contract. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:345>) and [spec](</Users/ericalt/Documents/eden/spec/v0/03-roles.md:121>).
+
+2. The proposed non-bare clone topology for implementer/evaluator is incompatible with the current worktree model, and the refresh command in the plan fails on a normal clone with `main` checked out. The plan says “use `--bare` for orchestrator/web-ui; non-bare otherwise so worktrees can be added”, but the existing subprocess hosts explicitly use worktrees of a bare repo, and `TaskWorktree` is documented that way. Separately, the proposed startup refresh `git fetch origin '+refs/heads/*:refs/heads/*'` is not safe for a non-bare checked-out clone. This needs to stay bare for the worker hosts or be redesigned more explicitly. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:227>), [worktrees helper](</Users/ericalt/Documents/eden/reference/services/_common/src/eden_service_common/worktrees.py:23>), [implementer CLI](</Users/ericalt/Documents/eden/reference/services/implementer/src/eden_implementer_host/cli.py:47>), and [evaluator CLI](</Users/ericalt/Documents/eden/reference/services/evaluator/src/eden_evaluator_host/cli.py:62>).
+
+3. The “remote compensating delete failed” recovery path is still not actually specified. The new four-step ladder is the right shape, but when step `4a` fails the plan says the next startup reconciliation cleans it up. The reconciliation it defines only removes local refs that do not exist on the remote; it does not describe how to detect and remove a remotely-published orphan `trial/*` ref whose store-side `trial_commit_sha` / `trial.integrated` never committed. That is exactly the failure mode step `4a` was added to handle, and it still needs a real recovery rule. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:235>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:303>), and [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:456>).
+
+4. The service-level transport-failure mapping is too broad for the evaluator. The plan says mid-operation Gitea unreachability should be caught and submitted as `status="error"` for the in-flight task. That is acceptable for implementer failure handling, but for evaluator infrastructure faults chapter 3 requires `eval_error`, not `error`, so the trial stays `starting`. This needs role-specific handling, not a blanket rule. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:258>) and [spec](</Users/ericalt/Documents/eden/spec/v0/03-roles.md:143>).
+
+5. The document still has several stale contradictions that should be cleaned before implementation so the plan is self-consistent. It still says “HTTPS” in the context and flag naming even after switching to plain HTTP, the verification section still lists `uv run pytest -m gitea` even though the test strategy explicitly says no `pytest.mark.gitea`, and the risks section still carries pre-revision text (`0644`, unresolved option `(a)`, `work/*`-only orphan cleanup). See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:15>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:225>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:484>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:557>), and [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:588>).
+
+**Assessment**
+The revision materially improved the core integrator atomicity story, the auth bootstrap is now much more concrete, and the blast-radius claim is more defensible than in round 0.
+
+It is still not ready to implement. The concrete revisions needed are:
+1. Fix evaluator fetch semantics to use the worker branch / worker commit, not `trial/*`.
+2. Resolve the bare vs non-bare topology explicitly and update the fetch strategy accordingly.
+3. Add a real recovery rule for “remote publish succeeded, store write failed, remote compensating delete failed”.
+4. Make git-transport failure handling role-specific, especially for evaluator `eval_error`.
+5. Remove the stale contradictory text so the plan has one coherent transport, test, and risk story.
+2026-04-29T22:11:58.003227Z ERROR codex_core::session: failed to record rollout items: thread 019ddb44-a74d-7d61-ba5b-d3d21aad35e4 not found
+tokens used
+353,067

@@ -1,0 +1,1401 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc55e-9b70-7451-ad27-7725d61293ba
+--------
+user
+I've addressed your feedback. The updated review brief at docs/plans/review/eden-phase-9e-observability-and-admin/impl/20260425T085901/1.md lists what was fixed. Please re-read the implementation files and review again.
+codex
+I’m re-reading the updated brief first, then I’ll revisit each listed file and check whether the previous review points are actually resolved in the code and tests.
+exec
+/bin/zsh -lc "sed -n '1,260p' /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9e-observability-and-admin/impl/20260425T085901/1.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-9e-observability-and-admin (Round 1)
+
+## Round 0 findings — addressed
+
+1. **Bug — read-path transport handling missing.** Fixed: every admin GET handler that calls `store.*` / `repo.*` now wraps the read in `try / except Exception` and renders an inline `_error.html` placeholder via the new `_read_failure_response(request, message)` helper. `StorageNotFound` is re-raised so the app-wide 404 handler picks it up. Routes touched: `index`, `tasks_index`, `task_detail`, `trials_index`, `trial_detail`, `events_index`, `work_refs_index`. New tests in `test_admin_partial_write.py::TestReadPathTransportFailures` cover the index, tasks, and events read paths under `monkeypatch InMemoryStore.list_tasks` / `replay`.
+
+2. **Bug — `work_refs_delete()` collapsed every git failure into `?error=ref-changed`.** Fixed: route now classifies `GitError` based on stderr containing `expected` (or returncode 1, the CAS-miss surface) → `?error=ref-changed`; any other `GitError` (e.g. permission denied, returncode 128) re-raises so FastAPI's default 500 handler renders. Test `TestWorkRefDeleteFailures::test_unexpected_git_error_propagates_5xx` exercises this with a `returncode=128` permission-denied stderr.
+
+3. **Risk — `_coerce_filter()` mapped unknown filter values to `None` (full list).** Fixed: introduced `_INVALID_FILTER` sentinel; routes short-circuit to an empty rowset when the filter is invalid. Test `test_unknown_kind_renders_empty` and `test_unknown_state_renders_empty` lock in the new behavior; the prior `test_unknown_kind_treated_as_no_filter` (which codified the wrong contract) was renamed and its assertions inverted.
+
+4. **Risk — dashboard collapsed "no `--repo-path`" and "git failed" into the same `None`.** Fixed: route now passes both `repo_enabled: bool` and `work_ref_error: bool` flags to the template. `admin_index.html` renders three distinct states: "not configured" / "git failure listing refs" (banner-error) / "{N} ref(s)" with the GC link.
+
+## Implementation Files (delta from Round 0)
+
+| File | Change |
+|---|---|
+| `reference/services/web-ui/src/eden_web_ui/routes/admin.py` | Added `_INVALID_FILTER` sentinel + `_read_failure_response`; wrapped every read path; classified `GitError` on delete; added `repo_enabled` + `work_ref_error` to dashboard context. Imported `StorageNotFound` at module scope. |
+| `reference/services/web-ui/src/eden_web_ui/templates/admin_index.html` | Three-state work-ref panel (`not repo_enabled` / `work_ref_error` / count). |
+| `reference/services/web-ui/tests/test_admin_routes.py` | Renamed and inverted `test_unknown_kind_*`; added `test_unknown_state_renders_empty`. |
+| `reference/services/web-ui/tests/test_admin_partial_write.py` | Added `test_unexpected_git_error_propagates_5xx` and `TestReadPathTransportFailures` class (3 tests). |
+
+## Test Status
+
+- 630 passed (was 625; +5 from the Round-0 fixes).
+- ruff clean. pyright clean. markdownlint clean.
+- e2e test still passes.
+
+## Review Status
+
+Round 1 — awaiting re-review.
+
+exec
+/bin/zsh -lc 'git diff --stat -- docs/plans/review/eden-phase-9e-observability-and-admin/impl/20260425T085901/0.md docs/plans/review/eden-phase-9e-observability-and-admin/impl/20260425T085901/1.md reference/services/web-ui/src/eden_web_ui/routes/admin.py reference/services/web-ui/src/eden_web_ui/templates/admin_index.html reference/services/web-ui/src/eden_web_ui/templates/admin_trials.html reference/services/web-ui/src/eden_web_ui/templates/admin_trial_detail.html reference/services/web-ui/tests/test_admin_routes.py reference/services/web-ui/tests/test_admin_security.py reference/services/web-ui/tests/test_admin_partial_write.py reference/services/web-ui/tests/test_admin_flow.py reference/services/web-ui/tests/test_admin_e2e.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M AGENTS.md
+ M docs/roadmap.md
+ M reference/services/web-ui/README.md
+ M reference/services/web-ui/src/eden_web_ui/app.py
+ M reference/services/web-ui/src/eden_web_ui/templates/base.html
+?? docs/plans/eden-phase-9e-observability-and-admin.md
+?? docs/plans/review/eden-phase-9e-observability-and-admin/
+?? reference/services/web-ui/src/eden_web_ui/routes/admin.py
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_events.html
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_index.html
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_task_detail.html
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_tasks.html
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_trial_detail.html
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_trials.html
+?? reference/services/web-ui/src/eden_web_ui/templates/admin_work_refs.html
+?? reference/services/web-ui/tests/test_admin_e2e.py
+?? reference/services/web-ui/tests/test_admin_flow.py
+?? reference/services/web-ui/tests/test_admin_partial_write.py
+?? reference/services/web-ui/tests/test_admin_routes.py
+?? reference/services/web-ui/tests/test_admin_security.py
+
+codex
+The updated brief only changes the route module, one template, and two test files, so I’m focusing there first and then I’ll rerun the admin test set to confirm the new behavior.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/admin.py | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Admin-module routes — observability views + operator actions.
+     2	
+     3	Implements the chunk 9e plan: read-only views over tasks / trials /
+     4	events, an operator ``reclaim`` action on tasks, and a ``work/*`` ref
+     5	GC page when ``--repo-path`` is configured.
+     6	
+     7	Auth-first POST discipline: every handler — GET and POST — runs
+     8	``get_session(request)`` first; an absent session redirects to
+     9	``/signin``. CSRF runs after the auth check on mutating routes.
+    10	This matches the planner / implementer / evaluator pattern.
+    11	"""
+    12	
+    13	from __future__ import annotations
+    14	
+    15	import re
+    16	from collections.abc import Callable
+    17	from datetime import datetime
+    18	from typing import Any
+    19	
+    20	from eden_contracts import Event, Task, Trial
+    21	from eden_storage.errors import IllegalTransition
+    22	from eden_storage.errors import NotFound as StorageNotFound
+    23	from fastapi import APIRouter, Form, Request
+    24	from fastapi.responses import HTMLResponse, RedirectResponse
+    25	
+    26	from ._helpers import csrf_ok, get_session, read_trial_artifact
+    27	
+    28	router = APIRouter(prefix="/admin")
+    29	
+    30	
+    31	_DEFAULT_EVENTS_LIMIT = 200
+    32	_MAX_EVENTS_LIMIT = 1000
+    33	_TRIAL_DETAIL_EVENT_CAP = 50
+    34	
+    35	_KIND_VALUES = ("plan", "implement", "evaluate")
+    36	_STATE_VALUES = ("pending", "claimed", "submitted", "completed", "failed")
+    37	_TRIAL_STATUS_VALUES = ("starting", "success", "error", "eval_error")
+    38	
+    39	# Closed allowlist: ?error=… and ?reclaimed=… banner copy. Keys
+    40	# match the querystring values; values are (level, message).
+    41	_RECLAIM_OUTCOMES: dict[str, tuple[str, str]] = {
+    42	    "ok": ("ok", "task reclaimed"),
+    43	    "illegal-transition": (
+    44	        "error",
+    45	        "this task cannot be reclaimed (terminal or not claimed)",
+    46	    ),
+    47	    "transport": (
+    48	        "error",
+    49	        "transport failure; refresh and try again if the task did not move to pending",
+    50	    ),
+    51	}
+    52	
+    53	_REF_DELETE_OUTCOMES: dict[str, tuple[str, str]] = {
+    54	    "ok": ("ok", "ref deleted"),
+    55	    "invalid-ref-name": ("error", "ref name is not a work-branch ref"),
+    56	    "not-eligible": ("error", "ref is not eligible for deletion"),
+    57	    "not-found": ("error", "ref no longer exists"),
+    58	    "ref-changed": (
+    59	        "error",
+    60	        "ref changed since you loaded the page; refresh and re-confirm",
+    61	    ),
+    62	    "transport": ("error", "git operation failed; check server logs"),
+    63	}
+    64	
+    65	# refs/heads/work/<segment>(/<segment>)*
+    66	# Each segment matches [A-Za-z0-9_.-]+; we forbid empty segments and
+    67	# anything that could escape the work/ namespace.
+    68	_WORK_REF_RE = re.compile(r"^refs/heads/work/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*$")
+    69	
+    70	
+    71	# A sentinel returned by ``_coerce_filter`` to mean "the operator
+    72	# typed a filter value that isn't in the allowed set". The route
+    73	# layer renders an empty rowset for this case (plan §A.3) — distinct
+    74	# from ``None`` which means "no filter applied".
+    75	_INVALID_FILTER = "__invalid__"
+    76	
+    77	
+    78	def _coerce_filter(raw: str | None, allowed: tuple[str, ...]) -> str | None:
+    79	    """Map ``raw`` to a value in ``allowed``, ``None`` (no filter), or ``_INVALID_FILTER``."""
+    80	    if raw is None or raw == "*" or raw == "":
+    81	        return None
+    82	    if raw in allowed:
+    83	        return raw
+    84	    return _INVALID_FILTER
+    85	
+    86	
+    87	def _claim_age_seconds(task: Task, now: datetime) -> float | None:
+    88	    if task.claim is None:
+    89	        return None
+    90	    claimed_at = _parse_dt(task.claim.claimed_at)
+    91	    if claimed_at is None:
+    92	        return None
+    93	    return (now - claimed_at).total_seconds()
+    94	
+    95	
+    96	def _claim_expired(task: Task, now: datetime) -> bool:
+    97	    if task.claim is None or task.claim.expires_at is None:
+    98	        return False
+    99	    expires_at = _parse_dt(task.claim.expires_at)
+   100	    if expires_at is None:
+   101	        return False
+   102	    return expires_at < now
+   103	
+   104	
+   105	def _parse_dt(raw: str | datetime | None) -> datetime | None:
+   106	    if raw is None:
+   107	        return None
+   108	    if isinstance(raw, datetime):
+   109	        return raw
+   110	    try:
+   111	        return datetime.fromisoformat(raw)
+   112	    except ValueError:
+   113	        return None
+   114	
+   115	
+   116	def _trial_terminal_handled(trial: Trial) -> bool:
+   117	    """Return True iff the trial has reached a terminal-and-handled status."""
+   118	    if trial.status in {"error", "eval_error"}:
+   119	        return True
+   120	    return trial.status == "success" and trial.trial_commit_sha is not None
+   121	
+   122	
+   123	def _now_dt(request: Request) -> datetime:
+   124	    fn: Callable[[], datetime] = request.app.state.now
+   125	    return fn()
+   126	
+   127	
+   128	# ---------------------------------------------------------------------
+   129	# Landing page
+   130	# ---------------------------------------------------------------------
+   131	
+   132	
+   133	@router.get("/", response_class=HTMLResponse, response_model=None)
+   134	async def index(request: Request) -> HTMLResponse | RedirectResponse:
+   135	    session = get_session(request)
+   136	    if session is None:
+   137	        return RedirectResponse(url="/signin", status_code=303)
+   138	    store = request.app.state.store
+   139	    repo = request.app.state.repo
+   140	    now = _now_dt(request)
+   141	
+   142	    try:
+   143	        tasks = store.list_tasks()
+   144	        trials = store.list_trials()
+   145	        events_full = store.replay()
+   146	    except Exception:  # noqa: BLE001 — transport/store-domain
+   147	        return _read_failure_response(request, "could not load dashboard data")
+   148	
+   149	    cross_tab: dict[str, dict[str, int]] = {
+   150	        kind: {state: 0 for state in _STATE_VALUES} for kind in _KIND_VALUES
+   151	    }
+   152	    expired_count = 0
+   153	    for t in tasks:
+   154	        if t.kind in cross_tab and t.state in cross_tab[t.kind]:
+   155	            cross_tab[t.kind][t.state] += 1
+   156	        if _claim_expired(t, now):
+   157	            expired_count += 1
+   158	
+   159	    trial_counts = {status: 0 for status in _TRIAL_STATUS_VALUES}
+   160	    for tr in trials:
+   161	        if tr.status in trial_counts:
+   162	            trial_counts[tr.status] += 1
+   163	
+   164	    # Three distinct states for ``work_ref_count`` so the dashboard
+   165	    # template can disambiguate them (plan §G + finding 4 from the
+   166	    # impl-review): ``None`` means "no --repo-path configured";
+   167	    # ``-1`` means "git read failed"; otherwise the count.
+   168	    work_ref_count: int | None = None
+   169	    work_ref_error: bool = False
+   170	    if repo is not None:
+   171	        try:
+   172	            work_ref_count = len(repo.list_refs("refs/heads/work/*"))
+   173	        except Exception:  # noqa: BLE001 — git failure on dashboard read
+   174	            work_ref_count = None
+   175	            work_ref_error = True
+   176	
+   177	    recent = list(reversed(events_full))[:10]
+   178	
+   179	    return request.app.state.templates.TemplateResponse(
+   180	        request,
+   181	        "admin_index.html",
+   182	        {
+   183	            "session": session,
+   184	            "cross_tab": cross_tab,
+   185	            "kinds": _KIND_VALUES,
+   186	            "states": _STATE_VALUES,
+   187	            "trial_counts": trial_counts,
+   188	            "trial_statuses": _TRIAL_STATUS_VALUES,
+   189	            "event_total": len(events_full),
+   190	            "work_ref_count": work_ref_count,
+   191	            "work_ref_error": work_ref_error,
+   192	            "repo_enabled": repo is not None,
+   193	            "expired_count": expired_count,
+   194	            "recent_events": recent,
+   195	        },
+   196	    )
+   197	
+   198	
+   199	# ---------------------------------------------------------------------
+   200	# Tasks
+   201	# ---------------------------------------------------------------------
+   202	
+   203	
+   204	@router.get("/tasks/", response_class=HTMLResponse, response_model=None)
+   205	async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
+   206	    session = get_session(request)
+   207	    if session is None:
+   208	        return RedirectResponse(url="/signin", status_code=303)
+   209	    store = request.app.state.store
+   210	    now = _now_dt(request)
+   211	
+   212	    kind = _coerce_filter(request.query_params.get("kind"), _KIND_VALUES)
+   213	    state = _coerce_filter(request.query_params.get("state"), _STATE_VALUES)
+   214	
+   215	    if kind == _INVALID_FILTER or state == _INVALID_FILTER:
+   216	        tasks = []
+   217	        kind_for_select = (
+   218	            request.query_params.get("kind", "*")
+   219	            if kind == _INVALID_FILTER
+   220	            else (kind or "*")
+   221	        )
+   222	        state_for_select = (
+   223	            request.query_params.get("state", "*")
+   224	            if state == _INVALID_FILTER
+   225	            else (state or "*")
+   226	        )
+   227	    else:
+   228	        try:
+   229	            tasks = store.list_tasks(kind=kind, state=state)
+   230	        except Exception:  # noqa: BLE001 — transport/store-domain
+   231	            return _read_failure_response(request, "could not load tasks")
+   232	        kind_for_select = kind or "*"
+   233	        state_for_select = state or "*"
+   234	
+   235	    rows: list[dict[str, Any]] = []
+   236	    for t in tasks:
+   237	        rows.append(
+   238	            {
+   239	                "task_id": t.task_id,
+   240	                "kind": t.kind,
+   241	                "state": t.state,
+   242	                "worker_id": t.claim.worker_id if t.claim else None,
+   243	                "claim_age": _claim_age_seconds(t, now),
+   244	                "expires_at": t.claim.expires_at if t.claim else None,
+   245	                "updated_at": t.updated_at,
+   246	                "claim_expired": _claim_expired(t, now),
+   247	            }
+   248	        )
+   249	
+   250	    return request.app.state.templates.TemplateResponse(
+   251	        request,
+   252	        "admin_tasks.html",
+   253	        {
+   254	            "session": session,
+   255	            "rows": rows,
+   256	            "selected_kind": kind_for_select,
+   257	            "selected_state": state_for_select,
+   258	            "kinds": _KIND_VALUES,
+   259	            "states": _STATE_VALUES,
+   260	        },
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/templates/admin_index.html | sed -n '1,140p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/admin.py | sed -n '261,760p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{% extends "base.html" %}
+     2	{% block title %}EDEN — admin{% endblock %}
+     3	{% block main %}
+     4	<h1>admin dashboard</h1>
+     5	
+     6	{% if expired_count %}
+     7	<div class="banner banner-warn">
+     8	    {{ expired_count }} claim(s) past <code>expires_at</code> — the next sweeper iteration will reclaim them automatically.
+     9	</div>
+    10	{% endif %}
+    11	
+    12	<section>
+    13	    <h2>tasks by kind &times; state</h2>
+    14	    <table>
+    15	        <thead>
+    16	            <tr>
+    17	                <th>kind</th>
+    18	                {% for state in states %}<th>{{ state }}</th>{% endfor %}
+    19	            </tr>
+    20	        </thead>
+    21	        <tbody>
+    22	        {% for kind in kinds %}
+    23	            <tr>
+    24	                <td><code>{{ kind }}</code></td>
+    25	                {% for state in states %}
+    26	                <td>
+    27	                    {% if cross_tab[kind][state] %}
+    28	                        <a href="/admin/tasks/?kind={{ kind }}&state={{ state }}">{{ cross_tab[kind][state] }}</a>
+    29	                    {% else %}
+    30	                        0
+    31	                    {% endif %}
+    32	                </td>
+    33	                {% endfor %}
+    34	            </tr>
+    35	        {% endfor %}
+    36	        </tbody>
+    37	    </table>
+    38	    <p><a href="/admin/tasks/">all tasks &raquo;</a></p>
+    39	</section>
+    40	
+    41	<section>
+    42	    <h2>trials by status</h2>
+    43	    <table>
+    44	        <thead><tr>{% for s in trial_statuses %}<th>{{ s }}</th>{% endfor %}</tr></thead>
+    45	        <tbody>
+    46	            <tr>
+    47	            {% for s in trial_statuses %}
+    48	                <td>
+    49	                {% if trial_counts[s] %}
+    50	                    <a href="/admin/trials/?status={{ s }}">{{ trial_counts[s] }}</a>
+    51	                {% else %}
+    52	                    0
+    53	                {% endif %}
+    54	                </td>
+    55	            {% endfor %}
+    56	            </tr>
+    57	        </tbody>
+    58	    </table>
+    59	    <p><a href="/admin/trials/">all trials &raquo;</a></p>
+    60	</section>
+    61	
+    62	<section>
+    63	    <h2>events</h2>
+    64	    <p>total events: {{ event_total }} <a href="/admin/events/">(view recent &raquo;)</a></p>
+    65	</section>
+    66	
+    67	<section>
+    68	    <h2>work refs</h2>
+    69	    {% if not repo_enabled %}
+    70	        <p>(<code>--repo-path</code> not configured; ref GC unavailable)</p>
+    71	    {% elif work_ref_error %}
+    72	        <p class="banner banner-error">git failure listing <code>refs/heads/work/*</code>; check the server logs.</p>
+    73	    {% else %}
+    74	        <p>{{ work_ref_count }} <code>refs/heads/work/*</code> ref(s) <a href="/admin/work-refs/">(view &raquo;)</a></p>
+    75	    {% endif %}
+    76	</section>
+    77	
+    78	<section>
+    79	    <h2>last 10 events</h2>
+    80	    {% if recent_events %}
+    81	    <table>
+    82	        <thead><tr><th>type</th><th>occurred_at</th><th>event_id</th></tr></thead>
+    83	        <tbody>
+    84	        {% for ev in recent_events %}
+    85	            <tr>
+    86	                <td><code>{{ ev.type }}</code></td>
+    87	                <td>{{ ev.occurred_at }}</td>
+    88	                <td><code>{{ ev.event_id }}</code></td>
+    89	            </tr>
+    90	        {% endfor %}
+    91	        </tbody>
+    92	    </table>
+    93	    {% else %}
+    94	    <p>no events yet.</p>
+    95	    {% endif %}
+    96	</section>
+    97	{% endblock %}
+
+ succeeded in 0ms:
+   261	    )
+   262	
+   263	
+   264	@router.get("/tasks/{task_id}/", response_class=HTMLResponse, response_model=None)
+   265	async def task_detail(
+   266	    task_id: str, request: Request
+   267	) -> HTMLResponse | RedirectResponse:
+   268	    session = get_session(request)
+   269	    if session is None:
+   270	        return RedirectResponse(url="/signin", status_code=303)
+   271	    store = request.app.state.store
+   272	    now = _now_dt(request)
+   273	
+   274	    # ``StorageNotFound`` propagates to the app-wide 404 handler.
+   275	    # Other exceptions (transport-shaped) get the inline placeholder.
+   276	    try:
+   277	        task = store.read_task(task_id)
+   278	        events_full = store.replay()
+   279	    except StorageNotFound:
+   280	        raise
+   281	    except Exception:  # noqa: BLE001 — transport/store-domain
+   282	        return _read_failure_response(request, "could not load task")
+   283	    related = [ev for ev in events_full if ev.data.get("task_id") == task_id]
+   284	
+   285	    reclaim_outcome = _outcome(request, "reclaimed", "error", _RECLAIM_OUTCOMES)
+   286	    can_reclaim = task.state in {"claimed", "submitted"}
+   287	    is_force = task.state == "submitted"
+   288	
+   289	    return request.app.state.templates.TemplateResponse(
+   290	        request,
+   291	        "admin_task_detail.html",
+   292	        {
+   293	            "session": session,
+   294	            "csrf_token": session.csrf,
+   295	            "task": task,
+   296	            "payload_json": task.payload.model_dump(mode="json"),
+   297	            "claim_age": _claim_age_seconds(task, now),
+   298	            "claim_expired": _claim_expired(task, now),
+   299	            "related_events": list(reversed(related))[:50],
+   300	            "outcome": reclaim_outcome,
+   301	            "can_reclaim": can_reclaim,
+   302	            "is_force": is_force,
+   303	        },
+   304	    )
+   305	
+   306	
+   307	@router.post("/tasks/{task_id}/reclaim", response_model=None)
+   308	async def task_reclaim(
+   309	    task_id: str,
+   310	    request: Request,
+   311	    csrf_token: str = Form(""),
+   312	) -> RedirectResponse | HTMLResponse:
+   313	    session = get_session(request)
+   314	    if session is None:
+   315	        return RedirectResponse(url="/signin", status_code=303)
+   316	    if not csrf_ok(session, csrf_token):
+   317	        return _csrf_failure_response()
+   318	    store = request.app.state.store
+   319	    try:
+   320	        store.reclaim(task_id, "operator")
+   321	    except IllegalTransition:
+   322	        return RedirectResponse(
+   323	            url=f"/admin/tasks/{task_id}/?error=illegal-transition",
+   324	            status_code=303,
+   325	        )
+   326	    except Exception:  # noqa: BLE001 — transport-shaped from StoreClient
+   327	        return RedirectResponse(
+   328	            url=f"/admin/tasks/{task_id}/?error=transport",
+   329	            status_code=303,
+   330	        )
+   331	    return RedirectResponse(
+   332	        url=f"/admin/tasks/{task_id}/?reclaimed=ok",
+   333	        status_code=303,
+   334	    )
+   335	
+   336	
+   337	# ---------------------------------------------------------------------
+   338	# Trials
+   339	# ---------------------------------------------------------------------
+   340	
+   341	
+   342	@router.get("/trials/", response_class=HTMLResponse, response_model=None)
+   343	async def trials_index(request: Request) -> HTMLResponse | RedirectResponse:
+   344	    session = get_session(request)
+   345	    if session is None:
+   346	        return RedirectResponse(url="/signin", status_code=303)
+   347	    store = request.app.state.store
+   348	
+   349	    status = _coerce_filter(request.query_params.get("status"), _TRIAL_STATUS_VALUES)
+   350	    if status == _INVALID_FILTER:
+   351	        return request.app.state.templates.TemplateResponse(
+   352	            request,
+   353	            "admin_trials.html",
+   354	            {
+   355	                "session": session,
+   356	                "rows": [],
+   357	                "selected_status": request.query_params.get("status", "*"),
+   358	                "trial_statuses": _TRIAL_STATUS_VALUES,
+   359	            },
+   360	        )
+   361	
+   362	    try:
+   363	        trials = store.list_trials(status=status)
+   364	        impl_tasks = store.list_tasks(kind="implement")
+   365	    except Exception:  # noqa: BLE001 — transport/store-domain
+   366	        return _read_failure_response(request, "could not load trials")
+   367	    impl_terminal_by_proposal: dict[str, bool] = {
+   368	        t.payload.proposal_id: (t.state in {"completed", "failed"})
+   369	        for t in impl_tasks
+   370	    }
+   371	
+   372	    rows: list[dict[str, Any]] = []
+   373	    for tr in trials:
+   374	        orphaned = (
+   375	            tr.status == "starting"
+   376	            and impl_terminal_by_proposal.get(tr.proposal_id, False)
+   377	        )
+   378	        rows.append(
+   379	            {
+   380	                "trial_id": tr.trial_id,
+   381	                "proposal_id": tr.proposal_id,
+   382	                "status": tr.status,
+   383	                "branch": tr.branch,
+   384	                "commit_sha": tr.commit_sha,
+   385	                "trial_commit_sha": tr.trial_commit_sha,
+   386	                "started_at": tr.started_at,
+   387	                "completed_at": tr.completed_at,
+   388	                "orphaned": orphaned,
+   389	            }
+   390	        )
+   391	
+   392	    return request.app.state.templates.TemplateResponse(
+   393	        request,
+   394	        "admin_trials.html",
+   395	        {
+   396	            "session": session,
+   397	            "rows": rows,
+   398	            "selected_status": status or "*",
+   399	            "trial_statuses": _TRIAL_STATUS_VALUES,
+   400	        },
+   401	    )
+   402	
+   403	
+   404	@router.get(
+   405	    "/trials/{trial_id}/", response_class=HTMLResponse, response_model=None
+   406	)
+   407	async def trial_detail(
+   408	    trial_id: str, request: Request
+   409	) -> HTMLResponse | RedirectResponse:
+   410	    session = get_session(request)
+   411	    if session is None:
+   412	        return RedirectResponse(url="/signin", status_code=303)
+   413	    store = request.app.state.store
+   414	    artifacts_dir = request.app.state.artifacts_dir
+   415	
+   416	    try:
+   417	        trial = store.read_trial(trial_id)
+   418	        proposal = store.read_proposal(trial.proposal_id)
+   419	        events_full = store.replay()
+   420	        related, total_related = _events_for_trial(
+   421	            events_full, store, trial_id=trial_id, proposal_id=trial.proposal_id
+   422	        )
+   423	    except StorageNotFound:
+   424	        raise
+   425	    except Exception:  # noqa: BLE001 — transport/store-domain
+   426	        return _read_failure_response(request, "could not load trial")
+   427	
+   428	    inline_artifact = read_trial_artifact(trial.artifacts_uri, artifacts_dir)
+   429	
+   430	    return request.app.state.templates.TemplateResponse(
+   431	        request,
+   432	        "admin_trial_detail.html",
+   433	        {
+   434	            "session": session,
+   435	            "trial": trial,
+   436	            "proposal": proposal,
+   437	            "related_events": list(reversed(related))[:_TRIAL_DETAIL_EVENT_CAP],
+   438	            "related_total": total_related,
+   439	            "trial_artifact_inline": inline_artifact,
+   440	        },
+   441	    )
+   442	
+   443	
+   444	def _events_for_trial(
+   445	    events_full: list[Event],
+   446	    store: Any,
+   447	    *,
+   448	    trial_id: str,
+   449	    proposal_id: str,
+   450	) -> tuple[list[Event], int]:
+   451	    """Return (events_correlated_to_this_trial_in_replay_order, total_match_count).
+   452	
+   453	    Correlation per chunk-9e plan §A.5: trial-id direct match + task-id
+   454	    match for the implement task that produced this trial + task-id
+   455	    match for any evaluate task whose payload references this trial.
+   456	    """
+   457	    impl_task_ids = {
+   458	        t.task_id
+   459	        for t in store.list_tasks(kind="implement")
+   460	        if t.payload.proposal_id == proposal_id
+   461	    }
+   462	    eval_task_ids = {
+   463	        t.task_id
+   464	        for t in store.list_tasks(kind="evaluate")
+   465	        if t.payload.trial_id == trial_id
+   466	    }
+   467	    related: list[Event] = []
+   468	    for ev in events_full:  # replay order
+   469	        if ev.data.get("trial_id") == trial_id:
+   470	            related.append(ev)
+   471	            continue
+   472	        tid = ev.data.get("task_id")
+   473	        if tid is not None and (tid in impl_task_ids or tid in eval_task_ids):
+   474	            related.append(ev)
+   475	    return related, len(related)
+   476	
+   477	
+   478	# ---------------------------------------------------------------------
+   479	# Events
+   480	# ---------------------------------------------------------------------
+   481	
+   482	
+   483	@router.get("/events/", response_class=HTMLResponse, response_model=None)
+   484	async def events_index(request: Request) -> HTMLResponse | RedirectResponse:
+   485	    session = get_session(request)
+   486	    if session is None:
+   487	        return RedirectResponse(url="/signin", status_code=303)
+   488	    store = request.app.state.store
+   489	
+   490	    raw_limit = request.query_params.get("limit")
+   491	    limit = _DEFAULT_EVENTS_LIMIT
+   492	    if raw_limit is not None:
+   493	        try:
+   494	            limit = max(1, min(_MAX_EVENTS_LIMIT, int(raw_limit)))
+   495	        except ValueError:
+   496	            limit = _DEFAULT_EVENTS_LIMIT
+   497	
+   498	    type_filter = request.query_params.get("type") or None
+   499	
+   500	    try:
+   501	        events_full = store.replay()
+   502	    except Exception:  # noqa: BLE001 — transport/store-domain
+   503	        return _read_failure_response(request, "could not load events")
+   504	    total = len(events_full)
+   505	
+   506	    indexed: list[tuple[int, Event]] = []
+   507	    for idx, ev in enumerate(events_full, start=1):
+   508	        if type_filter is not None and ev.type != type_filter:
+   509	            continue
+   510	        indexed.append((idx, ev))
+   511	
+   512	    filtered_total = len(indexed)
+   513	    sliced = indexed[-limit:]
+   514	    rows = list(reversed(sliced))
+   515	
+   516	    return request.app.state.templates.TemplateResponse(
+   517	        request,
+   518	        "admin_events.html",
+   519	        {
+   520	            "session": session,
+   521	            "rows": rows,
+   522	            "limit": limit,
+   523	            "total": total,
+   524	            "filtered_total": filtered_total,
+   525	            "type_filter": type_filter,
+   526	        },
+   527	    )
+   528	
+   529	
+   530	# ---------------------------------------------------------------------
+   531	# Work-ref GC
+   532	# ---------------------------------------------------------------------
+   533	
+   534	
+   535	@router.get("/work-refs/", response_class=HTMLResponse, response_model=None)
+   536	async def work_refs_index(request: Request) -> HTMLResponse | RedirectResponse:
+   537	    session = get_session(request)
+   538	    if session is None:
+   539	        return RedirectResponse(url="/signin", status_code=303)
+   540	    repo = request.app.state.repo
+   541	    outcome = _outcome(request, "deleted", "error", _REF_DELETE_OUTCOMES)
+   542	    if repo is None:
+   543	        return request.app.state.templates.TemplateResponse(
+   544	            request,
+   545	            "admin_work_refs.html",
+   546	            {
+   547	                "session": session,
+   548	                "csrf_token": session.csrf,
+   549	                "repo_enabled": False,
+   550	                "groups": None,
+   551	                "outcome": outcome,
+   552	            },
+   553	        )
+   554	    store = request.app.state.store
+   555	    try:
+   556	        groups = _classify_work_refs(repo, store)
+   557	    except Exception:  # noqa: BLE001 — git or transport
+   558	        return _read_failure_response(request, "could not list work refs")
+   559	    return request.app.state.templates.TemplateResponse(
+   560	        request,
+   561	        "admin_work_refs.html",
+   562	        {
+   563	            "session": session,
+   564	            "csrf_token": session.csrf,
+   565	            "repo_enabled": True,
+   566	            "groups": groups,
+   567	            "outcome": outcome,
+   568	        },
+   569	    )
+   570	
+   571	
+   572	@router.post("/work-refs/delete", response_model=None)
+   573	async def work_refs_delete(
+   574	    request: Request,
+   575	    ref_name: str = Form(""),
+   576	    expected_old_sha: str = Form(""),  # noqa: ARG001 — accepted for symmetry, never trusted
+   577	    csrf_token: str = Form(""),
+   578	) -> RedirectResponse | HTMLResponse:
+   579	    session = get_session(request)
+   580	    if session is None:
+   581	        return RedirectResponse(url="/signin", status_code=303)
+   582	    if not csrf_ok(session, csrf_token):
+   583	        return _csrf_failure_response()
+   584	    repo = request.app.state.repo
+   585	    if repo is None:
+   586	        return RedirectResponse(
+   587	            url="/admin/work-refs/?error=invalid-ref-name", status_code=303
+   588	        )
+   589	    if not _WORK_REF_RE.match(ref_name) or ".." in ref_name:
+   590	        return RedirectResponse(
+   591	            url="/admin/work-refs/?error=invalid-ref-name", status_code=303
+   592	        )
+   593	    store = request.app.state.store
+   594	    groups = _classify_work_refs(repo, store)
+   595	    target = None
+   596	    for entry in (*groups["eligible"], *groups["orphan"]):
+   597	        if entry["ref_name"] == ref_name:
+   598	            target = entry
+   599	            break
+   600	    if target is None:
+   601	        # Could be a not-eligible entry (still listed) or vanished.
+   602	        for entry in groups["not_eligible"]:
+   603	            if entry["ref_name"] == ref_name:
+   604	                return RedirectResponse(
+   605	                    url="/admin/work-refs/?error=not-eligible", status_code=303
+   606	                )
+   607	        return RedirectResponse(
+   608	            url="/admin/work-refs/?error=not-found", status_code=303
+   609	        )
+   610	    live_sha = target["current_sha"]
+   611	    from eden_git.repo import GitError
+   612	
+   613	    try:
+   614	        repo.delete_ref(ref_name, expected_old_sha=live_sha)
+   615	    except GitError as exc:
+   616	        # CAS miss surfaces as exit 1 with stderr containing the
+   617	        # "expected ... but is ..." text from update-ref. Anything
+   618	        # else (permissions issues, broken repo, etc.) is a real
+   619	        # failure that should not be silenced as ``ref-changed``.
+   620	        stderr = (exc.stderr or "").lower()
+   621	        if "expected" in stderr or exc.returncode == 1:
+   622	            return RedirectResponse(
+   623	                url="/admin/work-refs/?error=ref-changed", status_code=303
+   624	            )
+   625	        # Unexpected git failure — propagate to FastAPI's default
+   626	        # 500 handler so the operator sees a real error page and
+   627	        # the failure shows up in logs.
+   628	        raise
+   629	    return RedirectResponse(
+   630	        url="/admin/work-refs/?deleted=ok", status_code=303
+   631	    )
+   632	
+   633	
+   634	def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]]:
+   635	    """Group ``refs/heads/work/*`` refs by GC eligibility.
+   636	
+   637	    Ownership is keyed off exact ``trial.branch`` equality (chunk 9e
+   638	    plan §A.7), not by parsing the ref name.
+   639	    """
+   640	    trials = store.list_trials()
+   641	    branch_index: dict[str, Trial] = {
+   642	        tr.branch: tr for tr in trials if tr.branch is not None
+   643	    }
+   644	    pairs = repo.list_refs("refs/heads/work/*")
+   645	    eligible: list[dict[str, Any]] = []
+   646	    not_eligible: list[dict[str, Any]] = []
+   647	    orphan: list[dict[str, Any]] = []
+   648	    for refname, current_sha in pairs:
+   649	        branch_name = refname.removeprefix("refs/heads/")
+   650	        trial = branch_index.get(branch_name)
+   651	        entry: dict[str, Any] = {
+   652	            "ref_name": refname,
+   653	            "current_sha": current_sha,
+   654	            "branch_name": branch_name,
+   655	            "trial": trial,
+   656	        }
+   657	        if trial is None:
+   658	            entry["reason"] = "no trial owns this ref"
+   659	            orphan.append(entry)
+   660	            continue
+   661	        if not _trial_terminal_handled(trial):
+   662	            entry["reason"] = (
+   663	                f"trial is {trial.status}"
+   664	                + (
+   665	                    " (integrator has not yet promoted)"
+   666	                    if trial.status == "success" and trial.trial_commit_sha is None
+   667	                    else ""
+   668	                )
+   669	            )
+   670	            not_eligible.append(entry)
+   671	            continue
+   672	        if trial.commit_sha != current_sha:
+   673	            entry["reason"] = (
+   674	                "ref SHA does not match trial.commit_sha (manual rewrite?)"
+   675	            )
+   676	            not_eligible.append(entry)
+   677	            continue
+   678	        entry["reason"] = (
+   679	            f"trial {trial.trial_id} is {trial.status}; safe to delete"
+   680	        )
+   681	        eligible.append(entry)
+   682	    return {
+   683	        "eligible": eligible,
+   684	        "not_eligible": not_eligible,
+   685	        "orphan": orphan,
+   686	    }
+   687	
+   688	
+   689	# ---------------------------------------------------------------------
+   690	# Helpers
+   691	# ---------------------------------------------------------------------
+   692	
+   693	
+   694	def _csrf_failure_response() -> HTMLResponse:
+   695	    return HTMLResponse(content="CSRF token missing or invalid", status_code=403)
+   696	
+   697	
+   698	def _read_failure_response(request: Request, message: str) -> HTMLResponse:
+   699	    """Inline placeholder for transport-shaped read failures (plan §G).
+   700	
+   701	    We render the standard ``_error.html`` page with a 502 so the
+   702	    operator sees a clear "transport failure; refresh to retry"
+   703	    surface instead of an unhandled 500 from the underlying
+   704	    ``StoreClient`` / ``GitRepo`` exception.
+   705	    """
+   706	    return request.app.state.templates.TemplateResponse(
+   707	        request,
+   708	        "_error.html",
+   709	        {
+   710	            "title": "Transport failure",
+   711	            "message": (
+   712	                f"{message}; refresh to retry. If the failure persists, "
+   713	                "check the task-store-server logs."
+   714	            ),
+   715	        },
+   716	        status_code=502,
+   717	    )
+   718	
+   719	
+   720	def _outcome(
+   721	    request: Request,
+   722	    ok_param: str,
+   723	    err_param: str,
+   724	    table: dict[str, tuple[str, str]],
+   725	) -> dict[str, str] | None:
+   726	    """Resolve the action-result banner by looking up the closed allowlist.
+   727	
+   728	    ``ok_param`` is the success querystring key (``reclaimed``,
+   729	    ``deleted``); ``err_param`` is always ``error``. The value is
+   730	    looked up in ``table``; an unknown value renders no banner.
+   731	    """
+   732	    raw_ok = request.query_params.get(ok_param)
+   733	    raw_err = request.query_params.get(err_param)
+   734	    raw = raw_err if raw_err else raw_ok
+   735	    if raw is None:
+   736	        return None
+   737	    pair = table.get(raw)
+   738	    if pair is None:
+   739	        return None
+   740	    level, message = pair
+   741	    return {"level": level, "message": message}
+   742	
+   743	
+   744	__all__ = ["router"]
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_admin_routes.py | sed -n '80,150p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    80	        assert "tasks by kind" in resp.text
+    81	
+    82	
+    83	class TestAdminTasks:
+    84	    def test_no_filter_lists_all(
+    85	        self, signed_in_client: TestClient, store: InMemoryStore
+    86	    ) -> None:
+    87	        _seed_plan_task(store, "plan-A")
+    88	        store.create_plan_task("plan-B")
+    89	        resp = signed_in_client.get("/admin/tasks/")
+    90	        assert resp.status_code == 200
+    91	        assert "plan-A" in resp.text
+    92	        assert "plan-B" in resp.text
+    93	
+    94	    def test_kind_filter(
+    95	        self, signed_in_client: TestClient, store: InMemoryStore
+    96	    ) -> None:
+    97	        _seed_plan_task(store, "plan-A")
+    98	        resp = signed_in_client.get("/admin/tasks/?kind=evaluate")
+    99	        assert resp.status_code == 200
+   100	        assert "plan-A" not in resp.text
+   101	
+   102	    def test_state_filter(
+   103	        self, signed_in_client: TestClient, store: InMemoryStore
+   104	    ) -> None:
+   105	        _seed_plan_task(store, "plan-A")
+   106	        store.create_plan_task("plan-B")
+   107	        store.claim("plan-B", "w-1")
+   108	        resp = signed_in_client.get("/admin/tasks/?state=claimed")
+   109	        assert resp.status_code == 200
+   110	        assert "plan-B" in resp.text
+   111	        assert "plan-A" not in resp.text
+   112	
+   113	    def test_unknown_kind_renders_empty(
+   114	        self, signed_in_client: TestClient, store: InMemoryStore
+   115	    ) -> None:
+   116	        """Plan §A.3: unknown filter values must yield empty rowset, not full list."""
+   117	        _seed_plan_task(store, "plan-A")
+   118	        resp = signed_in_client.get("/admin/tasks/?kind=garbage")
+   119	        assert resp.status_code == 200
+   120	        assert "plan-A" not in resp.text
+   121	        assert "no tasks match" in resp.text
+   122	
+   123	    def test_unknown_state_renders_empty(
+   124	        self, signed_in_client: TestClient, store: InMemoryStore
+   125	    ) -> None:
+   126	        _seed_plan_task(store, "plan-A")
+   127	        resp = signed_in_client.get("/admin/tasks/?state=lol")
+   128	        assert resp.status_code == 200
+   129	        assert "plan-A" not in resp.text
+   130	        assert "no tasks match" in resp.text
+   131	
+   132	
+   133	class TestAdminTaskDetail:
+   134	    def test_pending_task_shows_no_reclaim_button(
+   135	        self, signed_in_client: TestClient, store: InMemoryStore
+   136	    ) -> None:
+   137	        _seed_plan_task(store, "plan-A")
+   138	        resp = signed_in_client.get("/admin/tasks/plan-A/")
+   139	        assert resp.status_code == 200
+   140	        assert "reclaim" not in resp.text.lower()
+   141	
+   142	    def test_claimed_task_shows_reclaim_button(
+   143	        self, signed_in_client: TestClient, store: InMemoryStore
+   144	    ) -> None:
+   145	        _seed_plan_task(store, "plan-A")
+   146	        store.claim("plan-A", "w-1")
+   147	        resp = signed_in_client.get("/admin/tasks/plan-A/")
+   148	        assert resp.status_code == 200
+   149	        assert ">reclaim<" in resp.text
+   150	
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_admin_partial_write.py | sed -n '1,340p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Partial-write recovery tests for the admin module (chunk 9e).
+     2	
+     3	Exercises the failure modes summarized in §I of the chunk-9e plan:
+     4	``IllegalTransition`` on terminal reclaim, transport-shaped failures
+     5	on read and write paths, the GET-time / POST-time eligibility split,
+     6	and the CAS-miss surface on ``GitRepo.delete_ref``. Also covers the
+     7	codex-review-driven refinement: ``GitError`` on delete is classified
+     8	into CAS-miss vs unexpected git failure, and unexpected failures
+     9	propagate to the standard 500 page (not silenced as ``ref-changed``).
+    10	"""
+    11	
+    12	from __future__ import annotations
+    13	
+    14	from pathlib import Path
+    15	
+    16	import pytest
+    17	from conftest import (
+    18	    EXPERIMENT_ID,
+    19	    SESSION_SECRET,
+    20	    WORKER_ID,
+    21	    _config,
+    22	    _now,
+    23	    get_csrf,
+    24	    make_child_commit,
+    25	    seed_evaluate_task,
+    26	)
+    27	from eden_git import GitRepo
+    28	from eden_storage import InMemoryStore
+    29	from eden_web_ui import make_app
+    30	from fastapi import FastAPI
+    31	from fastapi.testclient import TestClient
+    32	
+    33	
+    34	@pytest.fixture
+    35	def admin_repo_app(
+    36	    store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
+    37	) -> FastAPI:
+    38	    return make_app(
+    39	        store=store,
+    40	        experiment_id=EXPERIMENT_ID,
+    41	        experiment_config=_config(),
+    42	        worker_id=WORKER_ID,
+    43	        session_secret=SESSION_SECRET,
+    44	        claim_ttl_seconds=3600,
+    45	        artifacts_dir=artifacts_dir,
+    46	        secure_cookies=False,
+    47	        now=_now,
+    48	        repo=bare_repo,
+    49	    )
+    50	
+    51	
+    52	@pytest.fixture
+    53	def signed_in_admin_repo_client(admin_repo_app: FastAPI):
+    54	    with TestClient(admin_repo_app) as c:
+    55	        resp = c.post("/signin", follow_redirects=False)
+    56	        assert resp.status_code == 303
+    57	        yield c
+    58	
+    59	
+    60	def _seed_plan_task(store: InMemoryStore, task_id: str = "plan-A") -> str:
+    61	    store.create_plan_task(task_id)
+    62	    return task_id
+    63	
+    64	
+    65	class TestTaskReclaimFailures:
+    66	    def test_illegal_transition_redirects_with_error_banner(
+    67	        self, signed_in_client: TestClient, store: InMemoryStore
+    68	    ) -> None:
+    69	        """Terminal task → reclaim raises IllegalTransition → ?error=illegal-transition."""
+    70	        from eden_storage import PlanSubmission
+    71	
+    72	        task_id = _seed_plan_task(store, "plan-A")
+    73	        claim = store.claim(task_id, "w-1")
+    74	        store.submit(task_id, claim.token, PlanSubmission(status="success", proposal_ids=()))
+    75	        store.accept(task_id)
+    76	        csrf = get_csrf(signed_in_client)
+    77	        resp = signed_in_client.post(
+    78	            f"/admin/tasks/{task_id}/reclaim",
+    79	            data={"csrf_token": csrf},
+    80	            follow_redirects=False,
+    81	        )
+    82	        assert resp.status_code == 303
+    83	        assert "?error=illegal-transition" in resp.headers["location"]
+    84	        # Task is unchanged.
+    85	        assert store.read_task(task_id).state == "completed"
+    86	
+    87	    def test_transport_exception_redirects_with_transport_banner(
+    88	        self,
+    89	        signed_in_client: TestClient,
+    90	        store: InMemoryStore,
+    91	        monkeypatch: pytest.MonkeyPatch,
+    92	    ) -> None:
+    93	        """A non-IllegalTransition Exception from store.reclaim → ?error=transport."""
+    94	        task_id = _seed_plan_task(store, "plan-A")
+    95	        store.claim(task_id, "w-1")
+    96	        call_count = {"n": 0}
+    97	
+    98	        def explode(self, *args, **kwargs):
+    99	            call_count["n"] += 1
+   100	            raise RuntimeError("simulated transport error")
+   101	
+   102	        monkeypatch.setattr(InMemoryStore, "reclaim", explode)
+   103	        csrf = get_csrf(signed_in_client)
+   104	        resp = signed_in_client.post(
+   105	            f"/admin/tasks/{task_id}/reclaim",
+   106	            data={"csrf_token": csrf},
+   107	            follow_redirects=False,
+   108	        )
+   109	        assert resp.status_code == 303
+   110	        assert "?error=transport" in resp.headers["location"]
+   111	        assert call_count["n"] == 1, "route must not auto-retry on transport"
+   112	
+   113	
+   114	class TestWorkRefDeleteFailures:
+   115	    def test_post_time_eligibility_change_refuses(
+   116	        self,
+   117	        signed_in_admin_repo_client: TestClient,
+   118	        store: InMemoryStore,
+   119	        bare_repo: GitRepo,
+   120	        base_sha: str,
+   121	        artifacts_dir: Path,
+   122	        monkeypatch: pytest.MonkeyPatch,
+   123	    ) -> None:
+   124	        """Trial moved back to starting between GET and POST → not-eligible."""
+   125	        seed_evaluate_task(
+   126	            store,
+   127	            slug="t1",
+   128	            trial_id="trial-Z",
+   129	            artifacts_dir=artifacts_dir,
+   130	            commit_sha=make_child_commit(bare_repo, base_sha, "z"),
+   131	        )
+   132	        trial = store.read_trial("trial-Z")
+   133	        assert trial.branch is not None
+   134	        assert trial.commit_sha is not None
+   135	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   136	        store.declare_trial_eval_error("trial-Z")
+   137	        # Get the page (eligible at GET-time).
+   138	        resp = signed_in_admin_repo_client.get("/admin/work-refs/")
+   139	        assert "eligible for deletion (1)" in resp.text
+   140	        # Mutate the trial back to starting between GET and POST. The
+   141	        # store's terminal-immutability invariant forbids the natural
+   142	        # transition, so we reach into in-memory state directly.
+   143	        new_trial = trial.model_copy(update={"status": "starting"})
+   144	        store._trials[trial.trial_id] = new_trial
+   145	        csrf = get_csrf(signed_in_admin_repo_client)
+   146	        resp = signed_in_admin_repo_client.post(
+   147	            "/admin/work-refs/delete",
+   148	            data={
+   149	                "csrf_token": csrf,
+   150	                "ref_name": f"refs/heads/{trial.branch}",
+   151	            },
+   152	            follow_redirects=False,
+   153	        )
+   154	        assert resp.status_code == 303
+   155	        assert "?error=not-eligible" in resp.headers["location"]
+   156	        # The ref still exists.
+   157	        assert bare_repo.resolve_ref(f"refs/heads/{trial.branch}") is not None
+   158	
+   159	    def test_ref_vanished_between_get_and_post(
+   160	        self,
+   161	        signed_in_admin_repo_client: TestClient,
+   162	        store: InMemoryStore,
+   163	        bare_repo: GitRepo,
+   164	        base_sha: str,
+   165	        artifacts_dir: Path,
+   166	    ) -> None:
+   167	        """Ref deleted by a third party between GET and POST → not-found."""
+   168	        seed_evaluate_task(
+   169	            store,
+   170	            slug="t2",
+   171	            trial_id="trial-V",
+   172	            artifacts_dir=artifacts_dir,
+   173	            commit_sha=make_child_commit(bare_repo, base_sha, "v"),
+   174	        )
+   175	        trial = store.read_trial("trial-V")
+   176	        assert trial.branch is not None
+   177	        assert trial.commit_sha is not None
+   178	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   179	        store.declare_trial_eval_error("trial-V")
+   180	        resp = signed_in_admin_repo_client.get("/admin/work-refs/")
+   181	        assert "eligible for deletion (1)" in resp.text
+   182	        # Third-party deletion before POST.
+   183	        bare_repo.delete_ref(f"refs/heads/{trial.branch}")
+   184	        csrf = get_csrf(signed_in_admin_repo_client)
+   185	        resp = signed_in_admin_repo_client.post(
+   186	            "/admin/work-refs/delete",
+   187	            data={
+   188	                "csrf_token": csrf,
+   189	                "ref_name": f"refs/heads/{trial.branch}",
+   190	            },
+   191	            follow_redirects=False,
+   192	        )
+   193	        assert resp.status_code == 303
+   194	        assert "?error=not-found" in resp.headers["location"]
+   195	
+   196	    def test_cas_miss_redirects_ref_changed(
+   197	        self,
+   198	        signed_in_admin_repo_client: TestClient,
+   199	        store: InMemoryStore,
+   200	        bare_repo: GitRepo,
+   201	        base_sha: str,
+   202	        artifacts_dir: Path,
+   203	    ) -> None:
+   204	        """SHA rewritten between the route's read and the delete call → ref-changed.
+   205	
+   206	        We simulate this by monkey-patching ``GitRepo.delete_ref`` to
+   207	        raise ``GitError`` (the CAS miss surface).
+   208	        """
+   209	        seed_evaluate_task(
+   210	            store,
+   211	            slug="t3",
+   212	            trial_id="trial-C",
+   213	            artifacts_dir=artifacts_dir,
+   214	            commit_sha=make_child_commit(bare_repo, base_sha, "c"),
+   215	        )
+   216	        trial = store.read_trial("trial-C")
+   217	        assert trial.branch is not None
+   218	        assert trial.commit_sha is not None
+   219	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   220	        store.declare_trial_eval_error("trial-C")
+   221	        from eden_git.repo import GitError
+   222	
+   223	        def boom(self, *args, **kwargs):
+   224	            raise GitError(["git", "update-ref"], 1, "", "expected ... but is ...")
+   225	
+   226	        with pytest.MonkeyPatch.context() as mp:
+   227	            mp.setattr(GitRepo, "delete_ref", boom)
+   228	            csrf = get_csrf(signed_in_admin_repo_client)
+   229	            resp = signed_in_admin_repo_client.post(
+   230	                "/admin/work-refs/delete",
+   231	                data={
+   232	                    "csrf_token": csrf,
+   233	                    "ref_name": f"refs/heads/{trial.branch}",
+   234	                },
+   235	                follow_redirects=False,
+   236	            )
+   237	        assert resp.status_code == 303
+   238	        assert "?error=ref-changed" in resp.headers["location"]
+   239	
+   240	    def test_unexpected_git_error_propagates_5xx(
+   241	        self,
+   242	        signed_in_admin_repo_client: TestClient,
+   243	        store: InMemoryStore,
+   244	        bare_repo: GitRepo,
+   245	        base_sha: str,
+   246	        artifacts_dir: Path,
+   247	    ) -> None:
+   248	        """Plan §G + impl-review finding 2: a non-CAS GitError must not
+   249	        be silenced as ``ref-changed``. It propagates to FastAPI's
+   250	        default 500 handler so the operator sees a real error and the
+   251	        failure shows up in logs.
+   252	        """
+   253	        seed_evaluate_task(
+   254	            store,
+   255	            slug="t4",
+   256	            trial_id="trial-P",
+   257	            artifacts_dir=artifacts_dir,
+   258	            commit_sha=make_child_commit(bare_repo, base_sha, "p"),
+   259	        )
+   260	        trial = store.read_trial("trial-P")
+   261	        assert trial.branch is not None
+   262	        assert trial.commit_sha is not None
+   263	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   264	        store.declare_trial_eval_error("trial-P")
+   265	        from eden_git.repo import GitError
+   266	
+   267	        # exit code 128 + stderr without "expected" => unexpected git
+   268	        # failure. The route must re-raise.
+   269	        def perm_boom(self, *args, **kwargs):
+   270	            raise GitError(
+   271	                ["git", "update-ref"],
+   272	                128,
+   273	                "",
+   274	                "fatal: cannot lock ref: permission denied",
+   275	            )
+   276	
+   277	        with pytest.MonkeyPatch.context() as mp:
+   278	            mp.setattr(GitRepo, "delete_ref", perm_boom)
+   279	            csrf = get_csrf(signed_in_admin_repo_client)
+   280	            with pytest.raises(GitError):
+   281	                signed_in_admin_repo_client.post(
+   282	                    "/admin/work-refs/delete",
+   283	                    data={
+   284	                        "csrf_token": csrf,
+   285	                        "ref_name": f"refs/heads/{trial.branch}",
+   286	                    },
+   287	                    follow_redirects=False,
+   288	                )
+   289	
+   290	
+   291	class TestReadPathTransportFailures:
+   292	    """Plan §G + impl-review finding 1: transport-shaped failures on
+   293	    read paths render the inline placeholder, not 500.
+   294	    """
+   295	
+   296	    def test_index_transport_failure_renders_placeholder(
+   297	        self,
+   298	        signed_in_client: TestClient,
+   299	        monkeypatch: pytest.MonkeyPatch,
+   300	    ) -> None:
+   301	        def explode(self, *args, **kwargs):
+   302	            raise RuntimeError("simulated transport error")
+   303	
+   304	        monkeypatch.setattr(InMemoryStore, "list_tasks", explode)
+   305	        resp = signed_in_client.get("/admin/", follow_redirects=False)
+   306	        assert resp.status_code == 502
+   307	        assert "Transport failure" in resp.text
+   308	
+   309	    def test_tasks_index_transport_failure_renders_placeholder(
+   310	        self,
+   311	        signed_in_client: TestClient,
+   312	        monkeypatch: pytest.MonkeyPatch,
+   313	    ) -> None:
+   314	        def explode(self, *args, **kwargs):
+   315	            raise RuntimeError("boom")
+   316	
+   317	        monkeypatch.setattr(InMemoryStore, "list_tasks", explode)
+   318	        resp = signed_in_client.get("/admin/tasks/", follow_redirects=False)
+   319	        assert resp.status_code == 502
+   320	
+   321	    def test_events_transport_failure_renders_placeholder(
+   322	        self,
+   323	        signed_in_client: TestClient,
+   324	        monkeypatch: pytest.MonkeyPatch,
+   325	    ) -> None:
+   326	        def explode(self):
+   327	            raise RuntimeError("boom")
+   328	
+   329	        monkeypatch.setattr(InMemoryStore, "replay", explode)
+   330	        resp = signed_in_client.get("/admin/events/", follow_redirects=False)
+   331	        assert resp.status_code == 502
+
+exec
+/bin/zsh -lc "rg -n 'TestReadPathTransportFailures|unexpected_git_error_propagates_5xx|could not load' reference/services/web-ui/tests/test_admin_partial_write.py reference/services/web-ui/src/eden_web_ui/routes/admin.py" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/web-ui/tests/test_admin_partial_write.py:240:    def test_unexpected_git_error_propagates_5xx(
+reference/services/web-ui/tests/test_admin_partial_write.py:291:class TestReadPathTransportFailures:
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:147:        return _read_failure_response(request, "could not load dashboard data")
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:231:            return _read_failure_response(request, "could not load tasks")
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:282:        return _read_failure_response(request, "could not load task")
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:366:        return _read_failure_response(request, "could not load trials")
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:426:        return _read_failure_response(request, "could not load trial")
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:503:        return _read_failure_response(request, "could not load events")
+
+codex
+The prior four findings are mostly fixed. I’m checking the new failure-mode code a bit more closely now, because the updated review hinges on error classification rather than the happy path.
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d); git init --bare -b main "$tmp/repo.git" >/dev/null 2>&1; git -C "$tmp/repo.git" update-ref -d refs/heads/work/missing deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2>&1; echo RC:$?; rm -rf "$tmp"' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d); git init --bare -b main "$tmp/repo.git" >/dev/null 2>&1; git -C "$tmp/repo.git" update-ref refs/heads/work/test 1111111111111111111111111111111111111111 2>/dev/null || true; git -C "$tmp/repo.git" update-ref -d refs/heads/work/missing 1111111111111111111111111111111111111111; echo RC:$?; rm -rf "$tmp"' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+error: cannot lock ref 'refs/heads/work/missing': unable to resolve reference 'refs/heads/work/missing'
+RC:1
+
+ succeeded in 0ms:
+error: cannot lock ref 'refs/heads/work/missing': unable to resolve reference 'refs/heads/work/missing'
+RC:1
+
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d); git init --bare -b main "$tmp/repo.git" >/dev/null 2>&1; echo x > "$tmp/f"; sha=$(git -C "$tmp/repo.git" hash-object -w "$tmp/f"); tree=$(printf '"'100644 blob %s\\tfile\\n' \""'$sha" | git -C "$tmp/repo.git" mktree); commit=$(echo msg | GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@a GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@a git -C "$tmp/repo.git" commit-tree "$tree"); git -C "$tmp/repo.git" update-ref refs/heads/work/test "$commit"; git -C "$tmp/repo.git" update-ref -d refs/heads/work/test 0000000000000000000000000000000000000000 2>&1; echo RC:$?; rm -rf "$tmp"' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d); git init --bare -b main "$tmp/repo.git" >/dev/null 2>&1; echo x > "$tmp/f"; sha=$(git -C "$tmp/repo.git" hash-object -w "$tmp/f"); tree=$(printf '"'100644 blob %s\\tfile\\n' \""'$sha" | git -C "$tmp/repo.git" mktree); commit=$(echo msg | GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@a GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@a git -C "$tmp/repo.git" commit-tree "$tree"); git -C "$tmp/repo.git" update-ref refs/heads/work/test "$commit"; git -C "$tmp/repo.git" update-ref -d refs/heads/work/test "$commit" 2>&1; echo RC:$?; rm -rf "$tmp"' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+RC:0
+
+ succeeded in 0ms:
+RC:0
+
+exec
+/bin/zsh -lc 'tmp=$(mktemp -d); git init --bare -b main "$tmp/repo.git" >/dev/null 2>&1; echo x > "$tmp/f"; sha=$(git -C "$tmp/repo.git" hash-object -w "$tmp/f"); tree=$(printf '"'100644 blob %s\\tfile\\n' \""'$sha" | git -C "$tmp/repo.git" mktree); commit=$(echo msg | GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@a GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@a git -C "$tmp/repo.git" commit-tree "$tree"); echo y > "$tmp/g"; sha2=$(git -C "$tmp/repo.git" hash-object -w "$tmp/g"); tree2=$(printf '"'100644 blob %s\\tfile\\n' \""'$sha2" | git -C "$tmp/repo.git" mktree); wrong=$(echo msg2 | GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@a GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@a git -C "$tmp/repo.git" commit-tree "$tree2"); git -C "$tmp/repo.git" update-ref refs/heads/work/test "$commit"; git -C "$tmp/repo.git" update-ref -d refs/heads/work/test "$wrong" 2>&1; echo RC:$?; rm -rf "$tmp"' in /Users/ericalt/Documents/eden
+ succeeded in 151ms:
+error: cannot lock ref 'refs/heads/work/test': is at 1ac6640c731fd4a3223765fd6cdf10ff4c02400f but expected 4fc5b5ef5030a690b413301cad2016ced6ce6002
+RC:1
+
+codex
+I found one error-classification edge case worth validating before I close this out. I’m rerunning the admin suite as-is, then I’ll summarize what still remains versus what’s now fixed.
+exec
+/bin/zsh -lc "uv run pytest -q reference/services/web-ui/tests/test_admin_routes.py reference/services/web-ui/tests/test_admin_security.py reference/services/web-ui/tests/test_admin_partial_write.py reference/services/web-ui/tests/test_admin_flow.py reference/services/web-ui/tests/test_admin_e2e.py -m 'not skip'" in /Users/ericalt/Documents/eden
+ succeeded in 5424ms:
+....................................................................     [100%]
+68 passed in 4.67s
+
+codex
+**Findings**
+1. Risk — [reference/services/web-ui/src/eden_web_ui/routes/admin.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/admin.py:615). `work_refs_delete()` now treats any `GitError` with `returncode == 1` as `?error=ref-changed`. That is still too broad: I verified `git update-ref -d` returns exit code `1` both for a true CAS mismatch and for “ref disappeared after the POST-time read” (`unable to resolve reference ...`). Under the current code, that second case is mislabeled as `ref-changed` instead of `not-found`, which still deviates from plan §I. Fix by classifying on stderr more precisely: map `expected ... but is ...` to `ref-changed`, map `unable to resolve reference` to `not-found`, and re-raise anything else.
+
+**Overall assessment**
+
+The prior four findings are effectively fixed. The read-path failure handling is now present, invalid task filters no longer fall back to the full list, and the dashboard no longer conflates “no `--repo-path`” with “git failed”. I reran the admin test set plus the admin e2e test, and all 68 tests passed. Aside from the remaining `GitError` classification edge case above, the implementation is now in good shape.
+2026-04-25T16:11:54.254865Z ERROR codex_core::session: failed to record rollout items: thread 019dc55e-9b70-7451-ad27-7725d61293ba not found
+tokens used
+139,128

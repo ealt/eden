@@ -7,7 +7,7 @@ host writes a ``{"event": "ideation", ...}`` line on stdin and reads
 ``{"event": "idea", ...}`` lines back, terminated by either
 ``{"event": "ideation-done", ...}`` or ``{"event": "ideation-error", ...}``.
 
-See ``docs/plans/eden-phase-10d-llm-worker-hosts.md`` §D.2 for the
+See ``docs/archive/eden-phase-10d-llm-worker-hosts.md`` §D.2 for the
 wire format.
 """
 

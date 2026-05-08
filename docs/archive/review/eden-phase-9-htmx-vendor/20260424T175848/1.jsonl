@@ -1,0 +1,9 @@
+No findings in the follow-up scope.
+
+The medium is resolved. [htmx_aware_redirect()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/_helpers.py:16) fixes the exact failure mode from round 0 by returning `204` + `HX-Redirect` for HTMX requests, and [add_row()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:140) now uses it on both the no-session and missing-claim branches at [160](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:160) and [165](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:165). The new tests in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:148) pin the HTMX redirect behavior and the no-JS `303` regression path. I also spot-checked the behavior directly: HTMX no-session and missing-claim requests now return `204`, the expected `HX-Redirect`, and an empty body.
+
+The low doc issue is also resolved. The alternatives verdict in [docs/plans/eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:159) now names the row-append flow as the chunk-1 load-bearing use case, which matches the main tech-stack section.
+
+I did not find anything new. Residual note only: the HTMX invalid-CSRF branch is still generic `403` text rather than a redirect, and it still is not covered by an HTMX-specific test, but that was unchanged and I would treat it as optional hardening, not a blocking issue for this fix.
+
+Verification: `uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -q` passed, and the direct request checks matched the intended semantics.

@@ -65,8 +65,6 @@ ALLOWLIST_PATHS: tuple[str, ...] = (
     "docs/archive/",
     "docs/plans/eden-phase-",
     "docs/plans/review/",
-    "docs/plans/rename-to-directed-evolution.md",
-    "docs/plans/eden-protocol-bootstrap.md",
     "MANUAL_UI_ISSUES.md",
     "scripts/check-rename-discipline.py",  # this file documents the names
 )

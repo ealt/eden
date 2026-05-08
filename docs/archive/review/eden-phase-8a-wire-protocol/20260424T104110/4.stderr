@@ -1,0 +1,152 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc095-57d0-7a22-9ccf-f71b87fb3f7c
+--------
+user
+Round 4. Updated the test plan (finding 6 in 'Tests to pass before declaring done') to cover the three outcomes explicitly: confirmed success, confirmed divergence (AtomicityViolation, no compensation), indeterminate (IndeterminateIntegration, no compensation). Added a separate test for the only branch where compensation is correct: a synchronous non-transport 409 invalid-precondition rejection. Please verify the test plan now matches the atomicity rules throughout.
+codex
+Checking the updated test plan against the settled atomicity rules so the success/divergence/indeterminate branches, plus the only valid compensation branch, are all described consistently.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8a-wire-protocol.md | sed -n '372,398p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8a-wire-protocol.md | sed -n '497,530p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   497	"post-promotion reading" from
+   498	[`spec/v0/design-notes/integrator-atomicity.md`](../../spec/v0/design-notes/integrator-atomicity.md).
+   499	
+   500	Over HTTP, a transport failure — connection reset, timeout, proxy
+   501	disconnect — between the request being sent and the response being
+   502	received is **indeterminate**: the server may have durably committed
+   503	the transition before the response was lost. A blind
+   504	compensating-delete in that case would violate §3.4: the ref
+   505	disappears while the `trial_commit_sha` and `trial.integrated`
+   506	event stay, producing exactly the split-brain state §3.4 forbids
+   507	after a promotion returns.
+   508	
+   509	Two mechanisms together close this gap:
+   510	
+   511	1. **Server-side same-value idempotency** on the endpoint (see
+   512	   "Request and response bodies" §6 above): a repeated
+   513	   `POST /trials/{id}/integrate` with the **same** `trial_commit_sha`
+   514	   is a no-op; a repeated call with a **different** value is an
+   515	   error. This is the same rule `Integrator.integrate` already
+   516	   enforces in-process for `_check_idempotent` — now surfaced at
+   517	   the HTTP boundary so retries are safe.
+   518	2. **Client-side reconciliation on indeterminate failure.** The
+   519	   `StoreClient.integrate_trial` path MUST NOT raise a bare
+   520	   transport exception back to `Integrator.integrate`. Instead,
+   521	   on `httpx.TransportError` / `httpx.RemoteProtocolError` /
+   522	   `httpx.ReadTimeout` (and equivalents), it MUST attempt a
+   523	   reconciliation read of `GET /trials/{id}` and resolve to
+   524	   exactly one of three outcomes:
+   525	   a. **Confirmed success.** If the trial's `trial_commit_sha`
+   526	      equals the SHA the client sent, the server has durably
+   527	      committed. Return success; Integrator skips the compensating
+   528	      delete.
+   529	   b. **Confirmed divergence.** If the trial's `trial_commit_sha`
+   530	      is set but does **not** equal the SHA the client sent, some
+
+ succeeded in 0ms:
+   372	4. **Experiment-id header check** — a request whose header
+   373	   disagrees with the URL segment is rejected with
+   374	   `experiment-id-mismatch`.
+   375	5. **Schema parity** — each new wire schema has a
+   376	   `tests/test_wire_schema_parity.py` that round-trips Pydantic
+   377	   dumps against the JSON Schema.
+   378	6. **Integrate-over-HTTP reconciliation — three-outcome coverage.**
+   379	   One test per branch of the three-outcome rule:
+   380	   - *Confirmed success.* Server's
+   381	     `POST /trials/{id}/integrate` commits durably; the response
+   382	     is then lost (injected transport disconnect after the
+   383	     transaction but before serialization). The
+   384	     `StoreClient.integrate_trial` read-back observes
+   385	     `trial_commit_sha` equal to the expected value; the
+   386	     Integrator returns success and MUST NOT compensate-delete
+   387	     the ref.
+   388	   - *Confirmed divergence.* Server has already committed a
+   389	     *different* `trial_commit_sha` (simulated by seeding the
+   390	     store with one SHA, then calling integrate with another).
+   391	     The request is rejected inline with
+   392	     `invalid-precondition` (same-value idempotency fails);
+   393	     alternatively, the transport fails and the read-back
+   394	     observes the different SHA. Both paths raise
+   395	     `AtomicityViolation`; neither compensates.
+   396	   - *Indeterminate.* Server has no `trial_commit_sha` at
+   397	     read-back time (request never arrived, or transaction
+   398	     rolled back, or is still in flight) or the read-back
+
+exec
+/bin/zsh -lc 'rg -n "compensate|IndeterminateIntegration|AtomicityViolation|invalid-precondition|trial_commit_sha is None|MUST NOT compensate|confirmed success|confirmed divergence|indeterminate" docs/plans/eden-phase-8a-wire-protocol.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+141:   | `eden://error/invalid-precondition` | 409 | `InvalidPrecondition` |
+163:     `eden://error/invalid-precondition` (HTTP 409). The chapter
+170:   - **Transport-indeterminate handling (integrator-client rule).**
+172:     MUST NOT run blindly on any HTTP error. On an *indeterminate*
+180:     differs → `AtomicityViolation`, no compensation; observed
+182:     `IndeterminateIntegration`, no compensation (a `null`
+185:     compensates **only** when the server demonstrably rejected
+187:     `invalid-precondition` returned and received). Combined with
+191:     **not blindly retry-safe** on indeterminate transport
+386:     Integrator returns success and MUST NOT compensate-delete
+392:     `invalid-precondition` (same-value idempotency fails);
+395:     `AtomicityViolation`; neither compensates.
+400:     `IndeterminateIntegration` and MUST NOT compensate; the
+406:   returns a structured 409 `invalid-precondition` synchronously
+409:   Integrator compensates the ref per the existing Phase 7b
+415:   returns `invalid-precondition`. Verified by counting events and
+496:caused the Integrator to compensate-delete the ref — the
+502:received is **indeterminate**: the server may have durably committed
+518:2. **Client-side reconciliation on indeterminate failure.** The
+533:      `AtomicityViolation` for operator intervention. The client
+534:      MUST NOT compensate-delete the ref, because the ref may
+539:      `IndeterminateIntegration`. Read-back observing a null
+543:      this as unresolvable and MUST NOT compensate.
+547:the write (e.g. a 409 `invalid-precondition` returned and received,
+550:to confirmed success, confirmed divergence, or
+551:`IndeterminateIntegration`. This asymmetry is what preserves the
+554:rejection the Integrator definitely compensates, or by a loud
+555:`IndeterminateIntegration` / `AtomicityViolation` — the three
+570:  `IndeterminateIntegration` — raised when a wire-mediated
+574:  same as `AtomicityViolation`. Existing exception handlers in
+578:  transport-indeterminate reconciliation (read-back + retry loop)
+581:  failure it can compensate, or an `IndeterminateIntegration` it
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8a-wire-protocol.md | sed -n '396,410p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   396	   - *Indeterminate.* Server has no `trial_commit_sha` at
+   397	     read-back time (request never arrived, or transaction
+   398	     rolled back, or is still in flight) or the read-back
+   399	     itself fails. The client MUST raise
+   400	     `IndeterminateIntegration` and MUST NOT compensate; the
+   401	     `null`-SHA reading is not treated as positive proof of
+   402	     non-commit.
+   403	
+   404	   A separate test verifies the compensation path is still
+   405	   exercised by a **non-transport** rejection: the server
+   406	   returns a structured 409 `invalid-precondition` synchronously
+   407	   (e.g. the trial's `commit_sha` points to an unreachable
+   408	   commit so the server rejects at `validate_metrics` time); the
+   409	   Integrator compensates the ref per the existing Phase 7b
+   410	   rule. This preserves the only branch where compensating
+
+codex
+Two issues remain.
+
+1. The test plan now distinguishes the branches correctly, but the main atomicity prose is still too broad about synchronous `409 invalid-precondition`. The test section says there are two cases:
+- different stored SHA => `AtomicityViolation`, no compensation
+- separate non-transport rejection => compensation
+But the atomicity section still says compensation runs on a received `409 invalid-precondition` as the example of demonstrable rejection, without carving out the “different SHA already committed” case. That leaves a contradiction between the test plan and the prose. Refs: [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:388), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:404), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:524)
+
+2. The new compensation-path example is not a valid one. `integrate_trial` does not reject because `commit_sha` is unreachable, and `validate_metrics` does not check reachability. That example mixes integrator-side preconditions with the store-side endpoint. If you want this test, describe it as an injected/mock synchronous `InvalidPrecondition` from the store, or use a real store-side precondition that `integrate_trial` actually enforces. Ref: [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:406)
+
+So the test plan is closer, but it does not yet match the atomicity rules “throughout” because the prose and the compensation example still need tightening.
+tokens used
+116,487

@@ -1,0 +1,52 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbb65-722b-78b2-a2cc-6ee51fe81958
+--------
+user
+Round 4: updated 02 §7.1 completed_at field description to match the new terminal-transition semantics. It now says: 'Set when the trial reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from starting to success, error, or eval_error.'
+
+Please confirm whether this chunk is ready to merge.
+codex
+Checking the single frozen-field update against the current role/task text. I’m only validating whether `completed_at` now aligns cleanly with the retry-exhaustion `eval_error` path and whether that closes the last cross-chapter mismatch.
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '333,338p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/04-task-protocol.md | sed -n '223,226p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/02-data-model.md | sed -n '299,303p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   333	- `completed_at` — set to the time of the terminal trial
+   334	  transition, i.e. written exactly once, when the trial's status
+   335	  leaves `"starting"` (either on a `"success"`/`"error"`
+   336	  submission, or on the retry-exhausted `"eval_error"`
+   337	  transition). Intermediate `eval_error` submissions MUST NOT
+   338	  advance `completed_at`.
+
+ succeeded in 0ms:
+   223	      orchestrator's policy exhausts retries for this trial
+   224	      (or the operator abandons it), the orchestrator MUST
+   225	      transition the trial's `status` from `"starting"` to
+   226	      `"eval_error"`, at which point the trial status is
+
+ succeeded in 0ms:
+   299	| `description` | no | string | Human-readable summary. |
+   300	| `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
+   301	| `started_at` | yes | timestamp | When the implementer began. |
+   302	| `completed_at` | no | timestamp | Set when the trial reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"eval_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+   303	
+
+codex
+No findings.
+
+`completed_at` now aligns across [02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:302), [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:333), and [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:223). I don’t see any remaining blockers in this review chunk.
+
+I consider the chunk ready to merge.
+tokens used
+120,637

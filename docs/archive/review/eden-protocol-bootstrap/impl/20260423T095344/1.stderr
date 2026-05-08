@@ -1,0 +1,1528 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbb43-bb73-7cf2-9318-63a989b78c4c
+--------
+user
+I've addressed your Round 0 feedback. The updated review brief is at docs/plans/review/eden-protocol-bootstrap/impl/20260423T095344/1.md and lists what was fixed, with pointers to the specific files/sections. Please re-read the implementation files (spec/v0/*.md, spec/v0/schemas/*.schema.json, the fixture, the CI workflow, AGENTS.md, README.md) and review again.
+
+Specifically re-check:
+1. experiment-config protocol framing — does it still accidentally bake in impl-specific assumptions?
+2. task.schema.json claim mutual exclusion — correct shape?
+3. timestamp patterns across all schemas — UTC-only enforced?
+4. metric type tightening — is the integer/real distinction now actionable for implementors?
+
+Flag any remaining issues (Bug/Risk/Nit) and end with go/no-go.
+codex
+I’m re-running the review against the revised Phase 1 implementation, starting with the new brief and then re-reading the full affected file set so I can verify the fixes directly rather than relying on the change summary.
+exec
+/bin/zsh -lc "sed -n '1,260p' docs/plans/review/eden-protocol-bootstrap/impl/20260423T095344/1.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: Phase 1 — spec v0 core concepts + schemas + fixture
+
+## Plan
+
+- Path: `docs/plans/eden-protocol-bootstrap.md` (roadmap Phase 1 section)
+- Summary: spec chapters + 6 JSON Schemas + fixture migration + `schema-validity` CI job.
+
+## Implementation Files
+
+| File | Action | Plan Section |
+|---|---|---|
+| `spec/v0/00-overview.md` | Created | 1a |
+| `spec/v0/01-concepts.md` | Created | 1a |
+| `spec/v0/02-data-model.md` | Created + Round 0 revisions | 1a |
+| `spec/v0/schemas/experiment-config.schema.json` | Created + Round 0 revisions | 1b |
+| `spec/v0/schemas/task.schema.json` | Created + Round 0 revisions | 1b |
+| `spec/v0/schemas/event.schema.json` | Created + Round 0 revisions | 1b |
+| `spec/v0/schemas/proposal.schema.json` | Created + Round 0 revisions | 1b |
+| `spec/v0/schemas/trial.schema.json` | Created + Round 0 revisions | 1b |
+| `spec/v0/schemas/metrics-schema.schema.json` | Created | 1b |
+| `tests/fixtures/experiment/.eden/config.yaml` | Created | 1c |
+| `tests/fixtures/experiment/README.md` | Created | 1c |
+| `.github/workflows/ci.yml` | Modified | 1c — `schema-validity` job |
+| `AGENTS.md` | Modified | commands + status |
+| `README.md` | Modified | status |
+
+## Round 1 changes (in response to Round 0 review)
+
+**All four Round 0 findings addressed:**
+
+1. **Bug — experiment-config was too impl-specific.** Fixed.
+   Removed `planner_root`, `workspace`, `plan_command`,
+   `implement_command`, `evaluate_command`, and `file_permissions`
+   from the normative schema and from `02-data-model.md` §2.
+   Required normative fields are now only the host-independent core:
+   `parallel_trials`, `max_trials`, `max_wall_time`, `metrics_schema`,
+   `objective`. `convergence_window` and `target_condition` remain
+   optional. A new §2.4 explicitly permits additional top-level
+   fields for implementation-specific role binding / tuning and
+   forbids a conforming orchestrator from rejecting configs solely
+   because they carry such fields. Role binding is now deferred to
+   Phase 2's `03-roles.md`, matching the framing. The fixture still
+   validates under the relaxed schema (its direvo-specific fields
+   pass through as additional properties).
+
+2. **Bug — task `claim` mutual exclusion not enforced.** Fixed.
+   `schemas/task.schema.json` now uses
+   `{"if": state==claimed, "then": required claim, "else": not required claim}`.
+   `02-data-model.md` §3.4 now explicitly states `claim` MUST be
+   present when `state == "claimed"` and MUST NOT be present
+   otherwise.
+
+3. **Bug — prose said UTC but schemas accepted offsets.** Fixed.
+   Every timestamp field in `task.schema.json`, `event.schema.json`,
+   `proposal.schema.json`, and `trial.schema.json` now has a
+   `pattern` that restricts the value to a UTC `Z`-suffixed form
+   (e.g. `2026-04-23T18:04:01Z` or `…Z` with optional fractional
+   seconds). Prose in `02-data-model.md` §1.2 is strengthened to
+   state explicitly that offset forms MUST NOT be used.
+
+4. **Risk — integer vs real metric typing underspecified.**
+   Fixed. `02-data-model.md` §1.3 now defines exactly what each
+   declared type admits: `integer` is a JSON number with no
+   fractional component (`1.0` accepted; `1.5` rejected), `real` is
+   any JSON number, `text` is a JSON string, `null` is allowed for
+   any declared type. The trial schema's `metrics` remains
+   per-experiment — §7.2 now explicitly calls out that the
+   per-metric type check is a runtime responsibility of the
+   orchestrator because the schema cannot express per-experiment
+   types generically.
+
+**Local verification after changes:**
+
+- `markdownlint-cli2@0.14.0` — 0 errors on 16 files.
+- `check-jsonschema --check-metaschema spec/v0/schemas/*.schema.json` — ok.
+- `check-jsonschema --schemafile experiment-config.schema.json <fixture>` — ok.
+
+## Review Status
+
+Round 1 — awaiting review of the four fixes.
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M .github/workflows/ci.yml
+ M AGENTS.md
+ M README.md
+ D spec/v0/schemas/.gitkeep
+?? docs/plans/review/eden-protocol-bootstrap/impl/20260423T095344/
+?? spec/v0/00-overview.md
+?? spec/v0/01-concepts.md
+?? spec/v0/02-data-model.md
+?? spec/v0/schemas/event.schema.json
+?? spec/v0/schemas/experiment-config.schema.json
+?? spec/v0/schemas/metrics-schema.schema.json
+?? spec/v0/schemas/proposal.schema.json
+?? spec/v0/schemas/task.schema.json
+?? spec/v0/schemas/trial.schema.json
+?? tests/fixtures/
+
+codex
+I have the revision summary. Next I’m re-reading the spec chapters, all six schemas, and the integration files so I can confirm the fixes in context and catch any new regressions introduced by the changes.
+exec
+/bin/zsh -lc "nl -ba spec/v0/01-concepts.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/00-overview.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN Protocol — Overview
+     2	
+     3	**Version:** v0 (draft)
+     4	
+     5	EDEN is a protocol for orchestrating **directed code evolution**: the
+     6	iterative, machine-driven generation, implementation, and evaluation of
+     7	code changes against a declared objective. It specifies the components
+     8	involved, the messages they exchange, and the invariants they must
+     9	honor. It does not prescribe a language, transport, or storage
+    10	technology — those are implementation concerns.
+    11	
+    12	This document is the first chapter of the v0 specification. Later
+    13	chapters refine each of the concepts introduced here; see
+    14	[`README.md`](README.md) for the full chapter list and the phase in
+    15	which each lands.
+    16	
+    17	## 1. Scope
+    18	
+    19	The EDEN protocol defines:
+    20	
+    21	- The **roles** that participate in an EDEN experiment
+    22	  (Chapter [`03-roles.md`](03-roles.md)).
+    23	- The **shared data model** — experiment configs, tasks, events,
+    24	  proposals, trials, and metrics schemas (Chapter
+    25	  [`02-data-model.md`](02-data-model.md) and the JSON Schemas in
+    26	  [`schemas/`](schemas/)).
+    27	- The **task protocol** — how work is claimed, executed, and submitted
+    28	  (Chapter [`04-task-protocol.md`](04-task-protocol.md)).
+    29	- The **event protocol** — how state changes are observed by
+    30	  subscribers (Chapter [`05-event-protocol.md`](05-event-protocol.md)).
+    31	- The **integrator contract** — how trial branches are promoted into a
+    32	  canonical lineage (Chapter [`06-integrator.md`](06-integrator.md)).
+    33	- The **storage contract** — the durability and consistency guarantees
+    34	  a conforming task store, event log, and artifact store must provide
+    35	  (Chapter [`08-storage.md`](08-storage.md)).
+    36	- The **conformance procedure** — how an independent implementation
+    37	  proves it conforms (Chapter [`09-conformance.md`](09-conformance.md)).
+    38	
+    39	The EDEN protocol does **not** define:
+    40	
+    41	- Which language, runtime, or transport an implementation uses.
+    42	- Which database, message bus, or object store backs a conforming
+    43	  service.
+    44	- The UX of any human-facing tool.
+    45	- The internal algorithms of a planner, implementer, or evaluator,
+    46	  beyond the contracts they expose at their role boundary.
+    47	
+    48	## 2. Conformance
+    49	
+    50	### 2.1 Normative language
+    51	
+    52	Normative requirements in this specification use the RFC 2119 keywords
+    53	**MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**. Prose
+    54	that does not use one of these keywords is informative.
+    55	
+    56	### 2.2 Conformance classes
+    57	
+    58	A single EDEN experiment involves several distinct components. Each
+    59	can be implemented independently; each is evaluated against its own
+    60	conformance class:
+    61	
+    62	- **Planner** — proposes trials.
+    63	- **Implementer** — realizes a proposal as a working-tree change.
+    64	- **Evaluator** — scores a realized proposal against the experiment's
+    65	  objective.
+    66	- **Integrator** — promotes evaluated proposals into the canonical
+    67	  trial lineage.
+    68	- **Task store** — the durable queue that holds tasks between roles.
+    69	- **Event log** — the durable record of state changes, read by
+    70	  subscribers.
+    71	- **Artifact store** — the durable home for files produced during a
+    72	  trial (plans, code, evaluation outputs).
+    73	- **Orchestrator** — the component that dispatches tasks and advances
+    74	  the state machine.
+    75	
+    76	An implementation MAY conform to one or more classes. It need not
+    77	conform to all.
+    78	
+    79	### 2.3 What "conforming" means
+    80	
+    81	An implementation conforms to a class iff it passes every scenario in
+    82	[`09-conformance.md`](09-conformance.md) that targets that class. The
+    83	conformance suite is black-box: it drives an implementation through
+    84	its advertised protocol surface and observes the results. An
+    85	implementation that passes is conforming regardless of how it is
+    86	built.
+    87	
+    88	The reference implementation in [`../../reference/`](../../reference/)
+    89	is **one** conforming implementation. It has no privileged status; a
+    90	third-party implementation that passes the conformance suite is
+    91	equally valid.
+    92	
+    93	## 3. Versioning
+    94	
+    95	### 3.1 Version lineage
+    96	
+    97	An EDEN spec version is a single lineage identified by a directory
+    98	under `spec/` (e.g. `spec/v0/`, `spec/v1/`). Within a version, changes
+    99	MUST be either additive (new optional fields, new events, new roles)
+   100	or clarifying (wording, examples, fixed typos). Breaking changes MUST
+   101	go to a new version; `v0` MUST NOT be mutated in a way that would
+   102	invalidate a previously-conforming implementation.
+   103	
+   104	### 3.2 Declaring a targeted version
+   105	
+   106	An implementation MUST declare the EDEN spec version it targets. How
+   107	the declaration is surfaced is implementation-defined; typical forms
+   108	include a `protocol_version` field in a service's health endpoint, a
+   109	string in a package's metadata, or a header on protocol messages. The
+   110	conformance suite for version N runs only against implementations
+   111	that declare targeting of version N.
+   112	
+   113	### 3.3 Wire-format changes
+   114	
+   115	A change to any JSON Schema file under `schemas/` is a change to the
+   116	wire format. Within a version, such changes MUST be additive. Schema
+   117	changes MUST be reflected in the corresponding prose chapter (and,
+   118	once the reference implementation has them, in its language
+   119	bindings) in the same change — they MUST NOT drift.
+   120	
+   121	## 4. Document conventions
+   122	
+   123	### 4.1 Schemas and prose
+   124	
+   125	Wire-format objects are specified in two complementary forms:
+   126	
+   127	- A **JSON Schema** file under [`schemas/`](schemas/) that an
+   128	  implementation can validate messages against mechanically.
+   129	- A **prose description** in this spec that records what each field
+   130	  means, which invariants apply across fields, and what the
+   131	  surrounding role contract expects.
+   132	
+   133	If prose and schema disagree, the prose describes intent and the
+   134	schema MUST be updated to match. Automated tooling (see
+   135	[`AGENTS.md`](../../AGENTS.md)) MAY enforce parity between the two.
+   136	
+   137	### 4.2 Cross-references
+   138	
+   139	Chapters cite each other by filename (e.g. "see
+   140	[`04-task-protocol.md`](04-task-protocol.md)"). Numbered section
+   141	anchors within a chapter are stable within a version.
+   142	
+   143	### 4.3 Examples
+   144	
+   145	Informative examples appear in fenced code blocks and are marked as
+   146	such. Examples MUST NOT be read as normative — if an example
+   147	contradicts the surrounding prose, the prose wins.
+   148	
+   149	## 5. Status of this version
+   150	
+   151	EDEN `v0` is a **draft**. Chapters are filled in over Phases 1–12 of
+   152	the roadmap; see [`../../docs/roadmap.md`](../../docs/roadmap.md) for
+   153	the per-chapter target phase. An implementation MAY target `v0-draft`
+   154	during this period, but SHOULD expect additive changes between
+   155	successive `v0-draft` commits. A frozen `v0` release will be tagged
+   156	once the full chapter set and conformance suite are in place.
+
+ succeeded in 0ms:
+     1	# Core Concepts
+     2	
+     3	This chapter introduces the vocabulary used throughout the
+     4	specification. It defines each concept at the level of *what it is*
+     5	and *what role it plays in the system*, not *how it behaves over
+     6	time*. Behavioral contracts — state machines, transactional
+     7	guarantees, claim semantics — are defined in subsequent chapters.
+     8	
+     9	## 1. Experiment
+    10	
+    11	An **experiment** is a single directed-code-evolution run. It has:
+    12	
+    13	- A starting commit on a designated branch of a git repository.
+    14	- An **objective** — a scalar function of a trial's measured metrics,
+    15	  to be either maximized or minimized.
+    16	- A declared **metrics schema** — the names and types of the metrics
+    17	  evaluators will report.
+    18	- Role configurations — how to run the planner, implementer, and
+    19	  evaluator for this experiment.
+    20	- Termination conditions (trial-count, wall-clock, convergence
+    21	  target).
+    22	
+    23	The experiment's full configuration is specified by an
+    24	**experiment-config** object (Chapter
+    25	[`02-data-model.md`](02-data-model.md); schema:
+    26	[`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json)).
+    27	
+    28	## 2. Roles
+    29	
+    30	EDEN defines four role contracts. A conforming implementation of a
+    31	role MUST honor the protocol surface defined for that role in
+    32	Chapter [`03-roles.md`](03-roles.md). Within this chapter the roles
+    33	are introduced at the concept level only.
+    34	
+    35	### 2.1 Planner
+    36	
+    37	The **planner** proposes what to try. Its output is a **proposal** —
+    38	a document describing a change to attempt, along with metadata
+    39	(parent commits, priority, artifacts) needed to execute it. Planners
+    40	are free in their internal strategy (LLM, search, human); the
+    41	protocol constrains only what a proposal looks like and when one is
+    42	considered ready.
+    43	
+    44	### 2.2 Implementer
+    45	
+    46	The **implementer** turns a proposal into a working-tree change. It
+    47	consumes a proposal, produces a commit (or commit sequence) on a
+    48	per-trial branch, and signals completion. It does **not** judge
+    49	whether the change is good — it only reifies the plan.
+    50	
+    51	### 2.3 Evaluator
+    52	
+    53	The **evaluator** measures an implemented trial against the
+    54	experiment's metrics schema. Its output is a set of metrics plus a
+    55	status indicator (success, error). The evaluator MUST NOT modify the
+    56	trial branch; it observes only.
+    57	
+    58	### 2.4 Integrator
+    59	
+    60	The **integrator** decides how evaluated trials enter the canonical
+    61	trial lineage. It squashes a per-trial worker branch into a
+    62	trial-shaped commit on a canonical branch, attaches an eval manifest,
+    63	and exposes the resulting commit to downstream consumers. The
+    64	integrator is the sole writer of the canonical lineage.
+    65	
+    66	## 3. Proposal
+    67	
+    68	A **proposal** is the planner's output: a human-readable description
+    69	of a change plus the metadata required to dispatch work against it.
+    70	Schema: [`schemas/proposal.schema.json`](schemas/proposal.schema.json).
+    71	Proposals have a lifecycle (drafting → ready → dispatched →
+    72	completed) that is defined in
+    73	[`04-task-protocol.md`](04-task-protocol.md). This chapter treats a
+    74	proposal as a value object; the task protocol defines how its
+    75	lifecycle advances.
+    76	
+    77	## 4. Trial
+    78	
+    79	A **trial** is a single attempt to improve the objective. A trial
+    80	references:
+    81	
+    82	- The proposal that was implemented.
+    83	- The resulting commit(s) on the worker branch and the squashed
+    84	  commit on the canonical branch.
+    85	- The metrics reported by the evaluator.
+    86	- A status (starting, success, error, eval_error).
+    87	
+    88	Trials are the unit of progress: a terminated experiment is
+    89	summarized by the sequence of its completed trials and their scores
+    90	under the objective. Schema:
+    91	[`schemas/trial.schema.json`](schemas/trial.schema.json).
+    92	
+    93	## 5. Task
+    94	
+    95	A **task** is a unit of work dispatched to a role. Tasks are the
+    96	protocol's primary verb: "implementer, please realize this
+    97	proposal"; "evaluator, please score this branch." Every task has:
+    98	
+    99	- A **kind** (plan, implement, evaluate).
+   100	- A **payload** shaped per-kind (a proposal reference, a commit to
+   101	  evaluate, etc.).
+   102	- A **state** advancing through a state machine
+   103	  ([`04-task-protocol.md`](04-task-protocol.md)).
+   104	- A **claim token** that grants a specific worker temporary exclusive
+   105	  right to execute it.
+   106	
+   107	Schema: [`schemas/task.schema.json`](schemas/task.schema.json). The
+   108	task is *stored data*; the task protocol is *how state transitions
+   109	happen*.
+   110	
+   111	## 6. Event
+   112	
+   113	An **event** records a state change in the system — a task claimed,
+   114	a proposal submitted, a trial evaluated. Events are immutable, append
+   115	to an event log, and are read by subscribers (UIs, schedulers,
+   116	other roles).
+   117	
+   118	A central EDEN invariant: **every state change that is observable via
+   119	tasks or trials MUST be accompanied by a corresponding event, and
+   120	the event write MUST be atomic with the state change it describes.**
+   121	Subscribers rely on this to reconstruct the system's history without
+   122	gaps. The event schema and the transactional invariant are defined
+   123	in [`05-event-protocol.md`](05-event-protocol.md); the event
+   124	envelope itself is fixed in
+   125	[`schemas/event.schema.json`](schemas/event.schema.json).
+   126	
+   127	## 7. Objective and metrics schema
+   128	
+   129	An experiment declares:
+   130	
+   131	- A **metrics schema** — the names and storage types of the metrics
+   132	  its evaluator reports. Types are drawn from a small value-type set
+   133	  (integer, real, text). Schema:
+   134	  [`schemas/metrics-schema.schema.json`](schemas/metrics-schema.schema.json).
+   135	- An **objective** — a scalar expression over the declared metrics,
+   136	  plus a direction (maximize or minimize).
+   137	
+   138	Conforming implementations MUST validate every reported metrics
+   139	payload against the experiment's declared schema. A metrics payload
+   140	that names a field absent from the schema, or that supplies a value
+   141	incompatible with the declared type, MUST be rejected.
+   142	
+   143	## 8. Claim token
+   144	
+   145	A **claim token** is a value issued when a worker claims a task. It
+   146	accompanies every subsequent request the worker makes about that
+   147	task (progress reports, completion submissions, artifact uploads).
+   148	The token is the system's mechanism for guaranteeing that two
+   149	workers cannot complete the same task: once a task is claimed, the
+   150	task store MUST reject any completion attempt that does not present
+   151	the same token. A task store MAY reclaim a task from a worker that
+   152	has become unresponsive; reclamation invalidates the prior token.
+   153	
+   154	The token's concrete shape is implementation-defined; the protocol
+   155	requires only that it be unforgeable by other workers and bound to
+   156	a single claim.
+   157	
+   158	## 9. Canonical trial lineage
+   159	
+   160	EDEN defines a git topology with three namespaces:
+   161	
+   162	- **`main`** — the experiment's starting point. Immutable during an
+   163	  experiment.
+   164	- **`trial/*`** — the canonical lineage, one commit per successfully
+   165	  integrated trial. Written only by the integrator.
+   166	- **`work/*`** — per-attempt worker branches. Multiple implementers
+   167	  may write here concurrently; these branches are inputs to the
+   168	  integrator and are not normative outputs.
+   169	
+   170	Consumers (evaluators, external observers, later experiments) read
+   171	the canonical lineage on `trial/*`. Chapter
+   172	[`06-integrator.md`](06-integrator.md) defines the exact invariants
+   173	the integrator preserves across this topology.
+   174	
+   175	## 10. Storage components
+   176	
+   177	Three durable stores support an experiment:
+   178	
+   179	- **Task store** — holds tasks and their state. Provides atomic
+   180	  claim, idempotent submission, and reclamation.
+   181	- **Event log** — appends events in causal order. Provides subscribe
+   182	  and replay.
+   183	- **Artifact store** — holds per-trial files (plans, code diffs,
+   184	  evaluator outputs, logs). Addressed by URI.
+   185	
+   186	The protocol defines what each store's operations guarantee; it does
+   187	not define how they are implemented. Chapter
+   188	[`08-storage.md`](08-storage.md) gives the durability and
+   189	consistency requirements each store must meet.
+   190	
+   191	## 11. Orchestrator
+   192	
+   193	The **orchestrator** is the component that dispatches tasks to
+   194	workers and advances the protocol's state machine in response to
+   195	submissions. It has no unique authority beyond what the protocol
+   196	grants it: in particular, it MUST persist state changes through the
+   197	task store and event log like any other component, and an
+   198	experiment MAY run with multiple cooperating orchestrators provided
+   199	they share a conforming task store and event log.
+   200	
+   201	## 12. Relationships
+   202	
+   203	The concepts above fit together as follows. A full specification
+   204	chapter exists for each of the behavioral contracts implied here.
+   205	
+   206	- An **experiment** configures three **roles** and targets a **git
+   207	  repository** with a starting commit.
+   208	- An **orchestrator** dispatches **tasks** to role workers via the
+   209	  **task store**.
+   210	- A worker of role X claims a task, performs its role-specific
+   211	  work, and submits; the submission produces a result object
+   212	  (proposal, trial, metrics payload) persisted to the appropriate
+   213	  store, and an **event** is appended to the event log.
+   214	- The **integrator** consumes completed evaluations and advances
+   215	  the **canonical trial lineage**.
+   216	- The experiment terminates per its configured conditions; its
+   217	  outcome is the sequence of trials on the canonical lineage.
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/02-data-model.md | sed -n '1,340p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Data Model
+     2	
+     3	This chapter defines the shape of the values that flow through the
+     4	EDEN protocol. For each entity it gives the intent, the fields, the
+     5	required/optional split, and the structural invariants that MUST
+     6	hold independent of any behavioral contract.
+     7	
+     8	Each entity also has a companion JSON Schema under
+     9	[`schemas/`](schemas/). The prose in this chapter and the schema are
+    10	normatively paired: an implementation's data MUST satisfy both. Where
+    11	one is more restrictive than the other, the stricter constraint
+    12	applies.
+    13	
+    14	Behavioral concerns — when fields may change, which transitions are
+    15	permitted, what guarantees the surrounding store must offer — are
+    16	specified in Chapters [`04-task-protocol.md`](04-task-protocol.md),
+    17	[`05-event-protocol.md`](05-event-protocol.md),
+    18	[`06-integrator.md`](06-integrator.md), and
+    19	[`08-storage.md`](08-storage.md).
+    20	
+    21	## 1. Common types
+    22	
+    23	### 1.1 Identifiers
+    24	
+    25	Entity identifiers (`task_id`, `trial_id`, `proposal_id`,
+    26	`event_id`) are opaque strings. They MUST be unique within the store
+    27	that issues them. The protocol does not mandate a specific format;
+    28	implementations MAY use integers rendered as strings, UUIDs, or
+    29	other opaque values, so long as equality comparison is
+    30	well-defined.
+    31	
+    32	### 1.2 Timestamps
+    33	
+    34	All timestamps in protocol messages MUST be RFC 3339 strings in
+    35	UTC with second-or-better precision (e.g. `2026-04-23T18:04:01Z`).
+    36	Offset timestamps (e.g. `…-07:00`) MUST NOT be used on the wire:
+    37	every persisted timestamp MUST end with the literal `Z` suffix. A
+    38	consumer MUST NOT assume timestamps are strictly monotonic across
+    39	entities; ordering is established by the event log, not by
+    40	timestamps.
+    41	
+    42	### 1.3 Metric values
+    43	
+    44	A metric value is one of: a JSON number (for `integer` or `real`
+    45	types), a JSON string (for `text` type), or `null` (when the
+    46	evaluator declined to report). Implementations MUST reject metric
+    47	values whose JSON type does not match the declared metrics-schema
+    48	type.
+    49	
+    50	The `integer` and `real` metric types both travel the wire as JSON
+    51	numbers; they are distinguished by what values each admits:
+    52	
+    53	- **`integer`** — a JSON number whose value is an integer (no
+    54	  fractional component). Wire forms such as `3`, `-7`, or `1.0` are
+    55	  accepted; `1.5` MUST be rejected. A conforming orchestrator MUST
+    56	  validate this constraint when persisting a metrics payload.
+    57	- **`real`** — any JSON number, including values with a fractional
+    58	  component.
+    59	- **`text`** — a JSON string.
+    60	- **`null`** — allowed for any declared type when the evaluator
+    61	  declined to report that metric.
+    62	
+    63	### 1.4 Git references
+    64	
+    65	Commit SHAs are lowercase hexadecimal strings of an
+    66	implementation-declared length (minimum 40 characters for SHA-1; 64
+    67	for SHA-256). Branch names follow the namespaces defined in
+    68	[`01-concepts.md`](01-concepts.md) §9.
+    69	
+    70	### 1.5 URIs
+    71	
+    72	Artifact locations are URIs. The protocol does not mandate a scheme;
+    73	file URLs, S3 URLs, or custom schemes are permitted. A conforming
+    74	artifact store MUST document which schemes it issues.
+    75	
+    76	## 2. Experiment config
+    77	
+    78	Schema: [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json).
+    79	
+    80	An experiment config is the declarative input to an experiment. It
+    81	is authored by a user (or generated by tooling) and persisted
+    82	alongside the experiment.
+    83	
+    84	The protocol defines only the **host-mechanism-independent core** of
+    85	the config — fields that every conforming implementation needs to
+    86	observe the same semantics. How roles are bound (local subprocess,
+    87	HTTP service, in-process adapter, …) is outside this chapter's
+    88	scope; role binding is specified alongside the role contracts in
+    89	[`03-roles.md`](03-roles.md) (Phase 2). Until then, implementations
+    90	MAY carry role-binding information as additional top-level fields
+    91	without violating this chapter.
+    92	
+    93	### 2.1 Required fields
+    94	
+    95	| Field | Type | Description |
+    96	|---|---|---|
+    97	| `parallel_trials` | integer ≥ 1 | Maximum number of trials that MAY be in flight simultaneously. |
+    98	| `max_trials` | integer ≥ 1 | Hard ceiling on the number of trials attempted. |
+    99	| `max_wall_time` | duration | Hard ceiling on elapsed wall time. Format: a positive integer followed by one of `s`, `m`, `h`, `d`. |
+   100	| `metrics_schema` | object | A metrics schema (§6). MUST be non-empty. |
+   101	| `objective` | object | An objective spec (§2.2). |
+   102	
+   103	### 2.2 Objective spec
+   104	
+   105	| Field | Type | Description |
+   106	|---|---|---|
+   107	| `expr` | string | A scalar expression over fields of `metrics_schema`. |
+   108	| `direction` | string | Either `"maximize"` or `"minimize"`. |
+   109	
+   110	The expression language is implementation-defined but MUST treat
+   111	metric field names as the free variables. A conforming orchestrator
+   112	MUST reject an objective expression that references a name absent
+   113	from `metrics_schema`.
+   114	
+   115	### 2.3 Optional fields
+   116	
+   117	| Field | Type | Default | Description |
+   118	|---|---|---|---|
+   119	| `convergence_window` | integer ≥ 1 | (none) | Terminate if the objective has not improved in this many trials. |
+   120	| `target_condition` | string | (none) | A condition over metrics; when satisfied, the experiment terminates early. |
+   121	
+   122	### 2.4 Additional top-level fields
+   123	
+   124	Implementations MAY define additional top-level fields for role
+   125	binding and implementation-specific tuning. The experiment-config
+   126	schema does not restrict unknown top-level fields; a conforming
+   127	orchestrator MUST NOT reject a config solely because it carries
+   128	fields this chapter does not define. This forward-compatibility
+   129	rule is intentional: it lets role-binding semantics land in
+   130	[`03-roles.md`](03-roles.md) without breaking previously-valid
+   131	configs.
+   132	
+   133	An implementation SHOULD document which additional top-level fields
+   134	it consumes.
+   135	
+   136	## 3. Task
+   137	
+   138	Schema: [`schemas/task.schema.json`](schemas/task.schema.json).
+   139	
+   140	A task is a work item. It is persisted in the task store and
+   141	advances through a state machine defined in
+   142	[`04-task-protocol.md`](04-task-protocol.md); this section defines
+   143	only its shape.
+   144	
+   145	### 3.1 Fields
+   146	
+   147	| Field | Required | Type | Description |
+   148	|---|---|---|---|
+   149	| `task_id` | yes | string | Unique identifier. |
+   150	| `kind` | yes | string | One of `"plan"`, `"implement"`, `"evaluate"`. |
+   151	| `state` | yes | string | See §3.2. |
+   152	| `payload` | yes | object | Kind-specific payload (§3.3). |
+   153	| `claim` | no | object | Present iff the task is currently claimed (§3.4). |
+   154	| `created_at` | yes | timestamp | When the task was created. |
+   155	| `updated_at` | yes | timestamp | Most recent state change. |
+   156	
+   157	### 3.2 State values
+   158	
+   159	The `state` field MUST be one of `"pending"`, `"claimed"`,
+   160	`"submitted"`, `"completed"`, `"failed"`. The legal transitions
+   161	between these states are defined in
+   162	[`04-task-protocol.md`](04-task-protocol.md). The data model
+   163	constrains only that the value be one of the listed strings.
+   164	
+   165	### 3.3 Payload shape
+   166	
+   167	The `payload` object's shape depends on `kind`.
+   168	
+   169	- `"plan"` — MUST contain `experiment_id` (string). MAY contain
+   170	  planner-specific hints.
+   171	- `"implement"` — MUST contain `proposal_id` (string) referring to
+   172	  a proposal with `state == "ready"` at the time of dispatch.
+   173	- `"evaluate"` — MUST contain `trial_id` (string) referring to a
+   174	  trial with `status == "starting"` and a `commit_sha` set.
+   175	
+   176	### 3.4 Claim object
+   177	
+   178	| Field | Required | Type | Description |
+   179	|---|---|---|---|
+   180	| `token` | yes | string | Opaque unforgeable claim token. |
+   181	| `worker_id` | yes | string | Opaque identifier for the claiming worker. |
+   182	| `claimed_at` | yes | timestamp | When the claim was issued. |
+   183	| `expires_at` | no | timestamp | When the task store MAY reclaim. |
+   184	
+   185	The `claim` field MUST be present when `state == "claimed"`, and MUST
+   186	NOT be present for any other state. The schema in
+   187	[`schemas/task.schema.json`](schemas/task.schema.json) enforces this
+   188	mutual exclusion.
+   189	
+   190	## 4. Event
+   191	
+   192	Schema: [`schemas/event.schema.json`](schemas/event.schema.json).
+   193	
+   194	An event records a state change. Events are immutable once appended.
+   195	
+   196	### 4.1 Envelope
+   197	
+   198	Every event MUST provide this envelope:
+   199	
+   200	| Field | Required | Type | Description |
+   201	|---|---|---|---|
+   202	| `event_id` | yes | string | Unique identifier within the log. |
+   203	| `type` | yes | string | A dotted type name, e.g. `task.claimed`, `trial.evaluated`. |
+   204	| `occurred_at` | yes | timestamp | When the state change happened. |
+   205	| `experiment_id` | yes | string | The experiment this event belongs to. |
+   206	| `data` | yes | object | Type-specific payload (§4.2). |
+   207	
+   208	### 4.2 Type-specific payload
+   209	
+   210	Each event `type` corresponds to a shape under `data`. The full
+   211	enumeration of types is defined in
+   212	[`05-event-protocol.md`](05-event-protocol.md); at this layer, the
+   213	data model requires only that `data` be a JSON object and that its
+   214	shape match the registered schema for the event's `type`.
+   215	
+   216	### 4.3 Ordering
+   217	
+   218	Events within a single experiment MUST form a total order consistent
+   219	with causality: if event B describes a state change that depended
+   220	on a state recorded by event A, A MUST precede B in the log. The
+   221	ordering mechanism is a storage concern
+   222	([`08-storage.md`](08-storage.md)).
+   223	
+   224	## 5. Proposal
+   225	
+   226	Schema: [`schemas/proposal.schema.json`](schemas/proposal.schema.json).
+   227	
+   228	A proposal is the planner's output.
+   229	
+   230	### 5.1 Fields
+   231	
+   232	| Field | Required | Type | Description |
+   233	|---|---|---|---|
+   234	| `proposal_id` | yes | string | Unique identifier. |
+   235	| `experiment_id` | yes | string | The experiment this proposal belongs to. |
+   236	| `slug` | yes | string | Human-readable short label. MUST match `^[a-z0-9][a-z0-9-]*$`. |
+   237	| `priority` | yes | number | Ordering hint; higher dispatches earlier. |
+   238	| `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
+   239	| `artifacts_uri` | yes | string (URI) | Where the planner's output documents live. |
+   240	| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. |
+   241	| `created_at` | yes | timestamp | When the proposal was created. |
+   242	
+   243	### 5.2 Parent commits
+   244	
+   245	`parent_commits` MUST contain at least one SHA. Each SHA MUST name a
+   246	commit reachable from the experiment's starting commit on `main` or
+   247	from an already-completed trial on the canonical trial lineage.
+   248	
+   249	## 6. Metrics schema
+   250	
+   251	Schema: [`schemas/metrics-schema.schema.json`](schemas/metrics-schema.schema.json).
+   252	
+   253	A metrics schema is a mapping from metric name to storage type. It
+   254	appears as the `metrics_schema` field of an experiment config and is
+   255	used to validate every metrics payload the evaluator produces.
+   256	
+   257	### 6.1 Shape
+   258	
+   259	The metrics schema is a JSON object whose keys are metric names and
+   260	whose values are type strings.
+   261	
+   262	- A metric name MUST match `^[A-Za-z_][A-Za-z0-9_]*$`.
+   263	- A type value MUST be one of `"integer"`, `"real"`, `"text"`.
+   264	- A metrics schema MUST have at least one entry.
+   265	
+   266	### 6.2 Reserved names
+   267	
+   268	The names `trial_id`, `commit_sha`, `parent_commits`, `branch`,
+   269	`status`, `artifacts_uri`, `description`, `timestamp`, `started_at`,
+   270	`completed_at` are reserved by the protocol for use on the trial
+   271	object and MUST NOT appear in a metrics schema.
+   272	
+   273	## 7. Trial
+   274	
+   275	Schema: [`schemas/trial.schema.json`](schemas/trial.schema.json).
+   276	
+   277	A trial is one completed attempt.
+   278	
+   279	### 7.1 Fields
+   280	
+   281	| Field | Required | Type | Description |
+   282	|---|---|---|---|
+   283	| `trial_id` | yes | string | Unique identifier. |
+   284	| `experiment_id` | yes | string | The experiment this trial belongs to. |
+   285	| `proposal_id` | yes | string | The proposal that produced this trial. |
+   286	| `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"eval_error"`. |
+   287	| `parent_commits` | yes | array of SHA | Inherited from the proposal. |
+   288	| `branch` | no | string | Worker branch under `work/*`. Present once the implementer starts. |
+   289	| `commit_sha` | no | string | Worker-branch tip SHA. Present once the implementer completes. |
+   290	| `trial_commit_sha` | no | string | Canonical-lineage SHA under `trial/*`. Present once the integrator has promoted the trial. |
+   291	| `artifacts_uri` | no | string (URI) | Where the trial's artifacts live. |
+   292	| `description` | no | string | Human-readable summary. |
+   293	| `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
+   294	| `started_at` | yes | timestamp | When the implementer began. |
+   295	| `completed_at` | no | timestamp | When the evaluator submitted. |
+   296	
+   297	### 7.2 Metrics payload
+   298	
+   299	If present, `metrics` MUST be an object whose keys are a subset of
+   300	the declared metrics-schema keys and whose values match the declared
+   301	types (§1.3) or are `null`. Because the metrics-schema is
+   302	per-experiment, [`schemas/trial.schema.json`](schemas/trial.schema.json)
+   303	cannot express this constraint generically and leaves `metrics` as
+   304	an open object; the per-metric type check is a runtime responsibility
+   305	of the orchestrator. A conforming orchestrator MUST reject a metrics
+   306	payload that violates the experiment's metrics-schema, and MUST NOT
+   307	record the trial as `"success"` in that case.
+   308	
+   309	### 7.3 Status transitions
+   310	
+   311	Trial status transitions are behavioral and are defined alongside
+   312	the task and event protocols in
+   313	[`04-task-protocol.md`](04-task-protocol.md). The data model
+   314	constrains only that the status be one of the listed strings.
+   315	
+   316	## 8. Invariants across entities
+   317	
+   318	This section collects structural invariants that span multiple
+   319	entities. Behavioral invariants (claim semantics, transactional
+   320	event writes) live in the corresponding behavior chapters.
+   321	
+   322	1. **Identifier scope.** `task_id`, `proposal_id`, `trial_id`, and
+   323	   `event_id` MUST each be unique within a single experiment.
+   324	   Uniqueness across experiments is not required by the protocol
+   325	   but is RECOMMENDED when an implementation shares a store across
+   326	   experiments.
+   327	2. **Reference integrity.** Every `proposal_id` referenced by a
+   328	   task payload or trial MUST name a proposal persisted in the
+   329	   store before the reference is written. Every `trial_id`
+   330	   referenced by an `evaluate` task MUST exist with
+   331	   `status == "starting"` at dispatch time.
+   332	3. **Metrics/schema conformance.** Every metrics payload persisted
+   333	   on a trial MUST validate against the experiment's
+   334	   `metrics_schema` (§6).
+   335	4. **Canonical-lineage single-writer.** Only the integrator MAY
+   336	   write to `trial_commit_sha` on a trial. Workers MUST NOT set or
+   337	   modify this field directly.
+   338	5. **Claim uniqueness.** A task MAY have at most one active
+   339	   `claim` object at any time.
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/experiment-config.schema.json | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/task.schema.json | sed -n '1,240p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN experiment config",
+     4	  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, metrics schema, concurrency bound, termination bounds. Role bindings (how the planner, implementer, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and land under additional properties until the role-binding chapter is written in Phase 2.",
+     5	  "type": "object",
+     6	  "required": [
+     7	    "parallel_trials",
+     8	    "max_trials",
+     9	    "max_wall_time",
+    10	    "metrics_schema",
+    11	    "objective"
+    12	  ],
+    13	  "properties": {
+    14	    "parallel_trials": {
+    15	      "type": "integer",
+    16	      "minimum": 1,
+    17	      "description": "Maximum trials in flight simultaneously."
+    18	    },
+    19	    "max_trials": {
+    20	      "type": "integer",
+    21	      "minimum": 1,
+    22	      "description": "Hard ceiling on trials attempted."
+    23	    },
+    24	    "max_wall_time": {
+    25	      "type": "string",
+    26	      "pattern": "^[1-9][0-9]*[smhd]$",
+    27	      "description": "Hard ceiling on elapsed wall time; format is a positive integer followed by one of s, m, h, d."
+    28	    },
+    29	    "metrics_schema": {
+    30	      "$ref": "metrics-schema.schema.json"
+    31	    },
+    32	    "objective": {
+    33	      "type": "object",
+    34	      "required": ["expr", "direction"],
+    35	      "properties": {
+    36	        "expr": {
+    37	          "type": "string",
+    38	          "minLength": 1,
+    39	          "description": "Scalar expression over fields of metrics_schema."
+    40	        },
+    41	        "direction": {
+    42	          "type": "string",
+    43	          "enum": ["maximize", "minimize"]
+    44	        }
+    45	      }
+    46	    },
+    47	    "convergence_window": {
+    48	      "type": "integer",
+    49	      "minimum": 1,
+    50	      "description": "Terminate if the objective has not improved in this many trials."
+    51	    },
+    52	    "target_condition": {
+    53	      "type": "string",
+    54	      "minLength": 1,
+    55	      "description": "Condition over metrics that terminates the experiment when satisfied."
+    56	    }
+    57	  }
+    58	}
+
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN task",
+     4	  "description": "A unit of work dispatched to a role. The task object carries kind, state, payload, and optional claim; its state-machine semantics are defined in 04-task-protocol.md.",
+     5	  "type": "object",
+     6	  "required": ["task_id", "kind", "state", "payload", "created_at", "updated_at"],
+     7	  "properties": {
+     8	    "task_id": {
+     9	      "type": "string",
+    10	      "minLength": 1
+    11	    },
+    12	    "kind": {
+    13	      "type": "string",
+    14	      "enum": ["plan", "implement", "evaluate"]
+    15	    },
+    16	    "state": {
+    17	      "type": "string",
+    18	      "enum": ["pending", "claimed", "submitted", "completed", "failed"]
+    19	    },
+    20	    "payload": {
+    21	      "type": "object"
+    22	    },
+    23	    "claim": {
+    24	      "type": "object",
+    25	      "required": ["token", "worker_id", "claimed_at"],
+    26	      "properties": {
+    27	        "token": {
+    28	          "type": "string",
+    29	          "minLength": 1
+    30	        },
+    31	        "worker_id": {
+    32	          "type": "string",
+    33	          "minLength": 1
+    34	        },
+    35	        "claimed_at": {
+    36	          "type": "string",
+    37	          "format": "date-time",
+    38	          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    39	        },
+    40	        "expires_at": {
+    41	          "type": "string",
+    42	          "format": "date-time",
+    43	          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    44	        }
+    45	      }
+    46	    },
+    47	    "created_at": {
+    48	      "type": "string",
+    49	      "format": "date-time",
+    50	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    51	    },
+    52	    "updated_at": {
+    53	      "type": "string",
+    54	      "format": "date-time",
+    55	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    56	    }
+    57	  },
+    58	  "allOf": [
+    59	    {
+    60	      "if": {"properties": {"kind": {"const": "plan"}}, "required": ["kind"]},
+    61	      "then": {
+    62	        "properties": {
+    63	          "payload": {
+    64	            "type": "object",
+    65	            "required": ["experiment_id"],
+    66	            "properties": {
+    67	              "experiment_id": {"type": "string", "minLength": 1}
+    68	            }
+    69	          }
+    70	        }
+    71	      }
+    72	    },
+    73	    {
+    74	      "if": {"properties": {"kind": {"const": "implement"}}, "required": ["kind"]},
+    75	      "then": {
+    76	        "properties": {
+    77	          "payload": {
+    78	            "type": "object",
+    79	            "required": ["proposal_id"],
+    80	            "properties": {
+    81	              "proposal_id": {"type": "string", "minLength": 1}
+    82	            }
+    83	          }
+    84	        }
+    85	      }
+    86	    },
+    87	    {
+    88	      "if": {"properties": {"kind": {"const": "evaluate"}}, "required": ["kind"]},
+    89	      "then": {
+    90	        "properties": {
+    91	          "payload": {
+    92	            "type": "object",
+    93	            "required": ["trial_id"],
+    94	            "properties": {
+    95	              "trial_id": {"type": "string", "minLength": 1}
+    96	            }
+    97	          }
+    98	        }
+    99	      }
+   100	    },
+   101	    {
+   102	      "if": {"properties": {"state": {"const": "claimed"}}, "required": ["state"]},
+   103	      "then": {"required": ["claim"]},
+   104	      "else": {"not": {"required": ["claim"]}}
+   105	    }
+   106	  ]
+   107	}
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/event.schema.json | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/metrics-schema.schema.json | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/trial.schema.json | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN metrics schema",
+     4	  "description": "Declarative map from metric name to storage type. Appears as the metrics_schema field on experiment configs; used to validate every metrics payload an evaluator produces.",
+     5	  "type": "object",
+     6	  "minProperties": 1,
+     7	  "propertyNames": {
+     8	    "type": "string",
+     9	    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+    10	    "not": {
+    11	      "enum": [
+    12	        "trial_id",
+    13	        "commit_sha",
+    14	        "parent_commits",
+    15	        "branch",
+    16	        "status",
+    17	        "artifacts_uri",
+    18	        "description",
+    19	        "timestamp",
+    20	        "started_at",
+    21	        "completed_at"
+    22	      ]
+    23	    }
+    24	  },
+    25	  "additionalProperties": {
+    26	    "type": "string",
+    27	    "enum": ["integer", "real", "text"]
+    28	  }
+    29	}
+
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN event envelope",
+     4	  "description": "The envelope every event appended to an EDEN event log MUST carry. Type-specific payload shapes under data are enumerated in 05-event-protocol.md.",
+     5	  "type": "object",
+     6	  "required": ["event_id", "type", "occurred_at", "experiment_id", "data"],
+     7	  "properties": {
+     8	    "event_id": {
+     9	      "type": "string",
+    10	      "minLength": 1,
+    11	      "description": "Unique identifier for this event within the log."
+    12	    },
+    13	    "type": {
+    14	      "type": "string",
+    15	      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+    16	      "description": "Dotted type name, e.g. task.claimed, trial.evaluated."
+    17	    },
+    18	    "occurred_at": {
+    19	      "type": "string",
+    20	      "format": "date-time",
+    21	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+    22	      "description": "When the state change happened; UTC (trailing Z) required."
+    23	    },
+    24	    "experiment_id": {
+    25	      "type": "string",
+    26	      "minLength": 1
+    27	    },
+    28	    "data": {
+    29	      "type": "object",
+    30	      "description": "Type-specific payload; shape fixed by the event's type registry."
+    31	    }
+    32	  }
+    33	}
+
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN trial",
+     4	  "description": "One completed (or in-flight) attempt to improve the experiment's objective. The metrics object's shape is constrained by the experiment's metrics_schema; this schema does not itself constrain metric key/value types, since those vary per experiment.",
+     5	  "type": "object",
+     6	  "required": [
+     7	    "trial_id",
+     8	    "experiment_id",
+     9	    "proposal_id",
+    10	    "status",
+    11	    "parent_commits",
+    12	    "started_at"
+    13	  ],
+    14	  "properties": {
+    15	    "trial_id": {
+    16	      "type": "string",
+    17	      "minLength": 1
+    18	    },
+    19	    "experiment_id": {
+    20	      "type": "string",
+    21	      "minLength": 1
+    22	    },
+    23	    "proposal_id": {
+    24	      "type": "string",
+    25	      "minLength": 1
+    26	    },
+    27	    "status": {
+    28	      "type": "string",
+    29	      "enum": ["starting", "success", "error", "eval_error"]
+    30	    },
+    31	    "parent_commits": {
+    32	      "type": "array",
+    33	      "minItems": 1,
+    34	      "items": {
+    35	        "type": "string",
+    36	        "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    37	      }
+    38	    },
+    39	    "branch": {
+    40	      "type": "string",
+    41	      "pattern": "^work/.+$",
+    42	      "description": "Worker branch under work/*; present once the implementer starts."
+    43	    },
+    44	    "commit_sha": {
+    45	      "type": "string",
+    46	      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+    47	      "description": "Worker-branch tip; present once the implementer completes."
+    48	    },
+    49	    "trial_commit_sha": {
+    50	      "type": "string",
+    51	      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+    52	      "description": "Canonical-lineage SHA on trial/*; set only by the integrator."
+    53	    },
+    54	    "artifacts_uri": {
+    55	      "type": "string",
+    56	      "format": "uri"
+    57	    },
+    58	    "description": {
+    59	      "type": "string"
+    60	    },
+    61	    "metrics": {
+    62	      "type": "object",
+    63	      "description": "Metrics payload; keys MUST be a subset of the experiment's declared metrics_schema and values MUST match the declared types (or be null)."
+    64	    },
+    65	    "started_at": {
+    66	      "type": "string",
+    67	      "format": "date-time",
+    68	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    69	    },
+    70	    "completed_at": {
+    71	      "type": "string",
+    72	      "format": "date-time",
+    73	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    74	    }
+    75	  }
+    76	}
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/proposal.schema.json | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN proposal",
+     4	  "description": "A planner's output: the plan document metadata required to dispatch implementation work. Lifecycle semantics are in 04-task-protocol.md.",
+     5	  "type": "object",
+     6	  "required": [
+     7	    "proposal_id",
+     8	    "experiment_id",
+     9	    "slug",
+    10	    "priority",
+    11	    "parent_commits",
+    12	    "artifacts_uri",
+    13	    "state",
+    14	    "created_at"
+    15	  ],
+    16	  "properties": {
+    17	    "proposal_id": {
+    18	      "type": "string",
+    19	      "minLength": 1
+    20	    },
+    21	    "experiment_id": {
+    22	      "type": "string",
+    23	      "minLength": 1
+    24	    },
+    25	    "slug": {
+    26	      "type": "string",
+    27	      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    28	    },
+    29	    "priority": {
+    30	      "type": "number"
+    31	    },
+    32	    "parent_commits": {
+    33	      "type": "array",
+    34	      "minItems": 1,
+    35	      "items": {
+    36	        "type": "string",
+    37	        "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+    38	        "description": "Lowercase hex SHA-1 (40 chars) or SHA-256 (64 chars) commit identifier."
+    39	      }
+    40	    },
+    41	    "artifacts_uri": {
+    42	      "type": "string",
+    43	      "format": "uri",
+    44	      "minLength": 1
+    45	    },
+    46	    "state": {
+    47	      "type": "string",
+    48	      "enum": ["drafting", "ready", "dispatched", "completed"]
+    49	    },
+    50	    "created_at": {
+    51	      "type": "string",
+    52	      "format": "date-time",
+    53	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    54	    }
+    55	  }
+    56	}
+
+exec
+/bin/zsh -lc "nl -ba tests/fixtures/experiment/.eden/config.yaml | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba tests/fixtures/experiment/README.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	planner_root: "./planner"
+     2	workspace: "./workspace"
+     3	parallel_trials: 1
+     4	evaluate_command: "python3 eval.py"
+     5	implement_command: "python3 implement.py"
+     6	plan_command: "python3 plan.py"
+     7	max_trials: 20
+     8	max_wall_time: "10m"
+     9	metrics_schema:
+    10	  score: real
+    11	objective:
+    12	  expr: "score"
+    13	  direction: "maximize"
+
+ succeeded in 0ms:
+     1	# Experiment fixture
+     2	
+     3	A minimal valid EDEN experiment layout, used by the conformance and
+     4	reference-implementation test suites.
+     5	
+     6	- `.eden/config.yaml` — an experiment config that validates against
+     7	  [`spec/v0/schemas/experiment-config.schema.json`](../../../spec/v0/schemas/experiment-config.schema.json).
+     8	  The `schema-validity` CI job asserts this in every run.
+     9	
+    10	This fixture was ported from the predecessor project's fixture
+    11	directory at Phase 1 (chunk 1c). Role scripts (`plan.py`,
+    12	`implement.py`, `eval.py`) and the planner workspace are not part
+    13	of the protocol-layer fixture; they will be migrated with the
+    14	reference implementation in a later phase.
+
+exec
+/bin/zsh -lc "nl -ba .github/workflows/ci.yml | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	name: ci
+     2	
+     3	on:
+     4	  push:
+     5	    branches: [main]
+     6	  pull_request:
+     7	    branches: [main]
+     8	
+     9	jobs:
+    10	  docs-lint:
+    11	    name: docs-lint
+    12	    runs-on: ubuntu-latest
+    13	    steps:
+    14	      - uses: actions/checkout@v4
+    15	
+    16	      - name: Set up Node
+    17	        uses: actions/setup-node@v4
+    18	        with:
+    19	          node-version: '20'
+    20	
+    21	      - name: Install markdownlint-cli2
+    22	        run: npm install -g markdownlint-cli2@0.14.0
+    23	
+    24	      - name: Lint markdown
+    25	        run: |
+    26	          markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"
+    27	
+    28	  schema-validity:
+    29	    name: schema-validity
+    30	    runs-on: ubuntu-latest
+    31	    steps:
+    32	      - uses: actions/checkout@v4
+    33	
+    34	      - name: Set up Python
+    35	        uses: actions/setup-python@v5
+    36	        with:
+    37	          python-version: '3.12'
+    38	
+    39	      - name: Install check-jsonschema
+    40	        run: pip install 'check-jsonschema==0.29.4'
+    41	
+    42	      - name: Validate each schema against Draft 2020-12 meta-schema
+    43	        run: |
+    44	          check-jsonschema --check-metaschema spec/v0/schemas/*.schema.json
+    45	
+    46	      - name: Validate experiment fixture against experiment-config schema
+    47	        run: |
+    48	          check-jsonschema \
+    49	            --schemafile spec/v0/schemas/experiment-config.schema.json \
+    50	            tests/fixtures/experiment/.eden/config.yaml
+
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# AGENTS.md
+     2	
+     3	This file provides guidance to AI agents working with this repository.
+     4	
+     5	## What this repo is
+     6	
+     7	EDEN is a **protocol** for directed-code-evolution orchestration, not a
+     8	single product. The repo contains three distinct kinds of artifact, each
+     9	with different change discipline:
+    10	
+    11	| Layer | Path | Authoritative? | Change discipline |
+    12	|---|---|---|---|
+    13	| Protocol specification | [`spec/`](spec/) | Yes — the source of truth | RFC-style: versioned, normative (MUST/SHOULD/MAY), carefully reviewed |
+    14	| Reference implementation | [`reference/`](reference/) | No — *one* valid impl | Normal code-review discipline |
+    15	| Conformance suite | [`conformance/`](conformance/) | Normative for tests | Black-box; must be implementation-agnostic |
+    16	
+    17	Non-normative human docs live in [`docs/`](docs/).
+    18	
+    19	## Current phase
+    20	
+    21	**Phase 1 in progress.** `spec/v0/` core-concepts chapters
+    22	(`00-overview.md`, `01-concepts.md`, `02-data-model.md`) and the
+    23	first six JSON Schemas under `spec/v0/schemas/` are in place, and
+    24	the `schema-validity` CI job validates them against the Draft 2020-12
+    25	meta-schema and validates the migrated experiment fixture against
+    26	`experiment-config.schema.json`. See [`docs/roadmap.md`](docs/roadmap.md)
+    27	for the full 13-phase plan. Phase 2 next writes the role contracts
+    28	and the task-protocol state machine.
+    29	
+    30	## Commands
+    31	
+    32	At Phase 1, markdown linting and JSON Schema validation are wired up.
+    33	
+    34	| Command | Purpose |
+    35	|---|---|
+    36	| `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
+    37	| `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
+    38	| `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
+    39	
+    40	### Commands that will exist in later phases
+    41	
+    42	These are listed for orientation; none of the tooling is wired up yet.
+    43	
+    44	| Command | Lands in |
+    45	|---|---|
+    46	| `uv sync` | Phase 3 (first `pyproject.toml`) |
+    47	| `uv run ruff check .` | Phase 3 |
+    48	| `uv run pyright` | Phase 3 |
+    49	| `uv run pytest -q` | Phase 3 |
+    50	| Schema ↔ Pydantic parity check | Phase 3 |
+    51	| `docker compose up` end-to-end | Phase 10 |
+    52	
+    53	## Contribution conventions
+    54	
+    55	### Spec edits
+    56	
+    57	+ Every cross-component contract (wire format, state machine, invariant)
+    58	  is defined in `spec/` first, then implemented in `reference/`. When
+    59	  they disagree, the spec wins and the impl gets a bug.
+    60	+ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
+    61	+ Spec versions are frozen once stable (`spec/v0/` is a single lineage;
+    62	  breaking changes go to `spec/v1/`).
+    63	+ Schema changes must update the spec prose, the JSON Schema file, and
+    64	  (from Phase 3 onward) the Pydantic bindings in lockstep. CI will
+    65	  enforce schema ↔ model parity once both exist.
+    66	
+    67	### Reference implementation
+    68	
+    69	+ Normal code-review discipline.
+    70	+ Normative behavior is tested against the conformance suite (once it
+    71	  exists in Phase 11).
+    72	+ The reference impl is explicitly not a monopoly on correctness. A
+    73	  third-party implementation that passes conformance is equally valid.
+    74	
+    75	## Commit guidelines
+    76	
+    77	+ Short imperative subjects (e.g., "Add event protocol chapter",
+    78	  "Pin task state machine").
+    79	+ For pull requests, include: what the change is, which phase it
+    80	  advances, and any spec ↔ impl implications.
+    81	
+    82	## Related docs
+    83	
+    84	+ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
+    85	+ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with
+    86	  unit-level decomposition.
+    87	+ [`docs/plans/`](docs/plans/) — active implementation plans.
+    88	+ [`docs/archive/`](docs/archive/) — historical reference docs.
+    89	+ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
+    90	+ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+
+exec
+/bin/zsh -lc "nl -ba README.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN
+     2	
+     3	**E**ric's **D**irected **E**volution **N**exus — a protocol for
+     4	orchestrating directed code evolution, with an open reference
+     5	implementation and a conformance suite.
+     6	
+     7	EDEN is not a single system. It is a specification that defines the roles
+     8	(planner, implementer, evaluator, integrator), the messages they exchange,
+     9	and the invariants they must honor. Anyone can build a conforming planner,
+    10	implementer, evaluator, or backing store in any language and interoperate
+    11	with other conforming components.
+    12	
+    13	> **Intelligent evolution.**
+    14	
+    15	## What's in this repo
+    16	
+    17	| Directory | Purpose |
+    18	|---|---|
+    19	| [`spec/`](spec/) | Normative protocol specification. Versioned (`spec/v0/`, `spec/v1/`, …). The authoritative source. |
+    20	| [`reference/`](reference/) | One complete implementation of the protocol. Labeled as a reference — *one* valid implementation, not *the* implementation. |
+    21	| [`conformance/`](conformance/) | Black-box test suite any third-party component can run against itself to prove it conforms. |
+    22	| [`docs/`](docs/) | Non-normative human documentation. Starts with [`docs/naming.md`](docs/naming.md) (what EDEN is) and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
+    23	
+    24	## Status
+    25	
+    26	**Phase 1 in progress.** Scaffolding, documentation, and CI are in
+    27	place on a protected `main`; the Phase 1 spec work (core-concepts
+    28	chapters of `spec/v0/`, six JSON Schemas, fixture migration,
+    29	`schema-validity` CI job) is on a feature branch awaiting review.
+    30	There is still **no runnable code yet** — the reference
+    31	implementation lands in Phase 3. See
+    32	[`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
+    33	
+    34	## Contributing
+    35	
+    36	See [`CONTRIBUTING.md`](CONTRIBUTING.md). Two paths:
+    37	
+    38	- **Spec contributions** follow RFC-style discipline: versioned, normative
+    39	  language (RFC 2119 MUST/SHOULD/MAY), careful review.
+    40	- **Reference-implementation contributions** follow standard code-review
+    41	  workflow.
+    42	
+    43	## License
+    44	
+    45	[MIT](LICENSE).
+
+codex
+The four targeted fixes look materially different on re-read. I’m doing one short consistency sweep now for any leftover prose/schema drift outside those exact items before I close with a merge recommendation.
+exec
+/bin/zsh -lc "rg -n 'date-time|pattern.*Z\\"'$|occurred_at|created_at|updated_at|started_at|completed_at|claimed_at|expires_at'"' spec/v0/schemas/*.schema.json" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "rg -n '\\"'^[0-9a-f]'"\\{40\\}|implementation-declared length|SHA-1|SHA-256' spec/v0/02-data-model.md spec/v0/schemas/*.schema.json" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "rg -n 'planner_root|workspace|plan_command|implement_command|evaluate_command|file_permissions' spec/v0/02-data-model.md spec/v0/schemas/experiment-config.schema.json" in /Users/ericalt/Documents/eden
+ exited 1 in 0ms:
+ succeeded in 0ms:
+spec/v0/schemas/proposal.schema.json:14:    "created_at"
+spec/v0/schemas/proposal.schema.json:50:    "created_at": {
+spec/v0/schemas/proposal.schema.json:52:      "format": "date-time",
+spec/v0/schemas/proposal.schema.json:53:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/metrics-schema.schema.json:20:        "started_at",
+spec/v0/schemas/metrics-schema.schema.json:21:        "completed_at"
+spec/v0/schemas/task.schema.json:6:  "required": ["task_id", "kind", "state", "payload", "created_at", "updated_at"],
+spec/v0/schemas/task.schema.json:25:      "required": ["token", "worker_id", "claimed_at"],
+spec/v0/schemas/task.schema.json:35:        "claimed_at": {
+spec/v0/schemas/task.schema.json:37:          "format": "date-time",
+spec/v0/schemas/task.schema.json:38:          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:40:        "expires_at": {
+spec/v0/schemas/task.schema.json:42:          "format": "date-time",
+spec/v0/schemas/task.schema.json:43:          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:47:    "created_at": {
+spec/v0/schemas/task.schema.json:49:      "format": "date-time",
+spec/v0/schemas/task.schema.json:50:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/task.schema.json:52:    "updated_at": {
+spec/v0/schemas/task.schema.json:54:      "format": "date-time",
+spec/v0/schemas/task.schema.json:55:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/trial.schema.json:12:    "started_at"
+spec/v0/schemas/trial.schema.json:65:    "started_at": {
+spec/v0/schemas/trial.schema.json:67:      "format": "date-time",
+spec/v0/schemas/trial.schema.json:68:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/trial.schema.json:70:    "completed_at": {
+spec/v0/schemas/trial.schema.json:72:      "format": "date-time",
+spec/v0/schemas/trial.schema.json:73:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+spec/v0/schemas/event.schema.json:6:  "required": ["event_id", "type", "occurred_at", "experiment_id", "data"],
+spec/v0/schemas/event.schema.json:18:    "occurred_at": {
+spec/v0/schemas/event.schema.json:20:      "format": "date-time",
+spec/v0/schemas/event.schema.json:21:      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+
+ succeeded in 0ms:
+spec/v0/schemas/proposal.schema.json:38:        "description": "Lowercase hex SHA-1 (40 chars) or SHA-256 (64 chars) commit identifier."
+spec/v0/02-data-model.md:66:implementation-declared length (minimum 40 characters for SHA-1; 64
+spec/v0/02-data-model.md:67:for SHA-256). Branch names follow the namespaces defined in
+
+Completed the Round 1 re-review. The requested fixes were re-checked directly in the revised files, with one lower-severity remaining drift noted outside the four targeted items.
+  ✓ Read the Phase 1 plan details and mapped implementation files
+  ✓ Verify schemas and fixture behavior locally against the documented CI commands
+  ✓ Assess adherence, normative correctness, schema correctness, integration, and protocol framing
+  ✓ Deliver findings ordered by severity with file:line references and merge recommendation
+codex
+**Findings**
+- Risk — [spec/v0/02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:65), [spec/v0/schemas/proposal.schema.json](/Users/ericalt/Documents/eden/spec/v0/schemas/proposal.schema.json:37), [spec/v0/schemas/trial.schema.json](/Users/ericalt/Documents/eden/spec/v0/schemas/trial.schema.json:36): the prose still says commit SHAs use an implementation-declared length, but the schemas still hard-code 40 or 64 hex chars. If v0 intends to allow only SHA-1 and SHA-256 repos, the prose should say that explicitly; otherwise the regexes are over-constrained relative to the spec text.
+
+The four requested re-checks look fixed on this pass. `experiment-config` now carries only host-independent core fields and leaves role binding to additional properties / Phase 2; `task.schema.json` now enforces `claim` iff `state == "claimed"`; all current timestamp fields have UTC-only `Z` patterns; and the integer/real distinction is now defined concretely enough for implementors, with runtime enforcement called out where the static schema cannot express per-experiment metric typing.
+
+Go/no-go: **go**. I do not see a remaining merge-blocking Bug. The only issue I’d keep on the follow-up list is the SHA prose/schema drift above. I also could not rerun `check-jsonschema` locally in this sandbox because the tool is not installed and network installs are blocked, so the validation-status check here is based on direct file review rather than re-execution.
+tokens used
+89,446

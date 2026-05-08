@@ -1,0 +1,149 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbb65-722b-78b2-a2cc-6ee51fe81958
+--------
+user
+Round 3: tightened the eval_error persistence rule in 03 §4.4.
+
+On eval_error submissions (both intermediate and the retry-exhausted terminal case), the orchestrator MUST NOT write metrics or artifacts_uri onto the trial. Any submission-carried values are discarded. An evaluator that wants to retain diagnostic artifacts from a failed attempt may reference them in the task.failed event (channel to be defined in 05-event-protocol.md).
+
+This keeps the trial canonical: it either carries a success/error evaluation's outputs, or nothing.
+
+Please re-read spec/v0/03-roles.md §4.4 and confirm whether anything else blocks merge.
+codex
+Checking the revised `03 §4.4` now. I’m only validating whether the last ambiguity is actually closed and whether the new wording creates any new contradiction with the task protocol or frozen trial model.
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '285,334p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/02-data-model.md | sed -n '297,314p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/04-task-protocol.md | sed -n '214,227p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   285	### 4.4 Submission
+   286	
+   287	The evaluator submits with:
+   288	
+   289	- `trial_id` — the trial it evaluated.
+   290	- `status` — one of:
+   291	  - `"success"` — the trial ran and produced metrics.
+   292	  - `"error"` — the trial could not be evaluated for reasons
+   293	    attributable to the trial's own code (build failure, test
+   294	    failure, etc.). The evaluator MAY still include partial
+   295	    metrics.
+   296	  - `"eval_error"` — the evaluator itself failed for reasons
+   297	    unrelated to the trial's code (infrastructure fault,
+   298	    evaluator bug). While a fresh evaluate task MAY still be
+   299	    created for this trial, the trial's status MUST remain
+   300	    `"starting"`. If the orchestrator's retry policy is
+   301	    exhausted (or the operator abandons evaluation), the
+   302	    orchestrator MUST transition the trial's status to
+   303	    `"eval_error"`, making that status terminal for the trial
+   304	    ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
+   305	- `metrics` — the metrics object described in §4.2. MAY be absent
+   306	  when `status == "eval_error"`.
+   307	- `artifacts_uri` — OPTIONAL. A URI the evaluator uploaded
+   308	  supporting artifacts to.
+   309	
+   310	On a `submitted → completed` or `submitted → failed` transition
+   311	(per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the
+   312	orchestrator MUST write the following trial fields atomically with
+   313	the event:
+   314	
+   315	- `status` — the trial status implied by the submission: `"success"`
+   316	  when the submission's `status == "success"`; `"error"` when the
+   317	  submission's `status == "error"`; unchanged from `"starting"`
+   318	  when the submission's `status == "eval_error"` (see §4.4 above
+   319	  for the terminal-retry case).
+   320	- `metrics` — set to the submission's `metrics` when
+   321	  `status ∈ {"success", "error"}`. When `status == "eval_error"`
+   322	  the orchestrator MUST NOT write `metrics` on the trial; any
+   323	  submission-carried `metrics` is discarded.
+   324	- `artifacts_uri` — set to the submission's `artifacts_uri` when
+   325	  provided and `status ∈ {"success", "error"}`. When
+   326	  `status == "eval_error"` the orchestrator MUST NOT write
+   327	  `artifacts_uri` on the trial; any submission-carried
+   328	  `artifacts_uri` is discarded. (An evaluator that wishes to
+   329	  retain diagnostic artifacts from a failed attempt MAY reference
+   330	  them in the `task.failed` event for that evaluate task; that
+   331	  channel is defined in
+   332	  [`05-event-protocol.md`](05-event-protocol.md).)
+   333	- `completed_at` — set to the time of the terminal trial
+   334	  transition, i.e. written exactly once, when the trial's status
+
+ succeeded in 0ms:
+   297	| `trial_commit_sha` | no | string | Canonical-lineage SHA under `trial/*`. Present once the integrator has promoted the trial. |
+   298	| `artifacts_uri` | no | string (URI) | Where the trial's artifacts live. |
+   299	| `description` | no | string | Human-readable summary. |
+   300	| `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
+   301	| `started_at` | yes | timestamp | When the implementer began. |
+   302	| `completed_at` | no | timestamp | When the evaluator submitted. |
+   303	
+   304	### 7.2 Metrics payload
+   305	
+   306	If present, `metrics` MUST be an object whose keys are a subset of
+   307	the declared metrics-schema keys and whose values match the declared
+   308	types (§1.3) or are `null`. Because the metrics-schema is
+   309	per-experiment, [`schemas/trial.schema.json`](schemas/trial.schema.json)
+   310	cannot express this constraint generically and leaves `metrics` as
+   311	an open object; the per-metric type check is a runtime responsibility
+   312	of the orchestrator. A conforming orchestrator MUST reject a metrics
+   313	payload that violates the experiment's metrics-schema, and MUST NOT
+   314	record the trial as `"success"` in that case.
+
+ succeeded in 0ms:
+   214	    - `evaluate` task, worker `status == "error"` → `failed`
+   215	      AND the referenced trial's `status` MUST be updated to
+   216	      `"error"`.
+   217	    - `evaluate` task, worker `status == "eval_error"` →
+   218	      `failed`, but the referenced trial's `status` MUST remain
+   219	      `"starting"` (the trial itself was not shown to be bad;
+   220	      only the evaluator-side attempt failed). A fresh
+   221	      `evaluate` task MAY be created for the same trial; the
+   222	      protocol does not mandate automatic retry. If the
+   223	      orchestrator's policy exhausts retries for this trial
+   224	      (or the operator abandons it), the orchestrator MUST
+   225	      transition the trial's `status` from `"starting"` to
+   226	      `"eval_error"`, at which point the trial status is
+   227	      terminal.
+
+exec
+/bin/zsh -lc 'git diff -- spec/v0/03-roles.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+codex
+One more consistency check surfaced from the new `eval_error` rule: the trial now becomes terminal on retry exhaustion, which may be later than any evaluator submit. I’m checking `completed_at` against the frozen trial field description before I call it clean.
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '333,338p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/02-data-model.md | sed -n '300,304p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   333	- `completed_at` — set to the time of the terminal trial
+   334	  transition, i.e. written exactly once, when the trial's status
+   335	  leaves `"starting"` (either on a `"success"`/`"error"`
+   336	  submission, or on the retry-exhausted `"eval_error"`
+   337	  transition). Intermediate `eval_error` submissions MUST NOT
+   338	  advance `completed_at`.
+
+ succeeded in 0ms:
+   300	| `metrics` | no | object | Metrics payload; shape dictated by the experiment's metrics schema. |
+   301	| `started_at` | yes | timestamp | When the implementer began. |
+   302	| `completed_at` | no | timestamp | When the evaluator submitted. |
+   303	
+   304	### 7.2 Metrics payload
+
+codex
+**Findings**
+- Bug — [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:333), §4.4 now says `completed_at` is “set to the time of the terminal trial transition,” including “the retry-exhausted `eval_error` transition.” But the frozen trial model still says in [02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:302), §7.1 that `completed_at` means “When the evaluator submitted.” Those are no longer equivalent once retry exhaustion or operator abandonment can happen after the evaluator’s last submit.
+
+**Assessment**
+That `completed_at` mismatch is the only remaining blocker I see. The new `eval_error` persistence rule itself is good and closes the prior ambiguity.
+
+If you update the frozen field description in `02 §7.1` to match the new terminal-transition semantics, I’d consider this review chunk ready to merge.
+tokens used
+119,284

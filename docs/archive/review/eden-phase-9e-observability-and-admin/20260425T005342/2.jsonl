@@ -1,0 +1,17 @@
+Two of the three round-1 issues are resolved cleanly; one is not fully resolved.
+
+- **Replay-index-only ordering:** resolved. The trial-detail algorithm now explicitly uses replay-index position as the only ordering source and correctly rejects `event_id` as an ordering contract. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:316) and the underlying pluggable `event_id_factory` in [_base.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/src/eden_storage/_base.py:166).
+- **NotFound exception handler:** resolved. The plan now correctly notes that the existing `@app.exception_handler(404)` only handles HTTP 404 responses and adds an explicit handler for raised storage/wire `NotFound`. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:559) and the current app in [app.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/app.py:90).
+
+- **Work-ref ownership by trial_id:** not fully resolved yet. The plan correctly moved away from SHA-based ownership, but the new parser is wrong for the current naming scheme. It proposes splitting `work/<slug>-<trial_id>` on the last `-`, but current `trial_id`s themselves contain hyphens (`trial-<hex>`), so `work/foo-trial-abc123` would parse incorrectly. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:386), current branch construction in [implementer.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/implementer.py:69), and current trial-id generation in [implementer.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/implementer.py:65).  
+  The clean fix is to key ownership off exact `trial.branch` equality, not by reparsing the branch name. The `Trial` model already stores `branch`, so the admin page can map `refs/heads/<trial.branch>` to its owning trial directly. See [trial.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/trial.py:33).
+
+Other substantive concern:
+
+- The event-log view still refers to `event.timestamp`, but the event model field is `occurred_at`. That is a real implementation bug if copied literally. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:352) and [event.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/event.py:34).
+
+Smaller cleanup drift remains in the tests text:
+- [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:610) still says “payload” instead of `data`.
+- [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:653) still says `expected_sha` instead of `expected_old_sha`.
+
+Overall assessment: the plan is close, but I would not call it implementation-ready until the work-ref ownership rule is rewritten around exact `trial.branch` matching and the `event.timestamp` field name is corrected. After that, the remaining issues are mostly editorial.

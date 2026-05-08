@@ -1,0 +1,11 @@
+**Findings**
+
+- Medium: The plan still has one leftover contradiction on `EDEN_DOCKER_GID` detection. Section D.6 now correctly chooses the probe-from-inside method ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:287>)), and the risks section is consistent with that ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:596>)), but the implementation surface still says `setup-experiment.sh` will resolve `EDEN_DOCKER_GID` “via `stat`” ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:431>)). That should be updated to the same probe-from-inside approach or the plan remains ambiguous on Docker Desktop/macOS.
+
+- Medium: The per-task implementer/evaluator timeout path is still not explicitly wired to the SIGKILL cleanup callback. The API section makes `post_kill_callback` a spawn-time property on `Subprocess` ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:143>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:377>)), and the planner implementation note says both the `post_kill_callback` and cleanup callback are registered ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:388>)). But the implementer/evaluator note mentions only the cleanup callback ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:396>)). Those are the roles that already call `terminate()` on task deadline expiry, so the plan should explicitly say they register both callbacks as well; otherwise the original orphan-container risk can reappear on timeout.
+
+**Assessment**
+
+This is very close. The mount strategy, cidfile discipline, socket-permission model, and concrete Docker-backed test coverage are now in much better shape.
+
+I would still make the two revisions above before implementation. After that, I’d consider the plan ready.

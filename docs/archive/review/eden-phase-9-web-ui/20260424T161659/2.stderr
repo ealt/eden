@@ -1,0 +1,1216 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc1df-b851-71c3-997b-09babefd433d
+--------
+user
+I've revised again to address round-1 findings. Updated file at /Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md. Specifically:
+1. Stranded claims: new §D adds eden_dispatch.sweep.sweep_expired_claims, called from orchestrator loop each iteration. e2e test test_stranded_claim_recovers proves the path. Sections renumbered (D=Sweeper, E=Docs, F=CI).
+2. Planner inputs: planner page now surfaces objective + metrics_schema (read-only) AND a context panel with recent proposals/trials. Section §C updated.
+3. Partial-write: Phase-3 retry-before-orphan policy (3 retries on transport-only failures, leveraging §07 §6 idempotent resubmit) added before any 'orphaned proposals' messaging. Documented residual gap as still applying to scripted planner host.
+4. Error type names: corrected to wrong-token / illegal-transition / conflicting-resubmission / invalid-precondition.
+5. ExperimentConfig has no experiment_id field — dropped the false start-up cross-check claim; documented that the cross-check waits for Phase 12.
+6. Removed contradictory 'cookie can't bypass authorization' sentence from the Why-this-stack list.
+
+Has each round-0 and round-1 finding been addressed? Anything new introduced?
+codex
+Re-reviewing the latest revision against both prior rounds now. I’m reading the updated plan sections that changed and checking the new sweeper, planner context, retry policy, and corrected error vocabulary against the existing reference code and spec.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9-web-ui.md | sed -n '1,440p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/src/eden_dispatch/driver.py | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Orchestrator-side iteration body for the EDEN reference dispatch.
+     2	
+     3	``run_orchestrator_iteration`` runs one finalize + dispatch + integrate
+     4	pass against a ``Store``. The standalone orchestrator service in
+     5	``reference/services/orchestrator/`` calls it in a poll loop against a
+     6	``StoreClient`` (which satisfies the same Protocol). Workers live in
+     7	their own processes and drive the store through the wire binding; this
+     8	module never invokes them.
+     9	
+    10	Every write goes through the store, so the transactional invariant
+    11	(``05-event-protocol.md`` §2) is enforced regardless of caller behavior.
+    12	This module's responsibility is scheduling: decide which task to move
+    13	next.
+    14	
+    15	Finalization honors ``04-task-protocol.md`` §4.3: a submission that
+    16	declared ``success`` but does not satisfy the role's success contract,
+    17	or a `status="error"` evaluate submission whose metrics/artifacts_uri
+    18	would fail validation, turns into ``task.failed`` with
+    19	``reason=validation_error``. The orchestrator asks the store via
+    20	``validate_terminal`` which terminal transition to issue — accept,
+    21	reject(worker_error), or reject(validation_error) — and takes that
+    22	action.
+    23	"""
+    24	
+    25	from __future__ import annotations
+    26	
+    27	from collections.abc import Callable
+    28	
+    29	from eden_contracts import EvaluateTask
+    30	from eden_storage import Store
+    31	
+    32	
+    33	def run_orchestrator_iteration(
+    34	    store: Store,
+    35	    *,
+    36	    implement_task_id_factory: Callable[[], str],
+    37	    evaluate_task_id_factory: Callable[[], str],
+    38	    integrate_trial: Callable[[str], object] | None = None,
+    39	) -> bool:
+    40	    """Run one orchestrator pass: finalize + dispatch + integrate.
+    41	
+    42	    Returns ``True`` if any transition fired this iteration.
+    43	
+    44	    ``integrate_trial``, if supplied, is called once per ``success``
+    45	    trial that still has no ``trial_commit_sha``. Typically this is
+    46	    ``Integrator.integrate`` from ``eden_git``, which handles the full
+    47	    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    48	    event atomically). The return value is ignored.
+    49	    """
+    50	    progress = False
+    51	    progress |= _finalize_submitted(store, kind="plan")
+    52	    progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
+    53	    progress |= _finalize_submitted(store, kind="implement")
+    54	    progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
+    55	    progress |= _finalize_submitted(store, kind="evaluate")
+    56	    if integrate_trial is not None:
+    57	        progress |= _promote_successful_trials(store, integrate_trial)
+    58	    return progress
+    59	
+    60	
+    61	def _finalize_submitted(store: Store, *, kind: str) -> bool:
+    62	    """Accept/reject every submitted task of ``kind``.
+    63	
+    64	    Uses ``store.validate_terminal`` to pick the right terminal
+    65	    transition: accept, reject(worker_error), or reject(validation_error).
+    66	    Malformed payloads on either success or error submissions surface
+    67	    as ``validation_error`` rather than propagating as exceptions, so
+    68	    the task always reaches a terminal state (``04-task-protocol.md``
+    69	    §4.3).
+    70	    """
+    71	    progress = False
+    72	    for task in store.list_tasks(kind=kind, state="submitted"):
+    73	        decision, _reason = store.validate_terminal(task.task_id)
+    74	        if decision == "accept":
+    75	            store.accept(task.task_id)
+    76	        elif decision == "reject_worker":
+    77	            store.reject(task.task_id, "worker_error")
+    78	        else:
+    79	            store.reject(task.task_id, "validation_error")
+    80	        progress = True
+    81	    return progress
+    82	
+    83	
+    84	def _dispatch_implement_tasks(
+    85	    store: Store, factory: Callable[[], str]
+    86	) -> bool:
+    87	    progress = False
+    88	    for proposal in store.list_proposals(state="ready"):
+    89	        task_id = factory()
+    90	        store.create_implement_task(task_id, proposal.proposal_id)
+    91	        progress = True
+    92	    return progress
+    93	
+    94	
+    95	def _dispatch_evaluate_tasks(
+    96	    store: Store, factory: Callable[[], str]
+    97	) -> bool:
+    98	    progress = False
+    99	    for trial in _list_trials_needing_evaluation(store):
+   100	        task_id = factory()
+   101	        store.create_evaluate_task(task_id, trial.trial_id)
+   102	        progress = True
+   103	    return progress
+   104	
+   105	
+   106	def _promote_successful_trials(
+   107	    store: Store, integrate_trial: Callable[[str], object]
+   108	) -> bool:
+   109	    progress = False
+   110	    for trial in store.list_trials(status="success"):
+   111	        if trial.trial_commit_sha is not None:
+   112	            continue
+   113	        integrate_trial(trial.trial_id)
+   114	        progress = True
+   115	    return progress
+   116	
+   117	
+   118	def _list_trials_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
+   119	    dispatched = _trials_with_evaluate_task(store)
+   120	    out = []
+
+ succeeded in 0ms:
+     1	# EDEN Phase 9 chunk 1 — Reference Web UI shell + planner module
+     2	
+     3	## Goal
+     4	
+     5	Stand up the reference Web UI service (`reference/services/web-ui/`) with
+     6	enough surface to play one role — planner — through a browser end-to-end
+     7	against the existing Phase 8b service stack. This phase delivers roadmap
+     8	units **9a (UI shell)** and **9b (planner module)** as a single chunk;
+     9	implementer (9c), evaluator (9d), and observability (9e) are deferred
+    10	to subsequent chunks.
+    11	
+    12	The exit bar is: a human, given the URL of a running task-store-server
+    13	and the shared bearer token, can sign in, see the configured experiment,
+    14	claim a pending `plan` task, draft proposals through a web form, submit,
+    15	and see the resulting state reflected back through the same UI on the
+    16	next page load. Submission must round-trip through `eden-wire`'s
+    17	`StoreClient` against the real task-store-server (no in-process
+    18	shortcut).
+    19	
+    20	## Non-goals
+    21	
+    22	- **9c–9e** — implementer module, evaluator module, observability views,
+    23	  and admin-reclaim are out of scope for this chunk. The shell is
+    24	  designed to accommodate them, but no placeholder stubs are added; an
+    25	  empty navigation entry that 404s is worse than no entry.
+    26	- **Real auth.** The wire protocol uses a shared bearer token (chapter
+    27	  07 §12); this chunk inherits that. No per-user accounts, sessions
+    28	  beyond a signed cookie, or RBAC. Real auth is Milestone 3.
+    29	- **Multi-experiment switcher.** Phase 12 introduces the control plane;
+    30	  for now the UI service is configured at start-up with a single
+    31	  `--experiment-id` and `--task-store-url`, mirroring the orchestrator
+    32	  service.
+    33	- **Compose / Dockerization.** Phase 10. The UI service runs locally via
+    34	  `python3 -m eden_web_ui …` for now.
+    35	- **In-UI code editing**, artifact previews, or trial diff views.
+    36	- **WebSocket / SSE push.** The UI is request-response; the next page
+    37	  load reflects state. Phase 9e revisits live updates.
+    38	- **Static asset bundling / minification.** A single CSS file is served
+    39	  as-is; no build step.
+    40	- **Blob storage for proposal artifacts.** Phase 9 chunk 1 writes
+    41	  rationale markdown to `--artifacts-dir` and references it via
+    42	  `file://` URIs. This matches the placeholder scheme the scripted
+    43	  planner uses today; Phase 10 introduces real blob storage.
+    44	
+    45	## Backwards-compatibility policy
+    46	
+    47	Pre-1.0, version 0.0.1, no external consumers. Wire-protocol surface
+    48	does not change in this chunk. If a contract change is needed, it
+    49	lands in `eden-wire` / spec chapter 07 in lockstep, not as a side
+    50	effect of UI work.
+    51	
+    52	## Tech stack — decision and alternatives considered
+    53	
+    54	**Chosen stack:** FastAPI + Jinja2 + HTMX, plus a single hand-written
+    55	CSS file. The UI service is a separate process under
+    56	`reference/services/web-ui/` that acts as a **backend-for-frontend
+    57	(BFF)**: it holds the `--shared-token` (the same reference-bearer the
+    58	orchestrator and worker hosts already use), runs `eden_wire.StoreClient`
+    59	in-process to talk to the task-store-server, and exposes only
+    60	HTML/HTMX-friendly routes to the browser. The browser never sees the
+    61	shared token; it gets a session cookie signed with a server-side
+    62	secret.
+    63	
+    64	This BFF split is a property of the architecture, not the rendering
+    65	choice — the same split could host an SPA, a Phoenix-LiveView-style
+    66	push UI, or plain server-rendered HTML. The rendering choice (HTMX
+    67	over SPA) is argued separately below.
+    68	
+    69	### Why this stack
+    70	
+    71	1. **No new toolchain.** FastAPI, Jinja2, and httpx are already direct
+    72	   or transitive dependencies of `eden-wire` and the existing services.
+    73	   HTMX is a single CDN-hosted JS file (or vendored under `static/`).
+    74	   No Node, no Vite, no npm lockfile in a Python-first repo.
+    75	2. **One language end-to-end.** Server-side rendering keeps planner /
+    76	   implementer / evaluator forms in Python, where the typed
+    77	   `PlanSubmission` / `ImplementSubmission` / `EvaluateSubmission`
+    78	   payloads they construct already live (`eden_storage.submissions`).
+    79	   No duplicate validation logic in a JS layer.
+    80	3. **`StoreClient` already satisfies the `Store` Protocol.** The UI
+    81	   service consumes the same surface the orchestrator and worker
+    82	   hosts use. We don't add a second client implementation; we don't
+    83	   expose the wire protocol directly to the browser.
+    84	4. **Reference-impl ethos.** The repo's job is to demonstrate one
+    85	   conforming implementation, readable to someone evaluating whether
+    86	   to build a different one. An SPA buries the role-contract logic
+    87	   behind JSON-over-fetch plumbing; server-rendered forms keep the
+    88	   spec-to-code mapping legible.
+    89	5. **Auth surface stays small.** The browser holds a session cookie
+    90	   only; it never gets the shared bearer. The threat model is
+    91	   deliberately spelled out in §B (a leaked cookie can act as the
+    92	   named worker_id through the UI but cannot bypass the UI service
+    93	   to talk to the task-store directly); the goal here is to keep
+    94	   the wire-protocol auth surface unchanged, not to claim the
+    95	   cookie is unforgeable.
+    96	
+    97	### Alternatives considered
+    98	
+    99	#### A. BFF-backed SPA (React / Vue / Svelte talking to the UI service's JSON API)
+   100	
+   101	- **Pros:** Richer interactions; separates view logic from server
+   102	  state cleanly; idiomatic for production webapps; the BFF split
+   103	  preserves the shared-bearer-stays-server-side property.
+   104	- **Cons:**
+   105	  - Adds a Node toolchain, a build step, and a JS lockfile to a repo
+   106	    whose every other artifact is Python or Markdown. Doubles the CI
+   107	    matrix (frontend lint / build / test alongside `uv run …`).
+   108	  - Duplicates validation: form fields validated client-side, then
+   109	    re-validated server-side, then re-validated by the wire schemas.
+   110	    Three sources of truth for "is this submission well-formed."
+   111	  - The role-contract logic — "for plan submission, create N proposals,
+   112	    mark them ready, submit with their ids" — moves into JS, away
+   113	    from where `PlanSubmission` is defined.
+   114	- **Verdict:** Defensible if a richer client experience is the
+   115	  primary goal. For a reference impl whose job is to make the
+   116	  spec-to-code mapping legible, the costs outweigh the benefits.
+   117	
+   118	#### A'. Browser-direct SPA (no BFF; browser holds the shared bearer)
+   119	
+   120	Listed separately because it's the failure mode of a careless SPA
+   121	choice, not a defensible alternative on its own.
+   122	
+   123	- **Cons:** Exposes the chapter 07 §12 shared bearer to the browser;
+   124	  forces a CORS story; deletes the wire/UI auth boundary the BFF
+   125	  preserves.
+   126	- **Verdict:** Explicitly out — included only to flag that picking
+   127	  "SPA" without the BFF is strictly worse than either A or the
+   128	  chosen stack.
+   129	
+   130	#### B. Plain server-rendered Jinja with progressive enhancement (no HTMX)
+   131	
+   132	This is the closest neighbor to the chosen stack.
+   133	
+   134	- **Pros:** Exactly the same dependency graph minus 14 KB of JS;
+   135	  forms degrade to full-page POST + 303 redirect on every action;
+   136	  no client-side state to reason about; trivially testable with a
+   137	  plain HTTP client.
+   138	- **Cons:**
+   139	  - Claim-then-show-form needs either a server-side redirect or a
+   140	    two-page flow; not a deal-breaker but it's clunkier.
+   141	  - Any partial update — e.g. "you claimed task X, now this row
+   142	    moves out of pending" — either reflows the whole page or
+   143	    requires hand-rolled `fetch` + `outerHTML` swaps. HTMX
+   144	    automates exactly that with `hx-target` / `hx-swap`.
+   145	- **Verdict:** Live alternative, not a strawman. We pick HTMX for
+   146	  the partial-update ergonomics it gives the planner-list →
+   147	  claim-form transition; if HTMX adds friction during impl, the
+   148	  fallback is this option, not a heavier framework.
+   149	
+   150	#### C. Plain HTML + vanilla `fetch` + manual DOM replacement
+   151	
+   152	- **Pros:** No JS dependency at all.
+   153	- **Cons:** Reimplements HTMX badly. Every form ends up reinventing
+   154	  the same `fetch → response.text() → element.outerHTML = …`
+   155	  plumbing. The bug surface and code volume both grow per route.
+   156	- **Verdict:** Strictly dominated by option B (drop the JS entirely
+   157	  and reload) or the chosen stack (use HTMX for the swap).
+   158	
+   159	#### D. Phoenix-LiveView-style server-pushed UI (e.g. via SSE/WebSocket)
+   160	
+   161	- **Pros:** "Live" feel without a JS framework; great fit for the
+   162	  observability views in 9e.
+   163	- **Cons:** Phase 9 chunk 1 is request-response by scope. Pulling
+   164	  the live-update transport in now adds complexity (subscribe
+   165	  endpoint, reconnect logic) without a place to use it; a stranded
+   166	  human claim doesn't push, it times out. Revisit specifically for
+   167	  9e.
+   168	- **Verdict:** Right tool for 9e, wrong scope for 9a + 9b.
+   169	
+   170	#### E. Server-side React via Next.js (or Remix)
+   171	
+   172	- **Pros:** Server-rendered HTML at first paint, hydrates to an SPA;
+   173	  best-of-both for a production product.
+   174	- **Cons:** Brings the entire Node toolchain (and a build step) for
+   175	  marginal benefit over plain Jinja in a reference UI. The
+   176	  hydration step needs a JSON API anyway, recreating most of the
+   177	  SPA cost.
+   178	- **Verdict:** Wrong fit for a reference impl whose readers are
+   179	  evaluating spec conformance, not frontend architecture.
+   180	
+   181	#### F. Server-side framework with built-in templates (Starlette, Quart, Flask)
+   182	
+   183	- **Pros:** Same shape as FastAPI for our purposes.
+   184	- **Cons:** FastAPI is already in the dependency graph for
+   185	  `eden-wire`. Adding a second Python web framework just for the UI
+   186	  doubles the surface for "how does this differ from `eden-wire`?"
+   187	  questions in review.
+   188	- **Verdict:** No reason to introduce a second framework.
+   189	
+   190	#### G. Embed the UI in `task-store-server`
+   191	
+   192	- **Pros:** One fewer process to run.
+   193	- **Cons:**
+   194	  - Conflates the normative wire-protocol surface (chapter 07) with
+   195	    a non-normative UI; reviewing one no longer means reviewing
+   196	    only one. A third-party task-store-server reimplementation
+   197	    could not be expected to ship a UI.
+   198	  - The UI service holds the shared token on the browser's behalf
+   199	    and adds session-cookie state; baking that into the task-store
+   200	    pollutes a clean wire-protocol service.
+   201	- **Verdict:** Separate process is the right boundary.
+   202	
+   203	#### H. CLI-only for Phase 9 chunk 1
+   204	
+   205	- **Pros:** No new service at all.
+   206	- **Cons:** The roadmap exit criterion for Phase 9 is "a human can
+   207	  fully play any one role for at least one trial via the Web UI."
+   208	  CLI-only doesn't satisfy that, and Phase 10 (Compose)
+   209	  presupposes the UI service exists to dockerize.
+   210	- **Verdict:** Doesn't meet the phase exit bar.
+   211	
+   212	### What this decision does **not** preclude
+   213	
+   214	- A third-party SPA-style implementation against the same wire
+   215	  protocol — this is the whole point of the protocol-first repo.
+   216	- Switching off HTMX later if it turns out to be friction; the
+   217	  templates would still render fine on full-page submits.
+   218	- Phase 9e revisiting the request-response model with SSE for the
+   219	  observability view, which has the strongest case for live updates.
+   220	
+   221	## What gets built
+   222	
+   223	### A. New service: `reference/services/web-ui/`
+   224	
+   225	- `pyproject.toml` — `eden-web-ui`, depends on `eden-contracts`,
+   226	  `eden-storage`, `eden-wire`, `eden-service-common`, plus `fastapi`,
+   227	  `uvicorn`, `jinja2`, `itsdangerous` (for signed session cookies).
+   228	- `README.md` — what the service is, how to run it, the auth model,
+   229	  the request flow for a planner submission.
+   230	- `src/eden_web_ui/__init__.py`
+   231	- `src/eden_web_ui/__main__.py` — launch via `python3 -m eden_web_ui`.
+   232	- `src/eden_web_ui/cli.py` — argparse with `add_common_arguments`
+   233	  (gives us `--task-store-url`, `--experiment-id`, `--shared-token`,
+   234	  `--log-level`) plus:
+   235	  - `--experiment-config <path>` — required. YAML loaded via
+   236	    `eden_task_store_server.load_experiment_config` (the same
+   237	    function the `evaluator` host uses). Provides
+   238	    `metrics_schema` and `objective` to the planner module per
+   239	    spec/v0/03-roles.md §2 ("Read access to the experiment config
+   240	    for `E`, including the `metrics_schema` and `objective`").
+   241	    Drift between this file and the task-store-server's copy is a
+   242	    known reference-impl limitation; Phase 12's control plane is
+   243	    the proper fix. `ExperimentConfig` does not currently carry
+   244	    its own `experiment_id` field, so a content-equivalence check
+   245	    against `--experiment-id` is not implementable in this chunk;
+   246	    the drift risk is documented and the cross-check waits for the
+   247	    Phase-12 control plane.
+   248	  - `--host` / `--port` — UI listener.
+   249	  - `--session-secret` — required, signs session cookies.
+   250	  - `--worker-id` — value passed to `Store.claim(worker_id=…)` for
+   251	    every UI-initiated claim. Defaults to `web-ui-1`.
+   252	  - `--claim-ttl-seconds` — default `3600` (1 hour). Every UI
+   253	    claim is issued with `expires_at = now + claim_ttl`. By
+   254	    itself this is metadata; the actual recovery requires a
+   255	    sweeper (see §F below) that the orchestrator service runs
+   256	    once per iteration. Together, the TTL + sweeper close the
+   257	    stranded-claim gap codex flagged: the task-store's `expired`
+   258	    reclaim cause picks abandoned claims back up automatically.
+   259	  - `--artifacts-dir <path>` — required. Local directory the UI
+   260	    writes planner rationale markdown to before submitting; each
+   261	    proposal's `artifacts_uri` is `file://<absolute path>` of the
+   262	    written file. This matches the placeholder file-URI scheme
+   263	    the scripted planner uses today; Phase 10 swaps in real
+   264	    blob storage.
+   265	- `src/eden_web_ui/app.py` — `make_app(*, store, experiment_id,
+   266	  experiment_config, worker_id, session_secret, claim_ttl_seconds,
+   267	  artifacts_dir) -> FastAPI`, mirroring `eden_wire.make_app`'s
+   268	  factory shape so tests can drive it without a CLI.
+   269	- `src/eden_web_ui/routes/__init__.py`
+   270	- `src/eden_web_ui/routes/index.py` — landing page: experiment ID,
+   271	  high-level counts (pending plan / implement / evaluate tasks).
+   272	- `src/eden_web_ui/routes/planner.py` — claim, draft, submit, reject.
+   273	- `src/eden_web_ui/forms.py` — typed form parsers. The planner form
+   274	  parses N proposal rows (slug / priority / parent_commits /
+   275	  rationale-markdown) plus a status (success/error) into
+   276	  `(list[ProposalDraft], PlanSubmission)`, where `ProposalDraft` is
+   277	  a UI-internal dataclass holding everything needed to write the
+   278	  artifact file and call `create_proposal`. Validation errors
+   279	  render back into the form as field-level messages.
+   280	- `src/eden_web_ui/artifacts.py` — single helper
+   281	  `write_proposal_artifact(artifacts_dir, proposal_id, markdown)
+   282	  -> uri` that writes the rationale markdown atomically (write to
+   283	  `<id>.md.tmp`, rename to `<id>.md`) and returns the
+   284	  `file://<absolute path>` URI.
+   285	- `src/eden_web_ui/templates/base.html` — shell layout, navigation,
+   286	  HTMX include, current-experiment banner.
+   287	- `src/eden_web_ui/templates/index.html` — landing page.
+   288	- `src/eden_web_ui/templates/planner_list.html` — pending plan tasks.
+   289	- `src/eden_web_ui/templates/planner_claim.html` — post-claim draft
+   290	  form (HTMX fragment swappable into the list view).
+   291	- `src/eden_web_ui/templates/planner_submitted.html` — success
+   292	  confirmation fragment.
+   293	- `src/eden_web_ui/templates/_error.html` — generic error fragment.
+   294	- `src/eden_web_ui/static/style.css` — single hand-written stylesheet,
+   295	  served by FastAPI's `StaticFiles`.
+   296	- `src/eden_web_ui/static/htmx.min.js` — vendored HTMX 1.9.x. Vendored
+   297	  rather than CDN-loaded so the UI works offline / in CI without
+   298	  external network.
+   299	- `tests/__init__.py`
+   300	- `tests/test_app.py` — `TestClient`-driven unit tests against
+   301	  `make_app(store=InMemoryStore(...), …)`. Covers each route's
+   302	  rendering and validation in isolation: GET / returns 200, GET
+   303	  /planner lists pending plan tasks, malformed POST returns 400,
+   304	  CSRF-token mismatch returns 400.
+   305	- `tests/test_planner_flow.py` — covers the **cross-request flow**
+   306	  that `test_app.py` deliberately does not exercise: full
+   307	  claim → draft → submit happy path, expired-claim-token recovery
+   308	  (re-render with banner, input preserved), invalid-CSRF-token
+   309	  rejection on each mutating route, mid-flow `create_proposal`
+   310	  HTTP failure leaves only `drafting` proposals (asserted via
+   311	  `store.list_proposals(state="ready")` returning empty), mid-flow
+   312	  `submit` failure surfaces orphaned proposal IDs to the user.
+   313	  Driven by `httpx.AsyncClient` against the real ASGI app so
+   314	  cookie/session round-tripping is authentic.
+   315	- `tests/test_security_invariants.py` — focused unit tests that
+   316	  pin the security guarantees codex flagged:
+   317	  - The shared bearer never appears in any rendered HTML, any
+   318	    JSON-line log captured during a test request, or any
+   319	    `Set-Cookie` header.
+   320	  - Cookie attributes: `HttpOnly=True`, `SameSite=Lax`, `Path=/`.
+   321	    `Secure` is `True` iff `--secure-cookies` is on.
+   322	  - CSRF token is per-session and rotates only on session-secret
+   323	    rotation; same-token reuse across requests is allowed.
+   324	- `tests/test_partial_write_recovery.py` — focused tests that pin
+   325	  the planner-flow state-machine guarantees:
+   326	  - Forced `mark_proposal_ready` failure (via monkeypatched
+   327	    store) leaves all earlier proposals in `drafting`, none in
+   328	    `ready`. Asserts the orchestrator's
+   329	    `_dispatch_implement_tasks` would not pick them up.
+   330	  - Forced `submit` failure surfaces orphaned `ready`
+   331	    proposal IDs in the rendered error page.
+   332	- `tests/test_e2e_real_subprocess.py` — `pytest.mark.e2e` test that
+   333	  reuses the Phase 8b subprocess scaffold (spawn task-store-server +
+   334	  UI service on ephemeral ports) and drives one plan task to
+   335	  submission via the UI's HTTP surface, then asserts the resulting
+   336	  task-store state via a separate `StoreClient`. This is the only
+   337	  test that exercises the UI service against a real
+   338	  task-store-server subprocess.
+   339	
+   340	### B. Auth model (UI scope only — does not change wire protocol)
+   341	
+   342	- The UI service is started with `--shared-token <T>` and passes
+   343	  `T` as the bearer to its `StoreClient`.
+   344	- The browser receives an `itsdangerous`-signed session cookie
+   345	  holding `{"worker_id": "<--worker-id>", "csrf": "<random hex>"}`
+   346	  once the user "signs in". The sign-in for Phase 9 is a
+   347	  no-questions form ("Continue as <worker-id>"); real auth is
+   348	  Milestone 3. The cookie carries the worker_id so subsequent
+   349	  claim/submit requests know who the human is, and a per-session
+   350	  CSRF token used by mutating routes.
+   351	- **Cookie attributes** are pinned: `HttpOnly=True`, `SameSite=Lax`,
+   352	  `Secure=False` (toggleable via `--secure-cookies` for deployments
+   353	  behind TLS — defaults off so localhost dev doesn't break).
+   354	  `Path=/`, no `Domain`. Cookie max-age tracks the session-secret
+   355	  rotation: any restart with a fresh `--session-secret`
+   356	  invalidates outstanding sessions.
+   357	- **CSRF protection** for every mutating route (POST /planner/...).
+   358	  A hidden `_csrf` form input carries the per-session token; the
+   359	  server compares against the cookie's `csrf` field via constant-
+   360	  time compare and rejects mismatches with 400. `SameSite=Lax`
+   361	  alone is **not** treated as sufficient — explicit token check
+   362	  is added because reference UIs in the wild often get cross-site
+   363	  POST'd through HTML form action attributes.
+   364	- **Bearer-token hygiene.** The `--shared-token` value never reaches
+   365	  the browser, the rendered HTML, the server logs, or the test
+   366	  fixture log files. Specifically:
+   367	  - The session cookie does not contain it.
+   368	  - JSON-line logs (via `eden_service_common.logging`) elide
+   369	    `Authorization` headers.
+   370	  - The bearer-leak test (see §F) asserts no log line, no rendered
+   371	    response body, and no `Set-Cookie` value contains the token's
+   372	    string.
+   373	- **Session cookie does not bypass the wire boundary.** A leaked
+   374	  cookie can act on behalf of the worker_id it names (claim, submit
+   375	  through the UI) but cannot bypass the UI service to talk to the
+   376	  task-store directly — the shared bearer is held only in the UI
+   377	  process. Until Milestone-3 auth, "compromise of the cookie ==
+   378	  compromise of that worker_id's UI actions" is the documented
+   379	  threat model.
+   380	
+   381	### C. Planner request flow (the spec-to-code map)
+   382	
+   383	For each planner action, the corresponding `Store` (i.e.
+   384	`StoreClient`) calls are pinned here so the codex review can check
+   385	the implementation against this spec rather than rederiving it from
+   386	the templates.
+   387	
+   388	The planner module is informed by the `experiment_config` loaded at
+   389	start-up. The planner page surfaces:
+   390	
+   391	- The experiment's `objective` (read-only banner).
+   392	- The experiment's `metrics_schema` (read-only side panel showing
+   393	  metric names and types). The planner contract per
+   394	  `spec/v0/03-roles.md` §2 explicitly grants the planner read
+   395	  access to `metrics_schema` and `objective`; surfacing both is
+   396	  required to satisfy that contract.
+   397	- A "context" panel listing the most recent proposals
+   398	  (`store.list_proposals(state=None)` capped at the 20 most
+   399	  recent) and trials (`store.list_trials(status=None)` capped at
+   400	  the 20 most recent). This satisfies the implicit "what has
+   401	  already been tried" read access the planner needs to draft
+   402	  meaningfully.
+   403	
+   404	The proposal form itself collects per-proposal slug, priority,
+   405	parent-commits, and rationale-markdown.
+   406	
+   407	1. **List pending plan tasks** (`GET /planner`):
+   408	   - `store.list_tasks(kind="plan", state="pending")` — render rows.
+   409	2. **Claim** (`POST /planner/{task_id}/claim`):
+   410	   - CSRF check.
+   411	   - `claim = store.claim(task_id, worker_id=session.worker_id,
+   412	     expires_at=now() + timedelta(seconds=claim_ttl_seconds))`.
+   413	   - Save `claim.token` in the session keyed by `task_id`.
+   414	   - Render `planner_claim.html` with an empty proposal-row plus
+   415	     "add another" / "submit (success)" / "submit (error)" buttons.
+   416	3. **Submit success** (`POST /planner/{task_id}/submit`):
+   417	   - CSRF check.
+   418	   - Parse and **fully validate** N proposal rows from the form
+   419	     before any store mutation. Validation includes: slug
+   420	     pattern, priority float-parse, parent_commits non-empty,
+   421	     rationale-markdown non-empty.
+   422	   - **Phase 1 of the write — proposals as `drafting`.** For each
+   423	     proposal: write its rationale markdown to
+   424	     `<artifacts-dir>/<proposal_id>.md`, build a `file://` URI,
+   425	     then `store.create_proposal(Proposal(state="drafting", ...))`.
+   426	     A `drafting` proposal is invisible to the orchestrator's
+   427	     `list_proposals(state="ready")` dispatch path, so a
+   428	     mid-loop failure here orphans only `drafting` proposals,
+   429	     which are safe to ignore (no implement task is dispatched).
+   430	   - **Phase 2 of the write — flip to `ready`.** Once every
+   431	     `create_proposal` has returned, loop again and call
+   432	     `store.mark_proposal_ready(proposal_id)` for each.
+   433	   - **Phase 3 of the write — submit.**
+   434	     `store.submit(task_id, token, PlanSubmission(status="success",
+   435	     proposal_ids=tuple(proposal_ids)))`.
+   436	   - Drop the token from the session.
+   437	   - Render `planner_submitted.html`.
+   438	
+   439	   The narrowest unsafe window — orphaned `ready` proposals not
+   440	   yet referenced by a submitted plan task — exists between
+
+exec
+/bin/zsh -lc "rg -n \"ExperimentConfig|experiment_id\" reference/packages/eden-contracts/src/eden_contracts/config.py tests/fixtures/experiment/.eden/config.yaml | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "rg -n \"sweep_expired_claims|expired claim|reclaim|wrong-token|illegal-transition|conflicting-resubmission|invalid-precondition|metrics_schema|list_proposals|list_trials|recent proposals|recent trials|retry\" docs/plans/eden-phase-9-web-ui.md reference/packages/eden-dispatch/src reference/services/orchestrator/src spec/v0/07-wire-protocol.md | sed -n '1,320p'" in /Users/ericalt/Documents/eden
+ succeeded in 142ms:
+reference/packages/eden-contracts/src/eden_contracts/config.py:1:"""ExperimentConfig — declarative input to an EDEN experiment.
+reference/packages/eden-contracts/src/eden_contracts/config.py:32:class ExperimentConfig(BaseModel):
+
+ succeeded in 142ms:
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:88:    for proposal in store.list_proposals(state="ready"):
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:99:    for trial in _list_trials_needing_evaluation(store):
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:110:    for trial in store.list_trials(status="success"):
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:118:def _list_trials_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:121:    for trial in store.list_trials(status="starting"):
+spec/v0/07-wire-protocol.md:39:| `reclaim` | `POST` | `/v0/experiments/{E}/tasks/{T}/reclaim` |
+spec/v0/07-wire-protocol.md:52:`POST /v0/experiments/{E}/tasks/{T}/claim` accepts a JSON body with at minimum the field `worker_id` and an OPTIONAL `expires_at` timestamp. On success the server returns 200 with a `claim` object matching the shape from [`02-data-model.md`](02-data-model.md) §3.4 (see also [`schemas/task.schema.json`](schemas/task.schema.json)) — notably including the fresh `token`. On a non-`pending` task the server returns 409 `eden://error/illegal-transition`. The claim-token secrecy rule ([`04-task-protocol.md`](04-task-protocol.md) §3.2) implies that intermediary proxies and logs MUST NOT persist claim tokens in plaintext; that is a deployment concern and the binding does not enforce it.
+spec/v0/07-wire-protocol.md:56:`POST /v0/experiments/{E}/tasks/{T}/submit` accepts a JSON body containing the current `token` and a role-specific `payload` (matching the claim's task `kind`). Atomicity, idempotency, and content-equivalence rules from [`04-task-protocol.md`](04-task-protocol.md) §4 apply unchanged. A resubmit with a content-equivalent payload MUST return 200; a resubmit with a divergent payload MUST return 409 `eden://error/conflicting-resubmission`. A wrong token MUST return 403 `eden://error/wrong-token`.
+spec/v0/07-wire-protocol.md:65:`POST /v0/experiments/{E}/tasks/{T}/reclaim` transitions a `claimed` or (operator-invoked) `submitted` task back to `pending` per [`04-task-protocol.md`](04-task-protocol.md) §5. The request body carries a single field `cause` drawn from the closed v0 vocabulary: `"expired"`, `"operator"`, or `"health_policy"`.
+spec/v0/07-wire-protocol.md:72:| `list_proposals` | `GET` | `/v0/experiments/{E}/proposals` |
+spec/v0/07-wire-protocol.md:76:Request and response bodies match [`schemas/proposal.schema.json`](schemas/proposal.schema.json). `list_proposals` accepts an optional `state` query parameter. `mark-ready` has an empty request body.
+spec/v0/07-wire-protocol.md:83:| `list_trials` | `GET` | `/v0/experiments/{E}/trials` |
+spec/v0/07-wire-protocol.md:95:- **Same-value idempotency.** A repeated call whose `trial_commit_sha` equals the value already stored on the trial MUST return 200 and MUST NOT append a second `trial.integrated` event. This is what lets a client safely retry an `integrate_trial` request after a transport- indeterminate failure without double-commit.
+spec/v0/07-wire-protocol.md:96:- **Different-value rejection.** A call whose `trial_commit_sha` differs from the value already stored MUST return 409 `eden://error/invalid-precondition`. A conforming client MUST surface this as an atomicity violation (the chapter 6 §1.2 sole-writer rule has been violated somewhere upstream); operator intervention is required.
+spec/v0/07-wire-protocol.md:97:- **Other preconditions.** Standard [`06-integrator.md`](06-integrator.md) §3.4 preconditions continue to apply: the trial MUST be in `status == "success"`, and the `trial_commit_sha` MUST be a well-formed commit SHA; violations return `invalid-precondition`.
+spec/v0/07-wire-protocol.md:142:The `type` URI is the authoritative machine-readable error code. Clients MUST key retry and recovery on `type`, not on HTTP status alone (several conflict-class errors share 409). The closed v0 vocabulary is:
+spec/v0/07-wire-protocol.md:148:| `eden://error/wrong-token` | 403 | presented claim token ≠ stored token ([`04-task-protocol.md`](04-task-protocol.md) §3.3) |
+spec/v0/07-wire-protocol.md:151:| `eden://error/illegal-transition` | 409 | state-machine violation |
+spec/v0/07-wire-protocol.md:152:| `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
+spec/v0/07-wire-protocol.md:153:| `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_trial` (§5) |
+spec/v0/07-wire-protocol.md:157:## 8. Idempotency and retry
+spec/v0/07-wire-protocol.md:161:The [`04-task-protocol.md`](04-task-protocol.md) §4.2 submit-idempotency rule is preserved by the binding: a retry of `POST /v0/experiments/{E}/tasks/{T}/submit` carrying the same token and content-equivalent payload MUST return 200 identically to the original call. This lets a worker retry a submit after a transport error without risk of double- advance. No HTTP-level `Idempotency-Key` header is required.
+spec/v0/07-wire-protocol.md:169:Claim, reject, reclaim, and accept are **not** blindly retry-safe on transport failures. A retry after the server already committed the transition will return `illegal-transition`, but that error is not uniquely distinguishable from a racing actor or a reclaim that interleaved between attempts. The binding does **not** standardize an HTTP-level retry convention for these endpoints; a client MUST resolve ambiguous failures via a follow-up `GET /v0/experiments/{E}/tasks/{T}` read and apply operation- specific knowledge. A future spec lineage MAY introduce per- operation idempotency tokens.
+spec/v0/07-wire-protocol.md:193:- Keys retry and recovery on the `type` URI, not on HTTP status alone.
+docs/plans/eden-phase-9-web-ui.md:23:  and admin-reclaim are out of scope for this chunk. The shell is
+docs/plans/eden-phase-9-web-ui.md:238:    `metrics_schema` and `objective` to the planner module per
+docs/plans/eden-phase-9-web-ui.md:240:    for `E`, including the `metrics_schema` and `objective`").
+docs/plans/eden-phase-9-web-ui.md:258:    reclaim cause picks abandoned claims back up automatically.
+docs/plans/eden-phase-9-web-ui.md:311:  `store.list_proposals(state="ready")` returning empty), mid-flow
+docs/plans/eden-phase-9-web-ui.md:392:- The experiment's `metrics_schema` (read-only side panel showing
+docs/plans/eden-phase-9-web-ui.md:395:  access to `metrics_schema` and `objective`; surfacing both is
+docs/plans/eden-phase-9-web-ui.md:397:- A "context" panel listing the most recent proposals
+docs/plans/eden-phase-9-web-ui.md:398:  (`store.list_proposals(state=None)` capped at the 20 most
+docs/plans/eden-phase-9-web-ui.md:399:  recent) and trials (`store.list_trials(status=None)` capped at
+docs/plans/eden-phase-9-web-ui.md:427:     `list_proposals(state="ready")` dispatch path, so a
+docs/plans/eden-phase-9-web-ui.md:449:   proposal IDs explicitly so an operator can manually reclaim
+docs/plans/eden-phase-9-web-ui.md:457:5. **Phase-3 retry-before-orphan.** Per
+docs/plans/eden-phase-9-web-ui.md:461:   `eden://error/conflicting-resubmission`. Before declaring
+docs/plans/eden-phase-9-web-ui.md:471:   - `eden://error/wrong-token` (presented token != stored
+docs/plans/eden-phase-9-web-ui.md:473:   - `eden://error/illegal-transition` (state-machine
+docs/plans/eden-phase-9-web-ui.md:474:     violation, e.g. another worker reclaimed after expiry),
+docs/plans/eden-phase-9-web-ui.md:475:   - `eden://error/conflicting-resubmission` (resubmit
+docs/plans/eden-phase-9-web-ui.md:477:   - `eden://error/invalid-precondition` (e.g. trial state
+docs/plans/eden-phase-9-web-ui.md:492:something that actually calls `reclaim(task_id, "expired")` on
+docs/plans/eden-phase-9-web-ui.md:493:expired claims. The reference stack has no such sweeper today; this
+docs/plans/eden-phase-9-web-ui.md:498:  `sweep_expired_claims(store, *, now) -> int` (returns count
+docs/plans/eden-phase-9-web-ui.md:499:  reclaimed): iterates `store.list_tasks(state="claimed")`, parses
+docs/plans/eden-phase-9-web-ui.md:501:  each one strictly less than `now` calls `store.reclaim(task_id,
+docs/plans/eden-phase-9-web-ui.md:505:  calls `sweep_expired_claims(store, now=datetime.now(UTC))` once
+docs/plans/eden-phase-9-web-ui.md:515:  expired claim is reclaimed and emits `task.reclaimed`; non-expired
+docs/plans/eden-phase-9-web-ui.md:517:  reclaim failure does not abort the sweep.
+docs/plans/eden-phase-9-web-ui.md:519:  doesn't exercise expired claims, but the sweeper is a no-op on
+docs/plans/eden-phase-9-web-ui.md:559:  `eden_dispatch.sweep.sweep_expired_claims` (additive; documented
+docs/plans/eden-phase-9-web-ui.md:597:   `pending` via a `task.reclaimed` event with `cause ==
+docs/plans/eden-phase-9-web-ui.md:609:1. **§D sweeper first.** Add `eden_dispatch.sweep.sweep_expired_claims`
+docs/plans/eden-phase-9-web-ui.md:626:   failure paths, and the Phase-3 retry-before-orphan policy.
+docs/plans/eden-phase-9-web-ui.md:647:  new §D sweeper (`eden_dispatch.sweep.sweep_expired_claims`,
+docs/plans/eden-phase-9-web-ui.md:649:  the `expired` reclaim. Phase 9e adds an explicit
+docs/plans/eden-phase-9-web-ui.md:650:  operator-reclaim button as a faster recovery path. The UI must
+docs/plans/eden-phase-9-web-ui.md:651:  not retry claims server-side for a user who doesn't return —
+docs/plans/eden-phase-9-web-ui.md:656:  retry-before-orphan policy (per §07 §6 idempotent resubmit)
+docs/plans/eden-phase-9-web-ui.md:666:  inputs the evaluator's metrics_schema would later reject. Phase
+reference/services/orchestrator/src/eden_orchestrator/loop.py:56:            # task. Anything else (transport, auth, illegal-transition)
+
+codex
+I’ve got the top half. Next I’m reading the new Phase-3 retry logic and the added sweeper section closely, because those were the two remaining substantive correctness gaps last round.
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/loop.py | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Orchestrator main loop.
+     2	
+     3	Drives ``run_orchestrator_iteration`` from ``eden_dispatch`` against
+     4	a ``StoreClient`` (HTTP) plus an ``Integrator`` bound to a local bare
+     5	git repo. Exits cleanly when quiescent or when the ``stopping`` flag
+     6	is set.
+     7	"""
+     8	
+     9	from __future__ import annotations
+    10	
+    11	import uuid
+    12	from collections.abc import Callable
+    13	
+    14	from eden_dispatch import run_orchestrator_iteration
+    15	from eden_git import Identity, Integrator
+    16	from eden_service_common import StopFlag, get_logger
+    17	from eden_storage import Store
+    18	from eden_storage.errors import AlreadyExists
+    19	
+    20	log = get_logger(__name__)
+    21	
+    22	
+    23	def make_id_factory(prefix: str) -> Callable[[], str]:
+    24	    """Return a factory that produces ``<prefix><short-uuid>`` IDs.
+    25	
+    26	    UUIDs avoid cross-restart collisions on orchestrator-generated IDs.
+    27	    """
+    28	
+    29	    def _next() -> str:
+    30	        return f"{prefix}{uuid.uuid4().hex[:12]}"
+    31	
+    32	    return _next
+    33	
+    34	
+    35	def run_orchestrator_loop(
+    36	    *,
+    37	    store: Store,
+    38	    integrator: Integrator,
+    39	    plan_task_ids: list[str],
+    40	    implement_task_prefix: str,
+    41	    evaluate_task_prefix: str,
+    42	    poll_interval: float,
+    43	    max_quiescent_iterations: int,
+    44	    stop: StopFlag,
+    45	) -> None:
+    46	    """Seed plan tasks, then loop finalize + dispatch + integrate to quiescence.
+    47	
+    48	    Returns when either ``stop`` is set or the orchestrator has observed
+    49	    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    50	    """
+    51	    for task_id in plan_task_ids:
+    52	        try:
+    53	            store.create_plan_task(task_id)
+    54	        except AlreadyExists as exc:
+    55	            # Restart-safe: a previous orchestrator already seeded this
+    56	            # task. Anything else (transport, auth, illegal-transition)
+    57	            # surfaces immediately.
+    58	            log.info("plan_task_seed_skip", task_id=task_id, reason=str(exc))
+    59	
+    60	    implement_factory = make_id_factory(implement_task_prefix)
+    61	    evaluate_factory = make_id_factory(evaluate_task_prefix)
+    62	
+    63	    def integrate(trial_id: str) -> None:
+    64	        integrator.integrate(trial_id)
+    65	
+    66	    quiescent = 0
+    67	    while not stop.is_set():
+    68	        progress = run_orchestrator_iteration(
+    69	            store,
+    70	            implement_task_id_factory=implement_factory,
+    71	            evaluate_task_id_factory=evaluate_factory,
+    72	            integrate_trial=integrate,
+    73	        )
+    74	        if progress:
+    75	            quiescent = 0
+    76	        else:
+    77	            quiescent += 1
+    78	            if quiescent >= max_quiescent_iterations:
+    79	                log.info("quiescent", iterations=quiescent)
+    80	                return
+    81	        if stop.wait(poll_interval):
+    82	            return
+    83	
+    84	
+    85	_INTEGRATOR_IDENTITY = Identity(
+    86	    name="EDEN Integrator",
+    87	    email="integrator@eden.invalid",
+    88	)
+    89	
+    90	
+    91	def integrator_identity() -> Identity:
+    92	    """Return the fixed identity used for integrator commits."""
+    93	    return _INTEGRATOR_IDENTITY
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9-web-ui.md | sed -n '440,720p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   440	   yet referenced by a submitted plan task — exists between
+   441	   Phase 2 and Phase 3. If Phase 3 fails after Phase 2 succeeded
+   442	   for at least one proposal, the orchestrator could in principle
+   443	   dispatch implement tasks for ready-but-unreferenced proposals.
+   444	   We accept this narrow window for the reference impl,
+   445	   documented as a known limitation; the spec-level fix
+   446	   (atomic ready-and-submit) is out of scope for Phase 9 chunk 1
+   447	   and applies equally to the existing scripted planner host.
+   448	   The error page on Phase-3 failure surfaces the orphaned
+   449	   proposal IDs explicitly so an operator can manually reclaim
+   450	   the plan task and let the orchestrator re-dispatch a fresh
+   451	   plan attempt.
+   452	4. **Submit error** (`POST /planner/{task_id}/submit?status=error`):
+   453	   - CSRF check.
+   454	   - `store.submit(task_id, token, PlanSubmission(status="error"))`.
+   455	   - No proposals are written.
+   456	   - Drop the token. Render `planner_submitted.html`.
+   457	5. **Phase-3 retry-before-orphan.** Per
+   458	   `spec/v0/07-wire-protocol.md` §6 the resubmit semantics are
+   459	   defined: a content-equivalent resubmit returns 200, a
+   460	   divergent resubmit returns 409
+   461	   `eden://error/conflicting-resubmission`. Before declaring
+   462	   proposals orphaned, the UI retries the same `submit` call up
+   463	   to 3 times with exponential backoff on transport failures,
+   464	   and on a clean response treats the submission as committed.
+   465	   The orphaned-proposals error page is reached only after the
+   466	   retries are exhausted with an indeterminate result, or the
+   467	   server returns a definitive error.
+   468	6. **Reclaim path on expired/invalid claim token.** If any
+   469	   `store.claim` / `store.submit` returns one of the closed
+   470	   wire-protocol errors —
+   471	   - `eden://error/wrong-token` (presented token != stored
+   472	     token; chapter 07 §7),
+   473	   - `eden://error/illegal-transition` (state-machine
+   474	     violation, e.g. another worker reclaimed after expiry),
+   475	   - `eden://error/conflicting-resubmission` (resubmit
+   476	     disagreed with committed payload),
+   477	   - `eden://error/invalid-precondition` (e.g. trial state
+   478	     differs from required) —
+   479	   the form re-renders the planner list with a banner naming
+   480	   the canonical error type and offering "claim again." Field
+   481	   input is preserved across the re-render so the user does not
+   482	   lose work-in-progress.
+   483	7. **Errors** at any other point: re-render the form with
+   484	   field-level messages; do not lose user input.
+   485	
+   486	`proposal_id` is generated server-side using `uuid.uuid4().hex`, the
+   487	same pattern the orchestrator service uses for task IDs.
+   488	
+   489	### D. Expired-claim sweeper (cross-package, makes TTL operational)
+   490	
+   491	Setting `expires_at` on every claim is just metadata; recovery requires
+   492	something that actually calls `reclaim(task_id, "expired")` on
+   493	expired claims. The reference stack has no such sweeper today; this
+   494	chunk adds one. Without it, the `--claim-ttl-seconds` flag would be
+   495	load-bearing on paper only.
+   496	
+   497	- New module `eden_dispatch.sweep` exposing
+   498	  `sweep_expired_claims(store, *, now) -> int` (returns count
+   499	  reclaimed): iterates `store.list_tasks(state="claimed")`, parses
+   500	  each `expires_at` (skipping rows where it is `None`), and for
+   501	  each one strictly less than `now` calls `store.reclaim(task_id,
+   502	  "expired")`. Per-task errors are logged but do not abort the
+   503	  sweep — sweeping is best-effort; the next iteration retries.
+   504	- `reference/services/orchestrator/src/eden_orchestrator/loop.py`
+   505	  calls `sweep_expired_claims(store, now=datetime.now(UTC))` once
+   506	  per iteration before `run_orchestrator_iteration`. This couples
+   507	  expired-claim recovery to the same poll cadence as the rest of
+   508	  the dispatch loop, with no new background thread or wire-level
+   509	  notification. Adding the call here (vs. inside
+   510	  `run_orchestrator_iteration`) keeps the latter semantically
+   511	  pure: it stays the dispatch-and-finalize body, sweeping is a
+   512	  separate cross-cutting maintenance pass.
+   513	- New test
+   514	  `reference/packages/eden-dispatch/tests/test_sweep.py` covering:
+   515	  expired claim is reclaimed and emits `task.reclaimed`; non-expired
+   516	  claim is left alone; absent `expires_at` is left alone; per-task
+   517	  reclaim failure does not abort the sweep.
+   518	- The Phase 8b real-subprocess e2e test remains green: it
+   519	  doesn't exercise expired claims, but the sweeper is a no-op on
+   520	  fresh claims.
+   521	
+   522	This is the smallest cross-package change that makes the UI's
+   523	TTL claim real today, and it's reusable by every future role
+   524	that issues claims (implementer / evaluator UI modules in 9c /
+   525	9d / 9e).
+   526	
+   527	### E. Documentation updates
+   528	
+   529	- `reference/services/web-ui/README.md` — full surface, the auth
+   530	  model, how to run locally, the planner flow described above.
+   531	- `reference/README.md` — flip the `web-ui` row from "(Phase 9; not
+   532	  yet started)" to a current-status entry pointing at this chunk.
+   533	- `AGENTS.md` — add a "Phase 9 chunk 1 complete" status block leading
+   534	  the existing chain; document the new service in the Commands
+   535	  table.
+   536	- `docs/roadmap.md` — flip the Phase 9 unit list to "9a + 9b
+   537	  complete; 9c–9e pending" with a one-line summary of what shipped;
+   538	  call out that the expired-claim sweeper landed alongside as a
+   539	  cross-cutting prerequisite.
+   540	
+   541	### F. CI
+   542	
+   543	The `python-test`, `python-lint`, and `python-typecheck` jobs already
+   544	include the workspace; they pick up the new package with `uv sync`.
+   545	No new CI job is needed for this chunk. The `pytest.mark.e2e` test
+   546	is gated behind `-m e2e` exactly as the existing one is (so default
+   547	runs stay fast); the e2e job in CI runs with `-m e2e`.
+   548	
+   549	## What does **not** change
+   550	
+   551	- `spec/v0/**` — no normative changes. The UI is non-normative
+   552	  reference material; chapter 07 (wire protocol) is the only
+   553	  cross-component contract this UI consumes, and it stays as-is.
+   554	- `eden-wire`, `eden-contracts`, `eden-storage`, `eden-git` — no
+   555	  API changes. If a need surfaces during implementation, it gets
+   556	  called out in the impl-review and either done as a separate
+   557	  spec-aware change or deferred.
+   558	- `eden-dispatch` — gains a new module
+   559	  `eden_dispatch.sweep.sweep_expired_claims` (additive; documented
+   560	  in §D). `run_orchestrator_iteration` and the scripted workers
+   561	  are not modified.
+   562	- All other reference services — their CLIs, behavior, and tests are
+   563	  untouched.
+   564	
+   565	## Verification
+   566	
+   567	Before declaring the chunk done, all of the following hold:
+   568	
+   569	1. `uv sync && uv run pytest -q` — full suite green, including
+   570	   `eden-web-ui`'s unit, flow, security-invariant, and
+   571	   partial-write-recovery tests.
+   572	2. `uv run pytest -m e2e -q` — the new UI subprocess e2e test plus
+   573	   the Phase 8b orchestrator e2e test both green.
+   574	3. `uv run ruff check .` — clean.
+   575	4. `uv run pyright` — clean.
+   576	5. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` — clean.
+   577	6. `python3 scripts/spec-xref-check.py` — clean (sanity, no spec
+   578	   changes expected).
+   579	7. Manual smoke (documented in the new `web-ui/README.md`):
+   580	   - Spawn task-store-server and UI service.
+   581	   - Open the UI, claim a `plan` task, draft 2 proposals, submit
+   582	     success.
+   583	   - Reload the planner page; the task is gone from "pending".
+   584	   - `curl` the wire `/tasks/{id}` endpoint and confirm `state ==
+   585	     "completed"` and the proposals exist.
+   586	   - `curl` the wire `/proposals` endpoint and confirm both
+   587	     proposals are `state == "ready"` then become `dispatched`
+   588	     once the orchestrator runs.
+   589	   - Reload an old session cookie after restarting the UI with a
+   590	     fresh `--session-secret`; the UI redirects to sign-in
+   591	     (cookie invalidation).
+   592	8. **Stranded-claim sanity check (operational).** A
+   593	   `pytest.mark.e2e` test (`test_e2e_real_subprocess.py::
+   594	   test_stranded_claim_recovers`) claims a plan task with
+   595	   `expires_at = now - 1s` (i.e. already expired), runs one
+   596	   orchestrator iteration, and asserts the task returns to
+   597	   `pending` via a `task.reclaimed` event with `cause ==
+   598	   "expired"`. This proves the §D sweeper runs in the real
+   599	   subprocess loop.
+   600	9. **Bearer-leak grep.** A shell-script verification step:
+   601	   `grep -r "$EDEN_SHARED_TOKEN" reference/services/web-ui/` returns
+   602	   nothing in any rendered template, default value, README, or test
+   603	   fixture.
+   604	10. The `reference/README.md` web-ui row reflects the new status;
+   605	    no stale "(not yet started)" text.
+   606	
+   607	## Execution order
+   608	
+   609	1. **§D sweeper first.** Add `eden_dispatch.sweep.sweep_expired_claims`
+   610	   plus `tests/test_sweep.py`. Wire the call into
+   611	   `eden_orchestrator.loop`. Confirm the existing Phase 8b e2e
+   612	   test stays green.
+   613	2. Scaffold `reference/services/web-ui/` (pyproject, package
+   614	   skeleton, README stub, empty test files).
+   615	3. Wire it into `uv sync`; confirm `uv run pyright` and
+   616	   `uv run pytest -q` still green with the empty package.
+   617	4. Build `make_app` and the index route; commit-equivalent
+   618	   checkpoint.
+   619	5. Build the planner routes against `InMemoryStore` with
+   620	   `TestClient` covering each route in isolation, including
+   621	   CSRF rejection and bearer-leak invariants.
+   622	6. Build the templates and CSS; verify the unit tests still green
+   623	   (templates render).
+   624	7. Add `tests/test_planner_flow.py` covering the full claim →
+   625	   draft → submit happy path, expired-token recovery, mid-flow
+   626	   failure paths, and the Phase-3 retry-before-orphan policy.
+   627	8. Add `tests/test_partial_write_recovery.py` and
+   628	   `tests/test_security_invariants.py`.
+   629	9. Add the subprocess `pytest.mark.e2e` tests, reusing
+   630	   `_read_port_announcement` and the SIGTERM teardown helpers from
+   631	   `reference/services/orchestrator/tests/test_e2e.py`. The UI
+   632	   service announces `EDEN_WEB_UI_LISTENING host=… port=…` on
+   633	   stdout on bind, mirroring the task-store-server convention. The
+   634	   stranded-claim recovery test
+   635	   (`test_stranded_claim_recovers`) is in this file.
+   636	10. Documentation pass: `web-ui/README.md`, `reference/README.md`,
+   637	    `AGENTS.md`, `docs/roadmap.md`.
+   638	11. Local verification (every step in the Verification section).
+   639	12. `/codex-review` on the implementation; iterate to
+   640	    convergence.
+   641	13. PR, CI green, squash-merge.
+   642	
+   643	## Risks
+   644	
+   645	- **Stranded human claims.** Mitigated end-to-end: the UI sets
+   646	  `expires_at = now + --claim-ttl-seconds` on every claim, and the
+   647	  new §D sweeper (`eden_dispatch.sweep.sweep_expired_claims`,
+   648	  invoked from the orchestrator service's loop) actually issues
+   649	  the `expired` reclaim. Phase 9e adds an explicit
+   650	  operator-reclaim button as a faster recovery path. The UI must
+   651	  not retry claims server-side for a user who doesn't return —
+   652	  that would mask the issue.
+   653	- **Partial proposal writes.** The Phase 1 → Phase 2 → Phase 3
+   654	  ordering in §C narrows the unsafe window to "ready proposals
+   655	  not yet referenced by a submitted plan task." The Phase-3
+   656	  retry-before-orphan policy (per §07 §6 idempotent resubmit)
+   657	  collapses transport-only failures into successes; only a
+   658	  definitive divergent-payload server response or 3 indeterminate
+   659	  retries in a row falls through to the operator-recovery error
+   660	  page. A spec-level fix (atomic `mark_ready_and_submit`) is out
+   661	  of scope for Phase 9 chunk 1; the residual gap applies equally
+   662	  to the existing scripted planner host.
+   663	- **Experiment-config drift.** The UI loads its own copy of
+   664	  `experiment-config.yaml`; if it diverges from the
+   665	  task-store-server's copy, planner-side validation could pass on
+   666	  inputs the evaluator's metrics_schema would later reject. Phase
+   667	  12's control plane is the right fix; for now the start-up
+   668	  `experiment_id` mismatch check catches the loud cases.
+   669	- **CSRF / cookie attribute regressions.** The cookie/CSRF policy
+   670	  is enforced by `tests/test_security_invariants.py`. Any change
+   671	  that loosens an attribute or skips the CSRF check breaks the
+   672	  test, by design.
+   673	- **Bearer-token leak via templating.** Mitigated by the
+   674	  bearer-leak unit test, the JSON-line log redaction, and the
+   675	  manual `grep -r "$EDEN_SHARED_TOKEN"` verification step. A
+   676	  reviewer should still spot-check any new template that
+   677	  receives the configuration object.
+   678	- **`itsdangerous` session-secret rotation.** Out of scope for this
+   679	  chunk; restarting the service with a different `--session-secret`
+   680	  invalidates outstanding sessions, which is the documented
+   681	  behavior. A real auth phase replaces this anyway.
+   682	- **Vendored HTMX bit-rot.** Pin the version in `pyproject.toml`
+   683	  comments and check the SHA-256 in `web-ui/README.md`; bumping is a
+   684	  one-line follow-up but not silent.
+   685	- **HTMX surprises.** If a partial-update interaction turns out to
+   686	  need a feature HTMX doesn't cleanly support, fall back to
+   687	  full-page submits for that flow rather than reaching for a JS
+   688	  framework. The CSS is already a single file; the templates degrade
+   689	  gracefully.
+   690	- **Test scope creep.** The existing Phase 8b e2e test takes ~3
+   691	  seconds because it forks five processes. Adding a second e2e test
+   692	  that forks two more (task-store + UI) keeps it on the order of
+   693	  another ~3 seconds; this is acceptable. If e2e total exceeds
+   694	  ~30 seconds we revisit consolidating, but not preemptively.
+   695	- **Reviewers' default expectation of a SPA.** The "Tech stack —
+   696	  decision and alternatives considered" section is deliberately
+   697	  detailed precisely because reviewers may default to "modern means
+   698	  React." The codex-review should specifically scrutinize that
+   699	  decision.
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/src/eden_storage/_base.py | sed -n '749,790p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   749	    def reclaim(self, task_id: str, cause: ReclaimCause) -> None:
+   750	        """Move a claimed (or operator-reclaimed submitted) task back to pending.
+   751	
+   752	        Automatic causes (``expired``, ``health_policy``) are rejected
+   753	        against ``submitted`` tasks per ``04-task-protocol.md`` §5.1;
+   754	        only ``operator`` reclaim is permitted from ``submitted``. If
+   755	        the reclaimed task is an ``implement`` whose prior execution
+   756	        left a trial in ``starting``, the trial transitions to
+   757	        ``error`` atomically with the reclaim
+   758	        (``05-event-protocol.md`` §2.2).
+   759	        """
+   760	        with self._atomic_operation():
+   761	            task = self._require_task(task_id)
+   762	            if task.state in {"completed", "failed"}:
+   763	                raise IllegalTransition(
+   764	                    f"cannot reclaim terminal task {task_id!r} (state={task.state!r})"
+   765	                )
+   766	            if task.state not in {"claimed", "submitted"}:
+   767	                raise IllegalTransition(
+   768	                    f"cannot reclaim task in state {task.state!r}"
+   769	                )
+   770	            if task.state == "submitted" and cause != "operator":
+   771	                raise IllegalTransition(
+   772	                    "automatic reclaim (expired, health_policy) is not permitted "
+   773	                    "against a submitted task; only operator reclaim is"
+   774	                )
+   775	
+   776	            now = self._ts()
+   777	            tx = _Tx()
+   778	            tx.tasks[task_id] = _validated_update(
+   779	                task, state="pending", claim=None, updated_at=now
+   780	            )
+   781	            if self._get_submission(task_id) is not None:
+   782	                tx.task_deletes_submission.add(task_id)
+   783	            tx.events.append(
+   784	                self._event("task.reclaimed", {"task_id": task_id, "cause": cause})
+   785	            )
+   786	
+   787	            if task.kind == "implement":
+   788	                trial = self._find_starting_trial_for_implement_task(task)
+   789	                if trial is not None:
+   790	                    tx.trials[trial.trial_id] = _validated_update(
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/07-wire-protocol.md | sed -n '157,170p;142,153p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   142	The `type` URI is the authoritative machine-readable error code. Clients MUST key retry and recovery on `type`, not on HTTP status alone (several conflict-class errors share 409). The closed v0 vocabulary is:
+   143	
+   144	| `type` | HTTP | When |
+   145	|---|---|---|
+   146	| `eden://error/bad-request` | 400 | request body fails schema validation |
+   147	| `eden://error/experiment-id-mismatch` | 400 | header-vs-path experiment-ID disagreement (§1.3) |
+   148	| `eden://error/wrong-token` | 403 | presented claim token ≠ stored token ([`04-task-protocol.md`](04-task-protocol.md) §3.3) |
+   149	| `eden://error/not-found` | 404 | referenced entity does not exist |
+   150	| `eden://error/already-exists` | 409 | insert collided with existing id |
+   151	| `eden://error/illegal-transition` | 409 | state-machine violation |
+   152	| `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
+   153	| `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_trial` (§5) |
+   157	## 8. Idempotency and retry
+   158	
+   159	### 8.1 Submit
+   160	
+   161	The [`04-task-protocol.md`](04-task-protocol.md) §4.2 submit-idempotency rule is preserved by the binding: a retry of `POST /v0/experiments/{E}/tasks/{T}/submit` carrying the same token and content-equivalent payload MUST return 200 identically to the original call. This lets a worker retry a submit after a transport error without risk of double- advance. No HTTP-level `Idempotency-Key` header is required.
+   162	
+   163	### 8.2 Integrate
+   164	
+   165	Same-value idempotency on `integrate_trial` is pinned in §5.
+   166	
+   167	### 8.3 Other mutations
+   168	
+   169	Claim, reject, reclaim, and accept are **not** blindly retry-safe on transport failures. A retry after the server already committed the transition will return `illegal-transition`, but that error is not uniquely distinguishable from a racing actor or a reclaim that interleaved between attempts. The binding does **not** standardize an HTTP-level retry convention for these endpoints; a client MUST resolve ambiguous failures via a follow-up `GET /v0/experiments/{E}/tasks/{T}` read and apply operation- specific knowledge. A future spec lineage MAY introduce per- operation idempotency tokens.
+   170	
+
+exec
+/bin/zsh -lc "rg -n \"§F|§D|§6|§07\" docs/plans/eden-phase-9-web-ui.md | sed -n '1,200p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+255:    sweeper (see §F below) that the orchestrator service runs
+370:  - The bearer-leak test (see §F) asserts no log line, no rendered
+458:   `spec/v0/07-wire-protocol.md` §6 the resubmit semantics are
+560:  in §D). `run_orchestrator_iteration` and the scripted workers
+598:   "expired"`. This proves the §D sweeper runs in the real
+609:1. **§D sweeper first.** Add `eden_dispatch.sweep.sweep_expired_claims`
+647:  new §D sweeper (`eden_dispatch.sweep.sweep_expired_claims`,
+656:  retry-before-orphan policy (per §07 §6 idempotent resubmit)
+
+codex
+I’ve found the main correctness story is now in good shape. I’m doing one more pass for internal consistency and packaging edges, because the remaining issues look more like stale references than conceptual gaps.
+exec
+/bin/zsh -lc "sed -n '1,220p' reference/services/evaluator/pyproject.toml" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "sed -n '1,220p' reference/services/task-store-server/pyproject.toml" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+[project]
+name = "eden-evaluator-host"
+version = "0.0.1"
+description = "Reference evaluator worker host (standalone process)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "eden-contracts",
+    "eden-dispatch",
+    "eden-service-common",
+    "eden-storage",
+    "eden-task-store-server",
+    "eden-wire",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eden_evaluator_host"]
+
+ succeeded in 0ms:
+[project]
+name = "eden-task-store-server"
+version = "0.0.1"
+description = "Reference task-store server: uvicorn + eden-wire FastAPI app over a SQLite or in-memory Store."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "eden-contracts",
+    "eden-service-common",
+    "eden-storage",
+    "eden-wire",
+    "pyyaml>=6.0",
+    "uvicorn>=0.30,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eden_task_store_server"]
+
+exec
+/bin/zsh -lc "rg -n \"eden_task_store_server|eden-service-common|dependencies\" reference/services/evaluator/pyproject.toml reference/services/web-ui/pyproject.toml reference/services/task-store-server/pyproject.toml reference/services/web-ui docs/plans/eden-phase-9-web-ui.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+rg: reference/services/web-ui/pyproject.toml: No such file or directory (os error 2)
+reference/services/task-store-server/pyproject.toml:8:dependencies = [
+reference/services/task-store-server/pyproject.toml:10:    "eden-service-common",
+reference/services/task-store-server/pyproject.toml:22:packages = ["src/eden_task_store_server"]
+reference/services/evaluator/pyproject.toml:8:dependencies = [
+reference/services/evaluator/pyproject.toml:11:    "eden-service-common",
+docs/plans/eden-phase-9-web-ui.md:72:   or transitive dependencies of `eden-wire` and the existing services.
+docs/plans/eden-phase-9-web-ui.md:226:  `eden-storage`, `eden-wire`, `eden-service-common`, plus `fastapi`,
+docs/plans/eden-phase-9-web-ui.md:236:    `eden_task_store_server.load_experiment_config` (the same
+
+codex
+**Findings**
+
+- **Medium** — The planned `web-ui` dependency list is now incomplete. The CLI section says the service will import `eden_task_store_server.load_experiment_config` in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:235), but the planned `pyproject.toml` dependencies in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:225) still omit `eden-task-store-server`. The existing evaluator host does declare that dependency in [reference/services/evaluator/pyproject.toml](/Users/ericalt/Documents/eden/reference/services/evaluator/pyproject.toml:8). Either add the dependency or move the config loader into a shared package.
+
+- **Medium** — One stale experiment-drift claim remains. The main CLI section correctly says the config-file vs `--experiment-id` cross-check is not implementable because `ExperimentConfig` has no `experiment_id` in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:243), but the Risks section still says “the start-up `experiment_id` mismatch check catches the loud cases” in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:667). That should be removed or reworded.
+
+- **Low** — A few internal references are stale after the renumbering. `--claim-ttl-seconds` points to “§F below” instead of the new sweeper section D in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:255). The Phase-3 retry logic cites chapter 07 “§6” for submit idempotency in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:457) and [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:656), but the actual submit-idempotency section is [07-wire-protocol.md](/Users/ericalt/Documents/eden/spec/v0/07-wire-protocol.md:159). These are doc-fidelity fixes, not design blockers.
+
+**Status Against Prior Rounds**
+
+- **Round 0 / stranded claims:** addressed. The new sweeper section is the missing operational piece, and it is now correctly separated from `run_orchestrator_iteration` in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:489). That closes the earlier “TTL on paper only” problem.
+
+- **Round 0 / planner inputs:** addressed. The planner page now surfaces `objective`, `metrics_schema`, and recent proposals/trials in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:388), which fixes the earlier missing-context issue.
+
+- **Round 0 / partial-write handling:** mostly addressed, with the same explicit caveat you now document. The new retry-before-orphan policy in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:457) is the right addition. The residual Phase-2→Phase-3 window remains, but it is now clearly named as an accepted limitation rather than an accidental omission.
+
+- **Round 0 / auth and bearer hygiene:** addressed. The revised auth section remains solid.
+
+- **Round 0 / alternatives and stack rationale:** addressed. The alternatives section now reads as a fair comparison rather than a strawman.
+
+- **Round 1 / error names:** addressed. The canonical vocabulary now matches [07-wire-protocol.md](/Users/ericalt/Documents/eden/spec/v0/07-wire-protocol.md:142).
+
+- **Round 1 / impossible experiment-id cross-check:** mostly addressed, except for the one stale Risks sentence noted above.
+
+- **Round 1 / stale threat-model sentence:** addressed. The “Why this stack” section is now consistent with the explicit threat model in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:89).
+
+**Overall**
+
+The substantive round-0 and round-1 findings are now addressed. I do not see a new architectural blocker.
+
+What remains is cleanup: add the missing `eden-task-store-server` dependency, remove the stale experiment-id mismatch sentence in Risks, and fix the renumbered section citations. After those edits, this looks ready to implement with the already-documented caveat that the Phase-2→Phase-3 ready-before-submit window is still a known reference-impl limitation.
+tokens used
+166,792

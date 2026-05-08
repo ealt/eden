@@ -1,0 +1,469 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019db793-1782-7a63-b2be-bd00a49e8cca
+--------
+user
+I've addressed your feedback. The updated review brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/2.md lists what was fixed. Please re-read the implementation files and review again.
+codex
+Reading the round-2 brief first, then I’ll re-check the files touched by the last feedback and do one more consistency pass to see whether anything remains beyond those fixes.
+exec
+/bin/zsh -lc "nl -ba docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/2.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Implementation Review: eden-protocol-bootstrap
+     2	
+     3	## Plan
+     4	
+     5	- Path: `/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md`
+     6	
+     7	## Review Status
+     8	
+     9	Round 2 — responding to round 1 feedback.
+    10	
+    11	### Round 2 — issues addressed
+    12	
+    13	1. **Risk — naming.md present-tense "ships one complete reference
+    14	   implementation."** Reworded to "The repo is structured to house a
+    15	   reference implementation, built up incrementally over the roadmap,
+    16	   plus a conformance suite that any independently-built component
+    17	   will be able to run against itself once the suite lands." No more
+    18	   present-tense claims about shipping artifacts that don't exist.
+    19	2. **Risk — naming.md availability table with 2025-03-27 date.**
+    20	   Retitled to "Availability check — `direvo`" and added a framing
+    21	   sentence: "Historical name-squatting check carried over from the
+    22	   predecessor project. Re-verify before actually publishing in Phase
+    23	   3+." The dated data is preserved as a reference point but no longer
+    24	   reads like current state.
+    25	3. **Risk — markdownlint version mismatch (local v0.20.0 fails MD060
+    26	   where CI v0.14.0 does not).** Updated the AGENTS.md commands table
+    27	   to `npx --yes markdownlint-cli2@0.14.0 …`, pinning local runs to
+    28	   the CI version. CONTRIBUTING.md updated to call out the version
+    29	   pinning rationale. Anyone running the exact pinned command locally
+    30	   will now match CI.
+    31	4. **Nit — AGENTS.md malformed "+ push + branch protection..." list
+    32	   syntax.** Rewrote the status sentence using comma-separated prose
+    33	   instead of `+`-separators that the formatter re-wraps into list
+    34	   items: "the remaining steps (commit, push, branch protection)
+    35	   finish the phase."
+    36	5. **Nit — roadmap Phase 3 unit 3a nested sub-bullet from wrapped
+    37	   `+` list.** Same root cause; same fix. Rewrote as prose: "Pydantic
+    38	   models for the six v0 schemas, along with the root `pyproject.toml`
+    39	   (uv workspace root), a per-package
+    40	   `reference/packages/eden-contracts/pyproject.toml`, and a
+    41	   `.python-version` file."
+    42	
+    43	### Notes
+    44	
+    45	- Local lint (pinned 0.14.0 via `npx`) still passes 0 errors across
+    46	  12 files.
+    47	- Phase 0 commit / push / branch protection steps are still pending
+    48	  after this review — those are the final actions that flip
+    49	  "in progress" to "complete" in the status language.
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+?? .github/
+?? .gitignore
+?? .markdownlint.json
+?? AGENTS.md
+?? CLAUDE.md
+?? CONTRIBUTING.md
+?? LICENSE
+?? README.md
+?? STYLE_GUIDE.md
+?? conformance/
+?? docs/
+?? reference/
+?? spec/
+?? tests/
+
+exec
+/bin/zsh -lc 'rg --files README.md AGENTS.md CONTRIBUTING.md docs/roadmap.md docs/naming.md .github/workflows/ci.yml conformance/README.md docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/2.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/2.md
+conformance/README.md
+.github/workflows/ci.yml
+docs/naming.md
+docs/roadmap.md
+CONTRIBUTING.md
+AGENTS.md
+README.md
+
+codex
+I have the round-2 brief. Next I’m verifying the exact lines it claims were fixed in `AGENTS.md`, `CONTRIBUTING.md`, `docs/roadmap.md`, and `docs/naming.md`, then I’ll run one more cross-check for any remaining inconsistencies.
+exec
+/bin/zsh -lc "nl -ba CONTRIBUTING.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/naming.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/roadmap.md | sed -n '95,125p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN
+     2	
+     3	**E**ric's **D**irected **E**volution **N**exus — the meeting point where
+     4	intelligent planning and evolutionary selection converge.
+     5	
+     6	## Tagline
+     7	
+     8	> Intelligent evolution.
+     9	
+    10	## Short description
+    11	
+    12	EDEN is a protocol for orchestrating directed code evolution, with an
+    13	open reference implementation. Planners propose experiments, parallel trials
+    14	run against a shared data model, results feed back into the next round — an
+    15	automated loop of diversify, evaluate, amplify. Anyone can build a conforming
+    16	planner, implementer, evaluator, or backing store in any language and
+    17	interoperate with other conforming components.
+    18	
+    19	## Elevator pitch
+    20	
+    21	Most research automation tools are either a single-agent loop (try something,
+    22	check if it worked, repeat) or a static job runner (execute a fixed matrix of
+    23	experiments). EDEN is neither — and, importantly, EDEN is not a single system.
+    24	It is a **protocol**: a specification that defines the roles (planner,
+    25	implementer, evaluator, integrator), the messages they exchange, and the
+    26	invariants they must honor. A conforming system coordinates concurrent
+    27	research trials in which a planner — human, AI, or hybrid — proposes
+    28	experiments, an integrator dispatches them against a versioned workspace,
+    29	implementers modify code on isolated branches, and evaluators score the
+    30	results against a fitness function. Results flow back to the planner to
+    31	inform the next generation of proposals. The architecture mirrors directed
+    32	evolution in the lab: generate a library of variants, screen them, amplify
+    33	the winners, repeat.
+    34	
+    35	The repo is structured to house a **reference implementation** of the
+    36	protocol, built up incrementally over the roadmap, plus a **conformance
+    37	suite** that any independently-built component will be able to run
+    38	against itself once the suite lands. The planner brings the
+    39	intelligence; EDEN's contracts bring the infrastructure to run the
+    40	search at scale, regardless of which implementation is plugged in
+    41	where.
+    42	
+    43	## Etymology
+    44	
+    45	The name operates on two levels.
+    46	
+    47	**The acronym:** Eric's Directed Evolution Nexus — a nexus where experimental
+    48	proposals, parallel execution, and evaluative selection meet. The system is the
+    49	convergence point between a planner's intelligence and the outcomes of automated
+    50	trials.
+    51	
+    52	**The allusion:** The Garden of Eden is where creation happens by design — an
+    53	omniscient creator, a deliberate act. Directed evolution is the opposite: creation
+    54	through iterative selection, not foresight. EDEN sits in the tension between
+    55	these two ideas. The planner brings intent and strategy (intelligent design), but
+    56	the mechanism is evolutionary — propose variants, run trials, select the fittest,
+    57	repeat. The tagline "Intelligent evolution" captures this tension directly: it
+    58	inverts "intelligent design," preserving the cadence but swapping the noun.
+    59	
+    60	## Scientific lineage
+    61	
+    62	Directed evolution is a Nobel Prize-winning technique (Frances Arnold, 2018)
+    63	for engineering proteins through iterative cycles of diversification, screening,
+    64	and amplification. A researcher generates a library of variants, evaluates them
+    65	against a fitness function, and uses the best results as the template for the
+    66	next round.
+    67	
+    68	The parallel to EDEN's architecture is nearly 1:1:
+    69	
+    70	| Directed Evolution          | EDEN                                        |
+    71	| --------------------------- | ------------------------------------------- |
+    72	| Library of variants         | Parallel trials in isolated git worktrees   |
+    73	| Screening / assay           | Eval script producing JSON metrics          |
+    74	| Amplification (next round)  | Planner reads results, proposes next batch  |
+    75	| Iterative rounds            | The propose / execute / evaluate loop       |
+    76	| Mutagenesis                 | Planner proposes modifications to the code  |
+    77	| Intelligent guidance        | Planner is strategic, not random            |
+    78	
+    79	## Package name (reference implementation, planned)
+    80	
+    81	The Python reference implementation **will be published** as `direvo`
+    82	(**dir**ected **evo**lution) once it exists (landing in Phase 3 per
+    83	`docs/roadmap.md`). Both `direvo` and `eden` will work as CLI commands
+    84	after install — users can think of the tool as EDEN while the package
+    85	name stays short, unique, and conflict-free.
+    86	
+    87	```bash
+    88	# After Phase 3 lands, installation will look like:
+    89	pip install direvo
+    90	eden run --config .eden/config.yaml
+    91	```
+    92	
+    93	The name "eden" is heavily used across the software ecosystem (Eden AI,
+    94	Eden emulator, multiple PyPI packages), making it impractical as a
+    95	package name. The dual-name strategy avoids all registry conflicts while
+    96	giving users the brand name at the command line.
+    97	
+    98	This naming applies to the Python reference implementation only.
+    99	Third-party implementations in other languages / ecosystems are free to
+   100	choose their own names and should not use `direvo` or `eden` without
+   101	coordination; the protocol version they target (e.g. `eden-protocol/v0`)
+   102	is the identity that matters for interoperability.
+   103	
+   104	## Availability check — `direvo`
+   105	
+   106	Historical name-squatting check carried over from the predecessor
+   107	project. Re-verify before actually publishing in Phase 3+.
+   108	
+   109	| Registry    | Name   | Status as of 2025-03-27 |
+   110	| ----------- | ------ | ----------------------- |
+   111	| PyPI        | direvo | Available               |
+   112	| GitHub user | direvo | Available               |
+   113	| GitHub org  | direvo | Available               |
+   114	| npm         | direvo | Available               |
+
+ succeeded in 0ms:
+     1	# AGENTS.md
+     2	
+     3	This file provides guidance to AI agents working with this repository.
+     4	
+     5	## What this repo is
+     6	
+     7	EDEN is a **protocol** for directed-code-evolution orchestration, not a
+     8	single product. The repo contains three distinct kinds of artifact, each
+     9	with different change discipline:
+    10	
+    11	| Layer | Path | Authoritative? | Change discipline |
+    12	|---|---|---|---|
+    13	| Protocol specification | [`spec/`](spec/) | Yes — the source of truth | RFC-style: versioned, normative (MUST/SHOULD/MAY), carefully reviewed |
+    14	| Reference implementation | [`reference/`](reference/) | No — *one* valid impl | Normal code-review discipline |
+    15	| Conformance suite | [`conformance/`](conformance/) | Normative for tests | Black-box; must be implementation-agnostic |
+    16	
+    17	Non-normative human docs live in [`docs/`](docs/).
+    18	
+    19	## Current phase
+    20	
+    21	**Phase 0 (bootstrap) in progress.** Scaffolding is in place; the
+    22	remaining steps (commit, push, branch protection) finish the phase.
+    23	No code yet. See [`docs/roadmap.md`](docs/roadmap.md) for the full
+    24	13-phase plan. The spec itself is not yet written —
+    25	[`spec/v0/README.md`](spec/v0/README.md) lists the planned chapters
+    26	with their target phases.
+    27	
+    28	## Commands
+    29	
+    30	At Phase 0 only markdown linting is in play.
+    31	
+    32	| Command | Purpose |
+    33	|---|---|
+    34	| `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
+    35	
+    36	### Commands that will exist in later phases
+    37	
+    38	These are listed for orientation; none of the tooling is wired up yet.
+    39	
+    40	| Command | Lands in |
+    41	|---|---|
+    42	| `uv sync` | Phase 3 (first `pyproject.toml`) |
+    43	| `uv run ruff check .` | Phase 3 |
+    44	| `uv run pyright` | Phase 3 |
+    45	| `uv run pytest -q` | Phase 3 |
+    46	| `check-jsonschema --schemafile ...` | Phase 1 (first JSON Schema) |
+    47	| Schema ↔ Pydantic parity check | Phase 3 |
+    48	| `docker compose up` end-to-end | Phase 10 |
+    49	
+    50	## Contribution conventions
+    51	
+    52	### Spec edits
+    53	
+    54	+ Every cross-component contract (wire format, state machine, invariant)
+    55	  is defined in `spec/` first, then implemented in `reference/`. When
+    56	  they disagree, the spec wins and the impl gets a bug.
+    57	+ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
+    58	+ Spec versions are frozen once stable (`spec/v0/` is a single lineage;
+    59	  breaking changes go to `spec/v1/`).
+    60	+ Schema changes must update the spec prose, the JSON Schema file, and
+    61	  (from Phase 3 onward) the Pydantic bindings in lockstep. CI will
+    62	  enforce schema ↔ model parity once both exist.
+    63	
+    64	### Reference implementation
+    65	
+    66	+ Normal code-review discipline.
+    67	+ Normative behavior is tested against the conformance suite (once it
+    68	  exists in Phase 11).
+    69	+ The reference impl is explicitly not a monopoly on correctness. A
+    70	  third-party implementation that passes conformance is equally valid.
+    71	
+    72	## Commit guidelines
+    73	
+    74	+ Short imperative subjects (e.g., "Add event protocol chapter",
+    75	  "Pin task state machine").
+    76	+ For pull requests, include: what the change is, which phase it
+    77	  advances, and any spec ↔ impl implications.
+    78	
+    79	## Related docs
+    80	
+    81	+ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
+    82	+ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with
+    83	  unit-level decomposition.
+    84	+ [`docs/plans/`](docs/plans/) — active implementation plans.
+    85	+ [`docs/archive/`](docs/archive/) — historical reference docs.
+    86	+ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
+    87	+ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+
+ succeeded in 0ms:
+     1	# Contributing to EDEN
+     2	
+     3	Thanks for your interest in EDEN.
+     4	
+     5	EDEN is a **protocol** for directed-code-evolution orchestration. This repo
+     6	contains three kinds of artifact that call for different contribution
+     7	discipline: the **specification** (`spec/`), the **reference
+     8	implementation** (`reference/`), and the **conformance suite**
+     9	(`conformance/`). Read the section that matches where your change lives.
+    10	
+    11	## Current phase
+    12	
+    13	**Phase 0 (bootstrap) in progress.** Scaffolding and docs are in place;
+    14	first commit + push + branch protection finish the phase. There is no
+    15	runnable code yet — the reference implementation and conformance suite
+    16	are stubs. The spec itself is not yet written; only the section READMEs
+    17	exist. See [`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase
+    18	plan and the current state of each deliverable.
+    19	
+    20	If you want to contribute, the most useful thing today is reviewing
+    21	[`docs/plans/eden-protocol-bootstrap.md`](docs/plans/eden-protocol-bootstrap.md)
+    22	and the roadmap, and raising issues on framing or omissions.
+    23	
+    24	## Contributing to the spec
+    25	
+    26	The spec is the authoritative source of protocol semantics. A change to
+    27	the spec is a change to what "EDEN" means.
+    28	
+    29	### Spec conventions
+    30	
+    31	- **Versioning.** `spec/v0/` is a single lineage. Within a version,
+    32	  changes should be additive or clarifying. Breaking changes go to a new
+    33	  version (`spec/v1/`, …), never in-place.
+    34	- **Normative language.** Use RFC 2119 keywords: **MUST**, **SHOULD**,
+    35	  **MAY**. If prose doesn't use one, it's informative.
+    36	- **Wire-format changes propagate.** A change to a JSON Schema file
+    37	  under `spec/v*/schemas/` must be reflected in the Markdown chapter
+    38	  and (from Phase 3 onward) in the Pydantic bindings in
+    39	  `reference/packages/eden-contracts/`. CI will enforce schema ↔ model
+    40	  parity.
+    41	- **No technology choices in normative text.** The spec talks about
+    42	  *semantics*, not mechanisms. "A conforming task store MUST provide
+    43	  atomic claim with linearizable semantics" — yes. "Uses Postgres `SELECT
+    44	  ... FOR UPDATE`" — no, that's reference-impl detail.
+    45	
+    46	### Process
+    47	
+    48	1. Open an issue describing the change and why. Spec changes benefit from
+    49	   discussion before implementation.
+    50	2. Draft the prose + schema change in a branch.
+    51	3. Open a PR; expect careful review. Reviewers will check: RFC language,
+    52	   cross-reference consistency, whether the change is additive or
+    53	   breaking, and whether the change needs a conformance scenario.
+    54	
+    55	## Contributing to the reference implementation
+    56	
+    57	Standard code-review workflow applies.
+    58	
+    59	### Prerequisites (future phases)
+    60	
+    61	Once the Python reference implementation lands in Phase 3, contributors
+    62	will need:
+    63	
+    64	- Python 3.12+
+    65	- [uv](https://docs.astral.sh/uv/)
+    66	- (Phase 9+) Node.js 20+ for the reference web UI
+    67	- (Phase 10+) Docker for the Compose stack
+    68	
+    69	Phase 0 requires only a markdown linter for local pre-push checks; see
+    70	[`AGENTS.md`](AGENTS.md#commands) for the exact pinned command
+    71	(version-matched to CI to avoid works-locally / fails-in-CI drift).
+    72	
+    73	### Impl conventions
+    74	
+    75	- Normative behavior in the reference impl must match the spec. If the
+    76	  impl is correct and the spec is wrong, the spec should change first.
+    77	- Pass the conformance suite (Phase 11+).
+    78	- Follow the [style guide](STYLE_GUIDE.md).
+    79	
+    80	## Contributing to the conformance suite
+    81	
+    82	The conformance suite lands in Phase 11 and is not yet implementable.
+    83	Once it exists:
+    84	
+    85	- Scenarios must be **implementation-agnostic** — they drive an
+    86	  implementation-under-test via its advertised protocol surface, not via
+    87	  language-specific hooks.
+    88	- A scenario must cite the spec paragraph it validates.
+    89	
+    90	## Questions
+    91	
+    92	Open an issue.
+
+ succeeded in 0ms:
+    95	**Exit:** state machine is pinned; `04-task-protocol.md` enumerates
+    96	every legal transition with its pre- and post-conditions.
+    97	
+    98	---
+    99	
+   100	## Phase 3 — Reference contracts package (`eden-contracts`)
+   101	
+   102	First real Python code: Pydantic bindings for the v0 JSON Schemas.
+   103	Introduces the uv workspace + Python toolchain.
+   104	
+   105	**Units:**
+   106	
+   107	- **3a** — Pydantic models for the six v0 schemas, along with the
+   108	  root `pyproject.toml` (uv workspace root), a per-package
+   109	  `reference/packages/eden-contracts/pyproject.toml`, and a
+   110	  `.python-version` file. Ruff/pyright config ported from direvo.
+   111	  CI jobs: `python-lint` (ruff), `python-typecheck` (pyright),
+   112	  `python-test` (pytest).
+   113	- **3b** — Schema ↔ model parity check. CI job `schema-parity` that
+   114	  loads each JSON Schema and asserts the matching Pydantic model can
+   115	  round-trip any instance; fails CI on drift.
+   116	
+   117	**Chunk:** 3a + 3b — one chunk.
+   118	
+   119	**Non-goals:** any domain logic, just data types; storage, git,
+   120	dispatch (later phases).
+   121	
+   122	**Exit:** all six Pydantic models exist and parity CI is green against
+   123	the Phase 1 schemas.
+   124	
+   125	---
+
+codex
+The targeted round-2 fixes are present. I’m doing one last verification pass now: pinned local lint, link resolution, and a quick scan for any remaining plan/roadmap/doc drift before I decide whether there are still findings.
+exec
+/bin/zsh -lc "rg -n 'Phase 0 \\(bootstrap\\) complete|matches CI exactly|branch protection semantics|9a \\+ 9b|10b \\+ 10c|Availability check|reference implementation, planned|remaining steps \\(commit, push, branch protection\\)' README.md AGENTS.md CONTRIBUTING.md conformance/README.md docs/roadmap.md docs/naming.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+AGENTS.md:22:remaining steps (commit, push, branch protection) finish the phase.
+AGENTS.md:34:| `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
+docs/roadmap.md:265:**Chunks:** 9a + 9b one chunk (shell + first role module together —
+docs/roadmap.md:299:**Chunks:** 10a one; 10b + 10c one chunk (dockerize + setup script
+docs/naming.md:79:## Package name (reference implementation, planned)
+docs/naming.md:104:## Availability check — `direvo`
+
+exec
+/bin/zsh -lc 'npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'links=$(for f in README.md AGENTS.md CONTRIBUTING.md STYLE_GUIDE.md spec/README.md spec/v0/README.md reference/README.md conformance/README.md docs/roadmap.md docs/naming.md; do perl -ne '"'while(/\\[["'^'"\\]]+\\]\\((["'^)#]+)(?:#[''^)]+)?'"\\)/g){print \""'$ARGV'"\\t"'$1'"\\n\"}' \""'$f"; done); printf '"'%s
+' \""'$links" | while IFS=$'"'\\t' read -r src link; do case \""'$link" in http*|mailto:*|'"'') continue;; esac; dir="'$(dirname "$src"); target=$(cd "$dir" && realpath "$link" 2>/dev/null || true); if [ -z "$target" ] || [ ! -e "$target" ]; then echo "BROKEN $src -> $link"; fi; done' in /Users/ericalt/Documents/eden
+ succeeded in 208ms:
+codex
+The document fixes are holding up on re-read. One last thing I checked was whether any current-state wording still overclaims what Phase 0 has actually delivered; I only found the expected “Phase 0 in progress” language now, not the earlier premature “complete” claim.
+2026-04-22T23:56:41.119852Z ERROR codex_core::tools::router: error=write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open
+codex
+No findings.
+
+The round-2 changes resolve the remaining issues I flagged. `docs/roadmap.md` is back in sync with the bootstrap plan for Phases 3, 9, and 10; `AGENTS.md` and `CONTRIBUTING.md` now describe Phase 0 as in progress and document the pinned markdownlint invocation; `docs/naming.md` no longer overstates current implementation status and clearly frames the `direvo` availability table as historical pre-publication context; `conformance/README.md` remains aligned with Phase 11. Relative links I checked resolve correctly.
+
+Residual risk is limited to the still-pending execution-order steps outside the document edits themselves: commit, push, first CI run on `main`, and branch protection. I did not get a completed result back from the pinned `npx --yes markdownlint-cli2@0.14.0 ...` command in this sandbox, so I’m relying on the documented pin plus the file-level consistency review rather than an independent successful run of that exact command here.
+tokens used
+191,491

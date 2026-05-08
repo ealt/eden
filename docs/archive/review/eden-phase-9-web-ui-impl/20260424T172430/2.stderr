@@ -1,0 +1,315 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc206-90ea-7b30-a318-0367693c6508
+--------
+user
+Round 2: addressed your remaining round-1 finding.
+
+Added explicit tests covering each chapter-07 §7 definitive error name (WrongToken / IllegalTransition / ConflictingResubmission / InvalidPrecondition) at submit time, asserting that the orphan page (HTTP 502) renders with the canonical eden://error/<name> banner. Tests in test_planner_flow.py::TestDefinitiveSubmitErrors.
+
+Also tightened the docstring on _retry_submit to document why definitive submit errors land on the orphan page rather than a 'preserve input + claim again' form: by the time Phase 3 runs, Phase 1 has already created proposals and Phase 2 has marked them ready, so the work product that needs operator recovery is the orphaned proposals (whose IDs the orphan page lists), not the form inputs. Form-input preservation applies to *validation* errors, where no store mutation has happened yet — that path is covered by TestValidationRecovery.
+
+If you still want a 'redirect-to-planner-list-with-claim-again-banner' flow on top of the orphan page for these errors, I can add that as a third path (orphan page for the proposal IDs + a banner on the planner list), but I think that loses information rather than adding it.
+
+Results: 448 unit tests + 3 e2e tests pass; ruff, pyright, markdownlint clean.
+
+Has the round-1 finding been addressed sufficiently? Anything else?
+codex
+Checking the new submit-error tests against the actual contract now. The key question isn’t whether the orphan-page behavior is tested; it’s whether the behavior now matches the plan, or whether the plan needs to be amended to bless the new semantics.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/planner.py | sed -n '282,330p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   282	def _retry_submit(
+   283	    store: Any, task_id: str, token: str, submission: PlanSubmission
+   284	) -> tuple[bool, str | None]:
+   285	    """Resubmit on transport-only failures up to 3 times.
+   286	
+   287	    Per chapter 07 §2.4 / §8.1, a content-equivalent resubmit is
+   288	    idempotent. Returns ``(ok, banner)``:
+   289	
+   290	    - ``(True, None)`` on success (including a same-content
+   291	      resubmit that returns 200).
+   292	    - ``(False, banner)`` on a definitive divergent response or
+   293	      after 3 indeterminate failures. ``banner`` is the canonical
+   294	      ``eden://error/<name>`` (or a transport summary) suitable for
+   295	      surfacing to the user.
+   296	
+   297	    Definitive store-domain errors (``WrongToken``,
+   298	    ``ConflictingResubmission``, ``InvalidPrecondition``,
+   299	    ``IllegalTransition``) are not retried — retrying any of them
+   300	    cannot change the outcome and any further attempt would just
+   301	    return the same error or hide an actually-committed prior
+   302	    attempt. Anything else (``DispatchError`` without a known
+   303	    subclass, or a raw transport exception from the wire client
+   304	    such as ``httpx.HTTPError``) is treated as transport-shaped
+   305	    and retried.
+   306	
+   307	    On any definitive failure, the caller renders the orphan page
+   308	    rather than a "preserve input + claim again" form. Reasoning:
+   309	    by the time Phase 3 runs, Phase 1 has already created
+   310	    proposals and Phase 2 has marked them ready. The work product
+   311	    that needs operator recovery is the orphaned proposals
+   312	    themselves (whose IDs the orphan page lists), not the form
+   313	    inputs. Form-input preservation applies to *validation*
+   314	    errors, where no store mutation has happened yet.
+   315	    """
+   316	    last_exc: BaseException | None = None
+   317	    for delay in _RETRY_DELAYS_S:
+   318	        try:
+   319	            store.submit(task_id, token, submission)
+   320	            return True, None
+   321	        except (
+   322	            WrongToken,
+   323	            ConflictingResubmission,
+   324	            InvalidPrecondition,
+   325	            IllegalTransition,
+   326	        ) as exc:
+   327	            return False, _wire_error_banner(exc)
+   328	        except Exception as exc:  # noqa: BLE001 — transport-shaped or unknown
+   329	            last_exc = exc
+   330	            time.sleep(delay)
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_planner_flow.py | sed -n '220,380p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   220	            a.post("/signin", follow_redirects=False)
+   221	            csrf_a = get_csrf(a)
+   222	            resp = a.post(
+   223	                "/planner/t-iso/claim",
+   224	                data={"csrf_token": csrf_a},
+   225	                follow_redirects=False,
+   226	            )
+   227	            assert resp.status_code == 303
+   228	            # First session can see its own draft form.
+   229	            resp = a.get("/planner/t-iso/draft")
+   230	            assert resp.status_code == 200
+   231	
+   232	        # Second session — fresh sign-in (fresh CSRF) — cannot reach
+   233	        # the draft page, which means it cannot reuse the first
+   234	        # session's claim.
+   235	        with TestClient(app) as b:
+   236	            b.post("/signin", follow_redirects=False)
+   237	            resp = b.get("/planner/t-iso/draft", follow_redirects=False)
+   238	            assert resp.status_code == 303
+   239	            assert "claim+missing" in resp.headers["location"]
+   240	
+   241	
+   242	class TestDefinitiveSubmitErrors:
+   243	    """Each chapter-07 §7 error name surfaces on the orphan page.
+   244	
+   245	    Note on operational semantics: by the time Phase 3 submit runs,
+   246	    Phase 1 has already created proposals (drafting) and Phase 2 has
+   247	    marked them ready. A definitive wire error at submit means those
+   248	    proposals are orphaned — the form-input preservation that
+   249	    applies to *validation* errors does not apply here, because the
+   250	    work product (the proposals themselves) is what needs recovery,
+   251	    not the form inputs. The orphan page lists the orphaned
+   252	    proposal IDs and surfaces the canonical error type so an
+   253	    operator can decide whether to reclaim the plan task or
+   254	    garbage-collect.
+   255	    """
+   256	
+   257	    def _setup_claim(
+   258	        self, client: TestClient, store: InMemoryStore, task_id: str
+   259	    ) -> str:
+   260	        store.create_plan_task(task_id)
+   261	        token = get_csrf(client)
+   262	        resp = client.post(
+   263	            f"/planner/{task_id}/claim",
+   264	            data={"csrf_token": token},
+   265	            follow_redirects=False,
+   266	        )
+   267	        assert resp.status_code == 303
+   268	        return token
+   269	
+   270	    def _submit(
+   271	        self, client: TestClient, task_id: str, csrf: str
+   272	    ):
+   273	        return client.post(
+   274	            f"/planner/{task_id}/submit",
+   275	            data={
+   276	                "csrf_token": csrf,
+   277	                "status": "success",
+   278	                "slug": "feat-x",
+   279	                "priority": "1.0",
+   280	                "parent_commits": "a" * 40,
+   281	                "rationale": "rationale",
+   282	            },
+   283	        )
+   284	
+   285	    def test_wrong_token_lands_on_orphan_with_banner(
+   286	        self,
+   287	        signed_in_client: TestClient,
+   288	        store: InMemoryStore,
+   289	        monkeypatch,
+   290	    ) -> None:
+   291	        from eden_storage import WrongToken
+   292	
+   293	        token = self._setup_claim(signed_in_client, store, "t-wt")
+   294	
+   295	        def fail(*args, **kwargs):
+   296	            raise WrongToken("wrong token")
+   297	
+   298	        monkeypatch.setattr(store, "submit", fail)
+   299	        resp = self._submit(signed_in_client, "t-wt", token)
+   300	        assert resp.status_code == 502
+   301	        assert "eden://error/wrong-token" in resp.text
+   302	        assert len(store.list_proposals(state="ready")) == 1
+   303	
+   304	    def test_illegal_transition_lands_on_orphan_with_banner(
+   305	        self,
+   306	        signed_in_client: TestClient,
+   307	        store: InMemoryStore,
+   308	        monkeypatch,
+   309	    ) -> None:
+   310	        from eden_storage import IllegalTransition
+   311	
+   312	        token = self._setup_claim(signed_in_client, store, "t-it")
+   313	
+   314	        def fail(*args, **kwargs):
+   315	            raise IllegalTransition("not in claimed state")
+   316	
+   317	        monkeypatch.setattr(store, "submit", fail)
+   318	        resp = self._submit(signed_in_client, "t-it", token)
+   319	        assert resp.status_code == 502
+   320	        assert "eden://error/illegal-transition" in resp.text
+   321	
+   322	    def test_conflicting_resubmission_lands_on_orphan_with_banner(
+   323	        self,
+   324	        signed_in_client: TestClient,
+   325	        store: InMemoryStore,
+   326	        monkeypatch,
+   327	    ) -> None:
+   328	        from eden_storage import ConflictingResubmission
+   329	
+   330	        token = self._setup_claim(signed_in_client, store, "t-cr")
+   331	
+   332	        def fail(*args, **kwargs):
+   333	            raise ConflictingResubmission("payload diverged")
+   334	
+   335	        monkeypatch.setattr(store, "submit", fail)
+   336	        resp = self._submit(signed_in_client, "t-cr", token)
+   337	        assert resp.status_code == 502
+   338	        assert "eden://error/conflicting-resubmission" in resp.text
+   339	
+   340	    def test_invalid_precondition_lands_on_orphan_with_banner(
+   341	        self,
+   342	        signed_in_client: TestClient,
+   343	        store: InMemoryStore,
+   344	        monkeypatch,
+   345	    ) -> None:
+   346	        from eden_storage import InvalidPrecondition
+   347	
+   348	        token = self._setup_claim(signed_in_client, store, "t-ip")
+   349	
+   350	        def fail(*args, **kwargs):
+   351	            raise InvalidPrecondition("trial wrong status")
+   352	
+   353	        monkeypatch.setattr(store, "submit", fail)
+   354	        resp = self._submit(signed_in_client, "t-ip", token)
+   355	        assert resp.status_code == 502
+   356	        assert "eden://error/invalid-precondition" in resp.text
+   357	
+   358	
+   359	class TestRetryBeforeOrphan:
+   360	    def test_transport_exception_retries_then_orphan(
+   361	        self,
+   362	        signed_in_client: TestClient,
+   363	        store: InMemoryStore,
+   364	        monkeypatch,
+   365	    ) -> None:
+   366	        """Raw transport exceptions (httpx-style, not DispatchError) are retried."""
+   367	        store.create_plan_task("t-trans")
+   368	        token = get_csrf(signed_in_client)
+   369	        signed_in_client.post(
+   370	            "/planner/t-trans/claim",
+   371	            data={"csrf_token": token},
+   372	            follow_redirects=False,
+   373	        )
+   374	
+   375	        attempts = {"n": 0}
+   376	
+   377	        class TransportError(Exception):
+   378	            pass
+   379	
+   380	        def transport_fail(*args, **kwargs):
+
+exec
+/bin/zsh -lc 'git diff -- reference/services/web-ui/tests/test_planner_flow.py reference/services/web-ui/src/eden_web_ui/routes/planner.py docs/plans/eden-phase-9-web-ui.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "rg -n \"wrong-token|illegal-transition|conflicting-resubmission|invalid-precondition|claim again|preserved across the re-render|offering \\\"claim again\\\"|field input is preserved\" docs/plans/eden-phase-9-web-ui.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+470:   `eden://error/conflicting-resubmission`. Before declaring
+480:   - `eden://error/wrong-token` (presented token != stored
+482:   - `eden://error/illegal-transition` (state-machine
+484:   - `eden://error/conflicting-resubmission` (resubmit
+486:   - `eden://error/invalid-precondition` (e.g. trial state
+489:   the canonical error type and offering "claim again." Field
+490:   input is preserved across the re-render so the user does not
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9-web-ui.md | sed -n '462,494p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   462	   - CSRF check.
+   463	   - `store.submit(task_id, token, PlanSubmission(status="error"))`.
+   464	   - No proposals are written.
+   465	   - Drop the token. Render `planner_submitted.html`.
+   466	5. **Phase-3 retry-before-orphan.** Per
+   467	   `spec/v0/07-wire-protocol.md` §2.4 (and §8.1 on idempotency) the
+   468	   resubmit semantics are defined: a content-equivalent resubmit
+   469	   returns 200, a divergent resubmit returns 409
+   470	   `eden://error/conflicting-resubmission`. Before declaring
+   471	   proposals orphaned, the UI retries the same `submit` call up
+   472	   to 3 times with exponential backoff on transport failures,
+   473	   and on a clean response treats the submission as committed.
+   474	   The orphaned-proposals error page is reached only after the
+   475	   retries are exhausted with an indeterminate result, or the
+   476	   server returns a definitive error.
+   477	6. **Reclaim path on expired/invalid claim token.** If any
+   478	   `store.claim` / `store.submit` returns one of the closed
+   479	   wire-protocol errors —
+   480	   - `eden://error/wrong-token` (presented token != stored
+   481	     token; chapter 07 §7),
+   482	   - `eden://error/illegal-transition` (state-machine
+   483	     violation, e.g. another worker reclaimed after expiry),
+   484	   - `eden://error/conflicting-resubmission` (resubmit
+   485	     disagreed with committed payload),
+   486	   - `eden://error/invalid-precondition` (e.g. trial state
+   487	     differs from required) —
+   488	   the form re-renders the planner list with a banner naming
+   489	   the canonical error type and offering "claim again." Field
+   490	   input is preserved across the re-render so the user does not
+   491	   lose work-in-progress.
+   492	7. **Errors** at any other point: re-render the form with
+   493	   field-level messages; do not lose user input.
+   494	
+
+codex
+The revised tests make the current behavior explicit, but the plan text is still unambiguous: submit-time `wrong-token` / `illegal-transition` / `conflicting-resubmission` / `invalid-precondition` are supposed to re-render the planner list with “claim again” and preserved input. I’m running that new test block once for completeness, but on the contract question the code and plan still disagree.
+exec
+/bin/zsh -lc 'uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -k DefinitiveSubmitErrors -q' in /Users/ericalt/Documents/eden
+ succeeded in 644ms:
+....                                                                     [100%]
+
+codex
+**Findings**
+- Medium: not sufficiently addressed against the plan contract. The code still sends submit-time `WrongToken` / `IllegalTransition` / `ConflictingResubmission` / `InvalidPrecondition` to the orphan page in [_retry_submit()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:282) and [submit_plan()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:267), while the plan still says those `store.submit` errors should re-render the planner list with a canonical banner, “claim again,” and preserved input in [eden-phase-9-web-ui.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9-web-ui.md:477). The new tests in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:242) and the tightened docstring in [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:307) justify and pin the current behavior, but they do not make it match the review contract.
+
+No new issues jumped out beyond that. I reran the new `TestDefinitiveSubmitErrors` block locally and it passed.
+
+If you want this review to clear, one of these has to happen:
+- Change the implementation to match the current plan text.
+- Or update the plan to explicitly bless the orphan-page behavior for definitive Phase-3 submit errors, distinguishing it from pre-mutation validation recovery.
+
+Given your rationale, updating the plan is the cleaner fix.
+2026-04-25T00:40:10.362367Z ERROR codex_core::session: failed to record rollout items: thread 019dc206-90ea-7b30-a318-0367693c6508 not found
+tokens used
+169,756

@@ -1,0 +1,882 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc36e-3acf-72d1-91c1-7c98244e6775
+--------
+user
+I've addressed your round-0 feedback. Summary:
+
+1. Bug fixed: the submit route now collects every submitted `metric.*` field and forwards them all to the parser; an unknown metric key surfaces as an overall banner ('not in schema') rather than being silently dropped. The route returns 400 and submit is not called.
+2. Risk fixed: read paths in /evaluator/, claim, draft_form, and submit's pre-reads now catch transport-shaped Exception in addition to DispatchError, surfacing the existing wire-error UX rather than 500.
+3. Risk fixed: the unknown-metric-key test in test_evaluator_routes.py now drives the real route via a hand-crafted POST that includes `metric.ghost` and asserts the 400 + 'not in schema' banner.
+4. Nit fixed: evaluator_claim.html now has an {% else %} branch for the rationale-not-rendered note.
+
+Updated brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9d-evaluator-module/impl/20260424T235706/1.md. Please re-read the implementation files and review again.
+codex
+I’m re-running the review against the updated round-1 implementation. I’ll read the new brief first, then reload the implementation files it names and check whether the prior findings are actually closed and whether any new issues were introduced.
+exec
+/bin/zsh -lc "sed -n '1,260p' /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9d-evaluator-module/impl/20260424T235706/1.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-9d-evaluator-module
+
+## Plan
+
+- Path: `/Users/ericalt/Documents/eden/docs/plans/eden-phase-9d-evaluator-module.md`
+- Summary: Add the evaluator role to the reference Web UI as the
+  fourth chunk of Phase 9. Adds `/evaluator/*` routes mounted
+  unconditionally (no CLI flag), with claim → draft → submit
+  walking `store.submit` with retry-before-orphan + read-back.
+  Differs from chunk 9c in three ways: no git work; trial pre-
+  exists; status has three values; `IllegalTransition` falls
+  through to read-back rather than short-circuiting.
+
+## Implementation Files
+
+| File | Action | Plan Section |
+|---|---|---|
+| `reference/services/web-ui/src/eden_web_ui/routes/evaluator.py` | Created | §A New routes module + §C Request flow |
+| `reference/services/web-ui/src/eden_web_ui/routes/_helpers.py` | Modified — extracted `_read_inline_artifact`, added `read_trial_artifact` | §A.1 Artifact trust boundary (helper generalization) |
+| `reference/services/web-ui/src/eden_web_ui/forms.py` | Modified — added `EvaluateDraft` + `parse_evaluate_form` + `_parse_metric_value` | §B Forms helper |
+| `reference/services/web-ui/src/eden_web_ui/app.py` | Modified — included `evaluator_routes.router` unconditionally | §F CLI |
+| `reference/services/web-ui/src/eden_web_ui/templates/base.html` | Modified — permanent navigation link | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_list.html` | Created | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html` | Created | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_submitted.html` | Created | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_orphaned.html` | Created | §D Templates |
+| `reference/services/web-ui/tests/conftest.py` | Modified — added `seed_evaluate_task` + `get_evaluate_submission` helpers | §I.test-fixture additions |
+| `reference/services/web-ui/tests/test_evaluator_routes.py` | Created | §I.1 |
+| `reference/services/web-ui/tests/test_evaluator_flow.py` | Created | §I.2 |
+| `reference/services/web-ui/tests/test_evaluator_partial_write.py` | Created | §I.3 |
+| `reference/services/web-ui/tests/test_evaluator_security.py` | Created | §I.4 |
+| `reference/services/web-ui/tests/test_evaluator_e2e.py` | Created | §I.5 |
+| `CLAUDE.md` (the project AGENTS.md) | Modified — phase-status block | §G Docs |
+| `reference/README.md` | Modified | §G Docs |
+| `reference/services/web-ui/README.md` | Modified — evaluator-module section | §G Docs |
+| `docs/roadmap.md` | Modified — 9d marked complete | §G Docs |
+
+## Change Summary
+
+- Added the evaluator module under `/evaluator/*` (list / claim /
+  draft / submit), mounted unconditionally; the trial_id is
+  read from `task.payload.trial_id` at claim time and stashed in
+  an in-process `_CLAIMS` dict (per-(csrf, task_id) isolation).
+- Generalized the chunk-9c `read_proposal_rationale` trust
+  boundary into `_read_inline_artifact(uri, artifacts_dir)` and
+  added `read_trial_artifact` for the trial-side surface.
+  `read_proposal_rationale` is now a thin wrapper.
+- New `parse_evaluate_form` validates per-metric types per the
+  spec (`integer` accepts wire-legal `1.0`, `real` rejects non-
+  finite, text non-empty after strip, `success` requires ≥ 1
+  metric), with closed-set status validation and accumulated
+  per-field errors.
+- `_retry_submit_with_readback` differs from chunk 9c: `WrongToken`
+  / `ConflictingResubmission` short-circuit; `InvalidPrecondition`
+  re-renders the form (fixable); `IllegalTransition` and other
+  transport-shaped exceptions feed the read-back arm. The read-
+  back uses `read_task` + `read_submission` +
+  `submissions_equivalent` to distinguish "we won, response
+  lost" from "lost the race" from "claim still ours".
+- 56 new tests (20 routes + 5 flow + 12 partial-write recovery +
+  18 security + 1 e2e). Full suite: 553 unit + 5 e2e green.
+
+## Review Status
+
+Round 0 — awaiting initial review.
+
+## Round 1 — fixes
+
+- **Bug fixed.** [evaluator.py:218–238](reference/services/web-ui/src/eden_web_ui/routes/evaluator.py): the submit handler now collects every submitted `metric.*` field (not just declared schema keys) and forwards them all to `parse_evaluate_form`, so a hand-crafted POST with `metric.ghost` is rejected. Default declared keys to `""` so the parser still sees blanks for the omit-on-empty branch. Companion change in [forms.py](reference/services/web-ui/src/eden_web_ui/forms.py): unknown keys surface as `add_overall(...)` rather than `add(0, name, ...)` so the rejection appears on the rendered form (the field doesn't exist on the page to render an inline error against).
+- **Risk fixed.** Read paths in [evaluator.py](reference/services/web-ui/src/eden_web_ui/routes/evaluator.py): `list_pending` (L82-87), `claim` (L114-122), `draft_form` (L156-162), and `submit` pre-reads (L213-219) now also catch transport-shaped `Exception` (the StoreClient surface) and route them through the existing wire-error UX (banner / 502) instead of letting them surface as 500.
+- **Risk fixed.** [test_evaluator_routes.py:243-264](reference/services/web-ui/tests/test_evaluator_routes.py): the unknown-metric-key test now drives the actual route via a hand-crafted POST that includes both `metric.score` and `metric.ghost` and asserts the 400 + "not in schema" banner. The previous parser-direct test is gone.
+- **Nit fixed.** [evaluator_claim.html](reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html): added an `{% else %}` branch under the proposal-rationale block so the operator sees a "rationale not rendered inline" note when the artifact is outside the trust envelope.
+
+Verification: `uv run ruff check .` clean; `uv run pyright` clean; `uv run pytest -q` 553 passed; `uv run pytest -m e2e` 5 passed (chunk-9d e2e included).
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/evaluator.py | sed -n '1,280p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/evaluator.py | sed -n '281,560p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Evaluator-module routes.
+     2	
+     3	Implements the spec-to-code map pinned in §C of the Phase 9d plan.
+     4	The flow is: list pending evaluate tasks → claim with TTL +
+     5	server-pinned ``trial_id`` from ``task.payload.trial_id`` → render
+     6	draft form (read-only trial context, optional inline rationale +
+     7	trial-side artifact, per-metric inputs generated from the
+     8	experiment's ``metrics_schema``) → submit, which runs
+     9	
+    10	1. validate the form (status in {success, error, eval_error};
+    11	   metric values type-check against ``metrics_schema``;
+    12	   ``status="success"`` requires at least one metric)
+    13	2. ``store.submit`` with retry-before-orphan plus a
+    14	   committed-state read-back. ``IllegalTransition`` falls
+    15	   through to read-back rather than short-circuiting (so the
+    16	   "we won, the orchestrator already terminalized, our retry
+    17	   only saw the new state" case is correctly classified as
+    18	   success). ``WrongToken`` and ``ConflictingResubmission``
+    19	   short-circuit (definitive). ``InvalidPrecondition`` re-renders
+    20	   the draft form with a wire-error banner so a fixable metric
+    21	   drift does not orphan the operator.
+    22	
+    23	``trial_id`` is read from ``task.payload.trial_id`` at claim time
+    24	and stored in ``_CLAIMS``; it never round-trips through the
+    25	request surface.
+    26	"""
+    27	
+    28	from __future__ import annotations
+    29	
+    30	import time
+    31	from collections.abc import Callable
+    32	from datetime import timedelta
+    33	from typing import Any
+    34	
+    35	from eden_contracts import EvaluateTask, Proposal, Trial
+    36	from eden_storage import (
+    37	    ConflictingResubmission,
+    38	    DispatchError,
+    39	    EvaluateSubmission,
+    40	    IllegalTransition,
+    41	    InvalidPrecondition,
+    42	    WrongToken,
+    43	)
+    44	from eden_storage.submissions import submissions_equivalent
+    45	from fastapi import APIRouter, Form, Request
+    46	from fastapi.responses import HTMLResponse, RedirectResponse
+    47	
+    48	from ..forms import parse_evaluate_form
+    49	from ._helpers import (
+    50	    csrf_ok,
+    51	    get_session,
+    52	    is_htmx_request,
+    53	    read_proposal_rationale,
+    54	    read_trial_artifact,
+    55	)
+    56	
+    57	router = APIRouter(prefix="/evaluator")
+    58	
+    59	
+    60	# In-memory mapping of (csrf_token, task_id) -> (claim token, trial_id).
+    61	# Same shape as the chunk-9c implementer's _CLAIMS but a separate
+    62	# module-level dict so two simultaneous claims (one implement, one
+    63	# evaluate) on tasks that happen to share an id don't collide.
+    64	_CLAIMS: dict[tuple[str, str], tuple[str, str]] = {}
+    65	
+    66	
+    67	def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
+    68	    return (session_csrf, task_id)
+    69	
+    70	
+    71	def _list_recent_trials(store: Any, *, limit: int = 20) -> list[Any]:
+    72	    items = store.list_trials()
+    73	    return items[-limit:]
+    74	
+    75	
+    76	@router.get("/", response_class=HTMLResponse, response_model=None)
+    77	async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
+    78	    session = get_session(request)
+    79	    if session is None:
+    80	        return RedirectResponse(url="/signin", status_code=303)
+    81	    store = request.app.state.store
+    82	    try:
+    83	        pending = store.list_tasks(kind="evaluate", state="pending")
+    84	        recent = _list_recent_trials(store)
+    85	    except DispatchError as exc:
+    86	        return _render_error(request, _wire_error_banner(exc))
+    87	    except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
+    88	        return _render_error(
+    89	            request, f"task-store transport failure: {exc.__class__.__name__}"
+    90	        )
+    91	    config = request.app.state.experiment_config
+    92	    return request.app.state.templates.TemplateResponse(
+    93	        request,
+    94	        "evaluator_list.html",
+    95	        {
+    96	            "session": session,
+    97	            "pending": pending,
+    98	            "objective": config.objective,
+    99	            "recent_trials": recent,
+   100	            "banner": request.query_params.get("banner"),
+   101	        },
+   102	    )
+   103	
+   104	
+   105	@router.post("/{task_id}/claim", response_model=None)
+   106	async def claim(
+   107	    task_id: str,
+   108	    request: Request,
+   109	    csrf_token: str = Form(""),
+   110	) -> RedirectResponse | HTMLResponse:
+   111	    session = get_session(request)
+   112	    if session is None:
+   113	        return RedirectResponse(url="/signin", status_code=303)
+   114	    if not csrf_ok(session, csrf_token):
+   115	        return _csrf_failure_response(request)
+   116	    store = request.app.state.store
+   117	    try:
+   118	        task = store.read_task(task_id)
+   119	    except DispatchError as exc:
+   120	        banner = _wire_error_banner(exc)
+   121	        return RedirectResponse(
+   122	            url=f"/evaluator/?banner={banner}", status_code=303
+   123	        )
+   124	    except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
+   125	        return RedirectResponse(
+   126	            url=(
+   127	                "/evaluator/?banner=task-store+transport+failure:+"
+   128	                f"{exc.__class__.__name__}"
+   129	            ),
+   130	            status_code=303,
+   131	        )
+   132	    if not isinstance(task, EvaluateTask):
+   133	        return RedirectResponse(
+   134	            url="/evaluator/?banner=task+is+not+an+evaluate+task",
+   135	            status_code=303,
+   136	        )
+   137	    trial_id = task.payload.trial_id
+   138	    now: Callable[[], Any] = request.app.state.now
+   139	    expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
+   140	    try:
+   141	        result = store.claim(task_id, session.worker_id, expires_at=expires_at)
+   142	    except (IllegalTransition, InvalidPrecondition) as exc:
+   143	        banner = _wire_error_banner(exc)
+   144	        return RedirectResponse(
+   145	            url=f"/evaluator/?banner={banner}", status_code=303
+   146	        )
+   147	    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, trial_id)
+   148	    return RedirectResponse(url=f"/evaluator/{task_id}/draft", status_code=303)
+   149	
+   150	
+   151	@router.get("/{task_id}/draft", response_class=HTMLResponse, response_model=None)
+   152	async def draft_form(
+   153	    task_id: str,
+   154	    request: Request,
+   155	) -> HTMLResponse | RedirectResponse:
+   156	    session = get_session(request)
+   157	    if session is None:
+   158	        return RedirectResponse(url="/signin", status_code=303)
+   159	    entry = _CLAIMS.get(_claim_key(session.csrf, task_id))
+   160	    if entry is None:
+   161	        return RedirectResponse(
+   162	            url="/evaluator/?banner=claim+missing+from+session",
+   163	            status_code=303,
+   164	        )
+   165	    _, trial_id = entry
+   166	    store = request.app.state.store
+   167	    try:
+   168	        trial = store.read_trial(trial_id)
+   169	        proposal: Proposal = store.read_proposal(trial.proposal_id)
+   170	    except DispatchError as exc:
+   171	        return _render_error(request, _wire_error_banner(exc))
+   172	    except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
+   173	        return _render_error(
+   174	            request,
+   175	            f"task-store transport failure: {exc.__class__.__name__}",
+   176	        )
+   177	    return _render_draft(
+   178	        request,
+   179	        session=session,
+   180	        task_id=task_id,
+   181	        trial=trial,
+   182	        proposal=proposal,
+   183	        form_state=_empty_form_state(request),
+   184	        errors=None,
+   185	        status_code=200,
+   186	    )
+   187	
+   188	
+   189	@router.post("/{task_id}/submit", response_model=None)
+   190	async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
+   191	    task_id: str,
+   192	    request: Request,
+   193	) -> HTMLResponse | RedirectResponse:
+   194	    session = get_session(request)
+   195	    if session is None:
+   196	        return RedirectResponse(url="/signin", status_code=303)
+   197	    form = await request.form()
+   198	    if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+   199	        return _csrf_failure_response(request)
+   200	
+   201	    entry = _CLAIMS.get(_claim_key(session.csrf, task_id))
+   202	    if entry is None:
+   203	        return RedirectResponse(
+   204	            url="/evaluator/?banner=claim+missing+from+session",
+   205	            status_code=303,
+   206	        )
+   207	    token, trial_id = entry
+   208	
+   209	    store = request.app.state.store
+   210	    try:
+   211	        trial = store.read_trial(trial_id)
+   212	        proposal: Proposal = store.read_proposal(trial.proposal_id)
+   213	    except DispatchError as exc:
+   214	        return _render_error(request, _wire_error_banner(exc))
+   215	    except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
+   216	        return _render_error(
+   217	            request,
+   218	            f"task-store transport failure: {exc.__class__.__name__}",
+   219	        )
+   220	
+   221	    config = request.app.state.experiment_config
+   222	    metrics_schema = config.metrics_schema
+   223	
+   224	    status_raw = str(form.get("status") or "")
+   225	    artifacts_uri_raw = str(form.get("artifacts_uri") or "")
+   226	    # Collect every submitted `metric.*` field so the parser can
+   227	    # reject unknown metric keys (a hand-crafted POST is the only
+   228	    # way they appear; the template only emits inputs for declared
+   229	    # metrics). Default declared schema keys to "" so the parser
+   230	    # also sees blanks for the omit-on-empty branch.
+   231	    metric_inputs: dict[str, str] = {name: "" for name in metrics_schema.root}
+   232	    for raw_key in form:
+   233	        if not isinstance(raw_key, str) or not raw_key.startswith("metric."):
+   234	            continue
+   235	        name = raw_key[len("metric."):]
+   236	        metric_inputs[name] = str(form.get(raw_key) or "")
+   237	
+   238	    draft, errors = parse_evaluate_form(
+   239	        metrics_schema=metrics_schema,
+   240	        status_raw=status_raw,
+   241	        metric_inputs=metric_inputs,
+   242	        artifacts_uri_raw=artifacts_uri_raw,
+   243	    )
+   244	    form_state: dict[str, Any] = {
+   245	        "status": status_raw or "success",
+   246	        "artifacts_uri": artifacts_uri_raw,
+   247	        "metric_values": dict(metric_inputs),
+   248	    }
+   249	    if draft is None:
+   250	        return _render_draft(
+   251	            request,
+   252	            session=session,
+   253	            task_id=task_id,
+   254	            trial=trial,
+   255	            proposal=proposal,
+   256	            form_state=form_state,
+   257	            errors=errors,
+   258	            status_code=400,
+   259	        )
+   260	
+   261	    submission = EvaluateSubmission(
+   262	        status=draft.status,
+   263	        trial_id=trial_id,
+   264	        metrics=dict(draft.metrics) if draft.metrics else None,
+   265	        artifacts_uri=draft.artifacts_uri,
+   266	    )
+   267	
+   268	    outcome, banner = _retry_submit_with_readback(
+   269	        store=store, task_id=task_id, token=token, submission=submission
+   270	    )
+   271	
+   272	    if outcome == "ok":
+   273	        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+   274	        return _render_submitted(
+   275	            request,
+   276	            task_id=task_id,
+   277	            trial_id=trial_id,
+   278	            status=draft.status,
+   279	            metrics=submission.metrics,
+   280	            artifacts_uri=draft.artifacts_uri,
+
+ succeeded in 0ms:
+   281	        )
+   282	    if outcome == "invalid-precondition":
+   283	        # Fixable: re-render the form with a wire-error banner so
+   284	        # the operator can correct the metrics and resubmit.
+   285	        if errors is None:
+   286	            from ..forms import FormErrors
+   287	
+   288	            errors = FormErrors()
+   289	        errors.add_overall(banner or "eden://error/invalid-precondition")
+   290	        return _render_draft(
+   291	            request,
+   292	            session=session,
+   293	            task_id=task_id,
+   294	            trial=trial,
+   295	            proposal=proposal,
+   296	            form_state=form_state,
+   297	            errors=errors,
+   298	            status_code=400,
+   299	        )
+   300	    return _render_orphaned(
+   301	        request,
+   302	        task_id=task_id,
+   303	        trial_id=trial_id,
+   304	        status=draft.status,
+   305	        banner=banner or "submit failed",
+   306	        recovery_kind=outcome,
+   307	    )
+   308	
+   309	
+   310	_RETRY_DELAYS_S = (0.05, 0.2, 0.5)
+   311	
+   312	
+   313	def _retry_submit_with_readback(
+   314	    *,
+   315	    store: Any,
+   316	    task_id: str,
+   317	    token: str,
+   318	    submission: EvaluateSubmission,
+   319	) -> tuple[str, str | None]:
+   320	    """Submit with retry; reconcile transport / IllegalTransition via read-back.
+   321	
+   322	    Returns one of:
+   323	
+   324	    - ``("ok", None)`` — submit committed (clean call, retry, or
+   325	      read-back found an equivalent prior submission).
+   326	    - ``("auto", banner)`` — orphan page; auto-recovers via
+   327	      reclaim. Used for ``WrongToken`` short-circuit, transport
+   328	      retry exhaustion with claim still ours, and the read-back
+   329	      branch where the task has been reclaimed.
+   330	    - ``("conflict", banner)`` — orphan page; a different
+   331	      submission won the race
+   332	      (``ConflictingResubmission`` short-circuit, or read-back
+   333	      saw a non-equivalent committed payload).
+   334	    - ``("transport", banner)`` — orphan page; an
+   335	      implementation-illegal store state was observed during
+   336	      read-back (``read_submission`` returned ``None`` for a
+   337	      ``submitted`` / ``completed`` / ``failed`` task) or the
+   338	      read-back probe itself failed.
+   339	    - ``("invalid-precondition", banner)`` — form re-render; the
+   340	      server rejected the metrics shape. Fixable.
+   341	    """
+   342	    last_exc: BaseException | None = None
+   343	    needs_readback = False
+   344	    for delay in _RETRY_DELAYS_S:
+   345	        try:
+   346	            store.submit(task_id, token, submission)
+   347	            return "ok", None
+   348	        except WrongToken as exc:
+   349	            return "auto", _wire_error_banner(exc)
+   350	        except ConflictingResubmission as exc:
+   351	            return "conflict", _wire_error_banner(exc)
+   352	        except InvalidPrecondition as exc:
+   353	            return "invalid-precondition", _wire_error_banner(exc)
+   354	        except IllegalTransition as exc:
+   355	            # Could be: state==pending (we lost) | completed/failed
+   356	            # (we won, orchestrator terminalized) | submitted by
+   357	            # someone else (conflict). Read-back resolves it.
+   358	            last_exc = exc
+   359	            needs_readback = True
+   360	            break
+   361	        except Exception as exc:  # noqa: BLE001 — transport-shaped
+   362	            last_exc = exc
+   363	            time.sleep(delay)
+   364	
+   365	    if not needs_readback and last_exc is None:
+   366	        # All retries returned cleanly is impossible (we'd return
+   367	        # "ok" inside the loop). Defensive.
+   368	        return "transport", "submit returned without exception or commit"
+   369	
+   370	    return _readback(
+   371	        store=store, task_id=task_id, token=token, submission=submission, last_exc=last_exc
+   372	    )
+   373	
+   374	
+   375	def _readback(
+   376	    *,
+   377	    store: Any,
+   378	    task_id: str,
+   379	    token: str,
+   380	    submission: EvaluateSubmission,
+   381	    last_exc: BaseException | None,
+   382	) -> tuple[str, str | None]:
+   383	    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
+   384	    try:
+   385	        task = store.read_task(task_id)
+   386	    except Exception as exc:  # noqa: BLE001
+   387	        return (
+   388	            "transport",
+   389	            f"transport failure after retries; read-back failed: {exc.__class__.__name__}",
+   390	        )
+   391	    state = task.state
+   392	    if state == "claimed":
+   393	        if task.claim is not None and task.claim.token == token:
+   394	            return ("auto", f"transport failure after retries: {last_name}")
+   395	        return "auto", "eden://error/wrong-token"
+   396	    if state in {"submitted", "completed", "failed"}:
+   397	        try:
+   398	            prior = store.read_submission(task_id)
+   399	        except Exception as exc:  # noqa: BLE001
+   400	            return (
+   401	                "transport",
+   402	                (
+   403	                    "transport failure after retries; "
+   404	                    f"read-submission failed: {exc.__class__.__name__}"
+   405	                ),
+   406	            )
+   407	        if prior is None:
+   408	            return (
+   409	                "transport",
+   410	                "store invariant violation: submission missing for terminal/submitted task",
+   411	            )
+   412	        if submissions_equivalent(prior, submission):
+   413	            return "ok", None
+   414	        return "conflict", "eden://error/conflicting-resubmission"
+   415	    # state == "pending"
+   416	    return ("auto", f"transport failure after retries; task reclaimed: {last_name}")
+   417	
+   418	
+   419	def _empty_form_state(request: Request) -> dict[str, Any]:
+   420	    config = request.app.state.experiment_config
+   421	    return {
+   422	        "status": "success",
+   423	        "artifacts_uri": "",
+   424	        "metric_values": {name: "" for name in config.metrics_schema.root},
+   425	    }
+   426	
+   427	
+   428	def _render_draft(
+   429	    request: Request,
+   430	    *,
+   431	    session: Any,
+   432	    task_id: str,
+   433	    trial: Trial,
+   434	    proposal: Proposal,
+   435	    form_state: dict[str, Any],
+   436	    errors: Any,
+   437	    status_code: int,
+   438	) -> HTMLResponse:
+   439	    artifacts_dir = request.app.state.artifacts_dir
+   440	    proposal_rationale = read_proposal_rationale(proposal, artifacts_dir)
+   441	    trial_artifact_inline = read_trial_artifact(trial.artifacts_uri, artifacts_dir)
+   442	    config = request.app.state.experiment_config
+   443	    metric_schema_items = list(config.metrics_schema.root.items())
+   444	    return request.app.state.templates.TemplateResponse(
+   445	        request,
+   446	        "evaluator_claim.html",
+   447	        {
+   448	            "session": session,
+   449	            "task_id": task_id,
+   450	            "trial": trial,
+   451	            "proposal": proposal,
+   452	            "proposal_rationale": proposal_rationale,
+   453	            "trial_artifact_inline": trial_artifact_inline,
+   454	            "metric_schema_items": metric_schema_items,
+   455	            "form_state": form_state,
+   456	            "errors": errors,
+   457	        },
+   458	        status_code=status_code,
+   459	    )
+   460	
+   461	
+   462	def _render_submitted(
+   463	    request: Request,
+   464	    *,
+   465	    task_id: str,
+   466	    trial_id: str,
+   467	    status: str,
+   468	    metrics: dict[str, Any] | None,
+   469	    artifacts_uri: str | None,
+   470	) -> HTMLResponse:
+   471	    return request.app.state.templates.TemplateResponse(
+   472	        request,
+   473	        "evaluator_submitted.html",
+   474	        {
+   475	            "task_id": task_id,
+   476	            "trial_id": trial_id,
+   477	            "status": status,
+   478	            "metrics": metrics or {},
+   479	            "artifacts_uri": artifacts_uri,
+   480	        },
+   481	    )
+   482	
+   483	
+   484	def _render_orphaned(
+   485	    request: Request,
+   486	    *,
+   487	    task_id: str,
+   488	    trial_id: str,
+   489	    status: str,
+   490	    banner: str,
+   491	    recovery_kind: str,
+   492	) -> HTMLResponse:
+   493	    return request.app.state.templates.TemplateResponse(
+   494	        request,
+   495	        "evaluator_orphaned.html",
+   496	        {
+   497	            "task_id": task_id,
+   498	            "trial_id": trial_id,
+   499	            "status": status,
+   500	            "banner": banner,
+   501	            "recovery_kind": recovery_kind,
+   502	        },
+   503	        status_code=502,
+   504	    )
+   505	
+   506	
+   507	def _render_error(request: Request, message: str) -> HTMLResponse:
+   508	    return request.app.state.templates.TemplateResponse(
+   509	        request,
+   510	        "_error.html",
+   511	        {"title": "Wire error", "message": message},
+   512	        status_code=502,
+   513	    )
+   514	
+   515	
+   516	def _csrf_failure_response(request: Request | None = None) -> HTMLResponse:
+   517	    headers: dict[str, str] = {}
+   518	    if request is not None and is_htmx_request(request):
+   519	        headers["hx-reswap"] = "none"
+   520	    return HTMLResponse(
+   521	        content="CSRF token missing or invalid",
+   522	        status_code=403,
+   523	        headers=headers,
+   524	    )
+   525	
+   526	
+   527	_ERROR_NAMES: dict[type, str] = {
+   528	    WrongToken: "eden://error/wrong-token",
+   529	    IllegalTransition: "eden://error/illegal-transition",
+   530	    ConflictingResubmission: "eden://error/conflicting-resubmission",
+   531	    InvalidPrecondition: "eden://error/invalid-precondition",
+   532	}
+   533	
+   534	
+   535	def _wire_error_banner(exc: BaseException) -> str:
+   536	    name = _ERROR_NAMES.get(type(exc))
+   537	    if name is None:
+   538	        return f"unexpected error: {exc.__class__.__name__}"
+   539	    return name
+
+exec
+/bin/zsh -lc 'git diff --stat -- reference/services/web-ui/src/eden_web_ui/routes/evaluator.py reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html reference/services/web-ui/tests/test_evaluator_routes.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html | sed -n '60,90p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/forms.py | sed -n '260,340p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    60	                    {% else %}
+    61	                    <code>{{ proposal.artifacts_uri }}</code>
+    62	                    <span class="field-error">(unrenderable scheme)</span>
+    63	                    {% endif %}
+    64	                </td>
+    65	            </tr>
+    66	        </tbody>
+    67	    </table>
+    68	    {% if proposal_rationale %}
+    69	    <h3>proposal rationale</h3>
+    70	    <pre class="rationale">{{ proposal_rationale }}</pre>
+    71	    {% else %}
+    72	    <p class="rationale-note">proposal rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+    73	    {% endif %}
+    74	</section>
+    75	
+    76	<section class="instructions">
+    77	    <h2>how to evaluate</h2>
+    78	    <ol>
+    79	        <li>Fetch the bare repo and check out
+    80	            {% if trial.commit_sha %}<code>{{ trial.commit_sha }}</code>{% else %}the trial's <code>commit_sha</code>{% endif %}
+    81	            on a worktree of your own.</li>
+    82	        <li>Run your evaluation procedure (build / test / measure).</li>
+    83	        <li>Fill in the metrics below and submit.</li>
+    84	    </ol>
+    85	</section>
+    86	
+    87	<section class="draft">
+    88	    <h2>submission</h2>
+    89	    {% if errors and errors.overall %}
+    90	    {% for msg in errors.overall %}
+
+ succeeded in 0ms:
+   260	    return None, f"unknown metric type {mtype!r}"
+   261	
+   262	
+   263	def parse_evaluate_form(
+   264	    *,
+   265	    metrics_schema: MetricsSchema,
+   266	    status_raw: str,
+   267	    metric_inputs: Mapping[str, str],
+   268	    artifacts_uri_raw: str,
+   269	) -> tuple[EvaluateDraft | None, FormErrors]:
+   270	    """Parse the evaluator draft form into a validated draft.
+   271	
+   272	    Returns ``(None, errors)`` if validation fails, otherwise
+   273	    ``(draft, FormErrors())``.
+   274	
+   275	    - ``status`` must be one of ``success``, ``error``, ``eval_error``.
+   276	    - For each metric in ``metrics_schema.root``: the raw form value
+   277	      is parsed per :func:`_parse_metric_value`; an empty/whitespace
+   278	      input is treated as "metric omitted" (not an error). Per-metric
+   279	      type errors are accumulated under that metric's name.
+   280	    - ``status="success"`` requires at least one metric value
+   281	      (UI-side guardrail; the wire allows empty).
+   282	    - Any key in ``metric_inputs`` outside ``metrics_schema.root``
+   283	      is rejected (only reachable from a hand-crafted POST; the
+   284	      template generates inputs only for declared metrics).
+   285	    - ``artifacts_uri_raw.strip()`` → ``None`` if empty.
+   286	    """
+   287	    errors = FormErrors()
+   288	    status = status_raw.strip().lower()
+   289	    if status not in ("success", "error", "eval_error"):
+   290	        errors.add(0, "status", "status must be one of: success, error, eval_error")
+   291	        return None, errors
+   292	
+   293	    schema = metrics_schema.root
+   294	    metrics: dict[str, int | float | str] = {}
+   295	
+   296	    for name, raw in metric_inputs.items():
+   297	        if name not in schema:
+   298	            # Unknown metric keys can only arrive via a hand-crafted
+   299	            # POST (the template emits inputs only for declared
+   300	            # metrics). Surface the rejection as an overall banner
+   301	            # so the user — already on the form for some other
+   302	            # reason — sees it; the field doesn't exist on the page
+   303	            # to render an inline error against.
+   304	            errors.add_overall(f"metric {name!r} not in schema")
+   305	            continue
+   306	        value, err = _parse_metric_value(raw, schema[name])
+   307	        if err is not None:
+   308	            errors.add(0, name, err)
+   309	            continue
+   310	        if value is None:
+   311	            continue
+   312	        metrics[name] = value
+   313	
+   314	    if status == "success" and not metrics:
+   315	        errors.add_overall(
+   316	            "status=success requires at least one metric value"
+   317	        )
+   318	
+   319	    if errors:
+   320	        return None, errors
+   321	
+   322	    artifacts_uri = artifacts_uri_raw.strip() or None
+   323	
+   324	    return (
+   325	        EvaluateDraft(
+   326	            status=status,
+   327	            metrics=metrics,
+   328	            artifacts_uri=artifacts_uri,
+   329	        ),
+   330	        errors,
+   331	    )
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_evaluator_routes.py | sed -n '230,280p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   230	        csrf = self._claim(signed_in_client, eval_id)
+   231	        resp = _post_form(
+   232	            signed_in_client,
+   233	            f"/evaluator/{eval_id}/submit",
+   234	            [
+   235	                ("csrf_token", csrf),
+   236	                ("status", "success"),
+   237	                ("metric.score", "nan"),
+   238	            ],
+   239	        )
+   240	        assert resp.status_code == 400
+   241	        assert "value is not finite" in resp.text
+   242	
+   243	    def test_unknown_metric_key_rejected(
+   244	        self, signed_in_client: TestClient, store: InMemoryStore
+   245	    ) -> None:
+   246	        # Hand-crafted POST: the body carries a `metric.ghost` field
+   247	        # outside the experiment's metrics_schema. The route must
+   248	        # forward every `metric.*` to the parser so the unknown key
+   249	        # is rejected with a 400 + field error.
+   250	        eval_id, _, _ = seed_evaluate_task(store)
+   251	        csrf = self._claim(signed_in_client, eval_id)
+   252	        resp = _post_form(
+   253	            signed_in_client,
+   254	            f"/evaluator/{eval_id}/submit",
+   255	            [
+   256	                ("csrf_token", csrf),
+   257	                ("status", "success"),
+   258	                ("metric.score", "0.9"),
+   259	                ("metric.ghost", "1.0"),
+   260	            ],
+   261	        )
+   262	        assert resp.status_code == 400
+   263	        assert "not in schema" in resp.text
+   264	        # And submit must not have been called.
+   265	        assert store.read_submission(eval_id) is None
+   266	
+   267	    def test_forged_trial_id_form_field_ignored(
+   268	        self, signed_in_client: TestClient, store: InMemoryStore
+   269	    ) -> None:
+   270	        eval_id, trial_id, _ = seed_evaluate_task(store)
+   271	        csrf = self._claim(signed_in_client, eval_id)
+   272	        resp = _post_form(
+   273	            signed_in_client,
+   274	            f"/evaluator/{eval_id}/submit",
+   275	            [
+   276	                ("csrf_token", csrf),
+   277	                ("status", "success"),
+   278	                ("metric.score", "0.7"),
+   279	                ("trial_id", "trial-attacker-controls-this"),
+   280	            ],
+
+exec
+/bin/zsh -lc "uv run pytest -q reference/services/web-ui/tests/test_evaluator_routes.py -k 'unknown_metric_key_rejected or claim_rejects_missing_csrf or draft_renders_metric_inputs_per_schema'" in /Users/ericalt/Documents/eden
+ succeeded in 579ms:
+...                                                                      [100%]
+3 passed, 17 deselected in 0.05s
+
+codex
+The round-0 issues are closed. I’m checking for residual failure paths introduced by the same transport boundary, especially around the actual `claim` mutation, because the route is still running against `StoreClient` in production rather than the in-memory test store.
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from fastapi.testclient import TestClient
+from eden_task_store_server import load_experiment_config
+from eden_storage import InMemoryStore, ImplementSubmission
+from eden_web_ui import make_app
+from pathlib import Path
+from datetime import UTC, datetime
+from urllib.parse import urlencode
+import tempfile, re
+from eden_contracts import Proposal, Trial
+
+cfg=load_experiment_config('tests/fixtures/experiment/.eden/config.yaml')
+store=InMemoryStore(experiment_id='exp-web-ui', metrics_schema=cfg.metrics_schema)
+
+def now():
+    return datetime(2026,4,25,12,0,tzinfo=UTC)
+
+with tempfile.TemporaryDirectory() as td:
+    app=make_app(store=store, experiment_id='exp-web-ui', experiment_config=cfg, worker_id='ui-w', session_secret='test-session-secret-padding-padding-padding', claim_ttl_seconds=3600, artifacts_dir=Path(td), now=now)
+    proposal=Proposal(proposal_id='proposal-demo', experiment_id='exp-web-ui', slug='demo', priority=1.0, parent_commits=['a'*40], artifacts_uri='https://example.invalid/x', state='drafting', created_at='2026-04-25T11:00:00Z')
+    store.create_proposal(proposal)
+    store.mark_proposal_ready('proposal-demo')
+    store.create_implement_task('implement-demo','proposal-demo')
+    claim=store.claim('implement-demo','impl-w')
+    trial=Trial(trial_id='trial-eval', experiment_id='exp-web-ui', proposal_id='proposal-demo', status='starting', parent_commits=['a'*40], branch='work/demo-trial-eval', started_at='2026-04-25T12:00:00Z')
+    store.create_trial(trial)
+    store.submit('implement-demo', claim.token, ImplementSubmission(status='success', trial_id='trial-eval', commit_sha='b'*40))
+    store.accept('implement-demo')
+    store.create_evaluate_task('evaluate-demo','trial-eval')
+    original_claim = store.claim
+    def boom(*args, **kwargs):
+        raise RuntimeError('transport')
+    store.claim = boom
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post('/signin', follow_redirects=False)
+        resp=client.get('/evaluator/')
+        m = re.search(r'name=\"csrf_token\"\\s+value=\"(["'^"]+)"'"', resp.text)
+        csrf=m.group(1)
+        resp=client.post('/evaluator/evaluate-demo/claim', content=urlencode({'csrf_token': csrf}), headers={'Content-Type':'application/x-www-form-urlencoded'}, follow_redirects=False)
+        print(resp.status_code)
+        print(resp.text[:120])
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 425ms:
+500
+Internal Server Error
+
+codex
+**Findings**
+
+- Risk — [reference/services/web-ui/src/eden_web_ui/routes/evaluator.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/evaluator.py:140), [reference/packages/eden-wire/src/eden_wire/client.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/client.py:121): the read-path transport handling is fixed, but the actual `store.claim(...)` call still only catches store-domain exceptions. In the real web-ui deployment that call goes through `StoreClient`, which can raise transport exceptions directly; that still produces a 500 on claim instead of the module’s redirect/banner UX. Fix by catching transport-shaped exceptions around `store.claim` as well, and add a route test that monkeypatches `store.claim` to raise and asserts a non-500 response.
+
+**Overall Assessment**
+
+The round-0 findings are otherwise closed: unknown `metric.*` keys are now rejected through the real route, the planned rationale note is present, and the evaluator read paths no longer fall over on transport-shaped failures. The implementation is close to converged, with one remaining robustness gap on the claim mutation path.
+2026-04-25T07:06:47.632178Z ERROR codex_core::session: failed to record rollout items: thread 019dc36e-3acf-72d1-91c1-7c98244e6775 not found
+tokens used
+261,063

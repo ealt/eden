@@ -1,0 +1,556 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019db75b-5b20-7d02-bbae-a0ed568fe953
+--------
+user
+I've updated the plan again to reconcile the Phase 0 output with the eventual target layout. Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md.
+codex
+Reviewing the updated plan again against the same review order. I’m re-reading the document in full, with focus on whether the Phase 0 scaffold is now cleanly separated from the later target layout and whether that exposes any deeper issues.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-protocol-bootstrap.md | sed -n '241,520p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-protocol-bootstrap.md | sed -n '1,240p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN: Protocol-First Repo Bootstrap
+     2	
+     3	## Context
+     4	
+     5	`/Users/ericalt/Documents/eden` is the successor to `/Users/ericalt/Documents/direvo`.
+     6	The predecessor has a working monolith at `direvo/src/eden/` and a design
+     7	doc at `eden/docs/plans/eden-microservices-refactor.md`.
+     8	
+     9	**The reframe (critical):** EDEN is not a product-with-microservices. EDEN is
+    10	a **protocol** for orchestrating directed code evolution — a specification
+    11	that defines components, their responsibilities, the messages between them,
+    12	and the invariants they must honor. This repo provides:
+    13	
+    14	1. **The normative protocol specification** — versioned, formal, with
+    15	   machine-readable schemas for every wire format and state machine. This
+    16	   is the authoritative artifact; semantics live here, not in code.
+    17	2. **A reference implementation** — one complete, working stack that
+    18	   conforms to the spec. Explicitly labeled as *one* valid implementation,
+    19	   not *the* implementation.
+    20	3. **A conformance suite** (roadmapped) — black-box tests that any
+    21	   independently-built component can run against itself to prove it
+    22	   conforms. This is what makes swappability real rather than aspirational.
+    23	
+    24	Analogues: Language Server Protocol (spec + reference servers + clients),
+    25	Model Context Protocol (spec repo + reference SDKs), OpenTelemetry (spec
+    26	
+    27	- reference SDKs per language), Kubernetes CRI/CNI/CSI (wire APIs + many
+    28	interoperable implementations).
+    29	
+    30	Anyone should be able to implement their own orchestrator, planner host,
+    31	evaluator, storage backend, git host, or UI in any language, and have it
+    32	interoperate with other conforming components.
+    33	
+    34	User decisions already captured:
+    35	
+    36	- GitHub: **personal account, private**, name `eden`.
+    37	- Existing microservices plan: **move to archive**; new spec + roadmap
+    38	  become authoritative.
+    39	- GitHub setup: repo create + push + CI (**markdownlint only at
+    40	  bootstrap**; Python and JSON Schema gates phase in as those artifacts
+    41	  land) + branch protection on `main` requiring the one CI check.
+    42	
+    43	## Core Design Decisions
+    44	
+    45	- **Spec-first, impl-second.** Every cross-component boundary is defined
+    46	  first in `spec/` (human-readable normative text + JSON Schema + state
+    47	  machine) before any code for it is written in `reference/`. When they
+    48	  disagree, the spec wins and the impl gets a bug.
+    49	- **Wire protocols as the contract**, not Python types. Components
+    50	  communicate over documented message formats (JSON over HTTP for control
+    51	  calls, SQL or JSON over some transport for tasks/events — to be pinned
+    52	  in Phase 1). Python bindings in `reference/packages/eden-contracts/`
+    53	  are generated from / aligned with the JSON Schemas and exist as a
+    54	  convenience for Python implementors, **not** as the source of truth.
+    55	- **Single repo, clear boundaries.** `spec/`, `reference/`, `conformance/`,
+    56	  `docs/` at top level. Can split into separate repos later if needed
+    57	  (MCP/LSP pattern), but day 0 discipline is structural, not geographical.
+    58	- **Versioned spec.** `spec/v0/…` from day 0. Breaking changes go to `v1/`,
+    59	  not mutated in place. Reference impl declares which spec version it
+    60	  targets.
+    61	- **No Python toolchain at bootstrap.** Phase 0 creates zero `.py`
+    62	  files, so no `pyproject.toml`, no `.python-version`, no uv
+    63	  workspace, no ruff/pyright config. These land in **Phase 3** when
+    64	  the first reference package (`eden-contracts`) gets actual code.
+    65	  This avoids CI gates that can't meaningfully run yet (pytest on
+    66	  no tests exits non-zero; ruff/pyright on an empty tree is a
+    67	  no-signal green that creates false confidence).
+    68	- **Target Python version and tooling are pinned for later phases**:
+    69	  Python 3.12+, ruff + pyright, uv workspace with members under
+    70	  `reference/services/*` and `reference/packages/*`. Config will be
+    71	  ported from direvo's `pyproject.toml` when Phase 3 introduces it.
+    72	- **`CLAUDE.md` → `AGENTS.md` symlink** (user convention).
+    73	
+    74	## What Gets Created
+    75	
+    76	### A. Top-level layout
+    77	
+    78	Two trees below. The **first** is exactly what exists at the end of
+    79	Phase 0. The **second** is the eventual target shape (filled in over
+    80	Phases 1–13), included so the bootstrap directory structure makes
+    81	sense to readers — but none of the italicized future files are written
+    82	at bootstrap.
+    83	
+    84	#### A.1 Phase 0 output (what *this* task creates)
+    85	
+    86	```
+    87	eden/
+    88	├── spec/
+    89	│   ├── README.md                  # "What is the EDEN protocol"; versioning policy
+    90	│   └── v0/
+    91	│       ├── README.md              # Table of planned chapters; "populated in Phases 1,2,4"
+    92	│       └── schemas/
+    93	│           └── .gitkeep           # Empty; first schema lands in Phase 1
+    94	├── reference/
+    95	│   ├── README.md                  # "This is a reference impl; not THE impl"
+    96	│   ├── services/
+    97	│   │   ├── control-plane/.gitkeep
+    98	│   │   ├── orchestrator/.gitkeep
+    99	│   │   ├── planner/.gitkeep
+   100	│   │   ├── implementer/.gitkeep
+   101	│   │   ├── evaluator/.gitkeep
+   102	│   │   └── web-ui/.gitkeep
+   103	│   ├── packages/
+   104	│   │   ├── eden-contracts/.gitkeep
+   105	│   │   ├── eden-storage/.gitkeep
+   106	│   │   ├── eden-git/.gitkeep
+   107	│   │   └── eden-blob/.gitkeep
+   108	│   ├── scripts/
+   109	│   │   └── setup-experiment/.gitkeep
+   110	│   └── compose/
+   111	│       └── .gitkeep
+   112	├── conformance/
+   113	│   └── README.md                  # Stub: "suite lands Phase 11"
+   114	├── docs/
+   115	│   ├── naming.md                  # (already exists, untouched)
+   116	│   ├── roadmap.md                 # Phase 0–13
+   117	│   ├── plans/
+   118	│   │   └── eden-protocol-bootstrap.md  # (this doc, already copied in)
+   119	│   └── archive/
+   120	│       └── microservices-refactor-plan.md   # moved from docs/plans/
+   121	├── tests/
+   122	│   ├── unit/.gitkeep
+   123	│   └── integration/.gitkeep
+   124	├── .github/workflows/ci.yml       # docs-lint job only
+   125	├── .gitignore
+   126	├── .markdownlint.json
+   127	├── README.md                      # "EDEN is a protocol…"
+   128	├── AGENTS.md                      # Coding-agent guide
+   129	├── CLAUDE.md                      # → AGENTS.md (symlink)
+   130	├── CONTRIBUTING.md                # Two paths: contributing to spec vs. impl
+   131	├── STYLE_GUIDE.md
+   132	└── LICENSE                        # (already exists, untouched)
+   133	```
+   134	
+   135	Everything above is in scope for Phase 0. Nothing else. In particular:
+   136	**no numbered spec chapter files, no `*.schema.json` files, no
+   137	`pyproject.toml`, no Python, no code of any kind.**
+   138	
+   139	#### A.2 Eventual target layout *(not created by this bootstrap)*
+   140	
+   141	This is the eventual shape once the spec and reference impl are
+   142	written. Shown here for *orientation only*; Phase 0 does not create
+   143	any of these files.
+   144	
+   145	```
+   146	spec/v0/
+   147	  00-overview.md            # Phase 1
+   148	  01-concepts.md            # Phase 1
+   149	  02-data-model.md          # Phase 1
+   150	  03-roles.md               # Phase 2
+   151	  04-task-protocol.md       # Phase 2
+   152	  05-event-protocol.md      # Phase 4
+   153	  06-integrator.md          # Phase 4
+   154	  07-control-plane.md       # Phase 12
+   155	  08-storage.md             # Phase 4
+   156	  09-conformance.md         # Phase 11
+   157	  schemas/
+   158	    experiment-config.schema.json   # Phase 1
+   159	    task.schema.json                # Phase 1
+   160	    event.schema.json               # Phase 1
+   161	    proposal.schema.json            # Phase 1
+   162	    trial.schema.json               # Phase 1
+   163	    metrics-schema.schema.json      # Phase 1 (meta-schema for per-experiment metrics)
+   164	
+   165	reference/packages/eden-contracts/pyproject.toml   # Phase 3
+   166	reference/packages/eden-contracts/...              # Phase 3
+   167	reference/packages/eden-storage/...                # Phase 6
+   168	reference/packages/eden-git/...                    # Phase 7
+   169	reference/services/orchestrator/...                # Phase 8
+   170	... (see docs/roadmap.md for the full mapping)
+   171	
+   172	pyproject.toml           # Phase 3 (uv workspace root lands with first member)
+   173	.python-version          # Phase 3
+   174	```
+   175	
+   176	### B. The spec itself (`spec/v0/`)
+   177	
+   178	**Phase 0 writes only `spec/README.md` and `spec/v0/README.md`.** Those
+   179	READMEs describe the versioning policy and enumerate the planned
+   180	chapters (with a "filled in Phase N" note beside each), but no
+   181	chapter content or schema files are written at bootstrap. The
+   182	conventions below apply to those later-phase writes.
+   183	
+   184	When chapters are eventually written (Phases 1, 2, 4, 11, 12):
+   185	**normative language** (MUST / SHOULD / MAY per RFC 2119), numbered
+   186	sections, explicit cross-references, and *no* references to specific
+   187	technology choices. Example boundaries:
+   188	
+   189	- `04-task-protocol.md` (Phase 2) will define the task state machine,
+   190	  the claim-token rule, the submit-idempotency rule, and the wire
+   191	  format for task objects. It will **not** say "Postgres `tasks` table"
+   192	  — that's a reference-impl detail. It may say "a conforming task
+   193	  store MUST provide atomic claim with linearizable semantics" and
+   194	  leave the mechanism to the implementor.
+   195	- `05-event-protocol.md` (Phase 4) will define the event object shape,
+   196	  the transactional invariant (event insert MUST be atomic with the
+   197	  state change it describes), and the delivery guarantees subscribers
+   198	  can rely on. Whether that's LISTEN/NOTIFY, Kafka, or a WebSocket is
+   199	  out of scope.
+   200	- `06-integrator.md` (Phase 4) will pin git topology invariants:
+   201	  namespaces (`work/*`, `trial/*`, `main`), sole-integrator rule,
+   202	  squash rule, eval-manifest shape. Applies regardless of git host.
+   203	
+   204	Every wire-format object will eventually have a JSON Schema under
+   205	`spec/v0/schemas/` (first ones land in Phase 1). The Markdown docs
+   206	link to them. CI validates schemas from Phase 1 onward and enforces
+   207	reference-impl Pydantic-model parity from Phase 3 onward.
+   208	
+   209	### C. `reference/` at bootstrap
+   210	
+   211	- `reference/README.md` — "What's implemented, what's stubbed, what
+   212	  spec version is targeted." At bootstrap: declares `targets:
+   213	  eden-protocol/v0 (draft — chapters not yet written)` and lists all
+   214	  services/packages as "empty; lands in Phase N".
+   215	- Each `reference/services/*/` and `reference/packages/*/` — a
+   216	  `.gitkeep` only. Root `pyproject.toml` and per-member
+   217	  `pyproject.toml` files **land in Phase 3** with the first real
+   218	  package (`eden-contracts`), not at bootstrap.
+   219	- **No code yet.** Bootstrap is structure + section-level READMEs.
+   220	  Phase 1 starts writing the spec.
+   221	
+   222	### D. `conformance/` at bootstrap
+   223	
+   224	- `conformance/README.md` only. Describes the intended shape: scenarios
+   225	  drive an implementation-under-test via its advertised protocol
+   226	  endpoints; assertions verify invariants. Actual suite is a later
+   227	  roadmap phase once enough protocol surface is stable to test.
+   228	
+   229	### E. `docs/roadmap.md`
+   230	
+   231	Rewritten as spec-first phases. Each phase: Goal / Exit Criteria /
+   232	Non-Goals / Rough Size.
+   233	
+   234	- **Phase 0 — Bootstrap.** *(This task.)* Repo, scaffold, docs shell,
+   235	  GitHub. No spec content yet.
+   236	- **Phase 1 — Spec v0 drafts for core concepts.** Write `01-concepts`,
+   237	  `02-data-model`, JSON Schemas for config/task/event/proposal/trial.
+   238	  Exit: schemas validate `tests/fixtures/experiment/.eden/config.yaml`
+   239	  (migrated from direvo in this phase).
+   240	- **Phase 2 — Spec v0: role contracts + task protocol.** `03-roles`,
+
+ succeeded in 0ms:
+   241	  `04-task-protocol`. Full state machine enumerated with legal/illegal
+   242	  transitions. Exit: state machine is testable (next phase will).
+   243	- **Phase 3 — Reference contracts package.** `reference/packages/eden-contracts/`
+   244	  — Pydantic bindings aligned with the JSON Schemas. CI enforces
+   245	  schema ↔ model parity.
+   246	- **Phase 4 — Spec v0: events + integrator + storage.**
+   247	  `05-event-protocol`, `06-integrator`, `08-storage`. Transactional
+   248	  invariant formalized; git topology pinned.
+   249	- **Phase 5 — In-memory reference dispatch loop.** One process,
+   250	  scripted workers for all three roles, everything in-memory, no git.
+   251	  Proves the protocol's state machines are implementable. Exit:
+   252	  state-machine conformance tests (first conformance scenarios) pass.
+   253	- **Phase 6 — Reference storage backend.** `eden-storage` with one
+   254	  concrete impl (SQLite for dev). Loop persists.
+   255	- **Phase 7 — Reference git integrator.** `eden-git`, `work/*` →
+   256	  squash → `trial/*` with eval manifest against a local bare repo.
+   257	- **Phase 8 — Cross-process reference: orchestrator + workers over
+   258	  a documented transport.** Extract what was in-proc to a wire
+   259	  protocol. First point at which a third-party worker in any
+   260	  language could participate.
+   261	- **Phase 9 — Reference Web UI.** Claim/submit flows for all roles.
+   262	- **Phase 10 — Reference Compose stack.** All services in Docker
+   263	  Compose (Gitea, Postgres, blob, services). Equivalent to the old
+   264	  plan's Milestone 1 but now explicitly "one valid deployment topology."
+   265	- **Phase 11 — Conformance suite v1.** Formalize scenarios that drive
+   266	  an implementation-under-test. Reference impl is the first subject,
+   267	  but the harness is deployment-agnostic.
+   268	- **Phase 12 — Spec v0 → v0.1 maintenance; multi-experiment (leases).**
+   269	  Old Milestone 2 scope.
+   270	- **Phase 13 — Kubernetes reference deployment.** Old Milestone 3.
+   271	
+   272	Each phase explicitly lists what it does *not* do, to prevent creep.
+   273	
+   274	### F. Root docs
+   275	
+   276	- **`README.md`** — three-sentence elevator pitch + "EDEN is a protocol
+   277	  for directed-code-evolution orchestration; this repo ships the spec,
+   278	  a reference implementation, and a conformance suite. Anyone can
+   279	  build a conforming component in any language." Links to `spec/`,
+   280	  `reference/`, `conformance/`, `docs/roadmap.md`. Current status:
+   281	  "Phase 0 (bootstrap); nothing runnable yet."
+   282	- **`AGENTS.md`** — agent-facing. Layout tour with the spec/reference/
+   283	  conformance split made loud. Commands section lists only what
+   284	  currently works (markdownlint) and calls out what's planned
+   285	  (`uv sync`, `ruff`, `pyright`, `pytest`, schema validation — to
+   286	  be added in Phase 3+). Contribution conventions: **spec edits
+   287	  require extra care** (versioned, normative, reviewed);
+   288	  **reference edits are normal code changes**; **schema changes
+   289	  must update the spec and the Pydantic bindings in lockstep** (CI
+   290	  enforces this starting in Phase 3).
+   291	- **`CONTRIBUTING.md`** — two-path structure mirroring the repo
+   292	  structure: "Contributing to the spec" (RFC discipline, change
+   293	  proposals, versioning) and "Contributing to the reference
+   294	  implementation" (standard code-review workflow).
+   295	- **`STYLE_GUIDE.md`** — ported from direvo.
+   296	- **`CLAUDE.md`** — symlink to `AGENTS.md`.
+   297	
+   298	### G. Build & CI config
+   299	
+   300	**Bootstrap is docs-only**, so CI runs exactly one check.
+   301	
+   302	- `.github/workflows/ci.yml` — single workflow named `ci`, single job
+   303	  named **`docs-lint`**. That job name is also the required status
+   304	  check in branch protection (pinned explicitly so the `gh api` call
+   305	  is deterministic).
+   306	- The `docs-lint` job:
+   307	  1. Checks out.
+   308	  2. Runs `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv"` (or
+   309	     pinned-version equivalent). Configuration comes from the repo's
+   310	     `.markdownlint.json`.
+   311	  3. Exits 0 if all markdown passes.
+   312	- **No Python job** at bootstrap (no Python files exist).
+   313	- **No JSON Schema job** at bootstrap (no schemas exist, and an
+   314	  empty-glob job is brittle — either a find returning nothing exits 0
+   315	  quietly and hides a real misconfiguration, or the tool errors on
+   316	  no-input. Easier to add this job in Phase 1 when the first schema
+   317	  lands.)
+   318	- **Later phases add jobs**, each as a distinct job name (so branch
+   319	  protection can require each one as it stabilizes):
+   320	  - Phase 1: `schema-validity` — validates `spec/v0/schemas/*.schema.json`.
+   321	  - Phase 3: `python-lint` (ruff), `python-typecheck` (pyright),
+   322	    `python-test` (pytest) — once the first package exists and has a
+   323	    real test.
+   324	  - Phase 3+: `schema-parity` — Pydantic models match their JSON
+   325	    Schemas.
+   326	  - Phase 11: `conformance` — runs the conformance suite against
+   327	    the reference impl.
+   328	
+   329	### H. Git + GitHub execution
+   330	
+   331	Same as before:
+   332	
+   333	1. `git init -b main`
+   334	2. Initial commit containing all of the above.
+   335	3. `gh auth status`.
+   336	4. `gh repo create eden --private --source . --remote origin --push \
+   337	   --description "A protocol for directed code evolution orchestration"`.
+   338	5. `gh repo edit --add-topic protocol --add-topic specification \
+   339	   --add-topic directed-evolution --add-topic orchestration \
+   340	   --add-topic ai --add-topic research-automation`.
+   341	6. Wait for the first `docs-lint` run on `main` to complete (so the
+   342	   check name is registered in GitHub's status-check cache), **then**
+   343	   enable branch protection.
+   344	7. Branch protection uses **classic branch protection** (not the
+   345	   newer repository rulesets — classic is better-documented for
+   346	   scripted setup and the two tools can coexist). Call:
+   347	
+   348	   ```bash
+   349	   gh api -X PUT "repos/<user>/eden/branches/main/protection" \
+   350	     -H "Accept: application/vnd.github+json" \
+   351	     --input - <<'JSON'
+   352	   {
+   353	     "required_status_checks": {
+   354	       "strict": true,
+   355	       "contexts": ["docs-lint"]
+   356	     },
+   357	     "enforce_admins": false,
+   358	     "required_pull_request_reviews": {
+   359	       "required_approving_review_count": 0,
+   360	       "dismiss_stale_reviews": false,
+   361	       "require_code_owner_reviews": false
+   362	     },
+   363	     "restrictions": null,
+   364	     "allow_force_pushes": false,
+   365	     "allow_deletions": false
+   366	   }
+   367	   JSON
+   368	   ```
+   369	
+   370	   Rationale for each field:
+   371	   - `contexts: ["docs-lint"]` — exact CI job name pinned in section G.
+   372	     Added to as Phase 3 / Phase 11 introduce more jobs.
+   373	   - `enforce_admins: false` — solo-repo hotfix path stays open.
+   374	   - `required_approving_review_count: 0` — solo contributor;
+   375	     bumping this to 1+ would block every merge. Increase when
+   376	     collaborators arrive.
+   377	   - `strict: true` — branches must be up-to-date with `main` before
+   378	     merging; cheap safety on a low-traffic repo.
+   379	   - `allow_force_pushes: false`, `allow_deletions: false` — keep
+   380	     `main` durable.
+   381	
+   382	## Files to Reference
+   383	
+   384	- `direvo/pyproject.toml` — ruff/pyright config template.
+   385	- `direvo/.gitignore` — baseline.
+   386	- `direvo/STYLE_GUIDE.md` — copy verbatim.
+   387	- `direvo/AGENTS.md` — structural model for the new one (content
+   388	  differs because the project framing differs).
+   389	- `eden/docs/naming.md` — source for README's elevator pitch.
+   390	- `eden/docs/plans/eden-microservices-refactor.md` — source of
+   391	  functional/non-functional requirements for the spec. Read before
+   392	  writing spec; then move to `docs/archive/`.
+   393	- RFC 2119 — the source for MUST/SHOULD/MAY language conventions used
+   394	  in spec prose.
+   395	
+   396	## Verification
+   397	
+   398	Before declaring done:
+   399	
+   400	1. `tree -L 3` shows: `spec/`, `reference/`, `conformance/`, `docs/`
+   401	   at top level; `spec/v0/` present; `docs/archive/microservices-refactor-plan.md`
+   402	   present; old `docs/plans/eden-microservices-refactor.md` gone.
+   403	2. `readlink CLAUDE.md` prints `AGENTS.md`.
+   404	3. `markdownlint-cli2 "**/*.md" "#node_modules"` passes locally over
+   405	   every `.md` we wrote.
+   406	4. No Python-tool gates run — there are no Python files. (Intentional:
+   407	   those gates land with Phase 3.)
+   408	5. Remote: `gh repo view <user>/eden --json visibility,description,url`
+   409	   confirms private + correct description.
+   410	6. `gh run list --limit 1` shows the first CI run; `gh run view` shows
+   411	   the `docs-lint` job green.
+   412	7. `gh api repos/<user>/eden/branches/main/protection` returns the
+   413	   exact payload from section H step 7 — in particular
+   414	   `required_status_checks.contexts == ["docs-lint"]`.
+   415	
+   416	## Execution Order
+   417	
+   418	Each step lists the **exact** files it creates/moves. Nothing outside
+   419	this list is written at Phase 0.
+   420	
+   421	1. Read direvo's `AGENTS.md`, `pyproject.toml`, `STYLE_GUIDE.md` in full.
+   422	2. Create `docs/archive/` and move
+   423	   `docs/plans/eden-microservices-refactor.md` →
+   424	   `docs/archive/microservices-refactor-plan.md`, prepending a
+   425	   historical-context header note.
+   426	3. Create empty directory tree with `.gitkeep` files per the section
+   427	   A.1 tree. Directories: `spec/v0/schemas/`, every `reference/services/*`
+   428	   and `reference/packages/*` directory, `reference/scripts/setup-experiment/`,
+   429	   `reference/compose/`, `tests/unit/`, `tests/integration/`,
+   430	   `.github/workflows/`. No `.gitkeep` in directories that contain a
+   431	   real file (e.g. `spec/v0/` contains `README.md`).
+   432	4. Write section READMEs:
+   433	   - `spec/README.md` — what the EDEN protocol is, versioning policy,
+   434	     pointer to `v0/README.md`.
+   435	   - `spec/v0/README.md` — the planned-chapters table from section A.2,
+   436	     each annotated with "(Phase N)".
+   437	   - `reference/README.md` — "one valid implementation", target spec
+   438	     version, per-service/package Phase-N map.
+   439	   - `conformance/README.md` — stub; "suite lands Phase 11".
+   440	   - **No numbered spec chapter files, no `*.schema.json` files.**
+   441	5. Write `.gitignore` (port from direvo) and `.markdownlint.json`
+   442	   (copy direvo's `{"MD013": false}`).
+   443	6. Write root `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
+   444	   `STYLE_GUIDE.md`. **No `pyproject.toml`**, **no `.python-version`**
+   445	   — those land in Phase 3.
+   446	7. Create `CLAUDE.md` as a relative symlink to `AGENTS.md`.
+   447	8. Write `docs/roadmap.md` (Phase 0–13 with exit criteria and the
+   448	   section-A.2 file-to-phase mapping).
+   449	9. Write `.github/workflows/ci.yml` — the `docs-lint` job only, per
+   450	   section G. Pin `markdownlint-cli2` to a specific major version.
+   451	10. Run local verification (steps 1–3 of Verification above).
+   452	11. `git init -b main`, commit everything.
+   453	12. `gh auth status` sanity check (stop if unauthenticated).
+   454	13. `gh repo create … --push`.
+   455	14. `gh repo edit --add-topic …`.
+   456	15. `gh run watch` the first CI run; fix anything red before enabling
+   457	    branch protection.
+   458	16. Enable branch protection via `gh api` with the exact payload in
+   459	    section H step 7.
+   460	17. Report back: repo URL, the protocol-first framing summary, what
+   461	    Phase 1 looks like.
+   462	
+   463	## Out of Scope for This Bootstrap
+   464	
+   465	- **Any spec chapter content.** Phase 0 writes `spec/README.md` and
+   466	  `spec/v0/README.md` only. **No `00-overview.md`, `01-concepts.md`,
+   467	  or any other numbered chapter file is created.** Those land in
+   468	  Phases 1, 2, 4, 11, 12 per the section-A.2 mapping.
+   469	- **Any JSON Schema files.** `spec/v0/schemas/` is empty (just
+   470	  `.gitkeep`) at end of Phase 0. First schema lands in Phase 1.
+   471	- **Any reference code.** `reference/` tree has `.gitkeep`s and a
+   472	  top-level `README.md` only.
+   473	- **Any conformance tests.** Just the `conformance/README.md`.
+   474	- **Python toolchain** — `pyproject.toml`, `.python-version`, uv
+   475	  workspace, ruff/pyright config, per-member `pyproject.toml` files.
+   476	  All land in Phase 3 with the first real package.
+   477	- **Python / JSON Schema CI jobs** — added per-phase as the artifacts
+   478	  they gate on come into existence.
+   479	- Pre-commit hooks, issue templates, CODEOWNERS.
+   480	- Porting the fixture experiment — Phase 1.
+   481	- Moving/renaming anything inside `direvo/` (untouched).
+   482	
+   483	## Known Risks / Things to Watch
+   484	
+   485	- **Branch protection before the first CI run on `main`.** GitHub
+   486	  won't let you require a status-check context it has never seen.
+   487	  Order is hard-required: push → wait for `docs-lint` to complete on
+   488	  `main` → enable protection. The `gh run watch` step enforces this.
+   489	- **`gh auth status` failing.** Surface clearly and stop; don't guess
+   490	  at credentials.
+   491	- **Protocol versioning discipline from day 0** — tempting to write
+   492	  `spec/` without a `v0/` subdirectory "for now." Resist: adding the
+   493	  version layer later means rewriting every cross-reference.
+   494	- **"Reference" naming overload.** `reference/` (top-level) is the
+   495	  reference *impl*; `docs/archive/` (not `docs/reference/`) holds the
+   496	  old plan. Avoiding the collision is why the old plan goes to
+   497	  `archive/`, not `reference/`.
+   498	- **Classic branch protection vs. rulesets.** Both exist; rulesets
+   499	  are GitHub's newer system. This plan uses **classic protection**
+   500	  because it's better-supported by `gh api` one-liners and the solo
+   501	  use case doesn't need rulesets' evaluate-before-enforce mode. If
+   502	  the user later wants rulesets, migration is a drop-in replacement
+   503	  of the `gh api` call.
+   504	- **`markdownlint-cli2` version pinning.** Use a specific major in
+   505	  CI (e.g., `markdownlint-cli2@v0.14`) so Phase 0 doesn't silently
+   506	  break when the tool upgrades.
+
+codex
+**1. Missing Context**
+
+Assessment: resolved. The Phase 0 deliverable versus eventual repo shape is now explicit, and a reader can tell what is created now versus later.
+
+**2. Feasibility**
+
+Assessment: resolved. The docs-only bootstrap, single `docs-lint` gate, and deferred Python/schema toolchain are internally consistent and executable as written.
+
+**3. Alternatives**
+
+Assessment: the chosen approach still looks right. Keeping Phase 0 strictly structural is better than inventing placeholder code or fake schema artifacts just to satisfy tooling.
+
+**4. Completeness**
+
+Assessment: this now covers the bootstrap scope coherently. The scaffold, root docs, CI, GitHub setup, verification, and execution order line up.
+
+**5. Edge Cases and Risks**
+
+Assessment: no major blockers, but two small risks are still worth tightening.
+
+- The archived microservices plan is included in the `**/*.md` lint scope after it is moved. If that historical document is not already clean under the new markdownlint config, Phase 0 can fail on archived content rather than on the new bootstrap artifacts. Either verify that file passes now or explicitly exclude `docs/archive/**` from the Phase 0 lint rule. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:118), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:308), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:404), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:422))
+- The local verification command and CI command are slightly different: CI excludes `#.venv`, while the local verification example does not. That is minor, but making them identical would avoid unnecessary “works locally / fails in CI” noise. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:308), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:404))
+
+Overall assessment: this version is in good shape and looks implementation-ready. I don’t see any remaining structural blockers; only minor risk-proofing around markdown lint scope and command consistency.
+tokens used
+58,508

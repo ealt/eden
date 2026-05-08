@@ -1,0 +1,345 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc3b5-808f-7cd3-a200-64badb111676
+--------
+user
+I've updated the plan based on your feedback. Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md. Focus on whether the changes resolve the round-0 findings; any remaining substantive issues; and overall assessment.
+codex
+I’ve confirmed the major round-0 fixes landed. I’m checking a couple of remaining mechanics now, mainly around work-ref ownership and a few stale field names in the revised text, so I can separate resolved issues from residual substantive ones.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-contracts/src/eden_contracts/proposal.py | sed -n '1,80p'; nl -ba reference/services/web-ui/src/eden_web_ui/routes/implementer.py | sed -n '115,145p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Proposal — planner output; implementation-work dispatch metadata.
+     2	
+     3	Mirrors ``spec/v0/schemas/proposal.schema.json``. Lifecycle semantics are
+     4	in spec/v0/04-task-protocol.md.
+     5	"""
+     6	
+     7	from __future__ import annotations
+     8	
+     9	from typing import Annotated, Literal
+    10	
+    11	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    12	
+    13	from ._common import CommitSha, DateTimeStr, UriStr
+    14	
+    15	ProposalState = Literal["drafting", "ready", "dispatched", "completed"]
+    16	"""Proposal lifecycle states; ``completed`` is terminal and covers both success and failure."""
+    17	
+    18	SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
+    19	Slug = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+    20	
+    21	
+    22	class Proposal(BaseModel):
+    23	    """Planner-produced proposal."""
+    24	
+    25	    model_config = ConfigDict(strict=True, extra="allow")
+    26	
+    27	    proposal_id: Annotated[str, Field(min_length=1)]
+    28	    experiment_id: Annotated[str, Field(min_length=1)]
+    29	    slug: Slug
+    30	    priority: float
+    31	    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+    32	    artifacts_uri: UriStr
+    33	    state: ProposalState
+    34	    created_at: DateTimeStr
+   115	    except (IllegalTransition, InvalidPrecondition) as exc:
+   116	        banner = _wire_error_banner(exc)
+   117	        return RedirectResponse(
+   118	            url=f"/implementer/?banner={banner}", status_code=303
+   119	        )
+   120	    trial_id = _new_trial_id()
+   121	    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, trial_id)
+   122	    return RedirectResponse(url=f"/implementer/{task_id}/draft", status_code=303)
+   123	
+   124	
+   125	@router.get("/{task_id}/draft", response_class=HTMLResponse, response_model=None)
+   126	async def draft_form(
+   127	    task_id: str,
+   128	    request: Request,
+   129	) -> HTMLResponse | RedirectResponse:
+   130	    session = get_session(request)
+   131	    if session is None:
+   132	        return RedirectResponse(url="/signin", status_code=303)
+   133	    entry = _CLAIMS.get(_claim_key(session.csrf, task_id))
+   134	    if entry is None:
+   135	        return RedirectResponse(
+   136	            url="/implementer/?banner=claim+missing+from+session",
+   137	            status_code=303,
+   138	        )
+   139	    _, trial_id = entry
+   140	    store = request.app.state.store
+   141	    try:
+   142	        task = store.read_task(task_id)
+   143	        proposal: Proposal = store.read_proposal(task.payload.proposal_id)
+   144	    except DispatchError as exc:
+   145	        return _render_error(request, _wire_error_banner(exc))
+
+exec
+/bin/zsh -lc "rg -n \"trial_id_factory|T-\\{|t-impl|trial_id=|create_trial\\(\" reference/services/web-ui reference/packages/eden-dispatch reference/packages/eden-storage -g '*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:163:        trial_id_factory: Callable[[], str],
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:168:        self._trial_id_factory = trial_id_factory
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:203:        trial_id = self._trial_id_factory()
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:218:        store.create_trial(trial)
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:224:                trial_id=trial_id,
+reference/packages/eden-dispatch/src/eden_dispatch/workers.py:285:                trial_id=trial.trial_id,
+reference/packages/eden-storage/src/eden_storage/sqlite.py:105:            trial_id=payload["trial_id"],
+reference/packages/eden-storage/src/eden_storage/sqlite.py:111:            trial_id=payload["trial_id"],
+reference/packages/eden-storage/src/eden_storage/protocol.py:252:    def create_trial(self, trial: Trial) -> None:
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:52:    return f"t-impl-{itertools.count(1).__next__()}"
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:101:        new = f"t-impl-{len(dispatched_ids) + 1}"
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:134:        trial_id="tr-1",
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:143:    store.create_trial(trial)
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:192:    store.create_implement_task("t-impl-1", "p-1")
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:193:    claim = store.claim("t-impl-1", "implementer-1")
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:195:        trial_id="tr-1",
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:203:    store.create_trial(trial)
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:205:        "t-impl-1",
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:207:        ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:209:    store.accept("t-impl-1")
+reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py:216:        EvaluateSubmission(status="success", trial_id="tr-1", metrics={"loss": 0.5}),
+reference/packages/eden-storage/tests/test_protocol_operations.py:59:        payload=EvaluatePayload(trial_id=trial_id),
+reference/packages/eden-storage/tests/test_protocol_operations.py:82:    store.create_trial(
+reference/packages/eden-storage/tests/test_protocol_operations.py:84:            trial_id=trial_id,
+reference/packages/eden-storage/tests/test_protocol_operations.py:101:        ImplementSubmission(status="success", trial_id=trial_id, commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_protocol_operations.py:123:        store.create_task(_impl_task("t-impl", "p1"))
+reference/packages/eden-storage/tests/test_protocol_operations.py:154:            store.create_task(_impl_task("t-impl", "does-not-exist"))
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:151:        trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:205:            trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:227:                trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:244:                    trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:264:                trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:287:        store.create_trial(trial)
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:302:            trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:318:                trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:328:        trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:339:            trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:347:        trial_id=trial_id,
+reference/packages/eden-storage/tests/test_composite_commits.py:51:    store.create_trial(Trial(**kwargs))
+reference/packages/eden-storage/tests/test_composite_commits.py:69:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:91:            store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:101:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:102:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_composite_commits.py:105:            "t-impl",
+reference/packages/eden-storage/tests/test_composite_commits.py:107:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_composite_commits.py:109:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_composite_commits.py:121:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:122:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_composite_commits.py:125:            "t-impl",
+reference/packages/eden-storage/tests/test_composite_commits.py:127:            ImplementSubmission(status="error", trial_id="tr-1"),
+reference/packages/eden-storage/tests/test_composite_commits.py:129:        store.reject("t-impl", "worker_error")
+reference/packages/eden-storage/tests/test_composite_commits.py:141:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:142:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_composite_commits.py:145:            "t-impl",
+reference/packages/eden-storage/tests/test_composite_commits.py:147:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_composite_commits.py:149:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_composite_commits.py:159:            EvaluateSubmission(status="success", trial_id="tr-1", metrics={"score": 0.9}),
+reference/packages/eden-storage/tests/test_composite_commits.py:177:            EvaluateSubmission(status="error", trial_id="tr-1", metrics={"score": 0.0}),
+reference/packages/eden-storage/tests/test_composite_commits.py:199:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_composite_commits.py:223:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:224:        store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_composite_commits.py:226:        store.reclaim("t-impl", "health_policy")
+reference/packages/eden-storage/tests/test_composite_commits.py:230:        assert store.read_task("t-impl").state == "pending"
+reference/packages/eden-storage/tests/test_composite_commits.py:239:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:240:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_composite_commits.py:243:            "t-impl",
+reference/packages/eden-storage/tests/test_composite_commits.py:245:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_composite_commits.py:247:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_composite_commits.py:264:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_composite_commits.py:265:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_composite_commits.py:268:            "t-impl",
+reference/packages/eden-storage/tests/test_composite_commits.py:270:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_composite_commits.py:272:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_composite_commits.py:278:            EvaluateSubmission(status="success", trial_id="tr-1", metrics={"score": 0.9}),
+reference/packages/eden-storage/src/eden_storage/_base.py:525:                payload=EvaluatePayload(trial_id=trial_id),
+reference/packages/eden-storage/src/eden_storage/_base.py:841:    def create_trial(self, trial: Trial) -> None:
+reference/packages/eden-storage/src/eden_storage/_base.py:1158:                    f"implement submission trial_id={submission.trial_id!r} "
+reference/packages/eden-storage/src/eden_storage/_base.py:1166:                    f"evaluate submission trial_id={submission.trial_id!r} "
+reference/packages/eden-storage/tests/test_store_hardening.py:46:    store.create_trial(
+reference/packages/eden-storage/tests/test_store_hardening.py:48:            trial_id=trial_id,
+reference/packages/eden-storage/tests/test_store_hardening.py:119:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:120:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:123:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:125:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:127:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:132:            status="success", trial_id="tr-1", metrics=original_metrics
+reference/packages/eden-storage/tests/test_store_hardening.py:155:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:156:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:159:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:161:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:163:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:171:                    status="success", trial_id="not-tr-1", metrics={"score": 0.9}
+reference/packages/eden-storage/tests/test_store_hardening.py:191:                ImplementSubmission(status="success", trial_id="tr-b", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:243:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:244:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:247:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:249:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha=None),
+reference/packages/eden-storage/tests/test_store_hardening.py:251:        reason = store.validate_acceptance("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:260:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:261:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:264:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:266:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:268:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:274:            EvaluateSubmission(status="success", trial_id="tr-1", metrics=None),
+reference/packages/eden-storage/tests/test_store_hardening.py:286:        store.create_implement_task("t-impl", "p-1")
+reference/packages/eden-storage/tests/test_store_hardening.py:287:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:291:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:293:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha=None),
+reference/packages/eden-storage/tests/test_store_hardening.py:303:        impl_task = store.read_task("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:321:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:322:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:325:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:327:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:329:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:337:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_store_hardening.py:353:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:354:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:357:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:359:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:361:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:369:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_store_hardening.py:386:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:387:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:390:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:392:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:394:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:401:                status="success", trial_id="tr-1", metrics={"score": True}
+reference/packages/eden-storage/tests/test_store_hardening.py:423:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:424:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:427:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:430:                status="success", trial_id="tr-1", commit_sha="not-a-sha"
+reference/packages/eden-storage/tests/test_store_hardening.py:433:        decision, reason = store.validate_terminal("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:437:        store.reject("t-impl", "validation_error")
+reference/packages/eden-storage/tests/test_store_hardening.py:438:        task = store.read_task("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:452:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:453:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:456:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:458:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:460:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:468:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_store_hardening.py:501:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:502:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:505:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:507:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:509:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:517:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_store_hardening.py:534:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_store_hardening.py:556:                    trial_id="tr-1",
+reference/packages/eden-storage/tests/test_store_hardening.py:571:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:572:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:575:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:577:            ImplementSubmission(status="error", trial_id="tr-1"),
+reference/packages/eden-storage/tests/test_store_hardening.py:579:        store.reject("t-impl", "worker_error")
+reference/packages/eden-storage/tests/test_store_hardening.py:580:        assert store.read_task("t-impl").claim is None
+reference/packages/eden-storage/tests/test_store_hardening.py:599:        store.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_store_hardening.py:600:        claim = store.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_store_hardening.py:603:            "t-impl",
+reference/packages/eden-storage/tests/test_store_hardening.py:605:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_store_hardening.py:607:        store.accept("t-impl")
+reference/packages/eden-storage/tests/test_store_hardening.py:615:                trial_id="tr-1",
+reference/services/web-ui/tests/test_evaluator_e2e.py:181:            seed.create_implement_task("t-impl-1", "p-eval")
+reference/services/web-ui/tests/test_evaluator_e2e.py:186:                trial_id="tr-1",
+reference/services/web-ui/tests/test_evaluator_e2e.py:194:            seed.create_trial(trial)
+reference/services/web-ui/tests/test_evaluator_e2e.py:195:            claim = seed.claim("t-impl-1", "impl-w")
+reference/services/web-ui/tests/test_evaluator_e2e.py:197:                "t-impl-1",
+reference/services/web-ui/tests/test_evaluator_e2e.py:200:                    status="success", trial_id="tr-1", commit_sha="b" * 40
+reference/services/web-ui/tests/test_evaluator_e2e.py:203:            seed.accept("t-impl-1")
+reference/services/web-ui/src/eden_web_ui/routes/evaluator.py:271:        trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/evaluator.py:285:            trial_id=trial_id,
+reference/services/web-ui/src/eden_web_ui/routes/evaluator.py:311:        trial_id=trial_id,
+reference/services/web-ui/tests/conftest.py:275:    store.create_trial(Trial(**trial_kwargs))
+reference/services/web-ui/tests/conftest.py:280:        ImplementSubmission(status="success", trial_id=trial_id, commit_sha=commit_sha),
+reference/services/web-ui/tests/test_evaluator_partial_write.py:142:                        status="success", trial_id=trial_id, metrics={"score": 0.123}
+reference/services/web-ui/tests/test_evaluator_partial_write.py:244:            payload=EvaluatePayload(trial_id="trial-eval"),
+reference/services/web-ui/tests/test_evaluator_partial_write.py:413:            status="success", trial_id=trial_id, metrics={"score": 0.9}
+reference/services/web-ui/tests/test_evaluator_partial_write.py:444:                status="success", trial_id=trial_id, metrics={"score": 0.111}
+reference/packages/eden-storage/tests/test_restart_safety.py:64:        first.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_restart_safety.py:65:        claim = first.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_restart_safety.py:66:        first.create_trial(
+reference/packages/eden-storage/tests/test_restart_safety.py:68:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_restart_safety.py:78:            "t-impl",
+reference/packages/eden-storage/tests/test_restart_safety.py:80:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_restart_safety.py:82:        first.accept("t-impl")
+reference/packages/eden-storage/tests/test_restart_safety.py:88:        assert second.read_task("t-impl").state == "completed"
+reference/packages/eden-storage/tests/test_restart_safety.py:260:        second.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_restart_safety.py:261:        c = second.claim("t-impl", "impl-w")
+reference/packages/eden-storage/tests/test_restart_safety.py:262:        second.create_trial(
+reference/packages/eden-storage/tests/test_restart_safety.py:264:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_restart_safety.py:274:            "t-impl",
+reference/packages/eden-storage/tests/test_restart_safety.py:276:            ImplementSubmission(status="success", trial_id="tr-1", commit_sha="b" * 40),
+reference/packages/eden-storage/tests/test_restart_safety.py:278:        second.accept("t-impl")
+reference/packages/eden-storage/tests/test_restart_safety.py:286:                trial_id="tr-1",
+reference/packages/eden-storage/tests/test_restart_safety.py:338:            first.create_implement_task("t-impl", "p1")
+reference/packages/eden-storage/tests/test_restart_safety.py:362:        impl_task_ids = iter([f"t-impl-{i:02d}" for i in range(1, 10)])
+reference/packages/eden-storage/tests/test_restart_safety.py:393:            "impl-1", impl_fn, trial_id_factory=lambda: next(trial_ids), now=now
+reference/packages/eden-storage/tests/test_restart_safety.py:407:        decision, _ = first.validate_terminal("t-impl-01")
+reference/packages/eden-storage/tests/test_restart_safety.py:409:        first.accept("t-impl-01")
+reference/services/web-ui/tests/test_evaluator_flow.py:230:                trial_id=trial_id,
+reference/services/web-ui/tests/test_implementer_e2e.py:225:            seed.create_implement_task("t-impl-1", "p-impl")
+reference/services/web-ui/tests/test_implementer_e2e.py:235:            assert "t-impl-1" in resp.text
+reference/services/web-ui/tests/test_implementer_e2e.py:241:                "/implementer/t-impl-1/claim",
+reference/services/web-ui/tests/test_implementer_e2e.py:248:            resp = ui.get("/implementer/t-impl-1/draft")
+reference/services/web-ui/tests/test_implementer_e2e.py:261:                "/implementer/t-impl-1/submit",
+reference/services/web-ui/tests/test_implementer_e2e.py:281:            assert store.read_task("t-impl-1").state == "submitted"
+reference/services/web-ui/tests/test_implementer_partial_write.py:482:        status="success", trial_id="trial-x", commit_sha=child_sha
+reference/services/web-ui/tests/test_implementer_partial_write.py:602:            trial_id="trial-other-worker",
+
+exec
+/bin/zsh -lc "rg -n \"def _new_trial_id\" reference/services/web-ui/src/eden_web_ui/routes/implementer.py reference/packages/eden-dispatch/src/eden_dispatch/workers.py -g '*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:65:def _new_trial_id() -> str:
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/implementer.py | sed -n '60,75p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    60	
+    61	def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
+    62	    return (session_csrf, task_id)
+    63	
+    64	
+    65	def _new_trial_id() -> str:
+    66	    return f"trial-{uuid.uuid4().hex[:12]}"
+    67	
+    68	
+    69	def _branch_name(slug: str, trial_id: str) -> str:
+    70	    return f"work/{slug}-{trial_id}"
+    71	
+    72	
+    73	def _list_recent_trials(store: Any, *, limit: int = 20) -> list[Any]:
+    74	    items = store.list_trials()
+    75	    return items[-limit:]
+
+ERROR: Reconnecting... 2/5
+codex
+**Round-0 Findings**
+
+Those are mostly resolved.
+
+- The scope contradiction is fixed: the goal now correctly describes per-experiment, cross-role observability rather than cross-experiment observability. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:5).
+- The `GitRepo.delete_ref` drift is fixed: the plan now treats it as an existing primitive and uses the right kwarg name. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:89), [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:430), [repo.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/repo.py:511).
+- The auth/CSRF ordering issue is fixed: the plan now explicitly matches the existing auth-first POST behavior. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:155), [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:94).
+- The trial-event correlation gap is much better: it now specifies a concrete algorithm and correctly uses `event.data` rather than `payload`. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:289), [event.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/event.py:27).
+- The root-guidance target is fixed: the plan now treats `AGENTS.md` as canonical and notes `CLAUDE.md` is a symlink. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:735).
+
+**Remaining Substantive Issues**
+
+- Work-ref ownership is still too SHA-centric. The GC logic cross-references refs against trials by `commit_sha`, but the canonical ref name already embeds the owning `trial_id` as `work/<slug>-<trial_id>`. If two trials ever share a commit SHA, or if a ref name and SHA disagree due to manual rewrite, this plan can associate the ref with the wrong trial and offer deletion on the wrong basis. The safer rule is: parse the `trial_id` from the ref name first, load that trial, then require the ref’s current SHA to match that trial’s `commit_sha`. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:373), [implementer.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/implementer.py:69), [proposal.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/proposal.py:18).
+- The trial-detail event ordering should not permit sorting by `event_id`. The plan says `event_id` or replay index are both monotonic, but `event_id` comes from a pluggable factory and is not a reliable ordering contract. Use replay order / natural index only. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:316), [_base.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/src/eden_storage/_base.py:166).
+- The read-path 404 behavior is still underspecified. The plan says `NotFound` on read paths goes through the existing 404 handler, but the app only has a handler for HTTP 404 responses, not `eden_storage.NotFound` / wire `NotFound` exceptions. Either the routes need to catch and translate those explicitly, or `make_app` needs an exception handler for the storage/wire exception class. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:527), [app.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/app.py:90), [errors.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/errors.py:92).
+
+**Overall Assessment**
+
+This revision is materially better. The round-0 blockers are largely addressed, and the overall approach now looks sound for Phase 9e.
+
+I would not call it fully implementation-ready yet, but it is close. Tighten the work-ref ownership rule, remove `event_id`-based ordering, and make the `NotFound` → HTML 404 path explicit. After that, I’d consider the plan ready to implement.
+2026-04-25T09:56:05.733496Z ERROR codex_core::session: failed to record rollout items: thread 019dc3b5-808f-7cd3-a200-64badb111676 not found
+tokens used
+337,344

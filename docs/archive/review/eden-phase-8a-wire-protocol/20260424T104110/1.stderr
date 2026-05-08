@@ -1,0 +1,831 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc095-57d0-7a22-9ccf-f71b87fb3f7c
+--------
+user
+I've updated the plan based on your round-0 feedback. Please review the updated version at docs/plans/eden-phase-8a-wire-protocol.md. Key changes:
+
+1. validate-terminal and validate/metrics are moved off the normative wire chapter and onto /_reference/ non-normative helper endpoints.
+2. subscribe is now explicitly bound in 8a as a long-poll endpoint (GET /events/subscribe?cursor=N); polling companion remains. Not deferred.
+3. InvalidPrecondition -> 409 (was 422).
+4. Integrate-over-HTTP has a new 'Atomicity and composite-commit handling' subsection covering: (a) server-side same-value idempotency on POST /trials/{id}/integrate, (b) client-side read-back-before-compensate on indeterminate transport failures, (c) new IndeterminateIntegration error for unresolvable cases.
+5. Same-value idempotency is also pushed into Store.integrate_trial itself so direct-store and wire-mediated paths share the contract.
+6. New tests added: indeterminate-failure reconciliation, same-value idempotency, long-poll subscribe semantics.
+7. 'Open questions' section is now 'Design decisions settled in round 0' capturing everything resolved.
+
+Please check that (a) the atomicity story is now correct, (b) the subscribe binding is complete, (c) the normative/non-normative split is clean, and (d) there are no new issues introduced by the changes.
+codex
+Reviewing the updated Phase 8a plan with focus on the four changes you called out: integrate atomicity, `subscribe`, the normative/reference split, and whether the fixes introduced new edge cases. I’m rereading the plan and checking the updated claims against the existing Store and integrator contracts.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8a-wire-protocol.md | sed -n '1,360p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8a-wire-protocol.md | sed -n '360,520p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   360	6. **Integrate-over-HTTP indeterminate-failure reconciliation.**
+   361	   A focused test that exercises the split-brain scenario the HTTP
+   362	   boundary introduces: the server's `POST /trials/{id}/integrate`
+   363	   commits durably, then the test simulates the response being lost
+   364	   (e.g. by injecting a transport-level disconnect after the
+   365	   server's transaction but before the response is serialized).
+   366	   The `StoreClient.integrate_trial` + Integrator path MUST
+   367	   reconcile via the read-back rule and MUST NOT compensate-delete
+   368	   the ref. A second test inverts the case: the server returned a
+   369	   committed 5xx before durable persistence (simulated) or the
+   370	   transport failed before the request arrived; the read-back shows
+   371	   `trial_commit_sha is None`; the Integrator compensates as
+   372	   normal.
+   373	7. **Same-value idempotency on `integrate_trial`.** Calling the
+   374	   endpoint twice with the same `trial_commit_sha` emits exactly
+   375	   one `trial.integrated` event; calling it with a different SHA
+   376	   returns `invalid-precondition`. Verified by counting events and
+   377	   by asserting the error type.
+   378	8. **Long-poll `subscribe` semantics.** A subscriber connected at
+   379	   `GET /events/subscribe?cursor=N` receives events appended after
+   380	   cursor `N` within the poll window, receives an empty batch on
+   381	   timeout, and resumes from the returned cursor on the next call.
+   382	   Replay from cursor `0` returns the full experiment stream.
+   383	
+   384	### Build & CI
+   385	
+   386	- Add `reference/packages/eden-wire` to the uv workspace members in
+   387	  root `pyproject.toml`; add it to `dev` dependencies; add its
+   388	  tests to `testpaths`; add it to `pyright.include`.
+   389	- Dependencies added to the workspace: `fastapi`, `uvicorn`,
+   390	  `httpx`. (`jsonschema` and `pyyaml` already present; no new
+   391	  schema-validator deps.)
+   392	- No new CI job category. Existing `python-lint`,
+   393	  `python-typecheck`, `python-test`, and `schema-validity` cover
+   394	  the new code and new schemas; `schema-parity` extends
+   395	  automatically to the wire Pydantic types.
+   396	- `spec-xref-check.py` will automatically validate the new `07`
+   397	  chapter's cross-references to chapters 4, 5, 8.
+   398	
+   399	## Algorithm — what the orchestrator's turn looks like over HTTP
+   400	
+   401	For reference, a single iteration of `run_experiment` — unchanged
+   402	from Phase 7b structurally — now performs these HTTP calls via
+   403	`StoreClient`:
+   404	
+   405	1. `planner.run_pending(client)`:
+   406	   - `GET /tasks?kind=plan&state=pending`
+   407	   - For each: `POST /tasks/{id}/claim`, run scripted planner, per
+   408	     drafted proposal `POST /proposals`, per ready proposal
+   409	     `POST /proposals/{id}/mark-ready`,
+   410	     `POST /tasks/{id}/submit`.
+   411	2. `_finalize_submitted(client, kind="plan")`:
+   412	   - `GET /tasks?kind=plan&state=submitted`
+   413	   - For each: `GET /tasks/{id}/validate-terminal` →
+   414	     `POST /tasks/{id}/accept` or `POST /tasks/{id}/reject`.
+   415	3. `_dispatch_implement_tasks`:
+   416	   - `GET /proposals?state=ready`
+   417	   - For each: `POST /tasks` (kind=implement).
+   418	4. Implementer and evaluator loops follow the same pattern.
+   419	5. `_promote_successful_trials`:
+   420	   - `GET /trials?status=success`
+   421	   - For each without a `trial_commit_sha`: `integrator.integrate(id)`.
+   422	     Integrator calls into `client.read_trial`,
+   423	     `client.validate_metrics`, and — on success —
+   424	     `POST /trials/{id}/integrate` which atomically writes the
+   425	     field and the event per chapter 6 §3.4 (server-side).
+   426	
+   427	Per-iteration HTTP count is proportional to the number of tasks in
+   428	flight; the polling loop quiesces in O(1) round-trips after the
+   429	queue drains.
+   430	
+   431	## Atomicity and composite-commit handling
+   432	
+   433	### In-process composite commits stay atomic
+   434	
+   435	Chapter 5 §2.2 composite commits (task-completed + proposal-completed,
+   436	evaluate-terminal + trial.succeeded, reclaim + trial.errored,
+   437	trial-promotion ref + field + event) still commit atomically on the
+   438	server side: each endpoint runs under the existing `Store._commit`
+   439	transaction. A client invoking `POST /tasks/{id}/accept` on an
+   440	`implement` task receives one response after the task-completed
+   441	event and the proposal-completed event have both been durably
+   442	appended.
+   443	
+   444	The binding does not distribute transactions across HTTP calls. No
+   445	endpoint splits a composite commit into two HTTP requests; each
+   446	composite commit maps to exactly one server transaction.
+   447	
+   448	### Chapter 6 §3.4 across the process boundary
+   449	
+   450	The trial-promotion invariant (ref + trial_commit_sha + event all
+   451	consistent post-promotion) is the one composite commit that spans
+   452	the HTTP boundary: the ref write happens client-side in the
+   453	Integrator, and the store-side half (`trial_commit_sha` + event)
+   454	happens server-side through `POST /trials/{id}/integrate`. In-
+   455	process at Phase 7b, a `Store` exception from `integrate_trial`
+   456	caused the Integrator to compensate-delete the ref — the
+   457	"post-promotion reading" from
+   458	[`spec/v0/design-notes/integrator-atomicity.md`](../../spec/v0/design-notes/integrator-atomicity.md).
+   459	
+   460	Over HTTP, a transport failure — connection reset, timeout, proxy
+   461	disconnect — between the request being sent and the response being
+   462	received is **indeterminate**: the server may have durably committed
+   463	the transition before the response was lost. A blind
+   464	compensating-delete in that case would violate §3.4: the ref
+   465	disappears while the `trial_commit_sha` and `trial.integrated`
+   466	event stay, producing exactly the split-brain state §3.4 forbids
+   467	after a promotion returns.
+   468	
+   469	Two mechanisms together close this gap:
+   470	
+   471	1. **Server-side same-value idempotency** on the endpoint (see
+   472	   "Request and response bodies" §6 above): a repeated
+   473	   `POST /trials/{id}/integrate` with the **same** `trial_commit_sha`
+   474	   is a no-op; a repeated call with a **different** value is an
+   475	   error. This is the same rule `Integrator.integrate` already
+   476	   enforces in-process for `_check_idempotent` — now surfaced at
+   477	   the HTTP boundary so retries are safe.
+   478	2. **Client-side reconciliation on indeterminate failure.** The
+   479	   `StoreClient.integrate_trial` path MUST NOT raise a bare
+   480	   transport exception back to `Integrator.integrate`. Instead,
+   481	   on `httpx.TransportError` / `httpx.RemoteProtocolError` /
+   482	   `httpx.ReadTimeout` (and equivalents), it MUST:
+   483	   a. Re-issue `GET /trials/{id}` through a bounded retry loop
+   484	      (e.g. 3 attempts with exponential backoff).
+   485	   b. If the trial now has `trial_commit_sha == expected`, the
+   486	      server had already committed; return success and do not
+   487	      compensate.
+   488	   c. If the trial has no `trial_commit_sha`, re-raise; the
+   489	      Integrator compensates the ref per its existing §3.4 rule.
+   490	   d. If the trial has a *different* `trial_commit_sha`, raise
+   491	      `AtomicityViolation` — someone else integrated concurrently,
+   492	      which §1.2 forbids; this is operator-intervention territory.
+   493	   e. If the reconciliation read itself fails repeatedly, raise a
+   494	      new `IndeterminateIntegration` error that explicitly flags
+   495	      "unable to determine server state" rather than committing
+   496	      to either path.
+   497	
+   498	Integrator's existing compensating-delete flow runs only when the
+   499	client has **positively confirmed** the server did not commit. That
+   500	preserves the chapter 6 §3.4 post-promotion invariant across the
+   501	process boundary: after the call returns — by success, confirmed
+   502	rollback, or `IndeterminateIntegration` — the three artifacts
+   503	remain consistent, or the inconsistency is loud and named.
+   504	
+   505	This is the one place where the HTTP binding needs more than a
+   506	transport-layer translation of the `Store` API. The plan calls it
+   507	out explicitly so the Integrator changes land with the
+   508	`eden-wire` package, not as a later bug fix.
+   509	
+   510	## Migration from Phase 7b
+   511	
+   512	- `eden-dispatch.run_experiment` needs no signature change; it
+   513	  already accepts a `Store` and an `integrate_trial` callable. A
+   514	  `StoreClient` *is* a `Store`, so the driver works unchanged.
+   515	- `eden-git.Integrator` gains one new failure mode —
+   516	  `IndeterminateIntegration` — raised when a wire-mediated
+   517	  `integrate_trial` call's outcome cannot be determined. Direct-
+   518	  `Store` callers never see it (no transport involved); wire-
+   519	  mediated callers treat it as operator-intervention territory,
+   520	  same as `AtomicityViolation`. Existing exception handlers in
+
+ succeeded in 0ms:
+     1	# EDEN Phase 8a — Wire Protocol & Standalone Orchestrator
+     2	
+     3	## Goal
+     4	
+     5	Define an HTTP binding for the task/event-log operations that chapters
+     6	4, 5, and 8 specify behaviorally, and split the reference deployment
+     7	into two processes that communicate over it: a **task-store server**
+     8	that holds the `Store` (and its SQLite database), and an
+     9	**orchestrator service** that runs `run_experiment` as a client of
+    10	that server.
+    11	
+    12	At the end of Phase 8a, the 3-trial end-to-end experiment runs with
+    13	the store in one process and the orchestrator in another, with every
+    14	interaction crossing an HTTP boundary.
+    15	
+    16	## Non-goals (deferred to 8b / 8c)
+    17	
+    18	- **Worker process extraction.** Scripted workers keep running inside
+    19	  the orchestrator process at 8a. Phase 8b moves each worker role
+    20	  into its own host.
+    21	- **Authentication.** The server listens on loopback at 8a; the
+    22	  shared-token scaffolding the roadmap calls for lands with 8b when
+    23	  workers become independent principals.
+    24	- **Push-based event subscription (SSE / WebSocket).** Polling against
+    25	  `read_range` over HTTP satisfies at-least-once + replay for 8a;
+    26	  push delivery is a transport optimization that can land in 8b or
+    27	  8c without changing subscriber-observable behavior.
+    28	- **Removing in-process paths.** Phase 8c is the explicit cut-over
+    29	  that deletes the direct-`Store` instantiation path from
+    30	  `eden-dispatch`. At 8a, running dispatch against a local `Store`
+    31	  instance must remain supported; the tests still exercise it.
+    32	- **Artifact store (§5) transport.** Blob upload/fetch lands with
+    33	  Phase 10's object-store backend. The wire protocol carries only
+    34	  URIs, which remain opaque at 8a.
+    35	- **Composite-commit transport semantics.** The server holds the
+    36	  `Store` directly; composite commits stay atomic inside a single
+    37	  in-process transaction on the server side. 8a does not attempt to
+    38	  distribute a composite commit across processes.
+    39	
+    40	## Protocol-first framing
+    41	
+    42	The wire protocol is a **transport binding** for chapter 4 (task
+    43	state machine), chapter 5 (event log), and the parts of chapter 8 the
+    44	reference deployment has already implemented. Every wire endpoint
+    45	maps 1:1 to a `Store` Protocol operation; no endpoint introduces new
+    46	normative semantics. The binding chapter is therefore a translation
+    47	layer — request URLs, methods, status codes, error envelopes — not a
+    48	re-specification of behavior.
+    49	
+    50	The new spec chapter is [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)
+    51	(slot `07` was unassigned between `06-integrator.md` and
+    52	`08-storage.md`). It is an HTTP binding **only**; it does not rule
+    53	out other bindings (gRPC, in-process, message-broker-mediated). A
+    54	non-HTTP conforming deployment simply targets a different binding.
+    55	
+    56	## What gets created
+    57	
+    58	### Spec: `spec/v0/07-wire-protocol.md`
+    59	
+    60	Normative chapter covering:
+    61	
+    62	1. **Scope.** An HTTP binding for the operations in chapters 4, 5, and
+    63	   §§1.1 and 2.1 of chapter 8. Non-normative commentary cross-links
+    64	   to `04-task-protocol.md` for every endpoint that touches the task
+    65	   state machine.
+    66	2. **Transport.**
+    67	   - HTTP/1.1 minimum; HTTP/2 MAY. Request/response bodies are
+    68	     `application/json; charset=utf-8`.
+    69	   - Every request carries `X-Eden-Experiment-Id: <experiment_id>`;
+    70	     the server MUST reject a request whose header disagrees with
+    71	     the path's experiment segment. The experiment-ID is also in the
+    72	     URL path (see §3), so the header is defense-in-depth against
+    73	     misrouted clients.
+    74	3. **URL shape.** Resource-oriented REST with explicit operations
+    75	   for state transitions. The path root is
+    76	   `/experiments/{experiment_id}`; below that:
+    77	   - `POST   tasks`                              — `create_task`
+    78	     (wraps the typed `create_plan_task` /
+    79	     `create_implement_task` / `create_evaluate_task` helpers via
+    80	     the task `kind` field).
+    81	   - `GET    tasks`                              — `list_tasks`
+    82	     (supports `?kind=` and `?state=` query params).
+    83	   - `GET    tasks/{task_id}`                    — `read_task`.
+    84	   - `POST   tasks/{task_id}/claim`              — `claim`.
+    85	   - `POST   tasks/{task_id}/submit`             — `submit`.
+    86	   - `POST   tasks/{task_id}/accept`             — `accept`.
+    87	   - `POST   tasks/{task_id}/reject`             — `reject`.
+    88	   - `POST   tasks/{task_id}/reclaim`            — `reclaim`.
+    89	   - `GET    tasks/{task_id}/submission`         — `read_submission`.
+    90	   - `GET    proposals`, `GET proposals/{id}`    — list / read.
+    91	   - `POST   proposals`                          — `create_proposal`.
+    92	   - `POST   proposals/{id}/mark-ready`          — `mark_proposal_ready`.
+    93	   - `GET    trials`, `GET trials/{id}`          — list / read.
+    94	   - `POST   trials`                             — `create_trial`.
+    95	   - `POST   trials/{id}/declare-eval-error`     — `declare_trial_eval_error`.
+    96	   - `POST   trials/{id}/integrate`              — `integrate_trial`
+    97	     (server-side atomic write of `trial_commit_sha` + event;
+    98	     **same-value idempotent** per §3.4-binding below). The
+    99	     `Integrator.integrate` caller has already performed the ref
+   100	     write under its own atomicity rule; the HTTP endpoint persists
+   101	     the store-side half.
+   102	   - `GET    events`                             — `read_range` /
+   103	     `replay` (supports `?cursor=<int>`; omitting = full replay).
+   104	   - `GET    events/subscribe`                   — the chapter 8 §2.1
+   105	     `subscribe` binding; see §7 below.
+   106	
+   107	   Reference-implementation helpers (`validate_terminal`,
+   108	   `validate_metrics`) are **not** normative wire endpoints and are
+   109	   not listed in `07-wire-protocol.md`. The orchestrator service and
+   110	   the `eden_wire` server expose them at `/_reference/...` as
+   111	   non-normative affordances so the dispatch driver's Phase 5
+   112	   decision helpers keep working against the `StoreClient`; a
+   113	   third-party conforming orchestrator is free to implement the
+   114	   same decisions inline. See the new "Reference-only helper
+   115	   endpoints" section below.
+   116	4. **Request and response bodies.**
+   117	   - Every body is a JSON object with a stable field layout defined
+   118	     by a JSON Schema under `spec/v0/schemas/wire/`. At minimum:
+   119	     - `wire/task-create-request.schema.json`
+   120	     - `wire/claim-request.schema.json` / `claim-response.schema.json`
+   121	     - `wire/submit-request.schema.json`
+   122	     - `wire/reject-request.schema.json` (carries `reason`)
+   123	     - `wire/reclaim-request.schema.json` (carries optional `cause`)
+   124	     - `wire/events-response.schema.json`
+   125	     - `wire/error.schema.json`
+   126	   - Response bodies for read endpoints serialize the existing entity
+   127	     schemas (task, proposal, trial, event) verbatim — they're
+   128	     already the canonical JSON shapes.
+   129	5. **Error envelope.** All non-2xx responses return
+   130	   `application/problem+json` (RFC 7807 profile) with the `type`
+   131	   slot set to a closed vocabulary mapping to the `Store` error
+   132	   hierarchy:
+   133	
+   134	   | `type` | HTTP status | `Store` error |
+   135	   |---|---|---|
+   136	   | `eden://error/not-found` | 404 | `NotFound` |
+   137	   | `eden://error/already-exists` | 409 | `AlreadyExists` |
+   138	   | `eden://error/illegal-transition` | 409 | `IllegalTransition` |
+   139	   | `eden://error/wrong-token` | 403 | `WrongToken` |
+   140	   | `eden://error/conflicting-resubmission` | 409 | `ConflictingResubmission` |
+   141	   | `eden://error/invalid-precondition` | 409 | `InvalidPrecondition` |
+   142	   | `eden://error/bad-request` | 400 | body schema violation |
+   143	   | `eden://error/experiment-id-mismatch` | 400 | header vs. path disagreement |
+   144	
+   145	   The `title` is a short human phrase; `detail` is a longer
+   146	   human-readable message; `instance` is the request URL. Clients
+   147	   MUST key retries / error handling on `type`, not on HTTP status
+   148	   alone (several conflict-class errors share 409).
+   149	6. **Idempotency.**
+   150	   - **Submit (chapter 4 §4.2).** A repeated `submit` with the same
+   151	     token and content-equivalent payload MUST return the same 200
+   152	     outcome; a divergent payload MUST return
+   153	     `conflicting-resubmission`. The claim token uniquely identifies
+   154	     the attempt, so no HTTP-level `Idempotency-Key` header is
+   155	     required.
+   156	   - **Integrate-trial (chapter 6 §3.4 binding).** The wire endpoint
+   157	     `POST /trials/{id}/integrate` MUST be idempotent for **the same
+   158	     `trial_commit_sha`** value: a repeated call against a trial whose
+   159	     `trial_commit_sha` already equals the request's value MUST
+   160	     succeed as a no-op and MUST NOT append a second
+   161	     `trial.integrated` event. A repeated call with a **different**
+   162	     `trial_commit_sha` MUST be rejected with
+   163	     `conflicting-resubmission` (or `invalid-precondition` if the
+   164	     trial has already been integrated with a different SHA; the
+   165	     chapter picks one error type and names it).
+   166	   - **Transport-indeterminate handling (integrator-client rule).**
+   167	     The client-side `Integrator.integrate` compensating-delete path
+   168	     MUST NOT run blindly on any HTTP error. On an
+   169	     *indeterminate* failure — a transport error raised after the
+   170	     request was sent but before a 2xx or terminal 4xx/5xx response
+   171	     was received (connection reset, timeout, proxy-side
+   172	     disconnect) — the client MUST `GET /trials/{id}` to read back
+   173	     the trial's `trial_commit_sha`. If the server has already
+   174	     durably committed the integrator's SHA, the client MUST treat
+   175	     the call as successful and MUST NOT delete the ref. If the
+   176	     server has no `trial_commit_sha` or a different one, the
+   177	     client MAY delete the ref and re-raise. This rule — combined
+   178	     with server-side same-value idempotency — is what preserves
+   179	     the chapter 6 §3.4 atomicity invariant across the process
+   180	     boundary.
+   181	   - **Other mutations.** Claim, reject, reclaim, and accept are
+   182	     not safe to retry blindly on indeterminate failures; a retry
+   183	     after the server already committed the transition will return
+   184	     `illegal-transition`, which the client MUST treat as "the
+   185	     prior call committed" rather than a real rejection. The
+   186	     binding chapter documents this convention but does not add an
+   187	     HTTP-level `Idempotency-Key` mechanism; the state machine
+   188	     already distinguishes committed vs. pending by state.
+   189	7. **Event delivery — the `subscribe` binding.**
+   190	   - The chapter 8 §2.1 `subscribe` operation has an HTTP binding at
+   191	     `GET /experiments/{E}/events/subscribe?cursor=N`. In the 8a
+   192	     binding, this is **long-poll**: the server returns as soon as
+   193	     one or more events are available after index `N`, and returns
+   194	     an empty batch after a server-chosen timeout (default 30s)
+   195	     otherwise. The response body includes the delivered batch and
+   196	     the new cursor. A caller iterating this endpoint in a loop
+   197	     observes the log in order with unbounded retention and
+   198	     at-least-once delivery (chapter 5 §4.3, §4.4).
+   199	   - `GET /experiments/{E}/events?cursor=N` is a non-blocking
+   200	     companion corresponding to `read_range`: it returns whatever
+   201	     is available immediately (possibly zero events). Clients that
+   202	     prefer explicit polling use this endpoint; clients that want
+   203	     near-real-time delivery use `/subscribe`.
+   204	   - Both endpoints accept the same `cursor` semantics: cumulative
+   205	     count of events the caller has already observed. Cursor `0`
+   206	     (or omitted) triggers `replay` — the full stream from the
+   207	     first event.
+   208	   - **Out of scope for 8a: push transports.** Server-Sent Events
+   209	     and WebSocket bindings are additional *transport* layers that
+   210	     a later phase MAY add; they do not change the normative
+   211	     `subscribe` contract. A conforming 8a deployment offers the
+   212	     long-poll binding; richer transports are optimizations.
+   213	   - At-least-once and full-replay guarantees are preserved by the
+   214	     binding because they are preserved by the underlying `events`
+   215	     + `read_range` semantics.
+   216	8. **Versioning.** All URLs are under `/v0/` (e.g.
+   217	   `/v0/experiments/{id}/tasks`). Breaking changes go to `/v1/`
+   218	   per the same discipline as spec chapter versioning.
+   219	
+   220	### Reference-only helper endpoints (non-normative)
+   221	
+   222	The following endpoints are exposed by the reference `eden_wire`
+   223	server for the convenience of the reference orchestrator, but are
+   224	**not** part of the normative wire protocol and are **not** listed
+   225	in `07-wire-protocol.md`. They live under `/_reference/` (not
+   226	`/v0/`) to make the non-normative status syntactically obvious:
+   227	
+   228	- `GET  /_reference/tasks/{task_id}/validate-terminal` — wraps
+   229	  `Store.validate_terminal`. Returns the `(decision, reason)`
+   230	  tuple the Phase 5 dispatch driver uses to pick
+   231	  accept/reject_worker/reject_validation. A third-party
+   232	  orchestrator is free to implement this decision itself by
+   233	  reading the submission payload and task state via the normative
+   234	  `GET /tasks/{id}` + `GET /tasks/{id}/submission` endpoints.
+   235	- `POST /_reference/validate/metrics` — wraps
+   236	  `Store.validate_metrics`. Returns OK or a problem+json error.
+   237	  A third-party caller can validate locally against the
+   238	  experiment's metrics schema, or skip the pre-check and let the
+   239	  server reject malformed payloads at submit time.
+   240	
+   241	The reference Python `StoreClient` calls these `/_reference/`
+   242	endpoints through `validate_terminal` / `validate_metrics` methods
+   243	that match the `Store` Protocol; this keeps the existing dispatch
+   244	driver working verbatim. The `Store` Protocol stays what it is; the
+   245	wire chapter stays narrower than the Protocol.
+   246	
+   247	If a future phase decides one of these helpers deserves normative
+   248	status (e.g. a conformance test needs it), it gets promoted into the
+   249	chapter — and into `/v0/` — at that time, with a spec version bump
+   250	if it's a breaking change. At 8a, neither is normative.
+   251	
+   252	### Schemas: `spec/v0/schemas/wire/`
+   253	
+   254	Request/response JSON Schemas listed in §4 above. Each gets a
+   255	passing test under `reference/packages/eden-contracts/tests/`
+   256	(extending the existing `schema-validity` + `schema-parity` jobs).
+   257	
+   258	The error envelope schema is shared across all endpoints and is
+   259	cited from each endpoint's prose in the chapter.
+   260	
+   261	### Package: `reference/packages/eden-wire/`
+   262	
+   263	A new workspace member depending on `eden-contracts` and
+   264	`eden-storage`. Provides three cooperating pieces:
+   265	
+   266	1. **`eden_wire.models`** — Pydantic request/response types for
+   267	   every endpoint. Each body type has a schema-parity test matching
+   268	   `spec/v0/schemas/wire/*.schema.json`. Follows the same
+   269	   `strict=True`, `NotNone`, `UriStr`, `DateTimeStr` discipline as
+   270	   `eden-contracts`.
+   271	2. **`eden_wire.server`** — A FastAPI (or Starlette; see
+   272	   "Open questions") application factory: `make_app(store: Store)
+   273	   -> ASGIApp`. Each endpoint is a thin adapter that:
+   274	   - Validates the request body against its Pydantic model.
+   275	   - Validates the experiment-ID header against the URL segment.
+   276	   - Invokes the matching `Store` method.
+   277	   - Catches each `StoreError` subclass and maps it to the RFC 7807
+   278	     envelope.
+   279	   - Returns a Pydantic-serialized response body.
+   280	
+   281	   The server does not embed business logic — every operation
+   282	   delegates to `Store`. This keeps the server's conformance
+   283	   story trivial: if the underlying `Store` is conforming, the
+   284	   HTTP facade is conforming.
+   285	3. **`eden_wire.client`** — A `StoreClient` class whose public API
+   286	   satisfies the `Store` Protocol. Every method makes the
+   287	   corresponding HTTP call via `httpx.Client` and either:
+   288	   - Returns the decoded Pydantic entity, or
+   289	   - Raises the matching `StoreError` subclass reconstructed from
+   290	     the problem+json body.
+   291	
+   292	   `StoreClient` is used wherever a `Store` is used today: dispatch
+   293	   driver, integrator, test fixtures. Structural Protocol conformance
+   294	   means callers don't need to know whether they hold an in-process
+   295	   `Store` or a wire proxy.
+   296	
+   297	4. **`eden_wire.errors`** — Serde for the RFC 7807 envelope,
+   298	   including the `eden://error/...` type → exception class mapping.
+   299	   Used by both server (raise → serialize) and client (deserialize
+   300	   → raise).
+   301	
+   302	### Services
+   303	
+   304	- **`reference/services/task-store-server/`** — Entry point
+   305	  `eden_task_store_server.__main__` that:
+   306	  1. Parses CLI args (`--db-path`, `--experiment-id`,
+   307	     `--experiment-config`, `--host`, `--port`).
+   308	  2. Constructs either `SqliteStore.open(...)` or
+   309	     `InMemoryStore(...)` based on `--db-path`.
+   310	  3. Calls `eden_wire.server.make_app(store)`.
+   311	  4. Runs it via `uvicorn`.
+   312	
+   313	  Logs structured events (stdout) for observability.
+   314	
+   315	- **`reference/services/orchestrator-service/`** — Entry point
+   316	  `eden_orchestrator.__main__` that:
+   317	  1. Parses CLI args (`--task-store-url`, `--experiment-id`,
+   318	     `--repo-path`, `--plan-tasks`, `--implement-task-prefix`,
+   319	     `--evaluate-task-prefix`).
+   320	  2. Constructs `StoreClient(base_url, experiment_id)`.
+   321	  3. Constructs scripted workers (Phase 5 / 8a flavor) against the
+   322	     `StoreClient`.
+   323	  4. Constructs an `Integrator(store=client, repo=..., author=...)`;
+   324	     passes `integrator.integrate` as `integrate_trial`.
+   325	  5. Calls `run_experiment(...)` to completion.
+   326	  6. Exits zero on clean termination.
+   327	
+   328	- Existing directories `reference/services/orchestrator/`,
+   329	  `planner/`, `implementer/`, `evaluator/`, `web-ui/`,
+   330	  `control-plane/` remain stubbed with `.gitkeep`.
+   331	  `orchestrator-service/` is a new directory; the bare
+   332	  `orchestrator/` stays reserved as an alias in case a later
+   333	  phase prefers that shorter name.
+   334	
+   335	### Tests
+   336	
+   337	1. **Parametrized conformance** — `eden-wire/tests/` adds a new
+   338	   backend to the `make_store` parametrization used across
+   339	   `eden-storage` and `eden-dispatch`: a `ClientStore` that wraps a
+   340	   `StoreClient` pointed at an in-process FastAPI `TestClient` (no
+   341	   network, but the full serialization + dispatch round-trip
+   342	   happens). Every existing conformance scenario runs against this
+   343	   backend unchanged. Drift between the wire binding and the
+   344	   direct-store semantics surfaces as a test failure.
+   345	2. **End-to-end two-process test** — `eden-wire/tests/test_e2e.py`
+   346	   actually boots the task-store server as a subprocess on an
+   347	   ephemeral port, runs the orchestrator service against it, and
+   348	   asserts the post-run state matches the Phase 5 / 7b end-to-end
+   349	   fixtures (3 trials, 3 evaluations, 3 promotions visible in
+   350	   `list_trials(status="success")` with `trial_commit_sha` set).
+   351	3. **Error-envelope round-trip** — every `StoreError` subclass gets
+   352	   a test that triggers it server-side and verifies the client
+   353	   reconstructs the same exception class.
+   354	4. **Experiment-id header check** — a request whose header
+   355	   disagrees with the URL segment is rejected with
+   356	   `experiment-id-mismatch`.
+   357	5. **Schema parity** — each new wire schema has a
+   358	   `tests/test_wire_schema_parity.py` that round-trips Pydantic
+   359	   dumps against the JSON Schema.
+   360	6. **Integrate-over-HTTP indeterminate-failure reconciliation.**
+
+exec
+/bin/zsh -lc 'rg -n "integrate_trial|IndeterminateIntegration|subscribe|_reference|validate-terminal|validate/metrics|InvalidPrecondition|409|long-poll|same-value idempotency" docs/plans/eden-phase-8a-wire-protocol.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+27:  8c without changing subscriber-observable behavior.
+96:   - `POST   trials/{id}/integrate`              — `integrate_trial`
+104:   - `GET    events/subscribe`                   — the chapter 8 §2.1
+105:     `subscribe` binding; see §7 below.
+110:   the `eden_wire` server expose them at `/_reference/...` as
+137:   | `eden://error/already-exists` | 409 | `AlreadyExists` |
+138:   | `eden://error/illegal-transition` | 409 | `IllegalTransition` |
+140:   | `eden://error/conflicting-resubmission` | 409 | `ConflictingResubmission` |
+141:   | `eden://error/invalid-precondition` | 409 | `InvalidPrecondition` |
+148:   alone (several conflict-class errors share 409).
+178:     with server-side same-value idempotency — is what preserves
+189:7. **Event delivery — the `subscribe` binding.**
+190:   - The chapter 8 §2.1 `subscribe` operation has an HTTP binding at
+191:     `GET /experiments/{E}/events/subscribe?cursor=N`. In the 8a
+192:     binding, this is **long-poll**: the server returns as soon as
+203:     near-real-time delivery use `/subscribe`.
+211:     `subscribe` contract. A conforming 8a deployment offers the
+212:     long-poll binding; richer transports are optimizations.
+225:in `07-wire-protocol.md`. They live under `/_reference/` (not
+228:- `GET  /_reference/tasks/{task_id}/validate-terminal` — wraps
+235:- `POST /_reference/validate/metrics` — wraps
+241:The reference Python `StoreClient` calls these `/_reference/`
+324:     passes `integrator.integrate` as `integrate_trial`.
+366:   The `StoreClient.integrate_trial` + Integrator path MUST
+373:7. **Same-value idempotency on `integrate_trial`.** Calling the
+378:8. **Long-poll `subscribe` semantics.** A subscriber connected at
+379:   `GET /events/subscribe?cursor=N` receives events appended after
+413:   - For each: `GET /tasks/{id}/validate-terminal` →
+455:process at Phase 7b, a `Store` exception from `integrate_trial`
+471:1. **Server-side same-value idempotency** on the endpoint (see
+479:   `StoreClient.integrate_trial` path MUST NOT raise a bare
+494:      new `IndeterminateIntegration` error that explicitly flags
+502:rollback, or `IndeterminateIntegration` — the three artifacts
+513:  already accepts a `Store` and an `integrate_trial` callable. A
+516:  `IndeterminateIntegration` — raised when a wire-mediated
+517:  `integrate_trial` call's outcome cannot be determined. Direct-
+523:- The `StoreClient.integrate_trial` wrapper owns the
+527:  failure it can compensate, or an `IndeterminateIntegration` it
+531:- `Store.integrate_trial` server endpoint must preserve the §3.4
+533:  the direct call does, and adds same-value idempotency on top
+537:  `Store.integrate_trial` gains this behavior uniformly (the
+540:  `Store.integrate_trial` keeps the HTTP binding's contract and
+561:  under `/_reference/` to make the non-normative status
+563:- **InvalidPrecondition → 409**, not 422. These are state conflicts
+565:- **Long-poll is the 8a `subscribe` binding**, not a skip of the
+566:  subscribe contract. SSE / WebSocket bindings are optional
+572:- **Integrate-over-HTTP uses server-side same-value idempotency +
+
+codex
+The plan is much closer. I’m checking the tail now for the migration/decision text, because the remaining risk is less about the headline fixes and more about whether the updated wording accidentally reintroduced a protocol mismatch or an impossible client contract.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/src/eden_storage/protocol.py | sed -n '240,280p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8a-wire-protocol.md | sed -n '520,620p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   240	    def create_proposal(self, proposal: Proposal) -> None:
+   241	        """Persist a new ``drafting`` proposal; emits ``proposal.drafted``."""
+   242	        ...
+   243	
+   244	    def mark_proposal_ready(self, proposal_id: str) -> None:
+   245	        """Atomically transition ``drafting → ready``; emits ``proposal.ready``."""
+   246	        ...
+   247	
+   248	    # ------------------------------------------------------------------
+   249	    # Trial store
+   250	    # ------------------------------------------------------------------
+   251	
+   252	    def create_trial(self, trial: Trial) -> None:
+   253	        """Persist a new ``starting`` trial; emits ``trial.started``."""
+   254	        ...
+   255	
+   256	    def declare_trial_eval_error(self, trial_id: str) -> None:
+   257	        """Retry-exhausted terminal ``starting → eval_error`` (``05-event-protocol.md`` §2.2)."""
+   258	        ...
+   259	
+   260	    def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
+   261	        """Integrator promotion: write ``trial_commit_sha``; emits ``trial.integrated``."""
+   262	        ...
+   263	
+   264	    # ------------------------------------------------------------------
+   265	    # Shared validators
+   266	    # ------------------------------------------------------------------
+   267	
+   268	    def validate_metrics(self, metrics: dict[str, Any]) -> None:
+   269	        """Validate metrics against the experiment's ``metrics_schema``.
+   270	
+   271	        Chapter 8 §4 (submit-time) and chapter 6 §2 (integration-time)
+   272	        both depend on this guard. Raises ``InvalidPrecondition`` on
+   273	        violation; no-op when the store has no registered schema.
+   274	        """
+   275	        ...
+
+ succeeded in 0ms:
+   520	  same as `AtomicityViolation`. Existing exception handlers in
+   521	  `eden-dispatch` propagate it without special handling because
+   522	  `run_experiment` currently doesn't catch integrator errors.
+   523	- The `StoreClient.integrate_trial` wrapper owns the
+   524	  transport-indeterminate reconciliation (read-back + retry loop)
+   525	  described in "Atomicity and composite-commit handling" above.
+   526	  The Integrator sees either a successful return, a definite
+   527	  failure it can compensate, or an `IndeterminateIntegration` it
+   528	  must re-raise — the same three-way decision it would have in a
+   529	  direct-`Store` world, with the client absorbing the HTTP
+   530	  complexity.
+   531	- `Store.integrate_trial` server endpoint must preserve the §3.4
+   532	  invariant: the HTTP handler invokes the same atomic transaction
+   533	  the direct call does, and adds same-value idempotency on top
+   534	  (no-op if `trial_commit_sha` already equals the request value;
+   535	  error if it equals a different value). The same-value
+   536	  idempotency also applies to the direct-`Store` path, so
+   537	  `Store.integrate_trial` gains this behavior uniformly (the
+   538	  `_check_idempotent` helper in `Integrator` already expressed
+   539	  the same rule externally; moving the same-value check down into
+   540	  `Store.integrate_trial` keeps the HTTP binding's contract and
+   541	  the direct-call contract identical).
+   542	- Existing tests that construct `Store` directly stay. The
+   543	  parametrized fixtures gain an additional `ClientStore` backend;
+   544	  no direct-`Store` test is removed.
+   545	
+   546	## Design decisions settled in round 0
+   547	
+   548	The following were posed as open questions in the draft and resolved
+   549	by codex-review round 0:
+   550	
+   551	- **FastAPI over Starlette** for the reference server (Pydantic-
+   552	  native request validation; auto OpenAPI; the dependency surface
+   553	  is not a concern for a reference impl).
+   554	- **Wire schemas under `spec/v0/schemas/wire/`** — kept inside the
+   555	  single `schemas/` root rather than a sibling `wire-schemas/`.
+   556	- **RFC 7807 problem+json** for error envelopes. `type` URIs close
+   557	  over the error vocabulary and decouple the client's retry logic
+   558	  from HTTP status codes alone.
+   559	- **Helper endpoints (`validate_terminal`, `validate_metrics`) are
+   560	  reference-only**, not part of `07-wire-protocol.md`, and live
+   561	  under `/_reference/` to make the non-normative status
+   562	  syntactically obvious.
+   563	- **InvalidPrecondition → 409**, not 422. These are state conflicts
+   564	  against existing protocol objects, not malformed bodies.
+   565	- **Long-poll is the 8a `subscribe` binding**, not a skip of the
+   566	  subscribe contract. SSE / WebSocket bindings are optional
+   567	  transport upgrades that later phases may add without changing
+   568	  the normative contract.
+   569	- **Path-versioned URLs (`/v0/`)** over header-versioned content
+   570	  types — simpler for logs and grepping; mirrors the spec's
+   571	  `spec/v0/` directory structure.
+   572	- **Integrate-over-HTTP uses server-side same-value idempotency +
+   573	  client-side read-back reconciliation** to preserve chapter 6 §3.4
+   574	  atomicity across the process boundary. See "Atomicity and
+   575	  composite-commit handling" above.
+   576	
+   577	## Tests to pass before declaring done
+   578	
+   579	- `uv run ruff check .`
+   580	- `uv run pyright`
+   581	- `uv run pytest -q` — both direct-`Store` and `ClientStore`
+   582	  parametrizations green.
+   583	- `uv run pytest reference/packages/eden-wire/tests/test_e2e.py` —
+   584	  subprocess boot + orchestrator run-to-completion green.
+   585	- `npx --yes markdownlint-cli2@0.14.0 ...`
+   586	- `pipx run check-jsonschema --check-metaschema
+   587	  spec/v0/schemas/wire/*.schema.json`
+   588	- `python3 scripts/spec-xref-check.py` — chapter 07 cross-refs
+   589	  resolve.
+   590	
+   591	## Out of scope for 8a
+   592	
+   593	- Worker process extraction.
+   594	- Authentication or authorization.
+   595	- SSE / WebSocket push subscription.
+   596	- Removing in-process dispatch (that is Phase 8c).
+   597	- Artifact-store HTTP binding.
+   598	- OpenAPI publication / docs site generation (the app exposes it
+   599	  for introspection; shipping it as a consumable artifact is later).
+   600	
+   601	## Risks
+   602	
+   603	- **HTTP error-envelope ↔ exception hierarchy drift.** Mitigation:
+   604	  a table in the spec chapter pairs every `eden://error/<name>`
+   605	  with a `Store` exception; both sides of the mapping assert
+   606	  against the table in a parity test.
+   607	- **Subprocess e2e test flakiness.** Mitigation: boot with a
+   608	  readiness probe (poll `GET /experiments/{id}/events?cursor=0`
+   609	  until 2xx) before the orchestrator starts; tear down with
+   610	  SIGTERM and a graceful shutdown window.
+   611	- **FastAPI heavy-dependency surface.** Mitigation: pin narrowly
+   612	  in the per-package `pyproject.toml`; the workspace-wide `uv.lock`
+   613	  captures the resolved set.
+   614	- **Problem+json serialization drift.** Mitigation: the error
+   615	  schema is under `spec/v0/schemas/wire/` and both server + client
+   616	  validate against it.
+   617	
+   618	## Summary
+   619	
+   620	Phase 8a adds one new spec chapter (`07-wire-protocol.md`), one new
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/integrator.py | sed -n '114,170p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   114	    def integrate(self, trial_id: str) -> IntegrationResult:
+   115	        """Promote ``trial_id`` per §3.2 / §3.4.
+   116	
+   117	        Returns ``already_integrated=True`` on the idempotent no-op
+   118	        path (§5.3 bullet 1). Raises ``IntegratorError`` subclasses on
+   119	        precondition failure; ``GitError`` / ``StorageError`` from
+   120	        underlying operations propagate unchanged.
+   121	        """
+   122	        trial = self._store.read_trial(trial_id)
+   123	        proposal = self._store.read_proposal(trial.proposal_id)
+   124	        slug = proposal.slug
+   125	        branch = f"trial/{trial.trial_id}-{slug}"
+   126	        branch_ref = f"refs/heads/{branch}"
+   127	
+   128	        if trial.trial_commit_sha is not None:
+   129	            return self._check_idempotent(trial, branch, branch_ref)
+   130	
+   131	        self._require_promotion_preconditions(trial)
+   132	        self._require_reachability(trial)
+   133	        manifest_path = _manifest_path(trial.trial_id)
+   134	        self._require_no_manifest_collision(trial, manifest_path)
+   135	
+   136	        assert trial.commit_sha is not None
+   137	        tree_sha = self._build_squash_tree(trial, manifest_path)
+   138	        commit_sha = self._commit_squash(trial, slug, tree_sha)
+   139	
+   140	        self._repo.create_ref(branch_ref, commit_sha)
+   141	
+   142	        try:
+   143	            self._store.integrate_trial(trial.trial_id, commit_sha)
+   144	        except BaseException as store_error:
+   145	            try:
+   146	                self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
+   147	            except BaseException as rollback_error:
+   148	                raise AtomicityViolation(
+   149	                    f"integrator failed to commit trial {trial.trial_id!r} "
+   150	                    f"and the compensating ref-delete also failed; "
+   151	                    f"ref {branch_ref!r} is dangling at {commit_sha}",
+   152	                    original=store_error,
+   153	                    rollback=rollback_error,
+   154	                ) from store_error
+   155	            raise
+   156	
+   157	        return IntegrationResult(
+   158	            trial_id=trial.trial_id,
+   159	            trial_commit_sha=commit_sha,
+   160	            branch=branch,
+   161	            already_integrated=False,
+   162	        )
+   163	
+   164	    # ------------------------------------------------------------------
+   165	    # Preconditions
+   166	    # ------------------------------------------------------------------
+   167	
+   168	    def _require_promotion_preconditions(self, trial: Trial) -> None:
+   169	        if trial.status != "success":
+   170	            raise NotReadyForIntegration(
+
+codex
+**Findings**
+
+1. Major: the integrate-over-HTTP story is much better, but it still treats “read-back shows no `trial_commit_sha` after bounded retries” as proof that the server did not commit. That is not actually a positive confirmation; the original request can still be in flight and commit just after the last read, which would recreate the ref-deleted / store-committed split you were trying to eliminate. The safe rule is stricter: if reconciliation observes the expected SHA, return success; if it observes a different SHA, raise loudly; if it cannot definitively prove non-commit, raise `IndeterminateIntegration` and do not compensate. As written, steps `b`/`c` and the “positively confirmed” claim overstate what the bounded read-back loop can establish. Refs: [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:172), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:176), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:483), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:488), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:498)
+
+2. Major: the new retry guidance for “other mutations” is too broad and is incorrect for at least `claim`. An `illegal-transition` on retry does not generally mean “the prior call committed”; it can also mean some other actor won the race or the state changed for another reason. Even in the happy case, `claim` still has the unresolved token-recovery problem. I would not standardize this as a binding convention. If you want retry guidance here, it needs to be per-operation and based on a validating follow-up read, not a blanket reinterpretation of `IllegalTransition`. Ref: [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:181)
+
+3. Medium: the plan still leaves the different-SHA `integrate_trial` error type unresolved in one place, but later tests assume a specific answer. The normative section says the chapter will pick either `conflicting-resubmission` or `invalid-precondition`, while the test section hard-codes `invalid-precondition`. That needs to be settled in the plan text before implementation or you’ll get drift between chapter, client mapping, and tests. Refs: [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:163), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:373)
+
+4. Minor: a couple of doc references still reflect the old structure. The algorithm section still calls `GET /tasks/{id}/validate-terminal` instead of the new `/_reference/...` path, and the package section still says “see Open questions” even though that section was renamed. Refs: [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:271), [eden-phase-8a-wire-protocol.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8a-wire-protocol.md:413)
+
+**Assessment**
+
+The `subscribe` binding now looks complete for 8a, and the normative vs. `/_reference/` split is clean. Moving helper endpoints out of `07-wire-protocol.md`, switching `InvalidPrecondition` to `409`, and adding explicit long-poll tests are all solid fixes.
+
+I would still hold the plan until the integrate reconciliation rule is tightened and the blanket retry convention for non-idempotent mutations is removed or narrowed. After that, the design is in much better shape.
+tokens used
+93,948

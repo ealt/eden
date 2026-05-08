@@ -1,0 +1,1587 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc070-2dcf-7c93-b0de-a5a66d2d058a
+--------
+user
+I've addressed your three round-0 findings. The updated review brief at docs/plans/review/eden-phase-7b-integrator/impl/20260424T100023/0.md lists what was fixed under 'Round 0 — findings addressed'. Please re-read the updated implementation files:
+
+- reference/packages/eden-git/src/eden_git/integrator.py — §5.3 replay now tolerates a pruned worker commit (tree-shape check is conditional on commit_exists)
+- reference/packages/eden-git/src/eden_git/_manifest.py — allow_nan=False defense in depth
+- reference/packages/eden-storage/src/eden_storage/_base.py — _validate_metrics rejects non-finite floats via math.isfinite()
+- reference/packages/eden-git/tests/test_integrator.py — new regression tests TestIdempotentReplayAfterWorkerPruned and TestNonFiniteMetricsRejected
+- reference/packages/eden-dispatch/tests/test_end_to_end.py — new test_end_to_end_with_real_integrator
+
+Please review again using the same five-level framework (plan adherence, correctness, integration, robustness, code quality).
+codex
+I’m re-reading the updated brief and the five files you changed, then I’ll rerun the focused tests and look specifically at the replay-after-prune and non-finite-metrics paths to see whether the fixes fully close the original issues or introduce new drift.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/integrator.py | sed -n '1,420p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Reference integrator for ``spec/v0/06-integrator.md``.
+     2	
+     3	Composes the ``GitRepo`` subprocess wrapper with the Phase 6
+     4	``Store`` to produce canonical ``trial/*`` commits. Given a
+     5	``success`` trial with a recorded ``commit_sha``, the integrator:
+     6	
+     7	- re-validates the trial against the §2 promotion preconditions,
+     8	- re-checks §1.4 reachability via git,
+     9	- builds the §3.2 single-commit squash (worker-tip tree plus exactly
+    10	  the eval manifest at ``.eden/trials/<trial_id>/eval.json``),
+    11	- commits under the §3.3 subject line ``trial: <trial_id> <slug>``,
+    12	- creates the ``refs/heads/trial/<trial_id>-<slug>`` ref via CAS,
+    13	- writes ``trial_commit_sha`` and appends ``trial.integrated`` via
+    14	  the store's atomic ``integrate_trial`` operation,
+    15	- compensates the ref on store-side failure per §3.4.
+    16	
+    17	Atomicity follows the design decision recorded in
+    18	``spec/v0/design-notes/integrator-atomicity.md``.
+    19	"""
+    20	
+    21	from __future__ import annotations
+    22	
+    23	from collections.abc import Callable
+    24	from dataclasses import dataclass
+    25	from datetime import UTC, datetime
+    26	
+    27	from eden_contracts import Trial
+    28	from eden_storage import InvalidPrecondition, Store
+    29	
+    30	from ._manifest import ManifestFieldMissing, build_manifest
+    31	from .errors import GitError
+    32	from .repo import GitRepo, Identity
+    33	
+    34	__all__ = [
+    35	    "AtomicityViolation",
+    36	    "CorruptIntegrationState",
+    37	    "EvalManifestPathCollision",
+    38	    "Integrator",
+    39	    "IntegratorError",
+    40	    "IntegrationResult",
+    41	    "NotReadyForIntegration",
+    42	    "ReachabilityViolation",
+    43	]
+    44	
+    45	
+    46	class IntegratorError(RuntimeError):
+    47	    """Base class for integrator-level errors."""
+    48	
+    49	
+    50	class NotReadyForIntegration(IntegratorError):
+    51	    """Trial fails §2 promotion preconditions."""
+    52	
+    53	
+    54	class ReachabilityViolation(IntegratorError):
+    55	    """``commit_sha`` is not reachable from the proposal's ``parent_commits`` (§1.4)."""
+    56	
+    57	
+    58	class EvalManifestPathCollision(IntegratorError):
+    59	    """Worker tree already carries a file at ``.eden/trials/<id>/eval.json`` (§3.2)."""
+    60	
+    61	
+    62	class CorruptIntegrationState(IntegratorError):
+    63	    """§5.3: ``trial_commit_sha`` is set but the ref or tree disagrees with the trial."""
+    64	
+    65	
+    66	class AtomicityViolation(IntegratorError):
+    67	    """§3.4 compensating delete failed after the store-side write also failed."""
+    68	
+    69	    def __init__(
+    70	        self,
+    71	        message: str,
+    72	        *,
+    73	        original: BaseException,
+    74	        rollback: BaseException,
+    75	    ) -> None:
+    76	        super().__init__(message)
+    77	        self.original = original
+    78	        self.rollback = rollback
+    79	
+    80	
+    81	@dataclass(frozen=True)
+    82	class IntegrationResult:
+    83	    """Return value of ``Integrator.integrate``."""
+    84	
+    85	    trial_id: str
+    86	    trial_commit_sha: str
+    87	    branch: str
+    88	    already_integrated: bool
+    89	
+    90	
+    91	class Integrator:
+    92	    """Phase 7b reference integrator.
+    93	
+    94	    Instances are light-weight and safe to reuse across trials. The
+    95	    ``store`` and ``repo`` are held by reference; callers are
+    96	    expected to scope them to the same experiment.
+    97	    """
+    98	
+    99	    def __init__(
+   100	        self,
+   101	        *,
+   102	        store: Store,
+   103	        repo: GitRepo,
+   104	        author: Identity,
+   105	        committer: Identity | None = None,
+   106	        clock: Callable[[], datetime] | None = None,
+   107	    ) -> None:
+   108	        self._store = store
+   109	        self._repo = repo
+   110	        self._author = author
+   111	        self._committer = committer if committer is not None else author
+   112	        self._clock = clock if clock is not None else _default_clock
+   113	
+   114	    def integrate(self, trial_id: str) -> IntegrationResult:
+   115	        """Promote ``trial_id`` per §3.2 / §3.4.
+   116	
+   117	        Returns ``already_integrated=True`` on the idempotent no-op
+   118	        path (§5.3 bullet 1). Raises ``IntegratorError`` subclasses on
+   119	        precondition failure; ``GitError`` / ``StorageError`` from
+   120	        underlying operations propagate unchanged.
+   121	        """
+   122	        trial = self._store.read_trial(trial_id)
+   123	        proposal = self._store.read_proposal(trial.proposal_id)
+   124	        slug = proposal.slug
+   125	        branch = f"trial/{trial.trial_id}-{slug}"
+   126	        branch_ref = f"refs/heads/{branch}"
+   127	
+   128	        if trial.trial_commit_sha is not None:
+   129	            return self._check_idempotent(trial, branch, branch_ref)
+   130	
+   131	        self._require_promotion_preconditions(trial)
+   132	        self._require_reachability(trial)
+   133	        manifest_path = _manifest_path(trial.trial_id)
+   134	        self._require_no_manifest_collision(trial, manifest_path)
+   135	
+   136	        assert trial.commit_sha is not None
+   137	        tree_sha = self._build_squash_tree(trial, manifest_path)
+   138	        commit_sha = self._commit_squash(trial, slug, tree_sha)
+   139	
+   140	        self._repo.create_ref(branch_ref, commit_sha)
+   141	
+   142	        try:
+   143	            self._store.integrate_trial(trial.trial_id, commit_sha)
+   144	        except BaseException as store_error:
+   145	            try:
+   146	                self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
+   147	            except BaseException as rollback_error:
+   148	                raise AtomicityViolation(
+   149	                    f"integrator failed to commit trial {trial.trial_id!r} "
+   150	                    f"and the compensating ref-delete also failed; "
+   151	                    f"ref {branch_ref!r} is dangling at {commit_sha}",
+   152	                    original=store_error,
+   153	                    rollback=rollback_error,
+   154	                ) from store_error
+   155	            raise
+   156	
+   157	        return IntegrationResult(
+   158	            trial_id=trial.trial_id,
+   159	            trial_commit_sha=commit_sha,
+   160	            branch=branch,
+   161	            already_integrated=False,
+   162	        )
+   163	
+   164	    # ------------------------------------------------------------------
+   165	    # Preconditions
+   166	    # ------------------------------------------------------------------
+   167	
+   168	    def _require_promotion_preconditions(self, trial: Trial) -> None:
+   169	        if trial.status != "success":
+   170	            raise NotReadyForIntegration(
+   171	                f"trial {trial.trial_id!r} status is {trial.status!r}, not 'success'"
+   172	            )
+   173	        if trial.commit_sha is None:
+   174	            raise NotReadyForIntegration(
+   175	                f"trial {trial.trial_id!r} has no commit_sha"
+   176	            )
+   177	        if trial.branch is None:
+   178	            raise NotReadyForIntegration(
+   179	                f"trial {trial.trial_id!r} has no branch"
+   180	            )
+   181	
+   182	        branch_ref = f"refs/heads/{trial.branch}"
+   183	        tip = self._repo.resolve_ref(branch_ref)
+   184	        if tip is None:
+   185	            raise NotReadyForIntegration(
+   186	                f"trial {trial.trial_id!r} branch {trial.branch!r} does not exist"
+   187	            )
+   188	        if tip != trial.commit_sha and not self._repo.is_ancestor(
+   189	            trial.commit_sha, tip
+   190	        ):
+   191	            raise NotReadyForIntegration(
+   192	                f"trial {trial.trial_id!r} commit_sha {trial.commit_sha!r} "
+   193	                f"is not reachable from branch {trial.branch!r} tip {tip!r}"
+   194	            )
+   195	
+   196	        metrics = trial.metrics if trial.metrics is not None else {}
+   197	        try:
+   198	            self._store.validate_metrics(metrics)
+   199	        except InvalidPrecondition as exc:
+   200	            raise NotReadyForIntegration(
+   201	                f"trial {trial.trial_id!r} metrics failed schema validation: {exc}"
+   202	            ) from exc
+   203	
+   204	    def _require_reachability(self, trial: Trial) -> None:
+   205	        assert trial.commit_sha is not None
+   206	        for parent in trial.parent_commits:
+   207	            if not self._repo.is_ancestor(parent, trial.commit_sha):
+   208	                raise ReachabilityViolation(
+   209	                    f"trial {trial.trial_id!r}: parent {parent!r} is not an "
+   210	                    f"ancestor of commit_sha {trial.commit_sha!r} (§1.4)"
+   211	                )
+   212	
+   213	    def _require_no_manifest_collision(
+   214	        self, trial: Trial, manifest_path: str
+   215	    ) -> None:
+   216	        assert trial.commit_sha is not None
+   217	        if self._repo.tree_entry_exists(trial.commit_sha, manifest_path):
+   218	            raise EvalManifestPathCollision(
+   219	                f"trial {trial.trial_id!r} worker tree already contains "
+   220	                f"{manifest_path!r} (§3.2 — integrator MUST NOT overwrite)"
+   221	            )
+   222	
+   223	    # ------------------------------------------------------------------
+   224	    # Squash construction
+   225	    # ------------------------------------------------------------------
+   226	
+   227	    def _build_squash_tree(self, trial: Trial, manifest_path: str) -> str:
+   228	        assert trial.commit_sha is not None
+   229	        try:
+   230	            manifest_bytes = build_manifest(trial)
+   231	        except ManifestFieldMissing as exc:
+   232	            raise NotReadyForIntegration(
+   233	                f"trial {trial.trial_id!r}: {exc}"
+   234	            ) from exc
+   235	        blob_sha = self._repo.write_blob(manifest_bytes)
+   236	        worker_tree = self._repo.commit_tree_sha(trial.commit_sha)
+   237	        return self._repo.write_tree_with_file(
+   238	            worker_tree, manifest_path, blob_sha, mode="100644"
+   239	        )
+   240	
+   241	    def _commit_squash(self, trial: Trial, slug: str, tree_sha: str) -> str:
+   242	        message = f"trial: {trial.trial_id} {slug}\n"
+   243	        now = self._clock()
+   244	        stamp = _rfc3339(now)
+   245	        return self._repo.commit_tree(
+   246	            tree_sha,
+   247	            parents=list(trial.parent_commits),
+   248	            message=message,
+   249	            author=self._author,
+   250	            committer=self._committer,
+   251	            author_date=stamp,
+   252	            committer_date=stamp,
+   253	        )
+   254	
+   255	    # ------------------------------------------------------------------
+   256	    # §5.3 idempotency
+   257	    # ------------------------------------------------------------------
+   258	
+   259	    def _check_idempotent(
+   260	        self, trial: Trial, branch: str, branch_ref: str
+   261	    ) -> IntegrationResult:
+   262	        recorded = trial.trial_commit_sha
+   263	        assert recorded is not None
+   264	        ref_tip = self._repo.resolve_ref(branch_ref)
+   265	        if ref_tip is None or ref_tip != recorded:
+   266	            raise CorruptIntegrationState(
+   267	                f"trial {trial.trial_id!r} has trial_commit_sha={recorded!r} "
+   268	                f"but {branch_ref!r} resolves to {ref_tip!r} (§5.3)"
+   269	            )
+   270	
+   271	        manifest_path = _manifest_path(trial.trial_id)
+   272	        try:
+   273	            expected = build_manifest(trial)
+   274	        except ManifestFieldMissing as exc:
+   275	            raise CorruptIntegrationState(
+   276	                f"trial {trial.trial_id!r} is integrated but cannot "
+   277	                f"re-derive manifest: {exc}"
+   278	            ) from exc
+   279	
+   280	        # The committed trial commit + manifest blob must still be
+   281	        # present; the ref we just confirmed proves reachability.
+   282	        try:
+   283	            actual_tree = self._repo.commit_tree_sha(recorded)
+   284	            actual_blob_entry = _lookup_tree_entry(
+   285	                self._repo, actual_tree, manifest_path
+   286	            )
+   287	            actual_bytes = self._repo.read_blob(actual_blob_entry)
+   288	        except GitError as exc:
+   289	            raise CorruptIntegrationState(
+   290	                f"trial {trial.trial_id!r} is integrated but committed "
+   291	                f"manifest read failed: {exc}"
+   292	            ) from exc
+   293	
+   294	        if actual_bytes != expected:
+   295	            raise CorruptIntegrationState(
+   296	                f"trial {trial.trial_id!r} integrated manifest does not match "
+   297	                f"current trial state (§5.3)"
+   298	            )
+   299	
+   300	        # The §3.2 tree-shape check depends on the worker-branch tip
+   301	        # commit still being in the object DB. §1.3 permits deployments
+   302	        # to delete work/* branches eagerly after promotion, and
+   303	        # `git gc --prune=now` may then remove the worker commit
+   304	        # object entirely. If so, we cannot re-derive the expected
+   305	        # squash tree; we've already verified the ref + manifest bytes
+   306	        # above, which is the strongest replay-safety check we can
+   307	        # offer without the worker commit. Tree-shape re-verification
+   308	        # is best-effort.
+   309	        assert trial.commit_sha is not None
+   310	        if self._repo.commit_exists(trial.commit_sha):
+   311	            self._require_squash_tree_matches(
+   312	                trial.commit_sha, actual_tree, actual_blob_entry, manifest_path
+   313	            )
+   314	
+   315	        return IntegrationResult(
+   316	            trial_id=trial.trial_id,
+   317	            trial_commit_sha=recorded,
+   318	            branch=branch,
+   319	            already_integrated=True,
+   320	        )
+   321	
+   322	    def _require_squash_tree_matches(
+   323	        self,
+   324	        worker_commit_sha: str,
+   325	        actual_tree: str,
+   326	        actual_blob_entry: str,
+   327	        manifest_path: str,
+   328	    ) -> None:
+   329	        """Verify ``actual_tree`` equals worker-tip tree + only the manifest.
+   330	
+   331	        Re-derives the expected tree from the worker branch tip and the
+   332	        committed manifest blob, then compares tree SHAs. Equality
+   333	        implies the §3.2 rule holds — only the manifest path differs.
+   334	        Callers must have already verified ``worker_commit_sha`` is
+   335	        still reachable in the object DB.
+   336	        """
+   337	        worker_tree = self._repo.commit_tree_sha(worker_commit_sha)
+   338	        expected_tree = self._repo.write_tree_with_file(
+   339	            worker_tree, manifest_path, actual_blob_entry, mode="100644"
+   340	        )
+   341	        if expected_tree != actual_tree:
+   342	            raise CorruptIntegrationState(
+   343	                f"trial {worker_commit_sha!r} integrated tree does not match "
+   344	                f"worker-tip tree plus manifest (§3.2 / §5.3)"
+   345	            )
+   346	
+   347	
+   348	def _manifest_path(trial_id: str) -> str:
+   349	    return f".eden/trials/{trial_id}/eval.json"
+   350	
+   351	
+   352	def _default_clock() -> datetime:
+   353	    return datetime.now(tz=UTC)
+   354	
+   355	
+   356	def _rfc3339(dt: datetime) -> str:
+   357	    if dt.tzinfo is None:
+   358	        dt = dt.replace(tzinfo=UTC)
+   359	    return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+   360	
+   361	
+   362	def _lookup_tree_entry(repo: GitRepo, tree_sha: str, path: str) -> str:
+   363	    """Resolve ``path`` under ``tree_sha`` to the blob SHA at that path."""
+   364	    for entry in repo.ls_tree(tree_sha, path, recursive=True):
+   365	        if entry.path == path and entry.type == "blob":
+   366	            return entry.sha
+   367	    raise GitError(
+   368	        ["ls-tree", "-r", tree_sha, "--", path],
+   369	        0,
+   370	        "",
+   371	        f"path {path!r} not found in tree {tree_sha!r}",
+   372	    )
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/review/eden-phase-7b-integrator/impl/20260424T100023/0.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Implementation Review: eden-phase-7b-integrator
+     2	
+     3	## Plan
+     4	
+     5	- Path: `docs/plans/eden-phase-7b-integrator.md`
+     6	- Summary: Ship `eden_git.Integrator` that composes `GitRepo` (Phase
+     7	  7a) with `Store` (Phase 6) to produce canonical `trial/*` commits
+     8	  per [`spec/v0/06-integrator.md`](../../../../../spec/v0/06-integrator.md).
+     9	  Atomicity follows the post-promotion reading documented in
+    10	  [`spec/v0/design-notes/integrator-atomicity.md`](../../../../../spec/v0/design-notes/integrator-atomicity.md).
+    11	
+    12	## Implementation Files
+    13	
+    14	| File | Action | Plan Section |
+    15	|---|---|---|
+    16	| `reference/packages/eden-git/src/eden_git/integrator.py` | Created | "API surface" + "Algorithm" |
+    17	| `reference/packages/eden-git/src/eden_git/_manifest.py` | Created | "Eval-manifest builder (`_manifest.py`)" |
+    18	| `reference/packages/eden-git/src/eden_git/__init__.py` | Modified | Export new symbols |
+    19	| `reference/packages/eden-git/pyproject.toml` | Modified | Add `eden-contracts` + `eden-storage` workspace deps |
+    20	| `reference/packages/eden-git/README.md` | Modified | Integrator surface |
+    21	| `reference/packages/eden-storage/src/eden_storage/protocol.py` | Modified | Add `validate_metrics` to `Store` Protocol |
+    22	| `reference/packages/eden-storage/src/eden_storage/_base.py` | Modified | Public `validate_metrics` entry point |
+    23	| `reference/packages/eden-storage/tests/test_store_hardening.py` | Modified | Added `TestPublicValidateMetrics` |
+    24	| `reference/packages/eden-git/tests/test_manifest.py` | Created | Manifest builder tests |
+    25	| `reference/packages/eden-git/tests/test_integrator.py` | Created | Integrator tests (21) |
+    26	| `reference/packages/eden-dispatch/src/eden_dispatch/driver.py` | Modified | Replace `integrator_commit_factory` with `integrate_trial: Callable[[str], object]` |
+    27	| `reference/packages/eden-dispatch/tests/test_end_to_end.py` | Modified | Update to the new driver parameter |
+    28	| `spec/v0/06-integrator.md` | Modified | §3.4 tightening (post-promotion reading) |
+    29	| `spec/v0/design-notes/README.md` | Created | Design-notes directory convention |
+    30	| `spec/v0/design-notes/integrator-atomicity.md` | Created | Full atomicity rationale |
+    31	| `CLAUDE.md` (symlink `AGENTS.md`) | Modified | "Phase 7b complete" paragraph |
+    32	| `docs/roadmap.md` | Modified | Mark 7b complete |
+    33	
+    34	## Change Summary
+    35	
+    36	- `eden-git` now ships an `Integrator` that composes `GitRepo` with a
+    37	  `Store` to promote `success` trials to canonical `trial/*` commits.
+    38	  Order of operations: write commit object → `create_ref` (CAS) →
+    39	  `store.integrate_trial`; compensating `delete_ref` on store-side
+    40	  failure; `AtomicityViolation` if the compensating delete also fails.
+    41	- §2 preconditions (`status == success`, `commit_sha` reachable from
+    42	  `branch` tip), §1.4 reachability against declared `parent_commits`,
+    43	  and §2 metrics validity are all enforced up front. Metrics
+    44	  validation routes through the new public `Store.validate_metrics`
+    45	  method.
+    46	- §5.3 idempotency is verified end-to-end: second call on an already-
+    47	  promoted trial re-derives the manifest bytes, re-constructs the
+    48	  expected squash tree from the worker tip, and compares to the
+    49	  committed artifacts; `CorruptIntegrationState` on any mismatch.
+    50	- Eval-manifest bytes are deterministic (sorted keys, `indent=2`,
+    51	  trailing newline) to make the §5.3 re-derivation stable.
+    52	- The `eden-dispatch` driver now accepts `integrate_trial:
+    53	  Callable[[str], object]` (typically `Integrator.integrate`)
+    54	  instead of the Phase 5 placeholder `integrator_commit_factory`.
+    55	- Spec §3.4 was tightened to make the post-promotion reading of the
+    56	  cross-artifact invariant explicit, and a design note at
+    57	  `spec/v0/design-notes/integrator-atomicity.md` captures the full
+    58	  rationale and alternatives. This unblocked convergence of the plan
+    59	  review after three rounds where codex kept flagging the plan-local
+    60	  interpretation.
+    61	- All 336 tests pass; ruff and pyright are clean; markdownlint-cli2
+    62	  is clean; `scripts/spec-xref-check.py` resolves all 240 §-refs.
+    63	
+    64	## Review Status
+    65	
+    66	### Round 0 — findings addressed
+    67	
+    68	- **Bug — §5.3 replay after work/* pruning.** Fixed in
+    69	  `integrator.py::_check_idempotent`. The manifest-bytes check no
+    70	  longer depends on the worker commit being alive — it now reads
+    71	  the committed trial commit's tree and manifest blob directly.
+    72	  The tree-shape re-verification (§3.2 invariant) is now
+    73	  conditional on `commit_exists(trial.commit_sha)` being true, since
+    74	  §1.3 explicitly permits work/* cleanup. New regression test
+    75	  `TestIdempotentReplayAfterWorkerPruned` runs `git gc
+    76	  --prune=now` between integrations and asserts the second call is
+    77	  a no-op.
+    78	- **Bug — non-finite floats in metrics / manifest JSON.** Fixed in
+    79	  two layers: `_base.py::_validate_metrics` now rejects non-finite
+    80	  floats for `real` metrics via `math.isfinite()`; `_manifest.py`
+    81	  sets `allow_nan=False` on `json.dumps` as defense in depth. New
+    82	  test `TestNonFiniteMetricsRejected::test_nan_metric_rejected_at_integration`
+    83	  seeds a trial with `float("nan")` and asserts
+    84	  `NotReadyForIntegration`.
+    85	- **Risk — dispatch → real integrator coverage gap.** Fixed by
+    86	  `test_end_to_end_with_real_integrator` in
+    87	  `eden-dispatch/tests/test_end_to_end.py`. The test builds a real
+    88	  `GitRepo` in `tmp_path`, pre-creates three `work/*` branches,
+    89	  seeds the scripted implementer to return the real SHAs/branches,
+    90	  wires `Integrator.integrate` into `run_experiment`, and asserts
+    91	  the `trial/*` refs exist, the subject lines match §3.3, and the
+    92	  `trial.integrated` events land.
+    93	
+    94	All 339 tests pass. ruff / pyright / markdownlint / spec-xref clean.
+    95	
+    96	### Round 1 — awaiting review.
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/_manifest.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Eval-manifest builder for ``spec/v0/06-integrator.md`` §4.2.
+     2	
+     3	The integrator writes one eval-manifest file per ``trial/*`` commit
+     4	at ``.eden/trials/<trial_id>/eval.json``. This module produces the
+     5	manifest bytes from a ``Trial`` object.
+     6	
+     7	Required-field values come directly from the trial per §4.2; the
+     8	builder MUST NOT synthesize or transform them. Optional fields
+     9	(``description``, ``artifacts_uri``) are emitted only when present on
+    10	the trial.
+    11	
+    12	Byte stability is load-bearing: the integrator's idempotency check in
+    13	``integrator.py`` step 2 re-derives the manifest from the replayed
+    14	trial and compares byte-for-byte against the committed blob. Any
+    15	non-determinism here produces false ``CorruptIntegrationState``
+    16	errors on re-invocation.
+    17	"""
+    18	
+    19	from __future__ import annotations
+    20	
+    21	import json
+    22	
+    23	from eden_contracts import Trial
+    24	
+    25	
+    26	class ManifestFieldMissing(ValueError):
+    27	    """A required §4.2 field is absent from the trial."""
+    28	
+    29	
+    30	def build_manifest(trial: Trial) -> bytes:
+    31	    """Serialize ``trial`` as the §4.2 eval manifest.
+    32	
+    33	    The output is UTF-8 JSON with ``sort_keys=True``, ``indent=2``,
+    34	    and a trailing newline. Required-field absences raise
+    35	    ``ManifestFieldMissing``; callers translate these into
+    36	    ``NotReadyForIntegration`` at the integrator layer.
+    37	    """
+    38	    if trial.commit_sha is None:
+    39	        raise ManifestFieldMissing("trial.commit_sha is required (§4.2)")
+    40	    if trial.metrics is None:
+    41	        raise ManifestFieldMissing("trial.metrics is required (§4.2)")
+    42	    if trial.completed_at is None:
+    43	        raise ManifestFieldMissing("trial.completed_at is required (§4.2)")
+    44	
+    45	    payload: dict[str, object] = {
+    46	        "trial_id": trial.trial_id,
+    47	        "proposal_id": trial.proposal_id,
+    48	        "commit_sha": trial.commit_sha,
+    49	        "parent_commits": list(trial.parent_commits),
+    50	        "metrics": dict(trial.metrics),
+    51	        "completed_at": trial.completed_at,
+    52	    }
+    53	    if trial.artifacts_uri is not None:
+    54	        payload["artifacts_uri"] = trial.artifacts_uri
+    55	    if trial.description is not None:
+    56	        payload["description"] = trial.description
+    57	
+    58	    # allow_nan=False rejects NaN / +-inf — those are not valid JSON and
+    59	    # the spec requires eval.json to be a JSON file. Defense in depth
+    60	    # behind Store.validate_metrics's finite-float check.
+    61	    serialized = json.dumps(
+    62	        payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False
+    63	    )
+    64	    return (serialized + "\n").encode("utf-8")
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/src/eden_storage/_base.py | sed -n '1248,1288p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+  1248	        Public entry point for both submit-time (``08-storage.md`` §4)
+  1249	        and integration-time (``06-integrator.md`` §2) validation.
+  1250	        Raises ``InvalidPrecondition`` on violation; no-op when the
+  1251	        store was constructed without a ``metrics_schema``.
+  1252	        """
+  1253	        self._validate_metrics(metrics)
+  1254	
+  1255	    def _validate_metrics(self, metrics: dict[str, Any]) -> None:
+  1256	        """Validate metrics against the registered schema (``08-storage.md`` §4)."""
+  1257	        if self._metrics_schema is None:
+  1258	            return
+  1259	        schema = self._metrics_schema.root
+  1260	        for key, value in metrics.items():
+  1261	            if key not in schema:
+  1262	                raise InvalidPrecondition(
+  1263	                    f"metric key {key!r} is not in the experiment's metrics_schema"
+  1264	                )
+  1265	            if value is None:
+  1266	                continue
+  1267	            mtype = schema[key]
+  1268	            # Reject bools for integer/real per spec §1.3 (bool is a separate domain).
+  1269	            if isinstance(value, bool):
+  1270	                raise InvalidPrecondition(
+  1271	                    f"metric {key!r} is bool; declared type is {mtype!r}"
+  1272	                )
+  1273	            expected = _METRIC_PY_TYPES[mtype]
+  1274	            if not isinstance(value, expected):
+  1275	                raise InvalidPrecondition(
+  1276	                    f"metric {key!r} value {value!r} is not of declared type {mtype!r}"
+  1277	                )
+  1278	            # Non-finite floats (NaN, +inf, -inf) fail JSON round-trip
+  1279	            # and can't be stored in the event log or eval manifest. The
+  1280	            # ``real`` type in the metrics schema implies "finite IEEE
+  1281	            # 754 double" per the spec's JSON grounding.
+  1282	            if mtype == "real" and not math.isfinite(value):
+  1283	                raise InvalidPrecondition(
+  1284	                    f"metric {key!r} value {value!r} is not finite"
+  1285	                )
+  1286	
+  1287	    # ------------------------------------------------------------------
+  1288	    # Require-or-raise helpers
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/tests/test_integrator.py | sed -n '390,940p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   390	        assert "extra.py" not in squash_paths
+   391	
+   392	
+   393	# ----------------------------------------------------------------------
+   394	# Idempotency (§5.3)
+   395	# ----------------------------------------------------------------------
+   396	
+   397	
+   398	class TestIdempotency:
+   399	    def test_second_integrate_is_noop(
+   400	        self,
+   401	        integrator: Integrator,
+   402	        store: Store,
+   403	        repo: GitRepo,
+   404	        seed_sha: str,
+   405	    ) -> None:
+   406	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   407	        _seed_success_trial(
+   408	            store,
+   409	            trial_id="tr-1",
+   410	            proposal_id="p-1",
+   411	            slug="speedup",
+   412	            parent=seed_sha,
+   413	            branch="work/tr-1",
+   414	            commit_sha=commit,
+   415	        )
+   416	        first = integrator.integrate("tr-1")
+   417	        events_before = len(store.events())
+   418	
+   419	        second = integrator.integrate("tr-1")
+   420	
+   421	        assert second.already_integrated is True
+   422	        assert second.trial_commit_sha == first.trial_commit_sha
+   423	        assert len(store.events()) == events_before
+   424	
+   425	    def test_corrupt_state_trial_commit_sha_without_ref(
+   426	        self,
+   427	        integrator: Integrator,
+   428	        store: Store,
+   429	        repo: GitRepo,
+   430	        seed_sha: str,
+   431	    ) -> None:
+   432	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   433	        _seed_success_trial(
+   434	            store,
+   435	            trial_id="tr-1",
+   436	            proposal_id="p-1",
+   437	            slug="speedup",
+   438	            parent=seed_sha,
+   439	            branch="work/tr-1",
+   440	            commit_sha=commit,
+   441	        )
+   442	        # Integrate, then delete the ref externally.
+   443	        result = integrator.integrate("tr-1")
+   444	        repo.delete_ref("refs/heads/trial/tr-1-speedup")
+   445	        # Trial still has trial_commit_sha set.
+   446	        assert store.read_trial("tr-1").trial_commit_sha == result.trial_commit_sha
+   447	
+   448	        with pytest.raises(CorruptIntegrationState):
+   449	            integrator.integrate("tr-1")
+   450	
+   451	
+   452	# ----------------------------------------------------------------------
+   453	# Reachability (§1.4)
+   454	# ----------------------------------------------------------------------
+   455	
+   456	
+   457	class TestReachability:
+   458	    def test_commit_sha_not_descending_from_parents_rejected(
+   459	        self,
+   460	        integrator: Integrator,
+   461	        store: Store,
+   462	        repo: GitRepo,
+   463	        seed_sha: str,
+   464	    ) -> None:
+   465	        # Build a parallel commit chain that doesn't descend from seed_sha.
+   466	        other_blob = repo.write_blob(b"parallel\n")
+   467	        other_tree = repo.write_tree_from_entries(
+   468	            [TreeEntry(mode="100644", type="blob", sha=other_blob, path="p.py")]
+   469	        )
+   470	        other_root = repo.commit_tree(
+   471	            other_tree,
+   472	            parents=[],
+   473	            message="parallel root\n",
+   474	            author=AUTHOR,
+   475	            author_date="2026-04-23T00:00:00+00:00",
+   476	            committer_date="2026-04-23T00:00:00+00:00",
+   477	        )
+   478	        repo.update_ref("refs/heads/work/tr-1", other_root)
+   479	
+   480	        # Trial declares seed_sha as parent but commit_sha is other_root.
+   481	        _make_proposal(store, proposal_id="p-1", slug="speedup", parent=seed_sha)
+   482	        store.create_trial(
+   483	            Trial(
+   484	                trial_id="tr-1",
+   485	                experiment_id=store.experiment_id,
+   486	                proposal_id="p-1",
+   487	                status="starting",
+   488	                parent_commits=[seed_sha],
+   489	                branch="work/tr-1",
+   490	                started_at="2026-04-23T00:30:00Z",
+   491	            )
+   492	        )
+   493	        _force_trial_success(
+   494	            store, "tr-1", commit_sha=other_root, metrics={"score": 1.0}
+   495	        )
+   496	
+   497	        with pytest.raises(ReachabilityViolation):
+   498	            integrator.integrate("tr-1")
+   499	
+   500	        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+   501	
+   502	
+   503	# ----------------------------------------------------------------------
+   504	# Manifest-path collision (§3.2)
+   505	# ----------------------------------------------------------------------
+   506	
+   507	
+   508	class TestManifestPathCollision:
+   509	    def test_worker_already_has_manifest_path_rejected(
+   510	        self,
+   511	        integrator: Integrator,
+   512	        store: Store,
+   513	        repo: GitRepo,
+   514	        seed_sha: str,
+   515	    ) -> None:
+   516	        # Build a work branch whose tree already has the manifest file.
+   517	        base_tree = repo.commit_tree_sha(seed_sha)
+   518	        collision_blob = repo.write_blob(b'{"rogue":true}\n')
+   519	        new_tree = repo.write_tree_with_file(
+   520	            base_tree, ".eden/trials/tr-1/eval.json", collision_blob
+   521	        )
+   522	        commit = repo.commit_tree(
+   523	            new_tree,
+   524	            parents=[seed_sha],
+   525	            message="rogue\n",
+   526	            author=AUTHOR,
+   527	            author_date="2026-04-23T01:00:00+00:00",
+   528	            committer_date="2026-04-23T01:00:00+00:00",
+   529	        )
+   530	        repo.update_ref("refs/heads/work/tr-1", commit)
+   531	
+   532	        _seed_success_trial(
+   533	            store,
+   534	            trial_id="tr-1",
+   535	            proposal_id="p-1",
+   536	            slug="speedup",
+   537	            parent=seed_sha,
+   538	            branch="work/tr-1",
+   539	            commit_sha=commit,
+   540	        )
+   541	
+   542	        with pytest.raises(EvalManifestPathCollision):
+   543	            integrator.integrate("tr-1")
+   544	
+   545	        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+   546	
+   547	
+   548	# ----------------------------------------------------------------------
+   549	# Promotion preconditions (§2)
+   550	# ----------------------------------------------------------------------
+   551	
+   552	
+   553	class TestPromotionPreconditions:
+   554	    @pytest.mark.parametrize("status", ["starting", "error", "eval_error"])
+   555	    def test_non_success_status_rejected(
+   556	        self,
+   557	        integrator: Integrator,
+   558	        store: Store,
+   559	        repo: GitRepo,
+   560	        seed_sha: str,
+   561	        status: str,
+   562	    ) -> None:
+   563	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   564	        _seed_success_trial(
+   565	            store,
+   566	            trial_id="tr-1",
+   567	            proposal_id="p-1",
+   568	            slug="speedup",
+   569	            parent=seed_sha,
+   570	            branch="work/tr-1",
+   571	            commit_sha=commit,
+   572	        )
+   573	        # Overwrite to the non-success status.
+   574	        from eden_storage._base import _validated_update
+   575	
+   576	        trial = store.read_trial("tr-1")
+   577	        store._trials["tr-1"] = _validated_update(trial, status=status)  # type: ignore[attr-defined]
+   578	
+   579	        with pytest.raises(NotReadyForIntegration):
+   580	            integrator.integrate("tr-1")
+   581	        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+   582	
+   583	    def test_missing_branch_rejected(
+   584	        self,
+   585	        integrator: Integrator,
+   586	        store: Store,
+   587	        repo: GitRepo,
+   588	        seed_sha: str,
+   589	    ) -> None:
+   590	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   591	        _seed_success_trial(
+   592	            store,
+   593	            trial_id="tr-1",
+   594	            proposal_id="p-1",
+   595	            slug="speedup",
+   596	            parent=seed_sha,
+   597	            branch="work/tr-1",
+   598	            commit_sha=commit,
+   599	        )
+   600	        # Delete the work branch.
+   601	        repo.delete_ref("refs/heads/work/tr-1")
+   602	        with pytest.raises(NotReadyForIntegration):
+   603	            integrator.integrate("tr-1")
+   604	
+   605	    def test_branch_unrelated_to_commit_sha_rejected(
+   606	        self,
+   607	        integrator: Integrator,
+   608	        store: Store,
+   609	        repo: GitRepo,
+   610	        seed_sha: str,
+   611	    ) -> None:
+   612	        work_commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   613	        _seed_success_trial(
+   614	            store,
+   615	            trial_id="tr-1",
+   616	            proposal_id="p-1",
+   617	            slug="speedup",
+   618	            parent=seed_sha,
+   619	            branch="work/tr-1",
+   620	            commit_sha=work_commit,
+   621	        )
+   622	        # Repoint the branch to seed (commit_sha is now a descendant of
+   623	        # branch tip — not an ancestor).
+   624	        repo.update_ref("refs/heads/work/tr-1", seed_sha, expected_old_sha=work_commit)
+   625	        with pytest.raises(NotReadyForIntegration):
+   626	            integrator.integrate("tr-1")
+   627	
+   628	
+   629	class TestMetricsRevalidation:
+   630	    def test_invalid_metrics_at_promotion_rejected(
+   631	        self,
+   632	        repo: GitRepo,
+   633	        seed_sha: str,
+   634	    ) -> None:
+   635	        store: Store = InMemoryStore(
+   636	            experiment_id="exp-1",
+   637	            metrics_schema=MetricsSchema({"score": "integer"}),
+   638	        )
+   639	        integrator = Integrator(
+   640	            store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK
+   641	        )
+   642	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   643	        _seed_success_trial(
+   644	            store,
+   645	            trial_id="tr-1",
+   646	            proposal_id="p-1",
+   647	            slug="speedup",
+   648	            parent=seed_sha,
+   649	            branch="work/tr-1",
+   650	            commit_sha=commit,
+   651	            metrics={"score": "not-an-int"},
+   652	        )
+   653	        with pytest.raises(NotReadyForIntegration):
+   654	            integrator.integrate("tr-1")
+   655	        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+   656	
+   657	    def test_no_schema_skips_validation(
+   658	        self,
+   659	        integrator: Integrator,
+   660	        store: Store,
+   661	        repo: GitRepo,
+   662	        seed_sha: str,
+   663	    ) -> None:
+   664	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   665	        _seed_success_trial(
+   666	            store,
+   667	            trial_id="tr-1",
+   668	            proposal_id="p-1",
+   669	            slug="speedup",
+   670	            parent=seed_sha,
+   671	            branch="work/tr-1",
+   672	            commit_sha=commit,
+   673	            metrics={"whatever": "goes"},  # would fail a schema, none present
+   674	        )
+   675	        result = integrator.integrate("tr-1")
+   676	        assert result.already_integrated is False
+   677	
+   678	
+   679	# ----------------------------------------------------------------------
+   680	# Atomic rollback (§3.4)
+   681	# ----------------------------------------------------------------------
+   682	
+   683	
+   684	class TestAtomicRollback:
+   685	    def test_store_failure_rolls_back_ref(
+   686	        self,
+   687	        integrator: Integrator,
+   688	        store: Store,
+   689	        repo: GitRepo,
+   690	        seed_sha: str,
+   691	        monkeypatch: pytest.MonkeyPatch,
+   692	    ) -> None:
+   693	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   694	        _seed_success_trial(
+   695	            store,
+   696	            trial_id="tr-1",
+   697	            proposal_id="p-1",
+   698	            slug="speedup",
+   699	            parent=seed_sha,
+   700	            branch="work/tr-1",
+   701	            commit_sha=commit,
+   702	        )
+   703	
+   704	        boom = RuntimeError("store disk full")
+   705	
+   706	        def _explode(*_a: Any, **_kw: Any) -> None:
+   707	            raise boom
+   708	
+   709	        monkeypatch.setattr(store, "integrate_trial", _explode)
+   710	
+   711	        with pytest.raises(RuntimeError) as exc_info:
+   712	            integrator.integrate("tr-1")
+   713	        assert exc_info.value is boom
+   714	        # Ref compensated away.
+   715	        assert repo.resolve_ref("refs/heads/trial/tr-1-speedup") is None
+   716	        # Field still absent.
+   717	        assert store.read_trial("tr-1").trial_commit_sha is None
+   718	        # No trial.integrated event.
+   719	        assert [e for e in store.events() if e.type == "trial.integrated"] == []
+   720	
+   721	    def test_compensating_delete_failure_surfaces_atomicity_violation(
+   722	        self,
+   723	        integrator: Integrator,
+   724	        store: Store,
+   725	        repo: GitRepo,
+   726	        seed_sha: str,
+   727	        monkeypatch: pytest.MonkeyPatch,
+   728	    ) -> None:
+   729	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   730	        _seed_success_trial(
+   731	            store,
+   732	            trial_id="tr-1",
+   733	            proposal_id="p-1",
+   734	            slug="speedup",
+   735	            parent=seed_sha,
+   736	            branch="work/tr-1",
+   737	            commit_sha=commit,
+   738	        )
+   739	
+   740	        store_boom = RuntimeError("store boom")
+   741	        rollback_boom = RuntimeError("rollback boom")
+   742	
+   743	        def _store_explode(*_a: Any, **_kw: Any) -> None:
+   744	            raise store_boom
+   745	
+   746	        def _ref_explode(*_a: Any, **_kw: Any) -> None:
+   747	            raise rollback_boom
+   748	
+   749	        monkeypatch.setattr(store, "integrate_trial", _store_explode)
+   750	        monkeypatch.setattr(repo, "delete_ref", _ref_explode)
+   751	
+   752	        with pytest.raises(AtomicityViolation) as exc_info:
+   753	            integrator.integrate("tr-1")
+   754	        assert exc_info.value.original is store_boom
+   755	        assert exc_info.value.rollback is rollback_boom
+   756	
+   757	
+   758	# ----------------------------------------------------------------------
+   759	# Commit identity
+   760	# ----------------------------------------------------------------------
+   761	
+   762	
+   763	class TestCommitIdentity:
+   764	    def test_committer_defaults_to_author(
+   765	        self,
+   766	        store: Store,
+   767	        repo: GitRepo,
+   768	        seed_sha: str,
+   769	    ) -> None:
+   770	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   771	        _seed_success_trial(
+   772	            store,
+   773	            trial_id="tr-1",
+   774	            proposal_id="p-1",
+   775	            slug="speedup",
+   776	            parent=seed_sha,
+   777	            branch="work/tr-1",
+   778	            commit_sha=commit,
+   779	        )
+   780	        integ = Integrator(
+   781	            store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK
+   782	        )
+   783	        result = integ.integrate("tr-1")
+   784	        header = repo.commit_message(result.trial_commit_sha)  # full message
+   785	        # commit_tree stamps via GIT_AUTHOR_* / GIT_COMMITTER_* env vars;
+   786	        # asserting identity requires cat-file -p.
+   787	        raw = _raw_commit(repo, result.trial_commit_sha)
+   788	        assert f"author {AUTHOR.name} <{AUTHOR.email}>" in raw
+   789	        assert f"committer {AUTHOR.name} <{AUTHOR.email}>" in raw
+   790	        assert "trial: tr-1 speedup" in header
+   791	
+   792	    def test_explicit_committer_used(
+   793	        self,
+   794	        store: Store,
+   795	        repo: GitRepo,
+   796	        seed_sha: str,
+   797	    ) -> None:
+   798	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   799	        _seed_success_trial(
+   800	            store,
+   801	            trial_id="tr-1",
+   802	            proposal_id="p-1",
+   803	            slug="speedup",
+   804	            parent=seed_sha,
+   805	            branch="work/tr-1",
+   806	            commit_sha=commit,
+   807	        )
+   808	        committer = Identity("CI Bot", "ci@eden.example")
+   809	        integ = Integrator(
+   810	            store=store,
+   811	            repo=repo,
+   812	            author=AUTHOR,
+   813	            committer=committer,
+   814	            clock=lambda: FIXED_CLOCK,
+   815	        )
+   816	        result = integ.integrate("tr-1")
+   817	        raw = _raw_commit(repo, result.trial_commit_sha)
+   818	        assert f"author {AUTHOR.name} <{AUTHOR.email}>" in raw
+   819	        assert f"committer {committer.name} <{committer.email}>" in raw
+   820	
+   821	
+   822	# ----------------------------------------------------------------------
+   823	# Helpers
+   824	# ----------------------------------------------------------------------
+   825	
+   826	
+   827	def _assert_no_side_effects(store: Store, repo: GitRepo, *, branch: str) -> None:
+   828	    assert repo.resolve_ref(f"refs/heads/{branch}") is None
+   829	    trials = store.list_trials()
+   830	    for trial in trials:
+   831	        assert trial.trial_commit_sha is None
+   832	    assert [e for e in store.events() if e.type == "trial.integrated"] == []
+   833	
+   834	
+   835	def _raw_commit(repo: GitRepo, sha: str) -> str:
+   836	    """Read the raw commit object via cat-file -p for identity assertions."""
+   837	    import subprocess
+   838	
+   839	    result = subprocess.run(
+   840	        ["git", "-C", str(repo.path), "cat-file", "-p", sha],
+   841	        capture_output=True,
+   842	        check=True,
+   843	        text=True,
+   844	    )
+   845	    return result.stdout
+   846	
+   847	
+   848	# ----------------------------------------------------------------------
+   849	# §5.3 after §1.3 work-branch cleanup
+   850	# ----------------------------------------------------------------------
+   851	
+   852	
+   853	class TestIdempotentReplayAfterWorkerPruned:
+   854	    """§1.3 permits deleting work/* after promotion; the replay check
+   855	    MUST still be idempotent when the worker commit is gone."""
+   856	
+   857	    def test_second_integrate_after_worker_gc_is_noop(
+   858	        self,
+   859	        integrator: Integrator,
+   860	        store: Store,
+   861	        repo: GitRepo,
+   862	        seed_sha: str,
+   863	    ) -> None:
+   864	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   865	        _seed_success_trial(
+   866	            store,
+   867	            trial_id="tr-1",
+   868	            proposal_id="p-1",
+   869	            slug="speedup",
+   870	            parent=seed_sha,
+   871	            branch="work/tr-1",
+   872	            commit_sha=commit,
+   873	        )
+   874	        first = integrator.integrate("tr-1")
+   875	
+   876	        # Delete the work branch and run `git gc --prune=now` to evict
+   877	        # the worker commit object. §1.3 allows this cleanup.
+   878	        repo.delete_ref("refs/heads/work/tr-1")
+   879	        _force_gc_prune_now(repo)
+   880	        assert repo.commit_exists(commit) is False, (
+   881	            "test precondition: git gc should have pruned the worker commit"
+   882	        )
+   883	
+   884	        second = integrator.integrate("tr-1")
+   885	        assert second.already_integrated is True
+   886	        assert second.trial_commit_sha == first.trial_commit_sha
+   887	
+   888	
+   889	def _force_gc_prune_now(repo: GitRepo) -> None:
+   890	    import subprocess
+   891	
+   892	    subprocess.run(
+   893	        ["git", "-C", str(repo.path), "gc", "--prune=now", "--quiet"],
+   894	        check=True,
+   895	        capture_output=True,
+   896	    )
+   897	
+   898	
+   899	# ----------------------------------------------------------------------
+   900	# Non-finite metrics
+   901	# ----------------------------------------------------------------------
+   902	
+   903	
+   904	class TestNonFiniteMetricsRejected:
+   905	    def test_nan_metric_rejected_at_integration(
+   906	        self,
+   907	        repo: GitRepo,
+   908	        seed_sha: str,
+   909	    ) -> None:
+   910	        store: Store = InMemoryStore(
+   911	            experiment_id="exp-nan",
+   912	            metrics_schema=MetricsSchema({"score": "real"}),
+   913	        )
+   914	        integ = Integrator(
+   915	            store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK
+   916	        )
+   917	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   918	        _seed_success_trial(
+   919	            store,
+   920	            trial_id="tr-1",
+   921	            proposal_id="p-1",
+   922	            slug="speedup",
+   923	            parent=seed_sha,
+   924	            branch="work/tr-1",
+   925	            commit_sha=commit,
+   926	            metrics={"score": float("nan")},
+   927	        )
+   928	        with pytest.raises(NotReadyForIntegration):
+   929	            integ.integrate("tr-1")
+   930	        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+   931	
+   932	
+   933	# ----------------------------------------------------------------------
+   934	# Public parity: manifest ends with newline, is valid JSON
+   935	# ----------------------------------------------------------------------
+   936	
+   937	
+   938	def test_manifest_committed_blob_is_parseable_json(
+   939	    integrator: Integrator,
+   940	    store: Store,
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/tests/test_end_to_end.py | sed -n '1,320p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""End-to-end: a full 3-trial experiment through the scripted loop.
+     2	
+     3	Phase 5 exit criterion: ``run_experiment`` drives the three roles
+     4	through a complete plan → implement → evaluate → integrate cycle for
+     5	three trials. This test asserts (a) the exact event sequence, (b) the
+     6	final entity states, and (c) that the event log alone recovers every
+     7	lifecycle transition.
+     8	
+     9	Phase 7b adds a second end-to-end test that wires a real
+    10	``eden_git.Integrator`` into the driver, closing the dispatch →
+    11	integrator → git path.
+    12	"""
+    13	
+    14	from __future__ import annotations
+    15	
+    16	import itertools
+    17	from pathlib import Path
+    18	
+    19	from eden_dispatch import (
+    20	    InMemoryStore,
+    21	    ScriptedEvaluator,
+    22	    ScriptedImplementer,
+    23	    ScriptedPlanner,
+    24	    run_experiment,
+    25	)
+    26	from eden_dispatch.workers import (
+    27	    EvaluateOutcome,
+    28	    ImplementOutcome,
+    29	    ProposalTemplate,
+    30	)
+    31	from eden_git import GitRepo, Identity, Integrator, TreeEntry
+    32	
+    33	
+    34	def _now_factory():
+    35	    counter = itertools.count(1)
+    36	
+    37	    def _now() -> str:
+    38	        i = next(counter)
+    39	        return f"2026-04-23T00:{i // 60:02d}:{i % 60:02d}.000Z"
+    40	
+    41	    return _now
+    42	
+    43	
+    44	def test_three_trial_experiment_end_to_end(make_store) -> None:
+    45	    store = make_store("exp-e2e")
+    46	    proposal_ids = iter([f"p-{i:03d}" for i in range(1, 10)])
+    47	    trial_ids = iter([f"tr-{i:03d}" for i in range(1, 10)])
+    48	    implement_task_ids = iter([f"t-impl-{i:03d}" for i in range(1, 10)])
+    49	    evaluate_task_ids = iter([f"t-eval-{i:03d}" for i in range(1, 10)])
+    50	    commit_shas = iter([f"{i:02d}" + "b" * 38 for i in range(1, 10)])
+    51	    trial_commits = iter([f"{i:02d}" + "c" * 38 for i in range(1, 10)])
+    52	
+    53	    def plan_fn(task):
+    54	        return [
+    55	            ProposalTemplate(
+    56	                slug=f"feat-{i}",
+    57	                priority=float(10 - i),
+    58	                parent_commits=("a" * 40,),
+    59	                artifacts_uri=f"https://artifacts.example/{task.task_id}/{i}",
+    60	            )
+    61	            for i in range(1, 4)
+    62	        ]
+    63	
+    64	    def implement_fn(task, proposal) -> ImplementOutcome:
+    65	        return ImplementOutcome(status="success", commit_sha=next(commit_shas))
+    66	
+    67	    def evaluate_fn(task, trial) -> EvaluateOutcome:
+    68	        # Metrics depend deterministically on the proposal slug.
+    69	        return EvaluateOutcome(
+    70	            status="success",
+    71	            metrics={"score": float(len(trial.proposal_id))},
+    72	        )
+    73	
+    74	    now = _now_factory()
+    75	    planner = ScriptedPlanner(
+    76	        "planner-1", plan_fn, proposal_id_factory=lambda: next(proposal_ids), now=now
+    77	    )
+    78	    implementer = ScriptedImplementer(
+    79	        "impl-1", implement_fn, trial_id_factory=lambda: next(trial_ids), now=now
+    80	    )
+    81	    evaluator = ScriptedEvaluator("eval-1", evaluate_fn)
+    82	
+    83	    run_experiment(
+    84	        store,
+    85	        planner,
+    86	        implementer,
+    87	        evaluator,
+    88	        plan_task_ids=["t-plan-1"],
+    89	        implement_task_id_factory=lambda: next(implement_task_ids),
+    90	        evaluate_task_id_factory=lambda: next(evaluate_task_ids),
+    91	        integrate_trial=lambda tid: store.integrate_trial(tid, next(trial_commits)),
+    92	    )
+    93	
+    94	    # Three proposals → three trials → three successes → three integrations.
+    95	    trials = store.list_trials()
+    96	    assert len(trials) == 3
+    97	    assert all(t.status == "success" for t in trials)
+    98	    assert all(t.trial_commit_sha is not None for t in trials)
+    99	    assert all(t.metrics is not None for t in trials)
+   100	
+   101	    proposals = store.list_proposals()
+   102	    assert len(proposals) == 3
+   103	    assert all(p.state == "completed" for p in proposals)
+   104	
+   105	    # One plan task + three implement + three evaluate = seven tasks,
+   106	    # all in completed.
+   107	    tasks = store.list_tasks()
+   108	    assert len(tasks) == 7
+   109	    assert all(t.state == "completed" for t in tasks)
+   110	
+   111	
+   112	def test_event_log_reconstructs_full_lifecycle(make_store) -> None:
+   113	    """§3.4: every registered event in log order MUST let a subscriber reconstruct history."""
+   114	    store = make_store("exp-e2e")
+   115	    proposal_ids = iter([f"p-{i:03d}" for i in range(1, 10)])
+   116	    trial_ids = iter([f"tr-{i:03d}" for i in range(1, 10)])
+   117	    implement_task_ids = iter([f"t-impl-{i:03d}" for i in range(1, 10)])
+   118	    evaluate_task_ids = iter([f"t-eval-{i:03d}" for i in range(1, 10)])
+   119	    commit_shas = iter([f"{i:02d}" + "b" * 38 for i in range(1, 10)])
+   120	
+   121	    def plan_fn(task):
+   122	        return [
+   123	            ProposalTemplate(
+   124	                slug=f"feat-{i}",
+   125	                priority=float(10 - i),
+   126	                parent_commits=("a" * 40,),
+   127	                artifacts_uri=f"https://artifacts.example/{task.task_id}/{i}",
+   128	            )
+   129	            for i in range(1, 4)
+   130	        ]
+   131	
+   132	    def implement_fn(task, proposal) -> ImplementOutcome:
+   133	        return ImplementOutcome(status="success", commit_sha=next(commit_shas))
+   134	
+   135	    def evaluate_fn(task, trial) -> EvaluateOutcome:
+   136	        return EvaluateOutcome(status="success", metrics={"score": 1.0})
+   137	
+   138	    now = _now_factory()
+   139	    planner = ScriptedPlanner(
+   140	        "planner-1", plan_fn, proposal_id_factory=lambda: next(proposal_ids), now=now
+   141	    )
+   142	    implementer = ScriptedImplementer(
+   143	        "impl-1", implement_fn, trial_id_factory=lambda: next(trial_ids), now=now
+   144	    )
+   145	    evaluator = ScriptedEvaluator("eval-1", evaluate_fn)
+   146	
+   147	    run_experiment(
+   148	        store,
+   149	        planner,
+   150	        implementer,
+   151	        evaluator,
+   152	        plan_task_ids=["t-plan-1"],
+   153	        implement_task_id_factory=lambda: next(implement_task_ids),
+   154	        evaluate_task_id_factory=lambda: next(evaluate_task_ids),
+   155	    )
+   156	
+   157	    lifecycle = _reconstruct_lifecycle(store)
+   158	    # Three proposals, three trials, one plan-task + three implement
+   159	    # + three evaluate tasks = seven tasks.
+   160	    assert len(lifecycle["proposals"]) == 3
+   161	    assert len(lifecycle["trials"]) == 3
+   162	    assert len(lifecycle["tasks"]) == 7
+   163	    # Every task ends in "completed" per its event stream.
+   164	    assert {status for status in lifecycle["tasks"].values()} == {"completed"}
+   165	    # Every proposal ends in "completed".
+   166	    assert {state for state in lifecycle["proposals"].values()} == {"completed"}
+   167	    # Every trial ends in "success".
+   168	    assert {status for status in lifecycle["trials"].values()} == {"success"}
+   169	
+   170	
+   171	def _reconstruct_lifecycle(store: InMemoryStore) -> dict:
+   172	    """Replay the log and return the final status of every entity."""
+   173	    tasks: dict[str, str] = {}
+   174	    proposals: dict[str, str] = {}
+   175	    trials: dict[str, str] = {}
+   176	    for event in store.events():
+   177	        data = event.data
+   178	        t = event.type
+   179	        if t == "task.created":
+   180	            tasks[data["task_id"]] = "pending"
+   181	        elif t == "task.claimed":
+   182	            tasks[data["task_id"]] = "claimed"
+   183	        elif t == "task.submitted":
+   184	            tasks[data["task_id"]] = "submitted"
+   185	        elif t == "task.completed":
+   186	            tasks[data["task_id"]] = "completed"
+   187	        elif t == "task.failed":
+   188	            tasks[data["task_id"]] = "failed"
+   189	        elif t == "task.reclaimed":
+   190	            tasks[data["task_id"]] = "pending"
+   191	        elif t == "proposal.drafted":
+   192	            proposals[data["proposal_id"]] = "drafting"
+   193	        elif t == "proposal.ready":
+   194	            proposals[data["proposal_id"]] = "ready"
+   195	        elif t == "proposal.dispatched":
+   196	            proposals[data["proposal_id"]] = "dispatched"
+   197	        elif t == "proposal.completed":
+   198	            proposals[data["proposal_id"]] = "completed"
+   199	        elif t == "trial.started":
+   200	            trials[data["trial_id"]] = "starting"
+   201	        elif t == "trial.succeeded":
+   202	            trials[data["trial_id"]] = "success"
+   203	        elif t == "trial.errored":
+   204	            trials[data["trial_id"]] = "error"
+   205	        elif t == "trial.eval_errored":
+   206	            trials[data["trial_id"]] = "eval_error"
+   207	    return {"tasks": tasks, "proposals": proposals, "trials": trials}
+   208	
+   209	
+   210	# ----------------------------------------------------------------------
+   211	# Phase 7b: dispatch driver wired to the real integrator + git
+   212	# ----------------------------------------------------------------------
+   213	
+   214	
+   215	INTEGRATOR_AUTHOR = Identity("CI Integrator", "integrator@eden.example")
+   216	
+   217	
+   218	def test_end_to_end_with_real_integrator(tmp_path: Path) -> None:
+   219	    """Phase 7b exit: dispatch → Integrator.integrate → GitRepo produces
+   220	    canonical ``trial/*`` commits with eval manifests, the store's
+   221	    ``trial_commit_sha`` + ``trial.integrated`` land atomically, and
+   222	    the scheduling loop quiesces."""
+   223	    repo = GitRepo.init(tmp_path / "repo")
+   224	    seed_blob = repo.write_blob(b"seed\n")
+   225	    seed_tree = repo.write_tree_from_entries(
+   226	        [TreeEntry(mode="100644", type="blob", sha=seed_blob, path="README")]
+   227	    )
+   228	    seed_sha = repo.commit_tree(
+   229	        seed_tree,
+   230	        parents=[],
+   231	        message="seed\n",
+   232	        author=INTEGRATOR_AUTHOR,
+   233	        author_date="2026-04-23T00:00:00+00:00",
+   234	        committer_date="2026-04-23T00:00:00+00:00",
+   235	    )
+   236	    repo.update_ref("refs/heads/main", seed_sha)
+   237	
+   238	    # Pre-build three real work branches. Each implementer call returns
+   239	    # the matching pre-built branch + commit_sha; the driver wires them
+   240	    # into the trial so the integrator sees a real reachable commit.
+   241	    branches_by_index: dict[int, tuple[str, str]] = {}
+   242	    for i in range(1, 4):
+   243	        work_blob = repo.write_blob(f"feat-{i}\n".encode())
+   244	        work_tree = repo.write_tree_with_file(
+   245	            repo.commit_tree_sha(seed_sha), f"feat-{i}.py", work_blob
+   246	        )
+   247	        work_commit = repo.commit_tree(
+   248	            work_tree,
+   249	            parents=[seed_sha],
+   250	            message=f"feat-{i}\n",
+   251	            author=INTEGRATOR_AUTHOR,
+   252	            author_date="2026-04-23T01:00:00+00:00",
+   253	            committer_date="2026-04-23T01:00:00+00:00",
+   254	        )
+   255	        branch = f"work/feat-{i}"
+   256	        repo.update_ref(f"refs/heads/{branch}", work_commit)
+   257	        branches_by_index[i] = (branch, work_commit)
+   258	
+   259	    store: InMemoryStore = InMemoryStore(experiment_id="exp-e2e-git")
+   260	    proposal_ids = iter([f"p-{i:03d}" for i in range(1, 10)])
+   261	    trial_ids = iter([f"tr-{i:03d}" for i in range(1, 10)])
+   262	    implement_task_ids = iter([f"t-impl-{i:03d}" for i in range(1, 10)])
+   263	    evaluate_task_ids = iter([f"t-eval-{i:03d}" for i in range(1, 10)])
+   264	    slugs_iter = iter(sorted(branches_by_index))
+   265	
+   266	    def plan_fn(task):
+   267	        # Order matters: plan_fn is called once and returns all three
+   268	        # proposals. Slugs map to the pre-built branches.
+   269	        return [
+   270	            ProposalTemplate(
+   271	                slug=f"feat-{i}",
+   272	                priority=float(10 - i),
+   273	                parent_commits=(seed_sha,),
+   274	                artifacts_uri=f"https://artifacts.example/{task.task_id}/{i}",
+   275	            )
+   276	            for i in range(1, 4)
+   277	        ]
+   278	
+   279	    def implement_fn(task, proposal) -> ImplementOutcome:
+   280	        idx = next(slugs_iter)
+   281	        branch, commit_sha = branches_by_index[idx]
+   282	        return ImplementOutcome(status="success", commit_sha=commit_sha, branch=branch)
+   283	
+   284	    def evaluate_fn(task, trial) -> EvaluateOutcome:
+   285	        return EvaluateOutcome(status="success", metrics={"score": 1.0})
+   286	
+   287	    now = _now_factory()
+   288	    planner = ScriptedPlanner(
+   289	        "planner-1", plan_fn, proposal_id_factory=lambda: next(proposal_ids), now=now
+   290	    )
+   291	    implementer = ScriptedImplementer(
+   292	        "impl-1", implement_fn, trial_id_factory=lambda: next(trial_ids), now=now
+   293	    )
+   294	    evaluator = ScriptedEvaluator("eval-1", evaluate_fn)
+   295	
+   296	    integrator = Integrator(store=store, repo=repo, author=INTEGRATOR_AUTHOR)
+   297	
+   298	    run_experiment(
+   299	        store,
+   300	        planner,
+   301	        implementer,
+   302	        evaluator,
+   303	        plan_task_ids=["t-plan-1"],
+   304	        implement_task_id_factory=lambda: next(implement_task_ids),
+   305	        evaluate_task_id_factory=lambda: next(evaluate_task_ids),
+   306	        integrate_trial=integrator.integrate,
+   307	    )
+   308	
+   309	    # All three trials promoted through the real integrator.
+   310	    trials = store.list_trials()
+   311	    assert len(trials) == 3
+   312	    for trial in trials:
+   313	        assert trial.trial_commit_sha is not None
+   314	        # The ref the integrator created resolves to the recorded SHA.
+   315	        ref = f"refs/heads/trial/{trial.trial_id}-{_lookup_proposal_slug(store, trial.proposal_id)}"
+   316	        assert repo.resolve_ref(ref) == trial.trial_commit_sha
+   317	        # The trial commit carries the §3.3 subject line.
+   318	        subject = repo.commit_message_subject(trial.trial_commit_sha)
+   319	        assert subject.startswith(f"trial: {trial.trial_id} ")
+   320	        # Its parents are the proposal's parent_commits (§3.2).
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/tests/test_end_to_end.py | sed -n '320,420p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   320	        # Its parents are the proposal's parent_commits (§3.2).
+   321	        assert repo.commit_parents(trial.trial_commit_sha) == list(trial.parent_commits)
+   322	
+   323	    integrated_events = [e for e in store.events() if e.type == "trial.integrated"]
+   324	    assert len(integrated_events) == 3
+   325	
+   326	
+   327	def _lookup_proposal_slug(store: InMemoryStore, proposal_id: str) -> str:
+   328	    return store.read_proposal(proposal_id).slug
+
+codex
+I’ve read the updated code and tests. I’m rerunning the focused suites now, and I’m going to manually probe one more corner of the new replay logic because the tree-shape check is now conditional rather than mandatory.
+exec
+/bin/zsh -lc "uv run pytest -q reference/packages/eden-git/tests/test_integrator.py -k 'IdempotentReplayAfterWorkerPruned or NonFiniteMetricsRejected or Idempotency'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'uv run pytest -q reference/packages/eden-dispatch/tests/test_end_to_end.py' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'uv run pytest -q reference/packages/eden-storage/tests/test_store_hardening.py -k TestPublicValidateMetrics' in /Users/ericalt/Documents/eden
+ succeeded in 756ms:
+........                                                                 [100%]
+8 passed, 42 deselected in 0.03s
+
+ succeeded in 1481ms:
+...                                                                      [100%]
+3 passed in 1.13s
+
+ succeeded in 2093ms:
+....                                                                     [100%]
+4 passed, 19 deselected in 1.73s
+
+codex
+The targeted tests pass. I’m probing the main remaining question in the revised replay logic: whether skipping the §3.2 tree-shape check when the worker commit is pruned can let a corrupted `trial/*` commit be accepted as a valid no-op replay.
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from datetime import UTC, datetime
+from pathlib import Path
+import tempfile, subprocess
+from eden_git import GitRepo, Identity, Integrator, TreeEntry
+from eden_storage import InMemoryStore
+from eden_contracts import Proposal, Trial
+from eden_storage._base import _validated_update
+
+AUTHOR = Identity('Integrator','integrator@eden.example')
+FIXED_CLOCK = datetime(2026,4,24,12,0,0,tzinfo=UTC)
+
+td = tempfile.TemporaryDirectory()
+repo = GitRepo.init(Path(td.name)/'repo')
+blob = repo.write_blob(b'initial\\n')
+tree = repo.write_tree_from_entries([TreeEntry(mode='100644', type='blob', sha=blob, path='README')])
+seed = repo.commit_tree(tree, parents=[], message='initial\\n', author=AUTHOR, author_date='2026-04-23T00:00:00+00:00', committer_date='2026-04-23T00:00:00+00:00')
+repo.update_ref('refs/heads/main', seed)
+store = InMemoryStore(experiment_id='exp-1')
+store.create_proposal(Proposal(proposal_id='p-1', experiment_id='exp-1', slug='speedup', priority=1.0, parent_commits=[seed], artifacts_uri='file:///tmp/art/', state='drafting', created_at='2026-04-23T00:00:00Z'))
+store.create_trial(Trial(trial_id='tr-1', experiment_id='exp-1', proposal_id='p-1', status='starting', parent_commits=[seed], branch='work/tr-1', started_at='2026-04-23T00:30:00Z'))
+base_tree = repo.commit_tree_sha(seed)
+blob = repo.write_blob(b\"print('hi')\\n\")
+new_tree = repo.write_tree_with_file(base_tree, 'work.py', blob)
+work = repo.commit_tree(new_tree, parents=[seed], message='work\\n', author=AUTHOR, author_date='2026-04-23T01:00:00+00:00', committer_date='2026-04-23T01:00:00+00:00')
+repo.update_ref('refs/heads/work/tr-1', work)
+store._trials['tr-1'] = _validated_update(store.read_trial('tr-1'), status='success', commit_sha=work, metrics={'score':1.0}, completed_at='2026-04-23T02:00:00Z')
+integ = Integrator(store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK)
+res = integ.integrate('tr-1')
+print('good commit', res.trial_commit_sha)
+# corrupt the integrated tree by adding an extra file while keeping the same manifest bytes
+trial_tree = repo.commit_tree_sha(res.trial_commit_sha)
+extra_blob = repo.write_blob(b'evil\\n')
+bad_tree = repo.write_tree_with_file(trial_tree, 'extra.txt', extra_blob)
+bad_commit = repo.commit_tree(bad_tree, parents=[seed], message='trial: tr-1 speedup\\n', author=AUTHOR, author_date='2026-04-24T12:00:00+00:00', committer_date='2026-04-24T12:00:00+00:00')
+repo.update_ref('refs/heads/trial/tr-1-speedup', bad_commit, expected_old_sha=res.trial_commit_sha)
+store._trials['tr-1'] = _validated_update(store.read_trial('tr-1'), trial_commit_sha=bad_commit)
+# prune original worker commit
+repo.delete_ref('refs/heads/work/tr-1')
+subprocess.run(['git','-C',str(repo.path),'gc','--prune=now','--quiet'], check=True, capture_output=True)
+print('worker commit exists?', repo.commit_exists(work))
+try:
+    again = integ.integrate('tr-1')
+    print('replay accepted', again)
+except Exception as e:
+    print('replay rejected', type(e).__name__, e)
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 1055ms:
+good commit 9cb138e4936c274fb96c9e449f288f0c64dd6868
+worker commit exists? False
+replay accepted IntegrationResult(trial_id='tr-1', trial_commit_sha='9b2197851a1f018cd95d55cbe22ca05ed0172da3', branch='trial/tr-1-speedup', already_integrated=True)
+
+codex
+**Findings**
+- Bug — [integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:300), [integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:310): the new §1.3-pruned replay path now accepts an already-integrated trial without proving the §3.2 tree invariant. If `trial.commit_sha` has been pruned, `_check_idempotent()` skips `_require_squash_tree_matches()` and treats matching manifest bytes as sufficient. That lets a corrupted `trial/*` commit with extra paths pass as `already_integrated=True`. I reproduced this by rewriting the stored/ref commit to a tree with an extra file but the same `eval.json`, deleting `work/*`, running `git gc --prune=now`, and calling `integrate()` again; it was accepted as a no-op. Per §5.3, the no-op path is only valid when the recorded commit’s tree still satisfies §3.2. Fix by either persisting enough data at promotion time to re-verify tree shape after pruning, or by raising `CorruptIntegrationState` when the worker commit is gone and the §3.2 check cannot be completed. A regression test should be added alongside [test_integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/tests/test_integrator.py:853).
+
+**Overall Assessment**
+Plan adherence is otherwise improved: the non-finite-metrics bug is fixed cleanly, `allow_nan=False` is a good backstop, and the real dispatch-to-integrator end-to-end coverage is now present. On the five review axes: plan adherence, integration, robustness, and code quality are in good shape, but correctness still has the replay-hole above, so I would not sign this off yet.
+tokens used
+144,943

@@ -1,0 +1,812 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dd61b-9668-77b1-9f1c-71077fed2108
+--------
+user
+Updated based on round-1 feedback. Two fixes: (1) §B drops gitea from stage 1 entirely (deferred 10d follow-up; not used in 10e). The wait list is now postgres + blob-init + task-store-server + orchestrator + implementer-host + evaluator-host + web-ui. Worst-case wait is ~40s (web-ui's 15s start_period + 5s × 5 retries). Added an explicit 'orchestrator must be running at end of stage 1' assertion as a guardrail. (2) §L rewritten cleanly — explains the no-healthcheck-on-orchestrator startup race and the polling mitigation in the python driver, removes the working-notes prose. Please re-review at /Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md.
+codex
+Re-checking the revised stage-1 sequencing and the cleaned section L against the compose/orchestrator behavior. I’m focusing on whether the orchestrator can still quiesce before the driver, and whether the new guardrail actually closes that hole.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10e-compose-e2e.md | sed -n '100,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10e-compose-e2e.md | sed -n '420,470p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   100	`docker inspect` / `jq` plumbing; python is the natural shape for
+   101	cookie-aware HTTP and form-CSRF round-tripping. Mirroring the existing
+   102	smoke shells keeps the CI job shape uniform.
+   103	
+   104	### B. Bring-up sequence — the race-against-planner-host fix
+   105	
+   106	**Codex round-0 finding (blocker, addressed):** the scripted planner-host
+   107	drains pending plan tasks in a tight loop on startup
+   108	([`workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)).
+   109	If the stack starts with planner-host running and the orchestrator
+   110	seeds 4 plan tasks via `--plan-tasks 4`, the planner-host can claim
+   111	all 4 before the python driver finishes signing in. So a "stop
+   112	planner-host after up" pattern is fundamentally racy — the bad race
+   113	is during initial startup, not steady state.
+   114	
+   115	**Fix:** start the stack *without* planner-host, run the UI
+   116	walkthroughs against the seeded-but-unclaimed plan tasks while no
+   117	planner-host is competing, then bring planner-host online:
+   118	
+   119	```bash
+   120	# Stage 1: bring up everything we actually USE in the drill, minus
+   121	# planner-host. We deliberately omit gitea: it has a 30s healthcheck
+   122	# start_period and is not consumed by 10e (Gitea-as-remote is the
+   123	# 10d follow-up sub-chunk, deferred). The orchestrator has no
+   124	# healthcheck and exits after 30 × 1s of no progress, so we must NOT
+   125	# wait on a 30s+ healthcheck during stage-1 --wait, or the
+   126	# orchestrator can quiesce and exit 0 mid-wait — `compose up --wait`
+   127	# treats an exited service during the wait window as failure
+   128	# (codex round-1 finding).
+   129	#
+   130	# Also omit planner-host (the whole reason for staging).
+   131	#
+   132	# What we DO wait on: postgres (5s start_period), task-store-server
+   133	# (10s), web-ui (15s). Plus blob-init completes successfully in ~2s.
+   134	# Worst-case wait is ~40s — well under 30s of orchestrator quiescence
+   135	# from when it actually starts polling, because the orchestrator only
+   136	# starts after task-store-server is healthy.
+   137	docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \
+   138	    --wait-timeout 120 \
+   139	    postgres blob-init \
+   140	    task-store-server orchestrator \
+   141	    implementer-host evaluator-host web-ui
+   142	
+   143	# Sanity: the orchestrator must still be running by the time --wait
+   144	# returns. If it exited early (quiesced because we took too long,
+   145	# or crashed), the drill cannot proceed.
+   146	status="$(docker inspect --format '{{.State.Status}}' eden-orchestrator)"
+   147	test "$status" = "running" || {
+   148	    echo "orchestrator already exited at end of stage 1 (status=$status)" >&2
+   149	    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+   150	        logs --tail 60 orchestrator >&2
+   151	    exit 1
+   152	}
+   153	
+   154	# orchestrator seeded plan-0001..plan-0004 at startup. None claimed.
+   155	# Run python driver — claims plan-0001 (submit) and plan-0002
+   156	# (admin-reclaim drill). The claim events count as "progress" and
+   157	# reset the orchestrator's quiescence counter, so it stays running.
+   158	
+   159	python3 healthcheck/e2e_drive.py
+   160	
+   161	# Stage 2: bring planner-host online. It now picks up plan-0002
+   162	# (returned to pending by admin-reclaim), plan-0003, and plan-0004.
+   163	# Gitea is still down — not started, not used.
+   164	docker compose -f compose.yaml --env-file "$ENV_FILE" up -d \
+   165	    --wait --wait-timeout 60 planner-host
+   166	```
+   167	
+   168	**Note on `EDEN_PLAN_TASKS=4`:** the orchestrator's `--plan-tasks` flag
+   169	defaults to 3 in the fixture. We override to 4 in `.env` so the four
+   170	deterministic IDs `plan-0001..plan-0004` are seeded. The python driver
+   171	uses two specific IDs (`plan-0001` for the submit walkthrough,
+   172	`plan-0002` for the admin-reclaim drill); the other two go through the
+   173	headless planner-host on the success path.
+   174	
+   175	```bash
+   176	# After setup-experiment.sh writes .env, override:
+   177	sed -i.bak 's/^EDEN_PLAN_TASKS=.*/EDEN_PLAN_TASKS=4/' "$ENV_FILE"
+   178	rm -f "${ENV_FILE}.bak"
+   179	```
+   180	
+   181	The `sed -i.bak` form is GNU/BSD-portable (BSD `sed -i ''` rejects
+   182	the bare `-i`; GNU `sed -i.bak` accepts it identically).
+   183	
+   184	**Confirmed plan-task ID shape** ([`orchestrator/cli.py:116`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)):
+   185	numeric `--plan-tasks N` expands to `plan-0001..plan-{N:04d}`. So
+   186	with `N=4` we have exactly `plan-0001`, `plan-0002`, `plan-0003`,
+   187	`plan-0004`.
+   188	
+   189	### C. Web UI planner walkthrough — actual route shapes
+   190	
+   191	The python driver against `localhost:${WEB_UI_HOST_PORT:-8090}`:
+   192	
+   193	```python
+   194	# 1. Sign in (no body needed; chunk-9b auth stub is a no-questions form)
+   195	resp = ui.post("/signin", follow_redirects=False)
+   196	assert resp.status_code == 303
+   197	
+   198	# 2. GET /planner/ — list pending plan tasks, scrape CSRF token
+   199	resp = ui.get("/planner/")
+   200	assert resp.status_code == 200
+   201	assert "plan-0001" in resp.text  # the seeded task is visible
+   202	csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+   203	
+   204	# 3. Claim plan-0001
+   205	resp = ui.post(
+   206	    "/planner/plan-0001/claim",
+   207	    content=urlencode({"csrf_token": csrf}),
+   208	    headers={"content-type": "application/x-www-form-urlencoded"},
+   209	    follow_redirects=False,
+   210	)
+   211	assert resp.status_code == 303
+   212	
+   213	# 4. GET /planner/plan-0001/draft — re-scrape CSRF (form re-rendered)
+   214	resp = ui.get("/planner/plan-0001/draft")
+   215	assert resp.status_code == 200
+   216	csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+   217	
+   218	# 5. POST /planner/plan-0001/submit — note: returns 200 with rendered
+   219	#    success template, NOT 303 (codex round-0 fix).
+   220	body = urlencode([
+
+ succeeded in 0ms:
+   420	**httpx pin** is `>=0.27,<1` (codex round-0 fix), matching the
+   421	workspace's existing pin in
+   422	[`eden-wire/pyproject.toml:8`](../../reference/packages/eden-wire/pyproject.toml)
+   423	and
+   424	[`_common/pyproject.toml:8`](../../reference/services/_common/pyproject.toml).
+   425	A bare `pip install` is lighter than wiring up the full `uv sync` —
+   426	the CI job only needs the python driver to talk HTTP, no workspace
+   427	imports.
+   428	
+   429	### K. Failure-mode handling (revised)
+   430	
+   431	| Failure | Surface | Recovery |
+   432	|---|---|---|
+   433	| `compose up --wait` (stage 1) times out on a service | bash exits non-zero | trap dumps `compose ps -a` + `compose logs --tail 30` for unhealthy services; teardown |
+   434	| Python driver: claim returns no eligible task | driver exits non-zero with diagnostic naming the task IDs it tried | trap dumps `compose logs task-store-server`; teardown |
+   435	| Python driver: planner submit returns non-200 | driver exits non-zero with the response status + body excerpt | trap dumps `compose logs web-ui`; teardown |
+   436	| Python driver: admin-reclaim CSRF rejected | response is bare 403 (per [`admin.py:317`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py)); driver exits with diagnostic — indicates a CSRF-extraction bug in the driver | shell trap dumps body; teardown |
+   437	| Python driver: admin-reclaim 303 to `?error=…` instead of `?reclaimed=ok` | driver exits with the error-banner code | trap dumps `compose logs web-ui`; teardown |
+   438	| `compose up planner-host` (stage 2) fails healthcheck | planner-host has no healthcheck so this is just `compose up -d` succeeding when the container is started; no race | not applicable |
+   439	| Orchestrator doesn't quiesce in 240s | bash exits non-zero | trap dumps `compose logs --tail 60 orchestrator planner-host implementer-host evaluator-host`; teardown |
+   440	| End-state assertion fails (counts low) | bash exits non-zero with the failed comparison | trap dumps `compose logs --tail 60 orchestrator`; teardown |
+   441	| Container SIGKILLed during stop (exit code 137) | bash exits non-zero in the termination loop | trap dumps `compose logs --tail 30 <name>` for the offending container; teardown |
+   442	
+   443	The **TTL-expiry concern** flagged in round-0 is moot: the web-ui's
+   444	`--claim-ttl-seconds` default is **3600** (1 hour) per
+   445	[`reference/services/web-ui/src/eden_web_ui/cli.py:53`](../../reference/services/web-ui/src/eden_web_ui/cli.py),
+   446	and the admin-reclaim drill runs in <5s after the claim. No new flag
+   447	is needed.
+   448	
+   449	### L. Deterministic bring-up choreography
+   450	
+   451	The staged `compose up -d` (stage 1 omits planner-host and gitea;
+   452	stage 2 adds planner-host) makes the UI's claims uncontested. The only
+   453	component that could touch plan tasks during the drill window is the
+   454	expired-claim sweeper that runs inside the orchestrator's poll loop;
+   455	it only reclaims claims older than their TTL. The web-ui's
+   456	`--claim-ttl-seconds` defaults to 3600 and the drill holds claims for
+   457	<5s, so the sweeper is a no-op here.
+   458	
+   459	**Startup race against task seeding:** the orchestrator has no
+   460	compose-level healthcheck, so `compose up --wait` for orchestrator is
+   461	satisfied as soon as the container is in `running` state — which can
+   462	happen *before* the orchestrator has finished seeding the 4 plan tasks
+   463	into the task store. The python driver MUST therefore poll the task
+   464	list at startup rather than assume tasks are present.
+   465	
+   466	The driver's first action is:
+   467	
+   468	```python
+   469	deadline = time.monotonic() + 30.0
+   470	while time.monotonic() < deadline:
+
+exec
+/bin/zsh -lc "sed -n '100,220p' docs/plans/eden-phase-10e-compose-e2e.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+`docker inspect` / `jq` plumbing; python is the natural shape for
+cookie-aware HTTP and form-CSRF round-tripping. Mirroring the existing
+smoke shells keeps the CI job shape uniform.
+
+### B. Bring-up sequence — the race-against-planner-host fix
+
+**Codex round-0 finding (blocker, addressed):** the scripted planner-host
+drains pending plan tasks in a tight loop on startup
+([`workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)).
+If the stack starts with planner-host running and the orchestrator
+seeds 4 plan tasks via `--plan-tasks 4`, the planner-host can claim
+all 4 before the python driver finishes signing in. So a "stop
+planner-host after up" pattern is fundamentally racy — the bad race
+is during initial startup, not steady state.
+
+**Fix:** start the stack *without* planner-host, run the UI
+walkthroughs against the seeded-but-unclaimed plan tasks while no
+planner-host is competing, then bring planner-host online:
+
+```bash
+# Stage 1: bring up everything we actually USE in the drill, minus
+# planner-host. We deliberately omit gitea: it has a 30s healthcheck
+# start_period and is not consumed by 10e (Gitea-as-remote is the
+# 10d follow-up sub-chunk, deferred). The orchestrator has no
+# healthcheck and exits after 30 × 1s of no progress, so we must NOT
+# wait on a 30s+ healthcheck during stage-1 --wait, or the
+# orchestrator can quiesce and exit 0 mid-wait — `compose up --wait`
+# treats an exited service during the wait window as failure
+# (codex round-1 finding).
+#
+# Also omit planner-host (the whole reason for staging).
+#
+# What we DO wait on: postgres (5s start_period), task-store-server
+# (10s), web-ui (15s). Plus blob-init completes successfully in ~2s.
+# Worst-case wait is ~40s — well under 30s of orchestrator quiescence
+# from when it actually starts polling, because the orchestrator only
+# starts after task-store-server is healthy.
+docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \
+    --wait-timeout 120 \
+    postgres blob-init \
+    task-store-server orchestrator \
+    implementer-host evaluator-host web-ui
+
+# Sanity: the orchestrator must still be running by the time --wait
+# returns. If it exited early (quiesced because we took too long,
+# or crashed), the drill cannot proceed.
+status="$(docker inspect --format '{{.State.Status}}' eden-orchestrator)"
+test "$status" = "running" || {
+    echo "orchestrator already exited at end of stage 1 (status=$status)" >&2
+    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+        logs --tail 60 orchestrator >&2
+    exit 1
+}
+
+# orchestrator seeded plan-0001..plan-0004 at startup. None claimed.
+# Run python driver — claims plan-0001 (submit) and plan-0002
+# (admin-reclaim drill). The claim events count as "progress" and
+# reset the orchestrator's quiescence counter, so it stays running.
+
+python3 healthcheck/e2e_drive.py
+
+# Stage 2: bring planner-host online. It now picks up plan-0002
+# (returned to pending by admin-reclaim), plan-0003, and plan-0004.
+# Gitea is still down — not started, not used.
+docker compose -f compose.yaml --env-file "$ENV_FILE" up -d \
+    --wait --wait-timeout 60 planner-host
+```
+
+**Note on `EDEN_PLAN_TASKS=4`:** the orchestrator's `--plan-tasks` flag
+defaults to 3 in the fixture. We override to 4 in `.env` so the four
+deterministic IDs `plan-0001..plan-0004` are seeded. The python driver
+uses two specific IDs (`plan-0001` for the submit walkthrough,
+`plan-0002` for the admin-reclaim drill); the other two go through the
+headless planner-host on the success path.
+
+```bash
+# After setup-experiment.sh writes .env, override:
+sed -i.bak 's/^EDEN_PLAN_TASKS=.*/EDEN_PLAN_TASKS=4/' "$ENV_FILE"
+rm -f "${ENV_FILE}.bak"
+```
+
+The `sed -i.bak` form is GNU/BSD-portable (BSD `sed -i ''` rejects
+the bare `-i`; GNU `sed -i.bak` accepts it identically).
+
+**Confirmed plan-task ID shape** ([`orchestrator/cli.py:116`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)):
+numeric `--plan-tasks N` expands to `plan-0001..plan-{N:04d}`. So
+with `N=4` we have exactly `plan-0001`, `plan-0002`, `plan-0003`,
+`plan-0004`.
+
+### C. Web UI planner walkthrough — actual route shapes
+
+The python driver against `localhost:${WEB_UI_HOST_PORT:-8090}`:
+
+```python
+# 1. Sign in (no body needed; chunk-9b auth stub is a no-questions form)
+resp = ui.post("/signin", follow_redirects=False)
+assert resp.status_code == 303
+
+# 2. GET /planner/ — list pending plan tasks, scrape CSRF token
+resp = ui.get("/planner/")
+assert resp.status_code == 200
+assert "plan-0001" in resp.text  # the seeded task is visible
+csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+
+# 3. Claim plan-0001
+resp = ui.post(
+    "/planner/plan-0001/claim",
+    content=urlencode({"csrf_token": csrf}),
+    headers={"content-type": "application/x-www-form-urlencoded"},
+    follow_redirects=False,
+)
+assert resp.status_code == 303
+
+# 4. GET /planner/plan-0001/draft — re-scrape CSRF (form re-rendered)
+resp = ui.get("/planner/plan-0001/draft")
+assert resp.status_code == 200
+csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text).group(1)
+
+# 5. POST /planner/plan-0001/submit — note: returns 200 with rendered
+#    success template, NOT 303 (codex round-0 fix).
+body = urlencode([
+
+exec
+/bin/zsh -lc "sed -n '420,470p' docs/plans/eden-phase-10e-compose-e2e.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+**httpx pin** is `>=0.27,<1` (codex round-0 fix), matching the
+workspace's existing pin in
+[`eden-wire/pyproject.toml:8`](../../reference/packages/eden-wire/pyproject.toml)
+and
+[`_common/pyproject.toml:8`](../../reference/services/_common/pyproject.toml).
+A bare `pip install` is lighter than wiring up the full `uv sync` —
+the CI job only needs the python driver to talk HTTP, no workspace
+imports.
+
+### K. Failure-mode handling (revised)
+
+| Failure | Surface | Recovery |
+|---|---|---|
+| `compose up --wait` (stage 1) times out on a service | bash exits non-zero | trap dumps `compose ps -a` + `compose logs --tail 30` for unhealthy services; teardown |
+| Python driver: claim returns no eligible task | driver exits non-zero with diagnostic naming the task IDs it tried | trap dumps `compose logs task-store-server`; teardown |
+| Python driver: planner submit returns non-200 | driver exits non-zero with the response status + body excerpt | trap dumps `compose logs web-ui`; teardown |
+| Python driver: admin-reclaim CSRF rejected | response is bare 403 (per [`admin.py:317`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py)); driver exits with diagnostic — indicates a CSRF-extraction bug in the driver | shell trap dumps body; teardown |
+| Python driver: admin-reclaim 303 to `?error=…` instead of `?reclaimed=ok` | driver exits with the error-banner code | trap dumps `compose logs web-ui`; teardown |
+| `compose up planner-host` (stage 2) fails healthcheck | planner-host has no healthcheck so this is just `compose up -d` succeeding when the container is started; no race | not applicable |
+| Orchestrator doesn't quiesce in 240s | bash exits non-zero | trap dumps `compose logs --tail 60 orchestrator planner-host implementer-host evaluator-host`; teardown |
+| End-state assertion fails (counts low) | bash exits non-zero with the failed comparison | trap dumps `compose logs --tail 60 orchestrator`; teardown |
+| Container SIGKILLed during stop (exit code 137) | bash exits non-zero in the termination loop | trap dumps `compose logs --tail 30 <name>` for the offending container; teardown |
+
+The **TTL-expiry concern** flagged in round-0 is moot: the web-ui's
+`--claim-ttl-seconds` default is **3600** (1 hour) per
+[`reference/services/web-ui/src/eden_web_ui/cli.py:53`](../../reference/services/web-ui/src/eden_web_ui/cli.py),
+and the admin-reclaim drill runs in <5s after the claim. No new flag
+is needed.
+
+### L. Deterministic bring-up choreography
+
+The staged `compose up -d` (stage 1 omits planner-host and gitea;
+stage 2 adds planner-host) makes the UI's claims uncontested. The only
+component that could touch plan tasks during the drill window is the
+expired-claim sweeper that runs inside the orchestrator's poll loop;
+it only reclaims claims older than their TTL. The web-ui's
+`--claim-ttl-seconds` defaults to 3600 and the drill holds claims for
+<5s, so the sweeper is a no-op here.
+
+**Startup race against task seeding:** the orchestrator has no
+compose-level healthcheck, so `compose up --wait` for orchestrator is
+satisfied as soon as the container is in `running` state — which can
+happen *before* the orchestrator has finished seeding the 4 plan tasks
+into the task store. The python driver MUST therefore poll the task
+list at startup rather than assume tasks are present.
+
+The driver's first action is:
+
+```python
+deadline = time.monotonic() + 30.0
+while time.monotonic() < deadline:
+
+exec
+/bin/zsh -lc "sed -n '470,520p' docs/plans/eden-phase-10e-compose-e2e.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+while time.monotonic() < deadline:
+    resp = ui.get("/admin/tasks/?kind=plan")
+    if all(f"plan-{i:04d}" in resp.text for i in (1, 2, 3, 4)):
+        break
+    time.sleep(0.5)
+else:
+    sys.exit("orchestrator did not seed all 4 plan tasks within 30s")
+```
+
+This polls (rather than sleeping a fixed interval) so the drill is
+both robust against slow orchestrator startup AND fast on the happy
+path. Once the four IDs are visible, the walkthrough proceeds.
+
+**Why not poll task-store-server directly:** that service is
+internal-only (no published host port). The web-ui's `/admin/tasks/`
+list reads through `StoreClient` and is the public-facing equivalent.
+
+## Tests / verification
+
+This chunk's deliverable IS a test (compose-e2e). There are no new
+unit tests. The verification path is:
+
+1. `bash reference/compose/healthcheck/e2e.sh` passes locally
+2. `compose-e2e` job goes green on CI for the PR
+3. The existing `compose-smoke` and `compose-smoke-subprocess` jobs
+   still pass (no regressions to the base smoke shape)
+4. All other CI jobs (markdown, schema, ruff, pyright, pytest,
+   schema-parity, python-test-postgres) still green
+
+## Files to write
+
+- `reference/compose/healthcheck/e2e.sh` — bash wrapper (~180 lines)
+- `reference/compose/healthcheck/e2e_drive.py` — python driver (~220 lines)
+- `.github/workflows/ci.yml` — new `compose-e2e` job (delta only)
+- `AGENTS.md` — Phase-10e current-status update
+- `docs/roadmap.md` — mark 10e complete with the chunk delta
+
+## Files to update
+
+- `AGENTS.md` "Commands" table — add the e2e.sh invocation row
+
+## Lessons-learned hooks (preview for /codify after impl review)
+
+- The "stop after up" pattern doesn't work against tight-loop drainers;
+  the right shape is staged-up where the competing service is added
+  *after* the test claims its targets. Worth codifying if it survives
+  impl review.
+- `!= 137` is more robust than `== 0` for SIGKILL guards because
+  external images don't always install graceful handlers; codify if it
+  survives codex-review on the impl.
+- Plan-task IDs are zero-padded 4-digit (`plan-0001`), not bare-int —
+
+codex
+The stage-1 timing now looks materially better. I’m checking one last subtlety: whether a UI-issued `claim` actually counts as orchestrator “progress,” since the plan currently says those claim events reset quiescence.
+exec
+/bin/zsh -lc "sed -n '1,280p' reference/packages/eden-dispatch/src/eden_dispatch/orchestrator.py" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "sed -n '1,260p' reference/packages/eden-dispatch/src/eden_dispatch/__init__.py" in /Users/ericalt/Documents/eden
+ exited 1 in 0ms:
+sed: reference/packages/eden-dispatch/src/eden_dispatch/orchestrator.py: No such file or directory
+
+ succeeded in 0ms:
+"""Reference dispatch loop for EDEN v0.
+
+The store interface and backends moved to ``eden-storage`` in
+Phase 6. This package now contains the orchestrator-iteration body
+(``run_orchestrator_iteration``) and the scripted role workers; the
+store types are re-exported from ``eden-storage`` for backward
+compatibility with pre-Phase-6 import paths.
+"""
+
+from eden_storage import (
+    AlreadyExists,
+    ConflictingResubmission,
+    DispatchError,
+    EvaluateSubmission,
+    IllegalTransition,
+    ImplementSubmission,
+    InMemoryStore,
+    InvalidPrecondition,
+    NotFound,
+    PlanSubmission,
+    SqliteStore,
+    Store,
+    WrongToken,
+)
+
+from .driver import run_orchestrator_iteration
+from .sweep import sweep_expired_claims
+from .workers import ScriptedEvaluator, ScriptedImplementer, ScriptedPlanner
+
+__all__ = [
+    "AlreadyExists",
+    "ConflictingResubmission",
+    "DispatchError",
+    "EvaluateSubmission",
+    "IllegalTransition",
+    "ImplementSubmission",
+    "InMemoryStore",
+    "InvalidPrecondition",
+    "NotFound",
+    "PlanSubmission",
+    "ScriptedEvaluator",
+    "ScriptedImplementer",
+    "ScriptedPlanner",
+    "SqliteStore",
+    "Store",
+    "WrongToken",
+    "run_orchestrator_iteration",
+    "sweep_expired_claims",
+]
+
+exec
+/bin/zsh -lc "rg -n \"def run_orchestrator_iteration|progress =|return progress|claimed\" reference/packages/eden-dispatch/src -g '*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:7:any claimed task whose claim has expired. Per-task errors are
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:33:    """Reclaim every claimed task whose ``expires_at`` is strictly before ``now``.
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:35:    Returns the count of tasks reclaimed. Tasks without an
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:39:    reclaimed = 0
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:40:    for task in store.list_tasks(state="claimed"):
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:66:        reclaimed += 1
+reference/packages/eden-dispatch/src/eden_dispatch/sweep.py:67:    return reclaimed
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:33:def run_orchestrator_iteration(
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:50:    progress = False
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:58:    return progress
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:71:    progress = False
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:80:        progress = True
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:81:    return progress
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:87:    progress = False
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:91:        progress = True
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:92:    return progress
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:98:    progress = False
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:102:        progress = True
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:103:    return progress
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:109:    progress = False
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:114:        progress = True
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:115:    return progress
+
+exec
+/bin/zsh -lc "sed -n '1,220p' reference/packages/eden-dispatch/src/eden_dispatch/driver.py" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+"""Orchestrator-side iteration body for the EDEN reference dispatch.
+
+``run_orchestrator_iteration`` runs one finalize + dispatch + integrate
+pass against a ``Store``. The standalone orchestrator service in
+``reference/services/orchestrator/`` calls it in a poll loop against a
+``StoreClient`` (which satisfies the same Protocol). Workers live in
+their own processes and drive the store through the wire binding; this
+module never invokes them.
+
+Every write goes through the store, so the transactional invariant
+(``05-event-protocol.md`` §2) is enforced regardless of caller behavior.
+This module's responsibility is scheduling: decide which task to move
+next.
+
+Finalization honors ``04-task-protocol.md`` §4.3: a submission that
+declared ``success`` but does not satisfy the role's success contract,
+or a `status="error"` evaluate submission whose metrics/artifacts_uri
+would fail validation, turns into ``task.failed`` with
+``reason=validation_error``. The orchestrator asks the store via
+``validate_terminal`` which terminal transition to issue — accept,
+reject(worker_error), or reject(validation_error) — and takes that
+action.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from eden_contracts import EvaluateTask
+from eden_storage import Store
+
+
+def run_orchestrator_iteration(
+    store: Store,
+    *,
+    implement_task_id_factory: Callable[[], str],
+    evaluate_task_id_factory: Callable[[], str],
+    integrate_trial: Callable[[str], object] | None = None,
+) -> bool:
+    """Run one orchestrator pass: finalize + dispatch + integrate.
+
+    Returns ``True`` if any transition fired this iteration.
+
+    ``integrate_trial``, if supplied, is called once per ``success``
+    trial that still has no ``trial_commit_sha``. Typically this is
+    ``Integrator.integrate`` from ``eden_git``, which handles the full
+    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    event atomically). The return value is ignored.
+    """
+    progress = False
+    progress |= _finalize_submitted(store, kind="plan")
+    progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
+    progress |= _finalize_submitted(store, kind="implement")
+    progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
+    progress |= _finalize_submitted(store, kind="evaluate")
+    if integrate_trial is not None:
+        progress |= _promote_successful_trials(store, integrate_trial)
+    return progress
+
+
+def _finalize_submitted(store: Store, *, kind: str) -> bool:
+    """Accept/reject every submitted task of ``kind``.
+
+    Uses ``store.validate_terminal`` to pick the right terminal
+    transition: accept, reject(worker_error), or reject(validation_error).
+    Malformed payloads on either success or error submissions surface
+    as ``validation_error`` rather than propagating as exceptions, so
+    the task always reaches a terminal state (``04-task-protocol.md``
+    §4.3).
+    """
+    progress = False
+    for task in store.list_tasks(kind=kind, state="submitted"):
+        decision, _reason = store.validate_terminal(task.task_id)
+        if decision == "accept":
+            store.accept(task.task_id)
+        elif decision == "reject_worker":
+            store.reject(task.task_id, "worker_error")
+        else:
+            store.reject(task.task_id, "validation_error")
+        progress = True
+    return progress
+
+
+def _dispatch_implement_tasks(
+    store: Store, factory: Callable[[], str]
+) -> bool:
+    progress = False
+    for proposal in store.list_proposals(state="ready"):
+        task_id = factory()
+        store.create_implement_task(task_id, proposal.proposal_id)
+        progress = True
+    return progress
+
+
+def _dispatch_evaluate_tasks(
+    store: Store, factory: Callable[[], str]
+) -> bool:
+    progress = False
+    for trial in _list_trials_needing_evaluation(store):
+        task_id = factory()
+        store.create_evaluate_task(task_id, trial.trial_id)
+        progress = True
+    return progress
+
+
+def _promote_successful_trials(
+    store: Store, integrate_trial: Callable[[str], object]
+) -> bool:
+    progress = False
+    for trial in store.list_trials(status="success"):
+        if trial.trial_commit_sha is not None:
+            continue
+        integrate_trial(trial.trial_id)
+        progress = True
+    return progress
+
+
+def _list_trials_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
+    dispatched = _trials_with_evaluate_task(store)
+    out = []
+    for trial in store.list_trials(status="starting"):
+        if trial.commit_sha is None:
+            continue
+        if trial.trial_id in dispatched:
+            continue
+        out.append(trial)
+    return out
+
+
+def _trials_with_evaluate_task(store: Store) -> set[str]:
+    dispatched: set[str] = set()
+    for task in store.list_tasks(kind="evaluate"):
+        assert isinstance(task, EvaluateTask)
+        dispatched.add(task.payload.trial_id)
+    return dispatched
+
+codex
+I found one concrete mismatch in the new section L: the polling snippet uses `/admin/tasks/?kind=plan`, but that route is auth-gated. If the driver literally does that as its “first action,” it will just get `303 /signin` until a session exists. I’m grabbing the exact route lines so I can separate that from the more general quiescence concern.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/src/eden_dispatch/driver.py | sed -n '64,92p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/src/eden_dispatch/driver.py | sed -n '30,60p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/admin.py | sed -n '190,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/loop.py | sed -n '44,76p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    64	    Uses ``store.validate_terminal`` to pick the right terminal
+    65	    transition: accept, reject(worker_error), or reject(validation_error).
+    66	    Malformed payloads on either success or error submissions surface
+    67	    as ``validation_error`` rather than propagating as exceptions, so
+    68	    the task always reaches a terminal state (``04-task-protocol.md``
+    69	    §4.3).
+    70	    """
+    71	    progress = False
+    72	    for task in store.list_tasks(kind=kind, state="submitted"):
+    73	        decision, _reason = store.validate_terminal(task.task_id)
+    74	        if decision == "accept":
+    75	            store.accept(task.task_id)
+    76	        elif decision == "reject_worker":
+    77	            store.reject(task.task_id, "worker_error")
+    78	        else:
+    79	            store.reject(task.task_id, "validation_error")
+    80	        progress = True
+    81	    return progress
+    82	
+    83	
+    84	def _dispatch_implement_tasks(
+    85	    store: Store, factory: Callable[[], str]
+    86	) -> bool:
+    87	    progress = False
+    88	    for proposal in store.list_proposals(state="ready"):
+    89	        task_id = factory()
+    90	        store.create_implement_task(task_id, proposal.proposal_id)
+    91	        progress = True
+    92	    return progress
+
+ succeeded in 0ms:
+    30	from eden_storage import Store
+    31	
+    32	
+    33	def run_orchestrator_iteration(
+    34	    store: Store,
+    35	    *,
+    36	    implement_task_id_factory: Callable[[], str],
+    37	    evaluate_task_id_factory: Callable[[], str],
+    38	    integrate_trial: Callable[[str], object] | None = None,
+    39	) -> bool:
+    40	    """Run one orchestrator pass: finalize + dispatch + integrate.
+    41	
+    42	    Returns ``True`` if any transition fired this iteration.
+    43	
+    44	    ``integrate_trial``, if supplied, is called once per ``success``
+    45	    trial that still has no ``trial_commit_sha``. Typically this is
+    46	    ``Integrator.integrate`` from ``eden_git``, which handles the full
+    47	    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    48	    event atomically). The return value is ignored.
+    49	    """
+    50	    progress = False
+    51	    progress |= _finalize_submitted(store, kind="plan")
+    52	    progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
+    53	    progress |= _finalize_submitted(store, kind="implement")
+    54	    progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
+    55	    progress |= _finalize_submitted(store, kind="evaluate")
+    56	    if integrate_trial is not None:
+    57	        progress |= _promote_successful_trials(store, integrate_trial)
+    58	    return progress
+    59	
+    60	
+
+ succeeded in 0ms:
+   190	            "work_ref_count": work_ref_count,
+   191	            "work_ref_error": work_ref_error,
+   192	            "repo_enabled": repo is not None,
+   193	            "expired_count": expired_count,
+   194	            "recent_events": recent,
+   195	        },
+   196	    )
+   197	
+   198	
+   199	# ---------------------------------------------------------------------
+   200	# Tasks
+   201	# ---------------------------------------------------------------------
+   202	
+   203	
+   204	@router.get("/tasks/", response_class=HTMLResponse, response_model=None)
+   205	async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
+   206	    session = get_session(request)
+   207	    if session is None:
+   208	        return RedirectResponse(url="/signin", status_code=303)
+   209	    store = request.app.state.store
+   210	    now = _now_dt(request)
+   211	
+   212	    kind = _coerce_filter(request.query_params.get("kind"), _KIND_VALUES)
+   213	    state = _coerce_filter(request.query_params.get("state"), _STATE_VALUES)
+   214	
+   215	    if kind == _INVALID_FILTER or state == _INVALID_FILTER:
+   216	        tasks = []
+   217	        kind_for_select = (
+   218	            request.query_params.get("kind", "*")
+   219	            if kind == _INVALID_FILTER
+   220	            else (kind or "*")
+
+ succeeded in 0ms:
+    44	    max_quiescent_iterations: int,
+    45	    stop: StopFlag,
+    46	) -> None:
+    47	    """Seed plan tasks, then loop finalize + dispatch + integrate to quiescence.
+    48	
+    49	    Returns when either ``stop`` is set or the orchestrator has observed
+    50	    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    51	    """
+    52	    for task_id in plan_task_ids:
+    53	        try:
+    54	            store.create_plan_task(task_id)
+    55	        except AlreadyExists as exc:
+    56	            # Restart-safe: a previous orchestrator already seeded this
+    57	            # task. Anything else (transport, auth, illegal-transition)
+    58	            # surfaces immediately.
+    59	            log.info("plan_task_seed_skip", task_id=task_id, reason=str(exc))
+    60	
+    61	    implement_factory = make_id_factory(implement_task_prefix)
+    62	    evaluate_factory = make_id_factory(evaluate_task_prefix)
+    63	
+    64	    def integrate(trial_id: str) -> None:
+    65	        integrator.integrate(trial_id)
+    66	
+    67	    quiescent = 0
+    68	    while not stop.is_set():
+    69	        reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
+    70	        progress = run_orchestrator_iteration(
+    71	            store,
+    72	            implement_task_id_factory=implement_factory,
+    73	            evaluate_task_id_factory=evaluate_factory,
+    74	            integrate_trial=integrate,
+    75	        )
+    76	        if reclaimed or progress:
+
+codex
+**Findings**
+
+- Medium: section L’s polling snippet is auth-inconsistent as written. The plan says the driver’s first action is polling `/admin/tasks/?kind=plan` for the four seeded IDs ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md:459)), but `/admin/tasks/` redirects to `/signin` when there is no session ([admin.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/admin.py:204)). If implemented literally, that loop will just see `303 /signin` until the driver signs in first. The fix is simple: make the poll happen after `POST /signin`, or poll `/planner/` instead.
+
+- Low: section B still overstates what resets orchestrator quiescence. The plan says the UI claim events “count as progress” and reset the quiescence counter ([plan](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10e-compose-e2e.md:154)), but orchestrator “progress” is only its own finalize/dispatch/integrate work (plus expired-claim sweep), not external UI claims ([driver.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/driver.py:33), [loop.py](/Users/ericalt/Documents/eden/reference/services/orchestrator/src/eden_orchestrator/loop.py:67)). This is mostly a wording bug, but it should be corrected so the reasoning is accurate: the important progress edge is the submitted plan task, not the claim itself.
+
+The stage-1 `gitea`/quiescence blocker is fixed. Omitting `gitea` from stage 1 and asserting `eden-orchestrator` is still `running` at the end of stage 1 materially improves the sequencing.
+
+**Assessment**
+
+No blocker-class issue remains. With the two small correctness edits above, the plan looks ready to implement.
+2026-04-28T22:12:31.842993Z ERROR codex_core::session: failed to record rollout items: thread 019dd61b-9668-77b1-9f1c-71077fed2108 not found
+tokens used
+191,645

@@ -1,0 +1,240 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019db75b-5b20-7d02-bbae-a0ed568fe953
+--------
+user
+I've addressed the two minor risks you flagged — archived-doc lint scope and CI/local command parity. Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md.
+codex
+Reviewing the updated plan again, with focus on the lint-scope and command-parity changes and a quick pass over the surrounding sections to make sure nothing else regressed.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-protocol-bootstrap.md | sed -n '296,430p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-protocol-bootstrap.md | sed -n '108,135p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   108	│   ├── scripts/
+   109	│   │   └── setup-experiment/.gitkeep
+   110	│   └── compose/
+   111	│       └── .gitkeep
+   112	├── conformance/
+   113	│   └── README.md                  # Stub: "suite lands Phase 11"
+   114	├── docs/
+   115	│   ├── naming.md                  # (already exists, untouched)
+   116	│   ├── roadmap.md                 # Phase 0–13
+   117	│   ├── plans/
+   118	│   │   └── eden-protocol-bootstrap.md  # (this doc, already copied in)
+   119	│   └── archive/
+   120	│       └── microservices-refactor-plan.md   # moved from docs/plans/
+   121	├── tests/
+   122	│   ├── unit/.gitkeep
+   123	│   └── integration/.gitkeep
+   124	├── .github/workflows/ci.yml       # docs-lint job only
+   125	├── .gitignore
+   126	├── .markdownlint.json
+   127	├── README.md                      # "EDEN is a protocol…"
+   128	├── AGENTS.md                      # Coding-agent guide
+   129	├── CLAUDE.md                      # → AGENTS.md (symlink)
+   130	├── CONTRIBUTING.md                # Two paths: contributing to spec vs. impl
+   131	├── STYLE_GUIDE.md
+   132	└── LICENSE                        # (already exists, untouched)
+   133	```
+   134	
+   135	Everything above is in scope for Phase 0. Nothing else. In particular:
+
+ succeeded in 0ms:
+   296	- **`CLAUDE.md`** — symlink to `AGENTS.md`.
+   297	
+   298	### G. Build & CI config
+   299	
+   300	**Bootstrap is docs-only**, so CI runs exactly one check.
+   301	
+   302	- `.github/workflows/ci.yml` — single workflow named `ci`, single job
+   303	  named **`docs-lint`**. That job name is also the required status
+   304	  check in branch protection (pinned explicitly so the `gh api` call
+   305	  is deterministic).
+   306	- The `docs-lint` job:
+   307	  1. Checks out.
+   308	  2. Runs exactly this command (same in CI and local verification):
+   309	
+   310	     ```bash
+   311	     markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**"
+   312	     ```
+   313	
+   314	     Configuration comes from the repo's `.markdownlint.json`. The
+   315	     `docs/archive/**` exclusion is deliberate: archived historical
+   316	     documents (moved, not rewritten) should not be held to the new
+   317	     lint rules — that would be busywork against the archive's
+   318	     purpose. The `#node_modules` and `#.venv` exclusions guard
+   319	     against noise from future dependency installs.
+   320	  3. Exits 0 if all markdown passes.
+   321	- **No Python job** at bootstrap (no Python files exist).
+   322	- **No JSON Schema job** at bootstrap (no schemas exist, and an
+   323	  empty-glob job is brittle — either a find returning nothing exits 0
+   324	  quietly and hides a real misconfiguration, or the tool errors on
+   325	  no-input. Easier to add this job in Phase 1 when the first schema
+   326	  lands.)
+   327	- **Later phases add jobs**, each as a distinct job name (so branch
+   328	  protection can require each one as it stabilizes):
+   329	  - Phase 1: `schema-validity` — validates `spec/v0/schemas/*.schema.json`.
+   330	  - Phase 3: `python-lint` (ruff), `python-typecheck` (pyright),
+   331	    `python-test` (pytest) — once the first package exists and has a
+   332	    real test.
+   333	  - Phase 3+: `schema-parity` — Pydantic models match their JSON
+   334	    Schemas.
+   335	  - Phase 11: `conformance` — runs the conformance suite against
+   336	    the reference impl.
+   337	
+   338	### H. Git + GitHub execution
+   339	
+   340	Same as before:
+   341	
+   342	1. `git init -b main`
+   343	2. Initial commit containing all of the above.
+   344	3. `gh auth status`.
+   345	4. `gh repo create eden --private --source . --remote origin --push \
+   346	   --description "A protocol for directed code evolution orchestration"`.
+   347	5. `gh repo edit --add-topic protocol --add-topic specification \
+   348	   --add-topic directed-evolution --add-topic orchestration \
+   349	   --add-topic ai --add-topic research-automation`.
+   350	6. Wait for the first `docs-lint` run on `main` to complete (so the
+   351	   check name is registered in GitHub's status-check cache), **then**
+   352	   enable branch protection.
+   353	7. Branch protection uses **classic branch protection** (not the
+   354	   newer repository rulesets — classic is better-documented for
+   355	   scripted setup and the two tools can coexist). Call:
+   356	
+   357	   ```bash
+   358	   gh api -X PUT "repos/<user>/eden/branches/main/protection" \
+   359	     -H "Accept: application/vnd.github+json" \
+   360	     --input - <<'JSON'
+   361	   {
+   362	     "required_status_checks": {
+   363	       "strict": true,
+   364	       "contexts": ["docs-lint"]
+   365	     },
+   366	     "enforce_admins": false,
+   367	     "required_pull_request_reviews": {
+   368	       "required_approving_review_count": 0,
+   369	       "dismiss_stale_reviews": false,
+   370	       "require_code_owner_reviews": false
+   371	     },
+   372	     "restrictions": null,
+   373	     "allow_force_pushes": false,
+   374	     "allow_deletions": false
+   375	   }
+   376	   JSON
+   377	   ```
+   378	
+   379	   Rationale for each field:
+   380	   - `contexts: ["docs-lint"]` — exact CI job name pinned in section G.
+   381	     Added to as Phase 3 / Phase 11 introduce more jobs.
+   382	   - `enforce_admins: false` — solo-repo hotfix path stays open.
+   383	   - `required_approving_review_count: 0` — solo contributor;
+   384	     bumping this to 1+ would block every merge. Increase when
+   385	     collaborators arrive.
+   386	   - `strict: true` — branches must be up-to-date with `main` before
+   387	     merging; cheap safety on a low-traffic repo.
+   388	   - `allow_force_pushes: false`, `allow_deletions: false` — keep
+   389	     `main` durable.
+   390	
+   391	## Files to Reference
+   392	
+   393	- `direvo/pyproject.toml` — ruff/pyright config template.
+   394	- `direvo/.gitignore` — baseline.
+   395	- `direvo/STYLE_GUIDE.md` — copy verbatim.
+   396	- `direvo/AGENTS.md` — structural model for the new one (content
+   397	  differs because the project framing differs).
+   398	- `eden/docs/naming.md` — source for README's elevator pitch.
+   399	- `eden/docs/plans/eden-microservices-refactor.md` — source of
+   400	  functional/non-functional requirements for the spec. Read before
+   401	  writing spec; then move to `docs/archive/`.
+   402	- RFC 2119 — the source for MUST/SHOULD/MAY language conventions used
+   403	  in spec prose.
+   404	
+   405	## Verification
+   406	
+   407	Before declaring done:
+   408	
+   409	1. `tree -L 3` shows: `spec/`, `reference/`, `conformance/`, `docs/`
+   410	   at top level; `spec/v0/` present; `docs/archive/microservices-refactor-plan.md`
+   411	   present; old `docs/plans/eden-microservices-refactor.md` gone.
+   412	2. `readlink CLAUDE.md` prints `AGENTS.md`.
+   413	3. The exact CI command passes locally:
+   414	   `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**"`.
+   415	   (Running the identical command locally avoids works-locally /
+   416	   fails-in-CI drift.)
+   417	4. No Python-tool gates run — there are no Python files. (Intentional:
+   418	   those gates land with Phase 3.)
+   419	5. Remote: `gh repo view <user>/eden --json visibility,description,url`
+   420	   confirms private + correct description.
+   421	6. `gh run list --limit 1` shows the first CI run; `gh run view` shows
+   422	   the `docs-lint` job green.
+   423	7. `gh api repos/<user>/eden/branches/main/protection` returns the
+   424	   exact payload from section H step 7 — in particular
+   425	   `required_status_checks.contexts == ["docs-lint"]`.
+   426	
+   427	## Execution Order
+   428	
+   429	Each step lists the **exact** files it creates/moves. Nothing outside
+   430	this list is written at Phase 0.
+
+exec
+/bin/zsh -lc "rg -n \"markdownlint-cli2|docs/archive|\\.venv|\\*\\*/\\*\\.md|Verification|docs-lint\" docs/plans/eden-protocol-bootstrap.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+124:├── .github/workflows/ci.yml       # docs-lint job only
+303:  named **`docs-lint`**. That job name is also the required status
+306:- The `docs-lint` job:
+311:     markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**"
+315:     `docs/archive/**` exclusion is deliberate: archived historical
+318:     purpose. The `#node_modules` and `#.venv` exclusions guard
+350:6. Wait for the first `docs-lint` run on `main` to complete (so the
+364:       "contexts": ["docs-lint"]
+380:   - `contexts: ["docs-lint"]` — exact CI job name pinned in section G.
+401:  writing spec; then move to `docs/archive/`.
+405:## Verification
+410:   at top level; `spec/v0/` present; `docs/archive/microservices-refactor-plan.md`
+414:   `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**"`.
+422:   the `docs-lint` job green.
+425:   `required_status_checks.contexts == ["docs-lint"]`.
+433:2. Create `docs/archive/` and move
+435:   `docs/archive/microservices-refactor-plan.md`, prepending a
+460:9. Write `.github/workflows/ci.yml` — the `docs-lint` job only, per
+461:   section G. Pin `markdownlint-cli2` to a specific major version.
+462:10. Run local verification (steps 1–3 of Verification above).
+498:  Order is hard-required: push → wait for `docs-lint` to complete on
+506:  reference *impl*; `docs/archive/` (not `docs/reference/`) holds the
+515:- **`markdownlint-cli2` version pinning.** Use a specific major in
+516:  CI (e.g., `markdownlint-cli2@v0.14`) so Phase 0 doesn't silently
+
+codex
+No material findings.
+
+**1. Missing Context**
+
+Assessment: resolved. The plan now makes the bootstrap scope, lint policy, and verification commands explicit enough for someone else to execute it without guessing.
+
+**2. Feasibility**
+
+Assessment: resolved. The CI/local command parity is now exact, and excluding `docs/archive/**` removes the remaining likely false-failure path for Phase 0. ([eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:308), [eden-protocol-bootstrap.md](/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md:413))
+
+**3. Alternatives**
+
+Assessment: no better alternative stands out. The current docs-only bootstrap remains the right tradeoff.
+
+**4. Completeness**
+
+Assessment: coherent. The scaffold, moved archive doc, lint behavior, verification steps, and execution order all line up.
+
+**5. Edge Cases and Risks**
+
+Assessment: the two prior minor risks are addressed, and I don’t see a new blocker introduced by the changes. The only residual uncertainty is execution-time validation against real GitHub/CLI behavior, which is normal for this kind of setup plan.
+
+Overall assessment: this version looks ready to execute.
+tokens used
+62,592

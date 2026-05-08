@@ -1,0 +1,272 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc55e-9b70-7451-ad27-7725d61293ba
+--------
+user
+I've narrowed the GitError classification per your round-1 feedback. Brief at docs/plans/review/eden-phase-9e-observability-and-admin/impl/20260425T085901/2.md. Please re-review the work_refs_delete classifier in routes/admin.py and the partial-write tests. Any other substantive concerns?
+codex
+I’m checking the updated classifier and the partial-write coverage directly, then I’ll tell you whether that closes the remaining review issue or if anything substantive still stands out.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/admin.py | sed -n '600,660p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "sed -n '1,220p' /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9e-observability-and-admin/impl/20260425T085901/2.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-9e-observability-and-admin (Round 2)
+
+## Round 1 finding — addressed
+
+- **Risk — `work_refs_delete()` exit-1 still too broad.** Fixed: classification now uses precise stderr substring matches:
+  - `expected ... but is ...` → `?error=ref-changed` (CAS mismatch)
+  - `unable to resolve reference` → `?error=not-found` (ref vanished)
+  - anything else → re-raise to FastAPI's default 500
+
+- Existing `test_cas_miss_redirects_ref_changed` updated to use the realistic `update_ref failed: cannot lock ref: expected aaa but is bbb` stderr.
+- New `test_unable_to_resolve_reference_redirects_not_found` covers the not-found branch.
+- `test_unexpected_git_error_propagates_5xx` (returncode 128, stderr without "expected" or "unable to resolve") continues to assert the re-raise.
+
+## Test Status
+
+- 631 passed (was 630; +1 from the not-found test).
+- ruff clean. pyright clean.
+
+## Review Status
+
+Round 2 — awaiting re-review.
+
+ succeeded in 0ms:
+   600	    if target is None:
+   601	        # Could be a not-eligible entry (still listed) or vanished.
+   602	        for entry in groups["not_eligible"]:
+   603	            if entry["ref_name"] == ref_name:
+   604	                return RedirectResponse(
+   605	                    url="/admin/work-refs/?error=not-eligible", status_code=303
+   606	                )
+   607	        return RedirectResponse(
+   608	            url="/admin/work-refs/?error=not-found", status_code=303
+   609	        )
+   610	    live_sha = target["current_sha"]
+   611	    from eden_git.repo import GitError
+   612	
+   613	    try:
+   614	        repo.delete_ref(ref_name, expected_old_sha=live_sha)
+   615	    except GitError as exc:
+   616	        stderr = (exc.stderr or "").lower()
+   617	        # ``git update-ref -d <ref> <oldvalue>`` exits 1 with two
+   618	        # operationally-different stderrs:
+   619	        # - "expected ... but is ..." → CAS mismatch (the SHA we
+   620	        #   read at GET-time is no longer the ref's current SHA).
+   621	        # - "unable to resolve reference ..." → the ref vanished
+   622	        #   between our list_refs read and the delete call.
+   623	        # Anything else (permissions, broken repo, malformed args)
+   624	        # is an unexpected failure that must propagate to FastAPI's
+   625	        # default 500 handler so the operator sees a real error page
+   626	        # and the failure shows up in logs.
+   627	        if "expected" in stderr and "but is" in stderr:
+   628	            return RedirectResponse(
+   629	                url="/admin/work-refs/?error=ref-changed", status_code=303
+   630	            )
+   631	        if "unable to resolve reference" in stderr:
+   632	            return RedirectResponse(
+   633	                url="/admin/work-refs/?error=not-found", status_code=303
+   634	            )
+   635	        raise
+   636	    return RedirectResponse(
+   637	        url="/admin/work-refs/?deleted=ok", status_code=303
+   638	    )
+   639	
+   640	
+   641	def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]]:
+   642	    """Group ``refs/heads/work/*`` refs by GC eligibility.
+   643	
+   644	    Ownership is keyed off exact ``trial.branch`` equality (chunk 9e
+   645	    plan §A.7), not by parsing the ref name.
+   646	    """
+   647	    trials = store.list_trials()
+   648	    branch_index: dict[str, Trial] = {
+   649	        tr.branch: tr for tr in trials if tr.branch is not None
+   650	    }
+   651	    pairs = repo.list_refs("refs/heads/work/*")
+   652	    eligible: list[dict[str, Any]] = []
+   653	    not_eligible: list[dict[str, Any]] = []
+   654	    orphan: list[dict[str, Any]] = []
+   655	    for refname, current_sha in pairs:
+   656	        branch_name = refname.removeprefix("refs/heads/")
+   657	        trial = branch_index.get(branch_name)
+   658	        entry: dict[str, Any] = {
+   659	            "ref_name": refname,
+   660	            "current_sha": current_sha,
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_admin_partial_write.py | sed -n '190,330p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   190	            },
+   191	            follow_redirects=False,
+   192	        )
+   193	        assert resp.status_code == 303
+   194	        assert "?error=not-found" in resp.headers["location"]
+   195	
+   196	    def test_cas_miss_redirects_ref_changed(
+   197	        self,
+   198	        signed_in_admin_repo_client: TestClient,
+   199	        store: InMemoryStore,
+   200	        bare_repo: GitRepo,
+   201	        base_sha: str,
+   202	        artifacts_dir: Path,
+   203	    ) -> None:
+   204	        """SHA rewritten between the route's read and the delete call → ref-changed.
+   205	
+   206	        We simulate this by monkey-patching ``GitRepo.delete_ref`` to
+   207	        raise ``GitError`` (the CAS miss surface).
+   208	        """
+   209	        seed_evaluate_task(
+   210	            store,
+   211	            slug="t3",
+   212	            trial_id="trial-C",
+   213	            artifacts_dir=artifacts_dir,
+   214	            commit_sha=make_child_commit(bare_repo, base_sha, "c"),
+   215	        )
+   216	        trial = store.read_trial("trial-C")
+   217	        assert trial.branch is not None
+   218	        assert trial.commit_sha is not None
+   219	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   220	        store.declare_trial_eval_error("trial-C")
+   221	        from eden_git.repo import GitError
+   222	
+   223	        def boom(self, *args, **kwargs):
+   224	            raise GitError(
+   225	                ["git", "update-ref"],
+   226	                1,
+   227	                "",
+   228	                "fatal: update_ref failed: cannot lock ref: expected aaa but is bbb",
+   229	            )
+   230	
+   231	        with pytest.MonkeyPatch.context() as mp:
+   232	            mp.setattr(GitRepo, "delete_ref", boom)
+   233	            csrf = get_csrf(signed_in_admin_repo_client)
+   234	            resp = signed_in_admin_repo_client.post(
+   235	                "/admin/work-refs/delete",
+   236	                data={
+   237	                    "csrf_token": csrf,
+   238	                    "ref_name": f"refs/heads/{trial.branch}",
+   239	                },
+   240	                follow_redirects=False,
+   241	            )
+   242	        assert resp.status_code == 303
+   243	        assert "?error=ref-changed" in resp.headers["location"]
+   244	
+   245	    def test_unable_to_resolve_reference_redirects_not_found(
+   246	        self,
+   247	        signed_in_admin_repo_client: TestClient,
+   248	        store: InMemoryStore,
+   249	        bare_repo: GitRepo,
+   250	        base_sha: str,
+   251	        artifacts_dir: Path,
+   252	    ) -> None:
+   253	        """A ``git update-ref -d`` exit-1 with "unable to resolve reference"
+   254	        means the ref vanished between our read and the delete; route
+   255	        must redirect with ``?error=not-found`` (not ``ref-changed``).
+   256	        """
+   257	        seed_evaluate_task(
+   258	            store,
+   259	            slug="t-uvr",
+   260	            trial_id="trial-UVR",
+   261	            artifacts_dir=artifacts_dir,
+   262	            commit_sha=make_child_commit(bare_repo, base_sha, "uvr"),
+   263	        )
+   264	        trial = store.read_trial("trial-UVR")
+   265	        assert trial.branch is not None
+   266	        assert trial.commit_sha is not None
+   267	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   268	        store.declare_trial_eval_error("trial-UVR")
+   269	        from eden_git.repo import GitError
+   270	
+   271	        def boom(self, *args, **kwargs):
+   272	            raise GitError(
+   273	                ["git", "update-ref"],
+   274	                1,
+   275	                "",
+   276	                "fatal: unable to resolve reference 'refs/heads/work/foo'",
+   277	            )
+   278	
+   279	        with pytest.MonkeyPatch.context() as mp:
+   280	            mp.setattr(GitRepo, "delete_ref", boom)
+   281	            csrf = get_csrf(signed_in_admin_repo_client)
+   282	            resp = signed_in_admin_repo_client.post(
+   283	                "/admin/work-refs/delete",
+   284	                data={
+   285	                    "csrf_token": csrf,
+   286	                    "ref_name": f"refs/heads/{trial.branch}",
+   287	                },
+   288	                follow_redirects=False,
+   289	            )
+   290	        assert resp.status_code == 303
+   291	        assert "?error=not-found" in resp.headers["location"]
+   292	
+   293	    def test_unexpected_git_error_propagates_5xx(
+   294	        self,
+   295	        signed_in_admin_repo_client: TestClient,
+   296	        store: InMemoryStore,
+   297	        bare_repo: GitRepo,
+   298	        base_sha: str,
+   299	        artifacts_dir: Path,
+   300	    ) -> None:
+   301	        """Plan §G + impl-review finding 2: a non-CAS GitError must not
+   302	        be silenced as ``ref-changed``. It propagates to FastAPI's
+   303	        default 500 handler so the operator sees a real error and the
+   304	        failure shows up in logs.
+   305	        """
+   306	        seed_evaluate_task(
+   307	            store,
+   308	            slug="t4",
+   309	            trial_id="trial-P",
+   310	            artifacts_dir=artifacts_dir,
+   311	            commit_sha=make_child_commit(bare_repo, base_sha, "p"),
+   312	        )
+   313	        trial = store.read_trial("trial-P")
+   314	        assert trial.branch is not None
+   315	        assert trial.commit_sha is not None
+   316	        bare_repo.create_ref(f"refs/heads/{trial.branch}", trial.commit_sha)
+   317	        store.declare_trial_eval_error("trial-P")
+   318	        from eden_git.repo import GitError
+   319	
+   320	        # exit code 128 + stderr without "expected" => unexpected git
+   321	        # failure. The route must re-raise.
+   322	        def perm_boom(self, *args, **kwargs):
+   323	            raise GitError(
+   324	                ["git", "update-ref"],
+   325	                128,
+   326	                "",
+   327	                "fatal: cannot lock ref: permission denied",
+   328	            )
+   329	
+   330	        with pytest.MonkeyPatch.context() as mp:
+
+codex
+The classifier now matches the intended branches on inspection. I’m running just the partial-write file to confirm the new not-found branch behaves as expected under the existing harness.
+exec
+/bin/zsh -lc 'uv run pytest -q reference/services/web-ui/tests/test_admin_partial_write.py' in /Users/ericalt/Documents/eden
+ succeeded in 1622ms:
+..........                                                               [100%]
+10 passed in 0.97s
+
+codex
+No substantive findings in this pass.
+
+[reference/services/web-ui/src/eden_web_ui/routes/admin.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/admin.py:615) now has the right three-way split:
+- `expected ... but is ...` → `?error=ref-changed`
+- `unable to resolve reference` → `?error=not-found`
+- anything else → re-raise
+
+The partial-write coverage is now adequate in [reference/services/web-ui/tests/test_admin_partial_write.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_admin_partial_write.py:196): it exercises CAS mismatch, vanished-ref-after-read, unexpected git failure, plus the earlier pre-delete not-found and not-eligible branches.
+
+I reran `reference/services/web-ui/tests/test_admin_partial_write.py`; all 10 tests passed. The remaining risk is only the usual one for stderr-based classification: if git changes these messages, the tests will need updating, but that’s acceptable for this reference-stack surface.
+2026-04-25T16:14:45.798540Z ERROR codex_core::session: failed to record rollout items: thread 019dc55e-9b70-7451-ad27-7725d61293ba not found
+tokens used
+143,752

@@ -489,7 +489,7 @@ that aligns with the design doc. Latter is preferred per design.
   `conformance/src/conformance/fixtures/minimal-experiment.yaml`.
   Both should be updated when #13 is resolved.
 - **`*_command` keys are intentional drift**, not cruft. Per
-  [`docs/plans/review/eden-protocol-bootstrap/impl/20260423T095344/1.md`](docs/plans/review/eden-protocol-bootstrap/impl/20260423T095344/1.md)
+  [`docs/archive/review/eden-protocol-bootstrap/impl/20260423T095344/1.md`](docs/archive/review/eden-protocol-bootstrap/impl/20260423T095344/1.md)
   these were deliberately removed from the normative schema during
   bootstrap; they live on as fixture-only additional properties for
   the subprocess-mode hosts to read. Documented design choice; flag
@@ -558,7 +558,7 @@ policy), and the docker-exec / subprocess overlay variables
 None of these are in `.env.example`.
 
 **Why this matters.** Phase-10a documentation
-([`docs/plans/eden-phase-10a-compose-infrastructure.md`](docs/plans/eden-phase-10a-compose-infrastructure.md))
+([`docs/archive/eden-phase-10a-compose-infrastructure.md`](docs/archive/eden-phase-10a-compose-infrastructure.md))
 tells operators they can run ``cp .env.example .env && docker compose
 up -d`` for a quickstart. That fails today because the example is
 missing required variables. The actual workflow (run

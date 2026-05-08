@@ -1,0 +1,715 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc225-fcd7-70a3-bb3a-2a5c985d58ec
+--------
+user
+Round 2: also addressed your residual non-blocking note about the HTMX CSRF-failure branch.
+
+_csrf_failure_response now takes the request and adds 'HX-Reswap: none' for HTMX requests so the 'CSRF token missing or invalid' body doesn't get swapped into #proposal-rows. New test test_add_row_htmx_csrf_failure_sets_hx_reswap_none pins the behavior. The non-HTMX 403 path is unchanged.
+
+453 tests pass; ruff and pyright clean.
+
+Anything else, or are we done with the HTMX vendor + redirect/error branch hardening?
+codex
+Reviewing the HTMX-specific CSRF hardening now. I’m checking the helper change and the new test to make sure the header is attached on the right branch and that the no-JS `403` path really stayed unchanged.
+exec
+/bin/zsh -lc 'git diff --unified=80 -- reference/services/web-ui/src/eden_web_ui/routes/planner.py reference/services/web-ui/tests/test_planner_flow.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+diff --git a/reference/services/web-ui/src/eden_web_ui/routes/planner.py b/reference/services/web-ui/src/eden_web_ui/routes/planner.py
+index 49a435c..4f1f9e7 100644
+--- a/reference/services/web-ui/src/eden_web_ui/routes/planner.py
++++ b/reference/services/web-ui/src/eden_web_ui/routes/planner.py
+@@ -1,293 +1,295 @@
+ """Planner-module routes.
+ 
+ Implements the spec-to-code map pinned in section §C of the Phase
+ 9 plan: list pending plan tasks, claim with a TTL, draft proposals,
+ submit. Errors propagate as canonical wire-error names so the user
+ sees an honest banner.
+ 
+ The Phase-3 retry policy on ``submit`` leverages chapter 07 §2.4 /
+ §8.1: a content-equivalent resubmit returns 200, so transport
+ failures are retried up to 3 times with exponential backoff before
+ the orphaned-proposals error page is reached.
+ """
+ 
+ from __future__ import annotations
+ 
+ import time
+ import uuid
+ from collections.abc import Callable
+ from datetime import timedelta
+ from typing import Any
+ 
+ from eden_contracts import Proposal
+ from eden_storage import (
+     ConflictingResubmission,
+     DispatchError,
+     IllegalTransition,
+     InvalidPrecondition,
+     PlanSubmission,
+     WrongToken,
+ )
+ from fastapi import APIRouter, Form, Request
+ from fastapi.responses import HTMLResponse, RedirectResponse
+ 
+ from ..artifacts import write_proposal_artifact
+ from ..forms import ProposalDraft, parse_proposal_rows
+-from ._helpers import csrf_ok, get_session
++from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
+ 
+ router = APIRouter(prefix="/planner")
+ 
+ 
+ # In-memory mapping of (csrf_token, task_id) -> claim token. The CSRF
+ # token is per-session (rotates on session-secret rotation), so two
+ # browser sessions with the same configured worker_id cannot reuse
+ # each other's claims. We deliberately do not persist this across
+ # restarts — a UI restart drops claim tokens and the TTL sweep
+ # recovers stranded tasks (eden_dispatch.sweep_expired_claims).
+ _CLAIMS: dict[tuple[str, str], str] = {}
+ 
+ 
+ def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
+     return (session_csrf, task_id)
+ 
+ 
+ def _list_recent_proposals(store: Any, *, limit: int = 20) -> list[Any]:
+     items = store.list_proposals()
+     return items[-limit:]
+ 
+ 
+ def _list_recent_trials(store: Any, *, limit: int = 20) -> list[Any]:
+     items = store.list_trials()
+     return items[-limit:]
+ 
+ 
+ @router.get("/", response_class=HTMLResponse, response_model=None)
+ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     store = request.app.state.store
+     pending = store.list_tasks(kind="plan", state="pending")
+     config = request.app.state.experiment_config
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_list.html",
+         {
+             "session": session,
+             "pending": pending,
+             "objective": config.objective,
+             "metrics_schema": config.metrics_schema.root,
+             "recent_proposals": _list_recent_proposals(store),
+             "recent_trials": _list_recent_trials(store),
+             "banner": request.query_params.get("banner"),
+         },
+     )
+ 
+ 
+ @router.post("/{task_id}/claim", response_model=None)
+ async def claim(
+     task_id: str,
+     request: Request,
+     csrf_token: str = Form(""),
+ ) -> RedirectResponse | HTMLResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     if not csrf_ok(session, csrf_token):
+-        return _csrf_failure_response()
++        return _csrf_failure_response(request)
+     store = request.app.state.store
+     now: Callable[[], Any] = request.app.state.now
+     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
+     try:
+         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
+     except (IllegalTransition, InvalidPrecondition) as exc:
+         banner = _wire_error_banner(exc)
+         return RedirectResponse(url=f"/planner/?banner={banner}", status_code=303)
+     _CLAIMS[_claim_key(session.csrf, task_id)] = result.token
+     return RedirectResponse(url=f"/planner/{task_id}/draft", status_code=303)
+ 
+ 
+ @router.get("/{task_id}/draft", response_class=HTMLResponse, response_model=None)
+ async def draft_form(
+     task_id: str,
+     request: Request,
+ ) -> HTMLResponse | RedirectResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     token = _CLAIMS.get(_claim_key(session.csrf, task_id))
+     if token is None:
+         return RedirectResponse(
+             url="/planner/?banner=claim+missing+from+session",
+             status_code=303,
+         )
+     config = request.app.state.experiment_config
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_claim.html",
+         {
+             "session": session,
+             "task_id": task_id,
+             "objective": config.objective,
+             "metrics_schema": config.metrics_schema.root,
+             "errors": None,
+             "form_state": [_empty_row()],
+             "row_indices": [0],
+         },
+     )
+ 
+ 
+ @router.post("/{task_id}/add_row", response_model=None)
+-async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
++async def add_row(task_id: str, request: Request):
+     """Append one empty proposal row to the draft form.
+ 
+     Two transports, same end state:
+ 
+     - With JS, htmx posts here with ``HX-Request: true``. We respond
+       with the rendered ``_proposal_row.html`` fragment for the new
+       row only; htmx swaps it as ``beforeend`` of ``#proposal-rows``
+-      so the user's existing input is untouched.
++      so the user's existing input is untouched. Redirect/error
++      branches send ``HX-Redirect`` on a 204 so htmx does a full
++      client-side navigation rather than swapping a redirected page
++      into the rows container.
+     - Without JS, the same button submits the form normally and we
+       re-render the whole ``planner_claim.html`` with the
+-      collected state plus one more empty row.
++      collected state plus one more empty row, or 303 to the
++      sign-in / planner list on auth/claim failures.
+     """
+     session = get_session(request)
+     if session is None:
+-        return RedirectResponse(url="/signin", status_code=303)
++        return htmx_aware_redirect(request, "/signin")
+     form = await request.form()
+     if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+-        return _csrf_failure_response()
++        return _csrf_failure_response(request)
+     if _CLAIMS.get(_claim_key(session.csrf, task_id)) is None:
+-        return RedirectResponse(
+-            url="/planner/?banner=claim+missing+from+session",
+-            status_code=303,
++        return htmx_aware_redirect(
++            request, "/planner/?banner=claim+missing+from+session"
+         )
+-    is_htmx = request.headers.get("hx-request", "").lower() == "true"
+ 
+-    if is_htmx:
++    if is_htmx_request(request):
+         # The htmx-enhanced path: figure out where the new row goes
+         # by counting existing rows in the form, then render only
+         # the partial. The user's existing rows are already on the
+         # page; htmx appends ours to ``#proposal-rows``.
+         existing = max(
+             len(form.getlist("slug")),
+             len(form.getlist("priority")),
+             len(form.getlist("parent_commits")),
+             len(form.getlist("rationale")),
+         )
+         return request.app.state.templates.TemplateResponse(
+             request,
+             "_proposal_row.html",
+             {"i": existing, "row_state": _empty_row(), "row_errs": {}},
+         )
+ 
+     config = request.app.state.experiment_config
+     slugs = [str(v) for v in form.getlist("slug")]
+     priorities = [str(v) for v in form.getlist("priority")]
+     parents = [str(v) for v in form.getlist("parent_commits")]
+     rationales = [str(v) for v in form.getlist("rationale")]
+     state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+     state.append(_empty_row())
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_claim.html",
+         {
+             "session": session,
+             "task_id": task_id,
+             "objective": config.objective,
+             "metrics_schema": config.metrics_schema.root,
+             "errors": None,
+             "form_state": state,
+             "row_indices": list(range(len(state))),
+         },
+     )
+ 
+ 
+ @router.post("/{task_id}/submit", response_model=None)
+ async def submit_plan(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+     session = get_session(request)
+     if session is None:
+         return RedirectResponse(url="/signin", status_code=303)
+     form = await request.form()
+     if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+-        return _csrf_failure_response()
++        return _csrf_failure_response(request)
+     status = form.get("status")
+     if status not in ("success", "error"):
+         return _bad_request("invalid submit status")
+ 
+     token = _CLAIMS.get(_claim_key(session.csrf, task_id))
+     if token is None:
+         return RedirectResponse(
+             url="/planner/?banner=claim+missing+from+session",
+             status_code=303,
+         )
+ 
+     store = request.app.state.store
+     config = request.app.state.experiment_config
+ 
+     if status == "error":
+         try:
+             store.submit(task_id, token, PlanSubmission(status="error"))
+         except DispatchError as exc:
+             return _render_error(request, _wire_error_banner(exc))
+         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+         return _render_submitted(request, task_id, status="error", proposal_ids=())
+ 
+     slugs = [str(v) for v in form.getlist("slug")]
+     priorities = [str(v) for v in form.getlist("priority")]
+     parents = [str(v) for v in form.getlist("parent_commits")]
+     rationales = [str(v) for v in form.getlist("rationale")]
+     drafts, errors = parse_proposal_rows(slugs, priorities, parents, rationales)
+     if errors:
+         return request.app.state.templates.TemplateResponse(
+             request,
+             "planner_claim.html",
+             {
+                 "session": session,
+                 "task_id": task_id,
+                 "objective": config.objective,
+                 "metrics_schema": config.metrics_schema.root,
+                 "errors": errors,
+                 "form_state": _form_state_from_inputs(slugs, priorities, parents, rationales),
+                 "row_indices": list(range(max(1, len(slugs) or 1))),
+             },
+             status_code=400,
+         )
+ 
+     proposal_ids: list[str] = []
+     artifacts_dir = request.app.state.artifacts_dir
+     now: Callable[[], Any] = request.app.state.now
+ 
+     # Phase 1: write artifacts + create proposals as drafting.
+     for draft in drafts:
+         proposal_id = uuid.uuid4().hex
+         artifacts_uri = write_proposal_artifact(
+             artifacts_dir, proposal_id, draft.rationale
+         )
+         proposal = _make_proposal(
+             proposal_id=proposal_id,
+             experiment_id=request.app.state.experiment_id,
+             draft=draft,
+             artifacts_uri=artifacts_uri,
+             now_iso=_iso(now()),
+         )
+         try:
+             store.create_proposal(proposal)
+         except DispatchError as exc:
+             return _render_error(
+                 request,
+                 f"create_proposal failed for {proposal_id}: {_wire_error_banner(exc)}",
+             )
+         proposal_ids.append(proposal_id)
+ 
+     # Phase 2: flip to ready.
+     for proposal_id in proposal_ids:
+         try:
+             store.mark_proposal_ready(proposal_id)
+         except DispatchError as exc:
+             return _render_error(
+                 request,
+                 f"mark_proposal_ready failed for {proposal_id}: {_wire_error_banner(exc)}",
+             )
+ 
+     # Phase 3: submit, with retry-before-orphan.
+@@ -377,101 +379,116 @@ def _make_proposal(
+         state="drafting",
+         created_at=now_iso,
+     )
+ 
+ 
+ def _iso(dt: Any) -> str:
+     """Emit Zulu-suffixed ISO 8601: ``YYYY-MM-DDTHH:MM:SS(.sss)?Z``."""
+     s = dt.isoformat()
+     if s.endswith("+00:00"):
+         s = s[: -len("+00:00")] + "Z"
+     return s
+ 
+ 
+ def _empty_row() -> dict[str, str]:
+     return {"slug": "", "priority": "1.0", "parent_commits": "", "rationale": ""}
+ 
+ 
+ def _form_state_from_inputs(
+     slugs: list[str], priorities: list[str], parents: list[str], rationales: list[str]
+ ) -> list[dict[str, str]]:
+     n = max(len(slugs), len(priorities), len(parents), len(rationales))
+     out: list[dict[str, str]] = []
+     for i in range(n):
+         out.append(
+             {
+                 "slug": slugs[i] if i < len(slugs) else "",
+                 "priority": priorities[i] if i < len(priorities) else "1.0",
+                 "parent_commits": parents[i] if i < len(parents) else "",
+                 "rationale": rationales[i] if i < len(rationales) else "",
+             }
+         )
+     return out
+ 
+ 
+ def _render_submitted(
+     request: Request,
+     task_id: str,
+     *,
+     status: str,
+     proposal_ids: tuple[str, ...],
+ ) -> HTMLResponse:
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_submitted.html",
+         {
+             "task_id": task_id,
+             "status": status,
+             "proposal_ids": proposal_ids,
+         },
+     )
+ 
+ 
+ def _render_orphaned(
+     request: Request,
+     task_id: str,
+     proposal_ids: list[str],
+     *,
+     banner: str | None = None,
+ ) -> HTMLResponse:
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "planner_orphaned.html",
+         {
+             "task_id": task_id,
+             "proposal_ids": proposal_ids,
+             "banner": banner,
+         },
+         status_code=502,
+     )
+ 
+ 
+ def _render_error(request: Request, message: str) -> HTMLResponse:
+     return request.app.state.templates.TemplateResponse(
+         request,
+         "_error.html",
+         {"title": "Wire error", "message": message},
+         status_code=502,
+     )
+ 
+ 
+-def _csrf_failure_response() -> HTMLResponse:
+-    return HTMLResponse(content="CSRF token missing or invalid", status_code=403)
++def _csrf_failure_response(request: Request | None = None) -> HTMLResponse:
++    """Reject the request with 403.
++
++    For htmx requests we additionally set ``HX-Reswap: none`` so htmx
++    does not swap the error body into the configured target (e.g.
++    ``#proposal-rows``). Adding the same ``HX-Trigger`` header is
++    intentionally skipped — chunk 1 has no client-side error toast
++    yet; 9e revisits live error UX.
++    """
++    headers: dict[str, str] = {}
++    if request is not None and is_htmx_request(request):
++        headers["hx-reswap"] = "none"
++    return HTMLResponse(
++        content="CSRF token missing or invalid",
++        status_code=403,
++        headers=headers,
++    )
+ 
+ 
+ def _bad_request(message: str) -> HTMLResponse:
+     return HTMLResponse(content=message, status_code=400)
+ 
+ 
+ _ERROR_NAMES: dict[type, str] = {
+     WrongToken: "eden://error/wrong-token",
+     IllegalTransition: "eden://error/illegal-transition",
+     ConflictingResubmission: "eden://error/conflicting-resubmission",
+     InvalidPrecondition: "eden://error/invalid-precondition",
+ }
+ 
+ 
+ def _wire_error_banner(exc: BaseException) -> str:
+     name = _ERROR_NAMES.get(type(exc))
+     if name is None:
+         return f"unexpected error: {exc.__class__.__name__}"
+     return name
+diff --git a/reference/services/web-ui/tests/test_planner_flow.py b/reference/services/web-ui/tests/test_planner_flow.py
+index 3dc13e8..86ed37d 100644
+--- a/reference/services/web-ui/tests/test_planner_flow.py
++++ b/reference/services/web-ui/tests/test_planner_flow.py
+@@ -68,160 +68,239 @@ class TestHappyPath:
+             "/planner/t-err/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         resp = signed_in_client.post(
+             "/planner/t-err/submit",
+             data={"csrf_token": token, "status": "error"},
+         )
+         assert resp.status_code == 200
+         assert store.read_task("t-err").state == "submitted"
+         assert store.list_proposals() == []
+ 
+ 
+ class TestValidationRecovery:
+     def test_invalid_form_re_renders_with_errors_and_input_preserved(
+         self, signed_in_client: TestClient, store: InMemoryStore
+     ) -> None:
+         store.create_plan_task("t-bad")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-bad/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         # priority is not a number; rationale empty; parent_commits invalid.
+         resp = signed_in_client.post(
+             "/planner/t-bad/submit",
+             data={
+                 "csrf_token": token,
+                 "status": "success",
+                 "slug": "good-slug",
+                 "priority": "not-a-number",
+                 "parent_commits": "not-a-sha",
+                 "rationale": "",
+             },
+         )
+         assert resp.status_code == 400
+         # User input preserved.
+         assert "good-slug" in resp.text
+         assert "not-a-number" in resp.text
+         assert "not-a-sha" in resp.text
+         # Field errors surfaced.
+         assert "priority must be a number" in resp.text
+         assert "rationale markdown is required" in resp.text
+         # No store mutation.
+         assert store.list_proposals() == []
+         assert store.read_task("t-bad").state == "claimed"
+ 
+ 
+ class TestMultiRow:
+     def test_add_row_full_page_returns_form_with_one_more_empty_row(
+         self, signed_in_client: TestClient, store: InMemoryStore
+     ) -> None:
+         """No-JS path: add_row returns the full draft page with one more row."""
+         store.create_plan_task("t-add")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-add/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         resp = signed_in_client.post(
+             "/planner/t-add/add_row",
+             data={
+                 "csrf_token": token,
+                 "slug": "feat-1",
+                 "priority": "1.0",
+                 "parent_commits": "a" * 40,
+                 "rationale": "first proposal rationale",
+             },
+         )
+         assert resp.status_code == 200
+         # First row's input is preserved.
+         assert "feat-1" in resp.text
+         assert "first proposal rationale" in resp.text
+         # The form now has 2 rows — count textareas as a per-row marker.
+         assert resp.text.count('name="rationale"') == 2
+         # Full page: includes the base layout (topbar nav).
+         assert "<header" in resp.text
+ 
++    def test_add_row_htmx_no_session_returns_hx_redirect_to_signin(
++        self, client: TestClient, store: InMemoryStore
++    ) -> None:
++        """HTMX request with no session must use HX-Redirect, not 303 to a full page.
++
++        HTMX follows 3xx transparently and swaps the redirected
++        response into the configured target — for the add_row
++        button (``hx-target="#proposal-rows"``) that would dump
++        ``<html>...</html>`` of the sign-in page into the rows
++        container. Returning ``HX-Redirect`` instead makes htmx
++        do a real navigation.
++        """
++        store.create_plan_task("t-noses")
++        resp = client.post(
++            "/planner/t-noses/add_row",
++            data={"slug": "x"},
++            headers={"hx-request": "true"},
++        )
++        assert resp.status_code == 204
++        assert resp.headers.get("hx-redirect") == "/signin"
++        # Empty body is what htmx wants for HX-Redirect — it must NOT
++        # contain a <header> or anything else that could end up
++        # swapped into #proposal-rows.
++        assert resp.text == ""
++
++    def test_add_row_htmx_missing_claim_returns_hx_redirect(
++        self, signed_in_client: TestClient, store: InMemoryStore
++    ) -> None:
++        """HTMX request without an active claim must HX-Redirect to /planner/."""
++        store.create_plan_task("t-noclaim")
++        token = get_csrf(signed_in_client)
++        # Note: we never call /planner/{id}/claim, so the in-memory
++        # _CLAIMS dict has no entry for this (csrf, task) pair.
++        resp = signed_in_client.post(
++            "/planner/t-noclaim/add_row",
++            data={"csrf_token": token, "slug": "x"},
++            headers={"hx-request": "true"},
++        )
++        assert resp.status_code == 204
++        loc = resp.headers.get("hx-redirect", "")
++        assert loc.startswith("/planner/?banner=claim+missing")
++        assert resp.text == ""
++
++    def test_add_row_htmx_csrf_failure_sets_hx_reswap_none(
++        self, signed_in_client: TestClient, store: InMemoryStore
++    ) -> None:
++        """HTMX add_row with bad CSRF must NOT have its body swapped into the page."""
++        store.create_plan_task("t-csrf")
++        token = get_csrf(signed_in_client)
++        # Claim first so the missing-claim branch isn't what fires.
++        signed_in_client.post(
++            "/planner/t-csrf/claim",
++            data={"csrf_token": token},
++            follow_redirects=False,
++        )
++        resp = signed_in_client.post(
++            "/planner/t-csrf/add_row",
++            data={"csrf_token": "wrong"},
++            headers={"hx-request": "true"},
++        )
++        assert resp.status_code == 403
++        # `HX-Reswap: none` tells htmx to not swap the response body
++        # into the configured target. Without this, the "CSRF token
++        # missing or invalid" string would land in #proposal-rows.
++        assert resp.headers.get("hx-reswap") == "none"
++
++    def test_add_row_no_js_no_session_303_to_signin(
++        self, client: TestClient, store: InMemoryStore
++    ) -> None:
++        """The no-JS path keeps the conventional 303-to-/signin behavior."""
++        store.create_plan_task("t-nojs")
++        resp = client.post(
++            "/planner/t-nojs/add_row",
++            data={"slug": "x"},
++            follow_redirects=False,
++        )
++        assert resp.status_code == 303
++        assert resp.headers["location"] == "/signin"
++
+     def test_add_row_htmx_returns_partial_only(
+         self, signed_in_client: TestClient, store: InMemoryStore
+     ) -> None:
+         """JS path: add_row with HX-Request: true returns only the row partial."""
+         store.create_plan_task("t-htmx")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-htmx/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         resp = signed_in_client.post(
+             "/planner/t-htmx/add_row",
+             data={
+                 "csrf_token": token,
+                 "slug": "feat-1",
+                 "priority": "1.0",
+                 "parent_commits": "a" * 40,
+                 "rationale": "first",
+             },
+             headers={"hx-request": "true"},
+         )
+         assert resp.status_code == 200
+         # Just the new (empty) row partial — no <header>, no <html>.
+         assert "<header" not in resp.text
+         assert "<html" not in resp.text
+         # Contains exactly one textarea (the new row's rationale field).
+         assert resp.text.count('name="rationale"') == 1
+         # The new row's index is 1 (zero-based; row 1 is the second row,
+         # since the user already had 1 row before adding).
+         assert 'data-row-index="1"' in resp.text
+ 
+     def test_skip_fully_blank_row_on_submit(
+         self,
+         signed_in_client: TestClient,
+         store: InMemoryStore,
+     ) -> None:
+         """Submitting with a trailing blank row only persists the filled rows."""
+         from urllib.parse import urlencode
+ 
+         store.create_plan_task("t-skip")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+             "/planner/t-skip/claim",
+             data={"csrf_token": token},
+             follow_redirects=False,
+         )
+         body = urlencode(
+             [
+                 ("csrf_token", token),
+                 ("status", "success"),
+                 ("slug", "feat-only"),
+                 ("priority", "1.0"),
+                 ("parent_commits", "a" * 40),
+                 ("rationale", "real proposal"),
+                 ("slug", ""),
+                 ("priority", "1.0"),
+                 ("parent_commits", ""),
+                 ("rationale", ""),
+             ]
+         )
+         resp = signed_in_client.post(
+             "/planner/t-skip/submit",
+             content=body,
+             headers={"content-type": "application/x-www-form-urlencoded"},
+         )
+         assert resp.status_code == 200
+         ready = store.list_proposals(state="ready")
+         assert len(ready) == 1
+         assert ready[0].slug == "feat-only"
+ 
+     def test_all_blank_rejected(
+         self,
+         signed_in_client: TestClient,
+         store: InMemoryStore,
+     ) -> None:
+         """If every row is blank, submit re-renders with a form-level error."""
+         store.create_plan_task("t-all-blank")
+         token = get_csrf(signed_in_client)
+         signed_in_client.post(
+
+exec
+/bin/zsh -lc 'uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -q' in /Users/ericalt/Documents/eden
+ succeeded in 1661ms:
+..................                                                       [100%]
+
+codex
+No findings.
+
+The CSRF hardening is appropriate. `_csrf_failure_response()` now adds `HX-Reswap: none` for HTMX requests in [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:460), and the new [test_add_row_htmx_csrf_failure_sets_hx_reswap_none](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:191) pins the exact behavior you wanted. The non-HTMX `403` path is still intact, and broadening the helper so `claim`/`submit` also get the header on any future HTMX usage is fine.
+
+I don’t see anything else in the HTMX vendor + redirect/error-branch hardening scope. I reran `uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -q`; it passed. You can consider this thread done.
+2026-04-25T01:08:24.671943Z ERROR codex_core::session: failed to record rollout items: thread 019dc225-fcd7-70a3-bb3a-2a5c985d58ec not found
+tokens used
+308,692

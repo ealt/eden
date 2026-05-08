@@ -1,0 +1,1895 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019de4c6-5574-7840-9eae-ce5df13627f5
+--------
+user
+I've revised the plan based on your round 0 feedback. Please review the updated version at docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md.
+
+Specific changes I made:
+- Collapsed v1 to a single conformance level + single 'conformance' marker (your finding 1). Marker split deferred until a non-HTTP binding exists.
+- Dropped non-cite-able assertions: 404 on missing /v0/, header-absent error, auth 401 closure (your finding 2).
+- Reworked chapter 09 to make the IUT adapter and the bearer-token auth scheme informative rather than normative; only chapter 07 implementation is normative (your finding 3).
+- Reframed the atomicity scenario as a best-effort regression test, with explicit docstring acknowledging it's not a §1.3 certification (your finding 4).
+- Replaced pytest.main() in the self-validation with a 3-part subprocess invocation: control run must pass, broken run must fail with the exact targeted test ID and expected substring, plus a hit-counter check on the proxy (your finding 5).
+- Dropped --iut-mode entirely; per-scenario adapter start/stop only (your finding 6).
+- Strengthened event-shape assertions: split into envelope tests + per-type payload tests covering every chapter-05 §3 registered type. Replaced 'proposal.state-changed (or equivalent)' with proposal.dispatched specifically (your finding 7).
+- Replaced the integrate-fixture's full role-driving setup with direct create_proposal/create_trial wire calls; added evaluate-terminal composite scenarios for the success/error/eval_error cases (your finding 8).
+- Moved test_reclaim_cause_vocabulary_closed to test_status_codes.py (your finding 9).
+
+Please verify the revisions actually address the findings and look for any new issues introduced by the changes.
+codex
+Reviewing the revised plan as a second-pass conformance/spec review, again using `review-doc` because the risk is still in normative boundaries and false certainty. I’m reading the updated plan end to end, then checking the revised sections against the same spec clauses that drove the round-0 findings.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md | sed -n '1,320p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md | sed -n '321,680p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN Phase 11 chunk 11a + 11b — Conformance harness + state-machine scenarios
+     2	
+     3	## Context
+     4	
+     5	[`docs/roadmap.md`](../roadmap.md) Phase 11 chunks the conformance suite as
+     6	`11a + 11b` (one chunk), `11c` (one), `11d` (one). The harness and the
+     7	first scenarios travel together because the harness has nothing to
+     8	validate itself against until at least one scenario is in place — the
+     9	"first scenarios validate the harness itself" bootstrap problem.
+    10	
+    11	[`spec/v0/`](../../spec/v0/) currently ships chapters 00 – 08 plus the wire
+    12	binding (07) and is missing chapter 09. [`conformance/`](../../conformance/)
+    13	is a `README.md` stub reserving the location.
+    14	
+    15	This plan delivers exactly what chunk 11a + 11b says it should:
+    16	
+    17	1. The harness — pytest-driven, IUT-adapter-shaped.
+    18	2. The first scenarios — task lifecycle, claim-token semantics,
+    19	   transactional event invariant including all chapter-05 §2.2
+    20	   composite commits, plus the chapter-07 wire-binding shapes that
+    21	   the v1 suite exercises through HTTP.
+    22	3. The new normative chapter — [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md)
+    23	   — declaring what conformance means and the relationship between the
+    24	   spec, the suite, and any IUT.
+    25	4. The reference IUT adapter that drives the existing
+    26	   `task-store-server` against the harness.
+    27	5. A self-validation scenario that asserts the harness rejects a
+    28	   deliberately-broken adapter on a specific test for a specific
+    29	   reason.
+    30	6. A new `conformance` CI job that runs the suite against the reference
+    31	   impl on every PR.
+    32	
+    33	## Reframe
+    34	
+    35	The conformance suite is the **second** thing the spec promises (after
+    36	the spec itself) and the **first** thing that makes spec compliance an
+    37	externally-verifiable claim. Until this chunk lands, "the reference
+    38	impl conforms to the spec" is a sentence the maintainers say. After,
+    39	"the reference impl passes the v1 conformance suite, scenario by
+    40	scenario, every PR" is a sentence CI says.
+    41	
+    42	The chunk's success criterion is therefore **not** "the reference impl
+    43	passes the suite" — that is a tautology if I author the suite by
+    44	inspecting the reference impl. The criterion is the chapter-09 +
+    45	scenarios pair: **every assertion the harness makes MUST be backed by
+    46	a normative MUST in chapters 02 / 04 / 05 / 06 / 07 / 08.** No "the
+    47	reference impl happens to do this" assertions; every pass/fail must
+    48	be cite-able to a `§N.M` in a specific chapter. That discipline is the
+    49	load-bearing part of the chunk; the pytest plumbing is incidental.
+    50	
+    51	## Conformance posture for v1 (resolved from review round 0)
+    52	
+    53	The v0 spec defines exactly one wire binding ([`07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md)).
+    54	A conforming v0 IUT MAY in principle implement the chapter-04/05/08
+    55	behavior over a non-HTTP transport, but no such transport is currently
+    56	specified, and the v1 suite drives the IUT exclusively through chapter
+    57	07's HTTP binding. **Chapter 09 therefore declares one v1 conformance
+    58	level: an IUT that passes the v1 suite is conformant to chapters 02 /
+    59	04 / 05 / 06 / 07 / 08 over HTTP.**
+    60	
+    61	Accordingly:
+    62	
+    63	- The suite uses **one** pytest marker, `conformance`, applied at the
+    64	  scenario-directory level via `conftest.py`. There is no `_core` /
+    65	  `_wire_http` split in v1. Round-0 review correctly observed that a
+    66	  marker split would be a fiction: every scenario in v1 drives the IUT
+    67	  through HTTP and most scenarios assert both the wire shape and the
+    68	  underlying state-machine effect. Pretending those layers can be
+    69	  exercised separately would make the markers a lie.
+    70	- A future spec lineage that adds a non-HTTP binding will refactor the
+    71	  suite into transport-neutral semantic tests + per-binding wire tests
+    72	  at that point. Chapter 09 §4 describes that future shape as
+    73	  informative; it does **not** ship in v1.
+    74	- Chapter 07's `/_reference/` paths and the §12 informative bearer-
+    75	  token authentication are out of normative scope for the suite.
+    76	
+    77	## Scope
+    78	
+    79	### In scope (this chunk)
+    80	
+    81	1. **Harness infrastructure** under [`conformance/harness/`](../../conformance/harness/):
+    82	   - `IutAdapter` Protocol — start a subject, return a handle that
+    83	     exposes the wire-protocol base URL and any auth material the
+    84	     subject needs.
+    85	   - pytest plugin that wires fixtures (`iut`, `wire_client`,
+    86	     `experiment_id`, `event_cursor_helper`) and the `conformance`
+    87	     marker.
+    88	   - `WireClient` — thin httpx wrapper that talks raw HTTP/JSON, NOT
+    89	     through the existing `eden_wire.StoreClient`. The conformance
+    90	     suite needs to see status codes, problem+json bodies, and
+    91	     content-type headers; `StoreClient` papers over exactly those.
+    92	
+    93	2. **Reference IUT adapter** under
+    94	   [`conformance/adapters/reference/`](../../conformance/adapters/reference/):
+    95	   - Spawns `python3 -m eden_task_store_server` in a subprocess on an
+    96	     ephemeral port, parses the `EDEN_TASK_STORE_LISTENING` line for the
+    97	     port, and tears the subprocess down on `stop()`.
+    98	   - The reference adapter is a **task-store-only** subject. The chunk
+    99	     does NOT spawn the reference orchestrator or worker hosts — chunk
+   100	     11a + 11b's scope is task-store + wire-binding behavior. Role
+   101	     contracts (which would require driving the orchestrator alongside
+   102	     the store) are chunk 11c.
+   103	   - Adapter lifecycle is **per-scenario**: each test gets a fresh
+   104	     subprocess. Sharing across scenarios is incompatible with the
+   105	     reference task-store-server, which binds one `--experiment-id` at
+   106	     start (codex review round 0 finding #6); per-scenario lifecycle
+   107	     also gives free isolation guarantees.
+   108	
+   109	3. **State-machine scenarios** under
+   110	   [`conformance/scenarios/`](../../conformance/scenarios/) (chapters
+   111	   02 / 04 / 05 / 08):
+   112	   - Task lifecycle: every legal transition; every illegal transition
+   113	     returns the spec-pinned rejection.
+   114	   - Claim tokens: §3.2 freshness/uniqueness, §3.3 authorization, §3.4
+   115	     no-reclaim-while-claimed.
+   116	   - Submit idempotency: §4.2 content-equivalent acceptance vs
+   117	     divergent rejection vs post-terminal rejection.
+   118	   - Reclamation: §5.1 case matrix; §5.2 token invalidation; §5.4
+   119	     starting-trial reconciliation on implement reclaim.
+   120	   - Event log: §1 envelope shape; §3 per-type payload fields
+   121	     (`task.claimed.worker_id`, `task.failed.reason`,
+   122	     `task.reclaimed.cause`, `proposal.dispatched.task_id`,
+   123	     `trial.integrated.trial_commit_sha`, etc.); §4.1 total order; §4.3
+   124	     at-least-once via replay; §4.4 replayability from cursor 0.
+   125	   - Composite commits: §2.2 — implement dispatch, implement terminal,
+   126	     evaluate terminal (`success` / `error` / `eval_error`), implement
+   127	     reclaim with in-flight trial.
+   128	
+   129	4. **Wire-binding scenarios** (chapter 07):
+   130	   - Status-code mapping per §§2-6: every operation returns the
+   131	     spec-pinned status.
+   132	   - RFC 7807 problem+json envelope shape on every non-2xx response per
+   133	     §7 (content-type, all five envelope fields, `type` matching
+   134	     `eden://error/<name>`).
+   135	   - Closed `eden://error/<name>` vocabulary per §7: every error type
+   136	     observed across the suite belongs to the closed table; every
+   137	     entry in the table is observed at least once across the suite.
+   138	   - `X-Eden-Experiment-Id` header **disagreement** is rejected with
+   139	     `eden://error/experiment-id-mismatch` per §1.3. The suite does NOT
+   140	     test header absence; §1.3 only pins the disagreement case (codex
+   141	     review round 0 finding #2).
+   142	   - Same-value idempotency on `integrate_trial` per §5: first call
+   143	     200 + emit `trial.integrated`; same-SHA call 200 + no second
+   144	     event; different-SHA call 409 `invalid-precondition`; non-success
+   145	     trial 409 `invalid-precondition`.
+   146	   - The suite does NOT test `/v0/`-rooting (chapter 07 §1.2 makes
+   147	     `/v0/` a positive requirement, not a "non-`/v0/` returns 404"
+   148	     requirement) or auth (chapter 07 §11-12 informative).
+   149	
+   150	5. **Self-validation scenario** (`conformance/scenarios/_meta/`):
+   151	   A scenario that runs the suite as a subprocess against a wrapper
+   152	   adapter that injects one specific deviation, then asserts:
+   153	   - the targeted test failed by exact test ID,
+   154	   - the failure message contains the expected substring,
+   155	   - the wrapper proxy's hit counter recorded ≥ 1 mutated response, and
+   156	   - the **same** suite passes against the unmodified reference adapter
+   157	     in the same meta test (control). This is the bootstrap-validation
+   158	     proof: the suite has teeth AND the teeth aren't biting innocents.
+   159	
+   160	6. **Spec chapter [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md)**:
+   161	   See §G. The chapter is short and primarily declarative. The IUT
+   162	   adapter and the v0-reference auth scheme are explicitly **informative**,
+   163	   not normative — the only normative content is "to be tested by the
+   164	   v1 suite, an IUT MUST implement chapter 07."
+   165	
+   166	7. **CI wiring** (`conformance` job in
+   167	   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)):
+   168	   `uv sync --all-packages` + `uv run pytest -q conformance/`. Branch
+   169	   protection NOT updated to require it in this chunk (same posture as
+   170	   compose-smoke / compose-smoke-subprocess / compose-smoke-subprocess-
+   171	   docker / compose-e2e took for newly-added jobs).
+   172	
+   173	8. **AGENTS.md commands table** entry for the suite invocation, plus
+   174	   citation tooling (§I).
+   175	
+   176	### Out of scope (deferred to 11c / 11d / 12 / 13)
+   177	
+   178	- **Role-contract scenarios** (planner / implementer / evaluator
+   179	  submission semantics): chunk 11c.
+   180	- **Integrator scenarios** (squash shape, eval-manifest shape, `work/*`
+   181	  access discipline): chunk 11d.
+   182	- **Multi-experiment / lease scenarios**: Phase 12.
+   183	- **Non-HTTP wire bindings**: not currently spec'd. The marker split
+   184	  is forward-looking only.
+   185	- **Conformance against deployed Compose stack**: the reference adapter
+   186	  spawns one Python subprocess against an in-process `SqliteStore` at
+   187	  `:memory:`. Container-level conformance is `compose-smoke` /
+   188	  `compose-e2e`'s job.
+   189	- **Concurrency stress / chaos scenarios**: future Phase 11 follow-up
+   190	  if they prove necessary; the v1 suite asserts spec-level behavior,
+   191	  not behavior under fault injection. The atomicity scenario in §E.4
+   192	  is explicitly framed as a regression test, not a certification.
+   193	- **SSE/WebSocket push transports**: chapter 07 §6.2 long-poll
+   194	  subscribe IS in scope; SSE/WebSocket is OPTIONAL per chapter 07 §6.2
+   195	  and out of scope here.
+   196	- **Non-`/v0/` path behavior**: chapter 07 §1.2 does not pin a
+   197	  response shape for non-`/v0/` paths; the suite does not assert one.
+   198	- **Authentication conformance**: chapter 07 §§11-12 are informative.
+   199	
+   200	## Roadmap delta
+   201	
+   202	- [`docs/roadmap.md`](../roadmap.md) Phase 11 stays as written.
+   203	- The `conformance` CI job is **not** added to branch protection in
+   204	  this chunk (deferred follow-up).
+   205	- Chapter 09's `core` vs `core + wire-http` taxonomy described in the
+   206	  pre-review plan draft is dropped for v1; chapter 09 ships with one
+   207	  v1 level. A future-bindings note is included as informative §4.
+   208	
+   209	## Design
+   210	
+   211	### A. Layout
+   212	
+   213	```text
+   214	conformance/
+   215	├── README.md                      # Updated: "v1 ships with chunk 11a+11b"
+   216	├── pyproject.toml                 # NEW — separate uv workspace member
+   217	├── conftest.py                    # imports harness.plugin
+   218	├── harness/
+   219	│   ├── __init__.py
+   220	│   ├── adapter.py                 # IutAdapter Protocol + IutHandle dataclass
+   221	│   ├── plugin.py                  # pytest plugin: fixtures + marker
+   222	│   ├── wire_client.py             # Thin httpx wrapper, talks /v0/ only
+   223	│   └── event_cursor.py            # Helper: poll subscribe; assert event order
+   224	├── adapters/
+   225	│   └── reference/
+   226	│       ├── __init__.py
+   227	│       └── adapter.py             # Spawns task-store-server subprocess
+   228	├── scenarios/
+   229	│   ├── test_task_lifecycle.py
+   230	│   ├── test_claim_tokens.py
+   231	│   ├── test_submit_idempotency.py
+   232	│   ├── test_reclamation.py
+   233	│   ├── test_event_envelope.py
+   234	│   ├── test_event_payloads.py
+   235	│   ├── test_composite_commits.py
+   236	│   ├── test_event_delivery.py     # Total order, replay, at-least-once
+   237	│   ├── test_atomicity.py          # Best-effort regression test
+   238	│   ├── test_status_codes.py
+   239	│   ├── test_problem_json.py
+   240	│   ├── test_error_vocabulary.py
+   241	│   ├── test_experiment_id_header.py
+   242	│   ├── test_integrate_idempotency.py
+   243	│   └── _meta/
+   244	│       ├── __init__.py
+   245	│       └── test_self_validation.py
+   246	├── tools/
+   247	│   └── check_citations.py         # Walks scenario docstrings; verifies citations
+   248	└── fixtures/
+   249	    └── minimal-experiment.yaml    # Smallest valid experiment-config
+   250	```
+   251	
+   252	All scenario tests are in a single flat directory. The suite uses one
+   253	marker (`conformance`) applied at the directory level via
+   254	`conftest.py`. The `_meta/` directory carries the self-validation
+   255	scenario, marked separately as `conformance_meta` so it can be
+   256	filtered out of "run the suite as an IUT validates itself" — a real
+   257	IUT validation runs `pytest conformance/scenarios/ --ignore=conformance/scenarios/_meta`.
+   258	
+   259	### B. The IUT-adapter Protocol
+   260	
+   261	In [`conformance/harness/adapter.py`](../../conformance/harness/adapter.py):
+   262	
+   263	```python
+   264	from __future__ import annotations
+   265	
+   266	from dataclasses import dataclass, field
+   267	from pathlib import Path
+   268	from typing import Mapping, Protocol
+   269	
+   270	
+   271	@dataclass(frozen=True)
+   272	class IutHandle:
+   273	    """Handle returned by IutAdapter.start; everything the harness
+   274	    needs to drive the IUT through chapter-07 HTTP.
+   275	    """
+   276	
+   277	    base_url: str
+   278	    experiment_id: str
+   279	    # Headers the harness should attach to every request. Empty for
+   280	    # IUTs without auth; the reference adapter sets
+   281	    # {"Authorization": "Bearer <token>"}. Auth is informative per
+   282	    # chapter-07 §12, so the conformance contract does not require
+   283	    # any specific scheme; it just gives the IUT a way to inject one.
+   284	    extra_headers: Mapping[str, str] = field(default_factory=dict)
+   285	
+   286	
+   287	class IutAdapter(Protocol):
+   288	    """Conformance-suite adapter for an EDEN task-store implementation.
+   289	
+   290	    A conforming third-party implementation provides ONE concrete
+   291	    subclass. The reference adapter under conformance/adapters/reference
+   292	    is one example.
+   293	
+   294	    The adapter contract is informative per chapter 09 §6. Non-Python
+   295	    implementors are free to write their own runner that drives an
+   296	    IUT through chapter-07 HTTP without using this Python Protocol at
+   297	    all; the spec only requires the IUT to implement chapter 07.
+   298	    """
+   299	
+   300	    def start(
+   301	        self,
+   302	        *,
+   303	        experiment_config_path: Path,
+   304	        experiment_id: str,
+   305	    ) -> IutHandle: ...
+   306	
+   307	    def stop(self) -> None: ...
+   308	```
+   309	
+   310	The handle is **flat** (no callable for fetching a fresh token mid-
+   311	scenario); every secret a scenario needs is observable through the
+   312	wire binding. The handle's `extra_headers` field replaces a bespoke
+   313	`shared_token` to keep the contract scheme-agnostic — an IUT that uses
+   314	mTLS, a custom header, or no auth at all can still satisfy the
+   315	contract.
+   316	
+   317	The adapter is **per-scenario**: each test gets `start()` → use →
+   318	`stop()`. The reference adapter takes ~2 seconds per cycle (subprocess
+   319	spawn + uvicorn startup + port readiness); ≤ 50 scenarios in v1 means
+   320	the full suite runs in ~2 minutes locally and ~5 minutes in CI. That
+
+ succeeded in 0ms:
+   321	is an acceptable cost for the isolation guarantees per-scenario start
+   322	provides.
+   323	
+   324	### C. The pytest plugin
+   325	
+   326	In [`conformance/harness/plugin.py`](../../conformance/harness/plugin.py):
+   327	
+   328	```python
+   329	import importlib
+   330	import uuid
+   331	import pytest
+   332	
+   333	from .adapter import IutAdapter, IutHandle
+   334	from .wire_client import WireClient
+   335	from .event_cursor import EventCursorHelper
+   336	
+   337	
+   338	def pytest_configure(config: pytest.Config) -> None:
+   339	    config.addinivalue_line(
+   340	        "markers",
+   341	        "conformance: scenario asserts a chapter-02/04/05/06/07/08 "
+   342	        "MUST. Every conforming v0 IUT must pass.",
+   343	    )
+   344	    config.addinivalue_line(
+   345	        "markers",
+   346	        "conformance_meta: harness self-validation. Not part of the "
+   347	        "v1 conformance level.",
+   348	    )
+   349	
+   350	
+   351	def pytest_addoption(parser: pytest.Parser) -> None:
+   352	    parser.addoption(
+   353	        "--iut-adapter",
+   354	        default="conformance.adapters.reference.adapter:ReferenceAdapter",
+   355	        help="Importable path to the IutAdapter implementation.",
+   356	    )
+   357	
+   358	
+   359	@pytest.fixture(scope="session")
+   360	def iut_adapter_factory(pytestconfig: pytest.Config):
+   361	    spec = pytestconfig.getoption("--iut-adapter")
+   362	    module_name, cls_name = spec.split(":")
+   363	    return getattr(importlib.import_module(module_name), cls_name)
+   364	
+   365	
+   366	@pytest.fixture
+   367	def iut(iut_adapter_factory, tmp_path) -> IutHandle:
+   368	    adapter: IutAdapter = iut_adapter_factory()
+   369	    config_path = _write_minimal_experiment_config(tmp_path)
+   370	    experiment_id = f"test-{uuid.uuid4().hex[:8]}"
+   371	    handle = adapter.start(
+   372	        experiment_config_path=config_path,
+   373	        experiment_id=experiment_id,
+   374	    )
+   375	    try:
+   376	        yield handle
+   377	    finally:
+   378	        adapter.stop()
+   379	
+   380	
+   381	@pytest.fixture
+   382	def wire_client(iut: IutHandle) -> WireClient:
+   383	    return WireClient(
+   384	        base_url=iut.base_url,
+   385	        experiment_id=iut.experiment_id,
+   386	        extra_headers=iut.extra_headers,
+   387	    )
+   388	```
+   389	
+   390	The `WireClient` is a thin httpx wrapper that:
+   391	
+   392	- Talks raw HTTP/JSON, returning httpx `Response` objects (not decoded
+   393	  models) so scenarios can assert on status codes, headers, and body.
+   394	- Always sets `X-Eden-Experiment-Id` per chapter 07 §1.3 (the suite
+   395	  tests the disagreement case explicitly by overriding it).
+   396	- Adds `iut.extra_headers` to every request.
+   397	- Does NOT retry, NOT decode problem+json into typed exceptions, NOT
+   398	  paper over errors. All of those would mask the wire shape the
+   399	  suite is verifying.
+   400	
+   401	### D. The reference IUT adapter
+   402	
+   403	In [`conformance/adapters/reference/adapter.py`](../../conformance/adapters/reference/adapter.py):
+   404	
+   405	```python
+   406	import secrets
+   407	import subprocess
+   408	import sys
+   409	import threading
+   410	import time
+   411	from pathlib import Path
+   412	
+   413	from conformance.harness.adapter import IutAdapter, IutHandle
+   414	
+   415	
+   416	class ReferenceAdapter:
+   417	    """Spawns a fresh task-store-server subprocess against in-memory storage."""
+   418	
+   419	    _PORT_ANNOUNCE_TIMEOUT = 15.0
+   420	    _STOP_TIMEOUT = 5.0
+   421	
+   422	    def __init__(self) -> None:
+   423	        self._proc: subprocess.Popen | None = None
+   424	        self._stderr_buf: list[str] = []
+   425	        self._stderr_thread: threading.Thread | None = None
+   426	
+   427	    def start(self, *, experiment_config_path: Path, experiment_id: str) -> IutHandle:
+   428	        token = secrets.token_urlsafe(24)
+   429	        self._proc = subprocess.Popen(
+   430	            [
+   431	                sys.executable, "-m", "eden_task_store_server",
+   432	                "--store-url", ":memory:",
+   433	                "--experiment-id", experiment_id,
+   434	                "--experiment-config", str(experiment_config_path),
+   435	                "--shared-token", token,
+   436	                "--port", "0",
+   437	                "--host", "127.0.0.1",
+   438	            ],
+   439	            stdout=subprocess.PIPE,
+   440	            stderr=subprocess.PIPE,
+   441	            text=True,
+   442	        )
+   443	        port = self._read_port_announcement()
+   444	        self._start_stderr_drain()
+   445	        return IutHandle(
+   446	            base_url=f"http://127.0.0.1:{port}",
+   447	            experiment_id=experiment_id,
+   448	            extra_headers={"Authorization": f"Bearer {token}"},
+   449	        )
+   450	
+   451	    def stop(self) -> None:
+   452	        if self._proc and self._proc.poll() is None:
+   453	            self._proc.terminate()
+   454	            try:
+   455	                self._proc.wait(timeout=self._STOP_TIMEOUT)
+   456	            except subprocess.TimeoutExpired:
+   457	                self._proc.kill()
+   458	                self._proc.wait(timeout=2.0)
+   459	        # Drain stderr so the next scenario's pytest output isn't polluted.
+   460	        if self._stderr_thread:
+   461	            self._stderr_thread.join(timeout=1.0)
+   462	```
+   463	
+   464	The `_read_port_announcement` helper duplicates the corresponding
+   465	helper from
+   466	[`reference/services/orchestrator/tests/test_e2e.py`](../../reference/services/orchestrator/tests/test_e2e.py)
+   467	intentionally — copy is cheap, dependency from `conformance/` into
+   468	`reference/services/orchestrator/tests/` is wrong direction.
+   469	`conformance/` MUST NOT import from `reference/` outside
+   470	`conformance/adapters/reference/`. CI gates this; see §H.
+   471	
+   472	The reference adapter takes a deliberate shortcut: `SqliteStore(":memory:")`
+   473	rather than `PostgresStore`. Conformance does not test durability;
+   474	[`reference/packages/eden-storage/tests/`](../../reference/packages/eden-storage/tests/)
+   475	does. SQLite-in-memory gives the fastest possible test cycle.
+   476	
+   477	### E. Scenario inventory
+   478	
+   479	Every scenario's first docstring line cites the exact normative MUST
+   480	it tests, in the format `spec/v0/<chapter>.md §<sec>`. The
+   481	`tools/check_citations.py` helper (§I) walks every test and verifies
+   482	the citation resolves. Any test whose citation cannot be verified is
+   483	a CI failure.
+   484	
+   485	#### E.1 Task lifecycle (`test_task_lifecycle.py`)
+   486	
+   487	Each test creates a fresh `plan` task and exercises one transition.
+   488	Tests assert both the post-condition (state machine) and the wire
+   489	response (status + error type for negative cases).
+   490	
+   491	| Test | Asserts | Citation |
+   492	|---|---|---|
+   493	| `test_create_task_pending` | After `POST /tasks`, the task exists with `state == "pending"`, no `claim`. | 04 §2; 02 §3.1 |
+   494	| `test_pending_to_claimed` | `POST /tasks/{T}/claim` returns 200 with claim object; subsequent read shows `state == "claimed"`. | 04 §1.2; §3.2 |
+   495	| `test_claimed_to_submitted` | Submit with current token + plan payload returns 200; `state == "submitted"`. | 04 §4.1 |
+   496	| `test_submitted_to_completed` | `POST /tasks/{T}/accept` returns 200; `state == "completed"`. | 04 §4.3 |
+   497	| `test_submitted_to_failed_via_reject` | Reject with valid `reason` returns 200; `state == "failed"`. | 04 §4.3 |
+   498	| `test_terminal_completed_rejects_writes` | After accept, every write op (claim, submit, accept, reject, reclaim) returns 409 `eden://error/illegal-transition`. | 04 §1.1, §4.4 |
+   499	| `test_terminal_failed_rejects_writes` | Same for `failed`. | 04 §1.1 |
+   500	| `test_pending_rejects_submit` | Submit on pending task returns 409 `illegal-transition`. | 04 §1.2 |
+   501	| `test_pending_rejects_accept` | Accept on pending task returns 409. | 04 §1.2 |
+   502	| `test_pending_rejects_reject` | Reject on pending task returns 409. | 04 §1.2 |
+   503	| `test_claimed_rejects_accept` | Accept-without-submit returns 409. | 04 §1.2 |
+   504	| `test_claim_rejected_when_not_pending` | Re-claim a `claimed` task returns 409. | 04 §3.4 |
+   505	| `test_terminal_rejects_reclaim` | Reclaim of a `completed` or `failed` task returns 409. | 04 §5.1 |
+   506	
+   507	#### E.2 Claim tokens (`test_claim_tokens.py`)
+   508	
+   509	| Test | Asserts | Citation |
+   510	|---|---|---|
+   511	| `test_token_present_on_claim` | Successful claim response carries `claim.token`. | 02 §3.4 |
+   512	| `test_token_unique_across_tasks` | Two parallel claims on different tasks produce different tokens. | 04 §3.2 |
+   513	| `test_token_unique_across_reclaim_cycles` | Reclaim → re-claim same task → token differs. | 04 §3.2; §5.2 |
+   514	| `test_wrong_token_rejected` | Submit with a fabricated token returns 403 `eden://error/wrong-token`. | 04 §3.3 |
+   515	| `test_token_invalidated_by_reclaim` | After operator reclaim, the prior token returns 403 wrong-token on submit. | 04 §5.2 |
+   516	| `test_no_reclaim_while_claimed` | Second worker's claim against a claimed task returns 409 illegal-transition. | 04 §3.4 |
+   517	
+   518	The harness does NOT attempt to assert "tokens are unforgeable" — that
+   519	is a SHOULD/MAY mechanism in chapter 04 §3.2. The MUST is uniqueness,
+   520	which is testable.
+   521	
+   522	#### E.3 Submit idempotency (`test_submit_idempotency.py`)
+   523	
+   524	| Test | Asserts | Citation |
+   525	|---|---|---|
+   526	| `test_resubmit_content_equivalent_returns_200` | Second submit with identical payload returns 200; no second `task.submitted` event in the log. | 04 §4.2 |
+   527	| `test_resubmit_divergent_returns_409` | Second submit with different proposal_ids set returns 409 `eden://error/conflicting-resubmission`; first payload remains the committed one. | 04 §4.2 |
+   528	| `test_plan_proposal_ids_compared_as_set` | Two submits with same proposal_ids in different order are content-equivalent. | 04 §4.2 |
+   529	| `test_evaluate_metrics_compared_as_json` | Evaluate resubmit with same metrics in different key order is content-equivalent. | 04 §4.2 |
+   530	| `test_resubmit_after_terminal_rejected` | After accept, resubmit with the original token returns 409 illegal-transition (not wrong-token; per §4.4 the request is illegal regardless of token validity). | 04 §4.4 |
+   531	
+   532	#### E.4 Reclamation (`test_reclamation.py`)
+   533	
+   534	| Test | Asserts | Citation |
+   535	|---|---|---|
+   536	| `test_reclaim_operator_from_claimed` | Operator reclaim from claimed: 200; back to pending; claim cleared; `task.reclaimed` event with `cause=operator`. | 04 §5.1, §5.2 |
+   537	| `test_reclaim_operator_from_submitted` | Same for submitted. | 04 §5.1 |
+   538	| `test_reclaim_expired_from_claimed` | Claim with `expires_at` in the past, then reclaim with `cause=expired`: 200. | 04 §5.1 |
+   539	| `test_reclaim_expired_against_submitted_rejected` | Cannot apply automatic reclaim to submitted (rejected with 409). | 04 §5.1 |
+   540	| `test_implement_reclaim_sets_starting_trial_to_error` | Implement reclaim after `create_trial(status="starting")`: trial flips to `error` atomically with the reclaim. Both `task.reclaimed` and `trial.errored` events appear in the log. | 04 §5.4; 05 §2.2 |
+   541	
+   542	(The reclaim-cause vocabulary closure scenario moves to wire-binding;
+   543	codex review round 0 finding #9.)
+   544	
+   545	#### E.5 Atomicity (best-effort regression test) (`test_atomicity.py`)
+   546	
+   547	```python
+   548	@pytest.mark.conformance
+   549	def test_task_state_change_visible_only_after_event_appended():
+   550	    """spec/v0/04-task-protocol.md §1.3 — every state change MUST be
+   551	    accompanied by its event, atomically.
+   552	
+   553	    NOTE: This is a best-effort regression test, not a certification of
+   554	    the §1.3 atomicity invariant. A black-box poll-and-compare cannot
+   555	    rule out that the IUT briefly exposed a state without its event in
+   556	    a window narrower than the harness can observe; a Jepsen-style
+   557	    linearizability check is out of scope for v1.
+   558	
+   559	    The test drives one transition while concurrently long-poll-
+   560	    subscribing to the event log. The assertion is: when the
+   561	    long-poll yields the next event, an immediate `GET /tasks/{T}`
+   562	    MUST show a state consistent with that event. A subsequent
+   563	    follow-up read MUST NOT regress the state. Any window where the
+   564	    poll observes a state that the subsequent event does not match
+   565	    is a finding.
+   566	    """
+   567	```
+   568	
+   569	The wording in the docstring matches what codex review round 0
+   570	finding #4 prescribed: "best-effort black-box regression test, not the
+   571	conformance proof of atomicity." Chapter 09 §3 explicitly notes that
+   572	no v1 scenario certifies §1.3; the v1 suite asserts the testable
+   573	consequences.
+   574	
+   575	#### E.6 Event envelope (`test_event_envelope.py`)
+   576	
+   577	For every event observed across the suite, assert chapter 05 §1
+   578	envelope shape:
+   579	
+   580	| Test | Asserts | Citation |
+   581	|---|---|---|
+   582	| `test_event_carries_event_id` | Every event has `event_id` (string, non-empty). | 05 §1 |
+   583	| `test_event_carries_type` | Every event has `type` matching `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`. | 05 §1 |
+   584	| `test_event_carries_occurred_at` | Every event has `occurred_at` matching the §1 RFC 3339 profile. | 05 §1 |
+   585	| `test_event_carries_experiment_id_matching` | Every event's `experiment_id` matches the experiment under test. | 05 §1 |
+   586	| `test_event_carries_data_object` | Every event's `data` is an object. | 05 §1 |
+   587	| `test_event_id_uniqueness` | Across an experiment's stream, no two events share an `event_id`. | 05 §1.1 |
+   588	
+   589	#### E.7 Per-type event payloads (`test_event_payloads.py`)
+   590	
+   591	For each chapter 05 §3 registered type produced by v1 scenarios:
+   592	
+   593	| Test | Asserts | Citation |
+   594	|---|---|---|
+   595	| `test_task_created_carries_task_id_and_kind` | `task.created` payload has `task_id`, `kind`. | 05 §3.1 |
+   596	| `test_task_claimed_carries_worker_id` | `task.claimed` payload has `task_id`, `worker_id`. | 05 §3.1 |
+   597	| `test_task_submitted_carries_task_id` | `task.submitted` payload has `task_id`. | 05 §3.1 |
+   598	| `test_task_completed_carries_task_id` | `task.completed` payload has `task_id`. | 05 §3.1 |
+   599	| `test_task_failed_carries_reason` | `task.failed` payload has `task_id`, `reason ∈ {worker_error, validation_error, policy_limit}`. | 05 §3.1 |
+   600	| `test_task_reclaimed_carries_cause` | `task.reclaimed` payload has `task_id`, `cause ∈ {expired, operator, health_policy}`. | 05 §3.1 |
+   601	| `test_proposal_drafted_carries_proposal_id` | `proposal.drafted` payload has `proposal_id`. | 05 §3.2 |
+   602	| `test_proposal_ready_carries_proposal_id` | Same. | 05 §3.2 |
+   603	| `test_proposal_dispatched_carries_task_id` | `proposal.dispatched` payload has `proposal_id`, `task_id`. The event MUST be exactly `proposal.dispatched`, not a synonym (codex review round 0 finding #7). | 05 §3.2; §2.2 |
+   604	| `test_proposal_completed_carries_task_id` | `proposal.completed` payload has `proposal_id`, `task_id`. | 05 §3.2 |
+   605	| `test_trial_started_carries_proposal_id` | `trial.started` payload has `trial_id`, `proposal_id`. | 05 §3.3 |
+   606	| `test_trial_succeeded_carries_commit_sha` | `trial.succeeded` payload has `trial_id`, `commit_sha`. | 05 §3.3 |
+   607	| `test_trial_errored_carries_trial_id` | `trial.errored` payload has `trial_id`. | 05 §3.3 |
+   608	| `test_trial_eval_errored_carries_trial_id` | `trial.eval_errored` payload has `trial_id`. | 05 §3.3 |
+   609	| `test_trial_integrated_carries_trial_commit_sha` | `trial.integrated` payload has `trial_id`, `trial_commit_sha`. | 05 §3.3 |
+   610	
+   611	#### E.8 Composite commits (`test_composite_commits.py`)
+   612	
+   613	Per chapter 05 §2.2, six composite-commit cases. Each test:
+   614	
+   615	- Drives the composite operation through the wire binding,
+   616	- Reads the event log,
+   617	- Asserts both component events are present (no partial visibility),
+   618	- For atomicity-sensitive cases, reads the entity state and asserts
+   619	  consistency with the events.
+   620	
+   621	| Test | Asserts | Citation |
+   622	|---|---|---|
+   623	| `test_implement_dispatch_atomic` | Creating an `implement` task: `task.created` AND `proposal.dispatched` both appear, and `read_proposal` shows `state == "dispatched"`. | 05 §2.2 |
+   624	| `test_implement_terminal_completes_proposal` | Implementer task's `submitted → completed` transition: `task.completed` AND `proposal.completed` both appear; proposal is `state == "completed"`. | 05 §2.2 |
+   625	| `test_implement_terminal_fails_proposal` | Implementer task's `submitted → failed`: `task.failed` AND `proposal.completed` both appear (proposal still goes to completed per chapter 4 §7; the proposal lifecycle ends regardless of task outcome). | 05 §2.2; 04 §7 |
+   626	| `test_evaluate_terminal_success_emits_trial_succeeded` | Evaluate `submitted → completed` with worker `status=success`: `task.completed` AND `trial.succeeded` both appear; trial is `status == "success"`. | 05 §2.2; 04 §4.3 |
+   627	| `test_evaluate_terminal_error_emits_trial_errored` | Evaluate `submitted → failed` with worker `status=error`: `task.failed` AND `trial.errored` both appear; trial is `status == "error"`. | 05 §2.2; 04 §4.3 |
+   628	| `test_evaluate_terminal_eval_error_keeps_trial_starting` | Evaluate `submitted → failed` with worker `status=eval_error`: `task.failed` appears; trial stays `status == "starting"` (NO `trial.eval_errored` event yet — that fires only when the orchestrator decides to terminalize the trial). | 04 §4.3 |
+   629	| `test_implement_reclaim_with_starting_trial` | Implement reclaim on a task whose execution had created a starting trial: `task.reclaimed` AND `trial.errored` both appear atomically. | 05 §2.2; 04 §5.4 |
+   630	
+   631	#### E.9 Event delivery (`test_event_delivery.py`)
+   632	
+   633	| Test | Asserts | Citation |
+   634	|---|---|---|
+   635	| `test_total_order_per_experiment` | Two reads of the event log return events in the same order. | 05 §4.1 |
+   636	| `test_replay_from_cursor_zero_returns_all_events` | After driving N transitions, `GET /events?cursor=0` returns all N events. | 05 §4.4 |
+   637	| `test_at_least_once_via_cursor_replay` | A subsequent `GET /events?cursor=0` returns the same set (at-least-once subsumes replay's bounded-many-times semantics). | 05 §4.3 |
+   638	| `test_subscribe_long_poll_yields_event` | Open `GET /events/subscribe?cursor=N` then issue a transition; the long-poll returns the new event within the chapter 07 §6.2 timeout. | 07 §6.2 |
+   639	| `test_subscribe_empty_batch_after_timeout` | Open subscribe against a quiescent log; after the server timeout, response is `{events: [], cursor: <unchanged>}`. | 07 §6.2 |
+   640	
+   641	#### E.10 Status codes (`test_status_codes.py`)
+   642	
+   643	| Test | Asserts | Citation |
+   644	|---|---|---|
+   645	| `test_create_task_returns_200` | Successful create returns 200. | 07 §2.1 |
+   646	| `test_read_unknown_task_returns_404` | Unknown task returns 404 + `eden://error/not-found`. | 07 §2.2; §7 |
+   647	| `test_claim_non_pending_returns_409` | Claim on non-pending returns 409 + `eden://error/illegal-transition`. | 07 §2.3 |
+   648	| `test_submit_wrong_token_returns_403` | Submit with wrong token returns 403 + `eden://error/wrong-token`. | 07 §2.4 |
+   649	| `test_submit_divergent_returns_409` | Submit with divergent payload returns 409 + `eden://error/conflicting-resubmission`. | 07 §2.4 |
+   650	| `test_integrate_different_sha_returns_409` | Integrate with different SHA returns 409 + `eden://error/invalid-precondition`. | 07 §5 |
+   651	| `test_bad_request_body_returns_400` | Schema-invalid body returns 400 + `eden://error/bad-request`. | 07 §7 |
+   652	| `test_replay_returns_200_with_cursor` | `GET /events` returns 200 + body shape `{events, cursor}`. | 07 §6.1 |
+   653	| `test_reclaim_cause_vocabulary_closed` | `POST /tasks/{T}/reclaim cause="garbage"` returns 400 `eden://error/bad-request` (the §7 vocabulary closure forces this; the task store's reclaim-cause closure pinned in chapter 04 §5.1 is upheld via the wire-binding's bad-request mechanism). | 07 §2.6, §7 |
+   654	
+   655	#### E.11 Problem+json envelope (`test_problem_json.py`)
+   656	
+   657	For each error class observed in §E.10, assert:
+   658	
+   659	- `Content-Type: application/problem+json; charset=utf-8`.
+   660	- Body parses as JSON and matches
+   661	  [`spec/v0/schemas/wire/error.schema.json`](../../spec/v0/schemas/wire/error.schema.json).
+   662	- `type` is a URI matching `eden://error/<name>`.
+   663	- `status` field equals the HTTP status.
+   664	- `title`, `detail`, `instance` are non-empty strings.
+   665	
+   666	Citation: 07 §7.
+   667	
+   668	#### E.12 Error vocabulary closure (`test_error_vocabulary.py`)
+   669	
+   670	| Test | Asserts | Citation |
+   671	|---|---|---|
+   672	| `test_observed_types_are_in_v0_vocabulary` | Across the entire suite run, every observed `type` URI is in the chapter 07 §7 closed table. | 07 §7 |
+   673	| `test_v0_vocabulary_each_observed_at_least_once` | Across the suite, each entry of the §7 vocabulary is observed by at least one test. | 07 §7 |
+   674	
+   675	This is implemented via a session-scoped fixture that records every
+   676	non-2xx response's `type`. The two assertions run as two pytest items
+   677	collected last in the session via `pytest-ordering`. (Pinned in
+   678	`conformance/pyproject.toml`.) The `test_no_internal_eden_error_type_for_auth`
+   679	scenario from the pre-review draft is dropped: chapter 07 §11-12 makes
+   680	auth informative.
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md | sed -n '681,980p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   681	
+   682	#### E.13 Experiment-id header disagreement (`test_experiment_id_header.py`)
+   683	
+   684	| Test | Asserts | Citation |
+   685	|---|---|---|
+   686	| `test_header_disagrees_returns_400` | A request whose `X-Eden-Experiment-Id` header value differs from its path segment returns 400 `eden://error/experiment-id-mismatch`. | 07 §1.3 |
+   687	
+   688	The pre-review draft's `test_v0_root_required` (404 on missing /v0/),
+   689	`test_experiment_id_header_required` (header absence), and
+   690	`test_reference_paths_not_required_for_conformance` are dropped: none
+   691	are pinned by a normative MUST (codex review round 0 finding #2).
+   692	
+   693	#### E.14 Integrate idempotency (`test_integrate_idempotency.py`)
+   694	
+   695	The fixture model is **simplified** from the pre-review draft per
+   696	codex review round 0 finding #8: instead of driving plan → implement →
+   697	evaluate to produce a real `success` trial, the test seeds the trial
+   698	directly through the storage endpoints in chapter 07 §3-4. The wire
+   699	endpoint's normative contract (chapter 07 §5) treats `trial_commit_sha`
+   700	as a "well-formed commit SHA" — only the regex shape is checked at the
+   701	task-store layer. Reachability is the integrator's MUST (chapter 06
+   702	§2), not the task store's. The v1 test uses placeholder 40-hex SHAs.
+   703	
+   704	| Test | Asserts | Citation |
+   705	|---|---|---|
+   706	| `test_first_integrate_returns_200_emits_event` | First call with `trial_commit_sha=<40-hex>` returns 200; one `trial.integrated` event appears. | 07 §5 |
+   707	| `test_same_value_idempotency` | Second call with the same SHA returns 200; still exactly one `trial.integrated` event. | 07 §5 |
+   708	| `test_different_sha_returns_409` | Second call with a different SHA returns 409 `eden://error/invalid-precondition`; stored value unchanged. | 07 §5 |
+   709	| `test_integrate_against_non_success_trial_returns_409` | Trial with `status != "success"` rejects integrate with `invalid-precondition`. | 07 §5 |
+   710	
+   711	The setup helper (`integrate_test_trial_factory`):
+   712	
+   713	1. `POST /v0/experiments/{E}/proposals` with `state=drafting`,
+   714	   `parent_commits=["0"*40]`, `slug="test"`, `priority=0.5`.
+   715	2. `POST /v0/experiments/{E}/proposals/{P}/mark-ready`.
+   716	3. `POST /v0/experiments/{E}/trials` with `proposal_id=P`,
+   717	   `commit_sha="1"*40`, `status=starting`.
+   718	4. `POST /v0/experiments/{E}/tasks` for `evaluate` referencing trial.
+   719	5. Claim → submit `status=success` with valid metrics → accept.
+   720	6. Integrate against the now-`success` trial.
+   721	
+   722	Steps 1-5 use only chapter-07 endpoints. No git operations, no
+   723	worker-host coordination. This keeps 11a + 11b's scope clean of
+   724	chapter-03 role semantics.
+   725	
+   726	### F. Self-validation scenario
+   727	
+   728	In [`conformance/scenarios/_meta/test_self_validation.py`](../../conformance/scenarios/_meta/test_self_validation.py).
+   729	
+   730	The pre-review draft's `pytest.main()`-in-pytest design is replaced
+   731	with a subprocess pytest invocation per codex review round 0 finding 5.
+   732	The meta scenario:
+   733	
+   734	1. **Constructs a `MisbehavingAdapter`** that wraps `ReferenceAdapter`
+   735	   with an in-process httpx-Mocked-Transport-shaped HTTP proxy
+   736	   (see below). The proxy:
+   737	   - Listens on its own ephemeral port.
+   738	   - Forwards all requests transparently to the underlying real IUT.
+   739	   - Special-cases ONE URL pattern (`POST /v0/.../tasks/.../submit`
+   740	     with a token mismatch detected by reading and re-emitting the
+   741	     real backend's response): if the real IUT would have returned
+   742	     403 `eden://error/wrong-token`, the proxy mutates the response
+   743	     to 200 OK with a fabricated success body.
+   744	   - Maintains a `mutation_count` counter incremented whenever it
+   745	     mutated a response.
+   746	   - Lifecycle is context-managed: enter → start proxy → real IUT;
+   747	     exit → real IUT.stop() → proxy.stop().
+   748	
+   749	2. **Runs three subprocess pytest invocations** via
+   750	   `subprocess.run([sys.executable, "-m", "pytest", ...])`:
+   751	
+   752	   a. **Control run (must pass).** Target:
+   753	      `conformance/scenarios/test_claim_tokens.py::test_wrong_token_rejected`
+   754	      against the unmodified `ReferenceAdapter`.
+   755	      Assertion: exit code 0.
+   756	
+   757	   b. **Broken run (must fail).** Same target test against
+   758	      `MisbehavingAdapter`. Assertion: exit code != 0 AND
+   759	      `--json-report-file` shows `test_wrong_token_rejected` as
+   760	      `outcome=failed` AND its `longrepr` contains the substring
+   761	      `"Expected 403 wrong-token, got 200"` (the exact assertion
+   762	      text from the broken scenario; this proves the failure was the
+   763	      expected assertion, not an import error or proxy-startup
+   764	      error).
+   765	
+   766	   c. **Hit counter check (must be ≥ 1).** After the broken run,
+   767	      read the `MisbehavingAdapter`'s `mutation_count` (exposed via
+   768	      a sidecar file the proxy writes to; the meta test reads it
+   769	      after the subprocess exits). Assertion: count ≥ 1.
+   770	
+   771	3. **All three assertions pass** ⇒ the meta scenario is the proof
+   772	   that the suite has teeth. Any single-failure fails the meta.
+   773	
+   774	The proxy implementation lives at
+   775	[`conformance/scenarios/_meta/_misbehave_proxy.py`](../../conformance/scenarios/_meta/_misbehave_proxy.py)
+   776	and uses `aiohttp` (pinned in `conformance/pyproject.toml`). It is
+   777	~80 lines: a single-purpose forwarder that mutates one specific
+   778	response shape. It is **not** a general MITM library.
+   779	
+   780	The misbehaving adapter exposes its own `--shared-token` because the
+   781	sidecar misbehaving proxy needs to read+forward authenticated requests
+   782	unchanged.
+   783	
+   784	#### F.1 Why three sub-runs
+   785	
+   786	- The control run (a) defends against false-positives: if a real bug
+   787	  has already broken the wrong-token assertion in the suite, the
+   788	  control fails and we know the meta scenario isn't the right
+   789	  diagnosis.
+   790	- The broken run (b) defends against silent harness regressions: if
+   791	  someone refactors the wrong-token check away, the broken run starts
+   792	  passing, and the meta fires.
+   793	- The hit counter (c) defends against drift in the proxy itself: if
+   794	  the harness changes how it tests wrong-token (e.g., starts using a
+   795	  different URL or status code), the proxy stops matching the request,
+   796	  the broken run still fails (because `wrong-token` no longer fires),
+   797	  but the hit counter goes to 0 and the meta fires.
+   798	
+   799	#### F.2 Why this is not "just an extra test"
+   800	
+   801	The self-validation scenario is the closest thing to a proof that the
+   802	suite asserts what it claims. Chapter 09 §3 leans on this scenario
+   803	when it says "every assertion in the suite is keyed off a normative
+   804	MUST." The meta is the integrity check that connects the assertion
+   805	text to a concrete observable failure.
+   806	
+   807	### G. Spec chapter 09
+   808	
+   809	Chapter 09 is short by design. The chapter's job is to declare the
+   810	relationship between the spec, the suite, and any IUT — not to
+   811	duplicate content from chapters 02 / 04 / 05 / 06 / 07 / 08.
+   812	
+   813	```markdown
+   814	# Conformance
+   815	
+   816	This chapter declares what conformance to EDEN protocol v0 means and
+   817	how it is verified.
+   818	
+   819	## 1. What conformance is
+   820	
+   821	A v0-conforming IUT (implementation under test) implements chapter
+   822	07's HTTP wire binding with the normative semantics of chapters 02 /
+   823	04 / 05 / 06 / 08.
+   824	
+   825	The v1 conformance suite — under [`conformance/`](../../conformance/)
+   826	in this repo — is one expression of that contract: a set of black-box
+   827	scenarios that drive an IUT through chapter-07 HTTP and assert
+   828	chapter-02/04/05/06/07/08 MUSTs. An IUT that passes the v1 suite is
+   829	v0-conformant.
+   830	
+   831	The suite is one expression, not the only one. A future suite — in a
+   832	different language, against a different harness — that drives the same
+   833	chapter-07 endpoints and asserts the same MUSTs would be equally
+   834	authoritative. The spec is the source of truth; the suite is one
+   835	faithful implementation of "what would test that?"
+   836	
+   837	## 2. The IUT
+   838	
+   839	An IUT MUST:
+   840	
+   841	- Expose chapter 07's HTTP binding at a deployment-chosen base URL.
+   842	- Accept an experiment configuration whose shape matches
+   843	  `experiment-config.schema.json`.
+   844	
+   845	Anything else — language, deployment topology, persistence, auth
+   846	scheme, scaling profile — is a deployment choice. Chapter 07 §11
+   847	enumerates further latitude.
+   848	
+   849	## 3. Assertion vocabulary
+   850	
+   851	Every assertion in the v1 suite is keyed off a normative MUST in
+   852	chapters 02 / 04 / 05 / 06 / 07 / 08. The suite does NOT assert
+   853	SHOULDs; SHOULDs are interop guidance, not interop contracts.
+   854	
+   855	When the spec evolves, the suite evolves with it. A change that
+   856	removes a MUST or downgrades it to SHOULD MUST be accompanied by a
+   857	matching scenario removal or rewrite.
+   858	
+   859	The suite intentionally does NOT certify §1.3-class atomicity or §3.2
+   860	unforgeability properties; black-box testing cannot prove the absence
+   861	of a sufficiently-narrow window or the absence of a sufficiently-weak
+   862	random source. The v1 suite asserts the testable consequences of these
+   863	invariants (event presence, uniqueness across observed claims) and
+   864	labels the regression-style tests as such.
+   865	
+   866	## 4. Conformance levels
+   867	
+   868	For v0, there is exactly one conformance level: **v1 conformance** —
+   869	passing the v1 suite. The v0 spec defines exactly one wire binding
+   870	(chapter 07 HTTP), and the v1 suite drives every IUT through it; the
+   871	suite cannot meaningfully separate "core operation semantics" from
+   872	"chapter-07 wire shapes" until a second binding exists.
+   873	
+   874	A future spec lineage that introduces a second wire binding will at
+   875	that point split the suite into transport-neutral semantic tests + per-
+   876	binding wire tests, and chapter 09 will gain a `core` level claimable
+   877	by IUTs implementing only the semantic layer. The marker structure in
+   878	[`conformance/`](../../conformance/) anticipates this refactor but does
+   879	not enable it in v0.
+   880	
+   881	## 5. Scenario index (v1)
+   882	
+   883	| Group | Scope | Spec citations |
+   884	|---|---|---|
+   885	| Task lifecycle | Every legal/illegal transition. | 04 §1, §3, §4 |
+   886	| Claim tokens | Freshness, authorization, no-reclaim-while-claimed. | 04 §3 |
+   887	| Submit idempotency | Content-equivalent / divergent / post-terminal. | 04 §4.2, §4.4 |
+   888	| Reclamation | Case matrix; token invalidation; trial reconciliation. | 04 §5 |
+   889	| Atomicity (regression test) | State + event consistency around a transition. Best-effort, not a certification. | 04 §1.3 |
+   890	| Event envelope | Chapter-05 §1 envelope shape; uniqueness. | 05 §1, §1.1 |
+   891	| Per-type event payloads | Each registered type's required fields. | 05 §3 |
+   892	| Composite commits | Implement-dispatch, implement-terminal, evaluate-terminal cases, implement-reclaim-with-starting-trial. | 05 §2.2 |
+   893	| Event delivery | Total order, replay from cursor 0, at-least-once, long-poll subscribe. | 05 §4; 07 §6.2 |
+   894	| Status codes | Each operation's spec-pinned status. | 07 §§2-6 |
+   895	| Problem+json envelope | Shape + content-type. | 07 §7 |
+   896	| Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | 07 §7 |
+   897	| Experiment-id header disagreement | 400 experiment-id-mismatch. | 07 §1.3 |
+   898	| Integrate idempotency | Same-value / different-value / preconditions. | 07 §5 |
+   899	
+   900	v2 (chunk 11c) extends with role-contract scenarios; v3 (chunk 11d)
+   901	adds integrator scenarios.
+   902	
+   903	## 6. Adapter (informative)
+   904	
+   905	A v1 IUT does NOT need to ship a Python adapter. The reference suite's
+   906	adapter shape — under
+   907	[`conformance/harness/adapter.py`](../../conformance/harness/adapter.py)
+   908	— is one convenience for IUTs that prefer to integrate with the
+   909	reference Python harness; it is not a normative requirement. A non-
+   910	Python implementor MAY:
+   911	
+   912	- Write a Python `IutAdapter` subclass that spawns their service.
+   913	- Run the suite against an already-running IUT pointed at by an
+   914	  environment variable, via a thin Python adapter that simply
+   915	  returns an `IutHandle` to that URL.
+   916	- Re-implement the suite in another language entirely, asserting the
+   917	  same MUSTs.
+   918	
+   919	The contract between an IUT and a conformance harness is the chapter
+   920	07 HTTP binding. Everything else is convenience.
+   921	
+   922	## 7. Reference posture
+   923	
+   924	The reference implementation in [`reference/`](../../reference/) is
+   925	one demonstration of v0 conformance. CI gates the reference impl on
+   926	the v1 suite via the `conformance` job. A reference-impl test failure
+   927	that cannot be cited to a normative MUST is either a suite bug or a
+   928	spec gap; the resolution is one of: amend the suite, amend the spec,
+   929	fix the impl. The reference impl does NOT have authority to
+   930	reinterpret the spec.
+   931	```
+   932	
+   933	The chapter is intentionally informative on the adapter shape and on
+   934	the v0-reference auth mechanism (chapter 07 §12). Codex review round 0
+   935	finding #3 prescribed exactly this: the spec must not require third-
+   936	party implementations to expose a Python-harness-friendly lifecycle
+   937	shim or a bearer-token auth scheme.
+   938	
+   939	### H. CI wiring
+   940	
+   941	New `conformance` job in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml):
+   942	
+   943	```yaml
+   944	  conformance:
+   945	    runs-on: ubuntu-latest
+   946	    steps:
+   947	      - uses: actions/checkout@v4
+   948	      - uses: astral-sh/setup-uv@v3
+   949	      - name: Install workspace
+   950	        run: uv sync --all-packages
+   951	      - name: Run conformance suite
+   952	        run: uv run pytest -q conformance/
+   953	      - name: Verify directionality (no reference imports outside adapters)
+   954	        run: |
+   955	          set -euo pipefail
+   956	          if grep -RnE '^(from|import) (reference|eden_)' \
+   957	            conformance/harness conformance/scenarios; then
+   958	            echo "FAIL: conformance/harness or conformance/scenarios import reference packages."
+   959	            exit 1
+   960	          fi
+   961	      - name: Verify scenario citations
+   962	        run: uv run python conformance/tools/check_citations.py
+   963	```
+   964	
+   965	The directionality check makes the layering explicit: `conformance/harness/`
+   966	and `conformance/scenarios/` MUST NOT import `reference/` packages.
+   967	`conformance/adapters/reference/` is allowed to (that's the layer
+   968	where the reference impl is taught how to be a subject).
+   969	
+   970	The job is **not** added to the branch-protection required-checks set
+   971	in this chunk. After 2-3 clean runs on `main`, a follow-up commit can
+   972	bump it.
+   973	
+   974	### I. Spec ↔ harness traceability
+   975	
+   976	Every test in the suite carries a docstring whose first line cites a
+   977	specific spec section, in the format
+   978	`spec/v0/<chapter>.md §<sec> — <one-line summary>`. Example:
+   979	
+   980	```python
+
+exec
+/bin/zsh -lc 'git diff -- docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+codex
+The revision fixed most of the round-0 issues on paper. I’m doing one more pass over the tail sections now, mainly to catch contradictions between the new chapter-09 posture, the scenario inventory, and the CI/meta-test mechanics.
+exec
+/bin/zsh -lc "sed -n '1,220p' reference/packages/eden-wire/tests/test_wire_roundtrip.py" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md | sed -n '981,1120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+"""End-to-end round trip: StoreClient → FastAPI server → InMemoryStore.
+
+Every test here drives an in-process HTTP stack: FastAPI's TestClient
+wraps the ASGI app with an httpx-compatible transport so every request
+crosses the full serialization path without opening a real socket.
+StoreClient is constructed against that same TestClient so its
+request plumbing is identical to a subprocess-over-loopback run.
+
+Tests that need to simulate transport-indeterminate failures use
+``httpx.MockTransport`` to interpose on the single integrate call,
+leaving the rest of the requests (the pre-seed workflow, the
+reconciliation read-back) going through the real ASGI stack.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from eden_contracts import MetricsSchema, Proposal, Trial
+from eden_storage import InMemoryStore
+from eden_storage.errors import (
+    AlreadyExists,
+    ConflictingResubmission,
+    IllegalTransition,
+    InvalidPrecondition,
+    NotFound,
+    WrongToken,
+)
+from eden_storage.submissions import (
+    EvaluateSubmission,
+    ImplementSubmission,
+    PlanSubmission,
+)
+from eden_wire import StoreClient, make_app
+from eden_wire.client import IndeterminateIntegration
+from eden_wire.errors import ExperimentIdMismatch
+from fastapi.testclient import TestClient
+from httpx import Client, MockTransport, Request, Response
+
+EXPERIMENT_ID = "exp-wire"
+SHORT_SUBSCRIBE_TIMEOUT = 0.2  # keep idle long-polls fast in tests
+
+
+@pytest.fixture
+def store() -> InMemoryStore:
+    schema = MetricsSchema.model_validate({"loss": "real", "acc": "real"})
+    return InMemoryStore(EXPERIMENT_ID, metrics_schema=schema)
+
+
+@pytest.fixture
+def app(store: InMemoryStore) -> Any:
+    return make_app(
+        store,
+        subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+        subscribe_poll_interval=0.02,
+    )
+
+
+@pytest.fixture
+def client(app: Any) -> Client:
+    return TestClient(app, base_url="http://wire.test")
+
+
+@pytest.fixture
+def store_client(client: Client) -> StoreClient:
+    return StoreClient("http://wire.test", EXPERIMENT_ID, client=client)
+
+
+def _make_proposal_body(proposal_id: str) -> dict[str, Any]:
+    return {
+        "proposal_id": proposal_id,
+        "experiment_id": EXPERIMENT_ID,
+        "state": "drafting",
+        "slug": proposal_id,
+        "parent_commits": ["a" * 40],
+        "rationale": "test",
+        "priority": 1.0,
+        "artifacts_uri": "file:///tmp/artifacts",
+        "created_at": "2026-04-24T00:00:00Z",
+        "updated_at": "2026-04-24T00:00:00Z",
+    }
+
+
+def _make_trial_body(trial_id: str, proposal_id: str) -> dict[str, Any]:
+    return {
+        "trial_id": trial_id,
+        "experiment_id": EXPERIMENT_ID,
+        "proposal_id": proposal_id,
+        "branch": f"work/{trial_id}",
+        "parent_commits": ["a" * 40],
+        "status": "starting",
+        "started_at": "2026-04-24T00:00:00Z",
+    }
+
+
+def _run_trial_to_success(
+    store_client: StoreClient,
+    *,
+    task_prefix: str,
+    proposal_id: str,
+    trial_id: str,
+) -> None:
+    """Drive a trial to ``status="success"`` via the real Store API.
+
+    This is the seed routine for integrate_trial tests. It goes
+    through the full plan → implement → evaluate → accept pipeline
+    over HTTP, matching what the real dispatch driver would do.
+    No internal-state mutation; no ``model_copy(update=...)``.
+    """
+    # Plan phase — produces a ready proposal.
+    store_client.create_plan_task(f"{task_prefix}-plan")
+    claim = store_client.claim(f"{task_prefix}-plan", "planner")
+    store_client.create_proposal(Proposal.model_validate(_make_proposal_body(proposal_id)))
+    store_client.mark_proposal_ready(proposal_id)
+    store_client.submit(
+        f"{task_prefix}-plan",
+        claim.token,
+        PlanSubmission(status="success", proposal_ids=(proposal_id,)),
+    )
+    store_client.accept(f"{task_prefix}-plan")
+
+    # Implement phase — produces a trial with commit_sha.
+    store_client.create_implement_task(f"{task_prefix}-impl", proposal_id)
+    claim = store_client.claim(f"{task_prefix}-impl", "implementer")
+    store_client.create_trial(Trial.model_validate(_make_trial_body(trial_id, proposal_id)))
+    store_client.submit(
+        f"{task_prefix}-impl",
+        claim.token,
+        ImplementSubmission(status="success", trial_id=trial_id, commit_sha="b" * 40),
+    )
+    store_client.accept(f"{task_prefix}-impl")
+
+    # Evaluate phase — transitions trial to success with metrics.
+    store_client.create_evaluate_task(f"{task_prefix}-eval", trial_id)
+    claim = store_client.claim(f"{task_prefix}-eval", "evaluator")
+    store_client.submit(
+        f"{task_prefix}-eval",
+        claim.token,
+        EvaluateSubmission(
+            status="success",
+            trial_id=trial_id,
+            metrics={"loss": 0.1, "acc": 0.9},
+            artifacts_uri="file:///tmp/artifacts",
+        ),
+    )
+    store_client.accept(f"{task_prefix}-eval")
+
+
+class TestFullExperiment:
+    """Plan → implement → evaluate → integrate over HTTP."""
+
+    def test_plan_implement_evaluate_integrate(
+        self, store_client: StoreClient
+    ) -> None:
+        _run_trial_to_success(
+            store_client, task_prefix="t1", proposal_id="prop-1", trial_id="trial-1"
+        )
+        trial_commit_sha = "c" * 40
+        store_client.integrate_trial("trial-1", trial_commit_sha)
+
+        trials = store_client.list_trials(status="success")
+        assert len(trials) == 1
+        assert trials[0].trial_commit_sha == trial_commit_sha
+
+
+class TestErrorEnvelopeRoundtrip:
+    """Every StorageError maps to a problem+json body and raises the same class."""
+
+    def test_not_found(self, store_client: StoreClient) -> None:
+        with pytest.raises(NotFound):
+            store_client.read_task("missing")
+
+    def test_already_exists(self, store_client: StoreClient) -> None:
+        store_client.create_plan_task("dup")
+        with pytest.raises(AlreadyExists):
+            store_client.create_plan_task("dup")
+
+    def test_illegal_transition(self, store_client: StoreClient) -> None:
+        store_client.create_plan_task("p1")
+        store_client.claim("p1", "w1")
+        with pytest.raises(IllegalTransition):
+            store_client.claim("p1", "w2")
+
+    def test_wrong_token(self, store_client: StoreClient) -> None:
+        store_client.create_plan_task("p2")
+        store_client.claim("p2", "w1")
+        with pytest.raises(WrongToken):
+            store_client.submit(
+                "p2", "not-the-token", PlanSubmission(status="success")
+            )
+
+    def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
+        store_client.create_plan_task("p3")
+        claim = store_client.claim("p3", "w1")
+        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("pr-a")))
+        store_client.mark_proposal_ready("pr-a")
+        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("pr-b")))
+        store_client.mark_proposal_ready("pr-b")
+        store_client.submit(
+            "p3", claim.token, PlanSubmission(status="success", proposal_ids=("pr-a",))
+        )
+        with pytest.raises(ConflictingResubmission):
+            store_client.submit(
+                "p3", claim.token, PlanSubmission(status="success", proposal_ids=("pr-b",))
+            )
+
+    def test_invalid_precondition(self, store_client: StoreClient) -> None:
+        """An integrate call against a non-success trial raises InvalidPrecondition."""
+        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("prop-x")))
+        store_client.mark_proposal_ready("prop-x")
+        store_client.create_trial(Trial.model_validate(_make_trial_body("t-starting", "prop-x")))
+        # Trial is still "starting"; integrate must refuse.
+        with pytest.raises(InvalidPrecondition):
+            store_client.integrate_trial("t-starting", "c" * 40)
+
+
+class TestExperimentIdHeader:
+    """§1.3 — header-vs-path mismatch is rejected."""
+
+
+ succeeded in 0ms:
+   981	def test_wrong_token_rejected(wire_client, claimed_task):
+   982	    """spec/v0/04-task-protocol.md §3.3 — submit with wrong token MUST be rejected.
+   983	
+   984	    Verifies that the task store rejects a submit operation whose token
+   985	    differs from the one issued at claim time.
+   986	    """
+   987	```
+   988	
+   989	`conformance/tools/check_citations.py` (also in this chunk):
+   990	
+   991	1. Walks every test under `conformance/scenarios/`.
+   992	2. Extracts the first docstring line.
+   993	3. Parses out `spec/v0/<chapter>.md §<sec>`.
+   994	4. Asserts the cited section exists (using the existing
+   995	   [`scripts/spec-xref-check.py`](../../scripts/spec-xref-check.py)
+   996	   helper as a model).
+   997	5. Validates that every entry in the chapter 09 §5 scenario index has
+   998	   at least one citing test (drift between the chapter and the suite
+   999	   is a CI failure — codex review round 0 implicit risk).
+  1000	6. Emits a coverage report: which spec sections have at least one
+  1001	   citing test, and the union of cited sections.
+  1002	
+  1003	CI fails if (3) doesn't parse, (4) doesn't resolve, or (5) leaves an
+  1004	index entry uncovered.
+  1005	
+  1006	### J. AGENTS.md update
+  1007	
+  1008	Add to the Commands table:
+  1009	
+  1010	| `uv run pytest -q conformance/` | Run the conformance suite against the reference impl. |
+  1011	| `uv run pytest -q conformance/ --iut-adapter=<module:Cls>` | Run the conformance suite against a non-reference IUT. |
+  1012	| `uv run python conformance/tools/check_citations.py` | Verify every conformance test's docstring cites a real spec section. |
+  1013	
+  1014	And under "Plan-writing pitfalls", a new entry:
+  1015	
+  1016	> **Conformance assertions are spec citations, not impl observations.**
+  1017	> When adding a scenario, the docstring's first line MUST cite a
+  1018	> normative MUST in `spec/v0/<chapter>.md §<sec>`; CI checks the
+  1019	> citation resolves AND that the cited section is in the chapter 09
+  1020	> §5 scenario index. If the assertion describes behavior the reference
+  1021	> impl exhibits but no spec MUST mandates, the choice is to amend the
+  1022	> spec (so the assertion is grounded) or drop the assertion (it's an
+  1023	> impl-detail observation). Codifying impl observations as conformance
+  1024	> assertions silently creates a second source of truth and locks
+  1025	> third-party implementations into reference-impl quirks.
+  1026	
+  1027	### K. Self-host / packaging
+  1028	
+  1029	The harness is invoked **without** the conformance/ package being a
+  1030	development dependency of the reference services — i.e. running
+  1031	`uv run pytest -q reference/` doesn't pull in conformance machinery.
+  1032	This is enforced by:
+  1033	
+  1034	- `conformance/pyproject.toml` declares `conformance` as a separate uv
+  1035	  workspace member with its own dependency closure (pytest, httpx,
+  1036	  aiohttp, pytest-ordering, pytest-json-report).
+  1037	- The reference services' tests do NOT import from `conformance/`.
+  1038	- Root `pyproject.toml` lists `conformance` under
+  1039	  `[tool.uv.workspace] members` but reference packages don't depend
+  1040	  on it.
+  1041	
+  1042	A non-Python implementor can clone the repo, run `uv sync --package
+  1043	conformance` (or any equivalent venv), and point pytest at their
+  1044	adapter. They never run `uv sync --all-packages`.
+  1045	
+  1046	## Test plan
+  1047	
+  1048	In addition to the scenarios themselves (which are the primary unit of
+  1049	test for this chunk), three external verifications run before merge:
+  1050	
+  1051	1. **Reference adapter passes the v1 suite end to end.** `uv run pytest
+  1052	   -q conformance/` exits 0. CI's new `conformance` job gates this.
+  1053	
+  1054	2. **Self-validation meta test passes.** All three sub-assertions
+  1055	   (control passes, broken fails on the specific test ID, hit counter
+  1056	   ≥ 1) succeed.
+  1057	
+  1058	3. **Citation check passes.** `uv run python conformance/tools/check_citations.py`
+  1059	   exits 0. Specifically: every test cites a resolvable section AND
+  1060	   every chapter-09 §5 scenario-index entry has at least one citing
+  1061	   test.
+  1062	
+  1063	Ad-hoc tests during implementation should additionally include:
+  1064	
+  1065	- **Per-test isolation.** Run the suite with `pytest -p no:cacheprovider
+  1066	  -x --tb=short` and verify no state leaks between scenarios (no
+  1067	  shared `event_id` clashes, no shared experiment_id reuse).
+  1068	- **Random `experiment_id` per test prevents cross-talk.** Two
+  1069	  scenarios that create tasks with the same payload do not see each
+  1070	  other's tasks (this falls out of fresh-uuid + per-scenario adapter
+  1071	  start, but worth confirming explicitly).
+  1072	- **Shutdown discipline.** Run the suite with subprocess monitoring
+  1073	  (`ps -ef` before / after) to verify no leaked task-store-server
+  1074	  processes after pytest exits.
+  1075	
+  1076	## Verification
+  1077	
+  1078	Before declaring the chunk done:
+  1079	
+  1080	1. `uv run pytest -q conformance/` exits 0 against the reference impl.
+  1081	2. `uv run pytest -q conformance/ --ignore=conformance/scenarios/_meta`
+  1082	   also exits 0 (the suite without the meta scenario).
+  1083	3. `uv run python conformance/tools/check_citations.py` reports 100%
+  1084	   coverage of the chapter 09 §5 scenario-index entries.
+  1085	4. The new `conformance` CI job is green on the chunk's PR.
+  1086	5. Chapter 09 passes `python3 scripts/spec-xref-check.py` — every
+  1087	   `§N.M` reference resolves.
+  1088	6. `markdownlint-cli2` passes on the new chapter and the new plan.
+  1089	7. `uv run pyright` passes on `conformance/`.
+  1090	8. `uv run ruff check conformance/` passes.
+  1091	9. The directionality check in §H passes locally.
+  1092	
+  1093	## Files to reference
+  1094	
+  1095	- [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) — task lifecycle, claim, submit, reclaim citations.
+  1096	- [`spec/v0/05-event-protocol.md`](../../spec/v0/05-event-protocol.md) — event envelope, payloads, composite commits, delivery.
+  1097	- [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) — wire-binding scenarios.
+  1098	- [`spec/v0/schemas/wire/error.schema.json`](../../spec/v0/schemas/wire/error.schema.json) — problem+json envelope shape.
+  1099	- [`reference/services/orchestrator/tests/test_e2e.py`](../../reference/services/orchestrator/tests/test_e2e.py) — subprocess-spawn pattern model for the reference adapter.
+  1100	- [`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py) — implementation reference for status codes and problem+json (NOT a source of truth — chapter 07 is).
+  1101	- [`scripts/spec-xref-check.py`](../../scripts/spec-xref-check.py) — model for `conformance/tools/check_citations.py`.
+  1102	- Recent plans for prose discipline: [`docs/plans/eden-phase-10e-compose-e2e.md`](eden-phase-10e-compose-e2e.md), [`docs/plans/eden-phase-10d-followup-b-gitea-remote.md`](eden-phase-10d-followup-b-gitea-remote.md).
+  1103	
+  1104	## Out of scope (reiteration)
+  1105	
+  1106	This chunk delivers `11a + 11b` exactly. It does NOT deliver:
+  1107	
+  1108	- **Role-contract scenarios** (per-role submission semantics) → 11c.
+  1109	- **Integrator scenarios** (squash shape, eval-manifest shape, work/* discipline) → 11d.
+  1110	- **Branch-protection requirement for the `conformance` CI job** → deferred follow-up.
+  1111	- **Containerized IUT** (Compose-mode conformance) → either a Phase-10
+  1112	  follow-up or chunk 11d's call.
+  1113	- **Concurrency / chaos / fault injection** → not in v1.
+  1114	- **Non-HTTP wire bindings** → no such binding currently exists in the spec.
+  1115	- **Spec amendments other than chapter 09** → if a scenario surfaces
+  1116	  spec ambiguity, the fix is a separate spec-amend chunk.
+  1117	- **`/v0/`-rooting absence behavior, `X-Eden-Experiment-Id` absence
+  1118	  behavior, auth conformance** → not pinned by chapter 07 MUSTs.
+  1119	
+  1120	## Known risks / things to watch
+
+exec
+/bin/zsh -lc "rg -n \"create_trial\\(|mark_ready|declare_trial_eval_error|trial.eval_errored|proposal.completed|task.reclaimed|trial.errored|events/subscribe|cursor\" reference/packages/eden-storage/src/eden_storage/_base.py reference/packages/eden-wire/src/eden_wire/server.py reference/packages/eden-wire/tests/test_wire_roundtrip.py -S" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-wire/tests/test_wire_roundtrip.py:126:    store_client.create_trial(Trial.model_validate(_make_trial_body(trial_id, proposal_id)))
+reference/packages/eden-wire/tests/test_wire_roundtrip.py:212:        store_client.create_trial(Trial.model_validate(_make_trial_body("t-starting", "prop-x")))
+reference/packages/eden-wire/tests/test_wire_roundtrip.py:332:        events = store_client.subscribe(cursor=0, timeout=SHORT_SUBSCRIBE_TIMEOUT)
+reference/packages/eden-wire/tests/test_wire_roundtrip.py:345:            cursor=len(initial), timeout=SHORT_SUBSCRIBE_TIMEOUT
+reference/packages/eden-wire/src/eden_wire/server.py:397:    async def _create_trial(
+reference/packages/eden-wire/src/eden_wire/server.py:409:        store.create_trial(trial)
+reference/packages/eden-wire/src/eden_wire/server.py:443:    async def _declare_trial_eval_error(
+reference/packages/eden-wire/src/eden_wire/server.py:453:        store.declare_trial_eval_error(trial_id)
+reference/packages/eden-wire/src/eden_wire/server.py:481:        cursor: int = Query(0, ge=0),
+reference/packages/eden-wire/src/eden_wire/server.py:487:        events = store.read_range(cursor=cursor if cursor > 0 else None)
+reference/packages/eden-wire/src/eden_wire/server.py:488:        resp = EventsResponse(events=events, cursor=cursor + len(events))
+reference/packages/eden-wire/src/eden_wire/server.py:491:    @app.get(f"{base}/events/subscribe")
+reference/packages/eden-wire/src/eden_wire/server.py:494:        cursor: int = Query(0, ge=0),
+reference/packages/eden-wire/src/eden_wire/server.py:499:        # event is available after `cursor` or ``timeout`` (default
+reference/packages/eden-wire/src/eden_wire/server.py:508:            f"/v0/experiments/{experiment_id}/events/subscribe",
+reference/packages/eden-wire/src/eden_wire/server.py:512:        events = store.read_range(cursor=cursor if cursor > 0 else None)
+reference/packages/eden-wire/src/eden_wire/server.py:515:            events = store.read_range(cursor=cursor if cursor > 0 else None)
+reference/packages/eden-wire/src/eden_wire/server.py:516:        resp = EventsResponse(events=events, cursor=cursor + len(events))
+reference/packages/eden-storage/src/eden_storage/_base.py:17:  ``declare_trial_eval_error``, ``integrate_trial``).
+reference/packages/eden-storage/src/eden_storage/_base.py:321:    def read_range(self, cursor: int | None = None) -> list[Event]:
+reference/packages/eden-storage/src/eden_storage/_base.py:322:        """Return events after ``cursor`` in log order (chapter 8 §2.1).
+reference/packages/eden-storage/src/eden_storage/_base.py:324:        ``cursor`` is the **cumulative** count of events the caller
+reference/packages/eden-storage/src/eden_storage/_base.py:327:        caller polling in a loop advances ``cursor`` by the length
+reference/packages/eden-storage/src/eden_storage/_base.py:333:        so indexing by cumulative count is stable. A ``None`` cursor
+reference/packages/eden-storage/src/eden_storage/_base.py:338:        if cursor is None or cursor <= 0:
+reference/packages/eden-storage/src/eden_storage/_base.py:340:        return events[cursor:]
+reference/packages/eden-storage/src/eden_storage/_base.py:784:                self._event("task.reclaimed", {"task_id": task_id, "cause": cause})
+reference/packages/eden-storage/src/eden_storage/_base.py:794:                        self._event("trial.errored", {"trial_id": trial.trial_id})
+reference/packages/eden-storage/src/eden_storage/_base.py:841:    def create_trial(self, trial: Trial) -> None:
+reference/packages/eden-storage/src/eden_storage/_base.py:865:    def declare_trial_eval_error(self, trial_id: str) -> None:
+reference/packages/eden-storage/src/eden_storage/_base.py:882:            tx.events.append(self._event("trial.eval_errored", {"trial_id": trial_id}))
+reference/packages/eden-storage/src/eden_storage/_base.py:986:                "proposal.completed",
+reference/packages/eden-storage/src/eden_storage/_base.py:1024:                "proposal.completed",
+reference/packages/eden-storage/src/eden_storage/_base.py:1033:                self._event("trial.errored", {"trial_id": trial_for_error.trial_id})
+reference/packages/eden-storage/src/eden_storage/_base.py:1099:        #     metrics/artifacts_uri but still record trial.errored.
+reference/packages/eden-storage/src/eden_storage/_base.py:1113:            tx.events.append(self._event("trial.errored", {"trial_id": trial.trial_id}))
+
+web search: 
+web search: 
+codex
+A couple of second-order issues are showing up now that the big structural problems are fixed. I’m checking whether the new “cover all chapter 05 §2.2 composites” claim is actually satisfied, and whether the revised adapter/wire client still handles non-reference auth shapes without smuggling in a new constraint.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/src/eden_storage/_base.py | sed -n '840,890p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   840	
+   841	    def create_trial(self, trial: Trial) -> None:
+   842	        """Persist a new trial in ``starting``. Emits ``trial.started``."""
+   843	        with self._atomic_operation():
+   844	            if self._get_trial(trial.trial_id) is not None:
+   845	                raise AlreadyExists(f"trial {trial.trial_id!r}")
+   846	            if trial.status != "starting":
+   847	                raise InvalidPrecondition(
+   848	                    f"new trial must start in 'starting', not {trial.status!r}"
+   849	                )
+   850	            if trial.experiment_id != self._experiment_id:
+   851	                raise InvalidPrecondition(
+   852	                    f"trial experiment_id {trial.experiment_id!r} "
+   853	                    f"does not match store experiment {self._experiment_id!r}"
+   854	                )
+   855	            tx = _Tx()
+   856	            tx.trials[trial.trial_id] = _deep(trial)
+   857	            tx.events.append(
+   858	                self._event(
+   859	                    "trial.started",
+   860	                    {"trial_id": trial.trial_id, "proposal_id": trial.proposal_id},
+   861	                )
+   862	            )
+   863	            self._apply_commit(tx)
+   864	
+   865	    def declare_trial_eval_error(self, trial_id: str) -> None:
+   866	        """Retry-exhausted terminal: ``starting → eval_error`` (``05-event-protocol.md`` §2.2).
+   867	
+   868	        Writes ``completed_at`` atomically; MUST NOT set metrics or
+   869	        artifacts_uri (``03-roles.md`` §4.4).
+   870	        """
+   871	        with self._atomic_operation():
+   872	            trial = self._require_trial(trial_id)
+   873	            if trial.status != "starting":
+   874	                raise IllegalTransition(
+   875	                    f"cannot declare eval_error from trial status {trial.status!r}"
+   876	                )
+   877	            now = self._ts()
+   878	            tx = _Tx()
+   879	            tx.trials[trial_id] = _validated_update(
+   880	                trial, status="eval_error", completed_at=now
+   881	            )
+   882	            tx.events.append(self._event("trial.eval_errored", {"trial_id": trial_id}))
+   883	            self._apply_commit(tx)
+   884	
+   885	    def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
+   886	        """Integrator promotion: write ``trial_commit_sha`` and emit ``trial.integrated``.
+   887	
+   888	        Per ``08-storage.md`` §1.7: ``trial_commit_sha`` is the one
+   889	        post-terminal write permitted on a trial; it must be written
+   890	        atomically with its event.
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/src/eden_storage/_base.py | sed -n '980,1125p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   980	        )
+   981	        tx.proposals[task.payload.proposal_id] = _validated_update(proposal, state="completed")
+   982	        tx.trials[trial.trial_id] = _validated_update(trial, commit_sha=submission.commit_sha)
+   983	        tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
+   984	        tx.events.append(
+   985	            self._event(
+   986	                "proposal.completed",
+   987	                {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
+   988	            )
+   989	        )
+   990	        self._apply_commit(tx)
+   991	
+   992	    def _reject_implement(
+   993	        self,
+   994	        task: Task,
+   995	        submission: Submission,
+   996	        reason: FailReason,
+   997	    ) -> None:
+   998	        assert isinstance(task, ImplementTask)
+   999	        proposal = self._require_proposal(task.payload.proposal_id)
+  1000	        trial_for_error: Trial | None = None
+  1001	        if isinstance(submission, ImplementSubmission):
+  1002	            # Only touch the trial if it was created under this very
+  1003	            # task's proposal — submission.trial_id is caller-supplied
+  1004	            # and could reference an unrelated trial.
+  1005	            trial = self._get_trial(submission.trial_id)
+  1006	            if (
+  1007	                trial is not None
+  1008	                and trial.status == "starting"
+  1009	                and trial.proposal_id == task.payload.proposal_id
+  1010	            ):
+  1011	                trial_for_error = trial
+  1012	
+  1013	        now = self._ts()
+  1014	        tx = _Tx()
+  1015	        tx.tasks[task.task_id] = _validated_update(
+  1016	            task, state="failed", claim=None, updated_at=now
+  1017	        )
+  1018	        tx.proposals[task.payload.proposal_id] = _validated_update(proposal, state="completed")
+  1019	        tx.events.append(
+  1020	            self._event("task.failed", {"task_id": task.task_id, "reason": reason})
+  1021	        )
+  1022	        tx.events.append(
+  1023	            self._event(
+  1024	                "proposal.completed",
+  1025	                {"proposal_id": task.payload.proposal_id, "task_id": task.task_id},
+  1026	            )
+  1027	        )
+  1028	        if trial_for_error is not None:
+  1029	            tx.trials[trial_for_error.trial_id] = _validated_update(
+  1030	                trial_for_error, status="error", completed_at=now
+  1031	            )
+  1032	            tx.events.append(
+  1033	                self._event("trial.errored", {"trial_id": trial_for_error.trial_id})
+  1034	            )
+  1035	        self._apply_commit(tx)
+  1036	
+  1037	    def _accept_evaluate(self, task: Task, submission: Submission) -> None:
+  1038	        assert isinstance(task, EvaluateTask)
+  1039	        assert isinstance(submission, EvaluateSubmission)
+  1040	        reason = self._validate_evaluate_acceptance(task, submission)
+  1041	        if reason is not None:
+  1042	            raise IllegalTransition(
+  1043	                f"cannot accept evaluate {task.task_id!r}: {reason}"
+  1044	            )
+  1045	        trial = self._require_trial(submission.trial_id)
+  1046	
+  1047	        now = self._ts()
+  1048	        tx = _Tx()
+  1049	        tx.tasks[task.task_id] = _validated_update(
+  1050	            task, state="completed", claim=None, updated_at=now
+  1051	        )
+  1052	        tx.trials[trial.trial_id] = _validated_update(
+  1053	            trial,
+  1054	            status="success",
+  1055	            metrics=dict(submission.metrics) if submission.metrics else None,
+  1056	            artifacts_uri=submission.artifacts_uri,
+  1057	            completed_at=now,
+  1058	        )
+  1059	        tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
+  1060	        tx.events.append(
+  1061	            self._event(
+  1062	                "trial.succeeded",
+  1063	                {"trial_id": trial.trial_id, "commit_sha": trial.commit_sha},
+  1064	            )
+  1065	        )
+  1066	        self._apply_commit(tx)
+  1067	
+  1068	    def _reject_evaluate(
+  1069	        self,
+  1070	        task: Task,
+  1071	        submission: Submission,
+  1072	        reason: FailReason,
+  1073	    ) -> None:
+  1074	        assert isinstance(task, EvaluateTask)
+  1075	        assert isinstance(submission, EvaluateSubmission)
+  1076	        # submission.trial_id is already bound to task.payload.trial_id
+  1077	        # by _validate_submission_ref_binding at submit time.
+  1078	        trial = self._require_trial(task.payload.trial_id)
+  1079	
+  1080	        now = self._ts()
+  1081	        tx = _Tx()
+  1082	        tx.tasks[task.task_id] = _validated_update(
+  1083	            task, state="failed", claim=None, updated_at=now
+  1084	        )
+  1085	        tx.events.append(
+  1086	            self._event("task.failed", {"task_id": task.task_id, "reason": reason})
+  1087	        )
+  1088	
+  1089	        # Trial-side effect depends on the submission status, not on
+  1090	        # the orchestrator's reason (03-roles.md §4.4):
+  1091	        #   • eval_error — trial stays in starting; evaluator-side
+  1092	        #     failure does not condemn the trial.
+  1093	        #   • success — reject can only happen via validation_error
+  1094	        #     (malformed success). Trial stays in starting: the
+  1095	        #     evaluator has not produced a verdict either way.
+  1096	        #   • error — trial MUST transition to error, because the
+  1097	        #     worker declared trial failure. If the payload is
+  1098	        #     malformed (reason=validation_error), drop the invalid
+  1099	        #     metrics/artifacts_uri but still record trial.errored.
+  1100	        if submission.status == "error":
+  1101	            if trial.status != "starting":
+  1102	                raise IllegalTransition(
+  1103	                    f"cannot error trial {trial.trial_id!r} from status {trial.status!r}"
+  1104	                )
+  1105	            update_kwargs: dict[str, Any] = {"status": "error", "completed_at": now}
+  1106	            if reason != "validation_error":
+  1107	                if submission.metrics is not None:
+  1108	                    self._validate_metrics(submission.metrics)
+  1109	                    update_kwargs["metrics"] = dict(submission.metrics)
+  1110	                if submission.artifacts_uri is not None:
+  1111	                    update_kwargs["artifacts_uri"] = submission.artifacts_uri
+  1112	            tx.trials[trial.trial_id] = _validated_update(trial, **update_kwargs)
+  1113	            tx.events.append(self._event("trial.errored", {"trial_id": trial.trial_id}))
+  1114	        # status in {"eval_error", "success"} — no trial-side writes.
+  1115	
+  1116	        self._apply_commit(tx)
+  1117	
+  1118	    # ------------------------------------------------------------------
+  1119	    # Validation helpers
+  1120	    # ------------------------------------------------------------------
+  1121	
+  1122	    def _validate_submission_ref_binding(
+  1123	        self, task: Task, submission: Submission
+  1124	    ) -> None:
+  1125	        """Reject a submission whose referenced IDs don't match the task.
+
+exec
+/bin/zsh -lc "nl -ba reference/services/task-store-server/src/eden_task_store_server/cli.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Argparse + uvicorn runner for the task-store-server.
+     2	
+     3	Run as ``python -m eden_task_store_server …``.
+     4	"""
+     5	
+     6	from __future__ import annotations
+     7	
+     8	import argparse
+     9	import contextlib
+    10	import signal
+    11	import sys
+    12	import threading
+    13	from typing import Any
+    14	
+    15	import uvicorn
+    16	from eden_service_common import configure_logging, get_logger, parse_log_level
+    17	from eden_storage import PostgresStore, SqliteStore
+    18	
+    19	from .app import build_app, build_store, load_experiment_config
+    20	
+    21	
+    22	def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    23	    """Parse CLI args for the task-store-server."""
+    24	    parser = argparse.ArgumentParser(
+    25	        prog="eden-task-store-server",
+    26	        description="EDEN reference task-store server (uvicorn + eden-wire).",
+    27	    )
+    28	    parser.add_argument(
+    29	        "--store-url",
+    30	        default=None,
+    31	        help=(
+    32	            "Store URL: ':memory:' (in-memory), 'sqlite:///<path>' "
+    33	            "(SQLite), 'postgresql://…' (Postgres), or a bare "
+    34	            "filesystem path (treated as SQLite for compatibility)."
+    35	        ),
+    36	    )
+    37	    parser.add_argument(
+    38	        "--db-path",
+    39	        default=None,
+    40	        help=(
+    41	            "Deprecated alias for --store-url, kept for one phase. "
+    42	            "If set, treated as a SQLite path (or ':memory:' for "
+    43	            "in-memory)."
+    44	        ),
+    45	    )
+    46	    parser.add_argument(
+    47	        "--experiment-id",
+    48	        required=True,
+    49	        help="Experiment identifier served by this process.",
+    50	    )
+    51	    parser.add_argument(
+    52	        "--experiment-config",
+    53	        required=True,
+    54	        help="YAML experiment-config.schema.json file for metrics_schema seeding.",
+    55	    )
+    56	    parser.add_argument(
+    57	        "--host",
+    58	        default="127.0.0.1",
+    59	        help="Bind address (default: 127.0.0.1).",
+    60	    )
+    61	    parser.add_argument(
+    62	        "--port",
+    63	        type=int,
+    64	        default=0,
+    65	        help="TCP port to bind (0 = ephemeral; printed on startup).",
+    66	    )
+    67	    parser.add_argument(
+    68	        "--shared-token",
+    69	        default=None,
+    70	        help=(
+    71	            "Optional bearer token for the reference-only auth middleware "
+    72	            "(07-wire-protocol.md §12)."
+    73	        ),
+    74	    )
+    75	    parser.add_argument(
+    76	        "--subscribe-timeout",
+    77	        type=float,
+    78	        default=30.0,
+    79	        help="Long-poll window for GET /events/subscribe (default: 30s).",
+    80	    )
+    81	    parser.add_argument(
+    82	        "--log-level",
+    83	        default="info",
+    84	        choices=["debug", "info", "warning", "error"],
+    85	        help="Log level (default: info).",
+    86	    )
+    87	    return parser.parse_args(argv)
+    88	
+    89	
+    90	class _ListeningAnnouncer:
+    91	    """uvicorn lifespan hook that prints the bound host/port to stdout.
+    92	
+    93	    `--port 0` asks the kernel for an ephemeral port; the orchestrator
+    94	    / test harness reads the announcement to learn which port was
+    95	    actually assigned without having to scrape the log formatter.
+    96	    """
+    97	
+    98	    def __init__(self) -> None:
+    99	        self.announced = threading.Event()
+   100	
+   101	    def __call__(self, server: uvicorn.Server) -> None:  # noqa: D401
+   102	        # uvicorn Server records bound sockets on server.servers[*].sockets
+   103	        # after the serve-loop starts; poll in a background thread until
+   104	        # one is available, then print.
+   105	        def _wait_and_announce() -> None:
+   106	            for _ in range(200):
+   107	                if server.started and server.servers:
+   108	                    sockets = server.servers[0].sockets
+   109	                    if sockets:
+   110	                        sockname = sockets[0].getsockname()
+   111	                        host, port = sockname[0], sockname[1]
+   112	                        sys.stdout.write(
+   113	                            f"EDEN_TASK_STORE_LISTENING host={host} port={port}\n"
+   114	                        )
+   115	                        sys.stdout.flush()
+   116	                        self.announced.set()
+   117	                        return
+   118	                threading.Event().wait(0.05)
+   119	
+   120	        t = threading.Thread(target=_wait_and_announce, daemon=True)
+   121	        t.start()
+   122	
+   123	
+   124	def main(argv: list[str] | None = None) -> int:
+   125	    """Entry point for ``python -m eden_task_store_server``."""
+   126	    args = parse_args(argv)
+   127	    configure_logging(
+   128	        service="task-store-server",
+   129	        experiment_id=args.experiment_id,
+   130	        level=parse_log_level(args.log_level),
+   131	    )
+   132	    log = get_logger(__name__)
+   133	    config = load_experiment_config(args.experiment_config)
+   134	    if args.store_url is None and args.db_path is None:
+   135	        raise SystemExit("--store-url is required (or pass --db-path).")
+   136	    if args.store_url is not None and args.db_path is not None:
+   137	        raise SystemExit(
+   138	            "Pass either --store-url or --db-path, not both."
+   139	        )
+   140	    store_url: str
+   141	    if args.store_url is None:
+   142	        log.warning(
+   143	            "--db-path is deprecated; use --store-url instead",
+   144	        )
+   145	        assert args.db_path is not None  # guarded by the SystemExit checks above
+   146	        store_url = args.db_path
+   147	    else:
+   148	        store_url = args.store_url
+   149	    store = build_store(
+   150	        store_url=store_url,
+   151	        experiment_id=args.experiment_id,
+   152	        config=config,
+   153	    )
+   154	    try:
+   155	        app = build_app(
+   156	            store=store,
+   157	            shared_token=args.shared_token,
+   158	            subscribe_timeout=args.subscribe_timeout,
+   159	        )
+   160	        uv_config = uvicorn.Config(
+   161	            app,
+   162	            host=args.host,
+   163	            port=args.port,
+   164	            log_config=None,
+   165	            log_level=args.log_level,
+   166	        )
+   167	        server = uvicorn.Server(uv_config)
+   168	        announcer = _ListeningAnnouncer()
+   169	        announcer(server)
+   170	
+   171	        def _stop(*_: Any) -> None:
+   172	            log.info("received signal, initiating graceful shutdown")
+   173	            server.should_exit = True
+   174	
+   175	        for sig_name in ("SIGTERM", "SIGINT"):
+   176	            sig = getattr(signal, sig_name, None)
+   177	            if sig is not None:
+   178	                with contextlib.suppress(ValueError, OSError):
+   179	                    signal.signal(sig, _stop)
+   180	
+   181	        log.info(
+   182	            "starting uvicorn",
+   183	            host=args.host,
+   184	            port=args.port,
+   185	            store_url=store_url,
+   186	        )
+   187	        server.run()
+   188	        log.info("uvicorn exited")
+   189	    finally:
+   190	        if isinstance(store, (SqliteStore, PostgresStore)):
+   191	            store.close()
+   192	    return 0
+   193	
+   194	
+   195	if __name__ == "__main__":  # pragma: no cover
+   196	    raise SystemExit(main())
+
+exec
+/bin/zsh -lc 'rg -n "subscribe_timeout|poll_interval|shared-token|subscribe" reference/services/task-store-server/src reference/packages/eden-wire/src -S' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-wire/src/eden_wire/errors.py:65:    """Reference shared-token middleware rejected the request."""
+reference/services/task-store-server/src/eden_task_store_server/cli.py:68:        "--shared-token",
+reference/services/task-store-server/src/eden_task_store_server/cli.py:76:        "--subscribe-timeout",
+reference/services/task-store-server/src/eden_task_store_server/cli.py:79:        help="Long-poll window for GET /events/subscribe (default: 30s).",
+reference/services/task-store-server/src/eden_task_store_server/cli.py:158:            subscribe_timeout=args.subscribe_timeout,
+reference/packages/eden-wire/src/eden_wire/models.py:70:    """Body for ``GET /v0/experiments/{E}/events[/subscribe]``."""
+reference/services/task-store-server/src/eden_task_store_server/app.py:68:    subscribe_timeout: float = 30.0,
+reference/services/task-store-server/src/eden_task_store_server/app.py:74:        subscribe_timeout=subscribe_timeout,
+reference/packages/eden-wire/src/eden_wire/client.py:201:    def subscribe(
+reference/packages/eden-wire/src/eden_wire/client.py:204:        """Long-poll one batch from the subscribe endpoint.
+reference/packages/eden-wire/src/eden_wire/client.py:213:        resp = self._request("GET", f"{self._base}/events/subscribe", params=params)
+reference/packages/eden-wire/src/eden_wire/server.py:67:    subscribe_timeout: float = 30.0,
+reference/packages/eden-wire/src/eden_wire/server.py:68:    subscribe_poll_interval: float = 0.1,
+reference/packages/eden-wire/src/eden_wire/server.py:77:    ``subscribe_timeout`` is the long-poll window per
+reference/packages/eden-wire/src/eden_wire/server.py:79:    a short value. ``subscribe_poll_interval`` is how often the
+reference/packages/eden-wire/src/eden_wire/server.py:491:    @app.get(f"{base}/events/subscribe")
+reference/packages/eden-wire/src/eden_wire/server.py:492:    async def _subscribe(
+reference/packages/eden-wire/src/eden_wire/server.py:500:        # ``subscribe_timeout``) elapses. The underlying ``Store`` is
+reference/packages/eden-wire/src/eden_wire/server.py:508:            f"/v0/experiments/{experiment_id}/events/subscribe",
+reference/packages/eden-wire/src/eden_wire/server.py:510:        effective_timeout = timeout if timeout is not None else subscribe_timeout
+reference/packages/eden-wire/src/eden_wire/server.py:514:            await asyncio.sleep(subscribe_poll_interval)
+reference/packages/eden-wire/src/eden_wire/server.py:611:    """Install the reference-only shared-token auth middleware.
+
+codex
+**Findings**
+
+1. The revised draft still overclaims what this chunk proves. [plan L57](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:57>) and [plan L821](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:821>) say passing the v1 suite makes an IUT conformant to chapters 02/04/05/06/07/08, but [plan L178](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:178>) and [plan L180](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:180>) still defer role-contract and integrator scenarios to 11c/11d. That means major chapter-06 MUSTs, and a lot of chapter-08 durability/recovery MUSTs, are not in scope yet. Chapter 09 needs to say this is the v1 state-machine/wire subset, not “full v0 conformance.”
+
+2. The plan now claims “all chapter-05 §2.2 composite commits,” but it still misses the actual retry-exhausted `trial.eval_errored` composite. [plan L19](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:19>) and [plan L125](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:125>) make the full-coverage claim; [plan L608](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:608>) expects a `trial.eval_errored` payload test; but [plan L628](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:628>) only tests the non-terminal `status=eval_error` submit path where the trial stays `starting`. The missing scenario is the real `declare_trial_eval_error` terminalization that emits `trial.eval_errored` atomically.
+
+3. The new “every chapter-07 error type is observed at least once” check is not actually satisfiable from the listed scenarios. [plan L135](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:135>) and [plan L672](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:672>) require exhaustive observation of the closed table, but the scenario inventory at [plan L645](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:645>) through [plan L653](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:653>) still has no producer for `eden://error/already-exists`. You need an explicit duplicate-create case, otherwise the closure test either fails or silently stops being exhaustive.
+
+4. `test_at_least_once_via_cursor_replay` is still not testing the thing it cites. [plan L637](</Users/Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:637>) uses repeated `GET /events?cursor=0`, which exercises replayability, not `05 §4.3` subscriber delivery semantics. At-least-once in chapter 05 is about active subscribers and reconnect/recovery behavior. If you want a real `§4.3` test, it needs to involve `GET /events/subscribe` and a reconnect / repeated-cursor pattern on that endpoint.
+
+5. The revised adapter story is better, but the Python harness contract is still described more broadly than it actually is. [plan L279](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:279>) through [plan L285](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:285>) and [plan L313](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:313>) say `extra_headers` is enough even for mTLS, but the fixture at [plan L381](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:381>) only passes headers into a plain httpx client. Header-based auth and no auth are covered; mTLS and other transport-level auth are not. Since the adapter is informative this is not a spec blocker, but the plan should stop claiming those schemes fit this interface unless you add a client-factory / httpx-config hook.
+
+**Open Questions / Residual Risks**
+
+1. [plan L639](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:639>) adds a timeout-path subscribe test, but the reference adapter command at [plan L427](</Users/ericalt/Documents/eden/docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md:427>) does not pass a shortened `--subscribe-timeout`. The current default is 30s in the server CLI, so this test will be slow or flaky unless the adapter explicitly lowers it.
+
+2. I treated the chapter-09 language as intended to ship in this chunk. If instead the plan means “chapter 09 will be tightened again in 11d once integrator coverage exists,” that should be said directly, because the current wording reads as a final conformance claim.
+
+**Overall Assessment**
+
+This is materially better than round 0. The marker-boundary problem, the non-citeable HTTP assertions, the auth/adapter overreach, the `pytest.main()` meta-test design, and the direct-role-flow seeding issue are mostly fixed.
+
+The remaining problems are narrower but still important. The biggest one is chapter 09’s current overclaim: as written, it says this chunk certifies full v0 conformance even though 11c/11d are still deferred. Fix that, add the missing `trial.eval_errored` and `already-exists` coverage, and tighten the `§4.3` at-least-once test, and the plan looks ready.
+2026-05-01T18:35:53.850989Z ERROR codex_core::session: failed to record rollout items: thread 019de4c6-5574-7840-9eae-ce5df13627f5 not found
+tokens used
+244,513
