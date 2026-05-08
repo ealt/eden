@@ -1,0 +1,1958 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc206-90ea-7b30-a318-0367693c6508
+--------
+user
+I've revised the implementation to address your round-0 findings:
+
+1. Multi-row authoring: new POST /planner/{task_id}/add_row route + 'add another row' button on the form. Server-rendered re-render preserves user input. Tests in test_planner_flow.py::TestMultiRow cover the add-row flow, the skip-fully-blank-row submit path, and the all-blank rejection.
+
+2. Retry-before-orphan now catches Exception (not just DispatchError) so transport-shaped failures from the wire client (httpx.HTTPError etc) are retried. Definitive store-domain errors (WrongToken/IllegalTransition/ConflictingResubmission/InvalidPrecondition) still short-circuit. Returns (ok, banner) so the orphan page can show the canonical error name. Test in test_planner_flow.py::TestRetryBeforeOrphan exercises a non-DispatchError transport failure -> 3 retries -> orphan with class name in banner.
+
+3. Per-session claim isolation: _CLAIMS is now keyed by (session.csrf, task_id). Two browser sessions (even with the same configured worker_id) get different CSRF tokens at sign-in, so they cannot reuse each other's claims. Test in test_planner_flow.py::TestPerSessionClaimIsolation reproduces the cross-session draft-page request and asserts it redirects with claim+missing.
+
+4. Stranded-claim e2e now spawns a third subprocess (the real orchestrator with no plan tasks) to prove that run_orchestrator_loop's per-iteration sweep_expired_claims call is what reclaims. The orchestrator quiesces after observing no progress; the test asserts task state and event log.
+
+5. Orphan page renders the canonical eden://error/<name> banner from the retry's outcome.
+
+Results: 444 unit tests + 3 e2e tests pass; ruff and pyright clean; markdownlint clean.
+
+Please re-review against your round-0 findings — were each addressed? Any new issues?
+codex
+Re-reviewing the revised implementation against the round-0 findings now. I’m focusing on the changed planner routes and the new tests first, then I’ll spot-check the subprocess e2e and see whether any regressions were introduced.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/planner.py | sed -n '1,360p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Planner-module routes.
+     2	
+     3	Implements the spec-to-code map pinned in section §C of the Phase
+     4	9 plan: list pending plan tasks, claim with a TTL, draft proposals,
+     5	submit. Errors propagate as canonical wire-error names so the user
+     6	sees an honest banner.
+     7	
+     8	The Phase-3 retry policy on ``submit`` leverages chapter 07 §2.4 /
+     9	§8.1: a content-equivalent resubmit returns 200, so transport
+    10	failures are retried up to 3 times with exponential backoff before
+    11	the orphaned-proposals error page is reached.
+    12	"""
+    13	
+    14	from __future__ import annotations
+    15	
+    16	import time
+    17	import uuid
+    18	from collections.abc import Callable
+    19	from datetime import timedelta
+    20	from typing import Any
+    21	
+    22	from eden_contracts import Proposal
+    23	from eden_storage import (
+    24	    ConflictingResubmission,
+    25	    DispatchError,
+    26	    IllegalTransition,
+    27	    InvalidPrecondition,
+    28	    PlanSubmission,
+    29	    WrongToken,
+    30	)
+    31	from fastapi import APIRouter, Form, Request
+    32	from fastapi.responses import HTMLResponse, RedirectResponse
+    33	
+    34	from ..artifacts import write_proposal_artifact
+    35	from ..forms import ProposalDraft, parse_proposal_rows
+    36	from ._helpers import csrf_ok, get_session
+    37	
+    38	router = APIRouter(prefix="/planner")
+    39	
+    40	
+    41	# In-memory mapping of (csrf_token, task_id) -> claim token. The CSRF
+    42	# token is per-session (rotates on session-secret rotation), so two
+    43	# browser sessions with the same configured worker_id cannot reuse
+    44	# each other's claims. We deliberately do not persist this across
+    45	# restarts — a UI restart drops claim tokens and the TTL sweep
+    46	# recovers stranded tasks (eden_dispatch.sweep_expired_claims).
+    47	_CLAIMS: dict[tuple[str, str], str] = {}
+    48	
+    49	
+    50	def _claim_key(session_csrf: str, task_id: str) -> tuple[str, str]:
+    51	    return (session_csrf, task_id)
+    52	
+    53	
+    54	def _list_recent_proposals(store: Any, *, limit: int = 20) -> list[Any]:
+    55	    items = store.list_proposals()
+    56	    return items[-limit:]
+    57	
+    58	
+    59	def _list_recent_trials(store: Any, *, limit: int = 20) -> list[Any]:
+    60	    items = store.list_trials()
+    61	    return items[-limit:]
+    62	
+    63	
+    64	@router.get("/", response_class=HTMLResponse, response_model=None)
+    65	async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
+    66	    session = get_session(request)
+    67	    if session is None:
+    68	        return RedirectResponse(url="/signin", status_code=303)
+    69	    store = request.app.state.store
+    70	    pending = store.list_tasks(kind="plan", state="pending")
+    71	    config = request.app.state.experiment_config
+    72	    return request.app.state.templates.TemplateResponse(
+    73	        request,
+    74	        "planner_list.html",
+    75	        {
+    76	            "session": session,
+    77	            "pending": pending,
+    78	            "objective": config.objective,
+    79	            "metrics_schema": config.metrics_schema.root,
+    80	            "recent_proposals": _list_recent_proposals(store),
+    81	            "recent_trials": _list_recent_trials(store),
+    82	            "banner": request.query_params.get("banner"),
+    83	        },
+    84	    )
+    85	
+    86	
+    87	@router.post("/{task_id}/claim", response_model=None)
+    88	async def claim(
+    89	    task_id: str,
+    90	    request: Request,
+    91	    csrf_token: str = Form(""),
+    92	) -> RedirectResponse | HTMLResponse:
+    93	    session = get_session(request)
+    94	    if session is None:
+    95	        return RedirectResponse(url="/signin", status_code=303)
+    96	    if not csrf_ok(session, csrf_token):
+    97	        return _csrf_failure_response()
+    98	    store = request.app.state.store
+    99	    now: Callable[[], Any] = request.app.state.now
+   100	    expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
+   101	    try:
+   102	        result = store.claim(task_id, session.worker_id, expires_at=expires_at)
+   103	    except (IllegalTransition, InvalidPrecondition) as exc:
+   104	        banner = _wire_error_banner(exc)
+   105	        return RedirectResponse(url=f"/planner/?banner={banner}", status_code=303)
+   106	    _CLAIMS[_claim_key(session.csrf, task_id)] = result.token
+   107	    return RedirectResponse(url=f"/planner/{task_id}/draft", status_code=303)
+   108	
+   109	
+   110	@router.get("/{task_id}/draft", response_class=HTMLResponse, response_model=None)
+   111	async def draft_form(
+   112	    task_id: str,
+   113	    request: Request,
+   114	) -> HTMLResponse | RedirectResponse:
+   115	    session = get_session(request)
+   116	    if session is None:
+   117	        return RedirectResponse(url="/signin", status_code=303)
+   118	    token = _CLAIMS.get(_claim_key(session.csrf, task_id))
+   119	    if token is None:
+   120	        return RedirectResponse(
+   121	            url="/planner/?banner=claim+missing+from+session",
+   122	            status_code=303,
+   123	        )
+   124	    config = request.app.state.experiment_config
+   125	    return request.app.state.templates.TemplateResponse(
+   126	        request,
+   127	        "planner_claim.html",
+   128	        {
+   129	            "session": session,
+   130	            "task_id": task_id,
+   131	            "objective": config.objective,
+   132	            "metrics_schema": config.metrics_schema.root,
+   133	            "errors": None,
+   134	            "form_state": [_empty_row()],
+   135	            "row_indices": [0],
+   136	        },
+   137	    )
+   138	
+   139	
+   140	@router.post("/{task_id}/add_row", response_model=None)
+   141	async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+   142	    """Re-render the draft form with one more empty proposal row.
+   143	
+   144	    This is the server-rendered fallback for "add another proposal".
+   145	    Form input is preserved; the user keeps drafting.
+   146	    """
+   147	    session = get_session(request)
+   148	    if session is None:
+   149	        return RedirectResponse(url="/signin", status_code=303)
+   150	    form = await request.form()
+   151	    if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+   152	        return _csrf_failure_response()
+   153	    if _CLAIMS.get(_claim_key(session.csrf, task_id)) is None:
+   154	        return RedirectResponse(
+   155	            url="/planner/?banner=claim+missing+from+session",
+   156	            status_code=303,
+   157	        )
+   158	    config = request.app.state.experiment_config
+   159	    slugs = [str(v) for v in form.getlist("slug")]
+   160	    priorities = [str(v) for v in form.getlist("priority")]
+   161	    parents = [str(v) for v in form.getlist("parent_commits")]
+   162	    rationales = [str(v) for v in form.getlist("rationale")]
+   163	    state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+   164	    state.append(_empty_row())
+   165	    return request.app.state.templates.TemplateResponse(
+   166	        request,
+   167	        "planner_claim.html",
+   168	        {
+   169	            "session": session,
+   170	            "task_id": task_id,
+   171	            "objective": config.objective,
+   172	            "metrics_schema": config.metrics_schema.root,
+   173	            "errors": None,
+   174	            "form_state": state,
+   175	            "row_indices": list(range(len(state))),
+   176	        },
+   177	    )
+   178	
+   179	
+   180	@router.post("/{task_id}/submit", response_model=None)
+   181	async def submit_plan(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+   182	    session = get_session(request)
+   183	    if session is None:
+   184	        return RedirectResponse(url="/signin", status_code=303)
+   185	    form = await request.form()
+   186	    if not csrf_ok(session, form.get("csrf_token")):  # type: ignore[arg-type]
+   187	        return _csrf_failure_response()
+   188	    status = form.get("status")
+   189	    if status not in ("success", "error"):
+   190	        return _bad_request("invalid submit status")
+   191	
+   192	    token = _CLAIMS.get(_claim_key(session.csrf, task_id))
+   193	    if token is None:
+   194	        return RedirectResponse(
+   195	            url="/planner/?banner=claim+missing+from+session",
+   196	            status_code=303,
+   197	        )
+   198	
+   199	    store = request.app.state.store
+   200	    config = request.app.state.experiment_config
+   201	
+   202	    if status == "error":
+   203	        try:
+   204	            store.submit(task_id, token, PlanSubmission(status="error"))
+   205	        except DispatchError as exc:
+   206	            return _render_error(request, _wire_error_banner(exc))
+   207	        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+   208	        return _render_submitted(request, task_id, status="error", proposal_ids=())
+   209	
+   210	    slugs = [str(v) for v in form.getlist("slug")]
+   211	    priorities = [str(v) for v in form.getlist("priority")]
+   212	    parents = [str(v) for v in form.getlist("parent_commits")]
+   213	    rationales = [str(v) for v in form.getlist("rationale")]
+   214	    drafts, errors = parse_proposal_rows(slugs, priorities, parents, rationales)
+   215	    if errors:
+   216	        return request.app.state.templates.TemplateResponse(
+   217	            request,
+   218	            "planner_claim.html",
+   219	            {
+   220	                "session": session,
+   221	                "task_id": task_id,
+   222	                "objective": config.objective,
+   223	                "metrics_schema": config.metrics_schema.root,
+   224	                "errors": errors,
+   225	                "form_state": _form_state_from_inputs(slugs, priorities, parents, rationales),
+   226	                "row_indices": list(range(max(1, len(slugs) or 1))),
+   227	            },
+   228	            status_code=400,
+   229	        )
+   230	
+   231	    proposal_ids: list[str] = []
+   232	    artifacts_dir = request.app.state.artifacts_dir
+   233	    now: Callable[[], Any] = request.app.state.now
+   234	
+   235	    # Phase 1: write artifacts + create proposals as drafting.
+   236	    for draft in drafts:
+   237	        proposal_id = uuid.uuid4().hex
+   238	        artifacts_uri = write_proposal_artifact(
+   239	            artifacts_dir, proposal_id, draft.rationale
+   240	        )
+   241	        proposal = _make_proposal(
+   242	            proposal_id=proposal_id,
+   243	            experiment_id=request.app.state.experiment_id,
+   244	            draft=draft,
+   245	            artifacts_uri=artifacts_uri,
+   246	            now_iso=_iso(now()),
+   247	        )
+   248	        try:
+   249	            store.create_proposal(proposal)
+   250	        except DispatchError as exc:
+   251	            return _render_error(
+   252	                request,
+   253	                f"create_proposal failed for {proposal_id}: {_wire_error_banner(exc)}",
+   254	            )
+   255	        proposal_ids.append(proposal_id)
+   256	
+   257	    # Phase 2: flip to ready.
+   258	    for proposal_id in proposal_ids:
+   259	        try:
+   260	            store.mark_proposal_ready(proposal_id)
+   261	        except DispatchError as exc:
+   262	            return _render_error(
+   263	                request,
+   264	                f"mark_proposal_ready failed for {proposal_id}: {_wire_error_banner(exc)}",
+   265	            )
+   266	
+   267	    # Phase 3: submit, with retry-before-orphan.
+   268	    submission = PlanSubmission(status="success", proposal_ids=tuple(proposal_ids))
+   269	    ok, banner = _retry_submit(store, task_id, token, submission)
+   270	    if not ok:
+   271	        return _render_orphaned(request, task_id, proposal_ids, banner=banner)
+   272	
+   273	    _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+   274	    return _render_submitted(
+   275	        request, task_id, status="success", proposal_ids=tuple(proposal_ids)
+   276	    )
+   277	
+   278	
+   279	_RETRY_DELAYS_S = (0.05, 0.2, 0.5)
+   280	
+   281	
+   282	def _retry_submit(
+   283	    store: Any, task_id: str, token: str, submission: PlanSubmission
+   284	) -> tuple[bool, str | None]:
+   285	    """Resubmit on transport-only failures up to 3 times.
+   286	
+   287	    Per chapter 07 §2.4 / §8.1, a content-equivalent resubmit is
+   288	    idempotent. Returns ``(ok, banner)``:
+   289	
+   290	    - ``(True, None)`` on success (including a same-content
+   291	      resubmit that returns 200).
+   292	    - ``(False, banner)`` on a definitive divergent response or
+   293	      after 3 indeterminate failures. ``banner`` is the canonical
+   294	      ``eden://error/<name>`` (or a transport summary) suitable for
+   295	      surfacing to the user.
+   296	
+   297	    Definitive store-domain errors (``WrongToken``,
+   298	    ``ConflictingResubmission``, ``InvalidPrecondition``,
+   299	    ``IllegalTransition``) are not retried — retrying any of them
+   300	    cannot change the outcome and any further attempt would just
+   301	    return the same error or hide an actually-committed prior
+   302	    attempt. Anything else (``DispatchError`` without a known
+   303	    subclass, or a raw transport exception from the wire client
+   304	    such as ``httpx.HTTPError``) is treated as transport-shaped
+   305	    and retried.
+   306	    """
+   307	    last_exc: BaseException | None = None
+   308	    for delay in _RETRY_DELAYS_S:
+   309	        try:
+   310	            store.submit(task_id, token, submission)
+   311	            return True, None
+   312	        except (
+   313	            WrongToken,
+   314	            ConflictingResubmission,
+   315	            InvalidPrecondition,
+   316	            IllegalTransition,
+   317	        ) as exc:
+   318	            return False, _wire_error_banner(exc)
+   319	        except Exception as exc:  # noqa: BLE001 — transport-shaped or unknown
+   320	            last_exc = exc
+   321	            time.sleep(delay)
+   322	    if last_exc is None:
+   323	        return True, None
+   324	    return False, f"transport failure after retries: {last_exc.__class__.__name__}"
+   325	
+   326	
+   327	def _make_proposal(
+   328	    *,
+   329	    proposal_id: str,
+   330	    experiment_id: str,
+   331	    draft: ProposalDraft,
+   332	    artifacts_uri: str,
+   333	    now_iso: str,
+   334	) -> Proposal:
+   335	    return Proposal(
+   336	        proposal_id=proposal_id,
+   337	        experiment_id=experiment_id,
+   338	        slug=draft.slug,
+   339	        priority=draft.priority,
+   340	        parent_commits=list(draft.parent_commits),
+   341	        artifacts_uri=artifacts_uri,
+   342	        state="drafting",
+   343	        created_at=now_iso,
+   344	    )
+   345	
+   346	
+   347	def _iso(dt: Any) -> str:
+   348	    """Emit Zulu-suffixed ISO 8601: ``YYYY-MM-DDTHH:MM:SS(.sss)?Z``."""
+   349	    s = dt.isoformat()
+   350	    if s.endswith("+00:00"):
+   351	        s = s[: -len("+00:00")] + "Z"
+   352	    return s
+   353	
+   354	
+   355	def _empty_row() -> dict[str, str]:
+   356	    return {"slug": "", "priority": "1.0", "parent_commits": "", "rationale": ""}
+   357	
+   358	
+   359	def _form_state_from_inputs(
+   360	    slugs: list[str], priorities: list[str], parents: list[str], rationales: list[str]
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/templates/planner_claim.html | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{% extends "base.html" %}
+     2	{% block title %}EDEN — draft proposals{% endblock %}
+     3	{% block main %}
+     4	<h1>draft proposals — task <code>{{ task_id }}</code></h1>
+     5	{% if errors and errors.overall %}
+     6	<div class="banner banner-error">
+     7	    <ul>
+     8	    {% for msg in errors.overall %}<li>{{ msg }}</li>{% endfor %}
+     9	    </ul>
+    10	</div>
+    11	{% endif %}
+    12	<section class="objective">
+    13	    <h2>objective</h2>
+    14	    <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
+    15	</section>
+    16	<section class="metrics-schema">
+    17	    <h2>metrics schema (read-only)</h2>
+    18	    <table>
+    19	        <thead><tr><th>metric</th><th>type</th></tr></thead>
+    20	        <tbody>
+    21	        {% for name, kind in metrics_schema.items() %}
+    22	            <tr><td><code>{{ name }}</code></td><td>{{ kind }}</td></tr>
+    23	        {% endfor %}
+    24	        </tbody>
+    25	    </table>
+    26	</section>
+    27	<form action="/planner/{{ task_id }}/submit" method="post" class="proposal-form">
+    28	    <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+    29	    <fieldset>
+    30	        <legend>proposals</legend>
+    31	        {% for i in row_indices %}
+    32	        {% set row = form_state[i] if i < (form_state|length) else {"slug":"","priority":"1.0","parent_commits":"","rationale":""} %}
+    33	        {% set row_errs = (errors.by_row[i] if errors and i in errors.by_row else {}) %}
+    34	        <div class="proposal-row">
+    35	            <h3>row {{ i + 1 }}</h3>
+    36	            <label>slug
+    37	                <input type="text" name="slug" value="{{ row.slug }}">
+    38	                {% if row_errs.get("slug") %}<span class="field-error">{{ row_errs["slug"] }}</span>{% endif %}
+    39	            </label>
+    40	            <label>priority
+    41	                <input type="text" name="priority" value="{{ row.priority }}">
+    42	                {% if row_errs.get("priority") %}<span class="field-error">{{ row_errs["priority"] }}</span>{% endif %}
+    43	            </label>
+    44	            <label>parent commit SHAs (comma-separated)
+    45	                <input type="text" name="parent_commits" value="{{ row.parent_commits }}">
+    46	                {% if row_errs.get("parent_commits") %}<span class="field-error">{{ row_errs["parent_commits"] }}</span>{% endif %}
+    47	            </label>
+    48	            <label>rationale (markdown)
+    49	                <textarea name="rationale" rows="6">{{ row.rationale }}</textarea>
+    50	                {% if row_errs.get("rationale") %}<span class="field-error">{{ row_errs["rationale"] }}</span>{% endif %}
+    51	            </label>
+    52	        </div>
+    53	        {% endfor %}
+    54	    </fieldset>
+    55	    <div class="actions">
+    56	        <button type="submit" name="status" value="success">submit (success)</button>
+    57	        <button type="submit" name="status" value="error" class="danger">submit (error)</button>
+    58	        <button type="submit" formaction="/planner/{{ task_id }}/add_row" formmethod="post">add another row</button>
+    59	    </div>
+    60	</form>
+    61	{% endblock %}
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_planner_flow.py | sed -n '1,340p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Cross-request planner-flow tests.
+     2	
+     3	These exercise full happy-path and recovery flows that the
+     4	per-route ``test_app.py`` deliberately does not cover.
+     5	"""
+     6	
+     7	from __future__ import annotations
+     8	
+     9	from datetime import UTC, datetime
+    10	
+    11	from conftest import (
+    12	    EXPERIMENT_ID,
+    13	    SESSION_SECRET,
+    14	    WORKER_ID,
+    15	    _config,
+    16	    get_csrf,
+    17	)
+    18	from eden_dispatch import sweep_expired_claims
+    19	from eden_storage import InMemoryStore
+    20	from eden_web_ui import make_app
+    21	from fastapi.testclient import TestClient
+    22	
+    23	
+    24	def _draft_form(slug: str) -> dict[str, str]:
+    25	    return {
+    26	        "status": "success",
+    27	        "slug": slug,
+    28	        "priority": "1.5",
+    29	        "parent_commits": "a" * 40,
+    30	        "rationale": "## why\n\nBecause it's a sound plan.",
+    31	    }
+    32	
+    33	
+    34	class TestHappyPath:
+    35	    def test_claim_draft_submit_completes_task(
+    36	        self, signed_in_client: TestClient, store: InMemoryStore
+    37	    ) -> None:
+    38	        store.create_plan_task("t-1")
+    39	        token = get_csrf(signed_in_client)
+    40	
+    41	        resp = signed_in_client.post(
+    42	            "/planner/t-1/claim",
+    43	            data={"csrf_token": token},
+    44	            follow_redirects=False,
+    45	        )
+    46	        assert resp.status_code == 303
+    47	
+    48	        draft = signed_in_client.get("/planner/t-1/draft")
+    49	        assert draft.status_code == 200
+    50	        assert "draft proposals" in draft.text.lower()
+    51	
+    52	        form = _draft_form("first-feature") | {"csrf_token": token}
+    53	        resp = signed_in_client.post("/planner/t-1/submit", data=form)
+    54	        assert resp.status_code == 200
+    55	        assert "submitted" in resp.text.lower()
+    56	
+    57	        assert store.read_task("t-1").state == "submitted"
+    58	        proposals = store.list_proposals(state="ready")
+    59	        assert len(proposals) == 1
+    60	        assert proposals[0].slug == "first-feature"
+    61	
+    62	    def test_submit_error_path_writes_no_proposals(
+    63	        self, signed_in_client: TestClient, store: InMemoryStore
+    64	    ) -> None:
+    65	        store.create_plan_task("t-err")
+    66	        token = get_csrf(signed_in_client)
+    67	        signed_in_client.post(
+    68	            "/planner/t-err/claim",
+    69	            data={"csrf_token": token},
+    70	            follow_redirects=False,
+    71	        )
+    72	        resp = signed_in_client.post(
+    73	            "/planner/t-err/submit",
+    74	            data={"csrf_token": token, "status": "error"},
+    75	        )
+    76	        assert resp.status_code == 200
+    77	        assert store.read_task("t-err").state == "submitted"
+    78	        assert store.list_proposals() == []
+    79	
+    80	
+    81	class TestValidationRecovery:
+    82	    def test_invalid_form_re_renders_with_errors_and_input_preserved(
+    83	        self, signed_in_client: TestClient, store: InMemoryStore
+    84	    ) -> None:
+    85	        store.create_plan_task("t-bad")
+    86	        token = get_csrf(signed_in_client)
+    87	        signed_in_client.post(
+    88	            "/planner/t-bad/claim",
+    89	            data={"csrf_token": token},
+    90	            follow_redirects=False,
+    91	        )
+    92	        # priority is not a number; rationale empty; parent_commits invalid.
+    93	        resp = signed_in_client.post(
+    94	            "/planner/t-bad/submit",
+    95	            data={
+    96	                "csrf_token": token,
+    97	                "status": "success",
+    98	                "slug": "good-slug",
+    99	                "priority": "not-a-number",
+   100	                "parent_commits": "not-a-sha",
+   101	                "rationale": "",
+   102	            },
+   103	        )
+   104	        assert resp.status_code == 400
+   105	        # User input preserved.
+   106	        assert "good-slug" in resp.text
+   107	        assert "not-a-number" in resp.text
+   108	        assert "not-a-sha" in resp.text
+   109	        # Field errors surfaced.
+   110	        assert "priority must be a number" in resp.text
+   111	        assert "rationale markdown is required" in resp.text
+   112	        # No store mutation.
+   113	        assert store.list_proposals() == []
+   114	        assert store.read_task("t-bad").state == "claimed"
+   115	
+   116	
+   117	class TestMultiRow:
+   118	    def test_add_row_returns_form_with_one_more_empty_row(
+   119	        self, signed_in_client: TestClient, store: InMemoryStore
+   120	    ) -> None:
+   121	        """The add_row route preserves input and appends an empty row."""
+   122	        store.create_plan_task("t-add")
+   123	        token = get_csrf(signed_in_client)
+   124	        signed_in_client.post(
+   125	            "/planner/t-add/claim",
+   126	            data={"csrf_token": token},
+   127	            follow_redirects=False,
+   128	        )
+   129	        resp = signed_in_client.post(
+   130	            "/planner/t-add/add_row",
+   131	            data={
+   132	                "csrf_token": token,
+   133	                "slug": "feat-1",
+   134	                "priority": "1.0",
+   135	                "parent_commits": "a" * 40,
+   136	                "rationale": "first proposal rationale",
+   137	            },
+   138	        )
+   139	        assert resp.status_code == 200
+   140	        # First row's input is preserved.
+   141	        assert "feat-1" in resp.text
+   142	        assert "first proposal rationale" in resp.text
+   143	        # The form now has 2 rows — count textareas as a per-row marker.
+   144	        assert resp.text.count('name="rationale"') == 2
+   145	
+   146	    def test_skip_fully_blank_row_on_submit(
+   147	        self,
+   148	        signed_in_client: TestClient,
+   149	        store: InMemoryStore,
+   150	    ) -> None:
+   151	        """Submitting with a trailing blank row only persists the filled rows."""
+   152	        from urllib.parse import urlencode
+   153	
+   154	        store.create_plan_task("t-skip")
+   155	        token = get_csrf(signed_in_client)
+   156	        signed_in_client.post(
+   157	            "/planner/t-skip/claim",
+   158	            data={"csrf_token": token},
+   159	            follow_redirects=False,
+   160	        )
+   161	        body = urlencode(
+   162	            [
+   163	                ("csrf_token", token),
+   164	                ("status", "success"),
+   165	                ("slug", "feat-only"),
+   166	                ("priority", "1.0"),
+   167	                ("parent_commits", "a" * 40),
+   168	                ("rationale", "real proposal"),
+   169	                ("slug", ""),
+   170	                ("priority", "1.0"),
+   171	                ("parent_commits", ""),
+   172	                ("rationale", ""),
+   173	            ]
+   174	        )
+   175	        resp = signed_in_client.post(
+   176	            "/planner/t-skip/submit",
+   177	            content=body,
+   178	            headers={"content-type": "application/x-www-form-urlencoded"},
+   179	        )
+   180	        assert resp.status_code == 200
+   181	        ready = store.list_proposals(state="ready")
+   182	        assert len(ready) == 1
+   183	        assert ready[0].slug == "feat-only"
+   184	
+   185	    def test_all_blank_rejected(
+   186	        self,
+   187	        signed_in_client: TestClient,
+   188	        store: InMemoryStore,
+   189	    ) -> None:
+   190	        """If every row is blank, submit re-renders with a form-level error."""
+   191	        store.create_plan_task("t-all-blank")
+   192	        token = get_csrf(signed_in_client)
+   193	        signed_in_client.post(
+   194	            "/planner/t-all-blank/claim",
+   195	            data={"csrf_token": token},
+   196	            follow_redirects=False,
+   197	        )
+   198	        resp = signed_in_client.post(
+   199	            "/planner/t-all-blank/submit",
+   200	            data={
+   201	                "csrf_token": token,
+   202	                "status": "success",
+   203	                "slug": "",
+   204	                "priority": "1.0",
+   205	                "parent_commits": "",
+   206	                "rationale": "",
+   207	            },
+   208	        )
+   209	        assert resp.status_code == 400
+   210	        assert "at least one proposal row must be filled in" in resp.text
+   211	
+   212	
+   213	class TestPerSessionClaimIsolation:
+   214	    def test_other_session_with_same_worker_id_cannot_use_first_session_claim(
+   215	        self, app, store: InMemoryStore
+   216	    ) -> None:
+   217	        """Two browser sessions with the same worker_id must not share claims."""
+   218	        store.create_plan_task("t-iso")
+   219	        with TestClient(app) as a:
+   220	            a.post("/signin", follow_redirects=False)
+   221	            csrf_a = get_csrf(a)
+   222	            resp = a.post(
+   223	                "/planner/t-iso/claim",
+   224	                data={"csrf_token": csrf_a},
+   225	                follow_redirects=False,
+   226	            )
+   227	            assert resp.status_code == 303
+   228	            # First session can see its own draft form.
+   229	            resp = a.get("/planner/t-iso/draft")
+   230	            assert resp.status_code == 200
+   231	
+   232	        # Second session — fresh sign-in (fresh CSRF) — cannot reach
+   233	        # the draft page, which means it cannot reuse the first
+   234	        # session's claim.
+   235	        with TestClient(app) as b:
+   236	            b.post("/signin", follow_redirects=False)
+   237	            resp = b.get("/planner/t-iso/draft", follow_redirects=False)
+   238	            assert resp.status_code == 303
+   239	            assert "claim+missing" in resp.headers["location"]
+   240	
+   241	
+   242	class TestRetryBeforeOrphan:
+   243	    def test_transport_exception_retries_then_orphan(
+   244	        self,
+   245	        signed_in_client: TestClient,
+   246	        store: InMemoryStore,
+   247	        monkeypatch,
+   248	    ) -> None:
+   249	        """Raw transport exceptions (httpx-style, not DispatchError) are retried."""
+   250	        store.create_plan_task("t-trans")
+   251	        token = get_csrf(signed_in_client)
+   252	        signed_in_client.post(
+   253	            "/planner/t-trans/claim",
+   254	            data={"csrf_token": token},
+   255	            follow_redirects=False,
+   256	        )
+   257	
+   258	        attempts = {"n": 0}
+   259	
+   260	        class TransportError(Exception):
+   261	            pass
+   262	
+   263	        def transport_fail(*args, **kwargs):
+   264	            attempts["n"] += 1
+   265	            raise TransportError("connect timeout")
+   266	
+   267	        monkeypatch.setattr(store, "submit", transport_fail)
+   268	        resp = signed_in_client.post(
+   269	            "/planner/t-trans/submit",
+   270	            data={
+   271	                "csrf_token": token,
+   272	                "status": "success",
+   273	                "slug": "feat-trans",
+   274	                "priority": "1.0",
+   275	                "parent_commits": "a" * 40,
+   276	                "rationale": "rationale",
+   277	            },
+   278	        )
+   279	        assert resp.status_code == 502
+   280	        # Retried 3 times.
+   281	        assert attempts["n"] == 3
+   282	        # Banner names the transport error class.
+   283	        assert "TransportError" in resp.text
+   284	
+   285	
+   286	class TestStrandedClaim:
+   287	    def test_expired_claim_reclaims_via_sweeper(
+   288	        self,
+   289	        store: InMemoryStore,
+   290	        artifacts_dir,
+   291	        tmp_path,
+   292	    ) -> None:
+   293	        """Setting expires_at + sweeping returns a stranded task to pending."""
+   294	        # Build an app whose `now()` advances on each call so the second
+   295	        # tick is past the claim's expires_at.
+   296	        instants = iter([
+   297	            datetime(2026, 4, 24, 12, 0, tzinfo=UTC),
+   298	            datetime(2026, 4, 24, 14, 0, tzinfo=UTC),  # +2h
+   299	        ])
+   300	
+   301	        def fake_now() -> datetime:
+   302	            try:
+   303	                return next(instants)
+   304	            except StopIteration:
+   305	                return datetime(2026, 4, 24, 14, 0, tzinfo=UTC)
+   306	
+   307	        app = make_app(
+   308	            store=store,
+   309	            experiment_id=EXPERIMENT_ID,
+   310	            experiment_config=_config(),
+   311	            worker_id=WORKER_ID,
+   312	            session_secret=SESSION_SECRET,
+   313	            claim_ttl_seconds=60,  # 1 minute
+   314	            artifacts_dir=artifacts_dir,
+   315	            secure_cookies=False,
+   316	            now=fake_now,
+   317	        )
+   318	        with TestClient(app) as c:
+   319	            c.post("/signin", follow_redirects=False)
+   320	            store.create_plan_task("t-strand")
+   321	            csrf = get_csrf(c)
+   322	            c.post(
+   323	                "/planner/t-strand/claim",
+   324	                data={"csrf_token": csrf},
+   325	                follow_redirects=False,
+   326	            )
+   327	            assert store.read_task("t-strand").state == "claimed"
+   328	
+   329	        # Sweep using a now that's well past the expiry.
+   330	        n = sweep_expired_claims(
+   331	            store, now=datetime(2026, 4, 24, 12, 5, tzinfo=UTC)
+   332	        )
+   333	        assert n == 1
+   334	        assert store.read_task("t-strand").state == "pending"
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_e2e_real_subprocess.py | sed -n '1,460p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Real-subprocess end-to-end test for the Web UI.
+     2	
+     3	Two scenarios:
+     4	
+     5	1. ``test_planner_full_flow_through_ui`` — forks task-store-server
+     6	   and web-ui, drives a one-task plan flow through the UI's HTTP
+     7	   surface, asserts the resulting task-store state.
+     8	2. ``test_stranded_claim_recovered_by_orchestrator_loop`` — adds
+     9	   a real orchestrator subprocess to prove that the per-iteration
+    10	   ``sweep_expired_claims`` call wired into ``run_orchestrator_loop``
+    11	   is what actually reclaims an abandoned UI claim.
+    12	"""
+    13	
+    14	from __future__ import annotations
+    15	
+    16	import re
+    17	import signal
+    18	import subprocess
+    19	import sys
+    20	import time
+    21	from pathlib import Path
+    22	from urllib.parse import urlencode
+    23	
+    24	import httpx
+    25	import pytest
+    26	from eden_contracts import MetricsSchema
+    27	from eden_storage import SqliteStore
+    28	
+    29	pytestmark = pytest.mark.skipif(
+    30	    sys.platform == "win32",
+    31	    reason="subprocess signal handling is POSIX-only",
+    32	)
+    33	
+    34	FIXTURE_CONFIG = (
+    35	    Path(__file__).resolve().parents[4]
+    36	    / "tests"
+    37	    / "fixtures"
+    38	    / "experiment"
+    39	    / ".eden"
+    40	    / "config.yaml"
+    41	)
+    42	
+    43	
+    44	def _spawn(args: list[str]) -> subprocess.Popen:
+    45	    return subprocess.Popen(
+    46	        [sys.executable, "-m", *args],
+    47	        stdout=subprocess.PIPE,
+    48	        stderr=subprocess.PIPE,
+    49	        text=True,
+    50	    )
+    51	
+    52	
+    53	_TASK_STORE_RE = re.compile(r"^EDEN_TASK_STORE_LISTENING\s+(.*)$")
+    54	_WEB_UI_RE = re.compile(r"^EDEN_WEB_UI_LISTENING\s+(.*)$")
+    55	
+    56	
+    57	def _read_announcement(
+    58	    proc: subprocess.Popen, pattern: re.Pattern[str], timeout: float = 10.0
+    59	) -> int:
+    60	    deadline = time.monotonic() + timeout
+    61	    assert proc.stdout is not None
+    62	    while time.monotonic() < deadline:
+    63	        line = proc.stdout.readline()
+    64	        if not line:
+    65	            if proc.poll() is not None:
+    66	                raise RuntimeError(
+    67	                    f"subprocess exited early with code {proc.returncode}"
+    68	                )
+    69	            continue
+    70	        m = pattern.match(line.strip())
+    71	        if m is not None:
+    72	            kv = dict(p.split("=", 1) for p in m.group(1).split())
+    73	            return int(kv["port"])
+    74	    raise RuntimeError("subprocess did not announce its port in time")
+    75	
+    76	
+    77	def _terminate(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    78	    if proc.poll() is not None:
+    79	        return
+    80	    try:
+    81	        proc.send_signal(signal.SIGTERM)
+    82	        proc.wait(timeout=timeout)
+    83	    except subprocess.TimeoutExpired:
+    84	        proc.kill()
+    85	        proc.wait(timeout=2)
+    86	
+    87	
+    88	def _dump_stderr(procs: dict[str, subprocess.Popen]) -> str:
+    89	    parts = []
+    90	    for name, p in procs.items():
+    91	        stderr = ""
+    92	        if p.stderr is not None:
+    93	            try:
+    94	                stderr = p.stderr.read() or ""
+    95	            except Exception as exc:  # noqa: BLE001
+    96	                stderr = f"<failed to read stderr: {exc!r}>"
+    97	        parts.append(f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{stderr}\n")
+    98	    return "\n".join(parts)
+    99	
+   100	
+   101	@pytest.mark.e2e
+   102	def test_planner_full_flow_through_ui(tmp_path: Path) -> None:
+   103	    """Sign in, claim a plan task, draft + submit, verify state in the store."""
+   104	    db_path = tmp_path / "eden.sqlite"
+   105	    artifacts_dir = tmp_path / "artifacts"
+   106	    experiment_id = "exp-web-ui-e2e"
+   107	    token = "e2e-test-token"
+   108	
+   109	    server = _spawn(
+   110	        [
+   111	            "eden_task_store_server",
+   112	            "--db-path",
+   113	            str(db_path),
+   114	            "--experiment-id",
+   115	            experiment_id,
+   116	            "--experiment-config",
+   117	            str(FIXTURE_CONFIG),
+   118	            "--host",
+   119	            "127.0.0.1",
+   120	            "--port",
+   121	            "0",
+   122	            "--shared-token",
+   123	            token,
+   124	            "--subscribe-timeout",
+   125	            "1.0",
+   126	        ]
+   127	    )
+   128	    server_port = _read_announcement(server, _TASK_STORE_RE)
+   129	    task_store_url = f"http://127.0.0.1:{server_port}"
+   130	
+   131	    web_ui = _spawn(
+   132	        [
+   133	            "eden_web_ui",
+   134	            "--task-store-url",
+   135	            task_store_url,
+   136	            "--experiment-id",
+   137	            experiment_id,
+   138	            "--shared-token",
+   139	            token,
+   140	            "--experiment-config",
+   141	            str(FIXTURE_CONFIG),
+   142	            "--session-secret",
+   143	            "x" * 32,
+   144	            "--worker-id",
+   145	            "ui-w",
+   146	            "--artifacts-dir",
+   147	            str(artifacts_dir),
+   148	            "--host",
+   149	            "127.0.0.1",
+   150	            "--port",
+   151	            "0",
+   152	            "--claim-ttl-seconds",
+   153	            "60",
+   154	        ]
+   155	    )
+   156	    web_port = _read_announcement(web_ui, _WEB_UI_RE)
+   157	    web_url = f"http://127.0.0.1:{web_port}"
+   158	
+   159	    procs = {"task-store-server": server, "web-ui": web_ui}
+   160	
+   161	    try:
+   162	        # Seed one plan task via the wire StoreClient.
+   163	        from eden_wire import StoreClient
+   164	
+   165	        seed = StoreClient(
+   166	            base_url=task_store_url,
+   167	            experiment_id=experiment_id,
+   168	            token=token,
+   169	        )
+   170	        try:
+   171	            seed.create_plan_task("t-ui-1")
+   172	        finally:
+   173	            seed.close()
+   174	
+   175	        with httpx.Client(base_url=web_url, timeout=10.0) as ui:
+   176	            # Sign in.
+   177	            resp = ui.post("/signin", follow_redirects=False)
+   178	            assert resp.status_code == 303
+   179	
+   180	            # GET /planner/ to render and parse out the CSRF token.
+   181	            resp = ui.get("/planner/")
+   182	            assert resp.status_code == 200
+   183	            assert "t-ui-1" in resp.text
+   184	            m = re.search(
+   185	                r'name="csrf_token"\s+value="([^"]+)"', resp.text
+   186	            )
+   187	            assert m is not None, "csrf token not found in planner list"
+   188	            csrf = m.group(1)
+   189	
+   190	            # Claim.
+   191	            resp = ui.post(
+   192	                "/planner/t-ui-1/claim",
+   193	                content=urlencode({"csrf_token": csrf}),
+   194	                headers={"content-type": "application/x-www-form-urlencoded"},
+   195	                follow_redirects=False,
+   196	            )
+   197	            assert resp.status_code == 303
+   198	
+   199	            # Draft form.
+   200	            resp = ui.get("/planner/t-ui-1/draft")
+   201	            assert resp.status_code == 200
+   202	
+   203	            # Submit success with one proposal.
+   204	            body = urlencode(
+   205	                [
+   206	                    ("csrf_token", csrf),
+   207	                    ("status", "success"),
+   208	                    ("slug", "e2e-feat"),
+   209	                    ("priority", "1.0"),
+   210	                    ("parent_commits", "a" * 40),
+   211	                    ("rationale", "## why\n\nbecause."),
+   212	                ]
+   213	            )
+   214	            resp = ui.post(
+   215	                "/planner/t-ui-1/submit",
+   216	                content=body,
+   217	                headers={"content-type": "application/x-www-form-urlencoded"},
+   218	            )
+   219	            if resp.status_code != 200:
+   220	                pytest.fail(
+   221	                    f"submit returned {resp.status_code}: {resp.text}\n"
+   222	                    + _dump_stderr(procs)
+   223	                )
+   224	            assert "submitted" in resp.text.lower()
+   225	
+   226	        # Tear down processes before reading SQLite (release file lock).
+   227	        for p in procs.values():
+   228	            _terminate(p)
+   229	
+   230	        store = SqliteStore(
+   231	            experiment_id=experiment_id,
+   232	            path=str(db_path),
+   233	            metrics_schema=MetricsSchema({"score": "real"}),
+   234	        )
+   235	        try:
+   236	            assert store.read_task("t-ui-1").state == "submitted"
+   237	            ready = store.list_proposals(state="ready")
+   238	            assert len(ready) == 1
+   239	            assert ready[0].slug == "e2e-feat"
+   240	            # Artifact file exists at the URI.
+   241	            uri = ready[0].artifacts_uri
+   242	            assert uri.startswith("file://")
+   243	            assert Path(uri.removeprefix("file://")).read_text(
+   244	                encoding="utf-8"
+   245	            ).startswith("## why")
+   246	        finally:
+   247	            store.close()
+   248	    finally:
+   249	        for p in procs.values():
+   250	            _terminate(p)
+   251	
+   252	
+   253	@pytest.mark.e2e
+   254	def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
+   255	    """End-to-end: UI claims with TTL, orchestrator's loop sweeps + reclaims.
+   256	
+   257	    Spawns three real processes (task-store-server + web-ui +
+   258	    orchestrator) and proves the operational path the plan
+   259	    promised: the orchestrator's per-iteration sweep is what
+   260	    actually reclaims an abandoned claim. The orchestrator is
+   261	    launched with no plan tasks so it does the sweep, sees no
+   262	    other progress, and quiesces.
+   263	    """
+   264	    from eden_service_common import seed_bare_repo
+   265	
+   266	    db_path = tmp_path / "eden.sqlite"
+   267	    artifacts_dir = tmp_path / "artifacts"
+   268	    bare_repo = tmp_path / "bare-repo.git"
+   269	    subprocess.run(
+   270	        ["git", "init", "--bare", "--initial-branch", "main", str(bare_repo)],
+   271	        check=True,
+   272	        capture_output=True,
+   273	    )
+   274	    seed_bare_repo(str(bare_repo))
+   275	
+   276	    experiment_id = "exp-strand"
+   277	    token = "strand-token"
+   278	
+   279	    server = _spawn(
+   280	        [
+   281	            "eden_task_store_server",
+   282	            "--db-path",
+   283	            str(db_path),
+   284	            "--experiment-id",
+   285	            experiment_id,
+   286	            "--experiment-config",
+   287	            str(FIXTURE_CONFIG),
+   288	            "--host",
+   289	            "127.0.0.1",
+   290	            "--port",
+   291	            "0",
+   292	            "--shared-token",
+   293	            token,
+   294	            "--subscribe-timeout",
+   295	            "1.0",
+   296	        ]
+   297	    )
+   298	    server_port = _read_announcement(server, _TASK_STORE_RE)
+   299	    task_store_url = f"http://127.0.0.1:{server_port}"
+   300	
+   301	    web_ui = _spawn(
+   302	        [
+   303	            "eden_web_ui",
+   304	            "--task-store-url",
+   305	            task_store_url,
+   306	            "--experiment-id",
+   307	            experiment_id,
+   308	            "--shared-token",
+   309	            token,
+   310	            "--experiment-config",
+   311	            str(FIXTURE_CONFIG),
+   312	            "--session-secret",
+   313	            "x" * 32,
+   314	            "--worker-id",
+   315	            "ui-w",
+   316	            "--artifacts-dir",
+   317	            str(artifacts_dir),
+   318	            "--host",
+   319	            "127.0.0.1",
+   320	            "--port",
+   321	            "0",
+   322	            "--claim-ttl-seconds",
+   323	            "1",
+   324	        ]
+   325	    )
+   326	    web_port = _read_announcement(web_ui, _WEB_UI_RE)
+   327	    web_url = f"http://127.0.0.1:{web_port}"
+   328	
+   329	    procs: dict[str, subprocess.Popen] = {
+   330	        "task-store-server": server,
+   331	        "web-ui": web_ui,
+   332	    }
+   333	
+   334	    try:
+   335	        # Seed one plan task via the wire StoreClient.
+   336	        from eden_wire import StoreClient
+   337	
+   338	        seed = StoreClient(
+   339	            base_url=task_store_url,
+   340	            experiment_id=experiment_id,
+   341	            token=token,
+   342	        )
+   343	        try:
+   344	            seed.create_plan_task("t-strand")
+   345	        finally:
+   346	            seed.close()
+   347	
+   348	        # Claim through UI with 1s TTL.
+   349	        with httpx.Client(base_url=web_url, timeout=10.0) as ui:
+   350	            ui.post("/signin", follow_redirects=False)
+   351	            resp = ui.get("/planner/")
+   352	            m = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text)
+   353	            assert m is not None
+   354	            csrf = m.group(1)
+   355	            resp = ui.post(
+   356	                "/planner/t-strand/claim",
+   357	                content=urlencode({"csrf_token": csrf}),
+   358	                headers={"content-type": "application/x-www-form-urlencoded"},
+   359	                follow_redirects=False,
+   360	            )
+   361	            assert resp.status_code == 303
+   362	
+   363	        # Wait past the TTL so the orchestrator's next iteration's
+   364	        # sweep_expired_claims call will reclaim.
+   365	        time.sleep(2.0)
+   366	
+   367	        # Now spawn the orchestrator with NO plan tasks; its loop runs
+   368	        # sweep_expired_claims once per iteration, sees no other
+   369	        # progress, and quiesces.
+   370	        orchestrator = _spawn(
+   371	            [
+   372	                "eden_orchestrator",
+   373	                "--task-store-url",
+   374	                task_store_url,
+   375	                "--experiment-id",
+   376	                experiment_id,
+   377	                "--shared-token",
+   378	                token,
+   379	                "--repo-path",
+   380	                str(bare_repo),
+   381	                "--plan-tasks",
+   382	                "",
+   383	                "--max-quiescent-iterations",
+   384	                "2",
+   385	                "--poll-interval",
+   386	                "0.1",
+   387	            ]
+   388	        )
+   389	        procs["orchestrator"] = orchestrator
+   390	        try:
+   391	            rc = orchestrator.wait(timeout=30)
+   392	        except subprocess.TimeoutExpired:
+   393	            for p in procs.values():
+   394	                _terminate(p)
+   395	            pytest.fail(
+   396	                "orchestrator did not quiesce within 30s. Stderr:\n"
+   397	                + _dump_stderr(procs)
+   398	            )
+   399	        if rc != 0:
+   400	            for p in procs.values():
+   401	                _terminate(p)
+   402	            pytest.fail(
+   403	                f"orchestrator exited {rc}. Stderr:\n" + _dump_stderr(procs)
+   404	            )
+   405	
+   406	        # Verify state via a separate StoreClient.
+   407	        client = StoreClient(
+   408	            base_url=task_store_url,
+   409	            experiment_id=experiment_id,
+   410	            token=token,
+   411	        )
+   412	        try:
+   413	            assert client.read_task("t-strand").state == "pending"
+   414	            events = list(client.read_range())
+   415	            reclaimed = [
+   416	                e
+   417	                for e in events
+   418	                if e.type == "task.reclaimed"
+   419	                and e.data.get("task_id") == "t-strand"
+   420	            ]
+   421	            assert len(reclaimed) == 1
+   422	            assert reclaimed[0].data["cause"] == "expired"
+   423	        finally:
+   424	            client.close()
+   425	    finally:
+   426	        for p in procs.values():
+   427	            _terminate(p)
+
+exec
+/bin/zsh -lc 'git diff -- reference/services/web-ui/src/eden_web_ui/routes/planner.py reference/services/web-ui/src/eden_web_ui/templates/planner_claim.html reference/services/web-ui/tests/test_planner_flow.py reference/services/web-ui/tests/test_e2e_real_subprocess.py reference/services/orchestrator/src/eden_orchestrator/loop.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+diff --git a/reference/services/orchestrator/src/eden_orchestrator/loop.py b/reference/services/orchestrator/src/eden_orchestrator/loop.py
+index bb5fe4f..2e994ad 100644
+--- a/reference/services/orchestrator/src/eden_orchestrator/loop.py
++++ b/reference/services/orchestrator/src/eden_orchestrator/loop.py
+@@ -10,8 +10,9 @@ from __future__ import annotations
+ 
+ import uuid
+ from collections.abc import Callable
++from datetime import UTC, datetime
+ 
+-from eden_dispatch import run_orchestrator_iteration
++from eden_dispatch import run_orchestrator_iteration, sweep_expired_claims
+ from eden_git import Identity, Integrator
+ from eden_service_common import StopFlag, get_logger
+ from eden_storage import Store
+@@ -65,13 +66,14 @@ def run_orchestrator_loop(
+ 
+     quiescent = 0
+     while not stop.is_set():
++        reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
+         progress = run_orchestrator_iteration(
+             store,
+             implement_task_id_factory=implement_factory,
+             evaluate_task_id_factory=evaluate_factory,
+             integrate_trial=integrate,
+         )
+-        if progress:
++        if reclaimed or progress:
+             quiescent = 0
+         else:
+             quiescent += 1
+
+codex
+The main route changes are in place. I’m checking the form parser now, because the new “add another row” flow only works if blank rows are treated intentionally; that’s a common place for subtle regressions.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/forms.py | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Typed form parsers for the planner module.
+     2	
+     3	Form input arrives as a list of repeated field rows (one per
+     4	proposal). We parse it into a list of ``ProposalDraft`` objects
+     5	plus the planner-level status. Validation errors are accumulated
+     6	field-by-field so the form re-renders with the user's input intact.
+     7	"""
+     8	
+     9	from __future__ import annotations
+    10	
+    11	from dataclasses import dataclass, field
+    12	
+    13	
+    14	@dataclass(frozen=True)
+    15	class ProposalDraft:
+    16	    """Validated planner-form input for one proposal.
+    17	
+    18	    The canonical ``Proposal`` model is constructed by the route
+    19	    handler from this draft plus the server-generated
+    20	    ``proposal_id`` and ``artifacts_uri`` from the artifact writer.
+    21	    """
+    22	
+    23	    slug: str
+    24	    priority: float
+    25	    parent_commits: tuple[str, ...]
+    26	    rationale: str
+    27	
+    28	
+    29	@dataclass
+    30	class FormErrors:
+    31	    """Accumulated per-field error messages, indexed by row then field."""
+    32	
+    33	    by_row: dict[int, dict[str, str]] = field(default_factory=dict)
+    34	    overall: list[str] = field(default_factory=list)
+    35	
+    36	    def add(self, row: int, field_name: str, message: str) -> None:
+    37	        """Record a field-level error for ``row`` / ``field_name``."""
+    38	        self.by_row.setdefault(row, {})[field_name] = message
+    39	
+    40	    def add_overall(self, message: str) -> None:
+    41	        """Record a form-level (not row-specific) error."""
+    42	        self.overall.append(message)
+    43	
+    44	    def __bool__(self) -> bool:
+    45	        return bool(self.by_row) or bool(self.overall)
+    46	
+    47	
+    48	def parse_proposal_rows(
+    49	    slugs: list[str],
+    50	    priorities: list[str],
+    51	    parent_commits_csv: list[str],
+    52	    rationales: list[str],
+    53	) -> tuple[list[ProposalDraft], FormErrors]:
+    54	    """Parse parallel-list form input into validated drafts + accumulated errors.
+    55	
+    56	    Each row is one proposal. Fields are validated independently so a
+    57	    bad row 1 still yields an error report covering rows 2..N.
+    58	    """
+    59	    errors = FormErrors()
+    60	    n = max(len(slugs), len(priorities), len(parent_commits_csv), len(rationales))
+    61	    if n == 0:
+    62	        errors.add_overall("at least one proposal row is required")
+    63	        return [], errors
+    64	
+    65	    drafts: list[ProposalDraft] = []
+    66	    parsed_count = 0
+    67	    for i in range(n):
+    68	        slug = (slugs[i] if i < len(slugs) else "").strip()
+    69	        priority_raw = (priorities[i] if i < len(priorities) else "").strip()
+    70	        parents_raw = (
+    71	            parent_commits_csv[i] if i < len(parent_commits_csv) else ""
+    72	        ).strip()
+    73	        rationale = (rationales[i] if i < len(rationales) else "").strip()
+    74	
+    75	        # Skip fully-empty rows (priority defaults to "1.0" so a true
+    76	        # empty row has slug+parents+rationale all blank). The "add
+    77	        # another row" path adds blank trailing rows; the user
+    78	        # shouldn't be forced to fill every one before submitting.
+    79	        if not slug and not parents_raw and not rationale:
+    80	            continue
+    81	
+    82	        if not slug:
+    83	            errors.add(i, "slug", "slug is required")
+    84	        elif not all(c.isalnum() or c in "-_" for c in slug):
+    85	            errors.add(i, "slug", "slug must be alphanumeric / dash / underscore")
+    86	
+    87	        try:
+    88	            priority = float(priority_raw)
+    89	        except ValueError:
+    90	            errors.add(i, "priority", "priority must be a number")
+    91	            priority = 0.0
+    92	
+    93	        parents = tuple(p.strip() for p in parents_raw.split(",") if p.strip())
+    94	        if not parents:
+    95	            errors.add(i, "parent_commits", "at least one parent commit SHA is required")
+    96	        else:
+    97	            for parent in parents:
+    98	                if not (len(parent) == 40 and all(c in "0123456789abcdef" for c in parent.lower())):
+    99	                    errors.add(i, "parent_commits", f"invalid SHA: {parent!r}")
+   100	                    break
+   101	
+   102	        if not rationale:
+   103	            errors.add(i, "rationale", "rationale markdown is required")
+   104	
+   105	        parsed_count += 1
+   106	        if not errors.by_row.get(i):
+   107	            drafts.append(
+   108	                ProposalDraft(
+   109	                    slug=slug,
+   110	                    priority=priority,
+   111	                    parent_commits=parents,
+   112	                    rationale=rationale,
+   113	                )
+   114	            )
+   115	
+   116	    if parsed_count == 0:
+   117	        errors.add_overall("at least one proposal row must be filled in")
+   118	
+   119	    return drafts, errors
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/templates/planner_orphaned.html | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{% extends "base.html" %}
+     2	{% block title %}EDEN — orphaned proposals{% endblock %}
+     3	{% block main %}
+     4	<h1>plan submission failed</h1>
+     5	<div class="banner banner-error">
+     6	    <p>
+     7	        Plan task <code>{{ task_id }}</code> could not be submitted after retries.
+     8	        The proposals below were created and marked <code>ready</code> but are
+     9	        not referenced by any submitted plan task.
+    10	    </p>
+    11	    {% if banner %}<p>error: <code>{{ banner }}</code></p>{% endif %}
+    12	</div>
+    13	<p>orphaned proposal ids:</p>
+    14	<ul>
+    15	{% for pid in proposal_ids %}<li><code>{{ pid }}</code></li>{% endfor %}
+    16	</ul>
+    17	<p>
+    18	    Operator action: reclaim the plan task (force the orchestrator to re-dispatch),
+    19	    and decide whether to garbage-collect the orphaned proposals or let the
+    20	    orchestrator dispatch implement tasks for them on the next iteration.
+    21	</p>
+    22	<p><a href="/planner/">back to planner</a></p>
+    23	{% endblock %}
+
+exec
+/bin/zsh -lc 'rg -n "at least one proposal row must be filled in|skip fully blank|fully blank|blank row" reference/services/web-ui/src/eden_web_ui reference/services/web-ui/tests' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/web-ui/tests/test_planner_flow.py:151:        """Submitting with a trailing blank row only persists the filled rows."""
+reference/services/web-ui/tests/test_planner_flow.py:210:        assert "at least one proposal row must be filled in" in resp.text
+reference/services/web-ui/src/eden_web_ui/forms.py:117:        errors.add_overall("at least one proposal row must be filled in")
+
+exec
+/bin/zsh -lc 'uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -q' in /Users/ericalt/Documents/eden
+ succeeded in 1479ms:
+.........                                                                [100%]
+
+codex
+The planner-flow tests are running clean so far. I’m doing one more pass over the revised retry semantics, because broadening to `except Exception` fixes the transport path but can also accidentally swallow programmer bugs if the route no longer distinguishes client/network failures from local defects.
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/cli.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""CLI for the orchestrator service."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import argparse
+     6	import re
+     7	
+     8	from eden_git import GitRepo, Identity, Integrator
+     9	from eden_service_common import (
+    10	    StopFlag,
+    11	    add_common_arguments,
+    12	    configure_logging,
+    13	    get_logger,
+    14	    install_stop_handlers,
+    15	    parse_log_level,
+    16	    wait_for_task_store,
+    17	)
+    18	from eden_wire import StoreClient
+    19	
+    20	from .loop import integrator_identity, run_orchestrator_loop
+    21	
+    22	_AUTHOR_RE = re.compile(r"^(?P<name>.+?)\s+<(?P<email>[^>]+)>$")
+    23	
+    24	
+    25	def _quiescent_iterations(raw: str) -> int:
+    26	    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
+    27	    try:
+    28	        value = int(raw)
+    29	    except ValueError as exc:
+    30	        raise argparse.ArgumentTypeError(
+    31	            f"--max-quiescent-iterations must be an integer, not {raw!r}"
+    32	        ) from exc
+    33	    if value < 2:
+    34	        raise argparse.ArgumentTypeError(
+    35	            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
+    36	            "of 0 or 1 risks the orchestrator exiting while a worker is "
+    37	            "mid-submit."
+    38	        )
+    39	    return value
+    40	
+    41	
+    42	def _parse_author(value: str | None) -> Identity:
+    43	    if value is None:
+    44	        return integrator_identity()
+    45	    match = _AUTHOR_RE.match(value)
+    46	    if not match:
+    47	        raise SystemExit(
+    48	            f"--integrator-author {value!r}: expected 'Name <email>' format"
+    49	        )
+    50	    return Identity(name=match.group("name"), email=match.group("email"))
+    51	
+    52	
+    53	def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    54	    """Parse CLI args for the orchestrator service."""
+    55	    parser = argparse.ArgumentParser(
+    56	        prog="eden-orchestrator",
+    57	        description="EDEN reference orchestrator service (finalize + dispatch + integrate).",
+    58	    )
+    59	    add_common_arguments(parser)
+    60	    parser.add_argument(
+    61	        "--repo-path",
+    62	        required=True,
+    63	        help="Bare git repo that the Integrator writes trial/* refs into.",
+    64	    )
+    65	    parser.add_argument(
+    66	        "--integrator-author",
+    67	        default=None,
+    68	        help=(
+    69	            "Identity stamped on integrator commits, formatted "
+    70	            "'Name <email>'. Defaults to 'EDEN Integrator "
+    71	            "<integrator@eden.invalid>'."
+    72	        ),
+    73	    )
+    74	    parser.add_argument(
+    75	        "--plan-tasks",
+    76	        required=True,
+    77	        help=(
+    78	            "Either an integer N (creates plan-0001..plan-N) or a "
+    79	            "comma-separated list of explicit plan task IDs."
+    80	        ),
+    81	    )
+    82	    parser.add_argument(
+    83	        "--implement-task-prefix",
+    84	        default="implement-",
+    85	        help="Prefix for orchestrator-allocated implement task IDs (default: 'implement-').",
+    86	    )
+    87	    parser.add_argument(
+    88	        "--evaluate-task-prefix",
+    89	        default="evaluate-",
+    90	        help="Prefix for orchestrator-allocated evaluate task IDs (default: 'evaluate-').",
+    91	    )
+    92	    parser.add_argument(
+    93	        "--poll-interval",
+    94	        type=float,
+    95	        default=0.1,
+    96	        help="Seconds between zero-progress iterations (default: 0.1).",
+    97	    )
+    98	    parser.add_argument(
+    99	        "--max-quiescent-iterations",
+   100	        type=_quiescent_iterations,
+   101	        default=3,
+   102	        help=(
+   103	            "Exit after N consecutive no-progress iterations (default: 3). "
+   104	            "Must be >=2 — N=1 risks exiting while a worker is mid-submit."
+   105	        ),
+   106	    )
+   107	    parser.add_argument(
+   108	        "--startup-timeout",
+   109	        type=float,
+   110	        default=30.0,
+   111	        help="Max seconds to wait for the task-store to become ready.",
+   112	    )
+   113	    return parser.parse_args(argv)
+   114	
+   115	
+   116	def _expand_plan_tasks(spec: str) -> list[str]:
+   117	    """Parse --plan-tasks into a concrete list of IDs."""
+   118	    if spec.isdigit():
+   119	        n = int(spec)
+   120	        return [f"plan-{i:04d}" for i in range(1, n + 1)]
+   121	    return [s.strip() for s in spec.split(",") if s.strip()]
+   122	
+   123	
+   124	def main(argv: list[str] | None = None) -> int:
+   125	    """Entry point for ``python -m eden_orchestrator``."""
+   126	    args = parse_args(argv)
+   127	    configure_logging(
+   128	        service="orchestrator",
+   129	        experiment_id=args.experiment_id,
+   130	        level=parse_log_level(args.log_level),
+   131	    )
+   132	    log = get_logger(__name__)
+   133	
+   134	    stop = StopFlag()
+   135	    install_stop_handlers(stop)
+   136	
+   137	    log.info("waiting_for_task_store", url=args.task_store_url)
+   138	    wait_for_task_store(
+   139	        base_url=args.task_store_url,
+   140	        experiment_id=args.experiment_id,
+   141	        token=args.shared_token,
+   142	        deadline_seconds=args.startup_timeout,
+   143	    )
+   144	
+   145	    plan_task_ids = _expand_plan_tasks(args.plan_tasks)
+   146	    log.info("starting", plan_tasks=len(plan_task_ids), repo=args.repo_path)
+   147	
+   148	    with StoreClient(
+   149	        args.task_store_url,
+   150	        args.experiment_id,
+   151	        token=args.shared_token,
+   152	    ) as client:
+   153	        repo = GitRepo(args.repo_path)
+   154	        integrator = Integrator(
+   155	            store=client,
+   156	            repo=repo,
+   157	            author=_parse_author(args.integrator_author),
+   158	        )
+   159	        run_orchestrator_loop(
+   160	            store=client,
+   161	            integrator=integrator,
+   162	            plan_task_ids=plan_task_ids,
+   163	            implement_task_prefix=args.implement_task_prefix,
+   164	            evaluate_task_prefix=args.evaluate_task_prefix,
+   165	            poll_interval=args.poll_interval,
+   166	            max_quiescent_iterations=args.max_quiescent_iterations,
+   167	            stop=stop,
+   168	        )
+   169	    log.info("orchestrator exited")
+   170	    return 0
+   171	
+   172	
+   173	if __name__ == "__main__":  # pragma: no cover
+   174	    raise SystemExit(main())
+
+exec
+/bin/zsh -lc "rg -n \"--plan-tasks|plan_tasks|add_argument\\(.*plan-tasks|split\" reference/services/orchestrator/src/eden_orchestrator" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "rg -n \"_retry_submit\\(|add_row\\(|claim missing from session|TransportError|orchestrator_loop|plan tasks\" reference/services/web-ui/tests reference/services/web-ui/src reference/services/orchestrator/src" in /Users/ericalt/Documents/eden
+ exited 2 in 0ms:
+rg: unrecognized flag --plan-tasks|plan_tasks|add_argument\(.*plan-tasks|split
+
+ succeeded in 0ms:
+reference/services/web-ui/tests/test_planner_flow.py:260:        class TransportError(Exception):
+reference/services/web-ui/tests/test_planner_flow.py:265:            raise TransportError("connect timeout")
+reference/services/web-ui/tests/test_planner_flow.py:283:        assert "TransportError" in resp.text
+reference/services/orchestrator/src/eden_orchestrator/loop.py:36:def run_orchestrator_loop(
+reference/services/orchestrator/src/eden_orchestrator/loop.py:47:    """Seed plan tasks, then loop finalize + dispatch + integrate to quiescence.
+reference/services/orchestrator/src/eden_orchestrator/cli.py:20:from .loop import integrator_identity, run_orchestrator_loop
+reference/services/orchestrator/src/eden_orchestrator/cli.py:159:        run_orchestrator_loop(
+reference/services/web-ui/tests/test_routes.py:48:        # rough check: counts cell should reflect 2 pending plan tasks
+reference/services/orchestrator/src/eden_orchestrator/__init__.py:5:from .loop import make_id_factory, run_orchestrator_loop
+reference/services/orchestrator/src/eden_orchestrator/__init__.py:7:__all__ = ["make_id_factory", "run_orchestrator_loop"]
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:8:2. ``test_stranded_claim_recovered_by_orchestrator_loop`` — adds
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:10:   ``sweep_expired_claims`` call wired into ``run_orchestrator_loop``
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:254:def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:261:    launched with no plan tasks so it does the sweep, sees no
+reference/services/web-ui/tests/test_e2e_real_subprocess.py:367:        # Now spawn the orchestrator with NO plan tasks; its loop runs
+reference/services/web-ui/src/eden_web_ui/routes/planner.py:4:9 plan: list pending plan tasks, claim with a TTL, draft proposals,
+reference/services/web-ui/src/eden_web_ui/routes/planner.py:141:async def add_row(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
+reference/services/web-ui/src/eden_web_ui/routes/planner.py:269:    ok, banner = _retry_submit(store, task_id, token, submission)
+reference/services/web-ui/src/eden_web_ui/routes/planner.py:282:def _retry_submit(
+reference/services/web-ui/src/eden_web_ui/templates/planner_list.html:22:    <h2>pending plan tasks</h2>
+reference/services/web-ui/src/eden_web_ui/templates/planner_list.html:42:    <p>no pending plan tasks.</p>
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/planner.py | sed -n '360,460p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   360	    slugs: list[str], priorities: list[str], parents: list[str], rationales: list[str]
+   361	) -> list[dict[str, str]]:
+   362	    n = max(len(slugs), len(priorities), len(parents), len(rationales))
+   363	    out: list[dict[str, str]] = []
+   364	    for i in range(n):
+   365	        out.append(
+   366	            {
+   367	                "slug": slugs[i] if i < len(slugs) else "",
+   368	                "priority": priorities[i] if i < len(priorities) else "1.0",
+   369	                "parent_commits": parents[i] if i < len(parents) else "",
+   370	                "rationale": rationales[i] if i < len(rationales) else "",
+   371	            }
+   372	        )
+   373	    return out
+   374	
+   375	
+   376	def _render_submitted(
+   377	    request: Request,
+   378	    task_id: str,
+   379	    *,
+   380	    status: str,
+   381	    proposal_ids: tuple[str, ...],
+   382	) -> HTMLResponse:
+   383	    return request.app.state.templates.TemplateResponse(
+   384	        request,
+   385	        "planner_submitted.html",
+   386	        {
+   387	            "task_id": task_id,
+   388	            "status": status,
+   389	            "proposal_ids": proposal_ids,
+   390	        },
+   391	    )
+   392	
+   393	
+   394	def _render_orphaned(
+   395	    request: Request,
+   396	    task_id: str,
+   397	    proposal_ids: list[str],
+   398	    *,
+   399	    banner: str | None = None,
+   400	) -> HTMLResponse:
+   401	    return request.app.state.templates.TemplateResponse(
+   402	        request,
+   403	        "planner_orphaned.html",
+   404	        {
+   405	            "task_id": task_id,
+   406	            "proposal_ids": proposal_ids,
+   407	            "banner": banner,
+   408	        },
+   409	        status_code=502,
+   410	    )
+   411	
+   412	
+   413	def _render_error(request: Request, message: str) -> HTMLResponse:
+   414	    return request.app.state.templates.TemplateResponse(
+   415	        request,
+   416	        "_error.html",
+   417	        {"title": "Wire error", "message": message},
+   418	        status_code=502,
+   419	    )
+   420	
+   421	
+   422	def _csrf_failure_response() -> HTMLResponse:
+   423	    return HTMLResponse(content="CSRF token missing or invalid", status_code=403)
+   424	
+   425	
+   426	def _bad_request(message: str) -> HTMLResponse:
+   427	    return HTMLResponse(content=message, status_code=400)
+   428	
+   429	
+   430	_ERROR_NAMES: dict[type, str] = {
+   431	    WrongToken: "eden://error/wrong-token",
+   432	    IllegalTransition: "eden://error/illegal-transition",
+   433	    ConflictingResubmission: "eden://error/conflicting-resubmission",
+   434	    InvalidPrecondition: "eden://error/invalid-precondition",
+   435	}
+   436	
+   437	
+   438	def _wire_error_banner(exc: BaseException) -> str:
+   439	    name = _ERROR_NAMES.get(type(exc))
+   440	    if name is None:
+   441	        return f"unexpected error: {exc.__class__.__name__}"
+   442	    return name
+
+exec
+/bin/zsh -lc "sed -n '1,220p' reference/packages/eden-wire/src/eden_wire/errors.py" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+"""Problem+json serde for the EDEN wire binding (spec/v0 chapter 7 §7).
+
+Every non-2xx response from a conforming server carries a body
+matching ``spec/v0/schemas/wire/error.schema.json``. This module
+is the single source of truth for the two-way mapping between
+``eden_storage.errors.StorageError`` subclasses and the
+``eden://error/<name>`` URIs the binding specifies.
+
+The server uses :func:`envelope_for_error` to serialize; the client
+uses :func:`raise_for_envelope` to reconstruct. Round-trip stability
+is a CI invariant.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from eden_storage.errors import (
+    AlreadyExists,
+    ConflictingResubmission,
+    IllegalTransition,
+    InvalidPrecondition,
+    NotFound,
+    StorageError,
+    WrongToken,
+)
+
+__all__ = [
+    "BadRequest",
+    "ExperimentIdMismatch",
+    "ProblemJson",
+    "WireReferenceError",
+    "Unauthorized",
+    "WireError",
+    "envelope_for_error",
+    "envelope_for_reference_error",
+    "raise_for_envelope",
+]
+
+
+class WireError(Exception):
+    """Base class for wire-level errors that have no direct store analog."""
+
+
+class BadRequest(WireError):
+    """Request body failed schema validation."""
+
+
+class ExperimentIdMismatch(WireError):
+    """Header ``X-Eden-Experiment-Id`` disagreed with the URL segment."""
+
+
+class WireReferenceError(Exception):
+    """Base class for reference-only errors outside the normative vocabulary.
+
+    Errors under this hierarchy live under ``eden://reference-error/…``
+    and are not part of the ``07-wire-protocol.md`` §7 closed vocabulary
+    (§12 "Reference-only extensions"). A conforming server is free to
+    use a different auth scheme or none at all.
+    """
+
+
+class Unauthorized(WireReferenceError):
+    """Reference shared-token middleware rejected the request."""
+
+
+@dataclass(frozen=True)
+class ProblemJson:
+    """The RFC 7807 problem+json envelope in structured form."""
+
+    type: str
+    title: str
+    status: int
+    detail: str | None = None
+    instance: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the envelope as a plain dict suitable for JSON serialization."""
+        body: dict[str, Any] = {
+            "type": self.type,
+            "title": self.title,
+            "status": self.status,
+        }
+        if self.detail is not None:
+            body["detail"] = self.detail
+        if self.instance is not None:
+            body["instance"] = self.instance
+        return body
+
+
+_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
+    NotFound: ("eden://error/not-found", 404, "Not Found"),
+    AlreadyExists: ("eden://error/already-exists", 409, "Already Exists"),
+    IllegalTransition: (
+        "eden://error/illegal-transition",
+        409,
+        "Illegal Transition",
+    ),
+    WrongToken: ("eden://error/wrong-token", 403, "Wrong Token"),
+    ConflictingResubmission: (
+        "eden://error/conflicting-resubmission",
+        409,
+        "Conflicting Resubmission",
+    ),
+    InvalidPrecondition: (
+        "eden://error/invalid-precondition",
+        409,
+        "Invalid Precondition",
+    ),
+    BadRequest: ("eden://error/bad-request", 400, "Bad Request"),
+    ExperimentIdMismatch: (
+        "eden://error/experiment-id-mismatch",
+        400,
+        "Experiment ID Mismatch",
+    ),
+}
+
+_EXC_BY_TYPE: dict[str, type[Exception]] = {
+    wire_type: exc for exc, (wire_type, _, _) in _TYPE_BY_EXC.items()
+}
+
+
+def envelope_for_error(exc: Exception, *, instance: str | None = None) -> ProblemJson:
+    """Build a :class:`ProblemJson` envelope for ``exc``.
+
+    Raises ``ValueError`` for exceptions the binding does not cover.
+    """
+    entry = _TYPE_BY_EXC.get(type(exc))
+    if entry is None:
+        msg = f"no wire binding for exception {type(exc).__name__!r}"
+        raise ValueError(msg)
+    wire_type, status, title = entry
+    detail = str(exc) if str(exc) else None
+    return ProblemJson(
+        type=wire_type,
+        title=title,
+        status=status,
+        detail=detail,
+        instance=instance,
+    )
+
+
+_REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
+    Unauthorized: (
+        "eden://reference-error/unauthorized",
+        401,
+        "Unauthorized",
+    ),
+}
+
+_REF_EXC_BY_TYPE: dict[str, type[Exception]] = {
+    wire_type: exc for exc, (wire_type, _, _) in _REF_TYPE_BY_EXC.items()
+}
+
+
+def envelope_for_reference_error(
+    exc: Exception, *, instance: str | None = None
+) -> ProblemJson:
+    """Build a :class:`ProblemJson` envelope for a reference-only error.
+
+    Kept separate from :func:`envelope_for_error` so no refactor can
+    accidentally leak a reference-only type into the normative
+    ``_TYPE_BY_EXC`` vocabulary.
+    """
+    entry = _REF_TYPE_BY_EXC.get(type(exc))
+    if entry is None:
+        msg = f"no reference binding for exception {type(exc).__name__!r}"
+        raise ValueError(msg)
+    wire_type, status, title = entry
+    detail = str(exc) if str(exc) else None
+    return ProblemJson(
+        type=wire_type,
+        title=title,
+        status=status,
+        detail=detail,
+        instance=instance,
+    )
+
+
+def raise_for_envelope(body: dict[str, Any]) -> None:
+    """Reconstruct and raise the exception described by a problem+json body."""
+    wire_type = body.get("type")
+    if not isinstance(wire_type, str):
+        msg = f"envelope missing 'type' string: {body!r}"
+        raise ValueError(msg)
+    exc_cls = _EXC_BY_TYPE.get(wire_type) or _REF_EXC_BY_TYPE.get(wire_type)
+    if exc_cls is None:
+        msg = f"unknown wire error type {wire_type!r}"
+        raise WireError(msg)
+    detail = body.get("detail") or body.get("title") or wire_type
+    if issubclass(exc_cls, StorageError):
+        raise exc_cls(detail)
+    raise exc_cls(detail)
+
+codex
+The only round-0 item that still looks open in code review is the submit-time “claim again / preserve input” recovery path for definitive submit errors. I’m doing one last spot-check on the subprocess e2e file, but the route logic still points those cases at the orphan page rather than the planned recovery flow.
+exec
+/bin/zsh -lc 'uv run pytest -q reference/services/web-ui/tests/test_e2e_real_subprocess.py -q' in /Users/ericalt/Documents/eden
+ succeeded in 5766ms:
+..                                                                       [100%]
+
+exec
+/bin/zsh -lc 'rg -n "WrongToken|IllegalTransition|InvalidPrecondition|ConflictingResubmission|claim again|preserv" reference/services/web-ui/tests/test_planner_flow.py reference/services/web-ui/tests' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/web-ui/tests/test_planner_flow.py:82:    def test_invalid_form_re_renders_with_errors_and_input_preserved(
+reference/services/web-ui/tests/test_planner_flow.py:105:        # User input preserved.
+reference/services/web-ui/tests/test_planner_flow.py:121:        """The add_row route preserves input and appends an empty row."""
+reference/services/web-ui/tests/test_planner_flow.py:140:        # First row's input is preserved.
+reference/services/web-ui/tests/test_partial_write_recovery.py:31:    and preserves duplicate keys for multi-row planner forms.
+reference/services/web-ui/tests/test_planner_flow.py:82:    def test_invalid_form_re_renders_with_errors_and_input_preserved(
+reference/services/web-ui/tests/test_planner_flow.py:105:        # User input preserved.
+reference/services/web-ui/tests/test_planner_flow.py:121:        """The add_row route preserves input and appends an empty row."""
+reference/services/web-ui/tests/test_planner_flow.py:140:        # First row's input is preserved.
+
+codex
+**Findings**
+- Medium: the round-0 submit-recovery issue is still open. Definitive submit errors (`WrongToken`, `IllegalTransition`, `ConflictingResubmission`, `InvalidPrecondition`) now produce a canonical banner, but they still route to the orphan page via [_retry_submit()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:282) and [submit_plan()](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:267) instead of re-rendering the planner flow with “claim again” and preserved input. That was the remaining plan mismatch from round 0, and there is still no test covering the promised submit-time recovery path for those definitive wire errors.
+
+**Round-0 Status**
+- Addressed: multi-row authoring is now real. The new [add_row route](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:140), [button in the template](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/templates/planner_claim.html:55), and blank-row handling in [forms.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/forms.py:48) close the browser/UI gap. The new `TestMultiRow` coverage in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:117) is the right shape.
+- Addressed: retry-before-orphan now covers real transport-shaped failures from the wire client. `_retry_submit()` catches non-store exceptions and retries them in [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:282), which matches the `StoreClient` behavior in [client.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/client.py:113). The new retry test in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:242) covers that path.
+- Addressed: per-session claim isolation is fixed. Claims are now keyed by `(session.csrf, task_id)` in [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:41), and the regression test in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:213) closes the cross-session reuse hole.
+- Addressed: the stranded-claim e2e now proves the operational path, not just the helper. [test_e2e_real_subprocess.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_e2e_real_subprocess.py:253) now spawns the real orchestrator, and [loop.py](/Users/ericalt/Documents/eden/reference/services/orchestrator/src/eden_orchestrator/loop.py:68) is the path being exercised.
+- Addressed: the orphan page now shows the canonical banner in [planner_orphaned.html](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/templates/planner_orphaned.html:5).
+
+I reran `reference/services/web-ui/tests/test_planner_flow.py` and `reference/services/web-ui/tests/test_e2e_real_subprocess.py`; both passed locally.
+
+Overall: 4 of the 5 round-0 findings are fixed. I would still require the definitive submit-error recovery flow to match the plan before calling this fully ready.
+2026-04-25T00:37:32.823788Z ERROR codex_core::session: failed to record rollout items: thread 019dc206-90ea-7b30-a318-0367693c6508 not found
+tokens used
+164,106

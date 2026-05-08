@@ -1,0 +1,42 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc773-b760-7743-9a18-ab1beaf4ced7
+--------
+user
+Updated the AGENTS commands-table row for smoke.sh per your round 3 nit. Brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10bc-dockerize-and-setup/impl/20260425T184108/4.md. Please confirm convergence.
+codex
+Verifying the final AGENTS command-table row and the round-4 brief. If that row now matches the stricter smoke assertions, this is converged.
+exec
+/bin/zsh -lc "sed -n '1,160p' docs/plans/review/eden-phase-10bc-dockerize-and-setup/impl/20260425T184108/4.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-10bc-dockerize-and-setup — Round 4
+
+## Round 3 issue addressed
+
+- **Nit — AGENTS.md commands-table row for smoke.sh stale.**
+  Updated [`AGENTS.md`](../../../../../CLAUDE.md) line 63 to spell out all three smoke assertions: ≥3 `trial.integrated`, ≥9 `task.completed`, ≥3 plan-task `task.completed`. Now consistent with the phase summary on line 19 and with `roadmap.md`.
+
+## Review Status
+Round 4 — addressed last doc nit; awaiting convergence confirmation.
+
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '60,64p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    60	| `EDEN_TEST_POSTGRES_DSN=postgresql://… uv run pytest -q reference/packages/eden-storage/tests` | Run the parametrized backend conformance tests against a live Postgres (CI's `python-test-postgres` does this). Without the env var, postgres rows skip. |
+    61	| `bash reference/scripts/setup-experiment/setup-experiment.sh tests/fixtures/experiment/.eden/config.yaml --experiment-id <id>` | Bootstrap a Compose stack for the given experiment config: generate `.env`, build the shared image, seed the bare-repo volume, capture seed SHA. |
+    62	| `cd reference/compose && docker compose --env-file .env up -d --wait` | Bring up the full Phase 10b/10c stack — infra + EDEN services + web-ui on `localhost:${WEB_UI_HOST_PORT:-8090}`. Run setup-experiment first. |
+    63	| `bash reference/compose/healthcheck/smoke.sh` | Run the extended Compose smoke test (mirrors the `compose-smoke` CI job — runs setup-experiment, brings the stack up, waits for orchestrator quiescence, asserts ≥3 `trial.integrated` events, ≥9 `task.completed` events, and ≥3 plan-task `task.completed` events). |
+    64	
+
+codex
+No remaining findings. The AGENTS command-table row is now aligned with the actual `smoke.sh` behavior, so this review is converged.
+2026-04-26T02:02:46.217617Z ERROR codex_core::session: failed to record rollout items: thread 019dc773-b760-7743-9a18-ab1beaf4ced7 not found
+tokens used
+218,114

@@ -1,0 +1,171 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc34f-b175-77c2-9822-ac4f4ad643e5
+--------
+user
+Round-3 update. Targeted fixes for the round-2 findings:
+
+1. Removed the 'IllegalTransition + claimed-by-us → transport' row from §C-recovery, so the table now matches the read-back block (claimed-by-us is treated identically regardless of how we got there). The spec-impossible case is left implicit; if it surfaces in tests we can revisit.
+2. Reworded §A.1 opening: 'two URI-backed sources' (proposal.artifacts_uri, trial.artifacts_uri); trial.description explicitly noted as non-URI-backed and routed through Jinja autoescape only.
+3. Aligned §A.1's test-coverage paragraph with the actual §I.4 enumeration (outside-dir, traversal, non-file scheme, > 1 MiB, directory). Dropped the 'unreadable / non-text' language that wasn't in the test list.
+
+Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-phase-9d-evaluator-module.md.
+codex
+Using the `review-doc` skill again for the final pass. I’m checking the updated sections for internal consistency against the prior review points, then I’ll give you a concise go/no-go assessment.
+exec
+/bin/zsh -lc "nl -ba /Users/ericalt/Documents/eden/docs/plans/eden-phase-9d-evaluator-module.md | sed -n '668,705p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba /Users/ericalt/Documents/eden/docs/plans/eden-phase-9d-evaluator-module.md | sed -n '129,180p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba /Users/ericalt/Documents/eden/docs/plans/eden-phase-9d-evaluator-module.md | sed -n '425,445p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   668	     banner.
+   669	   - **Sub-case D** (read_submission returns None on a terminal
+   670	     task): mock `store.submit` to raise on every call; mock
+   671	     `store.read_task` to return a `submitted` task; mock
+   672	     `store.read_submission` to return `None` → orphan
+   673	     `recovery_kind="transport"` with the "store invariant
+   674	     violation" banner.
+   675	   - **Sub-case E** (`WrongToken` short-circuits): mock
+   676	     `store.submit` to raise `WrongToken` on the first call →
+   677	     orphan `recovery_kind="auto"`, no retries attempted.
+   678	   - **Sub-case F** (`ConflictingResubmission` short-circuits):
+   679	     mock to raise `ConflictingResubmission` on the first call →
+   680	     orphan `recovery_kind="conflict"`.
+   681	   - **Sub-case G** (task reclaimed mid-flight): mock submit to
+   682	     raise; mock read_task to return `task.state == "pending"`
+   683	     → orphan `recovery_kind="auto"` "task reclaimed".
+   684	   - **Sub-case H** (`InvalidPrecondition` from server-side
+   685	     metrics validation drift): mock submit to raise
+   686	     `InvalidPrecondition` on the first call → 400 form re-
+   687	     render with the wire-error banner (NOT an orphan — the form
+   688	     validation is fixable).
+   689	   - **Sub-case I-a** (`IllegalTransition` from state==pending):
+   690	     mock submit to raise `IllegalTransition` on the first call;
+   691	     mock read_task to return `task.state == "pending"`. The
+   692	     route falls through to read-back → orphan
+   693	     `recovery_kind="auto"` "task reclaimed".
+   694	   - **Sub-case I-b** (`IllegalTransition` from state==completed
+   695	     with our submission committed): drive the store to
+   696	     `completed` with our equivalent submission via
+   697	     `store.accept(...)` *before* the route's submit call; mock
+   698	     `store.submit` to raise `IllegalTransition`. The route
+   699	     falls through to read-back → success page. **This is the
+   700	     case the chunk-9c implementer module mis-classifies; it's
+   701	     the new lens the §K-2 follow-up exists to fix.**
+   702	   - **Sub-case I-c** (`IllegalTransition` from state==completed
+   703	     with a different submission committed): drive a different
+   704	     evaluate submission to `completed` first; route's submit
+   705	     raises `IllegalTransition`; read-back finds non-equivalent
+
+ succeeded in 0ms:
+   129	### §A.1 Artifact trust boundary
+   130	
+   131	The chunk-9c helper
+   132	`routes/_helpers.read_proposal_rationale(proposal, artifacts_dir)`
+   133	takes a `Proposal` argument; chunk 9d wants the **same security
+   134	envelope** (file://, contained in `--artifacts-dir`, ≤ 1 MiB) for
+   135	**two URI-backed sources**: the proposal's rationale (via
+   136	`proposal.artifacts_uri`) and the trial's `artifacts_uri` (when
+   137	set by the implementer per §3.2 step 3). The trial's
+   138	`description` is **not** URI-backed — it's free-form text stored
+   139	directly on the trial — and is rendered through Jinja2's default
+   140	autoescape; it does not go through this helper.
+   141	
+   142	The cleanest path is to generalize the existing helper:
+   143	
+   144	- Add a new internal helper
+   145	  `_read_inline_artifact(uri: str | None, artifacts_dir: Path) -> str | None`
+   146	  that takes a raw URI string and applies the same trust-boundary
+   147	  rules.
+   148	- Reimplement `read_proposal_rationale(proposal, artifacts_dir)`
+   149	  as a thin wrapper that calls
+   150	  `_read_inline_artifact(proposal.artifacts_uri, artifacts_dir)`,
+   151	  preserving the existing call site signature so the chunk-9c
+   152	  implementer module's import does not break.
+   153	- The evaluator route uses `_read_inline_artifact` directly for
+   154	  `trial.artifacts_uri` (and re-uses `read_proposal_rationale`
+   155	  for the proposal rationale).
+   156	
+   157	Result: one trust-boundary implementation, two call sites in
+   158	chunk 9d, identical envelope. The Phase 0 "no new helper"
+   159	language was incorrect; chunk 9d ships the
+   160	`_read_inline_artifact` extraction. Tests in
+   161	`test_evaluator_security.py` (§I.4) cover trial-side `file://`
+   162	confinement, traversal escape, non-`file://` schemes, the > 1 MiB
+   163	cap, and directory inputs explicitly — we don't trust the
+   164	symmetric proposal-side coverage from chunk 9c to flow through.
+   165	
+   166	The **trial's own** `artifacts_uri` and `description` MAY be set by
+   167	the implementer on a successful `starting` trial (per
+   168	`spec/v0/03-roles.md` §3.2 step 3). The chunk-9c implementer module
+   169	already wires `description` into `Trial(...)` from its form input;
+   170	`trial.artifacts_uri` is reserved for a future implementer-side
+   171	artifact-upload feature. The evaluator's draft page therefore
+   172	renders both `trial.description` (when set, as a read-only block,
+   173	escaped via Jinja2 autoescape) and `trial.artifacts_uri` (when
+   174	set, with the chunk-9c scheme allowlist applied: only `http`,
+   175	`https`, and `file` schemes are hyperlinked; any other scheme
+   176	renders as `<code>` plus "(unrenderable scheme)"). When
+   177	`trial.artifacts_uri` is a `file://` URI inside `--artifacts-dir`
+   178	and ≤ 1 MiB, the helper inlines the content — same envelope as
+   179	the proposal rationale.
+   180	
+
+ succeeded in 0ms:
+   425	The single-step structure means there's no Phase-1-failed /
+   426	Phase-2-failed split. The submit either succeeds, definitively
+   427	fails (rendered as a form error or orphan), or transport-fails
+   428	into the read-back arm.
+   429	
+   430	### §C-recovery (per-error)
+   431	
+   432	| Outcome | Definition | UI rendering | Operator action |
+   433	|---|---|---|---|
+   434	| ok | submit returned cleanly OR retry returned cleanly OR read-back found equivalent prior submission | `evaluator_submitted.html`, 200 | none |
+   435	| InvalidPrecondition (form-time, e.g. metric type drift only the server caught) | server rejected the metrics shape | re-render draft with the wire-error banner attached | fix the metrics and resubmit |
+   436	| WrongToken | the prior reclaim invalidated our claim (sweeper or operator) | orphan, `recovery_kind="auto"` | none — prior reclaim already restored task to `pending` |
+   437	| IllegalTransition, read-back finds state==pending | sweeper reclaimed our claim before our submit committed | orphan, `recovery_kind="auto"` | none |
+   438	| IllegalTransition, read-back finds equivalent prior submission | our prior attempt committed; orchestrator already terminalized | success page (treated as `ok`) | none |
+   439	| IllegalTransition, read-back finds non-equivalent submission | a different submission won the race; we lost | orphan, `recovery_kind="conflict"` | operator triage |
+   440	| ConflictingResubmission | a different submission won the race for this task | orphan, `recovery_kind="conflict"` | operator triage; the system's record stands |
+   441	| transport, retry exhausted, claim still ours | network glitch persisted; claim TTL will eventually reclaim | orphan, `recovery_kind="auto"` | wait for TTL, or operator-side reclaim |
+   442	| transport, retry exhausted, server committed equivalent | "submitted, response lost" sub-case A | success page (treated as `ok`) | none |
+   443	| transport, retry exhausted, server committed non-equivalent | "different submission won" sub-case A' | orphan, `recovery_kind="conflict"` | operator triage |
+   444	| transport, retry exhausted, store invariant violated | implementation-illegal: terminal task with no recorded submission | orphan, `recovery_kind="transport"` | operator investigation |
+   445	| transport, retry exhausted, read-back probe itself failed | indeterminate | orphan, `recovery_kind="transport"` | operator investigation |
+
+codex
+**1. Missing Context**
+
+Assessment: Resolved. The operator/deployment context and trial-side read-only context are now clear.
+
+**2. Feasibility**
+
+Assessment: No material concerns. The helper extraction, integer normalization, and retry/read-back story are now internally consistent.
+
+**3. Alternatives**
+
+Assessment: The current approach still looks like the right one. I don’t see a better design to switch to.
+
+**4. Completeness**
+
+Assessment: No material gaps. The sections I flagged in the last round are now aligned, and the test plan covers the new trial-side trust-boundary surface explicitly.
+
+**5. Edge Cases and Risks**
+
+Assessment: No new plan-level issues. The main residual risk is implementation drift: keeping `_read_inline_artifact`, the form parser, and the tests in sync with the store/spec behavior as the code lands. The plan already calls that out appropriately.
+
+**Overall Assessment**
+
+I don’t have further findings on the plan itself. It looks ready to implement.
+2026-04-25T06:40:08.591091Z ERROR codex_core::session: failed to record rollout items: thread 019dc34f-b175-77c2-9822-ac4f4ad643e5 not found
+tokens used
+159,179

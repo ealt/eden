@@ -1,0 +1,1130 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc181-2e7d-7060-b097-2c5a7fc2ecd4
+--------
+user
+I've addressed your feedback. The updated review brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-8b-service-extraction/impl/20260424T145825/1.md lists what was fixed. Please re-read the implementation files and review again.
+codex
+Re-reading the updated brief and the touched implementation files now, then I’ll verify whether the prior findings are actually closed and whether the fixes introduced anything new.
+exec
+/bin/zsh -lc "sed -n '1,260p' docs/plans/review/eden-phase-8b-service-extraction/impl/20260424T145825/1.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-8b-service-extraction
+
+## Plan
+
+- Path: `/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md`
+- Summary: Phase 8b finishes the cross-process reference deployment by extracting workers into independent subprocesses, landing the task-store-server and orchestrator CLI entrypoints, scaffolding shared-token auth as a reference-only extension, and proving the whole arrangement with a real-subprocess end-to-end test.
+
+## Implementation files
+
+| File | Action | Plan section |
+|---|---|---|
+| `spec/v0/07-wire-protocol.md` | Modified — appended §12 "Reference-only extensions — authentication (informative)" | Spec addendum |
+| `reference/packages/eden-dispatch/src/eden_dispatch/driver.py` | Modified — extracted `run_orchestrator_iteration`, kept `run_experiment` calling it | eden-dispatch refactor |
+| `reference/packages/eden-dispatch/src/eden_dispatch/__init__.py` | Modified — re-export `run_orchestrator_iteration` | eden-dispatch refactor |
+| `reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py` | Created — 5 unit tests covering the orchestrator iteration in isolation | Tests §3 |
+| `reference/packages/eden-wire/src/eden_wire/server.py` | Modified — added `shared_token` kwarg + middleware | Shared-token auth |
+| `reference/packages/eden-wire/src/eden_wire/client.py` | Modified — added `token` kwarg | Shared-token auth |
+| `reference/packages/eden-wire/src/eden_wire/errors.py` | Modified — added `WireReferenceError` base + `Unauthorized` + reference-only envelope helper | Shared-token auth |
+| `reference/packages/eden-wire/src/eden_wire/__init__.py` | Modified — re-export `Unauthorized`, `WireReferenceError` | Shared-token auth |
+| `reference/packages/eden-wire/tests/test_auth.py` | Created — 9 tests covering middleware accept/reject, client header behavior, round-trip, namespace separation | Tests §1, §2 |
+| `reference/services/_common/` | Created (workspace member `eden-service-common`) — logging, signals, readiness, cli helpers, scripted profiles, repo seeding | `_common/` scaffolding |
+| `reference/services/_common/tests/test_common.py` | Created — 6 unit tests | Tests |
+| `reference/services/task-store-server/` | Created (workspace member `eden-task-store-server`) — uvicorn entrypoint hosting `make_app(store)` | Task-store-server service |
+| `reference/services/task-store-server/tests/test_app.py` | Created — 6 unit tests for app construction | Tests §5 |
+| `reference/services/orchestrator/` | Created (workspace member `eden-orchestrator`) — finalize+dispatch+integrate loop | Orchestrator service |
+| `reference/services/orchestrator/tests/test_e2e.py` | Created — `pytest.mark.e2e` real-subprocess test | Tests §6 |
+| `reference/services/planner/` | Created (workspace member `eden-planner-host`) — standalone planner worker | Worker hosts |
+| `reference/services/implementer/` | Created (workspace member `eden-implementer-host`) — writes real git commits | Worker hosts |
+| `reference/services/implementer/tests/test_host.py` | Created — multi-parent commit test | Tests §4 |
+| `reference/services/evaluator/` | Created (workspace member `eden-evaluator-host`) — emits schema-matching metrics | Worker hosts |
+| `pyproject.toml` | Modified — added 6 new workspace members, sources, dev deps, pyright includes, testpaths, `e2e` pytest marker | Build & CI |
+| `AGENTS.md` | Modified — Phase 8b status block, updated Commands table | Docs |
+| `reference/README.md` | Modified — services + packages tables | Docs |
+| `docs/roadmap.md` | Modified — Phase 8b unit marked complete | Docs |
+| `STYLE_GUIDE.md` | Modified earlier in session — codified no-mid-paragraph-hard-wrap rule | Style policy (separate from 8b but same branch) |
+
+## Change summary
+
+- **One spec edit** — informative §12 documenting the reference-only auth namespace `eden://reference-error/…` and the constraint that any auth scheme MUST NOT overload the normative `eden://error/…` types.
+- **One refactor** — `run_experiment` split so the standalone orchestrator drives only the finalize/dispatch/integrate half via the now-public `run_orchestrator_iteration`.
+- **One auth extension** — server middleware + client header + `Unauthorized` exception, all kept structurally separate from the normative vocabulary (separate `_REF_TYPE_BY_EXC` table, separate base class, separate envelope helper).
+- **Five service entrypoints** — task-store-server (uvicorn), orchestrator (StoreClient + Integrator + dispatch loop), planner / implementer / evaluator hosts (StoreClient + ScriptedX). Each has its own `pyproject.toml`, `__main__.py`, CLI module, and runtime module.
+- **Shared scaffolding** — JSON-line logger that includes service+experiment context, SIGTERM/SIGINT stop flag, readiness probe (`wait_for_task_store`), common argparse flags, scripted `plan_fn`/`implement_fn`/`evaluate_fn` profiles (the implementer writes real git commits via `GitRepo.commit_tree` honoring `proposal.parent_commits` for both single-parent and merge shapes), and a `seed_bare_repo` helper.
+- **Real-subprocess E2E** — `test_e2e.py` forks all five processes on an ephemeral port (read from the task-store-server's stdout announcement), drives a 3-trial experiment to quiescence, and asserts on the SQLite DB + bare repo. Tears down with SIGTERM → 5s wait → SIGKILL fallback. Captures every subprocess's stderr on failure. Test runs in ~3s when healthy.
+
+## Validation
+
+- `uv run pytest -q` → 412 passed (incl. the e2e test under default markers).
+- `uv run ruff check .` → all checks passed.
+- `uv run pyright` → 0 errors / 0 warnings.
+- `npx --yes markdownlint-cli2@0.14.0 …` → 0 errors.
+- `python3 scripts/spec-xref-check.py` → 2 pre-existing unresolved refs in `spec/v0/README.md`, unchanged by 8b.
+
+## Known deferrals
+
+- Cut-over of the in-process dispatch path remains Phase 8c.
+- SSE / WebSocket push remains a transport optimization for later.
+- Per-worker auth (rotation, expiry, real identity) is Milestone 3.
+- `healthz` endpoint deferred — readiness via `GET /events`.
+- `--fail-every` flag is plumbed through implementer and evaluator hosts but no test currently exercises a non-success path; the existing E2E asserts the all-success shape.
+
+## Review status
+
+Round 0 — awaiting initial review.
+
+## Round 1 — addressed feedback
+
+- **Bug (loop.py:50)** Fixed. `run_orchestrator_loop` now imports `AlreadyExists` and catches it specifically; transport, auth, and other store errors propagate.
+- **Bug (test_e2e.py:208)** Fixed. The E2E now wraps `orchestrator.wait(timeout=60)` in a `try/except subprocess.TimeoutExpired`; on timeout it tears workers + server down (so any buffered stderr flushes) before failing with the full `_dump_stderr(procs)`. The same diagnostic dump is used on non-zero exit.
+- **Risk (workers.py:97)** Fixed. `ScriptedPlanner`/`Implementer`/`Evaluator`.`run_pending` now accept an optional `stop: Callable[[], bool]` keyword; the loop checks it before each task, so a SIGTERM mid-drain breaks out. Each host loop passes `stop=stop.is_set`.
+- **Risk (test_e2e.py:220)** Fixed. The E2E now opens the event log and asserts `task.completed == 9` (3 per role × 3 trials), `trial.integrated == 3`, and `trial.succeeded == 3`. Counts pin must-have terminals without freezing intermediate event order.
+- **Risk (cli.py:29)** Fixed. `--integrator-author "Name <email>"` now parses via a regex; an `Identity(name=…, email=…)` is threaded into the `Integrator`. Default is the previous hard-coded `EDEN Integrator <integrator@eden.invalid>` via `integrator_identity()`.
+- **Risk (cli.py:58)** Fixed. `--max-quiescent-iterations` uses an argparse `type=` callable that rejects values <2 with a clear `argparse.ArgumentTypeError`.
+
+All 412 tests still pass; ruff and pyright clean.
+
+exec
+/bin/zsh -lc 'git diff --stat' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ AGENTS.md                                          |  11 +-
+ docs/roadmap.md                                    |   2 +-
+ pyproject.toml                                     |  37 ++++-
+ reference/README.md                                |  16 ++-
+ .../eden-dispatch/src/eden_dispatch/workers.py     |  47 ++++++-
+ uv.lock                                            | 154 +++++++++++++++++++++
+ 6 files changed, 248 insertions(+), 19 deletions(-)
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M AGENTS.md
+M  STYLE_GUIDE.md
+A  docs/plans/eden-phase-8b-service-extraction.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/0-review.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/0.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/1-review.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/1.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/1.patch
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/2-review.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/2.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/2.patch
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/3-review.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/3.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/3.patch
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/4.md
+A  docs/plans/review/eden-phase-8b-service-extraction/20260424T132055/4.patch
+ M docs/roadmap.md
+ M pyproject.toml
+ M reference/README.md
+M  reference/packages/eden-dispatch/src/eden_dispatch/__init__.py
+M  reference/packages/eden-dispatch/src/eden_dispatch/driver.py
+ M reference/packages/eden-dispatch/src/eden_dispatch/workers.py
+A  reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py
+M  reference/packages/eden-wire/src/eden_wire/__init__.py
+M  reference/packages/eden-wire/src/eden_wire/client.py
+M  reference/packages/eden-wire/src/eden_wire/errors.py
+M  reference/packages/eden-wire/src/eden_wire/server.py
+A  reference/packages/eden-wire/tests/test_auth.py
+M  spec/v0/07-wire-protocol.md
+ M uv.lock
+?? docs/plans/review/eden-phase-8b-service-extraction/impl/
+?? reference/services/_common/
+?? reference/services/evaluator/README.md
+?? reference/services/evaluator/pyproject.toml
+?? reference/services/evaluator/src/
+?? reference/services/implementer/README.md
+?? reference/services/implementer/pyproject.toml
+?? reference/services/implementer/src/
+?? reference/services/implementer/tests/
+?? reference/services/orchestrator/README.md
+?? reference/services/orchestrator/pyproject.toml
+?? reference/services/orchestrator/src/
+?? reference/services/orchestrator/tests/
+?? reference/services/planner/README.md
+?? reference/services/planner/pyproject.toml
+?? reference/services/planner/src/
+?? reference/services/task-store-server/
+
+codex
+The updated brief matches the issues I raised, so I’m re-reading the concrete fix points first: orchestrator loop/CLI, worker shutdown path, and the E2E assertions/diagnostics.
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/loop.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/cli.py | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""CLI for the orchestrator service."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import argparse
+     6	import re
+     7	
+     8	from eden_git import GitRepo, Identity, Integrator
+     9	from eden_service_common import (
+    10	    StopFlag,
+    11	    add_common_arguments,
+    12	    configure_logging,
+    13	    get_logger,
+    14	    install_stop_handlers,
+    15	    parse_log_level,
+    16	    wait_for_task_store,
+    17	)
+    18	from eden_wire import StoreClient
+    19	
+    20	from .loop import integrator_identity, run_orchestrator_loop
+    21	
+    22	_AUTHOR_RE = re.compile(r"^(?P<name>.+?)\s+<(?P<email>[^>]+)>$")
+    23	
+    24	
+    25	def _quiescent_iterations(raw: str) -> int:
+    26	    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
+    27	    try:
+    28	        value = int(raw)
+    29	    except ValueError as exc:
+    30	        raise argparse.ArgumentTypeError(
+    31	            f"--max-quiescent-iterations must be an integer, not {raw!r}"
+    32	        ) from exc
+    33	    if value < 2:
+    34	        raise argparse.ArgumentTypeError(
+    35	            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
+    36	            "of 0 or 1 risks the orchestrator exiting while a worker is "
+    37	            "mid-submit."
+    38	        )
+    39	    return value
+    40	
+    41	
+    42	def _parse_author(value: str | None) -> Identity:
+    43	    if value is None:
+    44	        return integrator_identity()
+    45	    match = _AUTHOR_RE.match(value)
+    46	    if not match:
+    47	        raise SystemExit(
+    48	            f"--integrator-author {value!r}: expected 'Name <email>' format"
+    49	        )
+    50	    return Identity(name=match.group("name"), email=match.group("email"))
+    51	
+    52	
+    53	def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    54	    """Parse CLI args for the orchestrator service."""
+    55	    parser = argparse.ArgumentParser(
+    56	        prog="eden-orchestrator",
+    57	        description="EDEN reference orchestrator service (finalize + dispatch + integrate).",
+    58	    )
+    59	    add_common_arguments(parser)
+    60	    parser.add_argument(
+    61	        "--repo-path",
+    62	        required=True,
+    63	        help="Bare git repo that the Integrator writes trial/* refs into.",
+    64	    )
+    65	    parser.add_argument(
+    66	        "--integrator-author",
+    67	        default=None,
+    68	        help=(
+    69	            "Identity stamped on integrator commits, formatted "
+    70	            "'Name <email>'. Defaults to 'EDEN Integrator "
+    71	            "<integrator@eden.invalid>'."
+    72	        ),
+    73	    )
+    74	    parser.add_argument(
+    75	        "--plan-tasks",
+    76	        required=True,
+    77	        help=(
+    78	            "Either an integer N (creates plan-0001..plan-N) or a "
+    79	            "comma-separated list of explicit plan task IDs."
+    80	        ),
+    81	    )
+    82	    parser.add_argument(
+    83	        "--implement-task-prefix",
+    84	        default="implement-",
+    85	        help="Prefix for orchestrator-allocated implement task IDs (default: 'implement-').",
+    86	    )
+    87	    parser.add_argument(
+    88	        "--evaluate-task-prefix",
+    89	        default="evaluate-",
+    90	        help="Prefix for orchestrator-allocated evaluate task IDs (default: 'evaluate-').",
+    91	    )
+    92	    parser.add_argument(
+    93	        "--poll-interval",
+    94	        type=float,
+    95	        default=0.1,
+    96	        help="Seconds between zero-progress iterations (default: 0.1).",
+    97	    )
+    98	    parser.add_argument(
+    99	        "--max-quiescent-iterations",
+   100	        type=_quiescent_iterations,
+   101	        default=3,
+   102	        help=(
+   103	            "Exit after N consecutive no-progress iterations (default: 3). "
+   104	            "Must be >=2 — N=1 risks exiting while a worker is mid-submit."
+   105	        ),
+   106	    )
+   107	    parser.add_argument(
+   108	        "--startup-timeout",
+   109	        type=float,
+   110	        default=30.0,
+   111	        help="Max seconds to wait for the task-store to become ready.",
+   112	    )
+   113	    return parser.parse_args(argv)
+   114	
+   115	
+   116	def _expand_plan_tasks(spec: str) -> list[str]:
+   117	    """Parse --plan-tasks into a concrete list of IDs."""
+   118	    if spec.isdigit():
+   119	        n = int(spec)
+   120	        return [f"plan-{i:04d}" for i in range(1, n + 1)]
+   121	    return [s.strip() for s in spec.split(",") if s.strip()]
+   122	
+   123	
+   124	def main(argv: list[str] | None = None) -> int:
+   125	    """Entry point for ``python -m eden_orchestrator``."""
+   126	    args = parse_args(argv)
+   127	    configure_logging(
+   128	        service="orchestrator",
+   129	        experiment_id=args.experiment_id,
+   130	        level=parse_log_level(args.log_level),
+   131	    )
+   132	    log = get_logger(__name__)
+   133	
+   134	    stop = StopFlag()
+   135	    install_stop_handlers(stop)
+   136	
+   137	    log.info("waiting_for_task_store", url=args.task_store_url)
+   138	    wait_for_task_store(
+   139	        base_url=args.task_store_url,
+   140	        experiment_id=args.experiment_id,
+   141	        token=args.shared_token,
+   142	        deadline_seconds=args.startup_timeout,
+   143	    )
+   144	
+   145	    plan_task_ids = _expand_plan_tasks(args.plan_tasks)
+   146	    log.info("starting", plan_tasks=len(plan_task_ids), repo=args.repo_path)
+   147	
+   148	    with StoreClient(
+   149	        args.task_store_url,
+   150	        args.experiment_id,
+   151	        token=args.shared_token,
+   152	    ) as client:
+   153	        repo = GitRepo(args.repo_path)
+   154	        integrator = Integrator(
+   155	            store=client,
+   156	            repo=repo,
+   157	            author=_parse_author(args.integrator_author),
+   158	        )
+   159	        run_orchestrator_loop(
+   160	            store=client,
+   161	            integrator=integrator,
+   162	            plan_task_ids=plan_task_ids,
+   163	            implement_task_prefix=args.implement_task_prefix,
+   164	            evaluate_task_prefix=args.evaluate_task_prefix,
+   165	            poll_interval=args.poll_interval,
+   166	            max_quiescent_iterations=args.max_quiescent_iterations,
+   167	            stop=stop,
+   168	        )
+   169	    log.info("orchestrator exited")
+   170	    return 0
+   171	
+   172	
+   173	if __name__ == "__main__":  # pragma: no cover
+   174	    raise SystemExit(main())
+
+ succeeded in 0ms:
+     1	"""Orchestrator main loop.
+     2	
+     3	Drives ``run_orchestrator_iteration`` from ``eden_dispatch`` against
+     4	a ``StoreClient`` (HTTP) plus an ``Integrator`` bound to a local bare
+     5	git repo. Exits cleanly when quiescent or when the ``stopping`` flag
+     6	is set.
+     7	"""
+     8	
+     9	from __future__ import annotations
+    10	
+    11	import uuid
+    12	from collections.abc import Callable
+    13	
+    14	from eden_dispatch import run_orchestrator_iteration
+    15	from eden_git import Identity, Integrator
+    16	from eden_service_common import StopFlag, get_logger
+    17	from eden_storage import Store
+    18	from eden_storage.errors import AlreadyExists
+    19	
+    20	log = get_logger(__name__)
+    21	
+    22	
+    23	def make_id_factory(prefix: str) -> Callable[[], str]:
+    24	    """Return a factory that produces ``<prefix><short-uuid>`` IDs.
+    25	
+    26	    UUIDs avoid cross-restart collisions on orchestrator-generated IDs.
+    27	    """
+    28	
+    29	    def _next() -> str:
+    30	        return f"{prefix}{uuid.uuid4().hex[:12]}"
+    31	
+    32	    return _next
+    33	
+    34	
+    35	def run_orchestrator_loop(
+    36	    *,
+    37	    store: Store,
+    38	    integrator: Integrator,
+    39	    plan_task_ids: list[str],
+    40	    implement_task_prefix: str,
+    41	    evaluate_task_prefix: str,
+    42	    poll_interval: float,
+    43	    max_quiescent_iterations: int,
+    44	    stop: StopFlag,
+    45	) -> None:
+    46	    """Seed plan tasks, then loop finalize + dispatch + integrate to quiescence.
+    47	
+    48	    Returns when either ``stop`` is set or the orchestrator has observed
+    49	    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    50	    """
+    51	    for task_id in plan_task_ids:
+    52	        try:
+    53	            store.create_plan_task(task_id)
+    54	        except AlreadyExists as exc:
+    55	            # Restart-safe: a previous orchestrator already seeded this
+    56	            # task. Anything else (transport, auth, illegal-transition)
+    57	            # surfaces immediately.
+    58	            log.info("plan_task_seed_skip", task_id=task_id, reason=str(exc))
+    59	
+    60	    implement_factory = make_id_factory(implement_task_prefix)
+    61	    evaluate_factory = make_id_factory(evaluate_task_prefix)
+    62	
+    63	    def integrate(trial_id: str) -> None:
+    64	        integrator.integrate(trial_id)
+    65	
+    66	    quiescent = 0
+    67	    while not stop.is_set():
+    68	        progress = run_orchestrator_iteration(
+    69	            store,
+    70	            implement_task_id_factory=implement_factory,
+    71	            evaluate_task_id_factory=evaluate_factory,
+    72	            integrate_trial=integrate,
+    73	        )
+    74	        if progress:
+    75	            quiescent = 0
+    76	        else:
+    77	            quiescent += 1
+    78	            if quiescent >= max_quiescent_iterations:
+    79	                log.info("quiescent", iterations=quiescent)
+    80	                return
+    81	        if stop.wait(poll_interval):
+    82	            return
+    83	
+    84	
+    85	_INTEGRATOR_IDENTITY = Identity(
+    86	    name="EDEN Integrator",
+    87	    email="integrator@eden.invalid",
+    88	)
+    89	
+    90	
+    91	def integrator_identity() -> Identity:
+    92	    """Return the fixed identity used for integrator commits."""
+    93	    return _INTEGRATOR_IDENTITY
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/src/eden_dispatch/workers.py | sed -n '69,280p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    69	class ScriptedPlanner:
+    70	    """Poll-and-run planner worker.
+    71	
+    72	    Discovers pending ``plan`` tasks, claims each in turn, drafts its
+    73	    scripted proposals (one by one, marking each ``ready`` before
+    74	    submitting), and submits with ``status=success``. Multi-proposal
+    75	    drafting per plan is supported; zero-proposal plans also submit
+    76	    with success per ``03-roles.md`` §2.4.
+    77	    """
+    78	
+    79	    def __init__(
+    80	        self,
+    81	        worker_id: str,
+    82	        plan_fn: PlanFn,
+    83	        *,
+    84	        proposal_id_factory: Callable[[], str],
+    85	        now: Callable[[], str],
+    86	    ) -> None:
+    87	        self._worker_id = worker_id
+    88	        self._plan_fn = plan_fn
+    89	        self._proposal_id_factory = proposal_id_factory
+    90	        self._now = now
+    91	
+    92	    @property
+    93	    def worker_id(self) -> str:
+    94	        """Opaque worker identifier this planner claims tasks under."""
+    95	        return self._worker_id
+    96	
+    97	    def run_pending(
+    98	        self,
+    99	        store: Store,
+   100	        *,
+   101	        stop: Callable[[], bool] | None = None,
+   102	    ) -> int:
+   103	        """Claim and process every pending plan task. Returns count processed.
+   104	
+   105	        If ``stop`` is provided, it is consulted before each task; the loop
+   106	        returns early when it returns ``True``. This lets a host running
+   107	        in a SIGTERM-aware loop break mid-drain instead of finishing the
+   108	        whole queue first.
+   109	        """
+   110	        count = 0
+   111	        while True:
+   112	            if stop is not None and stop():
+   113	                return count
+   114	            pending = store.list_tasks(kind="plan", state="pending")
+   115	            if not pending:
+   116	                return count
+   117	            task = pending[0]
+   118	            assert isinstance(task, PlanTask)
+   119	            self._handle(store, task)
+   120	            count += 1
+   121	
+   122	    def _handle(self, store: Store, task: PlanTask) -> None:
+   123	        claim = store.claim(task.task_id, self._worker_id)
+   124	        templates = self._plan_fn(task)
+   125	        proposal_ids: list[str] = []
+   126	        for tpl in templates:
+   127	            proposal_id = self._proposal_id_factory()
+   128	            proposal = Proposal(
+   129	                proposal_id=proposal_id,
+   130	                experiment_id=store.experiment_id,
+   131	                slug=tpl.slug,
+   132	                priority=tpl.priority,
+   133	                parent_commits=list(tpl.parent_commits),
+   134	                artifacts_uri=tpl.artifacts_uri,
+   135	                state="drafting",
+   136	                created_at=self._now(),
+   137	            )
+   138	            store.create_proposal(proposal)
+   139	            store.mark_proposal_ready(proposal_id)
+   140	            proposal_ids.append(proposal_id)
+   141	        store.submit(
+   142	            task.task_id,
+   143	            claim.token,
+   144	            PlanSubmission(status="success", proposal_ids=tuple(proposal_ids)),
+   145	        )
+   146	
+   147	
+   148	class ScriptedImplementer:
+   149	    """Poll-and-run implementer worker.
+   150	
+   151	    Discovers pending ``implement`` tasks, reads the referenced
+   152	    proposal, creates a ``starting`` trial on a scripted ``work/*``
+   153	    branch, and submits with the scripted outcome. A successful
+   154	    outcome carries ``commit_sha``; an errored outcome submits with
+   155	    ``status=error``.
+   156	    """
+   157	
+   158	    def __init__(
+   159	        self,
+   160	        worker_id: str,
+   161	        implement_fn: ImplementFn,
+   162	        *,
+   163	        trial_id_factory: Callable[[], str],
+   164	        now: Callable[[], str],
+   165	    ) -> None:
+   166	        self._worker_id = worker_id
+   167	        self._implement_fn = implement_fn
+   168	        self._trial_id_factory = trial_id_factory
+   169	        self._now = now
+   170	
+   171	    @property
+   172	    def worker_id(self) -> str:
+   173	        """Opaque worker identifier this implementer claims tasks under."""
+   174	        return self._worker_id
+   175	
+   176	    def run_pending(
+   177	        self,
+   178	        store: Store,
+   179	        *,
+   180	        stop: Callable[[], bool] | None = None,
+   181	    ) -> int:
+   182	        """Claim and process every pending implement task. Returns count processed.
+   183	
+   184	        ``stop`` lets a host break mid-drain on SIGTERM. See
+   185	        :meth:`ScriptedPlanner.run_pending`.
+   186	        """
+   187	        count = 0
+   188	        while True:
+   189	            if stop is not None and stop():
+   190	                return count
+   191	            pending = store.list_tasks(kind="implement", state="pending")
+   192	            if not pending:
+   193	                return count
+   194	            task = pending[0]
+   195	            assert isinstance(task, ImplementTask)
+   196	            self._handle(store, task)
+   197	            count += 1
+   198	
+   199	    def _handle(self, store: Store, task: ImplementTask) -> None:
+   200	        proposal = store.read_proposal(task.payload.proposal_id)
+   201	        claim = store.claim(task.task_id, self._worker_id)
+   202	
+   203	        trial_id = self._trial_id_factory()
+   204	        outcome = self._implement_fn(task, proposal)
+   205	        branch = outcome.branch or f"work/{proposal.slug}-{trial_id}"
+   206	        trial_kwargs: dict[str, Any] = {
+   207	            "trial_id": trial_id,
+   208	            "experiment_id": store.experiment_id,
+   209	            "proposal_id": proposal.proposal_id,
+   210	            "status": "starting",
+   211	            "parent_commits": list(proposal.parent_commits),
+   212	            "branch": branch,
+   213	            "started_at": self._now(),
+   214	        }
+   215	        if outcome.description is not None:
+   216	            trial_kwargs["description"] = outcome.description
+   217	        trial = Trial(**trial_kwargs)
+   218	        store.create_trial(trial)
+   219	        store.submit(
+   220	            task.task_id,
+   221	            claim.token,
+   222	            ImplementSubmission(
+   223	                status=outcome.status,
+   224	                trial_id=trial_id,
+   225	                commit_sha=outcome.commit_sha,
+   226	            ),
+   227	        )
+   228	
+   229	
+   230	class ScriptedEvaluator:
+   231	    """Poll-and-run evaluator worker.
+   232	
+   233	    Discovers pending ``evaluate`` tasks, reads the referenced trial,
+   234	    runs its scripted evaluation, and submits. ``success`` and
+   235	    ``error`` write metrics on the trial via the orchestrator's
+   236	    terminal transition; ``eval_error`` leaves the trial in
+   237	    ``starting`` per ``03-roles.md`` §4.4.
+   238	    """
+   239	
+   240	    def __init__(
+   241	        self,
+   242	        worker_id: str,
+   243	        evaluate_fn: EvaluateFn,
+   244	    ) -> None:
+   245	        self._worker_id = worker_id
+   246	        self._evaluate_fn = evaluate_fn
+   247	
+   248	    @property
+   249	    def worker_id(self) -> str:
+   250	        """Opaque worker identifier this evaluator claims tasks under."""
+   251	        return self._worker_id
+   252	
+   253	    def run_pending(
+   254	        self,
+   255	        store: Store,
+   256	        *,
+   257	        stop: Callable[[], bool] | None = None,
+   258	    ) -> int:
+   259	        """Claim and process every pending evaluate task. Returns count processed.
+   260	
+   261	        ``stop`` lets a host break mid-drain on SIGTERM. See
+   262	        :meth:`ScriptedPlanner.run_pending`.
+   263	        """
+   264	        count = 0
+   265	        while True:
+   266	            if stop is not None and stop():
+   267	                return count
+   268	            pending = store.list_tasks(kind="evaluate", state="pending")
+   269	            if not pending:
+   270	                return count
+   271	            task = pending[0]
+   272	            assert isinstance(task, EvaluateTask)
+   273	            self._handle(store, task)
+   274	            count += 1
+   275	
+   276	    def _handle(self, store: Store, task: EvaluateTask) -> None:
+   277	        trial = store.read_trial(task.payload.trial_id)
+   278	        claim = store.claim(task.task_id, self._worker_id)
+   279	        outcome = self._evaluate_fn(task, trial)
+   280	        store.submit(
+
+exec
+/bin/zsh -lc "nl -ba reference/services/implementer/src/eden_implementer_host/host.py | sed -n '1,200p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/tests/test_e2e.py | sed -n '1,340p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/planner/src/eden_planner_host/host.py | sed -n '1,200p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Planner worker host main loop."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import uuid
+     6	from datetime import UTC, datetime
+     7	
+     8	from eden_dispatch import ScriptedPlanner
+     9	from eden_service_common import StopFlag, get_logger, make_plan_fn
+    10	from eden_storage import Store
+    11	
+    12	log = get_logger(__name__)
+    13	
+    14	
+    15	def _now_iso() -> str:
+    16	    return (
+    17	        datetime.now(tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    18	    )
+    19	
+    20	
+    21	def _proposal_id() -> str:
+    22	    return f"proposal-{uuid.uuid4().hex[:12]}"
+    23	
+    24	
+    25	def run_planner_loop(
+    26	    *,
+    27	    store: Store,
+    28	    worker_id: str,
+    29	    base_commit_sha: str,
+    30	    proposals_per_plan: int,
+    31	    poll_interval: float,
+    32	    stop: StopFlag,
+    33	) -> None:
+    34	    """Poll for pending plan tasks and drive each through the scripted profile.
+    35	
+    36	    Returns only when ``stop`` is set. If no pending tasks are visible,
+    37	    waits ``poll_interval`` seconds between polls; drains bursts without
+    38	    sleeping.
+    39	    """
+    40	    planner = ScriptedPlanner(
+    41	        worker_id=worker_id,
+    42	        plan_fn=make_plan_fn(
+    43	            base_commit_sha=base_commit_sha,
+    44	            proposals_per_plan=proposals_per_plan,
+    45	        ),
+    46	        proposal_id_factory=_proposal_id,
+    47	        now=_now_iso,
+    48	    )
+    49	    while not stop.is_set():
+    50	        processed = planner.run_pending(store, stop=stop.is_set)
+    51	        if processed == 0 and stop.wait(poll_interval):
+    52	            return
+
+ succeeded in 0ms:
+     1	"""Implementer worker host main loop."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import uuid
+     6	from datetime import UTC, datetime
+     7	
+     8	from eden_dispatch import ScriptedImplementer
+     9	from eden_service_common import StopFlag, get_logger, make_implement_fn
+    10	from eden_storage import Store
+    11	
+    12	log = get_logger(__name__)
+    13	
+    14	
+    15	def _now_iso() -> str:
+    16	    return (
+    17	        datetime.now(tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    18	    )
+    19	
+    20	
+    21	def _trial_id() -> str:
+    22	    return f"trial-{uuid.uuid4().hex[:12]}"
+    23	
+    24	
+    25	def run_implementer_loop(
+    26	    *,
+    27	    store: Store,
+    28	    worker_id: str,
+    29	    repo_path: str,
+    30	    fail_every: int | None,
+    31	    poll_interval: float,
+    32	    stop: StopFlag,
+    33	) -> None:
+    34	    """Poll for pending implement tasks and drive each through the scripted profile.
+    35	
+    36	    Returns only when ``stop`` is set.
+    37	    """
+    38	    impl = ScriptedImplementer(
+    39	        worker_id=worker_id,
+    40	        implement_fn=make_implement_fn(
+    41	            repo_path=repo_path, fail_every=fail_every
+    42	        ),
+    43	        trial_id_factory=_trial_id,
+    44	        now=_now_iso,
+    45	    )
+    46	    while not stop.is_set():
+    47	        processed = impl.run_pending(store, stop=stop.is_set)
+    48	        if processed == 0 and stop.wait(poll_interval):
+    49	            return
+
+ succeeded in 0ms:
+     1	"""Real-subprocess end-to-end test.
+     2	
+     3	Forks five processes (task-store-server + planner + implementer +
+     4	evaluator + orchestrator) on an ephemeral port and drives a 3-trial
+     5	experiment to quiescence over real HTTP.
+     6	
+     7	The test passes if the orchestrator exits 0 and the final DB + repo
+     8	state match the expected shape. On failure, every subprocess's stderr
+     9	is captured into the pytest failure report.
+    10	"""
+    11	
+    12	from __future__ import annotations
+    13	
+    14	import signal
+    15	import subprocess
+    16	import sys
+    17	import time
+    18	from pathlib import Path
+    19	
+    20	import pytest
+    21	from eden_contracts import MetricsSchema
+    22	from eden_git import GitRepo
+    23	from eden_service_common import seed_bare_repo
+    24	from eden_storage import SqliteStore
+    25	
+    26	pytestmark = pytest.mark.skipif(
+    27	    sys.platform == "win32",
+    28	    reason="subprocess signal handling is POSIX-only for 8b",
+    29	)
+    30	
+    31	FIXTURE_CONFIG = (
+    32	    Path(__file__).resolve().parents[4]
+    33	    / "tests"
+    34	    / "fixtures"
+    35	    / "experiment"
+    36	    / ".eden"
+    37	    / "config.yaml"
+    38	)
+    39	
+    40	
+    41	def _spawn(args: list[str]) -> subprocess.Popen:
+    42	    return subprocess.Popen(
+    43	        [sys.executable, "-m", *args],
+    44	        stdout=subprocess.PIPE,
+    45	        stderr=subprocess.PIPE,
+    46	        text=True,
+    47	    )
+    48	
+    49	
+    50	def _read_port_announcement(proc: subprocess.Popen, timeout: float = 10.0) -> int:
+    51	    """Read task-store-server's EDEN_TASK_STORE_LISTENING line and return the port."""
+    52	    deadline = time.monotonic() + timeout
+    53	    assert proc.stdout is not None
+    54	    while time.monotonic() < deadline:
+    55	        line = proc.stdout.readline()
+    56	        if not line:
+    57	            # Process may have died before listening.
+    58	            if proc.poll() is not None:
+    59	                raise RuntimeError(
+    60	                    f"task-store-server exited early with code {proc.returncode}"
+    61	                )
+    62	            continue
+    63	        if line.startswith("EDEN_TASK_STORE_LISTENING"):
+    64	            parts = dict(p.split("=", 1) for p in line.strip().split()[1:])
+    65	            return int(parts["port"])
+    66	    raise RuntimeError("task-store-server did not announce its port in time")
+    67	
+    68	
+    69	def _terminate(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    70	    if proc.poll() is not None:
+    71	        return
+    72	    try:
+    73	        proc.send_signal(signal.SIGTERM)
+    74	        proc.wait(timeout=timeout)
+    75	    except subprocess.TimeoutExpired:
+    76	        proc.kill()
+    77	        proc.wait(timeout=2)
+    78	
+    79	
+    80	def _dump_stderr(procs: dict[str, subprocess.Popen]) -> str:
+    81	    parts = []
+    82	    for name, p in procs.items():
+    83	        stderr = ""
+    84	        if p.stderr is not None:
+    85	            try:
+    86	                stderr = p.stderr.read() or ""
+    87	            except Exception as exc:  # noqa: BLE001
+    88	                stderr = f"<failed to read stderr: {exc!r}>"
+    89	        parts.append(
+    90	            f"--- {name} (pid={p.pid}, rc={p.returncode}) ---\n{stderr}\n"
+    91	        )
+    92	    return "\n".join(parts)
+    93	
+    94	
+    95	@pytest.mark.e2e
+    96	def test_three_trial_experiment_over_subprocesses(tmp_path: Path) -> None:
+    97	    """Spawn 5 processes, run to quiescence, assert final state."""
+    98	    bare_repo = tmp_path / "bare-repo.git"
+    99	    subprocess.run(
+   100	        [
+   101	            "git",
+   102	            "init",
+   103	            "--bare",
+   104	            "--initial-branch",
+   105	            "main",
+   106	            str(bare_repo),
+   107	        ],
+   108	        check=True,
+   109	        capture_output=True,
+   110	    )
+   111	    base_sha = seed_bare_repo(str(bare_repo))
+   112	
+   113	    db_path = tmp_path / "eden.sqlite"
+   114	    experiment_id = "exp-e2e"
+   115	    token = "test-token"
+   116	
+   117	    server = _spawn(
+   118	        [
+   119	            "eden_task_store_server",
+   120	            "--db-path",
+   121	            str(db_path),
+   122	            "--experiment-id",
+   123	            experiment_id,
+   124	            "--experiment-config",
+   125	            str(FIXTURE_CONFIG),
+   126	            "--host",
+   127	            "127.0.0.1",
+   128	            "--port",
+   129	            "0",
+   130	            "--shared-token",
+   131	            token,
+   132	            "--subscribe-timeout",
+   133	            "1.0",
+   134	        ]
+   135	    )
+   136	    port = _read_port_announcement(server)
+   137	    base_url = f"http://127.0.0.1:{port}"
+   138	
+   139	    planner = _spawn(
+   140	        [
+   141	            "eden_planner_host",
+   142	            "--task-store-url",
+   143	            base_url,
+   144	            "--experiment-id",
+   145	            experiment_id,
+   146	            "--shared-token",
+   147	            token,
+   148	            "--worker-id",
+   149	            "planner-1",
+   150	            "--base-commit-sha",
+   151	            base_sha,
+   152	        ]
+   153	    )
+   154	    implementer = _spawn(
+   155	        [
+   156	            "eden_implementer_host",
+   157	            "--task-store-url",
+   158	            base_url,
+   159	            "--experiment-id",
+   160	            experiment_id,
+   161	            "--shared-token",
+   162	            token,
+   163	            "--worker-id",
+   164	            "implementer-1",
+   165	            "--repo-path",
+   166	            str(bare_repo),
+   167	        ]
+   168	    )
+   169	    evaluator = _spawn(
+   170	        [
+   171	            "eden_evaluator_host",
+   172	            "--task-store-url",
+   173	            base_url,
+   174	            "--experiment-id",
+   175	            experiment_id,
+   176	            "--shared-token",
+   177	            token,
+   178	            "--worker-id",
+   179	            "evaluator-1",
+   180	            "--experiment-config",
+   181	            str(FIXTURE_CONFIG),
+   182	        ]
+   183	    )
+   184	    orchestrator = _spawn(
+   185	        [
+   186	            "eden_orchestrator",
+   187	            "--task-store-url",
+   188	            base_url,
+   189	            "--experiment-id",
+   190	            experiment_id,
+   191	            "--shared-token",
+   192	            token,
+   193	            "--repo-path",
+   194	            str(bare_repo),
+   195	            "--plan-tasks",
+   196	            "plan-1,plan-2,plan-3",
+   197	        ]
+   198	    )
+   199	
+   200	    procs = {
+   201	        "task-store-server": server,
+   202	        "planner": planner,
+   203	        "implementer": implementer,
+   204	        "evaluator": evaluator,
+   205	        "orchestrator": orchestrator,
+   206	    }
+   207	
+   208	    try:
+   209	        try:
+   210	            rc = orchestrator.wait(timeout=60)
+   211	        except subprocess.TimeoutExpired:
+   212	            # Tear workers + server down before reading stderr so any
+   213	            # buffered output flushes; then dump everything.
+   214	            for p in procs.values():
+   215	                _terminate(p)
+   216	            pytest.fail(
+   217	                "orchestrator did not exit within 60s. Subprocess stderr:\n"
+   218	                + _dump_stderr(procs)
+   219	            )
+   220	        if rc != 0:
+   221	            for p in procs.values():
+   222	                _terminate(p)
+   223	            pytest.fail(
+   224	                f"orchestrator exited {rc}. Subprocess stderr:\n"
+   225	                + _dump_stderr(procs)
+   226	            )
+   227	
+   228	        # Tear down workers + server so the SqliteStore's file is released.
+   229	        for name in ("planner", "implementer", "evaluator", "task-store-server"):
+   230	            _terminate(procs[name])
+   231	
+   232	        # Inspect final state.
+   233	        store = SqliteStore(
+   234	            experiment_id=experiment_id,
+   235	            path=str(db_path),
+   236	            metrics_schema=MetricsSchema({"score": "real"}),
+   237	        )
+   238	        try:
+   239	            trials = store.list_trials(status="success")
+   240	            if len(trials) != 3:
+   241	                pytest.fail(
+   242	                    f"expected 3 success trials, got {len(trials)}. Stderr:\n"
+   243	                    + _dump_stderr(procs)
+   244	                )
+   245	            repo = GitRepo(str(bare_repo))
+   246	            for trial in trials:
+   247	                assert trial.trial_commit_sha is not None
+   248	                assert trial.parent_commits == [base_sha]
+   249	                parents = repo.commit_parents(trial.trial_commit_sha)
+   250	                assert parents == list(trial.parent_commits)
+   251	
+   252	            # Every plan/implement/evaluate task terminal.
+   253	            for kind in ("plan", "implement", "evaluate"):
+   254	                tasks = store.list_tasks(kind=kind)
+   255	                completed = [t for t in tasks if t.state == "completed"]
+   256	                assert len(completed) == 3, (
+   257	                    f"expected 3 completed {kind} tasks, got {len(completed)}"
+   258	                )
+   259	
+   260	            # Event-log assertions (codex-review feedback): a 3-trial
+   261	            # experiment must emit one task.completed per role per trial
+   262	            # and one trial.integrated per trial. The full transcript is
+   263	            # richer (drafting, claimed, submitted, succeeded, …); this
+   264	            # test pins the must-have terminal events without freezing
+   265	            # the exact count of every intermediate event.
+   266	            events = list(store.read_range())
+   267	            event_types = [e.type for e in events]
+   268	            assert event_types.count("task.completed") == 9, (
+   269	                f"expected 9 task.completed events (3 per role × 3 trials), got "
+   270	                f"{event_types.count('task.completed')}; full sequence: {event_types}"
+   271	            )
+   272	            assert event_types.count("trial.integrated") == 3, (
+   273	                f"expected 3 trial.integrated events, got "
+   274	                f"{event_types.count('trial.integrated')}"
+   275	            )
+   276	            assert event_types.count("trial.succeeded") == 3, (
+   277	                f"expected 3 trial.succeeded events, got "
+   278	                f"{event_types.count('trial.succeeded')}"
+   279	            )
+   280	        finally:
+   281	            store.close()
+   282	    finally:
+   283	        for p in procs.values():
+   284	            _terminate(p)
+
+exec
+/bin/zsh -lc "nl -ba reference/services/evaluator/src/eden_evaluator_host/host.py | sed -n '1,200p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Evaluator worker host main loop."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	from eden_contracts import MetricsSchema
+     6	from eden_dispatch import ScriptedEvaluator
+     7	from eden_service_common import StopFlag, get_logger, make_evaluate_fn
+     8	from eden_storage import Store
+     9	
+    10	log = get_logger(__name__)
+    11	
+    12	
+    13	def run_evaluator_loop(
+    14	    *,
+    15	    store: Store,
+    16	    worker_id: str,
+    17	    metrics_schema: MetricsSchema,
+    18	    fail_every: int | None,
+    19	    poll_interval: float,
+    20	    stop: StopFlag,
+    21	) -> None:
+    22	    """Poll for pending evaluate tasks and drive each through the scripted profile.
+    23	
+    24	    Returns only when ``stop`` is set.
+    25	    """
+    26	    evaluator = ScriptedEvaluator(
+    27	        worker_id=worker_id,
+    28	        evaluate_fn=make_evaluate_fn(
+    29	            metrics_schema=metrics_schema,
+    30	            fail_every=fail_every,
+    31	        ),
+    32	    )
+    33	    while not stop.is_set():
+    34	        processed = evaluator.run_pending(store, stop=stop.is_set)
+    35	        if processed == 0 and stop.wait(poll_interval):
+    36	            return
+
+exec
+/bin/zsh -lc "rg -n \"integrator-author|max-quiescent-iterations|stop=stop.is_set|task.completed|trial.integrated|trial.succeeded\" reference/services reference/packages/eden-dispatch/tests -g '*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-dispatch/tests/test_end_to_end.py:185:        elif t == "task.completed":
+reference/packages/eden-dispatch/tests/test_end_to_end.py:201:        elif t == "trial.succeeded":
+reference/packages/eden-dispatch/tests/test_end_to_end.py:221:    ``trial_commit_sha`` + ``trial.integrated`` land atomically, and
+reference/packages/eden-dispatch/tests/test_end_to_end.py:323:    integrated_events = [e for e in store.events() if e.type == "trial.integrated"]
+reference/services/orchestrator/src/eden_orchestrator/cli.py:26:    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
+reference/services/orchestrator/src/eden_orchestrator/cli.py:31:            f"--max-quiescent-iterations must be an integer, not {raw!r}"
+reference/services/orchestrator/src/eden_orchestrator/cli.py:35:            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
+reference/services/orchestrator/src/eden_orchestrator/cli.py:48:            f"--integrator-author {value!r}: expected 'Name <email>' format"
+reference/services/orchestrator/src/eden_orchestrator/cli.py:66:        "--integrator-author",
+reference/services/orchestrator/src/eden_orchestrator/cli.py:99:        "--max-quiescent-iterations",
+reference/services/orchestrator/tests/test_e2e.py:261:            # experiment must emit one task.completed per role per trial
+reference/services/orchestrator/tests/test_e2e.py:262:            # and one trial.integrated per trial. The full transcript is
+reference/services/orchestrator/tests/test_e2e.py:268:            assert event_types.count("task.completed") == 9, (
+reference/services/orchestrator/tests/test_e2e.py:269:                f"expected 9 task.completed events (3 per role × 3 trials), got "
+reference/services/orchestrator/tests/test_e2e.py:270:                f"{event_types.count('task.completed')}; full sequence: {event_types}"
+reference/services/orchestrator/tests/test_e2e.py:272:            assert event_types.count("trial.integrated") == 3, (
+reference/services/orchestrator/tests/test_e2e.py:273:                f"expected 3 trial.integrated events, got "
+reference/services/orchestrator/tests/test_e2e.py:274:                f"{event_types.count('trial.integrated')}"
+reference/services/orchestrator/tests/test_e2e.py:276:            assert event_types.count("trial.succeeded") == 3, (
+reference/services/orchestrator/tests/test_e2e.py:277:                f"expected 3 trial.succeeded events, got "
+reference/services/orchestrator/tests/test_e2e.py:278:                f"{event_types.count('trial.succeeded')}"
+reference/services/evaluator/src/eden_evaluator_host/host.py:34:        processed = evaluator.run_pending(store, stop=stop.is_set)
+reference/services/planner/src/eden_planner_host/host.py:50:        processed = planner.run_pending(store, stop=stop.is_set)
+reference/services/implementer/src/eden_implementer_host/host.py:47:        processed = impl.run_pending(store, stop=stop.is_set)
+
+exec
+/bin/zsh -lc "uv run pytest -q reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py reference/services/implementer/tests/test_host.py reference/services/orchestrator/tests/test_e2e.py -m 'not e2e or e2e'" in /Users/ericalt/Documents/eden
+codex
+The updated paths compile conceptually; I’m finishing with a quick rerun of the changed review targets to make sure the fixes didn’t regress the subprocess path.
+ succeeded in 3458ms:
+.......                                                                  [100%]
+7 passed in 3.04s
+
+codex
+No findings.
+
+I re-read the updated brief and the changed implementation in [loop.py](/Users/ericalt/Documents/eden/reference/services/orchestrator/src/eden_orchestrator/loop.py:1), [cli.py](/Users/ericalt/Documents/eden/reference/services/orchestrator/src/eden_orchestrator/cli.py:1), [workers.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/src/eden_dispatch/workers.py:97), the three worker hosts, and the subprocess E2E at [test_e2e.py](/Users/ericalt/Documents/eden/reference/services/orchestrator/tests/test_e2e.py:95). The six issues from the previous review are addressed correctly: startup seeding now only suppresses `AlreadyExists`, timeout/non-zero E2E failures dump stderr, worker loops can stop mid-drain, the E2E asserts key event-log terminals, `--integrator-author` is implemented, and `--max-quiescent-iterations` rejects unsafe values.
+
+Overall assessment: this revision closes the prior review feedback without introducing new correctness or integration problems that I could find. I also reran the changed review targets, including the subprocess E2E, and they passed (`7 passed in 3.04s`). The only residual gap is coverage shape versus the original plan: the implementation still leans more on the E2E than on per-host/orchestrator unit tests, but I don’t see a concrete defect in the code as updated.
+tokens used
+162,032

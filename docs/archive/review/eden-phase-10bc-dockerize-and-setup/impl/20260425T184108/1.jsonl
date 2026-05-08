@@ -1,0 +1,13 @@
+**Findings**
+
+1. Risk — [reference/compose/compose.yaml](/Users/ericalt/Documents/eden/reference/compose/compose.yaml:148). The `task-store-server` healthcheck still uses `CMD-SHELL` with `${EDEN_SHARED_TOKEN}` and `${EDEN_EXPERIMENT_ID}` interpolated directly into shell syntax. Those values are user-controlled through `setup-experiment.sh` / `.env`, so quotes, spaces, or shell metacharacters can break the healthcheck or change command meaning. Fix by switching this healthcheck to `CMD` argv form, e.g. `["CMD", "curl", "-fsS", "-H", "Authorization: Bearer ...", ...]`, so Compose still interpolates values but no shell re-parses them.
+
+2. Nit — [reference/scripts/setup-experiment/setup-experiment.sh](/Users/ericalt/Documents/eden/reference/scripts/setup-experiment/setup-experiment.sh:242). The script now supports `--env-file <path>`, but the printed next-step command still hard-codes `docker compose --env-file .env up -d --wait`. That is wrong for non-default env-file paths. Fix by echoing the actual `ENV_FILE` the script used, or by making the message conditional when the default path is in use.
+
+3. Nit — [reference/packages/eden-storage/tests/test_postgres_store.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/tests/test_postgres_store.py:112). `test_reopen_inherits_persisted_metrics_schema()` does not actually verify persisted-schema inheritance. It reopens the store and creates a plan task, which would succeed whether `_metrics_schema` was restored or not. Fix by exercising metrics validation after reopen, for example via `validate_metrics()` or an evaluate-task submission with one valid and one invalid metrics payload.
+
+4. Nit — [reference/services/task-store-server/README.md](/Users/ericalt/Documents/eden/reference/services/task-store-server/README.md:7) and [reference/services/web-ui/README.md](/Users/ericalt/Documents/eden/reference/services/web-ui/README.md:33). The examples still use `sqlite:///tmp/eden.sqlite`. In this implementation, `build_store()` strips the `sqlite:///` prefix literally, so that example resolves to `tmp/eden.sqlite`, not `/tmp/eden.sqlite`. Fix the examples to use either a bare absolute path (`/tmp/eden.sqlite`) or the unambiguous URI form `sqlite:////tmp/eden.sqlite`.
+
+**Overall Assessment**
+
+The round-0 blockers are fixed: the Postgres schema-version bug is addressed, the password DSN construction is safer, argument parsing is hardened, the smoke test now checks terminal task completion, and the planned Postgres-specific test file plus `/healthz` docs were added. I do not see any remaining blockers to the chunk landing; the remaining issues are small robustness and documentation cleanups rather than design or correctness failures.

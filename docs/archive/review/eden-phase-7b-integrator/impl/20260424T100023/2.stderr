@@ -1,0 +1,386 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc070-2dcf-7c93-b0de-a5a66d2d058a
+--------
+user
+Round 2: I've addressed the §5.3-replay-accepts-corrupt-tree bug you found by raising CorruptIntegrationState when the worker commit is pruned (rather than silently no-op-ing). The review brief at docs/plans/review/eden-phase-7b-integrator/impl/20260424T100023/0.md is updated under 'Round 1 — findings addressed'. Please re-read reference/packages/eden-git/src/eden_git/integrator.py (_check_idempotent) and reference/packages/eden-git/tests/test_integrator.py (TestReplayAfterWorkerPruned + TestCorruptTrialTreeRejected) and review again.
+codex
+I’m re-reading the updated brief plus the revised replay logic and its new tests, then I’ll rerun the focused replay cases and repeat the corruption probe that failed in the last round.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/integrator.py | sed -n '255,345p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/tests/test_integrator.py | sed -n '840,980p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   840	        ["git", "-C", str(repo.path), "cat-file", "-p", sha],
+   841	        capture_output=True,
+   842	        check=True,
+   843	        text=True,
+   844	    )
+   845	    return result.stdout
+   846	
+   847	
+   848	# ----------------------------------------------------------------------
+   849	# §5.3 after §1.3 work-branch cleanup
+   850	# ----------------------------------------------------------------------
+   851	
+   852	
+   853	class TestReplayAfterWorkerPruned:
+   854	    """§1.3 permits deleting work/* after promotion. Once the worker
+   855	    commit is pruned, §5.3 replay cannot re-verify the §3.2 tree
+   856	    shape, and the integrator must surface this rather than silently
+   857	    no-op-ing — otherwise a corrupted trial/* commit with a matching
+   858	    manifest blob but divergent tree would be silently accepted."""
+   859	
+   860	    def test_replay_after_worker_gc_raises_corrupt_state(
+   861	        self,
+   862	        integrator: Integrator,
+   863	        store: Store,
+   864	        repo: GitRepo,
+   865	        seed_sha: str,
+   866	    ) -> None:
+   867	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   868	        _seed_success_trial(
+   869	            store,
+   870	            trial_id="tr-1",
+   871	            proposal_id="p-1",
+   872	            slug="speedup",
+   873	            parent=seed_sha,
+   874	            branch="work/tr-1",
+   875	            commit_sha=commit,
+   876	        )
+   877	        integrator.integrate("tr-1")
+   878	
+   879	        # §1.3: delete work/* and `git gc --prune=now`.
+   880	        repo.delete_ref("refs/heads/work/tr-1")
+   881	        _force_gc_prune_now(repo)
+   882	        assert repo.commit_exists(commit) is False, (
+   883	            "test precondition: git gc should have pruned the worker commit"
+   884	        )
+   885	
+   886	        with pytest.raises(CorruptIntegrationState):
+   887	            integrator.integrate("tr-1")
+   888	
+   889	    def test_replay_with_worker_alive_still_noops(
+   890	        self,
+   891	        integrator: Integrator,
+   892	        store: Store,
+   893	        repo: GitRepo,
+   894	        seed_sha: str,
+   895	    ) -> None:
+   896	        """§5.3: when the worker tree is still reachable, replay IS a no-op."""
+   897	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   898	        _seed_success_trial(
+   899	            store,
+   900	            trial_id="tr-1",
+   901	            proposal_id="p-1",
+   902	            slug="speedup",
+   903	            parent=seed_sha,
+   904	            branch="work/tr-1",
+   905	            commit_sha=commit,
+   906	        )
+   907	        first = integrator.integrate("tr-1")
+   908	        second = integrator.integrate("tr-1")
+   909	        assert second.already_integrated is True
+   910	        assert second.trial_commit_sha == first.trial_commit_sha
+   911	
+   912	
+   913	class TestCorruptTrialTreeRejected:
+   914	    """Codex round-1 reproduction: a trial/* commit with an extra file
+   915	    in its tree but the same eval.json bytes must be rejected on
+   916	    replay, not silently accepted."""
+   917	
+   918	    def test_tree_with_extra_path_rejected(
+   919	        self,
+   920	        integrator: Integrator,
+   921	        store: Store,
+   922	        repo: GitRepo,
+   923	        seed_sha: str,
+   924	    ) -> None:
+   925	        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+   926	        _seed_success_trial(
+   927	            store,
+   928	            trial_id="tr-1",
+   929	            proposal_id="p-1",
+   930	            slug="speedup",
+   931	            parent=seed_sha,
+   932	            branch="work/tr-1",
+   933	            commit_sha=commit,
+   934	        )
+   935	        first = integrator.integrate("tr-1")
+   936	
+   937	        # Rewrite the trial/* commit externally to have an extra path
+   938	        # alongside the manifest — exactly the corruption Codex flagged.
+   939	        squash_tree = repo.commit_tree_sha(first.trial_commit_sha)
+   940	        extra_blob = repo.write_blob(b"extra\n")
+   941	        corrupt_tree = repo.write_tree_with_file(squash_tree, "rogue.txt", extra_blob)
+   942	        corrupt_commit = repo.commit_tree(
+   943	            corrupt_tree,
+   944	            parents=list(store.read_trial("tr-1").parent_commits),
+   945	            message="trial: tr-1 speedup\n",
+   946	            author=AUTHOR,
+   947	            author_date="2026-04-23T03:00:00+00:00",
+   948	            committer_date="2026-04-23T03:00:00+00:00",
+   949	        )
+   950	        repo.update_ref(
+   951	            "refs/heads/trial/tr-1-speedup",
+   952	            corrupt_commit,
+   953	            expected_old_sha=first.trial_commit_sha,
+   954	        )
+   955	        # Repoint trial.trial_commit_sha to match (simulating externally-
+   956	        # consistent corruption).
+   957	        from eden_storage._base import _validated_update
+   958	
+   959	        trial = store.read_trial("tr-1")
+   960	        store._trials["tr-1"] = _validated_update(  # type: ignore[attr-defined]
+   961	            trial, trial_commit_sha=corrupt_commit
+   962	        )
+   963	
+   964	        with pytest.raises(CorruptIntegrationState):
+   965	            integrator.integrate("tr-1")
+   966	
+   967	
+   968	def _force_gc_prune_now(repo: GitRepo) -> None:
+   969	    import subprocess
+   970	
+   971	    subprocess.run(
+   972	        ["git", "-C", str(repo.path), "gc", "--prune=now", "--quiet"],
+   973	        check=True,
+   974	        capture_output=True,
+   975	    )
+   976	
+   977	
+   978	# ----------------------------------------------------------------------
+   979	# Non-finite metrics
+   980	# ----------------------------------------------------------------------
+
+ succeeded in 0ms:
+   255	    # ------------------------------------------------------------------
+   256	    # §5.3 idempotency
+   257	    # ------------------------------------------------------------------
+   258	
+   259	    def _check_idempotent(
+   260	        self, trial: Trial, branch: str, branch_ref: str
+   261	    ) -> IntegrationResult:
+   262	        recorded = trial.trial_commit_sha
+   263	        assert recorded is not None
+   264	        ref_tip = self._repo.resolve_ref(branch_ref)
+   265	        if ref_tip is None or ref_tip != recorded:
+   266	            raise CorruptIntegrationState(
+   267	                f"trial {trial.trial_id!r} has trial_commit_sha={recorded!r} "
+   268	                f"but {branch_ref!r} resolves to {ref_tip!r} (§5.3)"
+   269	            )
+   270	
+   271	        manifest_path = _manifest_path(trial.trial_id)
+   272	        try:
+   273	            expected = build_manifest(trial)
+   274	        except ManifestFieldMissing as exc:
+   275	            raise CorruptIntegrationState(
+   276	                f"trial {trial.trial_id!r} is integrated but cannot "
+   277	                f"re-derive manifest: {exc}"
+   278	            ) from exc
+   279	
+   280	        # The committed trial commit + manifest blob must still be
+   281	        # present; the ref we just confirmed proves reachability.
+   282	        try:
+   283	            actual_tree = self._repo.commit_tree_sha(recorded)
+   284	            actual_blob_entry = _lookup_tree_entry(
+   285	                self._repo, actual_tree, manifest_path
+   286	            )
+   287	            actual_bytes = self._repo.read_blob(actual_blob_entry)
+   288	        except GitError as exc:
+   289	            raise CorruptIntegrationState(
+   290	                f"trial {trial.trial_id!r} is integrated but committed "
+   291	                f"manifest read failed: {exc}"
+   292	            ) from exc
+   293	
+   294	        if actual_bytes != expected:
+   295	            raise CorruptIntegrationState(
+   296	                f"trial {trial.trial_id!r} integrated manifest does not match "
+   297	                f"current trial state (§5.3)"
+   298	            )
+   299	
+   300	        # §3.2 tree-shape re-verification requires the worker-branch
+   301	        # tip commit (and its tree) to still be reachable in the
+   302	        # object DB. §1.3 permits deployments to delete work/*
+   303	        # branches eagerly after promotion, which — combined with
+   304	        # `git gc --prune=now` — can remove the worker commit and its
+   305	        # tree. In that case we cannot prove §5.3's "tree satisfies
+   306	        # §3.2" precondition, so the no-op path is not safe to take:
+   307	        # the recorded trial/* commit could have been rewritten
+   308	        # externally with a different tree. Raise
+   309	        # ``CorruptIntegrationState`` rather than silently treating
+   310	        # the replay as a no-op. A deployment that needs replay-
+   311	        # idempotence after eager work/* cleanup must either retain
+   312	        # the worker commit (or its tree) via a separate anchor ref,
+   313	        # or accept that replay after cleanup requires operator
+   314	        # intervention.
+   315	        assert trial.commit_sha is not None
+   316	        if not self._repo.commit_exists(trial.commit_sha):
+   317	            raise CorruptIntegrationState(
+   318	                f"trial {trial.trial_id!r} is integrated but its worker "
+   319	                f"commit {trial.commit_sha!r} is no longer reachable; "
+   320	                f"§3.2 tree-shape verification cannot complete "
+   321	                f"(§1.3 permits work/* cleanup, but §5.3 replay then "
+   322	                f"requires operator intervention)"
+   323	            )
+   324	        self._require_squash_tree_matches(
+   325	            trial.commit_sha, actual_tree, actual_blob_entry, manifest_path
+   326	        )
+   327	
+   328	        return IntegrationResult(
+   329	            trial_id=trial.trial_id,
+   330	            trial_commit_sha=recorded,
+   331	            branch=branch,
+   332	            already_integrated=True,
+   333	        )
+   334	
+   335	    def _require_squash_tree_matches(
+   336	        self,
+   337	        worker_commit_sha: str,
+   338	        actual_tree: str,
+   339	        actual_blob_entry: str,
+   340	        manifest_path: str,
+   341	    ) -> None:
+   342	        """Verify ``actual_tree`` equals worker-tip tree + only the manifest.
+   343	
+   344	        Re-derives the expected tree from the worker branch tip and the
+   345	        committed manifest blob, then compares tree SHAs. Equality
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/review/eden-phase-7b-integrator/impl/20260424T100023/0.md | sed -n '64,180p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    64	## Review Status
+    65	
+    66	### Round 0 — findings addressed
+    67	
+    68	- **Bug — §5.3 replay after work/* pruning.** Fixed in
+    69	  `integrator.py::_check_idempotent`. The manifest-bytes check no
+    70	  longer depends on the worker commit being alive — it now reads
+    71	  the committed trial commit's tree and manifest blob directly.
+    72	  The tree-shape re-verification (§3.2 invariant) is now
+    73	  conditional on `commit_exists(trial.commit_sha)` being true, since
+    74	  §1.3 explicitly permits work/* cleanup. New regression test
+    75	  `TestIdempotentReplayAfterWorkerPruned` runs `git gc
+    76	  --prune=now` between integrations and asserts the second call is
+    77	  a no-op.
+    78	- **Bug — non-finite floats in metrics / manifest JSON.** Fixed in
+    79	  two layers: `_base.py::_validate_metrics` now rejects non-finite
+    80	  floats for `real` metrics via `math.isfinite()`; `_manifest.py`
+    81	  sets `allow_nan=False` on `json.dumps` as defense in depth. New
+    82	  test `TestNonFiniteMetricsRejected::test_nan_metric_rejected_at_integration`
+    83	  seeds a trial with `float("nan")` and asserts
+    84	  `NotReadyForIntegration`.
+    85	- **Risk — dispatch → real integrator coverage gap.** Fixed by
+    86	  `test_end_to_end_with_real_integrator` in
+    87	  `eden-dispatch/tests/test_end_to_end.py`. The test builds a real
+    88	  `GitRepo` in `tmp_path`, pre-creates three `work/*` branches,
+    89	  seeds the scripted implementer to return the real SHAs/branches,
+    90	  wires `Integrator.integrate` into `run_experiment`, and asserts
+    91	  the `trial/*` refs exist, the subject lines match §3.3, and the
+    92	  `trial.integrated` events land.
+    93	
+    94	All 339 tests pass. ruff / pyright / markdownlint / spec-xref clean.
+    95	
+    96	### Round 1 — findings addressed
+    97	
+    98	- **Bug — §5.3 replay silently accepted corrupt tree after
+    99	  worker prune.** You reproduced this by rewriting the stored
+   100	  trial/* commit to a tree with an extra file but the same
+   101	  eval.json, deleting work/*, and running `git gc --prune=now`;
+   102	  the second `integrate()` accepted it as no-op. I agree that
+   103	  skipping the tree check when the worker commit is pruned is
+   104	  too permissive — §5.3's no-op path requires the tree to
+   105	  satisfy §3.2, and without the worker tree we cannot prove
+   106	  that. Fixed in `integrator.py::_check_idempotent`: when the
+   107	  worker commit is no longer reachable, the integrator now
+   108	  raises `CorruptIntegrationState` rather than silently
+   109	  treating the replay as a no-op. Updated regression test
+   110	  `TestReplayAfterWorkerPruned::test_replay_after_worker_gc_raises_corrupt_state`
+   111	  confirms this. New test
+   112	  `TestCorruptTrialTreeRejected::test_tree_with_extra_path_rejected`
+   113	  exactly reproduces your scenario (extra file in trial/* tree
+   114	  with the same eval.json, work/* still present) and asserts
+   115	  `CorruptIntegrationState`.
+   116	
+   117	Deployment consequence: a deployment that wants §5.3 replay
+   118	idempotence after eager work/* cleanup must either retain the
+   119	worker commit/tree via a separate anchor ref, or accept that
+   120	replay after cleanup surfaces as `CorruptIntegrationState`
+   121	requiring operator intervention. This is the literal §5.3
+   122	reading; a looser reading (trust §1.2 to protect against
+   123	external writers, skip tree re-verification) is permissible in
+   124	a conforming third-party impl but the reference impl takes the
+   125	strict reading.
+   126	
+   127	### Round 2 — awaiting review.
+
+exec
+/bin/zsh -lc "uv run pytest -q reference/packages/eden-git/tests/test_integrator.py -k 'ReplayAfterWorkerPruned or CorruptTrialTreeRejected'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from datetime import UTC, datetime
+from pathlib import Path
+import tempfile, subprocess
+from eden_git import GitRepo, Identity, Integrator, TreeEntry
+from eden_storage import InMemoryStore
+from eden_contracts import Proposal, Trial
+from eden_storage._base import _validated_update
+
+AUTHOR = Identity('Integrator','integrator@eden.example')
+FIXED_CLOCK = datetime(2026,4,24,12,0,0,tzinfo=UTC)
+
+td = tempfile.TemporaryDirectory()
+repo = GitRepo.init(Path(td.name)/'repo')
+blob = repo.write_blob(b'initial\\n')
+tree = repo.write_tree_from_entries([TreeEntry(mode='100644', type='blob', sha=blob, path='README')])
+seed = repo.commit_tree(tree, parents=[], message='initial\\n', author=AUTHOR, author_date='2026-04-23T00:00:00+00:00', committer_date='2026-04-23T00:00:00+00:00')
+repo.update_ref('refs/heads/main', seed)
+store = InMemoryStore(experiment_id='exp-1')
+store.create_proposal(Proposal(proposal_id='p-1', experiment_id='exp-1', slug='speedup', priority=1.0, parent_commits=[seed], artifacts_uri='file:///tmp/art/', state='drafting', created_at='2026-04-23T00:00:00Z'))
+store.create_trial(Trial(trial_id='tr-1', experiment_id='exp-1', proposal_id='p-1', status='starting', parent_commits=[seed], branch='work/tr-1', started_at='2026-04-23T00:30:00Z'))
+base_tree = repo.commit_tree_sha(seed)
+blob = repo.write_blob(b\"print('hi')\\n\")
+new_tree = repo.write_tree_with_file(base_tree, 'work.py', blob)
+work = repo.commit_tree(new_tree, parents=[seed], message='work\\n', author=AUTHOR, author_date='2026-04-23T01:00:00+00:00', committer_date='2026-04-23T01:00:00+00:00')
+repo.update_ref('refs/heads/work/tr-1', work)
+store._trials['tr-1'] = _validated_update(store.read_trial('tr-1'), status='success', commit_sha=work, metrics={'score':1.0}, completed_at='2026-04-23T02:00:00Z')
+integ = Integrator(store=store, repo=repo, author=AUTHOR, clock=lambda: FIXED_CLOCK)
+res = integ.integrate('tr-1')
+trial_tree = repo.commit_tree_sha(res.trial_commit_sha)
+extra_blob = repo.write_blob(b'evil\\n')
+bad_tree = repo.write_tree_with_file(trial_tree, 'extra.txt', extra_blob)
+bad_commit = repo.commit_tree(bad_tree, parents=[seed], message='trial: tr-1 speedup\\n', author=AUTHOR, author_date='2026-04-24T12:00:00+00:00', committer_date='2026-04-24T12:00:00+00:00')
+repo.update_ref('refs/heads/trial/tr-1-speedup', bad_commit, expected_old_sha=res.trial_commit_sha)
+store._trials['tr-1'] = _validated_update(store.read_trial('tr-1'), trial_commit_sha=bad_commit)
+repo.delete_ref('refs/heads/work/tr-1')
+subprocess.run(['git','-C',str(repo.path),'gc','--prune=now','--quiet'], check=True, capture_output=True)
+print('worker commit exists?', repo.commit_exists(work))
+try:
+    integ.integrate('tr-1')
+    print('accepted')
+except Exception as e:
+    print(type(e).__name__, str(e))
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 830ms:
+worker commit exists? False
+CorruptIntegrationState trial 'tr-1' is integrated but its worker commit '7ac2e878b339bb259835511f532d90fe8be30196' is no longer reachable; §3.2 tree-shape verification cannot complete (§1.3 permits work/* cleanup, but §5.3 replay then requires operator intervention)
+
+ succeeded in 2076ms:
+...                                                                      [100%]
+3 passed, 22 deselected in 1.79s
+
+codex
+No further findings.
+
+The updated replay path in [integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:259) now takes the safe route: once the worker commit is pruned, `_check_idempotent()` raises `CorruptIntegrationState` instead of silently accepting the replay, and the new tests in [test_integrator.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/tests/test_integrator.py:853) cover both the pruned-worker case and the corrupt-tree-with-extra-path case. I reran those focused tests and repeated the earlier corruption probe; it now rejects as expected.
+
+Across the five review levels, this round looks good: the change is coherent with the stricter §5.3 reading, integrates cleanly with the existing error model, and closes the correctness hole from the prior round. The main residual tradeoff is now explicit rather than hidden: deployments that want replay to remain idempotent after eager `work/*` cleanup will need to retain the worker commit/tree somehow.
+tokens used
+152,589

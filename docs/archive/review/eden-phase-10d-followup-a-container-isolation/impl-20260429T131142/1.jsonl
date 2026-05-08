@@ -1,0 +1,9 @@
+No remaining implementation findings on correctness, lifecycle, security boundary, volume naming, identity, or test coverage. The two round-0 issues look fixed: host-mode subprocess no longer gets the Docker socket, and the docker-backed tests now hit both the real gitlink mount shape and the actual `Subprocess.terminate()` SIGKILL path.
+
+Two low-severity doc drifts remain:
+
+1. Low: the plan file still describes the pre-fix shape. It says the DooD wiring lives in `compose.subprocess.yaml` and still documents the older helper-only SIGKILL test, not the new overlay split and end-to-end `terminate()` coverage in [docs/plans/eden-phase-10d-followup-a-container-isolation.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:431) and [docs/plans/eden-phase-10d-followup-a-container-isolation.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-a-container-isolation.md:505).
+
+2. Low: the preserved context still overclaims what the smoke proves. The current-phase entry in [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:19) and the comment in [smoke-subprocess-docker.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/smoke-subprocess-docker.sh:167) say the planner-orphan-after-stop check proves `post_kill_callback` fired. After your new integration test, that statement is no longer needed and still isn’t strictly true; the smoke only proves no leftover planner sibling remained.
+
+Assessment: ready to ship from an implementation standpoint. I’d merge after tightening those doc/context artifacts so the plan and phase summary match the final design and the actual proof sources.

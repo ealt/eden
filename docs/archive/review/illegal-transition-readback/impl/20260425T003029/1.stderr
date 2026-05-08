@@ -1,0 +1,661 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc38c-cbae-7710-80ad-72b91538eed9
+--------
+user
+I've addressed your round-0 findings on a follow-up branch (not merged yet). Summary:
+
+1. Bug fixed: extracted a planner _readback() helper. The terminal-state arm now explicitly handles 'prior is None' as a transport-flavored 'store invariant violation' banner before the equivalence check, matching the implementer/evaluator. Conflict is reserved for non-equivalent prior submissions.
+2. Risk fixed: the planner _readback now branches state=='claimed' (with our token vs other token) and state=='pending' (reclaimed) explicitly. State==claimed with our token surfaces the transport class name; state==claimed with a different token surfaces 'eden://error/wrong-token'; state==pending surfaces 'task reclaimed: <class>'. Tests cover all three.
+
+New tests added to test_planner_flow.py::TestIllegalTransitionReadback:
+- test_terminal_state_with_no_submission_renders_transport_invariant (asserts NO 'conflicting-resubmission' in output)
+- test_pending_after_illegal_transition_distinct_from_claimed (asserts 'task reclaimed' in banner)
+- test_claimed_with_other_token_renders_wrong_token (asserts wire-error string)
+
+Files changed: routes/planner.py (_retry_submit refactored to call new _readback helper), tests/test_planner_flow.py (3 new sub-cases). Full suite 559 + 5 e2e + the new 3 = 565 passing locally.
+
+Please re-review the planner side to confirm the §K-2 contract is now fully covered.
+codex
+Re-reviewing the planner follow-up now. I’m reading the current `planner.py` and `test_planner_flow.py`, diffing them against `main`, and then I’ll verify the new read-back branches and tests against the §K-2 contract.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_planner_flow.py | sed -n '480,680p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   480	        assert resp.status_code == 502
+   481	        assert "eden://error/invalid-precondition" in resp.text
+   482	
+   483	
+   484	class TestIllegalTransitionReadback:
+   485	    """``IllegalTransition`` feeds read-back, not a definitive orphan.
+   486	
+   487	    Distinguishes "we won; orchestrator already terminalized" from
+   488	    "we lost; different submission won." The chunk-9c implementer
+   489	    module shipped this lens via §K-2 of the chunk-9d plan; the
+   490	    planner gets the same fix here.
+   491	    """
+   492	
+   493	    def _setup_claim(
+   494	        self, client: TestClient, store: InMemoryStore, task_id: str
+   495	    ) -> str:
+   496	        store.create_plan_task(task_id)
+   497	        token = get_csrf(client)
+   498	        resp = client.post(
+   499	            f"/planner/{task_id}/claim",
+   500	            data={"csrf_token": token},
+   501	            follow_redirects=False,
+   502	        )
+   503	        assert resp.status_code == 303
+   504	        return token
+   505	
+   506	    def _submit(
+   507	        self, client: TestClient, task_id: str, csrf: str
+   508	    ):
+   509	        return client.post(
+   510	            f"/planner/{task_id}/submit",
+   511	            data={
+   512	                "csrf_token": csrf,
+   513	                "status": "success",
+   514	                "slug": "feat-rb",
+   515	                "priority": "1.0",
+   516	                "parent_commits": "a" * 40,
+   517	                "rationale": "rationale",
+   518	            },
+   519	        )
+   520	
+   521	    def test_completed_with_equivalent_prior_renders_success(
+   522	        self,
+   523	        signed_in_client: TestClient,
+   524	        store: InMemoryStore,
+   525	        monkeypatch,
+   526	    ) -> None:
+   527	        """We won: submit committed, orchestrator terminalized, retry hit IllegalTransition."""
+   528	        from eden_storage import IllegalTransition
+   529	
+   530	        csrf = self._setup_claim(signed_in_client, store, "t-itb")
+   531	        original_submit = store.submit
+   532	
+   533	        def fake_submit(task_id_, token, submission):
+   534	            # Commit, accept (state -> completed), then raise
+   535	            # IllegalTransition simulating "response was lost; we
+   536	            # retried and saw a state the store rejects."
+   537	            original_submit(task_id_, token, submission)
+   538	            store.accept(task_id_)
+   539	            raise IllegalTransition("simulated post-terminalization retry")
+   540	
+   541	        monkeypatch.setattr(store, "submit", fake_submit)
+   542	        resp = self._submit(signed_in_client, "t-itb", csrf)
+   543	        # SUCCESS, not orphan — this is the planner-side §K-2 fix.
+   544	        assert resp.status_code == 200
+   545	        assert "feat-rb" in resp.text or "submitted" in resp.text.lower()
+   546	
+   547	    def test_completed_with_non_equivalent_prior_renders_orphan(
+   548	        self,
+   549	        signed_in_client: TestClient,
+   550	        store: InMemoryStore,
+   551	        monkeypatch,
+   552	    ) -> None:
+   553	        """Different submission won the race; read-back finds non-equivalent."""
+   554	        from eden_contracts import PlanPayload, PlanTask
+   555	        from eden_storage import IllegalTransition, PlanSubmission
+   556	
+   557	        csrf = self._setup_claim(signed_in_client, store, "t-itc")
+   558	        synthetic_task = PlanTask(
+   559	            task_id="t-itc",
+   560	            kind="plan",
+   561	            state="completed",
+   562	            payload=PlanPayload(experiment_id=store.experiment_id),
+   563	            created_at="2026-04-24T11:00:00.000Z",
+   564	            updated_at="2026-04-24T13:00:00.000Z",
+   565	        )
+   566	        non_equiv_prior = PlanSubmission(
+   567	            status="success", proposal_ids=("proposal-other-worker",)
+   568	        )
+   569	
+   570	        def fake_submit(*a, **k):
+   571	            raise IllegalTransition("task already terminal")
+   572	
+   573	        monkeypatch.setattr(store, "submit", fake_submit)
+   574	        monkeypatch.setattr(store, "read_task", lambda tid: synthetic_task)
+   575	        monkeypatch.setattr(store, "read_submission", lambda tid: non_equiv_prior)
+   576	
+   577	        resp = self._submit(signed_in_client, "t-itc", csrf)
+   578	        assert resp.status_code == 502
+   579	        assert "conflicting-resubmission" in resp.text
+   580	
+   581	    def test_terminal_state_with_no_submission_renders_transport_invariant(
+   582	        self,
+   583	        signed_in_client: TestClient,
+   584	        store: InMemoryStore,
+   585	        monkeypatch,
+   586	    ) -> None:
+   587	        """`read_submission() is None` on a terminal task is invariant violation, not conflict."""
+   588	        from eden_contracts import PlanPayload, PlanTask
+   589	        from eden_storage import IllegalTransition
+   590	
+   591	        csrf = self._setup_claim(signed_in_client, store, "t-inv")
+   592	        synthetic_task = PlanTask(
+   593	            task_id="t-inv",
+   594	            kind="plan",
+   595	            state="completed",
+   596	            payload=PlanPayload(experiment_id=store.experiment_id),
+   597	            created_at="2026-04-24T11:00:00.000Z",
+   598	            updated_at="2026-04-24T13:00:00.000Z",
+   599	        )
+   600	
+   601	        def fake_submit(*a, **k):
+   602	            raise IllegalTransition("task already terminal")
+   603	
+   604	        monkeypatch.setattr(store, "submit", fake_submit)
+   605	        monkeypatch.setattr(store, "read_task", lambda tid: synthetic_task)
+   606	        monkeypatch.setattr(store, "read_submission", lambda tid: None)
+   607	
+   608	        resp = self._submit(signed_in_client, "t-inv", csrf)
+   609	        assert resp.status_code == 502
+   610	        assert "store invariant violation" in resp.text
+   611	        # Must NOT be classified as conflict.
+   612	        assert "conflicting-resubmission" not in resp.text
+   613	
+   614	    def test_pending_after_illegal_transition_distinct_from_claimed(
+   615	        self,
+   616	        signed_in_client: TestClient,
+   617	        store: InMemoryStore,
+   618	        monkeypatch,
+   619	    ) -> None:
+   620	        """state==pending after IllegalTransition mentions reclaim, not generic transport."""
+   621	        from eden_storage import IllegalTransition
+   622	
+   623	        csrf = self._setup_claim(signed_in_client, store, "t-pen")
+   624	        # Reclaim the task ourselves so its state is pending; the
+   625	        # patched submit will raise IllegalTransition and read-back
+   626	        # observes state==pending.
+   627	        store.reclaim("t-pen", "operator")
+   628	
+   629	        def fake_submit(*a, **k):
+   630	            raise IllegalTransition("task no longer claimed")
+   631	
+   632	        monkeypatch.setattr(store, "submit", fake_submit)
+   633	        resp = self._submit(signed_in_client, "t-pen", csrf)
+   634	        assert resp.status_code == 502
+   635	        # New banner explicitly mentions reclaim, distinguishing it
+   636	        # from a transport failure where the claim is still ours.
+   637	        assert "task reclaimed" in resp.text
+   638	
+   639	    def test_claimed_with_other_token_renders_wrong_token(
+   640	        self,
+   641	        signed_in_client: TestClient,
+   642	        store: InMemoryStore,
+   643	        monkeypatch,
+   644	    ) -> None:
+   645	        """state==claimed but a different worker now holds the claim."""
+   646	        from eden_storage import IllegalTransition
+   647	
+   648	        csrf = self._setup_claim(signed_in_client, store, "t-wt2")
+   649	        # Reclaim then re-claim under a different worker so the
+   650	        # task is in state==claimed with a non-matching token.
+   651	        store.reclaim("t-wt2", "operator")
+   652	        store.claim("t-wt2", "another-worker")
+   653	
+   654	        def fake_submit(*a, **k):
+   655	            raise IllegalTransition("token does not match")
+   656	
+   657	        monkeypatch.setattr(store, "submit", fake_submit)
+   658	        resp = self._submit(signed_in_client, "t-wt2", csrf)
+   659	        assert resp.status_code == 502
+   660	        assert "eden://error/wrong-token" in resp.text
+   661	
+   662	
+   663	class TestRetryBeforeOrphan:
+   664	    def test_transport_exception_retries_then_orphan(
+   665	        self,
+   666	        signed_in_client: TestClient,
+   667	        store: InMemoryStore,
+   668	        monkeypatch,
+   669	    ) -> None:
+   670	        """Raw transport exceptions (httpx-style, not DispatchError) are retried."""
+   671	        store.create_plan_task("t-trans")
+   672	        token = get_csrf(signed_in_client)
+   673	        signed_in_client.post(
+   674	            "/planner/t-trans/claim",
+   675	            data={"csrf_token": token},
+   676	            follow_redirects=False,
+   677	        )
+   678	
+   679	        attempts = {"n": 0}
+   680	
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/planner.py | sed -n '300,430p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   300	        return _render_orphaned(request, task_id, proposal_ids, banner=banner)
+   301	
+   302	    _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+   303	    return _render_submitted(
+   304	        request, task_id, status="success", proposal_ids=tuple(proposal_ids)
+   305	    )
+   306	
+   307	
+   308	_RETRY_DELAYS_S = (0.05, 0.2, 0.5)
+   309	
+   310	
+   311	def _retry_submit(
+   312	    store: Any, task_id: str, token: str, submission: PlanSubmission
+   313	) -> tuple[bool, str | None]:
+   314	    """Resubmit on transport-only failures up to 3 times.
+   315	
+   316	    Per chapter 07 §2.4 / §8.1, a content-equivalent resubmit is
+   317	    idempotent. Returns ``(ok, banner)``:
+   318	
+   319	    - ``(True, None)`` on success (including a same-content
+   320	      resubmit that returns 200).
+   321	    - ``(False, banner)`` on a definitive divergent response or
+   322	      after 3 indeterminate failures. ``banner`` is the canonical
+   323	      ``eden://error/<name>`` (or a transport summary) suitable for
+   324	      surfacing to the user.
+   325	
+   326	    Exception classification (per
+   327	    ``feedback_retry_readback_test_mocks.md`` rule 1):
+   328	
+   329	    - ``WrongToken``, ``ConflictingResubmission``, and
+   330	      ``InvalidPrecondition`` are definitive short-circuits;
+   331	      retrying them cannot change the outcome.
+   332	    - ``IllegalTransition`` is **not** definitive: it falls
+   333	      through to a read-back that distinguishes "we won; the
+   334	      orchestrator already terminalized" (success) from "we
+   335	      lost; task reclaimed or different submission won"
+   336	      (orphan). Treating it as a definitive orphan would
+   337	      mis-classify a successful submit whose response was lost.
+   338	    - Other exceptions (transport-shaped) are retried with
+   339	      backoff; on exhaustion, the read-back resolves.
+   340	
+   341	    On any definitive failure, the caller renders the orphan page
+   342	    rather than a "preserve input + claim again" form. Reasoning:
+   343	    by the time Phase 3 runs, Phase 1 has already created
+   344	    proposals and Phase 2 has marked them ready. The work product
+   345	    that needs operator recovery is the orphaned proposals
+   346	    themselves (whose IDs the orphan page lists), not the form
+   347	    inputs. Form-input preservation applies to *validation*
+   348	    errors, where no store mutation has happened yet.
+   349	    """
+   350	    last_exc: BaseException | None = None
+   351	    needs_readback = False
+   352	    for delay in _RETRY_DELAYS_S:
+   353	        try:
+   354	            store.submit(task_id, token, submission)
+   355	            return True, None
+   356	        except (WrongToken, ConflictingResubmission, InvalidPrecondition) as exc:
+   357	            return False, _wire_error_banner(exc)
+   358	        except IllegalTransition as exc:
+   359	            last_exc = exc
+   360	            needs_readback = True
+   361	            break
+   362	        except Exception as exc:  # noqa: BLE001 — transport-shaped or unknown
+   363	            last_exc = exc
+   364	            time.sleep(delay)
+   365	
+   366	    # Either retries exhausted with transport-shape failures, or
+   367	    # IllegalTransition broke us out of the loop. Either way,
+   368	    # read-back disambiguates: an equivalent prior submission means
+   369	    # we won and the response was lost in transit; anything else is
+   370	    # orphan with a state-specific banner.
+   371	    if needs_readback or last_exc is not None:
+   372	        return _readback(
+   373	            store=store,
+   374	            task_id=task_id,
+   375	            token=token,
+   376	            submission=submission,
+   377	            last_exc=last_exc,
+   378	        )
+   379	
+   380	    return True, None
+   381	
+   382	
+   383	def _readback(
+   384	    *,
+   385	    store: Any,
+   386	    task_id: str,
+   387	    token: str,
+   388	    submission: PlanSubmission,
+   389	    last_exc: BaseException | None,
+   390	) -> tuple[bool, str | None]:
+   391	    """Read-back disambiguation for the planner's retry-exhaustion arm.
+   392	
+   393	    Mirrors ``routes/implementer._readback`` (and the chunk-9d
+   394	    evaluator's ``_readback``) so the planner classifies every
+   395	    state branch the spec describes:
+   396	
+   397	    - ``submitted`` / ``completed`` / ``failed`` with an equivalent
+   398	      prior submission → ``(True, None)`` (we won).
+   399	    - same states with a non-equivalent prior submission →
+   400	      ``conflicting-resubmission`` (orphan, different won).
+   401	    - same states with ``read_submission() is None`` → transport
+   402	      banner naming the store-invariant violation. This is
+   403	      implementation-illegal in the reference store but defensively
+   404	      handled.
+   405	    - ``claimed`` with our token still on the task → transport
+   406	      banner naming the underlying exception class.
+   407	    - ``claimed`` with our token gone (someone else holds the
+   408	      claim now) → ``eden://error/wrong-token``.
+   409	    - ``pending`` (sweeper / operator already reclaimed) →
+   410	      transport banner mentioning the reclaim, distinct from the
+   411	      claim-still-ours case.
+   412	    - ``read_task`` itself raises → transport banner naming the
+   413	      probe failure.
+   414	    """
+   415	    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
+   416	    try:
+   417	        task = store.read_task(task_id)
+   418	    except Exception as exc:  # noqa: BLE001
+   419	        return (
+   420	            False,
+   421	            "transport failure after retries; "
+   422	            f"read-back failed: {exc.__class__.__name__}",
+   423	        )
+   424	    if task.state in {"submitted", "completed", "failed"}:
+   425	        try:
+   426	            prior = store.read_submission(task_id)
+   427	        except Exception as exc:  # noqa: BLE001
+   428	            return (
+   429	                False,
+   430	                "transport failure after retries; "
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M reference/services/web-ui/src/eden_web_ui/routes/planner.py
+ M reference/services/web-ui/tests/test_planner_flow.py
+?? docs/plans/review/illegal-transition-readback/
+
+exec
+/bin/zsh -lc 'git diff --stat origin/main...HEAD -- reference/services/web-ui/src/eden_web_ui/routes/planner.py reference/services/web-ui/tests/test_planner_flow.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/planner.py | sed -n '424,470p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   424	    if task.state in {"submitted", "completed", "failed"}:
+   425	        try:
+   426	            prior = store.read_submission(task_id)
+   427	        except Exception as exc:  # noqa: BLE001
+   428	            return (
+   429	                False,
+   430	                "transport failure after retries; "
+   431	                f"read-submission failed: {exc.__class__.__name__}",
+   432	            )
+   433	        if prior is None:
+   434	            # Implementation-illegal: terminal/submitted task with
+   435	            # no recorded submission. Defensively classify as a
+   436	            # transport-flavored invariant violation rather than as
+   437	            # a conflict — the reference store would never produce
+   438	            # this state, and conflating it with conflict would
+   439	            # mis-route the operator.
+   440	            return (
+   441	                False,
+   442	                "store invariant violation: submission missing for "
+   443	                "terminal/submitted task",
+   444	            )
+   445	        if submissions_equivalent(prior, submission):
+   446	            return True, None
+   447	        return False, "eden://error/conflicting-resubmission"
+   448	    if task.state == "claimed":
+   449	        if task.claim is not None and task.claim.token == token:
+   450	            return False, f"transport failure after retries: {last_name}"
+   451	        return False, "eden://error/wrong-token"
+   452	    # state == "pending"
+   453	    return (
+   454	        False,
+   455	        f"transport failure after retries; task reclaimed: {last_name}",
+   456	    )
+   457	
+   458	
+   459	def _make_proposal(
+   460	    *,
+   461	    proposal_id: str,
+   462	    experiment_id: str,
+   463	    draft: ProposalDraft,
+   464	    artifacts_uri: str,
+   465	    now_iso: str,
+   466	) -> Proposal:
+   467	    return Proposal(
+   468	        proposal_id=proposal_id,
+   469	        experiment_id=experiment_id,
+   470	        slug=draft.slug,
+
+exec
+/bin/zsh -lc 'git diff -- reference/services/web-ui/src/eden_web_ui/routes/planner.py reference/services/web-ui/tests/test_planner_flow.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+diff --git a/reference/services/web-ui/src/eden_web_ui/routes/planner.py b/reference/services/web-ui/src/eden_web_ui/routes/planner.py
+index 7037e3d..1faa916 100644
+--- a/reference/services/web-ui/src/eden_web_ui/routes/planner.py
++++ b/reference/services/web-ui/src/eden_web_ui/routes/planner.py
+@@ -367,37 +367,93 @@ def _retry_submit(
+     # IllegalTransition broke us out of the loop. Either way,
+     # read-back disambiguates: an equivalent prior submission means
+     # we won and the response was lost in transit; anything else is
+-    # orphan.
++    # orphan with a state-specific banner.
+     if needs_readback or last_exc is not None:
++        return _readback(
++            store=store,
++            task_id=task_id,
++            token=token,
++            submission=submission,
++            last_exc=last_exc,
++        )
++
++    return True, None
++
++
++def _readback(
++    *,
++    store: Any,
++    task_id: str,
++    token: str,
++    submission: PlanSubmission,
++    last_exc: BaseException | None,
++) -> tuple[bool, str | None]:
++    """Read-back disambiguation for the planner's retry-exhaustion arm.
++
++    Mirrors ``routes/implementer._readback`` (and the chunk-9d
++    evaluator's ``_readback``) so the planner classifies every
++    state branch the spec describes:
++
++    - ``submitted`` / ``completed`` / ``failed`` with an equivalent
++      prior submission → ``(True, None)`` (we won).
++    - same states with a non-equivalent prior submission →
++      ``conflicting-resubmission`` (orphan, different won).
++    - same states with ``read_submission() is None`` → transport
++      banner naming the store-invariant violation. This is
++      implementation-illegal in the reference store but defensively
++      handled.
++    - ``claimed`` with our token still on the task → transport
++      banner naming the underlying exception class.
++    - ``claimed`` with our token gone (someone else holds the
++      claim now) → ``eden://error/wrong-token``.
++    - ``pending`` (sweeper / operator already reclaimed) →
++      transport banner mentioning the reclaim, distinct from the
++      claim-still-ours case.
++    - ``read_task`` itself raises → transport banner naming the
++      probe failure.
++    """
++    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
++    try:
++        task = store.read_task(task_id)
++    except Exception as exc:  # noqa: BLE001
++        return (
++            False,
++            "transport failure after retries; "
++            f"read-back failed: {exc.__class__.__name__}",
++        )
++    if task.state in {"submitted", "completed", "failed"}:
+         try:
+-            task = store.read_task(task_id)
++            prior = store.read_submission(task_id)
+         except Exception as exc:  # noqa: BLE001
+             return (
+                 False,
+                 "transport failure after retries; "
+-                f"read-back failed: {exc.__class__.__name__}",
++                f"read-submission failed: {exc.__class__.__name__}",
+             )
+-        if task.state in {"submitted", "completed", "failed"}:
+-            try:
+-                prior = store.read_submission(task_id)
+-            except Exception as exc:  # noqa: BLE001
+-                return (
+-                    False,
+-                    "transport failure after retries; "
+-                    f"read-submission failed: {exc.__class__.__name__}",
+-                )
+-            if prior is not None and submissions_equivalent(prior, submission):
+-                # We won — the orchestrator already accepted (or
+-                # rejected) our equivalent prior submission and the
+-                # transport just lost the response.
+-                return True, None
+-            # state moved past submitted with a different submission
+-            # → orphan conflict.
+-            return False, "eden://error/conflicting-resubmission"
+-        last_name = last_exc.__class__.__name__ if last_exc else "unknown"
+-        return False, f"transport failure after retries: {last_name}"
+-
+-    return True, None
++        if prior is None:
++            # Implementation-illegal: terminal/submitted task with
++            # no recorded submission. Defensively classify as a
++            # transport-flavored invariant violation rather than as
++            # a conflict — the reference store would never produce
++            # this state, and conflating it with conflict would
++            # mis-route the operator.
++            return (
++                False,
++                "store invariant violation: submission missing for "
++                "terminal/submitted task",
++            )
++        if submissions_equivalent(prior, submission):
++            return True, None
++        return False, "eden://error/conflicting-resubmission"
++    if task.state == "claimed":
++        if task.claim is not None and task.claim.token == token:
++            return False, f"transport failure after retries: {last_name}"
++        return False, "eden://error/wrong-token"
++    # state == "pending"
++    return (
++        False,
++        f"transport failure after retries; task reclaimed: {last_name}",
++    )
+ 
+ 
+ def _make_proposal(
+diff --git a/reference/services/web-ui/tests/test_planner_flow.py b/reference/services/web-ui/tests/test_planner_flow.py
+index 5385577..c4da8cb 100644
+--- a/reference/services/web-ui/tests/test_planner_flow.py
++++ b/reference/services/web-ui/tests/test_planner_flow.py
+@@ -578,6 +578,87 @@ class TestIllegalTransitionReadback:
+         assert resp.status_code == 502
+         assert "conflicting-resubmission" in resp.text
+ 
++    def test_terminal_state_with_no_submission_renders_transport_invariant(
++        self,
++        signed_in_client: TestClient,
++        store: InMemoryStore,
++        monkeypatch,
++    ) -> None:
++        """`read_submission() is None` on a terminal task is invariant violation, not conflict."""
++        from eden_contracts import PlanPayload, PlanTask
++        from eden_storage import IllegalTransition
++
++        csrf = self._setup_claim(signed_in_client, store, "t-inv")
++        synthetic_task = PlanTask(
++            task_id="t-inv",
++            kind="plan",
++            state="completed",
++            payload=PlanPayload(experiment_id=store.experiment_id),
++            created_at="2026-04-24T11:00:00.000Z",
++            updated_at="2026-04-24T13:00:00.000Z",
++        )
++
++        def fake_submit(*a, **k):
++            raise IllegalTransition("task already terminal")
++
++        monkeypatch.setattr(store, "submit", fake_submit)
++        monkeypatch.setattr(store, "read_task", lambda tid: synthetic_task)
++        monkeypatch.setattr(store, "read_submission", lambda tid: None)
++
++        resp = self._submit(signed_in_client, "t-inv", csrf)
++        assert resp.status_code == 502
++        assert "store invariant violation" in resp.text
++        # Must NOT be classified as conflict.
++        assert "conflicting-resubmission" not in resp.text
++
++    def test_pending_after_illegal_transition_distinct_from_claimed(
++        self,
++        signed_in_client: TestClient,
++        store: InMemoryStore,
++        monkeypatch,
++    ) -> None:
++        """state==pending after IllegalTransition mentions reclaim, not generic transport."""
++        from eden_storage import IllegalTransition
++
++        csrf = self._setup_claim(signed_in_client, store, "t-pen")
++        # Reclaim the task ourselves so its state is pending; the
++        # patched submit will raise IllegalTransition and read-back
++        # observes state==pending.
++        store.reclaim("t-pen", "operator")
++
++        def fake_submit(*a, **k):
++            raise IllegalTransition("task no longer claimed")
++
++        monkeypatch.setattr(store, "submit", fake_submit)
++        resp = self._submit(signed_in_client, "t-pen", csrf)
++        assert resp.status_code == 502
++        # New banner explicitly mentions reclaim, distinguishing it
++        # from a transport failure where the claim is still ours.
++        assert "task reclaimed" in resp.text
++
++    def test_claimed_with_other_token_renders_wrong_token(
++        self,
++        signed_in_client: TestClient,
++        store: InMemoryStore,
++        monkeypatch,
++    ) -> None:
++        """state==claimed but a different worker now holds the claim."""
++        from eden_storage import IllegalTransition
++
++        csrf = self._setup_claim(signed_in_client, store, "t-wt2")
++        # Reclaim then re-claim under a different worker so the
++        # task is in state==claimed with a non-matching token.
++        store.reclaim("t-wt2", "operator")
++        store.claim("t-wt2", "another-worker")
++
++        def fake_submit(*a, **k):
++            raise IllegalTransition("token does not match")
++
++        monkeypatch.setattr(store, "submit", fake_submit)
++        resp = self._submit(signed_in_client, "t-wt2", csrf)
++        assert resp.status_code == 502
++        assert "eden://error/wrong-token" in resp.text
++
+ 
+ class TestRetryBeforeOrphan:
+     def test_transport_exception_retries_then_orphan(
+
+exec
+/bin/zsh -lc "uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -k 'IllegalTransitionReadback or illegal_transition_feeds_readback'" in /Users/ericalt/Documents/eden
+ succeeded in 883ms:
+......                                                                   [100%]
+6 passed, 17 deselected in 0.07s
+
+codex
+No findings.
+
+The planner follow-up now covers the §K-2 contract cleanly. `_retry_submit()` delegates to a dedicated `_readback()` in [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:311), and that helper now splits all of the relevant branches in [planner.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/planner.py:383): equivalent prior submission → success, non-equivalent prior submission → conflict, terminal-without-submission → transport/invariant violation, `claimed` with our token → transport banner, `claimed` with another token → `eden://error/wrong-token`, and `pending` → reclaimed banner.
+
+The new planner tests in [test_planner_flow.py](/Users/ericalt/Documents/eden/reference/services/web-ui/tests/test_planner_flow.py:484) exercise those paths directly, and the added sub-cases close the gaps from round 0. I also ran the targeted planner read-back tests: `uv run pytest -q reference/services/web-ui/tests/test_planner_flow.py -k 'IllegalTransitionReadback or illegal_transition_feeds_readback'`, and they passed (`6 passed`). Overall assessment: planner side now looks fully covered for §K-2.
+2026-04-25T07:36:47.806639Z ERROR codex_core::session: failed to record rollout items: thread 019dc38c-cbae-7710-80ad-72b91538eed9 not found
+tokens used
+161,819

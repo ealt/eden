@@ -6,7 +6,7 @@ materialize a per-task worktree at ``parent_commits[0]``, run the
 user's ``execution_command`` with cwd = worktree, validate the
 resulting commit, create the ``work/*`` ref, and submit.
 
-See ``docs/plans/eden-phase-10d-llm-worker-hosts.md`` §D.3.
+See ``docs/archive/eden-phase-10d-llm-worker-hosts.md`` §D.3.
 """
 
 from __future__ import annotations

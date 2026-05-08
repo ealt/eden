@@ -1,0 +1,14 @@
+**Findings**
+1. The revised plan still treats an integrator `push_ref` transport failure as if it were a definite remote rejection, and that is not safe enough for `trial/*`. The text says a transport failure during step 2 gets only local rollback, with remote cleanup deferred to the next startup reconciliation pass. But a transport drop can happen after the remote accepted the ref and before the client observed success. In that case, “step 4b only” leaks a remote `trial/*` without `trial_commit_sha` / `trial.integrated` until some later restart, which is exactly the chapter 6 §3.4 violation this chunk is trying to prevent. The plan needs an immediate post-failure remote read-back / cleanup rule for step-2 `GitTransportError`, not just the startup sweep. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:275>), [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:335>), and [spec](</Users/ericalt/Documents/eden/spec/v0/06-integrator.md:91>).
+
+2. The new remote-orphan reconciliation path still assumes the integrator can recover `trial_id` from a remote `trial/<trial_id>-<slug>` ref name, but the spec treats `trial_id` as opaque. The plan now says “walk remote `trial/*` refs via `ls-remote` and call `Store.read_trial(trial_id)`”, but it does not say how `trial_id` is recovered safely. Branch-name parsing is not guaranteed by the spec; the machine-parseable artifact chapter 6 gives you is the commit subject, not the ref name. This needs to be made explicit or the recovery path can misclassify valid refs or miss true orphans. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:242>), [spec](</Users/ericalt/Documents/eden/spec/v0/02-data-model.md:13>), and [spec](</Users/ericalt/Documents/eden/spec/v0/06-integrator.md:61>).
+
+**Suggestions**
+- One stale transport wording remains: the hardened-deployment note still says “same `git://` URL” after the doc switched to HTTP Basic. That should be corrected so the plan is fully self-consistent. See [plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:104>).
+
+**Assessment**
+This is much closer. The evaluator namespace bug, bare-clone topology issue, role-specific failure mapping, and most of the stale text are fixed, and the plan now has a credible shape.
+
+I would still not call it ready to implement until the two remaining correctness points above are revised:
+1. distinguish definite push rejection from transport-indeterminate push on integrator step 2, with immediate remote read-back / cleanup;
+2. specify a spec-safe way to recover `trial_id` during the remote orphan sweep.

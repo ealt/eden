@@ -1,0 +1,7 @@
+No findings.
+
+The round-0 and round-1 blockers are closed in the reviewed surface. [reference/packages/eden-git/src/eden_git/integrator.py:146](</Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:146>) now refreshes `trial.branch` on the promote path before the chapter-6 preconditions run, [reference/packages/eden-git/src/eden_git/integrator.py:546](</Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:546>) only deletes remote orphan refs on authoritative `NotFound`, and [reference/services/web-ui/src/eden_web_ui/routes/admin.py:555](</Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/admin.py:555>) / [reference/services/web-ui/src/eden_web_ui/routes/admin.py:623](</Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/admin.py:623>) now match the remote-first admin GC model. The new regression coverage in [reference/packages/eden-git/tests/test_remote_integrator.py:173](</Users/ericalt/Documents/eden/reference/packages/eden-git/tests/test_remote_integrator.py:173>) and the added indeterminate-push tests cover the critical paths that were previously missing.
+
+Residual risk is limited to normal edge coverage gaps: I still don’t see a direct test for the `ls_remote`-also-fails fallback or for every role-specific git transport failure branch outside the integrator, but that’s no longer a ship blocker from this review.
+
+Overall assessment: ready to ship.

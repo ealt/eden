@@ -10,7 +10,7 @@ set -euo pipefail
 #   3. End-state assertions adjusted for EDEN_IDEATION_TASKS=4
 #   4. Termination drill (compose stop --timeout 10; verify no SIGKILL)
 #
-# See docs/plans/eden-phase-10e-compose-e2e.md for the design rationale,
+# See docs/archive/eden-phase-10e-compose-e2e.md for the design rationale,
 # in particular §B (race-free staged bring-up).
 
 # Tooling preflight.

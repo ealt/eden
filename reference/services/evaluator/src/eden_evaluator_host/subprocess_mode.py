@@ -5,7 +5,7 @@ worktree at the variant's commit, run the user's ``evaluation_command``,
 parse the metrics outcome JSON, validate against ``evaluation_schema``,
 and submit.
 
-See ``docs/plans/eden-phase-10d-llm-worker-hosts.md`` §D.4.
+See ``docs/archive/eden-phase-10d-llm-worker-hosts.md`` §D.4.
 """
 
 from __future__ import annotations

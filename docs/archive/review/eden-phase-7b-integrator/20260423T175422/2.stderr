@@ -1,0 +1,604 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbcfb-355e-7db1-a153-d9f12e0f6bce
+--------
+user
+Two more revisions based on your feedback: (1) rewrote the atomicity section around the 'field-first reader convention' — the trial_commit_sha field is designated the canonical integration marker, written atomically with trial.integrated in the final step, strictly after create_ref. Any reader consulting the field as the authoritative marker (which every in-repo component already does, per _promote_successful_trials) never observes field-set-without-ref/event. Documented the external-ref-walker trade as inherent to §3.4's named 'compensating deletes' mechanism. (2) Fixed the branch-ref normalization: integrator composes 'refs/heads/{trial.branch}' before calling resolve_ref, since GitRepo.resolve_ref uses show-ref --verify which requires fully qualified refs. Please review docs/plans/eden-phase-7b-integrator.md.
+codex
+Using `review-doc` again for the revised plan. I’m focusing on the two edited areas: the new reader convention around atomicity, and the branch-ref normalization against the current `GitRepo` API.
+exec
+/bin/zsh -lc "nl -ba spec/v0/06-integrator.md | sed -n '192,210p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-7b-integrator.md | sed -n '1,320p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/repo.py | sed -n '223,235p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-7b-integrator.md | sed -n '320,520p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   192	### 3.4 Atomic write
+   193	
+   194	The promotion MUST be atomic with two other state changes:
+   195	
+   196	1. Writing the `trial_commit_sha` field on the trial to the SHA of
+   197	   the new `trial/*` commit
+   198	   ([`02-data-model.md`](02-data-model.md) §7.1).
+   199	2. Appending a `trial.integrated` event to the event log
+   200	   ([`05-event-protocol.md`](05-event-protocol.md) §3.3).
+   201	
+   202	If any of the three steps fails — git ref write, trial-object
+   203	field write, event append — the integrator MUST roll back any
+   204	already-performed step. In particular, a dangling `trial/*` ref with
+   205	no `trial_commit_sha` field and no `trial.integrated` event is a
+   206	protocol violation. Implementations MAY use store-level
+   207	transactions, outbox patterns, compensating deletes, or any other
+   208	mechanism; the observable invariant is that a reader of any one of
+   209	the three artifacts (ref, field, event) MUST observe the other two.
+   210	
+
+ succeeded in 0ms:
+   223	    def ref_exists(self, refname: str) -> bool:
+   224	        """Return whether a ref exists (e.g. ``refs/heads/trial/t1-slug``)."""
+   225	        result = self._run(["show-ref", "--verify", "--quiet", refname], check=False)
+   226	        return result.returncode == 0
+   227	
+   228	    def resolve_ref(self, refname: str) -> str | None:
+   229	        """Return the SHA a ref points to, or ``None`` if the ref is absent."""
+   230	        result = self._run(["show-ref", "--verify", refname], check=False)
+   231	        if result.returncode != 0:
+   232	            return None
+   233	        line = result.stdout.strip().split()
+   234	        return line[0] if line else None
+   235	
+
+ succeeded in 0ms:
+     1	# Phase 7b — Integrator flow (`eden_git.integrator`)
+     2	
+     3	## Goal
+     4	
+     5	Ship the integrator that composes the Phase 7a `GitRepo` subprocess
+     6	wrapper with the Phase 6 `Store` to produce canonical `trial/*` commits
+     7	per [`spec/v0/06-integrator.md`](../../spec/v0/06-integrator.md).
+     8	Given a `success` trial with a recorded `commit_sha`, the integrator
+     9	produces a single-commit squash whose tree is the worker-tip tree plus
+    10	exactly the eval-manifest file at `.eden/trials/<trial_id>/eval.json`,
+    11	writes the `trial/*` ref, writes `trial_commit_sha` on the trial, and
+    12	appends `trial.integrated` — atomically with respect to in-process
+    13	observers.
+    14	
+    15	See [`docs/roadmap.md`](../roadmap.md) §Phase 7 for context. Phase 7a
+    16	is shipped (PR #12, merged `0fd58bd`).
+    17	
+    18	## Scope
+    19	
+    20	### Files to create
+    21	
+    22	| File | Purpose |
+    23	|---|---|
+    24	| `reference/packages/eden-git/src/eden_git/integrator.py` | `Integrator` class + `IntegratorError` hierarchy |
+    25	| `reference/packages/eden-git/src/eden_git/_manifest.py` | Eval-manifest builder (§4.2) — separated for testability |
+    26	| `reference/packages/eden-git/tests/test_integrator.py` | Success + rejection + idempotency + atomicity tests |
+    27	| `reference/packages/eden-git/tests/test_manifest.py` | Eval-manifest shape tests |
+    28	
+    29	### Files to modify
+    30	
+    31	| File | Change |
+    32	|---|---|
+    33	| `reference/packages/eden-git/pyproject.toml` | Add `eden-contracts` + `eden-storage` workspace dependencies |
+    34	| `reference/packages/eden-git/src/eden_git/__init__.py` | Re-export `Integrator`, `IntegratorError`, subclasses |
+    35	| `reference/packages/eden-git/README.md` | Integrator surface + §3.2 / §3.4 contract notes |
+    36	| `reference/packages/eden-storage/src/eden_storage/protocol.py` | Add `validate_metrics(metrics)` to `Store` — public entry point to the existing `_validate_metrics`, consumed by the integrator for §2 MUST-NOT-promote enforcement |
+    37	| `reference/packages/eden-storage/src/eden_storage/_base.py` | Add public `validate_metrics` method; thin wrapper over existing `_validate_metrics` |
+    38	| `reference/packages/eden-storage/tests/test_store_metrics_validation.py` | Tests for the new public entry point (parity with submit-time behavior across both backends) |
+    39	| `CLAUDE.md` (and symlink `AGENTS.md`) | Phase-7b completion paragraph |
+    40	| `docs/roadmap.md` | Mark 7b complete |
+    41	
+    42	## API surface
+    43	
+    44	```python
+    45	class Integrator:
+    46	    def __init__(
+    47	        self,
+    48	        *,
+    49	        store: Store,
+    50	        repo: GitRepo,
+    51	        author: Identity,
+    52	        committer: Identity | None = None,
+    53	        clock: Callable[[], datetime] | None = None,
+    54	    ) -> None: ...
+    55	
+    56	    def integrate(self, trial_id: str) -> IntegrationResult: ...
+    57	```
+    58	
+    59	- `store` supplies trial reads + proposal lookup (for `slug`) + the
+    60	  composite `integrate_trial` commit.
+    61	- `repo` is the experiment's git repository (bare or non-bare). The
+    62	  integrator writes `trial/*` refs here.
+    63	- `author`/`committer` stamp the squash commit (§6 leaves identity to
+    64	  the implementation).
+    65	- `clock` is injected for deterministic timestamps in tests; defaults
+    66	  to `datetime.now(tz=UTC)`.
+    67	
+    68	```python
+    69	@dataclass(frozen=True)
+    70	class IntegrationResult:
+    71	    trial_id: str
+    72	    trial_commit_sha: str
+    73	    branch: str            # e.g. "trial/<trial_id>-<slug>"
+    74	    already_integrated: bool  # True on idempotent no-op path (§5.3)
+    75	```
+    76	
+    77	### Error hierarchy
+    78	
+    79	```python
+    80	class IntegratorError(RuntimeError): ...                 # base
+    81	class NotReadyForIntegration(IntegratorError): ...       # §2: status != success, commit_sha absent, etc.
+    82	class ReachabilityViolation(IntegratorError): ...        # §1.4
+    83	class EvalManifestPathCollision(IntegratorError): ...    # §3.2: worker carried a file at the manifest path
+    84	class CorruptIntegrationState(IntegratorError): ...      # §5.3: trial_commit_sha set but ref missing / tree disagrees
+    85	class AtomicityViolation(IntegratorError): ...           # §3.4: compensating rollback itself failed
+    86	```
+    87	
+    88	`IntegratorError` wraps `GitError` / `StorageError` only when the
+    89	underlying operation should not be retried as-is. Otherwise those raise
+    90	through unchanged so callers see the root cause.
+    91	
+    92	## Algorithm
+    93	
+    94	Executed in order, with the rollback rules documented in §3.4.
+    95	
+    96	1. **Load trial.** `trial = store.read_trial(trial_id)`. Raise
+    97	   `NotFound` through.
+    98	2. **Idempotency check (§5.3).**
+    99	   - If `trial.trial_commit_sha is not None`:
+   100	     - Resolve the SHA on the `trial/*` ref. If the ref exists, points
+   101	       at the recorded SHA, and the commit's tree satisfies §3.2 (tree
+   102	       derives from `trial.commit_sha`'s tree plus exactly the manifest
+   103	       path, manifest blob matches §4.2), return
+   104	       `IntegrationResult(..., already_integrated=True)`.
+   105	     - Otherwise raise `CorruptIntegrationState`.
+   106	3. **Promotion preconditions (§2).** Verify:
+   107	   - `trial.status == "success"` — else `NotReadyForIntegration`.
+   108	   - `trial.commit_sha is not None` — else `NotReadyForIntegration`.
+   109	   - `trial.branch is not None`, the branch exists, and
+   110	     `trial.commit_sha` is reachable from the branch tip. The
+   111	     integrator normalizes the `work/*` branch name to a fully
+   112	     qualified ref before resolving, since `GitRepo.resolve_ref`
+   113	     requires `refs/heads/…` form (verified against Phase 7a's
+   114	     `show-ref --verify` implementation):
+   115	     `branch_ref = f"refs/heads/{trial.branch}"`. Then
+   116	     `tip = repo.resolve_ref(branch_ref)` — `None` means branch
+   117	     absent → `NotReadyForIntegration`. Reachability check:
+   118	     `tip == trial.commit_sha` OR
+   119	     `repo.is_ancestor(trial.commit_sha, tip)`. This matches §2
+   120	     bullet 2 literally ("`commit_sha` resolves to a commit on the
+   121	     trial's `branch`") — the branch tip need not equal `commit_sha`;
+   122	     additional commits pushed to `work/*` after evaluation are
+   123	     tolerated, they simply are not part of the squash tree. Raise
+   124	     `NotReadyForIntegration` if `commit_sha` is not reachable from
+   125	     the tip.
+   126	   - **Metrics validate against `metrics_schema` (§2 last paragraph).**
+   127	     Call `store.validate_metrics(trial.metrics)`. Raises
+   128	     `InvalidPrecondition` on violation; the integrator surfaces this
+   129	     as `NotReadyForIntegration` and produces no `trial/*` commit, no
+   130	     `trial_commit_sha` write, no `trial.integrated` event (§5.1).
+   131	     This is defense-in-depth: the orchestrator already validates at
+   132	     the evaluate terminal, but §2 is normative ("MUST NOT promote a
+   133	     trial whose `metrics` do not validate"), so the integrator
+   134	     enforces it directly rather than relying on the upstream guard.
+   135	4. **Proposal lookup.** `proposal = store.read_proposal(trial.proposal_id)`.
+   136	   The branch name uses `proposal.slug` per §3.1.
+   137	5. **Reachability check (§1.4).** For each parent in
+   138	   `trial.parent_commits`, verify
+   139	   `repo.is_ancestor(parent, trial.commit_sha)`. On any failure raise
+   140	   `ReachabilityViolation`. This defends against a work branch whose
+   141	   tip does not descend from the declared parents.
+   142	6. **Manifest-path collision check (§3.2).** If
+   143	   `repo.tree_entry_exists(trial.commit_sha,
+   144	   f".eden/trials/{trial.trial_id}/eval.json")` returns true, raise
+   145	   `EvalManifestPathCollision`. The integrator MUST NOT overwrite.
+   146	7. **Build squash tree.**
+   147	   1. Build the manifest JSON bytes per §4.2 via `_manifest.py`.
+   148	   2. `blob_sha = repo.write_blob(manifest_bytes)`.
+   149	   3. `worker_tree = repo.commit_tree_sha(trial.commit_sha)`.
+   150	   4. `tree_sha = repo.write_tree_with_file(worker_tree,
+   151	      f".eden/trials/{trial.trial_id}/eval.json", blob_sha,
+   152	      mode="100644")`. (`write_tree_with_file` already rejects on
+   153	      nested-path collisions — belt-and-braces behind step 6.)
+   154	8. **Commit object.**
+   155	   - `message = f"trial: {trial.trial_id} {proposal.slug}\n"` (§3.3).
+   156	   - `commit_sha = repo.commit_tree(tree_sha,
+   157	     parents=list(trial.parent_commits), message=message,
+   158	     author=self.author, committer=self.committer or self.author,
+   159	     author_date=..., committer_date=...)`.
+   160	   - Timestamps derive from `self.clock()`; tests inject a fixed clock.
+   161	9. **Create `trial/*` ref.**
+   162	   `branch = f"trial/{trial.trial_id}-{proposal.slug}"`
+   163	   `repo.create_ref(f"refs/heads/{branch}", commit_sha)` (CAS with
+   164	   zero-oid — fails if the ref already exists).
+   165	10. **Atomic store write.**
+   166	    `store.integrate_trial(trial.trial_id, commit_sha)`. If this raises:
+   167	    `repo.delete_ref(f"refs/heads/{branch}",
+   168	    expected_old_sha=commit_sha)` to compensate. Then re-raise the
+   169	    original error. If `delete_ref` itself raises, wrap both errors in
+   170	    `AtomicityViolation` — this is the one case where operator
+   171	    intervention is required (§3.4).
+   172	11. **Return** `IntegrationResult(..., already_integrated=False)`.
+   173	
+   174	### Atomicity design (§3.4)
+   175	
+   176	Three observable artifacts: the `trial_commit_sha` field on the trial,
+   177	the `trial.integrated` event, and the `trial/*` git ref. §3.4 pins:
+   178	
+   179	1. "The integrator MUST roll back any already-performed step" on
+   180	   failure.
+   181	2. "A dangling `trial/*` ref with no `trial_commit_sha` field and no
+   182	   `trial.integrated` event is a protocol violation."
+   183	3. "Implementations MAY use store-level transactions, outbox patterns,
+   184	   compensating deletes, or any other mechanism."
+   185	4. "The observable invariant is that a reader of any one of the three
+   186	   artifacts MUST observe the other two."
+   187	
+   188	Rules 1+3 explicitly permit compensating deletes. Rules 2+4 define the
+   189	invariant readers observe. Read together, the spec requires that
+   190	**post-reconciliation** any reader sees a consistent tuple: success
+   191	leaves all three, rollback leaves none. The Phase 7b integrator
+   192	achieves this by making the `trial_commit_sha` field the **commit
+   193	marker** — the single artifact whose presence indicates a successful
+   194	integration — and ordering writes so the field lands last.
+   195	
+   196	**Chosen order: [commit object, create ref, append event, write
+   197	field].** The ref and event land *inside* `store.integrate_trial` as
+   198	separate sub-steps of the store's atomic commit for the reference
+   199	backends:
+   200	
+   201	1. **Write commit object.** Orphan, content-addressed; invisible to
+   202	   ref-walking readers.
+   203	2. **`repo.create_ref`** (CAS with zero-oid). Gives §1.2 single-writer
+   204	   discipline a mechanical guard.
+   205	3. **`store.integrate_trial(trial_id, commit_sha)`**. The store's
+   206	   existing atomic operation appends `trial.integrated` and writes
+   207	   `trial_commit_sha` in a single transaction.
+   208	4. On failure of step 3: compensating `repo.delete_ref(...,
+   209	   expected_old_sha=commit_sha)`. Both ref and the two store writes
+   210	   are now absent.
+   211	
+   212	**Reader discipline.** Protocol-conforming readers consult artifacts
+   213	in the order: `trial_commit_sha` → event log → `trial/*` ref. The
+   214	field is the single authoritative marker. Because it is written
+   215	atomically with `trial.integrated` and strictly after `create_ref`,
+   216	the following is guaranteed:
+   217	
+   218	- Field set ⇒ ref written + event written. Reader transitions to
+   219	  examining the other two and finds them.
+   220	- Field absent ⇒ treat trial as not-integrated. Reader does not look
+   221	  at the ref even if it transiently exists pre-step-3. This satisfies
+   222	  the §3.4 invariant "a reader of any one of the three artifacts MUST
+   223	  observe the other two" — a reader consulting the field as the
+   224	  canonical marker never encounters a state where the marker is set
+   225	  but the other two are missing.
+   226	
+   227	The dispatch driver and every in-repo component check the field first
+   228	(see `_promote_successful_trials` in `eden_dispatch/driver.py`, which
+   229	already filters by `trial.trial_commit_sha is not None`). Phase 7b's
+   230	design preserves that convention: the field's presence is the
+   231	integration signal.
+   232	
+   233	**External git readers.** A shell running `git log trial/*` directly
+   234	has no access to the field and walks refs only. §3.4's "compensating
+   235	deletes" mechanism is by construction incompatible with zero-width
+   236	windows for such external readers — rollback writes a ref, then
+   237	deletes it. The reference implementation accepts this trade:
+   238	
+   239	- On success (the common case), all three land and every reader
+   240	  observes all three.
+   241	- On rollback (the rare case), an external ref-walking reader MAY
+   242	  observe the ref before the compensating delete; after stabilization
+   243	  the ref is gone. A subsequent ref walk sees the rolled-back state.
+   244	  §3.4 explicitly names compensating deletes as a permitted mechanism;
+   245	  a permitted mechanism cannot simultaneously be a violation.
+   246	
+   247	Stronger guarantees — an instantaneous invariant surviving
+   248	concurrent fs-level readers — would require either (a) a two-phase
+   249	commit coupling the store's SQL transaction with git's ref write, or
+   250	(b) an outbox where the ref write is derived from committed store
+   251	state. Neither mechanism is required by §3.4; both trade against
+   252	design simplicity and wire-protocol scope, and are more natural to
+   253	introduce in Phase 8 when the cross-process wire is defined.
+   254	
+   255	**On compensating-delete failure** — if step 3 raises and
+   256	`repo.delete_ref(...)` also raises, neither rollback succeeded. The
+   257	integrator raises `AtomicityViolation` wrapping both causes. This is
+   258	the irrecoverable state §3.4 names as requiring implementation-defined
+   259	mitigation; the wrapped exception identifies exactly which `trial/*`
+   260	ref is dangling so an operator can delete it manually.
+   261	
+   262	**Alternate orderings rejected:**
+   263	
+   264	- `[commit object, store.integrate_trial, create_ref]`. If ref-create
+   265	  fails after the store committed, both the field and event are
+   266	  already written. Events are append-only per chapter 5; there is no
+   267	  "undo integration" event. The rollback path is strictly worse than
+   268	  the chosen order's single compensating ref-delete.
+   269	- Outbox pattern with a dedicated outbox table in the store. Would
+   270	  give stronger external-reader guarantees but requires extending the
+   271	  `Store` protocol and all backends with outbox read/claim/ack
+   272	  operations — a disproportionate scope increase for Phase 7b. §3.4
+   273	  explicitly lists outbox as *one* permitted mechanism, not *the*
+   274	  required mechanism. Revisit in Phase 8 when the wire-protocol
+   275	  introduces cross-process readers that actually benefit from it.
+   276	
+   277	### What the integrator does NOT do
+   278	
+   279	- **Does not observe events or poll.** The integrator is a passive
+   280	  function: callers drive `integrate(trial_id)` when they decide.
+   281	  The dispatch loop (`eden_dispatch.driver`) already has the
+   282	  `_promote_successful_trials` scheduler; it will be updated to call
+   283	  `Integrator.integrate(trial_id)` in place of its current
+   284	  placeholder `integrator_commit_factory` hook.
+   285	- **Does not manage work-branch retention** (§1.3). The integrator
+   286	  neither deletes nor renames `work/*` branches; that is a deployment
+   287	  concern.
+   288	- **Does not populate optional manifest fields** `evaluator` or
+   289	  `artifacts` (§4.3, §4.4). The v0 role contracts in `03-roles.md`
+   290	  §4.4 do not surface evaluator identity or per-file artifact
+   291	  inventory in the evaluator's submission shape; when role-bindings
+   292	  add that metadata (Phase 10's LLM evaluator is the likely source)
+   293	  the integrator grows two optional `Callable` hooks. Keeping the
+   294	  shape minimal now avoids inventing a submission field ahead of
+   295	  spec demand.
+   296	
+   297	## New `Store.validate_metrics` method
+   298	
+   299	The integrator needs access to the experiment's `metrics_schema` to
+   300	enforce §2's "MUST NOT promote a trial whose `metrics` do not
+   301	validate." The schema is a `Store` construction parameter (private
+   302	`self._metrics_schema`) and `_validate_metrics` already implements
+   303	the check for submit-time validation. Phase 7b promotes it to a
+   304	public `Store` method:
+   305	
+   306	```python
+   307	# In Store Protocol (reference/packages/eden-storage/src/eden_storage/protocol.py)
+   308	def validate_metrics(self, metrics: dict[str, Any]) -> None:
+   309	    """Validate metrics against the experiment's metrics_schema.
+   310	
+   311	    Raises ``InvalidPrecondition`` on violation; returns None on pass.
+   312	    No-op when the store was constructed without a ``metrics_schema``.
+   313	    Chapter 8 §4 (storage) and chapter 6 §2 (integrator) both
+   314	    reference this guard; this is the public entry point for both.
+   315	    """
+   316	    ...
+   317	```
+   318	
+   319	`_base.py` exposes the public method as a thin wrapper:
+   320	
+
+ succeeded in 0ms:
+   320	
+   321	```python
+   322	def validate_metrics(self, metrics: dict[str, Any]) -> None:
+   323	    self._validate_metrics(metrics)
+   324	```
+   325	
+   326	**Why on Store, not on the integrator or a separate validator
+   327	object.** The schema lives in the store; exposing a standalone
+   328	validator would require duplicating the construction path that wires
+   329	the schema in, for no gain. Both submit-time and integration-time
+   330	validation pass through the same code, which is the invariant §2
+   331	actually wants (the two validators agree by construction).
+   332	
+   333	**Parameter choice.** `metrics: dict[str, Any]` rather than
+   334	`trial_id: str`. The integrator already has the `Trial` object loaded
+   335	in step 1; passing its `metrics` dict through avoids a redundant
+   336	store round-trip and keeps the validator unit-testable without a
+   337	trial fixture.
+   338	
+   339	## Eval-manifest builder (`_manifest.py`)
+   340	
+   341	Separate module so manifest shape has its own test target. Signature:
+   342	
+   343	```python
+   344	def build_manifest(trial: Trial) -> bytes: ...
+   345	```
+   346	
+   347	Builds a JSON object with the required fields from §4.2 (sourced
+   348	directly from the `Trial` model). Emits the optional `description`
+   349	and `artifacts_uri` only when present on the trial. Produces UTF-8
+   350	bytes with `sort_keys=True` + `indent=2` + trailing newline so the
+   351	blob is byte-stable across repeated promotions for idempotency check
+   352	in step 2.
+   353	
+   354	- Required fields copied verbatim from the trial: `trial_id`,
+   355	  `proposal_id`, `commit_sha`, `parent_commits`, `metrics`,
+   356	  `completed_at`.
+   357	- Optional `artifacts_uri` and `description` copied only if present.
+   358	- No synthesis. No transformation. §4.2 closing paragraph: "a
+   359	  conforming integrator MUST NOT synthesize or transform
+   360	  required-field values."
+   361	- Raises `ValueError` if any required trial field is `None`. Surfaces
+   362	  as `NotReadyForIntegration` at the integrator layer (the conditions
+   363	  that prevent those fields from being set are the same as §2's
+   364	  preconditions; this is a guard, not a rewrite).
+   365	
+   366	## Updating `eden-dispatch` driver
+   367	
+   368	The driver currently accepts an `integrator_commit_factory:
+   369	Callable[[str], str] | None` that returns a fake commit SHA. Phase 7b
+   370	replaces this with a real `Integrator` call:
+   371	
+   372	```python
+   373	def run_experiment(
+   374	    ...,
+   375	    integrator: Integrator | None = None,
+   376	) -> None:
+   377	```
+   378	
+   379	`_promote_successful_trials` becomes:
+   380	
+   381	```python
+   382	def _promote_successful_trials(store: Store, integrator: Integrator) -> bool:
+   383	    progress = False
+   384	    for trial in store.list_trials(status="success"):
+   385	        if trial.trial_commit_sha is not None:
+   386	            continue
+   387	        integrator.integrate(trial.trial_id)
+   388	        progress = True
+   389	    return progress
+   390	```
+   391	
+   392	The `integrator_commit_factory` parameter is removed entirely — it
+   393	was a Phase 5 placeholder, not a supported surface. Driver tests
+   394	either supply a real `Integrator` backed by a test `GitRepo` or omit
+   395	the integrator argument and assert trials remain at `status=success`
+   396	with `trial_commit_sha=None`.
+   397	
+   398	## Tests
+   399	
+   400	### `test_manifest.py`
+   401	
+   402	- Required-field shape: builds manifest from a fully populated trial,
+   403	  asserts every §4.2 required key + value equal to trial field.
+   404	- Optional fields: omitted when absent, present when set.
+   405	- Byte stability: two calls on the same trial produce identical
+   406	  bytes (load-bearing for idempotency in `test_integrator.py`).
+   407	- Rejects when any required field is `None` (trial with no
+   408	  `commit_sha` / `metrics` / `completed_at`).
+   409	
+   410	### `test_integrator.py`
+   411	
+   412	Set up with a non-bare `GitRepo`, an `InMemoryStore`, a real proposal
+   413	and trial seeded into the store, and a real worker branch at
+   414	`trial.commit_sha` that descends from `trial.parent_commits`.
+   415	
+   416	**Success path:**
+   417	
+   418	- `integrate(trial_id)` returns `already_integrated=False`.
+   419	- `refs/heads/trial/<trial_id>-<slug>` exists and resolves to a
+   420	  commit whose parents are `trial.parent_commits` in order.
+   421	- Commit subject line is `trial: <trial_id> <slug>`.
+   422	- Commit tree's entry at `.eden/trials/<trial_id>/eval.json` is a
+   423	  blob matching `build_manifest(trial)`.
+   424	- Every other tree entry equals the corresponding entry under
+   425	  `trial.commit_sha`'s tree (no drift, no drops).
+   426	- `store.read_trial(trial_id).trial_commit_sha == result.trial_commit_sha`.
+   427	- `store.events()` contains one `trial.integrated` event referencing
+   428	  the trial + sha.
+   429	
+   430	**Idempotent replay (§5.3 bullet 1):**
+   431	
+   432	- Call `integrate(trial_id)` twice. Second call returns
+   433	  `already_integrated=True` with the same SHA. No new ref write, no
+   434	  new event. Assert len(events) equals expected + 1 total (not + 2).
+   435	
+   436	**Corrupt state (§5.3 bullet 2):**
+   437	
+   438	- Trial has `trial_commit_sha` set but ref does not exist → raises
+   439	  `CorruptIntegrationState`, no side effects.
+   440	- Trial has `trial_commit_sha` set and ref exists but tree does not
+   441	  satisfy §3.2 (manifest missing or extra file) →
+   442	  `CorruptIntegrationState`.
+   443	
+   444	**Reachability rejection (§1.4):**
+   445	
+   446	- Seed a trial whose `commit_sha` is unreachable from its
+   447	  `parent_commits` (e.g. by rewriting `commit_sha` to point to a
+   448	  separate commit chain). `integrate(trial_id)` raises
+   449	  `ReachabilityViolation`. Assert no ref created, no
+   450	  `trial_commit_sha` written, no `trial.integrated` event.
+   451	
+   452	**Manifest-path collision (§3.2):**
+   453	
+   454	- Seed a worker branch whose tree already contains
+   455	  `.eden/trials/<trial_id>/eval.json`. Raise
+   456	  `EvalManifestPathCollision`. No side effects.
+   457	
+   458	**Precondition failures (§2):**
+   459	
+   460	- `status=starting`, `status=error`, `status=eval_error` each raise
+   461	  `NotReadyForIntegration`. No ref, no field, no event.
+   462	- `commit_sha=None` → `NotReadyForIntegration`.
+   463	- `branch` does not exist → `NotReadyForIntegration`.
+   464	- `branch` resolves to a SHA unrelated to `trial.commit_sha` (not an
+   465	  ancestor either direction) → `NotReadyForIntegration`.
+   466	- **`branch` tip is equal to `commit_sha`** → promotion succeeds
+   467	  (edge of §2 bullet 2 where the branch hasn't advanced).
+   468	- **`branch` tip is a descendant of `commit_sha`** → promotion
+   469	  succeeds (§2 "commit_sha resolves to a commit on the branch" is
+   470	  satisfied when commit_sha is reachable from branch tip, per plan
+   471	  step 3). Asserts the squash tree derives from `commit_sha`, not
+   472	  from the branch tip — extra commits on the branch are excluded
+   473	  from the squash.
+   474	
+   475	**Metrics re-validation (§2, §5.1):**
+   476	
+   477	- A trial with metrics containing a key absent from the experiment's
+   478	  `metrics_schema` — seeded directly via store internals (bypassing
+   479	  submit-time validation) — raises `NotReadyForIntegration` when
+   480	  passed to `integrate`. Assert no ref, no field, no event.
+   481	- A trial with metrics of the wrong declared type raises similarly.
+   482	- A store constructed without a `metrics_schema` integrates trials
+   483	  with arbitrary metrics (no-op validator path).
+   484	
+   485	**Atomic rollback (§3.4):**
+   486	
+   487	- Monkey-patch `store.integrate_trial` to raise. Run
+   488	  `integrate(trial_id)`. Assert:
+   489	  - The `trial/*` ref was deleted (compensating write).
+   490	  - The original `store.integrate_trial` exception propagates through
+   491	    `Integrator.integrate`.
+   492	  - Trial `trial_commit_sha` remains `None`.
+   493	  - No `trial.integrated` event appears.
+   494	  - The commit object is still in the object DB (orphan; GC will
+   495	    clean it). Verified via `repo.commit_exists(sha)` returning True.
+   496	- Monkey-patch both `store.integrate_trial` and `repo.delete_ref` to
+   497	  raise. Assert `AtomicityViolation` surfaces, wrapping both errors.
+   498	
+   499	**Commit identity:**
+   500	
+   501	- Custom `author` / `committer` / `clock` are honored. Commit has
+   502	  `commit.gpgsign=false` (inherited from `GitRepo`).
+   503	- Default `committer = author` when only `author` is supplied.
+   504	
+   505	**Multi-parent proposal:**
+   506	
+   507	- A trial with two `parent_commits` produces a commit with two
+   508	  parents in order. (§3.2 supports multi-parent squash.)
+   509	
+   510	## Verification
+   511	
+   512	1. `uv sync` resolves the new `eden-contracts` + `eden-storage`
+   513	   workspace deps for `eden-git`.
+   514	2. `uv run ruff check .` clean.
+   515	3. `uv run pyright` clean.
+   516	4. `uv run pytest -q` green including new tests.
+   517	5. `npx --yes markdownlint-cli2@0.14.0 "**/*.md" ...` clean.
+   518	6. `pipx run 'check-jsonschema==0.29.4' ...` clean.
+   519	7. CI on PR green.
+   520	
+
+codex
+**1. Missing Context**
+
+Assessment: no significant missing-context issues remain. The `Store.validate_metrics` addition and the branch-ref normalization close the two major context gaps from the prior round.
+
+**2. Feasibility**
+
+Assessment: one significant feasibility issue remains, so I would still stop here.
+
+- `Critical:` The atomicity section still narrows the spec’s reader invariant to a `trial_commit_sha`-first reader convention that `§3.4` does not grant. The spec says a reader of any one artifact `(ref, field, event)` must observe the other two. The revised plan still explicitly allows an external ref-walking reader to see the ref before the field/event and treats that as acceptable because compensating deletes are named in the spec. That is still a weaker contract than the normative text. The same section also slips into an internal inconsistency: it says the chosen order is `[commit object, create ref, append event, write field]`, then says “the ref and event land inside `store.integrate_trial`,” but `store.integrate_trial` cannot own the git ref write. See [eden-phase-7b-integrator.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-7b-integrator.md:12), [eden-phase-7b-integrator.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-7b-integrator.md:174), and [06-integrator.md](/Users/ericalt/Documents/eden/spec/v0/06-integrator.md:202).
+
+The branch-ref normalization looks correct now against `GitRepo.resolve_ref()`, so I don’t see a remaining issue there. See [eden-phase-7b-integrator.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-7b-integrator.md:109) and [repo.py](/Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/repo.py:228).
+
+I’d skip alternatives, completeness, and edge cases until the atomicity contract is either aligned with the literal spec text or the plan is explicitly reframed as a knowingly weaker reference behavior.
+
+**Overall Assessment**
+
+This revision is closer: the branch-resolution problem is fixed, and the metrics-validation path remains sound. But the plan still is not ready as a spec-conforming Phase 7b plan, because the atomicity argument continues to rely on a reader convention that is narrower than `spec/v0/06-integrator.md` allows.
+tokens used
+112,848

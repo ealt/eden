@@ -5,7 +5,7 @@ the user's command runs in a sibling docker container (DooD) instead
 of in-process on the worker host. This module owns the wrap shape,
 the cidfile lifecycle, and the orphan-reaping helpers.
 
-See [docs/plans/eden-phase-10d-followup-a-container-isolation.md] for
+See [docs/archive/eden-phase-10d-followup-a-container-isolation.md] for
 design rationale.
 """
 

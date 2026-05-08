@@ -1,0 +1,427 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dd637-8fac-7213-ac50-1d496f12dabf
+--------
+user
+I addressed your three findings: (1) blocker - .github/workflows/ci.yml now uses actions/setup-python@v5 with python-version 3.12 and runs python3 -m pip install (instead of bare pip install) to dodge PEP 668 on ubuntu-latest 24.04; (2) medium - removed the stale 'Comprehensive Compose end-to-end test (with web-ui walkthroughs)' row from AGENTS.md's 'Commands that will exist in later phases' table; (3) medium - reference/compose/healthcheck/e2e_drive.py wraps the main httpx.Client block in try/except httpx.HTTPError so transport errors surface as a concise _fail diagnostic instead of a Python traceback. Ruff, pyright, markdownlint all clean; pytest still 660 passed. Please re-review.
+codex
+Re-reviewing the follow-up changes now. I’m checking the three touched areas directly in the repo and then I’ll confirm whether the prior blockers are actually closed or whether any new regressions slipped in.
+exec
+/bin/zsh -lc "nl -ba reference/compose/healthcheck/e2e_drive.py | sed -n '1,280p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '68,86p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    68	| `bash reference/compose/healthcheck/smoke-subprocess.sh` | Phase 10d subprocess-mode smoke (mirrors the `compose-smoke-subprocess` CI job; layers `compose.subprocess.yaml` over the base stack and runs against the fixture's `plan.py` / `implement.py` / `eval.py`). |
+    69	| `bash reference/compose/healthcheck/e2e.sh` | Phase 10e end-to-end smoke (mirrors the `compose-e2e` CI job — staged bring-up, Web UI planner walkthrough + admin-reclaim drill via `e2e_drive.py`, full-stack quiescence wait, termination drill). Requires `httpx` importable from `python3` — locally, prefix with `PATH="/path/to/.venv/bin:$PATH"` or activate the workspace venv. |
+    70	| `eden_planner_host --mode subprocess --experiment-config <path> --experiment-dir <path> --artifacts-dir <path>` | Run the planner host with a user-supplied long-running `plan_command` (read from the experiment-config YAML; subprocess exchanges JSON-line messages per [`spec/v0/reference-bindings/worker-host-subprocess.md`](spec/v0/reference-bindings/worker-host-subprocess.md)). |
+    71	| `eden_implementer_host --mode subprocess --experiment-config <path> --experiment-dir <path> --repo-path <path>` | Per-task subprocess implementer; cwd = freshly-created git worktree at `parent_commits[0]`; reads outcome JSON from `EDEN_OUTPUT`. |
+    72	| `eden_evaluator_host --mode subprocess --experiment-config <path> --experiment-dir <path> --repo-path <path>` | Per-task subprocess evaluator; cwd = git worktree at `trial.commit_sha`; metrics validated against `metrics_schema` before submit. |
+    73	
+    74	### Commands that will exist in later phases
+    75	
+    76	These are listed for orientation; the tooling is not wired up yet.
+    77	
+    78	| Command | Lands in |
+    79	|---|---|
+    80	| Container-isolated `*_command` execution (sandbox per task) | Phase 10d follow-up |
+    81	| Experiment-specific image build pipeline | Phase 10d follow-up |
+    82	
+    83	## Contribution conventions
+    84	
+    85	### Spec edits
+    86	
+
+ succeeded in 0ms:
+     1	#!/usr/bin/env python3
+     2	"""Phase 10e end-to-end Compose drill — python driver.
+     3	
+     4	Drives a single planner walkthrough and a single admin-reclaim drill
+     5	against the live web-ui container, then exits zero on success or
+     6	non-zero with a diagnostic on failure.
+     7	
+     8	Run from ``e2e.sh``; expects these env vars:
+     9	
+    10	- ``EDEN_E2E_WEB_UI_URL`` — base URL of the web-ui (e.g.
+    11	  ``http://localhost:8090``)
+    12	- ``EDEN_BASE_COMMIT_SHA`` — 40-hex SHA to use as ``parent_commits``
+    13	  on the planner submit (read from setup-experiment's ``.env``)
+    14	
+    15	The flow is documented in
+    16	``docs/plans/eden-phase-10e-compose-e2e.md`` §C / §D.
+    17	"""
+    18	
+    19	from __future__ import annotations
+    20	
+    21	import os
+    22	import re
+    23	import sys
+    24	import time
+    25	from urllib.parse import urlencode
+    26	
+    27	import httpx
+    28	
+    29	_CSRF_RE = re.compile(r'name="csrf_token"\s+value="([^"]+)"')
+    30	
+    31	
+    32	def _fail(msg: str, *, response: httpx.Response | None = None) -> None:
+    33	    """Print a diagnostic to stderr and exit non-zero."""
+    34	    print(f"e2e_drive: {msg}", file=sys.stderr)
+    35	    if response is not None:
+    36	        print(f"  status: {response.status_code}", file=sys.stderr)
+    37	        body = response.text
+    38	        excerpt = body if len(body) <= 800 else body[:800] + "…"
+    39	        print(f"  body: {excerpt}", file=sys.stderr)
+    40	    sys.exit(1)
+    41	
+    42	
+    43	def _scrape_csrf(html: str, *, where: str) -> str:
+    44	    m = _CSRF_RE.search(html)
+    45	    if m is None:
+    46	        _fail(f"could not find csrf_token in {where} response body")
+    47	        # _fail exits; this return is unreachable but appeases the type checker
+    48	        return ""
+    49	    return m.group(1)
+    50	
+    51	
+    52	def _form_post(
+    53	    ui: httpx.Client, path: str, fields: list[tuple[str, str]]
+    54	) -> httpx.Response:
+    55	    return ui.post(
+    56	        path,
+    57	        content=urlencode(fields),
+    58	        headers={"content-type": "application/x-www-form-urlencoded"},
+    59	        follow_redirects=False,
+    60	    )
+    61	
+    62	
+    63	def _wait_for_seeded_tasks(
+    64	    ui: httpx.Client, ids: tuple[str, ...], deadline_s: float
+    65	) -> None:
+    66	    """Poll ``/planner/`` until all ``ids`` are visible.
+    67	
+    68	    The orchestrator has no compose healthcheck so ``compose up --wait``
+    69	    can return before seeding completes. Polling avoids both an
+    70	    arbitrary sleep and a race against slow startup.
+    71	    """
+    72	    end = time.monotonic() + deadline_s
+    73	    last: httpx.Response | None = None
+    74	    while time.monotonic() < end:
+    75	        resp = ui.get("/planner/")
+    76	        last = resp
+    77	        if resp.status_code == 200 and all(tid in resp.text for tid in ids):
+    78	            return
+    79	        time.sleep(0.5)
+    80	    _fail(
+    81	        f"orchestrator did not seed all tasks {ids} within "
+    82	        f"{deadline_s:.0f}s",
+    83	        response=last,
+    84	    )
+    85	
+    86	
+    87	def _planner_walkthrough(
+    88	    ui: httpx.Client, task_id: str, base_commit_sha: str
+    89	) -> None:
+    90	    """Claim → draft → submit one plan task.
+    91	
+    92	    The submit returns 200 with the rendered ``planner_submitted.html``
+    93	    template (NOT a 303 — see chunk-9b
+    94	    ``reference/services/web-ui/src/eden_web_ui/routes/planner.py``).
+    95	    """
+    96	    # GET /planner/ to scrape CSRF for the claim form.
+    97	    resp = ui.get("/planner/")
+    98	    if resp.status_code != 200:
+    99	        _fail("GET /planner/ failed", response=resp)
+   100	    csrf = _scrape_csrf(resp.text, where="GET /planner/")
+   101	
+   102	    # Claim.
+   103	    resp = _form_post(ui, f"/planner/{task_id}/claim", [("csrf_token", csrf)])
+   104	    if resp.status_code != 303:
+   105	        _fail(f"claim {task_id} did not 303", response=resp)
+   106	
+   107	    # Draft form. Re-scrape CSRF — the draft renders its own form.
+   108	    resp = ui.get(f"/planner/{task_id}/draft")
+   109	    if resp.status_code != 200:
+   110	        _fail(f"GET /planner/{task_id}/draft failed", response=resp)
+   111	    csrf = _scrape_csrf(resp.text, where=f"GET /planner/{task_id}/draft")
+   112	
+   113	    # Submit a single proposal row.
+   114	    fields = [
+   115	        ("csrf_token", csrf),
+   116	        ("status", "success"),
+   117	        ("slug", "e2e-feat"),
+   118	        ("priority", "1.0"),
+   119	        ("parent_commits", base_commit_sha),
+   120	        ("rationale", "## why\n\nphase 10e end-to-end drill.\n"),
+   121	    ]
+   122	    resp = _form_post(ui, f"/planner/{task_id}/submit", fields)
+   123	    if resp.status_code != 200:
+   124	        _fail(f"submit {task_id} returned non-200", response=resp)
+   125	    if "submitted" not in resp.text.lower():
+   126	        _fail(
+   127	            f"submit {task_id} 200 but body lacks 'submitted'", response=resp
+   128	        )
+   129	
+   130	
+   131	def _admin_reclaim_drill(ui: httpx.Client, task_id: str) -> None:
+   132	    """Claim a plan task via web UI, do not submit, then admin-reclaim it.
+   133	
+   134	    The admin reclaim redirect URL has a TRAILING SLASH before the
+   135	    query (``/admin/tasks/<id>/?reclaimed=ok``) — see chunk-9e
+   136	    ``reference/services/web-ui/src/eden_web_ui/routes/admin.py``.
+   137	    """
+   138	    # Claim.
+   139	    resp = ui.get("/planner/")
+   140	    if resp.status_code != 200:
+   141	        _fail("GET /planner/ for admin drill failed", response=resp)
+   142	    csrf = _scrape_csrf(resp.text, where="GET /planner/ (admin drill)")
+   143	    resp = _form_post(ui, f"/planner/{task_id}/claim", [("csrf_token", csrf)])
+   144	    if resp.status_code != 303:
+   145	        _fail(
+   146	            f"admin-drill claim {task_id} did not 303", response=resp
+   147	        )
+   148	
+   149	    # Confirm it shows up in the admin claimed list.
+   150	    resp = ui.get("/admin/tasks/?state=claimed")
+   151	    if resp.status_code != 200:
+   152	        _fail("GET /admin/tasks/?state=claimed failed", response=resp)
+   153	    if task_id not in resp.text:
+   154	        _fail(
+   155	            f"{task_id} not visible in /admin/tasks/?state=claimed",
+   156	            response=resp,
+   157	        )
+   158	
+   159	    # Re-scrape CSRF from the task-detail page (its own form render).
+   160	    resp = ui.get(f"/admin/tasks/{task_id}/")
+   161	    if resp.status_code != 200:
+   162	        _fail(f"GET /admin/tasks/{task_id}/ failed", response=resp)
+   163	    csrf = _scrape_csrf(resp.text, where=f"GET /admin/tasks/{task_id}/")
+   164	
+   165	    # Reclaim.
+   166	    resp = _form_post(
+   167	        ui, f"/admin/tasks/{task_id}/reclaim", [("csrf_token", csrf)]
+   168	    )
+   169	    if resp.status_code != 303:
+   170	        _fail(
+   171	            f"admin reclaim {task_id} did not 303", response=resp
+   172	        )
+   173	    expected = f"/admin/tasks/{task_id}/?reclaimed=ok"
+   174	    location = resp.headers.get("location", "")
+   175	    if location != expected:
+   176	        _fail(
+   177	            f"admin reclaim {task_id} redirected to {location!r}; "
+   178	            f"expected {expected!r}",
+   179	            response=resp,
+   180	        )
+   181	
+   182	
+   183	def main() -> int:
+   184	    """Drive the planner walkthrough and admin-reclaim drill end-to-end."""
+   185	    web_url = os.environ.get("EDEN_E2E_WEB_UI_URL")
+   186	    base_sha = os.environ.get("EDEN_BASE_COMMIT_SHA")
+   187	    if not web_url:
+   188	        _fail("EDEN_E2E_WEB_UI_URL not set in environment")
+   189	    if not base_sha:
+   190	        _fail("EDEN_BASE_COMMIT_SHA not set in environment")
+   191	    # _fail exits non-zero, but the type checker doesn't know that;
+   192	    # narrow with two separate asserts (ruff PT018 — one assertion per
+   193	    # condition).
+   194	    assert web_url is not None  # noqa: S101 — type narrowing only
+   195	    assert base_sha is not None  # noqa: S101 — type narrowing only
+   196	
+   197	    seeded_ids = tuple(f"plan-{i:04d}" for i in range(1, 5))
+   198	    submit_id = "plan-0001"
+   199	    reclaim_id = "plan-0002"
+   200	
+   201	    print(f"e2e_drive: connecting to {web_url}", flush=True)
+   202	    try:
+   203	        with httpx.Client(base_url=web_url, timeout=15.0) as ui:
+   204	            # Sign in (anonymous stub) BEFORE polling — admin/planner
+   205	            # pages redirect to /signin without a session, so an
+   206	            # unauthenticated poll loop would just see 303s.
+   207	            resp = ui.post("/signin", follow_redirects=False)
+   208	            if resp.status_code != 303:
+   209	                _fail("POST /signin did not 303", response=resp)
+   210	
+   211	            # Wait for the orchestrator's seed to land. Polls /planner/
+   212	            # — both /planner/ and /admin/tasks/ are auth-gated, so
+   213	            # this only works after sign-in.
+   214	            _wait_for_seeded_tasks(ui, seeded_ids, deadline_s=30.0)
+   215	            print(
+   216	                f"e2e_drive: all {len(seeded_ids)} seeded plan tasks "
+   217	                "visible",
+   218	                flush=True,
+   219	            )
+   220	
+   221	            _planner_walkthrough(ui, submit_id, base_commit_sha=base_sha)
+   222	            print(
+   223	                f"e2e_drive: planner walkthrough OK ({submit_id} submitted)",
+   224	                flush=True,
+   225	            )
+   226	
+   227	            _admin_reclaim_drill(ui, reclaim_id)
+   228	            print(
+   229	                f"e2e_drive: admin-reclaim drill OK ({reclaim_id} reclaimed)",
+   230	                flush=True,
+   231	            )
+   232	    except httpx.HTTPError as exc:
+   233	        # ConnectTimeout / ConnectError / ReadTimeout / etc. — surface
+   234	        # as a concise diagnostic rather than a Python traceback.
+   235	        _fail(f"httpx transport error talking to web-ui: {exc!r}")
+   236	
+   237	    print("e2e_drive: PASS", flush=True)
+   238	    return 0
+   239	
+   240	
+   241	if __name__ == "__main__":
+   242	    raise SystemExit(main())
+
+exec
+/bin/zsh -lc "nl -ba .github/workflows/ci.yml | sed -n '160,190p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   160	
+   161	  compose-e2e:
+   162	    name: compose-e2e
+   163	    runs-on: ubuntu-latest
+   164	    timeout-minutes: 20
+   165	    steps:
+   166	      - uses: actions/checkout@v4
+   167	
+   168	      # ubuntu-latest is now 24.04 with a system Python that
+   169	      # rejects bare `pip install` per PEP 668. setup-python provides
+   170	      # an isolated interpreter whose pip is unrestricted, and adds it
+   171	      # to PATH so the bash wrapper's `python3` resolves to it.
+   172	      - name: Set up Python
+   173	        uses: actions/setup-python@v5
+   174	        with:
+   175	          python-version: '3.12'
+   176	
+   177	      - name: Verify docker compose + jq + python3 are available
+   178	        run: |
+   179	          docker compose version
+   180	          jq --version
+   181	          python3 --version
+   182	
+   183	      - name: Install httpx for the python driver
+   184	        run: python3 -m pip install 'httpx>=0.27,<1'
+   185	
+   186	      - name: Run compose e2e
+   187	        working-directory: reference/compose
+   188	        run: bash healthcheck/e2e.sh
+   189	
+   190	  python-test-postgres:
+
+exec
+/bin/zsh -lc 'git diff -- .github/workflows/ci.yml AGENTS.md reference/compose/healthcheck/e2e_drive.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 14c0291..bac9f64 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -158,6 +158,35 @@ jobs:
+         working-directory: reference/compose
+         run: bash healthcheck/smoke-subprocess.sh
+ 
++  compose-e2e:
++    name: compose-e2e
++    runs-on: ubuntu-latest
++    timeout-minutes: 20
++    steps:
++      - uses: actions/checkout@v4
++
++      # ubuntu-latest is now 24.04 with a system Python that
++      # rejects bare `pip install` per PEP 668. setup-python provides
++      # an isolated interpreter whose pip is unrestricted, and adds it
++      # to PATH so the bash wrapper's `python3` resolves to it.
++      - name: Set up Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++
++      - name: Verify docker compose + jq + python3 are available
++        run: |
++          docker compose version
++          jq --version
++          python3 --version
++
++      - name: Install httpx for the python driver
++        run: python3 -m pip install 'httpx>=0.27,<1'
++
++      - name: Run compose e2e
++        working-directory: reference/compose
++        run: bash healthcheck/e2e.sh
++
+   python-test-postgres:
+     name: python-test-postgres
+     runs-on: ubuntu-latest
+diff --git a/AGENTS.md b/AGENTS.md
+index bc1a977..4d84d01 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -16,6 +16,8 @@ Non-normative human docs live in [`docs/`](docs/).
+ 
+ ## Current phase
+ 
++**Phase 10 chunk 10e complete.** A new `compose-e2e` CI job runs [`reference/compose/healthcheck/e2e.sh`](reference/compose/healthcheck/e2e.sh) — the stack-shape coverage missing from `compose-smoke` / `compose-smoke-subprocess`: a Web UI planner walkthrough (sign-in → claim → submit), an admin-reclaim drill (claim → admin-reclaim with a `task.reclaimed` `cause=operator` event in the log), and a termination drill (`compose stop --timeout 10`; every container in `compose ps -a` ends in `exited` with `ExitCode != 137`). The `!= 137` SIGKILL guard is deliberately weaker than `== 0`: external images don't always install graceful SIGTERM handlers, and 143 from a default-handler is also a clean termination — what we actually care about is that no container needed SIGKILL. Bring-up is **staged** to defeat the planner-host-claim race that the round-0 codex review flagged: stage 1 omits both planner-host AND gitea (gitea's 30s healthcheck `start_period` would race against the orchestrator's 30s quiescence budget; gitea is the deferred 10d follow-up sub-chunk and isn't consumed by 10e). The python driver in [`reference/compose/healthcheck/e2e_drive.py`](reference/compose/healthcheck/e2e_drive.py) runs the UI walkthroughs against the seeded-but-unclaimed plan tasks, then stage 2 brings planner-host online so the experiment proceeds to quiescence and the orchestrator exits 0. `EDEN_PLAN_TASKS=4` is overridden in the staged `.env` (vs smoke's default 3) so plan-0001 / plan-0002 carry the UI walkthrough + admin-reclaim drill while plan-0003 / plan-0004 (and the reclaimed plan-0002) flow through the headless host. The python driver polls `/planner/` for all 4 seeded IDs to land before claiming — the orchestrator has no compose healthcheck so `compose up --wait` returns as soon as the container is `running`, which can precede the seed completing. The poll happens **after** sign-in, not before: `/planner/` and `/admin/tasks/` redirect unauthed sessions to `/signin`, so an unauthenticated poll loop would just see 303s. Driver assertions match the actual route shapes: planner submit returns 200 with `planner_submitted.html` (NOT 303); admin reclaim redirects to `/admin/tasks/<id>/?reclaimed=ok` *with the trailing slash*; orchestrator-seeded plan tasks are `plan-{i:04d}` not bare-int. Termination drill iterates the full `compose ps -a` output (not eden-* only) — covers postgres, blob-init, task-store-server, orchestrator, planner-host, implementer-host, evaluator-host, and web-ui (gitea was never started in stage 1 so it doesn't appear; eden-repo-init ran via `compose run --rm` and is gone). Local mac compatibility: the container loop uses portable `while IFS= read -r … done < <(…)` instead of bash 4+'s `mapfile` builtin so the script runs under macOS's default bash 3.2. New CI job is **not** required by branch protection in this chunk (same posture 10c / 10d took for newly-added compose jobs).
++
+ **Phase 10 chunk 10d complete.** Each of the planner / implementer / evaluator hosts gains a new `--mode subprocess` that invokes a user-supplied command from the experiment-config YAML (`plan_command` / `implement_command` / `evaluate_command`) instead of the deterministic Phase-8b scripted profile. The subprocess invocation is via `shell=True` so user expressions like `python3 ${EDEN_EXPERIMENT_DIR}/plan.py` expand correctly; the host supplies `EDEN_EXPERIMENT_DIR`, `EDEN_TASK_JSON`, `EDEN_OUTPUT`, and (for implement/eval) `EDEN_WORKTREE`. Planner subprocess is **long-running** with a JSON-line `ready` / `plan` / `proposal` / `plan-done` protocol over stdin/stdout (so user code can hold accumulating LLM context across plan tasks); implementer + evaluator subprocesses are **per-task short-lived** with cwd set to a per-task git worktree, and read/write outcome JSON via the `EDEN_OUTPUT` path. The implementer flow honors [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §3.2 step 1 — `Store.create_trial(status="starting")` runs **before** any repository write, mirroring the chunk-9c web-ui implementer ordering. Worktrees are host-private under `<worktrees-dir>/<container_hostname>/<task_id>/`; startup-time cleanup uses path-scoped `git worktree remove --force` (never repo-global `git worktree prune`), so cross-host races don't exist by construction. The chapter-3 submission shapes carry no free-form `description` field; worker-side failure context (subprocess timeout, malformed outcome JSON, etc.) goes to the host log only. The protocol is documented as a non-normative **reference binding** at [`spec/v0/reference-bindings/worker-host-subprocess.md`](spec/v0/reference-bindings/worker-host-subprocess.md) — a conforming alternative host can either match the shape (drop-in compatibility with the fixture experiment) or pick a different mechanism. Three new fixture scripts ([`tests/fixtures/experiment/plan.py`](tests/fixtures/experiment/plan.py), [`implement.py`](tests/fixtures/experiment/implement.py), [`eval.py`](tests/fixtures/experiment/eval.py)) exercise the protocol deterministically without LLM secrets so the new `compose-smoke-subprocess` CI job can run end-to-end alongside the original `compose-smoke`. The fixture's `*_command` config keys gain `${EDEN_EXPERIMENT_DIR}/...` prefixes (single source of truth: the experiment YAML, not a CLI flag). Compose plumbing is a non-invasive overlay [`reference/compose/compose.subprocess.yaml`](reference/compose/compose.subprocess.yaml) layered via `compose -f compose.yaml -f compose.subprocess.yaml`; setup-experiment grows `--experiment-dir` (defaults to the directory containing the config's `.eden`) and writes `EDEN_EXPERIMENT_DIR_HOST` into `.env` for the bind-mount. Container isolation of the user's command (docker-in-docker, experiment-specific image build, auth-secret mounting) is **deferred to a 10d follow-up sub-chunk**; the subprocess.Popen call is the wrappable layer, and the protocol stays unchanged when wrapped. Branch protection is not updated to require `compose-smoke-subprocess` in this chunk (same posture 10a / 10b+10c took for newly-added jobs).
+ 
+ **Phase 10 chunks 10b + 10c complete.** Six EDEN reference services are now dockerized and wired into the Compose stack at [`reference/compose/`](reference/compose/), and a new [`reference/scripts/setup-experiment/setup-experiment.sh`](reference/scripts/setup-experiment/setup-experiment.sh) bootstraps a runnable stack from an experiment-config YAML in one shot. After `bash setup-experiment.sh <config.yaml> --experiment-id <id> && docker compose --env-file .env up -d --wait`, the fixture experiment runs to completion in Compose: orchestrator dispatches three plan tasks → planner-host claims/submits → orchestrator integrates → 3 trials succeed and integrate, with the orchestrator exiting 0 on quiescence (`restart: "on-failure"` so exit-0 sticks; tuned to `--poll-interval 1.0 --max-quiescent-iterations 30` for Compose worker-startup latency). All seven services (six EDEN services + setup-time `eden-repo-init`) share **one** `eden-reference:dev` image (multi-stage build with `uv sync --frozen --no-dev --all-packages` — the `--all-packages` flag is load-bearing because the workspace root pins `tool.uv.package = false` and lists the `eden-*` workspace members only in the `dev` group, which `--no-dev` would otherwise skip). The roadmap delta documenting the per-service-image deviation, the deferral of the LLM-implementer experiment-specific image to 10d, the deferral of control-plane registration to Phase 12, and the deferral of Gitea-as-the-workers'-actual-git-remote to a follow-up sub-chunk after 10d is recorded in the plan and reflected in the chunk's roadmap update. New `eden-storage.PostgresStore` ([`reference/packages/eden-storage/src/eden_storage/postgres.py`](reference/packages/eden-storage/src/eden_storage/postgres.py)) is the third backend conforming to the same `Store` Protocol as `InMemoryStore`/`SqliteStore`; backed by `psycopg[binary]>=3.2,<4` with `autocommit=True` + explicit per-op `BEGIN ISOLATION LEVEL SERIALIZABLE READ WRITE` (psycopg's auto-begin would error `ActiveSqlTransaction` on `BEGIN ISOLATION LEVEL`). Schema is byte-for-byte parallel to SQLite (`data text NOT NULL`, not `jsonb` — keeps the read path identical and defers indexing concerns). The new `python-test-postgres` CI job spins up `postgres:16.6-alpine` as a service container and runs the parametrized backend tests against it; the existing `python-test` job continues to run with `EDEN_TEST_POSTGRES_DSN` unset (so the postgres rows skip), keeping it fast. `task-store-server` gains a URL-based `--store-url` flag (`:memory:` / `sqlite:///<path>` / `postgresql://…` / bare-path-for-compat); the deprecated `--db-path` alias survives for one phase. Bare-repo bootstrap is owned **synchronously** by setup-experiment (one canonical command shape: `docker compose build eden-repo-init && docker compose run --rm --no-deps eden-repo-init` — `--no-deps` keeps future dependency edits from accidentally starting Postgres/Gitea just to seed). The seed SHA is captured from stdout and replaced into a placeholder line in `.env` (zero-padded sentinel) — *replaced*, not appended, so `grep -E '^EDEN_BASE_COMMIT_SHA='` returns one definition. The `eden-repo-init` service has `profiles: ["setup"]` so it's invisible to plain `compose up`. Volume permissions are pre-created in the Dockerfile via `RUN mkdir -p /var/lib/eden/{repo,artifacts} && chown -R eden:eden /var/lib/eden` — without this the named volume inherits root ownership from the volume driver and the eden user can't write. Healthchecks for `task-store-server` and `web-ui` use compose-load-time `${VAR}` interpolation (single `$`), not container-shell `$${VAR}`, because the env-file vars aren't propagated into the container's shell environment unless declared under `environment:`; baking the values into the literal command at compose-load is simpler. The web-ui mount is **read-write**, not read-only, because passing `--repo-path` activates the entire implementer module (chunk 9c) which writes refs on submit — read-only would 500. The redundancy with `implementer-host` is intentional (operators pick which they prefer; both race for claim atomicity via `Store.claim` chapter 04 §3). New `web-ui /healthz` endpoint is unauthenticated by design (compose healthchecks must work before any user signs in; reveals only "process is up"). Extended [`reference/compose/healthcheck/smoke.sh`](reference/compose/healthcheck/smoke.sh) (the `compose-smoke` CI job's invariant) now runs setup-experiment, asserts the seeded ref *before* `compose up` via a one-shot probe that reuses the already-built `eden-reference:dev` image (avoiding a floating `latest` tag), waits up to 180s for the orchestrator to exit 0 on quiescence, and verifies the final task-store state on the wire endpoint: ≥3 `trial.integrated` events (full pipeline), ≥9 `task.completed` events (3 plan + 3 implement + 3 evaluate), and ≥3 `task.completed` events whose `task_id` starts with `plan-` (each seeded plan task reached a terminal state). Branch protection is **not** updated to require `python-test-postgres` in this chunk — that lands in a follow-up after the job has a few clean runs (same posture 10a took for `compose-smoke`).
+@@ -42,7 +44,7 @@ Non-normative human docs live in [`docs/`](docs/).
+ 
+ ## Commands
+ 
+-At Phase 10 chunk 10d, markdown linting, JSON Schema validation, and the Python toolchain for the `eden-contracts`, `eden-dispatch`, `eden-git`, `eden-storage`, `eden-wire`, `eden-service-common`, `eden-task-store-server`, `eden-orchestrator`, `eden-planner-host`, `eden-implementer-host`, `eden-evaluator-host`, and `eden-web-ui` reference packages and services are wired up.
++At Phase 10 chunk 10e, markdown linting, JSON Schema validation, and the Python toolchain for the `eden-contracts`, `eden-dispatch`, `eden-git`, `eden-storage`, `eden-wire`, `eden-service-common`, `eden-task-store-server`, `eden-orchestrator`, `eden-planner-host`, `eden-implementer-host`, `eden-evaluator-host`, and `eden-web-ui` reference packages and services are wired up.
+ 
+ | Command | Purpose |
+ |---|---|
+@@ -64,6 +66,7 @@ At Phase 10 chunk 10d, markdown linting, JSON Schema validation, and the Python
+ | `cd reference/compose && docker compose --env-file .env up -d --wait` | Bring up the full Phase 10b/10c stack — infra + EDEN services + web-ui on `localhost:${WEB_UI_HOST_PORT:-8090}`. Run setup-experiment first. |
+ | `bash reference/compose/healthcheck/smoke.sh` | Run the extended Compose smoke test (mirrors the `compose-smoke` CI job — runs setup-experiment, brings the stack up, waits for orchestrator quiescence, asserts ≥3 `trial.integrated` events, ≥9 `task.completed` events, and ≥3 plan-task `task.completed` events). |
+ | `bash reference/compose/healthcheck/smoke-subprocess.sh` | Phase 10d subprocess-mode smoke (mirrors the `compose-smoke-subprocess` CI job; layers `compose.subprocess.yaml` over the base stack and runs against the fixture's `plan.py` / `implement.py` / `eval.py`). |
++| `bash reference/compose/healthcheck/e2e.sh` | Phase 10e end-to-end smoke (mirrors the `compose-e2e` CI job — staged bring-up, Web UI planner walkthrough + admin-reclaim drill via `e2e_drive.py`, full-stack quiescence wait, termination drill). Requires `httpx` importable from `python3` — locally, prefix with `PATH="/path/to/.venv/bin:$PATH"` or activate the workspace venv. |
+ | `eden_planner_host --mode subprocess --experiment-config <path> --experiment-dir <path> --artifacts-dir <path>` | Run the planner host with a user-supplied long-running `plan_command` (read from the experiment-config YAML; subprocess exchanges JSON-line messages per [`spec/v0/reference-bindings/worker-host-subprocess.md`](spec/v0/reference-bindings/worker-host-subprocess.md)). |
+ | `eden_implementer_host --mode subprocess --experiment-config <path> --experiment-dir <path> --repo-path <path>` | Per-task subprocess implementer; cwd = freshly-created git worktree at `parent_commits[0]`; reads outcome JSON from `EDEN_OUTPUT`. |
+ | `eden_evaluator_host --mode subprocess --experiment-config <path> --experiment-dir <path> --repo-path <path>` | Per-task subprocess evaluator; cwd = git worktree at `trial.commit_sha`; metrics validated against `metrics_schema` before submit. |
+@@ -76,7 +79,6 @@ These are listed for orientation; the tooling is not wired up yet.
+ |---|---|
+ | Container-isolated `*_command` execution (sandbox per task) | Phase 10d follow-up |
+ | Experiment-specific image build pipeline | Phase 10d follow-up |
+-| Comprehensive Compose end-to-end test (with web-ui walkthroughs) | Phase 10e |
+ 
+ ## Contribution conventions
+ 
+
+exec
+/bin/zsh -lc 'rg -n "setup-python|python3 -m pip install|compose-e2e|HTTPError|later phases|Comprehensive Compose end-to-end" .github/workflows/ci.yml AGENTS.md reference/compose/healthcheck/e2e_drive.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/compose/healthcheck/e2e_drive.py:16:``docs/plans/eden-phase-10e-compose-e2e.md`` §C / §D.
+reference/compose/healthcheck/e2e_drive.py:232:    except httpx.HTTPError as exc:
+AGENTS.md:19:**Phase 10 chunk 10e complete.** A new `compose-e2e` CI job runs [`reference/compose/healthcheck/e2e.sh`](reference/compose/healthcheck/e2e.sh) — the stack-shape coverage missing from `compose-smoke` / `compose-smoke-subprocess`: a Web UI planner walkthrough (sign-in → claim → submit), an admin-reclaim drill (claim → admin-reclaim with a `task.reclaimed` `cause=operator` event in the log), and a termination drill (`compose stop --timeout 10`; every container in `compose ps -a` ends in `exited` with `ExitCode != 137`). The `!= 137` SIGKILL guard is deliberately weaker than `== 0`: external images don't always install graceful SIGTERM handlers, and 143 from a default-handler is also a clean termination — what we actually care about is that no container needed SIGKILL. Bring-up is **staged** to defeat the planner-host-claim race that the round-0 codex review flagged: stage 1 omits both planner-host AND gitea (gitea's 30s healthcheck `start_period` would race against the orchestrator's 30s quiescence budget; gitea is the deferred 10d follow-up sub-chunk and isn't consumed by 10e). The python driver in [`reference/compose/healthcheck/e2e_drive.py`](reference/compose/healthcheck/e2e_drive.py) runs the UI walkthroughs against the seeded-but-unclaimed plan tasks, then stage 2 brings planner-host online so the experiment proceeds to quiescence and the orchestrator exits 0. `EDEN_PLAN_TASKS=4` is overridden in the staged `.env` (vs smoke's default 3) so plan-0001 / plan-0002 carry the UI walkthrough + admin-reclaim drill while plan-0003 / plan-0004 (and the reclaimed plan-0002) flow through the headless host. The python driver polls `/planner/` for all 4 seeded IDs to land before claiming — the orchestrator has no compose healthcheck so `compose up --wait` returns as soon as the container is `running`, which can precede the seed completing. The poll happens **after** sign-in, not before: `/planner/` and `/admin/tasks/` redirect unauthed sessions to `/signin`, so an unauthenticated poll loop would just see 303s. Driver assertions match the actual route shapes: planner submit returns 200 with `planner_submitted.html` (NOT 303); admin reclaim redirects to `/admin/tasks/<id>/?reclaimed=ok` *with the trailing slash*; orchestrator-seeded plan tasks are `plan-{i:04d}` not bare-int. Termination drill iterates the full `compose ps -a` output (not eden-* only) — covers postgres, blob-init, task-store-server, orchestrator, planner-host, implementer-host, evaluator-host, and web-ui (gitea was never started in stage 1 so it doesn't appear; eden-repo-init ran via `compose run --rm` and is gone). Local mac compatibility: the container loop uses portable `while IFS= read -r … done < <(…)` instead of bash 4+'s `mapfile` builtin so the script runs under macOS's default bash 3.2. New CI job is **not** required by branch protection in this chunk (same posture 10c / 10d took for newly-added compose jobs).
+AGENTS.md:69:| `bash reference/compose/healthcheck/e2e.sh` | Phase 10e end-to-end smoke (mirrors the `compose-e2e` CI job — staged bring-up, Web UI planner walkthrough + admin-reclaim drill via `e2e_drive.py`, full-stack quiescence wait, termination drill). Requires `httpx` importable from `python3` — locally, prefix with `PATH="/path/to/.venv/bin:$PATH"` or activate the workspace venv. |
+AGENTS.md:74:### Commands that will exist in later phases
+.github/workflows/ci.yml:35:        uses: actions/setup-python@v5
+.github/workflows/ci.yml:161:  compose-e2e:
+.github/workflows/ci.yml:162:    name: compose-e2e
+.github/workflows/ci.yml:169:      # rejects bare `pip install` per PEP 668. setup-python provides
+.github/workflows/ci.yml:173:        uses: actions/setup-python@v5
+.github/workflows/ci.yml:184:        run: python3 -m pip install 'httpx>=0.27,<1'
+
+codex
+No findings.
+
+The three prior issues are closed in the current tree. [ci.yml](/Users/ericalt/Documents/eden/.github/workflows/ci.yml:172) now uses `actions/setup-python@v5` with `python-version: '3.12'`, and [ci.yml](/Users/ericalt/Documents/eden/.github/workflows/ci.yml:184) installs `httpx` via `python3 -m pip`, so the `python3` that [e2e.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e.sh:27) imports from is the same interpreter the workflow provisioned. [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:74) no longer has the stale 10e row in the “later phases” table. [e2e_drive.py](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e_drive.py:202) now catches `httpx.HTTPError` and routes it through `_fail()`, which closes the traceback-on-transport-error gap.
+
+Residual notes only: the earlier non-blocking caveats still apply. The process-substitution producer in [e2e.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e.sh:200) is still not covered by `pipefail`, and the stage-1 “orchestrator still running” check in [e2e.sh](/Users/ericalt/Documents/eden/reference/compose/healthcheck/e2e.sh:90) is still a pragmatic guard rather than a proof against every possible slow-runner stall. I would not block on either.
+
+Overall assessment: ready to ship.
+2026-04-28T22:36:01.974362Z ERROR codex_core::session: failed to record rollout items: thread 019dd637-8fac-7213-ac50-1d496f12dabf not found
+tokens used
+225,328

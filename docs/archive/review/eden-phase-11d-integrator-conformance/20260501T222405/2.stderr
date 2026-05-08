@@ -1,0 +1,717 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019de725-4c77-7273-adda-9d970e746717
+--------
+user
+Round-2 revisions applied to the plan. Key changes:
+
+1. §2(b) re-classified as 'NOT independently wire-observable in v0' — the trial-status lifecycle enforces (b) transitively through (a), so a wire-only suite cannot isolate (b). Updated the §2 precondition table accordingly. The chapter-9 §4 amendment dropped the §2(b) coverage claim.
+
+2. Reference-impl section corrected: described actual integrate_trial behavior (status check + same/different idempotency), removed the fictional _accept_integrate name, and removed the false claim that the impl checks trial.commit_sha at integrate time.
+
+3. Dropped the starting-trial-without-commit_sha test (it could not isolate (b) from (a) and adds nothing distinct to the existing v1 starting-trial test). Promotion preconditions group now has 2 tests (error, eval_error). Total tests: 4.
+
+4. Removed the stale 'failed-integrate-leaves-no-artifacts' reference from §3.2 out-of-scope and replaced with 'the §3.1.b precondition tests pin via their composite end-state assertion.'
+
+Re-review docs/plans/eden-phase-11d-integrator-conformance.md. Verify the corrections are accurate and the plan is implementation-ready, OR list any remaining issues. If ready, say 'ready to proceed'.
+codex
+I’m re-reading the revised plan against the earlier findings to verify the §2(b) downgrade, the test-count change, and the corrected reference-impl claims before I give a final pass/fail.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-11d-integrator-conformance.md | sed -n '1,360p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN Phase 11 chunk 11d — integrator conformance scenarios
+     2	
+     3	## 1. Context
+     4	
+     5	Phase 11 builds out the conformance suite. Chunk 11a + 11b shipped harness +
+     6	v1 (task-store / event-log / wire) scenarios. Chunk 11c shipped v1+roles
+     7	(role-contract submission semantics from chapter 03). Chunk 11d is the
+     8	final unit of Phase 11: it adds **v1+roles+integrator** scenarios that
+     9	exercise [`spec/v0/06-integrator.md`](../../spec/v0/06-integrator.md) MUSTs.
+    10	
+    11	Per the existing `Integrate idempotency` group in
+    12	[`conformance/scenarios/test_integrate_idempotency.py`](../../conformance/scenarios/test_integrate_idempotency.py)
+    13	(landed in 11b under the v1 level), the **HTTP-binding** projection of
+    14	the integrator atomic-three invariant is already covered: chapter 7 §5
+    15	pins same-value idempotency, different-SHA rejection, and the
+    16	status-precondition check. Those tests stay where they are — they cite
+    17	chapter 7 §5 and belong to the v1 level.
+    18	
+    19	What chunk 11d adds is the **chapter-06 projection**: tests that cite
+    20	chapter 06 §3.4 (atomic-three invariant, projected onto the wire-visible
+    21	artifacts: trial-object field + event log) and chapter 06 §2 (promotion
+    22	trigger preconditions across the full trial-status vocabulary). This is
+    23	the v1+roles+integrator delta over v1.
+    24	
+    25	## 2. Reframe — what's wire-observable in chapter 06
+    26	
+    27	This is the load-bearing scope question for the chunk and warrants
+    28	making the scope explicit before writing tests. Chapter 06 §3.4 names
+    29	**three** atomic-three artifacts:
+    30	
+    31	1. The `trial/*` git ref.
+    32	2. The `trial_commit_sha` field on the trial object.
+    33	3. The `trial.integrated` event in the event log.
+    34	
+    35	Of those, the chapter-7 HTTP binding exposes only #2 and #3 to a
+    36	conformance harness. Git refs are an integrator-side internal detail;
+    37	chapter 9 §6 makes the chapter-7 binding the **only** IUT contract a
+    38	conformance harness can rely on.
+    39	
+    40	§2 (promotion trigger) names **three** preconditions:
+    41	
+    42	(a) `status == "success"` — wire-observable (`read_trial.status`).
+    43	(b) `commit_sha` is set — **NOT independently wire-observable** in v0.
+    44	    The trial-status lifecycle (chapter 02 §7.1, chapter 03 §3.2, §4.4)
+    45	    requires `commit_sha` to be written before a trial can transition
+    46	    to `success`: implementer-accept writes `commit_sha` on the
+    47	    `starting` trial; evaluator-accept transitions `starting` →
+    48	    `success`. So a `success` trial with `commit_sha` unset is
+    49	    unreachable through normal wire endpoints. Without a back-door,
+    50	    a wire-only suite cannot isolate (b) from (a) — any test that
+    51	    sees `commit_sha` unset will also see `status != success`, and
+    52	    the IUT may reject for either reason. The reference impl's
+    53	    `Store.integrate_trial` checks (a) and same-value-idempotency
+    54	    only (see [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
+    55	    `integrate_trial`); it does NOT inspect `trial.commit_sha`. The
+    56	    suite therefore covers (b) only transitively, through (a)'s
+    57	    enforcement of the lifecycle ordering.
+    58	(c) `commit_sha` resolves to a commit on the trial's `branch` in the
+    59	    experiment repository — **NOT** wire-observable through chapter 7
+    60	    alone (would require the IUT's wire endpoint to validate against
+    61	    a real git repo, which the wire spec does not require). This is
+    62	    the integrator-side §1.4 reachability check restated as a §2
+    63	    trigger condition.
+    64	
+    65	This means several MUSTs from chapter 06 cannot be asserted by a
+    66	chapter-7-only suite, even at the v1+roles+integrator level:
+    67	
+    68	| Chapter-06 MUST | Wire-observable? |
+    69	|---|---|
+    70	| §1.4 reachability check | NO — requires git access |
+    71	| §2 (c) commit_sha-resolves-on-branch | NO — same as §1.4 |
+    72	| §3.2 squash shape | NO — git tree shape, off-wire |
+    73	| §3.3 commit message format | NO — git commit, off-wire |
+    74	| §4.x eval-manifest path/shape | NO — git tree content, off-wire |
+    75	| §1.3 work/* access discipline | NO — git ref existence, off-wire |
+    76	| §2 (a) `status == success` | YES — `read_trial.status` |
+    77	| §2 (b) `commit_sha` is set | TRANSITIVELY only — see (b) note above; the lifecycle enforces (b) as a precondition for `status == success`, so (a)'s assertion subsumes (b) under any wire-driven seed |
+    78	| §3.4 atomic-three (field + event projection) | YES — `read_trial` + `events` |
+    79	| §5.3 repeat-promotion (no-overwrite) | YES — `read_trial` + event count |
+    80	| §5.1 metrics-schema-violation detection | PARTIAL — orchestrator catches at evaluate-terminal (§2 last paragraph) |
+    81	
+    82	### 2.1 Spec gap surfaced
+    83	
+    84	Chapter 9 §3 prose enumerates "[`06-integrator.md`](06-integrator.md)"
+    85	as an in-scope MUST source for v1+roles+integrator. Chapter 9 §4 names
+    86	the level's scope as "squash shape, eval-manifest shape, `work/*` access
+    87	discipline, atomicity ladder under transport-indeterminate failures."
+    88	The first three of those four items are **not** wire-observable through
+    89	chapter-7 alone. This is the **same class of inter-chapter restatement
+    90	drift the chunk-11c plan-review caught** between chapter 03 §4.4 and
+    91	chapter 04 §4.2: chapter 9 §4 over-promises what a wire-only conformance
+    92	suite can assert, in apparent disagreement with chapter 9 §6 ("the
+    93	chapter-7 binding is the only IUT contract").
+    94	
+    95	The chunk-11c codification rule **applies directly here** (cite:
+    96	[AGENTS.md plan-writing pitfalls — "Spec inter-chapter restatement is
+    97	a conflict surface"](../../AGENTS.md)): when two chapters restate the
+    98	same constraint with drift, defer the role-side restatement to the
+    99	canonical statement and tighten the prose. The fix shape:
+   100	
+   101	- **Chapter 9 §4** — rewrite the v1+roles+integrator bullet to scope
+   102	  the level to "the wire-observable projection of chapter 06: §2
+   103	  promotion preconditions on the trial-status vocabulary; §3.4
+   104	  atomicity-of-(field, event) on `integrate_trial`; §5.3 no-overwrite
+   105	  under repeat promotion. The git-side artifacts (squash shape,
+   106	  eval-manifest shape, work/* discipline, reachability) are part of
+   107	  chapter 06 but are **not** asserted by a wire-only suite; a future
+   108	  binding chapter that defines a 'conformance + git access' contract
+   109	  MAY add those tests at a higher level."
+   110	- **Chapter 9 §3** — already cites chapter 06 generically; no edit.
+   111	- **Chapter 9 §5** — gain two new groups (see §3.2 below). The prose
+   112	  immediately above the v1+roles index table — currently "The
+   113	  **v1+roles+integrator** level adds its own group; its contents are
+   114	  out of scope for chunk 11c and will be appended in chunk 11d." —
+   115	  is also rewritten to "The **v1+roles+integrator** level adds the
+   116	  groups below" (singular → plural), and a new sub-table is
+   117	  appended for the v1+roles+integrator entries to mirror the §3
+   118	  prose's level distinction.
+   119	
+   120	This is a single-paragraph spec amendment, not a refactor. It
+   121	preserves the v0 contract and tightens chapter 9's claim to match
+   122	what the suite actually delivers.
+   123	
+   124	## 3. Scope
+   125	
+   126	### 3.1 In scope
+   127	
+   128	Two new chapter-9 §5 groups, with new scenario files under
+   129	[`conformance/scenarios/`](../../conformance/scenarios/):
+   130	
+   131	#### 3.1.a Group `Integrator atomicity` — citing chapter 06 §3.4 + §5.3
+   132	
+   133	Asserts the wire-observable projection of the atomic-three invariant
+   134	on the **two** wire-visible artifacts (field + event), and the
+   135	no-overwrite half of repeat-promotion idempotency.
+   136	
+   137	- **cross-artifact-consistency-on-success.** Single test that asserts
+   138	  both directions of the atomic-three (field, event) projection in
+   139	  one composed assertion: after `POST /trials/{T}/integrate` returns
+   140	  2xx, (1) GET `/trials/{T}` shows `trial_commit_sha == X`, AND
+   141	  (2) the event log contains exactly one `trial.integrated` event
+   142	  for T with `data.trial_commit_sha == X`, AND (3) the field's value
+   143	  and the event's payload reference the **same** SHA — i.e. they
+   144	  are derived from the same atomic write. The cross-SHA-equality
+   145	  assertion is the chunk's central new content; the field-only and
+   146	  event-only halves are already covered by the v1 `Integrate
+   147	  idempotency` group. Cites: [chapter 06 §3.4](../../spec/v0/06-integrator.md)
+   148	  atomic-write.
+   149	- **divergent-resubmit-leaves-no-second-event.** The existing v1
+   150	  `test_different_sha_returns_409` asserts the field is unchanged
+   151	  but does **not** explicitly assert the event log shows exactly
+   152	  one `trial.integrated` (not two). This test pins that AND that
+   153	  the field's stored SHA is still the original — the §5.3
+   154	  no-overwrite rule projected onto the event side. Cites: chapter 06
+   155	  §5.3.
+   156	
+   157	The cross-consistency direction-dual test (event-implies-field as a
+   158	distinct test) was considered and dropped: it is logically the same
+   159	invariant as field-implies-event and adds little debug value over a
+   160	single composed assertion. Likewise, "failed-integrate-leaves-no-
+   161	artifacts" was considered but moved to the §3.1.b group, where it
+   162	belongs (it is a §2 precondition rejection, not a §3.4 atomicity
+   163	test).
+   164	
+   165	#### 3.1.b Group `Promotion preconditions` — citing chapter 06 §2
+   166	
+   167	Asserts the §2(a) status-precondition requirement across the two
+   168	**non-`starting`** terminal-error trial statuses (`error`,
+   169	`eval_error`). The §2(b) commit_sha-set precondition is not
+   170	independently wire-observable in v0 (per §2 above); a wire-only suite
+   171	covers it only transitively through (a). The §2(c) branch-reachability
+   172	precondition is off-wire in v0 (per §2 above); a future binding
+   173	chapter MAY add it. The existing v1
+   174	`test_integrate_against_non_success_trial_returns_409` covers (a) for
+   175	the `starting` status; the two new tests below cover (a) for the
+   176	remaining two non-`starting` non-`success` statuses, completing the
+   177	status vocabulary.
+   178	
+   179	Each test asserts the **end-state**, not just the wire response, per
+   180	the chunk-11c "end-state, not endpoint" pattern (
+   181	[`conformance/README.md`](../../conformance/README.md)): the response
+   182	is 4xx in `eden://error/invalid-precondition`, AND the trial's
+   183	`trial_commit_sha` is unset, AND no `trial.integrated` event was
+   184	appended for T. The composite end-state pins the §3.4 rollback-half
+   185	"a failed write produces neither field nor event" without needing a
+   186	separate §3.4 test for it.
+   187	
+   188	- **`error` trial → 409 invalid-precondition + no artifacts.** §2 says
+   189	  "trials in `error` ... MUST NOT receive a `trial/*` commit." Cites
+   190	  chapter 06 §2.
+   191	- **`eval_error` trial → 409 invalid-precondition + no artifacts.**
+   192	  Same MUST, different status. Cites §2.
+   193	
+   194	That's **4 new scenarios across two new groups**, plus the spec
+   195	amendment to chapter 9 §4 + §5 index.
+   196	
+   197	### 3.2 Out of scope (deferred)
+   198	
+   199	Per §2 above, all of the following remain explicitly NOT asserted by
+   200	the v1+roles+integrator suite. The amended chapter 9 §4 records this
+   201	as deliberate, not an oversight:
+   202	
+   203	- §1.3 work/* discipline.
+   204	- §1.4 reachability check.
+   205	- §3.2 squash shape.
+   206	- §3.3 commit message format.
+   207	- §4.x eval-manifest path/shape/contents.
+   208	- §5.1 partial-write rollback (server-side internal; wire only sees
+   209	  the post-rollback state, which the §3.1.b precondition tests
+   210	  pin via their composite end-state assertion).
+   211	- §5.2 ref-durability.
+   212	
+   213	A future spec lineage that introduces a "git-access conformance
+   214	contract" (the IUT exposes its bare-repo path through an extended
+   215	adapter) MAY add a new level (e.g., `v2+integrator-git`) that asserts
+   216	these. That is **not** chunk 11d.
+   217	
+   218	### 3.3 Non-goals
+   219	
+   220	- No changes to the harness adapter contract (`IutAdapter` /
+   221	  `IutHandle`). Git access is not a v1+roles+integrator IUT contract;
+   222	  see §3.2.
+   223	- No changes to `eden_storage` or `eden_wire`. The reference impl
+   224	  already passes the chapter-06 §3.4 wire projection (chunk-11b's
+   225	  `Integrate idempotency` group covers most of it; the new group's
+   226	  delta is cross-artifact consistency, which the reference impl's
+   227	  composite-commit primitive already enforces).
+   228	- No changes to the integrator package (`eden_git`). The integrator's
+   229	  squash/manifest behavior is not under conformance assertion in v0.
+   230	
+   231	## 4. The "end-state, not endpoint" pattern (carried forward from 11c)
+   232	
+   233	For the §2 precondition tests, the rejection point in the IUT's pipeline
+   234	is implementation-defined (the reference impl rejects synchronously at
+   235	the wire layer with 409 invalid-precondition; a different IUT might
+   236	defer the check to an async integrator background task). Per the
+   237	chunk-11c codified pattern in
+   238	[`conformance/README.md`](../../conformance/README.md) "Asserting
+   239	end-state, not endpoint", these tests pin the **end-state**: trial is
+   240	not promoted, no `trial.integrated` event, `trial_commit_sha` unset —
+   241	regardless of where in the IUT's call-chain the rejection surfaces.
+   242	
+   243	Concretely, each precondition test asserts both:
+   244	
+   245	1. The HTTP response is in the 4xx range (the wire MUST per chapter 7
+   246	   §5 + §7), AND
+   247	2. The end-state is consistent: GET `/trials/{T}` shows no
+   248	   `trial_commit_sha`, AND the event log shows no `trial.integrated`
+   249	   for T.
+   250	
+   251	The 4xx-range assertion is intentionally weaker than `== 409`: an IUT
+   252	that returns 400 bad-request for a malformed precondition would still
+   253	be conforming (the chapter-7 §7 vocabulary allows it), and the conformance
+   254	suite shouldn't lock in 409 specifically when chapter 06 §2 is a
+   255	**semantic** precondition, not a wire-layer constraint. The existing v1
+   256	`test_integrate_against_non_success_trial_returns_409` does pin 409 +
+   257	`invalid-precondition`; that's correct because chapter 7 §5
+   258	**explicitly** maps the integrate-precondition class to that code. The
+   259	new chapter-06-citing tests can either follow the same pattern (since
+   260	they're testing the same wire endpoint) or relax to 4xx for portability.
+   261	**Decision: follow the existing pattern (assert 409 +
+   262	`invalid-precondition`)**, matching the existing v1 test's discipline so
+   263	new tests look uniform.
+   264	
+   265	## 5. Files to touch
+   266	
+   267	### 5.1 Spec
+   268	
+   269	- `spec/v0/09-conformance.md` — amend §4 (rewrite v1+roles+integrator
+   270	  bullet per §2.1 above) and §5 (add the two new groups to the
+   271	  v1+roles index table OR add a new v1+roles+integrator index table —
+   272	  prefer a new table to mirror §3 prose's level distinction).
+   273	
+   274	### 5.2 Conformance suite
+   275	
+   276	- `conformance/scenarios/test_integrator_atomicity.py` — NEW file.
+   277	  Group `Integrator atomicity`. 2 tests: cross-artifact-consistency-
+   278	  on-success (cites §3.4) and divergent-resubmit-leaves-no-second-
+   279	  event (cites §5.3).
+   280	- `conformance/scenarios/test_promotion_preconditions.py` — NEW file.
+   281	  Group `Promotion preconditions`. 2 tests: error trial → 409,
+   282	  eval_error trial → 409. Both cite §2.
+   283	- `conformance/src/conformance/harness/_seed.py` — extend with
+   284	  `drive_to_error_trial(client, *, proposal_id=None) -> str` and
+   285	  `drive_to_eval_error_trial(client, *, proposal_id=None) -> str`.
+   286	  Note: the helper `drive_to_eval_error_trial` takes
+   287	  `proposal_id` for symmetry but does not use it directly — it
+   288	  forwards to `drive_to_starting_trial(proposal_id=...)` and then
+   289	  calls `declare_trial_eval_error`.
+   290	  Both follow the chunk-11c hardening pattern: call
+   291	  `raise_for_status()` on every wire call AND assert the end-state
+   292	  trial status before returning. The `error`-trial helper drives
+   293	  through `submit_implement(status="error")` + `accept`; the
+   294	  `eval_error`-trial helper drives through `drive_to_starting_trial`
+   295	  + `declare_trial_eval_error`. (Both helpers exist in
+   296	  `_seed`'s prior surface; only the composite drive-to-end-state
+   297	  helpers are new.)
+   298	
+   299	### 5.3 Repo metadata
+   300	
+   301	- `AGENTS.md` — current-phase header gains a chunk-11d-complete entry.
+   302	- `docs/roadmap.md` — Phase 11 chunk 11d marked complete; Phase 11
+   303	  exit criterion ("reference impl passes the full v1 suite; suite is
+   304	  documented as the conformance contract for `eden-protocol/v0`")
+   305	  marked met. Phase 11 itself transitions from chunk-pending to
+   306	  fully complete.
+   307	
+   308	## 6. Reference-impl behavior (verification)
+   309	
+   310	The reference impl's `Store.integrate_trial` lives at
+   311	[`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
+   312	(method `integrate_trial`). It is a single composite-commit (chapter 05
+   313	§2.2) that:
+   314	
+   315	1. Validates `trial.status == "success"`; otherwise raises
+   316	   `InvalidPrecondition` (mapped to 409 `eden://error/invalid-precondition`
+   317	   at the wire layer per chapter 7 §5/§7).
+   318	2. Validates same-value idempotency: if `trial.trial_commit_sha`
+   319	   equals the request body's `trial_commit_sha`, returns no-op (no
+   320	   second write, no second event).
+   321	3. Validates no-overwrite: if `trial.trial_commit_sha` is set and
+   322	   differs from the request body's value, raises `InvalidPrecondition`.
+   323	4. On success, writes the new `trial_commit_sha` field and emits
+   324	   `trial.integrated` in one transaction.
+   325	
+   326	The reference impl does **not** inspect `trial.commit_sha` at integrate
+   327	time; the §2(b) precondition is enforced transitively by the trial-
+   328	status lifecycle (a trial cannot reach `success` without `commit_sha`
+   329	set; see chunk-11c hardening of `drive_to_starting_trial` /
+   330	`drive_to_success_trial`).
+   331	
+   332	The new tests are **not expected to fail** against the reference impl;
+   333	they extend coverage of cross-artifact consistency (already enforced
+   334	by the composite-commit primitive) and broaden status-precondition
+   335	coverage to `error` and `eval_error` (which the existing
+   336	`Store.integrate_trial` rejects via the same `status != "success"`
+   337	branch as the existing v1 `starting` test). If any new test reveals
+   338	a gap, it will surface at run time and the resolution is one of:
+   339	amend the spec, fix the impl, fix the suite (per chapter 9 §7 — the
+   340	reference impl does not have authority to reinterpret the spec).
+   341	
+   342	## 7. Test-design notes
+   343	
+   344	### 7.1 Cross-artifact-consistency tests are stronger than per-artifact tests
+   345	
+   346	The chunk's central new content is the **cross-artifact consistency**
+   347	assertion: it's not enough to verify "field is set" and "event was
+   348	emitted" independently; the new tests assert that they reference the
+   349	**same** SHA. A bug where the composite-commit writes the field but
+   350	emits the event with a stale SHA (or vice versa) would not be caught
+   351	by the existing v1 tests; it would be caught by the new tests.
+   352	
+   353	This is also the right shape because it's **wire-observable** — a
+   354	client that reads the field and the event sees the same value.
+   355	
+   356	### 7.2 Helper hardening discipline (per chunk-11c codification)
+   357	
+   358	`drive_to_error_trial` and `drive_to_eval_error_trial` MUST verify
+   359	their own postconditions before returning. Specifically:
+   360	
+
+exec
+/bin/zsh -lc "nl -ba conformance/src/conformance/tools/check_citations.py | sed -n '49,310p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/src/eden_storage/_base.py | sed -n '885,935p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   885	    def integrate_trial(self, trial_id: str, trial_commit_sha: str) -> None:
+   886	        """Integrator promotion: write ``trial_commit_sha`` and emit ``trial.integrated``.
+   887	
+   888	        Per ``08-storage.md`` §1.7: ``trial_commit_sha`` is the one
+   889	        post-terminal write permitted on a trial; it must be written
+   890	        atomically with its event.
+   891	
+   892	        **Same-value idempotency** (``07-wire-protocol.md`` §5): a
+   893	        repeated call whose ``trial_commit_sha`` equals the value
+   894	        already stored on the trial is a no-op and MUST NOT append a
+   895	        second ``trial.integrated`` event. This rule lets an HTTP-
+   896	        mediated caller retry a transport-indeterminate
+   897	        ``integrate_trial`` request without risking double-commit;
+   898	        the same-value branch also keeps direct-``Store`` callers
+   899	        and wire-mediated callers on identical contracts.
+   900	
+   901	        A repeated call with a **different** ``trial_commit_sha``
+   902	        raises ``InvalidPrecondition`` — the chapter 6 §1.2 sole-
+   903	        writer rule has been violated and operator intervention is
+   904	        required. The caller (e.g. ``Integrator``) maps this to an
+   905	        ``AtomicityViolation`` rather than compensating the ref.
+   906	        """
+   907	        with self._atomic_operation():
+   908	            trial = self._require_trial(trial_id)
+   909	            if trial.status != "success":
+   910	                raise InvalidPrecondition(
+   911	                    f"trial {trial_id!r} must be in 'success' to integrate, "
+   912	                    f"not {trial.status!r}"
+   913	                )
+   914	            if trial.trial_commit_sha is not None:
+   915	                if trial.trial_commit_sha == trial_commit_sha:
+   916	                    return
+   917	                raise InvalidPrecondition(
+   918	                    f"trial {trial_id!r} is already integrated with a "
+   919	                    f"different trial_commit_sha "
+   920	                    f"({trial.trial_commit_sha!r} != {trial_commit_sha!r})"
+   921	                )
+   922	            tx = _Tx()
+   923	            tx.trials[trial_id] = _validated_update(
+   924	                trial, trial_commit_sha=trial_commit_sha
+   925	            )
+   926	            tx.events.append(
+   927	                self._event(
+   928	                    "trial.integrated",
+   929	                    {"trial_id": trial_id, "trial_commit_sha": trial_commit_sha},
+   930	                )
+   931	            )
+   932	            self._apply_commit(tx)
+   933	
+   934	    # ------------------------------------------------------------------
+   935	    # Internal dispatch — accept/reject helpers
+
+ succeeded in 0ms:
+    49	def parse_chapter_9_index() -> list[tuple[str, str, set[tuple[str, str]]]]:
+    50	    """Parse the §5 scenario-index table from chapter 9.
+    51	
+    52	    Returns a list of ``(group_name, scope_text, citations)`` tuples
+    53	    where ``citations`` is the set of ``(chapter_filename, section)``
+    54	    pairs each group cites. Coverage requires at least one valid
+    55	    citing test for each *group*, where "valid" means a test whose
+    56	    own citation is to one of the group's chapters/sections (or any
+    57	    descendant of one).
+    58	    """
+    59	    chapter_9 = SPEC_DIR / "09-conformance.md"
+    60	    text = chapter_9.read_text()
+    61	    # Locate the section index table. The §5 heading is "## 5. ..."
+    62	    # and the table runs until the next heading of <= depth.
+    63	    index_re = re.compile(r"^##\s+5\.[^\n]*\n", re.MULTILINE)
+    64	    m = index_re.search(text)
+    65	    if not m:
+    66	        raise RuntimeError("chapter 9 §5 not found")
+    67	    body = text[m.end() :]
+    68	    next_heading = re.search(r"^##\s+\d+\.", body, re.MULTILINE)
+    69	    if next_heading:
+    70	        body = body[: next_heading.start()]
+    71	    # Each row is like "| Group name | Scope. | citations |" — three
+    72	    # pipe-delimited columns plus leading/trailing pipes.
+    73	    groups: list[tuple[str, str, set[tuple[str, str]]]] = []
+    74	    for line in body.splitlines():
+    75	        if not line.startswith("|"):
+    76	            continue
+    77	        cols = [c.strip() for c in line.strip("|").split("|")]
+    78	        if len(cols) != 3:
+    79	            continue
+    80	        group, scope, raw_cites = cols
+    81	        if group in {"Group", "---"} or not group:
+    82	            continue
+    83	        cites: set[tuple[str, str]] = set()
+    84	        for cm in INDEX_LINK_RE.finditer(raw_cites):
+    85	            chapter_name = cm.group("chapter")
+    86	            for ref in SECTION_REF_RE.finditer(cm.group("chain")):
+    87	                cites.add((chapter_name, ref.group(1)))
+    88	        if cites:
+    89	            groups.append((group, scope, cites))
+    90	    return groups
+    91	
+    92	
+    93	def _section_or_ancestor_has_must(
+    94	    sections: dict[str, str], section: str
+    95	) -> bool:
+    96	    r"""Check that the section, or any ancestor in the same chapter, has MUST.
+    97	
+    98	    Walks from the cited section up to its top-level parent; returns
+    99	    True if any of those texts contains a `\bMUST\b` token.
+   100	    """
+   101	    parts = section.split(".")
+   102	    while parts:
+   103	        candidate = ".".join(parts)
+   104	        text = sections.get(candidate)
+   105	        if text and MUST_RE.search(text):
+   106	            return True
+   107	        parts.pop()
+   108	    return False
+   109	
+   110	
+   111	def build_section_text_index() -> dict[str, dict[str, str]]:
+   112	    """Return ``{filename: {section_num: text}}`` for every spec heading.
+   113	
+   114	    The "text" is everything from the heading line through (but not
+   115	    including) the next heading whose depth is the same or shallower.
+   116	    This lets the MUST-check examine the full section body.
+   117	    """
+   118	    index: dict[str, dict[str, str]] = {}
+   119	    for f in sorted(SPEC_DIR.glob("*.md")):
+   120	        sections: dict[str, str] = {}
+   121	        lines = f.read_text().splitlines()
+   122	        # Pre-extract heading positions.
+   123	        positions: list[tuple[int, str, int]] = []
+   124	        for i, line in enumerate(lines):
+   125	            m = HEADING_RE.match(line)
+   126	            if m:
+   127	                positions.append((i, m.group("num"), _heading_depth(m.group("num"))))
+   128	        for idx, (start, num, depth) in enumerate(positions):
+   129	            end = len(lines)
+   130	            for j in range(idx + 1, len(positions)):
+   131	                _next_start, _next_num, next_depth = positions[j]
+   132	                if next_depth <= depth:
+   133	                    end = positions[j][0]
+   134	                    break
+   135	            sections[num] = "\n".join(lines[start:end])
+   136	        index[f.name] = sections
+   137	    return index
+   138	
+   139	
+   140	def iter_test_functions(path: Path):
+   141	    """Yield (path, function_name, first_docstring_line) for every test_*."""
+   142	    tree = ast.parse(path.read_text())
+   143	    for node in ast.walk(tree):
+   144	        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+   145	            doc = ast.get_docstring(node)
+   146	            first_line = doc.splitlines()[0] if doc else ""
+   147	            yield (path, node.name, first_line)
+   148	
+   149	
+   150	def _matches_group_citation(
+   151	    test_chapter: str,
+   152	    test_section: str,
+   153	    group_cites: set[tuple[str, str]],
+   154	) -> bool:
+   155	    """Check whether a test citation lies inside one of an index group's pairs.
+   156	
+   157	    A test matches an index group if its citation is at one of the
+   158	    group's chapter+section pairs OR a descendant section in the
+   159	    same chapter.
+   160	    """
+   161	    test_parts = test_section.split(".")
+   162	    for group_chapter, group_section in group_cites:
+   163	        if test_chapter != group_chapter:
+   164	            continue
+   165	        gs = group_section.split(".")
+   166	        if test_parts[: len(gs)] == gs:
+   167	            return True
+   168	    return False
+   169	
+   170	
+   171	def read_module_conformance_group(path: Path) -> str | None:
+   172	    """Read the module-level ``CONFORMANCE_GROUP`` constant from a scenario file.
+   173	
+   174	    Returns the string value or ``None`` if the constant is missing
+   175	    (or set to a non-string).
+   176	    """
+   177	    tree = ast.parse(path.read_text())
+   178	    for node in tree.body:
+   179	        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+   180	            target = node.targets[0]
+   181	            if (
+   182	                isinstance(target, ast.Name)
+   183	                and target.id == "CONFORMANCE_GROUP"
+   184	                and isinstance(node.value, ast.Constant)
+   185	                and isinstance(node.value.value, str)
+   186	            ):
+   187	                return node.value.value
+   188	    return None
+   189	
+   190	
+   191	def main() -> int:
+   192	    """Run the citation check and report findings."""
+   193	    if not SCENARIOS_DIR.is_dir():
+   194	        print(f"FAIL: {SCENARIOS_DIR} not found", file=sys.stderr)
+   195	        return 2
+   196	    spec_index = build_section_text_index()
+   197	    try:
+   198	        chapter_9_groups = parse_chapter_9_index()
+   199	    except RuntimeError as e:
+   200	        print(f"FAIL: {e}", file=sys.stderr)
+   201	        return 2
+   202	    failures: list[str] = []
+   203	    coverage: dict[str, list[tuple[Path, str, str]]] = {
+   204	        chapter: [] for chapter in spec_index
+   205	    }
+   206	    # Group identity per scenario file: tests are matched to chapter-9
+   207	    # §5 groups via this explicit mapping rather than citation overlap.
+   208	    # (path, test_name, chapter, section) for every test that cites a
+   209	    # valid MUST. Used by the per-group coverage + relevance checks.
+   210	    group_to_valid_tests: dict[str, list[tuple[Path, str, str, str]]] = {}
+   211	    file_groups: dict[Path, str | None] = {}
+   212	    for test_file in sorted(SCENARIOS_DIR.glob("test_*.py")):
+   213	        file_group = read_module_conformance_group(test_file)
+   214	        file_groups[test_file] = file_group
+   215	        if file_group is None:
+   216	            failures.append(
+   217	                f"{test_file.relative_to(REPO_ROOT)}: missing module-level "
+   218	                f"`CONFORMANCE_GROUP = '<group name>'` constant. Required "
+   219	                f"so the chapter-9 §5 coverage check can map this file to "
+   220	                f"its index group."
+   221	            )
+   222	        for path, name, first_line in iter_test_functions(test_file):
+   223	            m = CITATION_RE.search(first_line)
+   224	            if not m:
+   225	                failures.append(
+   226	                    f"{path.relative_to(REPO_ROOT)}::{name}: docstring "
+   227	                    f"first line missing 'spec/v0/<chapter>.md §<sec>' citation:\n"
+   228	                    f"    {first_line!r}"
+   229	                )
+   230	                continue
+   231	            chapter = m.group("chapter")
+   232	            section = m.group("section")
+   233	            sections = spec_index.get(chapter)
+   234	            if sections is None:
+   235	                failures.append(
+   236	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites unknown "
+   237	                    f"chapter {chapter}"
+   238	                )
+   239	                continue
+   240	            text = sections.get(section)
+   241	            if text is None:
+   242	                failures.append(
+   243	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   244	                    f"{chapter} §{section} (no such section in target)"
+   245	                )
+   246	                continue
+   247	            if not _section_or_ancestor_has_must(sections, section):
+   248	                failures.append(
+   249	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   250	                    f"{chapter} §{section}, but neither that section nor "
+   251	                    f"any ancestor contains a normative MUST. Per "
+   252	                    f"chapter 9 §3 the suite asserts MUSTs only; either "
+   253	                    f"cite a different section or strengthen the spec."
+   254	                )
+   255	                continue
+   256	            coverage[chapter].append((path, name, section))
+   257	            file_group = file_groups.get(path)
+   258	            if file_group is not None:
+   259	                group_to_valid_tests.setdefault(file_group, []).append(
+   260	                    (path, name, chapter, section)
+   261	                )
+   262	    # Index-group coverage check — combines TWO conditions: a scenario
+   263	    # file must declare CONFORMANCE_GROUP matching the index group AND
+   264	    # at least one of its tests must cite a section that the index
+   265	    # entry calls out (or a descendant of one). Identity alone (the
+   266	    # old fix) would let a file declare any group regardless of what
+   267	    # its tests cite; citation overlap alone (the older fix) would
+   268	    # let groups bleed into each other when they share citations.
+   269	    chapter_9_group_names = {g for (g, _s, _c) in chapter_9_groups}
+   270	    declared_groups = {g for g in file_groups.values() if g}
+   271	    unknown = declared_groups - chapter_9_group_names
+   272	    if unknown:
+   273	        failures.append(
+   274	            f"scenario files declare CONFORMANCE_GROUP values that are "
+   275	            f"not in chapter 9 §5: {sorted(unknown)}"
+   276	        )
+   277	    cites_by_group = {g: cites for (g, _s, cites) in chapter_9_groups}
+   278	    # Per-test relevance check: every test's citation must match its
+   279	    # declared group's index entries.
+   280	    for group, entries in group_to_valid_tests.items():
+   281	        cites = cites_by_group.get(group)
+   282	        if cites is None:
+   283	            continue  # already reported as unknown above
+   284	        for path, name, chapter, section in entries:
+   285	            if not _matches_group_citation(chapter, section, cites):
+   286	                failures.append(
+   287	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   288	                    f"{chapter} §{section}, but its CONFORMANCE_GROUP "
+   289	                    f"is {group!r}, whose chapter-9 §5 entry calls out: "
+   290	                    f"{sorted(f'{c} §{s}' for (c, s) in cites)}. Either "
+   291	                    f"re-cite to one of those (or a descendant) or move "
+   292	                    f"the test to a file whose CONFORMANCE_GROUP matches "
+   293	                    f"its citation."
+   294	                )
+   295	    # Per-group existence check: every chapter-9 §5 group needs at
+   296	    # least one valid citing test that ALSO declares itself as that
+   297	    # group AND cites a relevant section.
+   298	    for group, _scope, cites in chapter_9_groups:
+   299	        relevant = [
+   300	            (path, name)
+   301	            for (path, name, ch, sec) in group_to_valid_tests.get(group, [])
+   302	            if _matches_group_citation(ch, sec, cites)
+   303	        ]
+   304	        if not relevant:
+   305	            failures.append(
+   306	                f"chapter 9 §5 index group {group!r}: no valid citing "
+   307	                f"test declares CONFORMANCE_GROUP = {group!r} AND cites "
+   308	                f"one of: "
+   309	                f"{sorted(f'{c} §{s}' for (c, s) in cites)}."
+   310	            )
+
+codex
+ready to proceed
+
+The corrections are accurate. The §2(b) downgrade now matches both the wire-seeding limits and the actual reference implementation, the two-group / four-test structure fits `check_citations.py`, the single composed cross-artifact success test is the right granularity, and the reference-impl section now describes `Store.integrate_trial` correctly. I don’t see any remaining blocking issues.
+2026-05-02T05:35:15.807818Z ERROR codex_core::session: failed to record rollout items: thread 019de725-4c77-7273-adda-9d970e746717 not found
+tokens used
+243,856

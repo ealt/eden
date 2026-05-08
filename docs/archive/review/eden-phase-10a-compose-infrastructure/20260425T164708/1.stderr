@@ -1,0 +1,623 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc70a-6e46-7062-95a2-bf21eadd3584
+--------
+user
+I've updated the file based on your feedback. Please review the updated version at docs/plans/eden-phase-10a-compose-infrastructure.md.
+codex
+Reviewing the revised plan against the earlier feasibility concerns first, then I’ll continue down the requested review order only if those are actually resolved in the document.
+exec
+/bin/zsh -lc 'wc -l docs/plans/eden-phase-10a-compose-infrastructure.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     558 docs/plans/eden-phase-10a-compose-infrastructure.md
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10a-compose-infrastructure.md | sed -n '261,560p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10a-compose-infrastructure.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   261	  created up front; 10a's smoke test verifies via
+   262	  `docker volume ls`. Downstream services in 10b/10d mount it at
+   263	  `/var/lib/eden/blobs`.
+   264	- No `networks:` block: services land on Compose's default
+   265	  bridge network. Service discovery via container name
+   266	  (`postgres:5432`, `gitea:3000`) just works; explicit network
+   267	  declarations matter for multi-stack overlap, which 10a doesn't
+   268	  have.
+   269	
+   270	### `reference/compose/.env.example`
+   271	
+   272	Plain dotenv. Comments document each value. Ships dev-only secrets:
+   273	
+   274	```dotenv
+   275	# EDEN reference Compose stack — example environment.
+   276	# Copy to ".env" for local use; "compose up" reads from .env automatically.
+   277	# CI uses these defaults verbatim; do NOT use these in production.
+   278	
+   279	# --- Postgres ---
+   280	POSTGRES_DB=eden
+   281	POSTGRES_USER=eden
+   282	POSTGRES_PASSWORD=eden-dev-password-change-me
+   283	POSTGRES_HOST_PORT=5433
+   284	
+   285	# --- Gitea ---
+   286	# SECRET_KEY: gitea uses this for cookie / CSRF / 2FA encryption.
+   287	# Generate with: gitea generate secret SECRET_KEY  (or 64 hex chars).
+   288	GITEA_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+   289	# INTERNAL_TOKEN: gitea uses this for inter-component auth.
+   290	GITEA_INTERNAL_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+   291	GITEA_HOST_PORT=3001
+   292	GITEA_SSH_HOST_PORT=2222
+   293	```
+   294	
+   295	### `reference/compose/README.md`
+   296	
+   297	Sections (full content drafted at implementation time):
+   298	
+   299	1. **What this stack provides** — three infra services that EDEN
+   300	   services in later chunks consume.
+   301	2. **Quickstart** — `cp .env.example .env && docker compose up -d`
+   302	   plus `docker compose ps` showing all three healthy.
+   303	3. **What each service does** — Postgres (durable task store
+   304	   backend, lands in 10b), Gitea (git remote for `work/*` and
+   305	   `trial/*` branches, lands in 10b/10c), blob volume (artifact
+   306	   storage, lands in 10d).
+   307	4. **Connection details** — host:port for each service, default
+   308	   credentials, where to find data on disk (`docker volume
+   309	   inspect`).
+   310	5. **Operations** — bring up / tear down / wipe data (`-v`),
+   311	   tailing logs, getting a psql shell.
+   312	6. **Troubleshooting** — port collisions, healthcheck failures,
+   313	   Gitea install-lock confusion.
+   314	7. **What's *not* here yet** — explicit list of what later chunks
+   315	   add so a reader who finds the compose file isn't confused that
+   316	   the EDEN services are missing.
+   317	
+   318	### `reference/compose/healthcheck/smoke.sh`
+   319	
+   320	Bash script, exits 0 on success. Used by the new CI job and runnable
+   321	locally for verification. Behavior:
+   322	
+   323	```bash
+   324	#!/usr/bin/env bash
+   325	set -euo pipefail
+   326	
+   327	# Bring the stack up using .env.example as the source of truth.
+   328	# (Copy to a temp .env if invoked from CI to avoid mutating the
+   329	# checked-in file.)
+   330	TMPENV="$(mktemp)"
+   331	trap 'rm -f "$TMPENV"; docker compose -f compose.yaml --env-file "$TMPENV" down -v' EXIT
+   332	cp .env.example "$TMPENV"
+   333	
+   334	docker compose -f compose.yaml --env-file "$TMPENV" up -d --wait --wait-timeout 120
+   335	
+   336	# Assert both long-running services are healthy.
+   337	# `--wait` already enforces this, but we re-check for clarity in CI logs.
+   338	docker compose -f compose.yaml --env-file "$TMPENV" ps
+   339	
+   340	# Assert all three named volumes were created at compose-up time.
+   341	# Compose creates every top-level volume even when no service in the
+   342	# project mounts it (the blob volume is mounted by services in 10b/10d).
+   343	for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
+   344	    docker volume inspect "eden-reference_${vol}" >/dev/null
+   345	done
+   346	
+   347	# Assert Postgres is accepting connections (independent of healthcheck).
+   348	docker compose -f compose.yaml --env-file "$TMPENV" exec -T postgres \
+   349	    pg_isready -U eden -d eden
+   350	
+   351	# Assert Gitea API responds.
+   352	GITEA_PORT="$(grep ^GITEA_HOST_PORT "$TMPENV" | cut -d= -f2)"
+   353	curl -fsS "http://localhost:${GITEA_PORT}/api/v1/version" | grep -q '"version":'
+   354	
+   355	echo "PASS"
+   356	```
+   357	
+   358	Notes:
+   359	
+   360	- The `trap` ensures teardown runs even on assertion failure, so
+   361	  CI runs don't leave dangling volumes.
+   362	- `--wait --wait-timeout 120` (Compose v2 feature) makes `up`
+   363	  block until every service is healthy or 2min elapses, exiting
+   364	  non-zero if any service fails. This is the cleanest way to
+   365	  encode "everything came up healthy" in a script.
+   366	- The blob volume assertion uses `docker volume inspect` rather
+   367	  than parsing Compose's project-prefixed volume name by hand —
+   368	  a fragile string concat (`eden-reference_eden-blob-data`) is
+   369	  what `docker compose config` emits, but resolving it via
+   370	  `compose config` is robust to project-name overrides.
+   371	
+   372	### `.github/workflows/ci.yml` — new `compose-smoke` job
+   373	
+   374	```yaml
+   375	  compose-smoke:
+   376	    name: compose-smoke
+   377	    runs-on: ubuntu-latest
+   378	    steps:
+   379	      - uses: actions/checkout@v4
+   380	      - name: Verify docker compose is available
+   381	        run: docker compose version
+   382	      - name: Run compose smoke
+   383	        working-directory: reference/compose
+   384	        run: bash healthcheck/smoke.sh
+   385	```
+   386	
+   387	GitHub Actions' `ubuntu-latest` runners ship with Docker and the
+   388	Compose v2 plugin pre-installed; no extra setup needed.
+   389	
+   390	We do **not** add `compose-smoke` to branch protection in this PR.
+   391	Reasoning: the existing required checks (`docs-lint`,
+   392	`schema-validity`, `python-lint`, `python-typecheck`, `python-test`,
+   393	`schema-parity`) are sufficient to gate a 10a merge; adding
+   394	`compose-smoke` to protection on the *same* PR that introduces it
+   395	risks a chicken-and-egg if the job is flaky on first run. Add to
+   396	protection in 10b once the job has a few clean runs under its belt.
+   397	
+   398	### `.gitignore`
+   399	
+   400	Append:
+   401	
+   402	```text
+   403	# Compose secrets — example template is committed; real .env is not.
+   404	reference/compose/.env
+   405	```
+   406	
+   407	### Doc updates
+   408	
+   409	- `docs/roadmap.md` — under Phase 10, change `**10a** — …` to
+   410	  `**10a** — complete.` with a one-paragraph summary mirroring the
+   411	  Phase 8a / 9 chunk patterns.
+   412	- `reference/README.md` — Compose row goes from "Phase 10" to
+   413	  "Phase 10 chunk 10a"; update Status section to mention the infra
+   414	  stack landed.
+   415	- `AGENTS.md` — add a "**Phase 10 chunk 10a complete.**" paragraph
+   416	  at the top of the Current phase section, mirroring the existing
+   417	  9c / 9d / 9e paragraphs in voice and density.
+   418	
+   419	## Verification
+   420	
+   421	Order matters: each step assumes the previous one passed.
+   422	
+   423	1. **Local compose up.** From `reference/compose/`:
+   424	
+   425	   ```bash
+   426	   cp .env.example .env
+   427	   docker compose up -d --wait --wait-timeout 120
+   428	   docker compose ps
+   429	   ```
+   430	
+   431	   Expected: two services (`postgres`, `gitea`), both
+   432	   `running (healthy)`. Then:
+   433	
+   434	   ```bash
+   435	   docker volume ls --filter name=eden-reference_
+   436	   ```
+   437	
+   438	   Expected: three volumes listed
+   439	   (`eden-reference_eden-postgres-data`,
+   440	   `eden-reference_eden-gitea-data`,
+   441	   `eden-reference_eden-blob-data`).
+   442	
+   443	2. **Local smoke script.**
+   444	
+   445	   ```bash
+   446	   cd reference/compose
+   447	   bash healthcheck/smoke.sh
+   448	   ```
+   449	
+   450	   Expected: prints `PASS` and exits 0.
+   451	
+   452	3. **Local teardown.**
+   453	
+   454	   ```bash
+   455	   docker compose down -v
+   456	   docker volume ls | grep eden-reference  # should be empty
+   457	   ```
+   458	
+   459	4. **CI green.** All seven jobs pass on the PR
+   460	   (`docs-lint`, `schema-validity`, `python-lint`,
+   461	   `python-typecheck`, `python-test`, `schema-parity`,
+   462	   `compose-smoke`).
+   463	
+   464	5. **`reference/compose/.env` is not committed.** `git status`
+   465	   shows nothing under `reference/compose/.env` after running the
+   466	   quickstart locally.
+   467	
+   468	6. **AGENTS.md, reference/README.md, docs/roadmap.md** all reflect
+   469	   10a-complete state.
+   470	
+   471	## Execution Order
+   472	
+   473	1. Branch off `main` as `phase-10a/compose-infrastructure`.
+   474	2. Create `reference/compose/compose.yaml`,
+   475	   `reference/compose/.env.example`,
+   476	   `reference/compose/healthcheck/smoke.sh` (chmod +x),
+   477	   `reference/compose/README.md`.
+   478	3. Update root `.gitignore`.
+   479	4. Update `.github/workflows/ci.yml` with the `compose-smoke` job.
+   480	5. Run local verification steps 1-3 above.
+   481	6. Update `docs/roadmap.md`, `reference/README.md`, `AGENTS.md`.
+   482	7. Stage + commit.
+   483	8. Push + open PR.
+   484	9. Wait for CI; address any failures.
+   485	10. Merge once green.
+   486	11. Codify any lessons learned (subagent invariants, missing
+   487	    pre-flight checks, etc.) into memory or skills.
+   488	
+   489	## Out of Scope
+   490	
+   491	- Any Dockerfile for an EDEN service (`task-store-server`,
+   492	  `orchestrator`, etc.). 10b.
+   493	- Any `PostgresStore` Python code. Lands when its consumer lands —
+   494	  10b.
+   495	- Any blob storage Python code. 10d.
+   496	- The `setup-experiment` script. 10c.
+   497	- Gitea admin user / API token bootstrap. 10c.
+   498	- Production-grade secrets management. The `.env` pattern is
+   499	  developer-grade; production deployments override.
+   500	- Compose overrides for the e2e test. 10e may add a `compose.test.yaml`.
+   501	- Branch protection update to require `compose-smoke`. Deferred to
+   502	  a follow-up after the job is proven stable.
+   503	
+   504	## Known Risks / Things to Watch
+   505	
+   506	- **GitHub Actions Docker version drift.** `ubuntu-latest` updates
+   507	  Docker periodically; Compose v2 syntax we use (`--wait`,
+   508	  `--wait-timeout`, `name:` top-level field, no `version:` key) all
+   509	  require Docker Compose v2.20+. As of April 2026 `ubuntu-latest`
+   510	  ships v2.27+, so we have margin, but if the runner ever
+   511	  downgrades the smoke job will break loudly. We don't pin Docker
+   512	  in CI because GitHub controls that.
+   513	- **Gitea startup is slow.** First boot of `gitea/gitea:1.22.6-rootless`
+   514	  takes 15-25 seconds on a cold runner. The healthcheck
+   515	  `start_period: 30s` covers this; if it ever proves flaky,
+   516	  the next move is bumping to 60s rather than reducing the test.
+   517	- **Image-pin staleness.** `postgres:16.6-alpine` and
+   518	  `gitea/gitea:1.22.6-rootless` will be superseded. We pin
+   519	  deliberately; Phase 10e or a dedicated bump PR refreshes both
+   520	  together when the next Compose round lands.
+   521	- **Port-collision regret.** Defaults of 5433 / 3001 / 2222 sidestep
+   522	  the most common collisions but a developer running their own
+   523	  Gitea on 3001 will hit one. The README's Troubleshooting section
+   524	  documents the `.env` overrides; no other mitigation is worth it.
+   525	- **`.env.example` rotation.** The dev-only secrets in `.env.example`
+   526	  are intentionally weak. If a future contributor copies them to a
+   527	  real deployment they're in trouble. The README's Quickstart
+   528	  section labels the values as throwaway; we additionally make
+   529	  `POSTGRES_PASSWORD`, `GITEA_SECRET_KEY`, `GITEA_INTERNAL_TOKEN`
+   530	  required-with-error-on-missing in `compose.yaml`, so production
+   531	  users who delete `.env` get a clear failure rather than silently
+   532	  inheriting weak defaults.
+   533	- **Compose project-name leakage.** The `name: eden-reference`
+   534	  field means volumes get the prefix `eden-reference_`. If a
+   535	  developer also runs the predecessor's direvo monolith via
+   536	  Compose, project names won't collide. If they ever rename our
+   537	  `name:` field, every `docker volume ls` reference and every
+   538	  `compose down -v` invocation that targets historical data will
+   539	  miss the old volumes. We document the project name in the README.
+   540	- **Compose v1 (`docker-compose`) users.** v1 is EOL since June
+   541	  2023. Some legacy systems still ship it; those users will see
+   542	  syntax errors on `name:` and `--wait`. The README's prerequisites
+   543	  section names `docker compose` v2.20+ explicitly. No backcompat
+   544	  shim.
+   545	
+   546	## Files to Reference
+   547	
+   548	- `direvo/Dockerfile` — predecessor's container shape, kept for
+   549	  10b context but **not** copied for 10a.
+   550	- `docs/roadmap.md` — Phase 10 unit definitions.
+   551	- `reference/README.md` — current "Compose: Phase 10" placeholder
+   552	  that this chunk updates.
+   553	- The Postgres image docs (`hub.docker.com/_/postgres`) for
+   554	  `POSTGRES_*` env-var semantics and `/docker-entrypoint-initdb.d/`
+   555	  rules.
+   556	- The Gitea install docs
+   557	  (`docs.gitea.com/installation/install-with-docker-rootless`) for
+   558	  `GITEA__*` env-var semantics and rootless-image conventions.
+
+ succeeded in 0ms:
+     1	# EDEN Phase 10 chunk 10a: Compose Infrastructure
+     2	
+     3	## Context
+     4	
+     5	Phase 9 closed with a complete Web UI: a human can play any role
+     6	end-to-end through a browser, and `/admin/*` exposes observability and
+     7	operator-reclaim. Every service is currently run as a Python module
+     8	(`python -m eden_task_store_server …`, etc.) against ephemeral
+     9	SQLite + a local bare git repo.
+    10	
+    11	Phase 10 packages the reference stack so it runs locally via
+    12	`docker compose up`. Per the roadmap, the phase splits into five
+    13	chunks; this plan covers **chunk 10a**:
+    14	
+    15	> **10a** — Infrastructure containers (Postgres for durable backend,
+    16	> Gitea for git host, blob volume) + Compose skeleton that stands them
+    17	> up.
+    18	
+    19	Subsequent chunks will dockerize the EDEN services themselves (10b),
+    20	add the experiment-registration script (10c), wire LLM workers (10d),
+    21	and ship the end-to-end Compose integration test (10e).
+    22	
+    23	**Critical scope clarification.** 10a is *only* the infrastructure
+    24	layer: third-party stateful services (Postgres, Gitea), the named
+    25	volume that will eventually back blob storage, and the Compose file
+    26	that stands them up. **No EDEN services are dockerized in 10a.** No
+    27	new Python code in `reference/packages/` or `reference/services/`.
+    28	No `PostgresStore` implementation — `eden-storage` already ships
+    29	`SqliteStore` and `InMemoryStore`; the Postgres binding lands when a
+    30	consumer exists (10b alongside the dockerized `task-store-server`).
+    31	The blob package (`reference/packages/eden-blob/`) stays a `.gitkeep`
+    32	until 10d when the implementer host needs to publish artifacts.
+    33	
+    34	**Postgres is for the EDEN task store, not for Gitea.** The roadmap
+    35	phrases 10a's deliverables as "Postgres for durable backend, Gitea
+    36	for git host," which scoped together can read as "Postgres backs
+    37	Gitea." It does not. Gitea ships with its own embedded SQLite and
+    38	that's what the 10a Compose file uses (`GITEA__database__DB_TYPE:
+    39	sqlite3`). Pointing Gitea at our Postgres would couple the git
+    40	host's recovery story to EDEN's task store schema — something a
+    41	reference deployment of EDEN should explicitly not do, since
+    42	production deployments should be free to swap either component
+    43	independently. The Postgres container in 10a is reserved for
+    44	`PostgresStore` consumption in 10b.
+    45	
+    46	Why ship infra without consumers? Three reasons:
+    47	
+    48	1. **Image-pin & config-shape stability lands first.** Pinning
+    49	   image tags, naming volumes, choosing the postgres user/db scheme,
+    50	   and picking the Gitea admin bootstrap pattern are all decisions
+    51	   that downstream chunks consume. Surfacing them now means 10b/10c/10d
+    52	   only have to write app code, not also negotiate infra shape.
+    53	2. **Smoke-testable in isolation.** A standalone Compose file with
+    54	   healthchecks can be brought up in CI with no EDEN dependencies,
+    55	   so Compose drift is caught even when the python suite is green.
+    56	3. **Chunk discipline.** The roadmap explicitly groups 10b + 10c into
+    57	   one chunk and lists 10a separately. Co-mingling 10a with backend
+    58	   bindings violates that grouping.
+    59	
+    60	## Core Design Decisions
+    61	
+    62	- **`reference/compose/` is the home for everything.** Compose file,
+    63	  `.env.example`, init scripts, README. No top-level `docker-compose.yml`
+    64	  at the repo root — that would imply the whole repo is "a docker
+    65	  thing," which it isn't.
+    66	- **One Compose file, no overrides yet.** A single
+    67	  `docker-compose.yml` in 10a. Profile-based service splits
+    68	  (`compose --profile workers`) are tempting but premature; 10b will
+    69	  add EDEN services to the same file, and 10e may add an override
+    70	  for the e2e test. Adding a second file now would force us to move
+    71	  things around in 10b.
+    72	- **Image tags pinned to specific minor versions, never `:latest`.**
+    73	  Selected versions:
+    74	  - `postgres:16.6-alpine` — current Postgres stable, alpine variant
+    75	    keeps the image small. Postgres 16 is the line direvo's monolith
+    76	    targeted; staying on it minimizes surprises when Phase 10b adds
+    77	    `PostgresStore`.
+    78	  - `gitea/gitea:1.22.6-rootless` — current Gitea stable, rootless
+    79	    variant runs as uid 1000 instead of root (Gitea publishes both
+    80	    flavors and explicitly recommends rootless for new deployments).
+    81	- **Default ports are off the well-known channels** (Postgres on 5433,
+    82	  Gitea on 3001) so a developer's existing local Postgres / Gitea
+    83	  doesn't collide. Documented in `.env.example`. Real production
+    84	  deployments override.
+    85	- **Secrets via `.env` only.** No secrets baked into the Compose file.
+    86	  `.env.example` ships canned dev defaults; the real `.env` is
+    87	  gitignored. CI uses `.env.example` as-is — these are throwaway
+    88	  values, not real credentials.
+    89	- **Healthchecks on every infra service.** Compose `depends_on`
+    90	  semantics with `condition: service_healthy` are the only safe way
+    91	  to chain bring-up; without healthchecks, "up" means "container
+    92	  process started," not "Postgres is accepting connections." Each
+    93	  service in 10a defines a `healthcheck:` block and downstream
+    94	  services in 10b will gate on `service_healthy` instead of bare
+    95	  `service_started`.
+    96	- **Volume strategy — named volumes, not bind mounts.** Named volumes
+    97	  (`eden-postgres-data`, `eden-gitea-data`, `eden-blob-data`) are
+    98	  Compose-managed, survive `compose down` (use `compose down -v` to
+    99	  wipe), and don't pollute the repo with `_data/` directories. Bind
+   100	  mounts work but tie data location to the developer's filesystem
+   101	  layout, which gets fragile when CI lays things out differently.
+   102	- **Postgres bootstrap via `/docker-entrypoint-initdb.d/`.** The
+   103	  official Postgres image runs every `*.sql` and `*.sh` in that
+   104	  directory the *first* time the data volume is empty. We ship one
+   105	  init SQL file: `01-create-eden-db.sql`, which creates the `eden`
+   106	  database and the `eden` role with an env-var-driven password.
+   107	  (`POSTGRES_DB=eden` + `POSTGRES_USER=eden` + `POSTGRES_PASSWORD=…`
+   108	  in `.env` is the simpler path and we use that — the init SQL is
+   109	  needed only if we want extensions or extra roles. **Decision:**
+   110	  use env-var bootstrap, **no init SQL file** in 10a. If a later
+   111	  chunk needs `pg_stat_statements` or a second role we add init SQL
+   112	  then. Keeps 10a smaller.)
+   113	- **Gitea bootstrap via env vars.** Gitea respects `GITEA__<section>__<key>`
+   114	  env vars at startup. We set the minimum needed for headless
+   115	  operation: install lock skipped, no telemetry, JWT secret pinned
+   116	  via `.env`, admin user *not* auto-created in 10a — 10c's
+   117	  `setup-experiment` script will create the admin via the API or
+   118	  `gitea admin user create` once there's a real consumer. (Creating
+   119	  an admin in 10a means we'd have to choose a token-issuing scheme
+   120	  before we have anything to issue tokens for.)
+   121	- **Blob volume = bare named volume.** No init container, no service
+   122	  process. Compose creates every volume declared in the top-level
+   123	  `volumes:` block at `compose up` time even if no service mounts
+   124	  it (Compose v2 docs: "Volumes are created if they do not exist
+   125	  yet" — applies to all volumes in the project, not just mounted
+   126	  ones). Downstream services in 10b/10d mount it at
+   127	  `/var/lib/eden/blobs`. 10a's smoke test asserts the named volume
+   128	  exists in `docker volume ls` after `compose up`. (Earlier drafts
+   129	  added a one-shot `blob-init` busybox container to "guarantee"
+   130	  the volume existed, but that doubled up on Compose's own
+   131	  guarantee, and `docker compose up --wait` semantics for
+   132	  one-shot/exited services are not as crisp as for healthy
+   133	  long-running ones — the bare-volume path avoids both confusions.)
+   134	- **Compose file format = `compose.yaml` (no `version:` field).**
+   135	  Modern Docker Compose deprecated the top-level `version:` key and
+   136	  Docker recommends using just `compose.yaml`. We name the file
+   137	  `compose.yaml` (not `docker-compose.yml`) and omit `version:`.
+   138	  `docker compose` (v2 plugin, the only supported flavor) accepts
+   139	  both filenames; users on extremely old `docker-compose` (v1, EOL)
+   140	  may be surprised, and that's an acceptable cost — v1 has been
+   141	  unmaintained for 18+ months.
+   142	
+   143	## What Gets Created
+   144	
+   145	```text
+   146	reference/compose/
+   147	├── README.md                 # How to bring it up + what each service does + ops notes
+   148	├── compose.yaml              # The Compose file. Three services + three volumes.
+   149	├── .env.example              # Default env values; gitignored ".env" is the real file.
+   150	└── healthcheck/
+   151	    └── smoke.sh              # Bash script: bring up, wait for healthy, assert volume,
+   152	                              # tear down. Used by both the human verification step
+   153	                              # and the new compose-smoke CI job.
+   154	
+   155	.github/workflows/ci.yml      # New job: compose-smoke
+   156	.gitignore                    # Add: reference/compose/.env
+   157	docs/roadmap.md               # Mark 10a complete
+   158	reference/README.md           # Update Compose row from "Phase 10" → "Phase 10 chunk 10a"
+   159	AGENTS.md                     # Append Phase 10 chunk 10a paragraph
+   160	```
+   161	
+   162	**Not** created in 10a:
+   163	
+   164	- Any Dockerfile under `reference/services/*/` — those land in 10b.
+   165	- Any `PostgresStore` code in `reference/packages/eden-storage/` —
+   166	  defers until 10b ships the consumer.
+   167	- `reference/packages/eden-blob/*.py` — defers to 10d.
+   168	- `reference/scripts/setup-experiment/` content — that's 10c.
+   169	- A repo-root `compose.yaml` — only `reference/compose/compose.yaml`.
+   170	
+   171	## File-by-file design
+   172	
+   173	### `reference/compose/compose.yaml`
+   174	
+   175	Three services. Two named volumes are tied to services; one
+   176	(`eden-blob-data`) is declared but unmounted by any 10a service.
+   177	
+   178	```yaml
+   179	name: eden-reference
+   180	
+   181	services:
+   182	  postgres:
+   183	    image: postgres:16.6-alpine
+   184	    container_name: eden-postgres
+   185	    restart: unless-stopped
+   186	    environment:
+   187	      POSTGRES_DB: ${POSTGRES_DB:-eden}
+   188	      POSTGRES_USER: ${POSTGRES_USER:-eden}
+   189	      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+   190	    ports:
+   191	      - "${POSTGRES_HOST_PORT:-5433}:5432"
+   192	    volumes:
+   193	      - eden-postgres-data:/var/lib/postgresql/data
+   194	    healthcheck:
+   195	      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eden} -d ${POSTGRES_DB:-eden}"]
+   196	      interval: 5s
+   197	      timeout: 3s
+   198	      retries: 10
+   199	      start_period: 10s
+   200	
+   201	  gitea:
+   202	    image: gitea/gitea:1.22.6-rootless
+   203	    container_name: eden-gitea
+   204	    restart: unless-stopped
+   205	    environment:
+   206	      GITEA__server__DOMAIN: localhost
+   207	      GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
+   208	      GITEA__server__HTTP_PORT: "3000"
+   209	      # SSH_PORT is the *advertised* port (shown in clone URLs); it must
+   210	      # match the host-side mapping so SSH clones work. SSH_LISTEN_PORT
+   211	      # is what Gitea binds inside the container, kept fixed at 2222
+   212	      # so the published mapping below stays valid even when a user
+   213	      # overrides GITEA_SSH_HOST_PORT to dodge a host collision.
+   214	      GITEA__server__SSH_PORT: "${GITEA_SSH_HOST_PORT:-2222}"
+   215	      GITEA__server__SSH_LISTEN_PORT: "2222"
+   216	      GITEA__database__DB_TYPE: sqlite3
+   217	      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+   218	      GITEA__security__INSTALL_LOCK: "true"
+   219	      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
+   220	      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
+   221	      GITEA__service__DISABLE_REGISTRATION: "true"
+   222	      GITEA__metrics__ENABLED: "false"
+   223	      GITEA__log__LEVEL: Warn
+   224	    ports:
+   225	      - "${GITEA_HOST_PORT:-3001}:3000"
+   226	      - "${GITEA_SSH_HOST_PORT:-2222}:2222"
+   227	    volumes:
+   228	      - eden-gitea-data:/var/lib/gitea
+   229	    healthcheck:
+   230	      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
+   231	      interval: 5s
+   232	      timeout: 3s
+   233	      retries: 20
+   234	      start_period: 30s
+   235	
+   236	volumes:
+   237	  eden-postgres-data:
+   238	  eden-gitea-data:
+   239	  eden-blob-data:
+   240	```
+   241	
+   242	Notes on shape choices:
+   243	
+   244	- `name: eden-reference` is the project name. `compose up`,
+   245	  `compose down`, and `compose ps` use this; without it the project
+   246	  defaults to the directory name (`compose`) which is uselessly
+   247	  generic.
+   248	- `${VAR:?msg}` syntax for required secrets means `compose up`
+   249	  fails fast with a clear message if the user hasn't copied
+   250	  `.env.example` to `.env`. `${VAR:-default}` for optional values.
+   251	- Port collisions on the host are likely (a developer probably has
+   252	  Postgres 5432 in use; some have Gitea 3000). Defaulting host-side
+   253	  to 5433 / 3001 / 2222 sidesteps the most common collisions.
+   254	- `GITEA__security__INSTALL_LOCK: "true"` — skip the first-run
+   255	  installer wizard. With `INSTALL_LOCK=true` plus
+   256	  `DISABLE_REGISTRATION=true`, Gitea boots straight into headless
+   257	  mode. Admin user creation happens in 10c.
+   258	- The blob volume is declared at the top level but mounted by no
+   259	  10a service. Compose still creates it at `compose up` time
+   260	  because every volume in the top-level `volumes:` block is
+
+web search: 
+web search: site:docs.docker.com Compose volumes are created if they do not already exist top-level volumes official
+web search: 
+web search: site:docs.docker.com "top-level volumes" created if not used compose
+web search: 
+web search: https://docs.docker.com/reference/cli/docker/compose/down/
+web search: 
+web search: 'container_name' in https://docs.docker.com/reference/compose-file/services/
+web search: 
+web search: site:docs.gitea.com START_SSH_SERVER default false gitea config cheat sheet
+web search: 
+web search: https://docs.gitea.com/1.26/installation/install-with-docker-rootless
+codex
+**Missing Context**
+
+Brief assessment: the revised plan is much clearer. The Gitea/Postgres relationship is now explicit, and the earlier SSH/blob-init ambiguities are addressed.
+
+- There is still one small internal inconsistency on file naming. The design section says “a single `docker-compose.yml` in 10a” at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:66), but the rest of the plan standardizes on `compose.yaml` at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:134). That should be normalized so the plan has one filename throughout.
+
+**Feasibility**
+
+Brief assessment: much improved, but I still see one material feasibility gap.
+
+- The plan now depends on an unused top-level volume being created at `docker compose up` time, but the source it cites does not actually prove that case. The key design claim is at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:121), and the smoke test enforces it at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:340) and [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:435). Docker’s volumes docs say `docker compose up` creates the volume in examples where a service mounts that volume; they do not clearly state that a completely unreferenced top-level volume is created just because it is declared. Since `eden-blob-data` is intentionally unmounted in 10a at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:175), this needs either:
+  - a more specific authoritative source proving the behavior, or
+  - a small implementation spike before the plan treats it as an invariant.
+  
+  Without that, the blob-volume strategy and its smoke test are still resting on an unverified assumption. Source used for this check: [Docker Compose volumes docs](https://docs.docker.com/reference/compose-file/volumes/).
+
+I would stop here before reviewing alternatives, completeness, or later edge cases, because that blob-volume assumption is central to the revised design.
+
+**Overall Assessment**
+
+This draft is materially better than the previous one. The earlier SSH-port and one-shot-service problems are fixed. The remaining blocker is narrower: prove or replace the assumption that an unmounted named volume is created by `docker compose up`, and the plan will be in much better shape for a deeper round.
+2026-04-25T23:52:49.389212Z ERROR codex_core::session: failed to record rollout items: thread 019dc70a-6e46-7062-95a2-bf21eadd3584 not found
+tokens used
+202,628

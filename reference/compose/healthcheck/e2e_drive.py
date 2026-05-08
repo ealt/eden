@@ -13,7 +13,7 @@ Run from ``e2e.sh``; expects these env vars:
   on the ideator submit (read from setup-experiment's ``.env``)
 
 The flow is documented in
-``docs/plans/eden-phase-10e-compose-e2e.md`` §C / §D.
+``docs/archive/eden-phase-10e-compose-e2e.md`` §C / §D.
 """
 
 from __future__ import annotations

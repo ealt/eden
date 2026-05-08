@@ -1,0 +1,414 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbb65-722b-78b2-a2cc-6ee51fe81958
+--------
+user
+Round 2 updates:
+
+1. Evaluator self-contradiction (03 §4.2 → §4.3): rewritten. §4.2 says the evaluator's outputs are metrics and optional artifacts, returned via the submission payload; it does NOT write trial fields directly. §4.4 now says the orchestrator performs the trial writes atomically with the terminal state event. 'MUST NOT modify ... other than the trial fields the submission writes and the task it holds a claim on' is the new negative rule.
+
+2. completed_at / metrics / artifacts_uri ambiguity across eval attempts: resolved in 03 §4.4. completed_at is written exactly once (on the trial-status transition out of 'starting'); intermediate eval_error submissions do not advance it. metrics and artifacts_uri are written only when trial status leaves 'starting' (success or error submission, or retry-exhausted eval_error terminal).
+
+3. Proposal dispatched→completed on failure: resolved in 04 §7 and 02 §5.1 state-description column. 'completed' now means 'the implementer's attempt has finished (successfully or not)'; the trial's status records outcome. Any terminal implement transition MUST move proposal dispatched→completed. No proposal remains in dispatched after its implement task terminates.
+
+4. Nit 'at two points' / three bullets: changed to 'at the following points'.
+
+Please re-review 03-roles.md, 04-task-protocol.md, and the single-line change to 02-data-model.md §5.1.
+codex
+Re-reviewing the revised sections now. I’m checking only the residual areas from the last round: evaluator write ownership, eval-retry field timing, and proposal completion semantics.
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '240,320p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/02-data-model.md | sed -n '232,246p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/04-task-protocol.md | sed -n '198,380p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   232	
+   233	Schema: [`schemas/proposal.schema.json`](schemas/proposal.schema.json).
+   234	
+   235	A proposal is the planner's output.
+   236	
+   237	### 5.1 Fields
+   238	
+   239	| Field | Required | Type | Description |
+   240	|---|---|---|---|
+   241	| `proposal_id` | yes | string | Unique identifier. |
+   242	| `experiment_id` | yes | string | The experiment this proposal belongs to. |
+   243	| `slug` | yes | string | Human-readable short label. MUST match `^[a-z0-9][a-z0-9-]*$`. |
+   244	| `priority` | yes | number | Ordering hint; higher dispatches earlier. |
+   245	| `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
+   246	| `artifacts_uri` | yes | string (URI) | Where the planner's output documents live. |
+
+ succeeded in 0ms:
+   240	
+   241	### 4.1 Inputs
+   242	
+   243	An evaluator receives:
+   244	
+   245	- The task object (`kind == "evaluate"`,
+   246	  `payload.trial_id == T`).
+   247	- Read access to the trial `T`. The orchestrator MUST ensure
+   248	  `T.status == "starting"` and `T.commit_sha` is set before
+   249	  dispatch.
+   250	- Read access to the git repository at `T.commit_sha` on the
+   251	  worker branch (`T.branch`). Repository location and access are
+   252	  a role-binding concern, as for the implementer (§3.1).
+   253	- Read access to the experiment's `metrics_schema` and
+   254	  `objective`.
+   255	
+   256	### 4.2 Outputs
+   257	
+   258	The evaluator MUST:
+   259	
+   260	1. Produce a `metrics` object whose keys are a subset of the
+   261	   declared `metrics_schema` keys and whose values satisfy the
+   262	   per-metric type rules
+   263	   ([`02-data-model.md`](02-data-model.md) §1.3, §7.2).
+   264	2. Optionally upload supporting artifacts (logs, captured outputs,
+   265	   diagnostic files).
+   266	
+   267	The evaluator MUST NOT modify the worker branch or any
+   268	protocol-owned mutable state other than the trial fields the
+   269	submission writes (§4.4) and the task it holds a claim on. In
+   270	particular, the evaluator MUST NOT write to the trial's
+   271	`completed_at`, `metrics`, `artifacts_uri`, `description`, or
+   272	`status` directly; those writes are performed by the orchestrator
+   273	when the submitted task reaches its terminal state (§4.4,
+   274	[`04-task-protocol.md`](04-task-protocol.md) §4.3).
+   275	
+   276	### 4.3 Non-interference
+   277	
+   278	The evaluator reads the repository at the trial's worker-branch tip
+   279	but MUST NOT push, rewrite, or delete that branch, and MUST NOT
+   280	write to the canonical trial lineage. Any side effects of evaluation
+   281	(test caches, build outputs, captured logs) MUST NOT be observable
+   282	through any protocol-owned store, ref, or artifact location except
+   283	via the evaluator's declared outputs (§4.2).
+   284	
+   285	### 4.4 Submission
+   286	
+   287	The evaluator submits with:
+   288	
+   289	- `trial_id` — the trial it evaluated.
+   290	- `status` — one of:
+   291	  - `"success"` — the trial ran and produced metrics.
+   292	  - `"error"` — the trial could not be evaluated for reasons
+   293	    attributable to the trial's own code (build failure, test
+   294	    failure, etc.). The evaluator MAY still include partial
+   295	    metrics.
+   296	  - `"eval_error"` — the evaluator itself failed for reasons
+   297	    unrelated to the trial's code (infrastructure fault,
+   298	    evaluator bug). While a fresh evaluate task MAY still be
+   299	    created for this trial, the trial's status MUST remain
+   300	    `"starting"`. If the orchestrator's retry policy is
+   301	    exhausted (or the operator abandons evaluation), the
+   302	    orchestrator MUST transition the trial's status to
+   303	    `"eval_error"`, making that status terminal for the trial
+   304	    ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
+   305	- `metrics` — the metrics object described in §4.2. MAY be absent
+   306	  when `status == "eval_error"`.
+   307	- `artifacts_uri` — OPTIONAL. A URI the evaluator uploaded
+   308	  supporting artifacts to.
+   309	
+   310	On a `submitted → completed` or `submitted → failed` transition
+   311	(per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the
+   312	orchestrator MUST write the following trial fields atomically with
+   313	the event:
+   314	
+   315	- `status` — the trial status implied by the submission: `"success"`
+   316	  when the submission's `status == "success"`; `"error"` when the
+   317	  submission's `status == "error"`; unchanged from `"starting"`
+   318	  when the submission's `status == "eval_error"` (see §4.4 above
+   319	  for the terminal-retry case).
+   320	- `metrics` — set to the submission's `metrics` when
+
+ succeeded in 0ms:
+   198	
+   199	### 4.3 From `submitted` to terminal
+   200	
+   201	A submitted task is processed by the orchestrator and transitions
+   202	to a terminal state. The orchestrator MUST:
+   203	
+   204	- Transition `submitted → completed` when the submission's
+   205	  `status` is `"success"` and the result satisfies the role's
+   206	  success contract (e.g. an implementer submission carries a
+   207	  reachable `commit_sha`).
+   208	- Transition `submitted → failed` when either:
+   209	  - The result violates the role's success contract (malformed
+   210	    payload, missing required field, failed post-validation).
+   211	  - The worker itself declared failure:
+   212	    - `plan` task, worker `status == "error"` → `failed`.
+   213	    - `implement` task, worker `status == "error"` → `failed`.
+   214	    - `evaluate` task, worker `status == "error"` → `failed`
+   215	      AND the referenced trial's `status` MUST be updated to
+   216	      `"error"`.
+   217	    - `evaluate` task, worker `status == "eval_error"` →
+   218	      `failed`, but the referenced trial's `status` MUST remain
+   219	      `"starting"` (the trial itself was not shown to be bad;
+   220	      only the evaluator-side attempt failed). A fresh
+   221	      `evaluate` task MAY be created for the same trial; the
+   222	      protocol does not mandate automatic retry. If the
+   223	      orchestrator's policy exhausts retries for this trial
+   224	      (or the operator abandons it), the orchestrator MUST
+   225	      transition the trial's `status` from `"starting"` to
+   226	      `"eval_error"`, at which point the trial status is
+   227	      terminal.
+   228	
+   229	Every terminal transition produces exactly one state-change event
+   230	in the log ([`05-event-protocol.md`](05-event-protocol.md)) and
+   231	MUST clear the task's `claim` object
+   232	([`02-data-model.md`](02-data-model.md) §3.4). The orchestrator MAY
+   233	implement the `claimed → submitted → completed` (or `failed`)
+   234	sequence as two distinct persisted states or as a single store
+   235	transaction whose event stream includes both transitions, but
+   236	subscribers MUST observe both events in order.
+   237	
+   238	### 4.4 Post-terminal writes prohibited
+   239	
+   240	Once a task is `completed` or `failed`, no further writes to its
+   241	task fields are permitted beyond audit-only metadata that a task
+   242	store chooses to expose outside the normative schema
+   243	([`02-data-model.md`](02-data-model.md) §3.1). In particular, a
+   244	resubmission against a terminal task MUST be rejected regardless of
+   245	content equivalence; the claim token that produced the terminal
+   246	transition is no longer valid.
+   247	
+   248	## 5. Reclamation
+   249	
+   250	### 5.1 When reclamation is permitted
+   251	
+   252	A conforming task store MAY reclaim a task — move it from
+   253	`claimed` back to `pending` — in any of the following cases:
+   254	
+   255	- The `claim.expires_at` timestamp has passed.
+   256	- An operator invokes an explicit reclaim action on the task.
+   257	- A task-store-defined health policy determines the claiming worker
+   258	  is unreachable.
+   259	
+   260	A task in `submitted` state MAY be reclaimed **only** by an
+   261	explicit operator action; automatic reclaim (expires_at, health
+   262	policy) MUST NOT apply to `submitted` tasks. After submit the
+   263	worker's reachability is no longer a relevant liveness signal; the
+   264	orchestrator is expected to advance the task to a terminal state
+   265	(§4.3).
+   266	
+   267	A task store MUST NOT reclaim a task in a terminal state.
+   268	
+   269	### 5.2 Effect of reclamation
+   270	
+   271	Reclamation:
+   272	
+   273	1. Invalidates the prior claim token. Subsequent operations
+   274	   presenting it MUST be rejected.
+   275	2. Clears the `claim` object from the task.
+   276	3. Sets the task's `state` back to `pending`.
+   277	4. Is accompanied by a `task.reclaimed` event in the event log
+   278	   ([`05-event-protocol.md`](05-event-protocol.md)), atomically
+   279	   with the state change.
+   280	
+   281	Any partial result a worker had assembled before reclamation is
+   282	no longer observable through the task protocol. If the worker
+   283	created store-resident objects (drafting proposals, starting
+   284	trials), those objects persist per their own lifecycle and are
+   285	subject to role-level cleanup rules; reclamation itself does not
+   286	delete them.
+   287	
+   288	### 5.3 Worker detection of reclamation
+   289	
+   290	A worker that wishes to detect its own reclamation MAY observe its
+   291	task's state or subscribe to events. If a worker discovers its
+   292	token has been invalidated, it MUST discontinue work on the task
+   293	and MUST NOT submit ([`03-roles.md`](03-roles.md) §1 step 5).
+   294	
+   295	### 5.4 Reclamation effect on role outputs
+   296	
+   297	When a reclaimed task had created role-owned objects during its
+   298	prior execution, the orchestrator MUST reconcile those objects as
+   299	follows:
+   300	
+   301	- **Implement reclamation.** If the prior execution created a
+   302	  trial with `status == "starting"`, the orchestrator MUST
+   303	  transition that trial's `status` to `"error"` atomically with
+   304	  the reclaim event. A subsequent re-claim of the implement task
+   305	  produces a **new** trial; starting trials are never shared
+   306	  across implementer attempts.
+   307	- **Plan reclamation.** If the prior execution persisted
+   308	  proposals in `"drafting"` state, those proposals remain in
+   309	  `"drafting"` and are not dispatched. Implementations MAY expose
+   310	  them to operators for inspection or removal; the task protocol
+   311	  does not mandate automatic cleanup.
+   312	- **Evaluate reclamation.** The trial the task referenced is
+   313	  unchanged by reclamation (it was produced by the implementer,
+   314	  not the evaluator).
+   315	
+   316	## 6. Ordering and concurrency
+   317	
+   318	### 6.1 Per-task serialization
+   319	
+   320	All transitions on a single task MUST be serialized: the observable
+   321	history of a task is a total order. A conforming task store MUST
+   322	NOT expose a state to readers that has not yet been accompanied by
+   323	its event.
+   324	
+   325	### 6.2 Cross-task concurrency
+   326	
+   327	Distinct tasks MAY progress concurrently. The protocol imposes no
+   328	global ordering on transitions across tasks beyond the causal order
+   329	preserved by the event log
+   330	([`02-data-model.md`](02-data-model.md) §4.3,
+   331	[`05-event-protocol.md`](05-event-protocol.md)).
+   332	
+   333	### 6.3 Observability
+   334	
+   335	A subscriber that reads the event log MUST be able to reconstruct
+   336	every task's state-machine history exactly. Implementations MAY
+   337	provide faster paths (direct task reads, push notifications) but
+   338	MUST NOT let those paths expose states that the event log does not
+   339	record.
+   340	
+   341	## 7. Proposal and trial lifecycle interactions
+   342	
+   343	The task state machine is not the only lifecycle in the system.
+   344	Proposals ([`02-data-model.md`](02-data-model.md) §5.1) and trials
+   345	([`02-data-model.md`](02-data-model.md) §7) have their own state
+   346	fields. The task protocol interacts with these lifecycles at the
+   347	following points:
+   348	
+   349	- **Plan submit.** A successful plan-task submission MAY reference
+   350	  proposals that have been transitioned to `state == "ready"` by
+   351	  the planner ([`03-roles.md`](03-roles.md) §2.2). The task
+   352	  protocol does not itself transition proposal state; it treats
+   353	  the proposal as a value produced by the planner.
+   354	- **Implement submit.** A successful implement-task submission
+   355	  requires a trial created and advanced by the implementer
+   356	  ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition
+   357	  of the implement task (whether `submitted → completed` or
+   358	  `submitted → failed`), the orchestrator MUST transition the
+   359	  referenced proposal's `state` from `"dispatched"` to
+   360	  `"completed"`, atomically with the task's terminal event. The
+   361	  proposal's `"completed"` state therefore means *"the
+   362	  implementer's attempt on this proposal has finished"*, not
+   363	  *"the attempt succeeded"*; the trial's `status` field records
+   364	  the outcome. A proposal in `"dispatched"` always names a
+   365	  non-terminal implement task; no proposal remains in
+   366	  `"dispatched"` after its implement task has reached a terminal
+   367	  state.
+   368	- **Evaluate submit.** A successful evaluate-task submission
+   369	  populates the trial's `metrics`, `completed_at`, and (per
+   370	  worker-declared status) the trial's `status`. The integrator's
+   371	  subsequent promotion of the trial into the canonical lineage is
+   372	  out of this chapter's scope
+   373	  ([`06-integrator.md`](06-integrator.md)).
+   374	
+   375	## 8. Implementation latitude
+   376	
+   377	The protocol leaves to implementations:
+   378	
+   379	- The mechanism by which a worker discovers claimable tasks
+   380	  (polling, subscription, dispatch).
+
+exec
+/bin/zsh -lc 'git diff -- spec/v0/02-data-model.md spec/v0/03-roles.md spec/v0/04-task-protocol.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+diff --git a/spec/v0/02-data-model.md b/spec/v0/02-data-model.md
+index 94bf0aa..0c4e8d4 100644
+--- a/spec/v0/02-data-model.md
++++ b/spec/v0/02-data-model.md
+@@ -184,10 +184,15 @@ The `payload` object's shape depends on `kind`.
+ | `claimed_at` | yes | timestamp | When the claim was issued. |
+ | `expires_at` | no | timestamp | When the task store MAY reclaim. |
+ 
+-The `claim` field MUST be present when `state == "claimed"`, and MUST
+-NOT be present for any other state. The schema in
++The `claim` field MUST be present when `state ∈ {"claimed",
++"submitted"}` and MUST NOT be present for any other state. The
++claim is retained through `"submitted"` so that the task protocol
++can authorize resubmission by token
++([`04-task-protocol.md`](04-task-protocol.md) §4.2); it is cleared
++on reclamation and on the terminal transition to `"completed"` or
++`"failed"`. The schema in
+ [`schemas/task.schema.json`](schemas/task.schema.json) enforces this
+-mutual exclusion.
++presence rule.
+ 
+ ## 4. Event
+ 
+@@ -239,7 +244,7 @@ A proposal is the planner's output.
+ | `priority` | yes | number | Ordering hint; higher dispatches earlier. |
+ | `parent_commits` | yes | array of SHA | One or more commit SHAs the proposal is based on. |
+ | `artifacts_uri` | yes | string (URI) | Where the planner's output documents live. |
+-| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. |
++| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the implementer's attempt has finished (successfully or not); the trial's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
+ | `created_at` | yes | timestamp | When the proposal was created. |
+ 
+ ### 5.2 Parent commits
+
+codex
+I’m doing one narrow follow-up on the new evaluator write rules, because the current wording shifts ownership to the orchestrator and I want to make sure the write timing is actually pinned, not just implied.
+exec
+/bin/zsh -lc "nl -ba spec/v0/03-roles.md | sed -n '310,336p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/proposal.schema.json | sed -n '40,54p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   310	On a `submitted → completed` or `submitted → failed` transition
+   311	(per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the
+   312	orchestrator MUST write the following trial fields atomically with
+   313	the event:
+   314	
+   315	- `status` — the trial status implied by the submission: `"success"`
+   316	  when the submission's `status == "success"`; `"error"` when the
+   317	  submission's `status == "error"`; unchanged from `"starting"`
+   318	  when the submission's `status == "eval_error"` (see §4.4 above
+   319	  for the terminal-retry case).
+   320	- `metrics` — set to the submission's `metrics` when
+   321	  `status ∈ {"success", "error"}`; MAY be left unchanged when
+   322	  `status == "eval_error"`.
+   323	- `artifacts_uri` — set to the submission's `artifacts_uri` when
+   324	  provided and `status ∈ {"success", "error"}`.
+   325	- `completed_at` — set to the time of the terminal trial
+   326	  transition, i.e. written exactly once, when the trial's status
+   327	  leaves `"starting"` (either on a `"success"`/`"error"`
+   328	  submission, or on the retry-exhausted `"eval_error"`
+   329	  transition). Intermediate `eval_error` submissions MUST NOT
+   330	  advance `completed_at`.
+   331	
+   332	Resubmission is idempotent under the same rules as §3.4: identical
+   333	`trial_id` + `status` + `metrics` + `artifacts_uri` MUST be
+   334	accepted; inconsistent resubmission MUST be rejected.
+   335	
+   336	## 5. Integrator
+
+ succeeded in 0ms:
+    40	    },
+    41	    "artifacts_uri": {
+    42	      "type": "string",
+    43	      "format": "uri",
+    44	      "minLength": 1
+    45	    },
+    46	    "state": {
+    47	      "type": "string",
+    48	      "enum": ["drafting", "ready", "dispatched", "completed"]
+    49	    },
+    50	    "created_at": {
+    51	      "type": "string",
+    52	      "format": "date-time",
+    53	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    54	    }
+
+codex
+**Findings**
+- Risk — [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:320), §4.4 still leaves `metrics`/`artifacts_uri` persistence on `eval_error` under-specified. The text says `metrics` “MAY be left unchanged when `status == "eval_error"`,” and [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:323) only says `artifacts_uri` is written when `status ∈ {"success", "error"}`. But [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:307) allows an evaluator submission to carry `artifacts_uri`, and [04-task-protocol.md](/Users/ericalt/Documents/eden/spec/v0/04-task-protocol.md:223) allows a trial to become terminal `eval_error` after retries exhaust. Two conforming implementations could still diverge on whether eval-side debug artifacts or partial metrics are retained, discarded, or only persisted on the final retry-exhausted path. If the intent is one of those, it should be pinned with `MUST`/`MUST NOT`.
+
+**Assessment**
+The prior blockers look fixed. I don’t see remaining state-machine contradictions, claim-lifetime inconsistencies, or proposal-lifecycle holes in this round.
+
+This is close to ready. I’d tighten the one `eval_error` persistence rule above first; after that, I’d consider the chapters mergeable.
+tokens used
+115,736

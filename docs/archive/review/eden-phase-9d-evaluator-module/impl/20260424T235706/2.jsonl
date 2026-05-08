@@ -1,0 +1,5 @@
+No findings.
+
+The round-2 change closes the remaining gap: `store.claim(...)` in [reference/services/web-ui/src/eden_web_ui/routes/evaluator.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/evaluator.py:140) now handles transport-shaped exceptions and degrades to the existing 303 banner flow instead of 500ing, and [test_claim_transport_failure_surfaces_banner](reference/services/web-ui/tests/test_evaluator_routes.py) covers that path directly. I re-ran the targeted evaluator route tests, including the unknown-metric and claim-banner cases, and they pass.
+
+Overall assessment: the implementation now matches the phase 9d plan closely, including the earlier `IllegalTransition -> read-back` behavior, server-pinned `trial_id`, trust-boundary helper reuse, and the route-level rejection of unknown `metric.*` fields. Residual risk is low and mostly in the usual reference-UI areas already acknowledged by the plan: transport failures during later submit/read-back reconciliation and the intentionally duplicated helper logic across modules.

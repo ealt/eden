@@ -1,0 +1,1086 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019db793-1782-7a63-b2be-bd00a49e8cca
+--------
+user
+I've addressed your feedback. The updated review brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/1.md lists what was fixed and what was deferred. Please re-read the implementation files and review again.
+codex
+Re-reading the updated brief first, then I’ll re-check the implementation files it says changed and re-verify the previously flagged areas against the current repo state.
+exec
+/bin/zsh -lc "nl -ba docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/1.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Implementation Review: eden-protocol-bootstrap
+     2	
+     3	## Plan
+     4	
+     5	- Path: `/Users/ericalt/Documents/eden/docs/plans/eden-protocol-bootstrap.md`
+     6	- Summary: Bootstrap the EDEN repo as a protocol-first project with a
+     7	  reference implementation. Phase 0 scope: directory tree, documentation
+     8	  shell (root docs + section READMEs + roadmap), CI (docs-lint only), and
+     9	  GitHub hygiene (branch protection). No code, no spec content, no
+    10	  Python toolchain.
+    11	
+    12	## Implementation Files
+    13	
+    14	(Same list as round 0 — see `0.md`.)
+    15	
+    16	## Review Status
+    17	
+    18	Round 1 — responding to round 0 feedback.
+    19	
+    20	### Round 1 — issues addressed
+    21	
+    22	1. **Bug — Roadmap Phase 9 drift.** Restored the five-unit breakdown
+    23	   (9a shell, 9b planner, 9c implementer, 9d evaluator, 9e observability)
+    24	   with chunks 9a+9b / 9c / 9d / 9e matching the plan Section E.
+    25	2. **Bug — Roadmap Phase 10 drift.** Restored the five-unit breakdown
+    26	   (10a infra, 10b services dockerized, 10c setup-experiment script,
+    27	   10d LLM worker hosts, 10e e2e test) with chunks 10a / 10b+10c / 10d
+    28	   / 10e matching the plan Section E.
+    29	3. **Bug — "Phase 0 complete" premature.** Softened in README.md,
+    30	   AGENTS.md, and CONTRIBUTING.md to **"Phase 0 in progress — scaffolding
+    31	   in place; commit + push + branch protection finish the phase"**. The
+    32	   "complete" claim will become accurate after the push and branch
+    33	   protection steps are executed.
+    34	4. **Bug — AGENTS.md markdownlint command out of sync with CI.** Updated
+    35	   to include the `"#docs/plans/review/**"` exclusion so the documented
+    36	   command matches `ci.yml` verbatim.
+    37	5. **Risk — naming.md tense implies package exists.** Retitled section
+    38	   to "Package name (reference implementation, planned)" and reworded
+    39	   prose + fenced example to "will be published" / "after Phase 3
+    40	   lands" language. The availability table was left intact — it's name
+    41	   squatting context, still accurate.
+    42	6. **Risk — conformance scenarios list diverged from roadmap.** Updated
+    43	   `conformance/README.md` to match roadmap Phase 11 language: "squash
+    44	   shape, eval-manifest shape, `work/*` access discipline" instead of
+    45	   "branch protection semantics". Also added "backpressure, idempotency"
+    46	   to the role-contract line to match Phase 11c.
+    47	7. **Nit — roadmap opening prose malformed.** Rewrote the first
+    48	   paragraph as one flowing sentence (no accidental list syntax).
+    49	
+    50	### Round 1 — deliberately not addressed
+    51	
+    52	None. All 7 findings actioned.
+    53	
+    54	### Notes for the reviewer
+    55	
+    56	- Local markdownlint run (v0.14.0 pinned via `npx`) passes 0 errors
+    57	  across 12 files with the final exclusion list.
+    58	- Phase 0 commit / push / branch protection steps remain pending after
+    59	  this review round — they finish the phase and are the trigger for
+    60	  flipping the status language to "complete" in a follow-up commit.
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'rg --files README.md AGENTS.md CONTRIBUTING.md conformance/README.md docs/roadmap.md docs/naming.md .github/workflows/ci.yml docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/1.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+?? .github/
+?? .gitignore
+?? .markdownlint.json
+?? AGENTS.md
+?? CLAUDE.md
+?? CONTRIBUTING.md
+?? LICENSE
+?? README.md
+?? STYLE_GUIDE.md
+?? conformance/
+?? docs/
+?? reference/
+?? spec/
+?? tests/
+
+ succeeded in 0ms:
+docs/plans/review/eden-protocol-bootstrap/impl/20260422T164153/1.md
+.github/workflows/ci.yml
+docs/naming.md
+docs/roadmap.md
+conformance/README.md
+CONTRIBUTING.md
+AGENTS.md
+README.md
+
+codex
+The round-1 brief says all seven prior findings were addressed. I’m verifying those exact spots first, then I’ll do another consistency pass for anything newly introduced by the edits.
+exec
+/bin/zsh -lc "nl -ba README.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba CONTRIBUTING.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Contributing to EDEN
+     2	
+     3	Thanks for your interest in EDEN.
+     4	
+     5	EDEN is a **protocol** for directed-code-evolution orchestration. This repo
+     6	contains three kinds of artifact that call for different contribution
+     7	discipline: the **specification** (`spec/`), the **reference
+     8	implementation** (`reference/`), and the **conformance suite**
+     9	(`conformance/`). Read the section that matches where your change lives.
+    10	
+    11	## Current phase
+    12	
+    13	**Phase 0 (bootstrap) in progress.** Scaffolding and docs are in place;
+    14	first commit + push + branch protection finish the phase. There is no
+    15	runnable code yet — the reference implementation and conformance suite
+    16	are stubs. The spec itself is not yet written; only the section READMEs
+    17	exist. See [`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase
+    18	plan and the current state of each deliverable.
+    19	
+    20	If you want to contribute, the most useful thing today is reviewing
+    21	[`docs/plans/eden-protocol-bootstrap.md`](docs/plans/eden-protocol-bootstrap.md)
+    22	and the roadmap, and raising issues on framing or omissions.
+    23	
+    24	## Contributing to the spec
+    25	
+    26	The spec is the authoritative source of protocol semantics. A change to
+    27	the spec is a change to what "EDEN" means.
+    28	
+    29	### Spec conventions
+    30	
+    31	- **Versioning.** `spec/v0/` is a single lineage. Within a version,
+    32	  changes should be additive or clarifying. Breaking changes go to a new
+    33	  version (`spec/v1/`, …), never in-place.
+    34	- **Normative language.** Use RFC 2119 keywords: **MUST**, **SHOULD**,
+    35	  **MAY**. If prose doesn't use one, it's informative.
+    36	- **Wire-format changes propagate.** A change to a JSON Schema file
+    37	  under `spec/v*/schemas/` must be reflected in the Markdown chapter
+    38	  and (from Phase 3 onward) in the Pydantic bindings in
+    39	  `reference/packages/eden-contracts/`. CI will enforce schema ↔ model
+    40	  parity.
+    41	- **No technology choices in normative text.** The spec talks about
+    42	  *semantics*, not mechanisms. "A conforming task store MUST provide
+    43	  atomic claim with linearizable semantics" — yes. "Uses Postgres `SELECT
+    44	  ... FOR UPDATE`" — no, that's reference-impl detail.
+    45	
+    46	### Process
+    47	
+    48	1. Open an issue describing the change and why. Spec changes benefit from
+    49	   discussion before implementation.
+    50	2. Draft the prose + schema change in a branch.
+    51	3. Open a PR; expect careful review. Reviewers will check: RFC language,
+    52	   cross-reference consistency, whether the change is additive or
+    53	   breaking, and whether the change needs a conformance scenario.
+    54	
+    55	## Contributing to the reference implementation
+    56	
+    57	Standard code-review workflow applies.
+    58	
+    59	### Prerequisites (future phases)
+    60	
+    61	Once the Python reference implementation lands in Phase 3, contributors
+    62	will need:
+    63	
+    64	- Python 3.12+
+    65	- [uv](https://docs.astral.sh/uv/)
+    66	- (Phase 9+) Node.js 20+ for the reference web UI
+    67	- (Phase 10+) Docker for the Compose stack
+    68	
+    69	Phase 0 requires only a markdown linter for local pre-push checks; see
+    70	[`AGENTS.md`](AGENTS.md#commands) for the exact command.
+    71	
+    72	### Impl conventions
+    73	
+    74	- Normative behavior in the reference impl must match the spec. If the
+    75	  impl is correct and the spec is wrong, the spec should change first.
+    76	- Pass the conformance suite (Phase 11+).
+    77	- Follow the [style guide](STYLE_GUIDE.md).
+    78	
+    79	## Contributing to the conformance suite
+    80	
+    81	The conformance suite lands in Phase 11 and is not yet implementable.
+    82	Once it exists:
+    83	
+    84	- Scenarios must be **implementation-agnostic** — they drive an
+    85	  implementation-under-test via its advertised protocol surface, not via
+    86	  language-specific hooks.
+    87	- A scenario must cite the spec paragraph it validates.
+    88	
+    89	## Questions
+    90	
+    91	Open an issue.
+
+exec
+/bin/zsh -lc "nl -ba docs/roadmap.md | sed -n '1,360p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN Roadmap
+     2	
+     3	Incremental build-up from empty repo to a complete EDEN protocol
+     4	specification, reference implementation, and conformance suite.
+     5	
+     6	## Two orthogonal concepts
+     7	
+     8	- **Units** — the fine-grained decomposition. Each unit is a distinct,
+     9	  named piece of work with its own exit criterion. Units are the
+    10	  progress-tracking granularity: a unit can be crossed off even when it
+    11	  ships in a shared commit with siblings.
+    12	- **Chunks** — execution grouping. Units that must be designed and
+    13	  implemented together (cross-referencing spec chapters, protocol
+    14	  alongside its first consumer, shared commit-sized work) travel as one
+    15	  chunk. Chunks are the review/commit granularity.
+    16	
+    17	**Rule:** a chunk can span multiple units; no unit spans chunks. If
+    18	implementation runs over context mid-chunk, stop at the next unit
+    19	boundary — never mid-unit. That keeps handoffs, resumes, and partial
+    20	progress legible across sessions.
+    21	
+    22	Each phase also has explicit **non-goals** to prevent creep.
+    23	
+    24	---
+    25	
+    26	## Phase 0 — Bootstrap
+    27	
+    28	Repo shape, documentation shell, CI, GitHub hygiene. No runnable code
+    29	and no spec content.
+    30	
+    31	**Units:**
+    32	
+    33	- **0a** — Repo scaffold (directory tree + section READMEs + root docs +
+    34	  CI workflow + `.gitignore` + `.markdownlint.json` + `CLAUDE.md`
+    35	  symlink). First `main` commit on GitHub; branch protection requiring
+    36	  `docs-lint`.
+    37	
+    38	**Chunk:** 0a is one chunk — this bootstrap.
+    39	
+    40	**Non-goals:** any spec chapter content; any JSON Schema files; any
+    41	Python; any reference code; any conformance scenarios.
+    42	
+    43	**Exit:** `docs-lint` CI job green on `main`; protected branch in place;
+    44	all root and section READMEs accurately describe what's in the repo and
+    45	what's next.
+    46	
+    47	---
+    48	
+    49	## Phase 1 — Spec v0 core concepts + schemas + fixture migration
+    50	
+    51	Writes the first normative chapters and the JSON Schemas they describe.
+    52	
+    53	**Units:**
+    54	
+    55	- **1a** — `spec/v0/00-overview.md`, `01-concepts.md`,
+    56	  `02-data-model.md` prose. Defines experiment, trial, proposal, role,
+    57	  artifact, metric, worker.
+    58	- **1b** — JSON Schemas for config, task, event, proposal, trial,
+    59	  metrics-meta under `spec/v0/schemas/`. Each cited from the data-model
+    60	  chapter.
+    61	- **1c** — Migrate `tests/fixtures/experiment/.eden/config.yaml` from
+    62	  direvo; assert `experiment-config.schema.json` validates it. Add a
+    63	  `schema-validity` CI job.
+    64	
+    65	**Chunk:** 1a + 1b + 1c — one chunk. Prose, schemas, and fixture
+    66	cross-constrain each other; splitting would produce inconsistency.
+    67	
+    68	**Non-goals:** role contracts (Phase 2); event/integrator/storage
+    69	chapters (Phase 4); any Pydantic code (Phase 3).
+    70	
+    71	**Exit:** schemas validate the fixture; `schema-validity` CI green;
+    72	`02-data-model.md` cross-references all six schemas.
+    73	
+    74	---
+    75	
+    76	## Phase 2 — Spec v0 role contracts + task protocol
+    77	
+    78	Two more chapters. Defines what each role does and the task lifecycle
+    79	they operate against.
+    80	
+    81	**Units:**
+    82	
+    83	- **2a** — `03-roles.md`. Planner, implementer, evaluator contracts:
+    84	  discovery, claiming, context reading, execution, submission, release.
+    85	  Per-role outputs and their expected schema shapes.
+    86	- **2b** — `04-task-protocol.md`. Full task state machine (legal and
+    87	  illegal transitions enumerated), claim-token semantics, submit
+    88	  idempotency rule, wire format for task objects.
+    89	
+    90	**Chunk:** 2a + 2b — one chunk. Role contracts reference task
+    91	lifecycle and vice versa.
+    92	
+    93	**Non-goals:** event protocol (Phase 4); any implementation (Phase 5+).
+    94	
+    95	**Exit:** state machine is pinned; `04-task-protocol.md` enumerates
+    96	every legal transition with its pre- and post-conditions.
+    97	
+    98	---
+    99	
+   100	## Phase 3 — Reference contracts package (`eden-contracts`)
+   101	
+   102	First real Python code: Pydantic bindings for the v0 JSON Schemas.
+   103	Introduces the uv workspace + Python toolchain.
+   104	
+   105	**Units:**
+   106	
+   107	- **3a** — Pydantic models for the six v0 schemas. Root `pyproject.toml`
+   108	  (uv workspace root) + `reference/packages/eden-contracts/pyproject.toml`
+   109	  - `.python-version`. Ruff/pyright config ported from direvo.
+   110	  CI jobs: `python-lint` (ruff), `python-typecheck` (pyright),
+   111	  `python-test` (pytest).
+   112	- **3b** — Schema ↔ model parity check. CI job `schema-parity` that
+   113	  loads each JSON Schema and asserts the matching Pydantic model can
+   114	  round-trip any instance; fails CI on drift.
+   115	
+   116	**Chunk:** 3a + 3b — one chunk.
+   117	
+   118	**Non-goals:** any domain logic, just data types; storage, git,
+   119	dispatch (later phases).
+   120	
+   121	**Exit:** all six Pydantic models exist and parity CI is green against
+   122	the Phase 1 schemas.
+   123	
+   124	---
+   125	
+   126	## Phase 4 — Spec v0 events + integrator + storage
+   127	
+   128	Three more chapters. Heavy cross-referencing: the integrator emits
+   129	events; storage persists them.
+   130	
+   131	**Units:**
+   132	
+   133	- **4a** — `05-event-protocol.md` + `event.schema.json` refinement.
+   134	  Transactional invariant (state change + event insert must commit
+   135	  atomically); delivery guarantees subscribers can rely on.
+   136	- **4b** — `06-integrator.md`. Git topology invariants: `work/*`,
+   137	  `trial/*`, `main` namespaces; sole-integrator rule; squash rule;
+   138	  eval-manifest shape (metrics + blob URIs + hashes).
+   139	- **4c** — `08-storage.md`. Repository interface as protocol-level
+   140	  contract; durability requirements; per-experiment metrics schemas.
+   141	
+   142	**Chunk:** 4a + 4b + 4c — one chunk. Cross-references are dense and
+   143	splitting risks inconsistency.
+   144	
+   145	**Non-goals:** control-plane (Phase 12); conformance chapter (Phase 11);
+   146	any code.
+   147	
+   148	**Exit:** three chapters land with consistent cross-references; schema
+   149	updates (if any) pass parity.
+   150	
+   151	---
+   152	
+   153	## Phase 5 — In-memory reference dispatch loop
+   154	
+   155	First executable implementation. Proves the spec's state machines are
+   156	implementable. Single process; no git yet; no persistence.
+   157	
+   158	**Units:**
+   159	
+   160	- **5a** — In-memory task queue + event log with the transactional
+   161	  invariant enforced.
+   162	- **5b** — Scripted planner/implementer/evaluator workers (fake
+   163	  outputs, real state transitions) driving the queue through a full
+   164	  trial lifecycle.
+   165	- **5c** — First conformance scenarios (state-machine coverage)
+   166	  implemented as pytest-based black-box tests against 5a+5b.
+   167	
+   168	**Chunks:** 5a one chunk; 5b + 5c one chunk (scenarios need a worker
+   169	harness to drive).
+   170	
+   171	**Non-goals:** git integration; SQLite persistence; cross-process.
+   172	
+   173	**Exit:** the in-memory loop runs a 3-trial experiment end-to-end and
+   174	conformance scenarios pass.
+   175	
+   176	---
+   177	
+   178	## Phase 6 — Reference storage backend (`eden-storage`)
+   179	
+   180	Makes Phase 5 persist across restarts.
+   181	
+   182	**Units:**
+   183	
+   184	- **6a** — Repository interface (Python `Protocol`) matching spec
+   185	  chapter 8.
+   186	- **6b** — SQLite concrete impl + schema migrations + wiring into the
+   187	  dispatch loop.
+   188	
+   189	**Chunk:** 6a + 6b — one chunk.
+   190	
+   191	**Non-goals:** Postgres (later); blob storage (Phase 10).
+   192	
+   193	**Exit:** restart-safe 3-trial experiment; existing conformance
+   194	scenarios still pass.
+   195	
+   196	---
+   197	
+   198	## Phase 7 — Reference git integrator (`eden-git`)
+   199	
+   200	Git topology: `work/*` branches for implementers, `trial/*` for
+   201	canonical records, squashed trial commits with eval manifests.
+   202	
+   203	**Units:**
+   204	
+   205	- **7a** — Port `git_manager.py` from direvo into
+   206	  `reference/packages/eden-git/` (worktree + branch ops). Adapt to the
+   207	  new repo's naming conventions.
+   208	- **7b** — Integrator flow: create `work/<trial-id>-impl` at parent;
+   209	  after implementer submits, squash into `trial/<id>-<slug>`; attach
+   210	  eval manifest under `.eden/trials/<id>/eval.json`.
+   211	
+   212	**Chunks:** 7a one chunk; 7b one chunk.
+   213	
+   214	**Non-goals:** Gitea / remote hosts (Phase 10); multi-parent proposals
+   215	(deferred beyond v0).
+   216	
+   217	**Exit:** trials produce canonical `trial/*` commits against a local
+   218	bare repo; eval manifest shape matches spec chapter 6.
+   219	
+   220	---
+   221	
+   222	## Phase 8 — Cross-process reference
+   223	
+   224	Extracts the dispatch loop into separate processes over a wire
+   225	protocol. First point at which a third-party component in any
+   226	language could participate.
+   227	
+   228	**Units:**
+   229	
+   230	- **8a** — Wire-protocol definition (HTTP endpoints for claim, submit,
+   231	  release, plus event subscription) documented alongside spec chapters
+   232	  2/4. Orchestrator implemented as a standalone process consuming this
+   233	  protocol.
+   234	- **8b** — Planner, implementer, evaluator worker hosts as standalone
+   235	  processes. Each authenticates via a shared token (scaffolding; real
+   236	  auth is Milestone 3 work).
+   237	- **8c** — Cut-over: remove all in-process code paths; the only way
+   238	  components talk is the wire protocol.
+   239	
+   240	**Chunks:** 8a one chunk (protocol + first consumer coupled); 8b one
+   241	chunk; 8c one chunk.
+   242	
+   243	**Non-goals:** UI (Phase 9); Compose packaging (Phase 10); k8s
+   244	(Phase 13).
+   245	
+   246	**Exit:** 3-trial experiment runs with each role in its own process;
+   247	conformance scenarios pass against the HTTP surface.
+   248	
+   249	---
+   250	
+   251	## Phase 9 — Reference Web UI
+   252	
+   253	Browser-based claim/submit flows for each role, plus observability.
+   254	
+   255	**Units:**
+   256	
+   257	- **9a** — UI shell: routing, auth stub, navigation, experiment list.
+   258	- **9b** — Planner module: claim / markdown form / submit.
+   259	- **9c** — Implementer module: claim / manifest / submit SHA.
+   260	- **9d** — Evaluator module: claim / metrics form / artifact upload.
+   261	- **9e** — Observability views (trial timeline, task queue filtered by
+   262	  kind + claim status) + admin-reclaim action on stranded claims.
+   263	
+   264	**Chunks:** 9a + 9b one chunk (shell + first role module together —
+   265	the first role establishes the component pattern); 9c one; 9d one;
+   266	9e one.
+   267	
+   268	**Non-goals:** full auth / multi-tenancy (Milestone 3); in-UI code
+   269	editing (implementers work in their own environment).
+   270	
+   271	**Exit:** a human can fully play any one role for at least one trial
+   272	via the Web UI; admin-reclaim on a stranded claim works end-to-end.
+   273	
+   274	---
+   275	
+   276	## Phase 10 — Reference Compose stack
+   277	
+   278	Everything runs locally via `docker compose up`. Equivalent to the old
+   279	microservices plan's Milestone 1, now explicitly "one valid deployment
+   280	topology."
+   281	
+   282	**Units:**
+   283	
+   284	- **10a** — Infrastructure containers (Postgres for durable backend,
+   285	  Gitea for git host, blob volume) + Compose skeleton that stands them
+   286	  up.
+   287	- **10b** — Each reference service dockerized with its own image.
+   288	- **10c** — `setup-experiment` script: registers an experiment
+   289	  end-to-end (builds experiment-specific image, initializes the bare
+   290	  git repo, writes per-service sub-configs, registers with the control
+   291	  plane).
+   292	- **10d** — LLM worker hosts: planner host (context-accumulating
+   293	  Claude session), implementer host (spawns per-task sandbox
+   294	  containers running `implement_command`), evaluator host.
+   295	- **10e** — End-to-end Compose integration test exercising the full
+   296	  loop including Web UI, admin-reclaim, and termination.
+   297	
+   298	**Chunks:** 10a one; 10b + 10c one chunk (dockerize + setup script
+   299	co-evolve — each image's env vars and entrypoints feed the script);
+   300	10d one; 10e one.
+   301	
+   302	**Non-goals:** k8s (Phase 13); S3 blob backend (Phase 13); Gitea auth
+   303	(Phase 13).
+   304	
+   305	**Exit:** the fixture experiment runs to completion in Compose with
+   306	comparable results to direvo's monolith; e2e test green in CI.
+   307	
+   308	---
+   309	
+   310	## Phase 11 — Conformance suite v1
+   311	
+   312	Formalizes black-box scenarios that any component can run against
+   313	itself.
+   314	
+   315	**Units:**
+   316	
+   317	- **11a** — Harness: fixture infrastructure + implementation-under-test
+   318	  adapter + scenario-execution driver. First scenarios validate the
+   319	  harness itself (bootstrap problem).
+   320	- **11b** — State-machine scenarios (task lifecycle, claim tokens,
+   321	  transactional event invariant) — expands on Phase 5's scenarios.
+   322	- **11c** — Role-contract scenarios (per-role submission semantics,
+   323	  backpressure, idempotency).
+   324	- **11d** — Integrator scenarios (squash shape, eval-manifest shape,
+   325	  `work/*` access discipline).
+   326	
+   327	**Chunks:** 11a + 11b one chunk (harness needs first scenarios to
+   328	validate itself); 11c one; 11d one.
+   329	
+   330	**Non-goals:** multi-experiment scenarios (Phase 12); k8s-specific
+   331	tests (Phase 13).
+   332	
+   333	**Exit:** reference impl passes the full v1 suite; suite is documented
+   334	as the conformance contract for `eden-protocol/v0`.
+   335	
+   336	---
+   337	
+   338	## Phase 12 — Multi-experiment (leases, control plane, switcher)
+   339	
+   340	Units and chunking to be named closer to execution — too far ahead to
+   341	estimate coupling accurately. Scope:
+   342	
+   343	- Control plane service + lease data model.
+   344	- Multi-replica orchestrator; chaos test: kill lease-holder, another
+   345	  replica takes over.
+   346	- Cross-experiment views in the shared planner.
+   347	- Experiment switcher in the Web UI.
+   348	- Multi-experiment conformance scenarios.
+   349	
+   350	---
+   351	
+   352	## Phase 13 — Kubernetes reference deployment
+   353	
+   354	Units and chunking to be named closer to execution. Scope:
+   355	
+   356	- Base Helm chart for the reference services.
+   357	- Implementer as a k8s Job (GPU node selection).
+   358	- Managed Postgres migration.
+   359	- S3/GCS blob backend.
+   360	- Gitea with auth + per-branch ACLs + native PR review enabled.
+
+ succeeded in 176ms:
+     1	# EDEN
+     2	
+     3	**E**ric's **D**irected **E**volution **N**exus — a protocol for
+     4	orchestrating directed code evolution, with an open reference
+     5	implementation and a conformance suite.
+     6	
+     7	EDEN is not a single system. It is a specification that defines the roles
+     8	(planner, implementer, evaluator, integrator), the messages they exchange,
+     9	and the invariants they must honor. Anyone can build a conforming planner,
+    10	implementer, evaluator, or backing store in any language and interoperate
+    11	with other conforming components.
+    12	
+    13	> **Intelligent evolution.**
+    14	
+    15	## What's in this repo
+    16	
+    17	| Directory | Purpose |
+    18	|---|---|
+    19	| [`spec/`](spec/) | Normative protocol specification. Versioned (`spec/v0/`, `spec/v1/`, …). The authoritative source. |
+    20	| [`reference/`](reference/) | One complete implementation of the protocol. Labeled as a reference — *one* valid implementation, not *the* implementation. |
+    21	| [`conformance/`](conformance/) | Black-box test suite any third-party component can run against itself to prove it conforms. |
+    22	| [`docs/`](docs/) | Non-normative human documentation. Starts with [`docs/naming.md`](docs/naming.md) (what EDEN is) and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
+    23	
+    24	## Status
+    25	
+    26	**Phase 0 (bootstrap) in progress.** The scaffolding, documentation, and
+    27	CI are in place; first commit + push + branch protection complete the
+    28	phase. There is **no runnable code yet**. See
+    29	[`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan; the
+    30	next phase (Phase 1) writes the core-concepts chapters of the spec and
+    31	the JSON Schemas for the shared data model.
+    32	
+    33	## Contributing
+    34	
+    35	See [`CONTRIBUTING.md`](CONTRIBUTING.md). Two paths:
+    36	
+    37	- **Spec contributions** follow RFC-style discipline: versioned, normative
+    38	  language (RFC 2119 MUST/SHOULD/MAY), careful review.
+    39	- **Reference-implementation contributions** follow standard code-review
+    40	  workflow.
+    41	
+    42	## License
+    43	
+    44	[MIT](LICENSE).
+
+ succeeded in 181ms:
+     1	# AGENTS.md
+     2	
+     3	This file provides guidance to AI agents working with this repository.
+     4	
+     5	## What this repo is
+     6	
+     7	EDEN is a **protocol** for directed-code-evolution orchestration, not a
+     8	single product. The repo contains three distinct kinds of artifact, each
+     9	with different change discipline:
+    10	
+    11	| Layer | Path | Authoritative? | Change discipline |
+    12	|---|---|---|---|
+    13	| Protocol specification | [`spec/`](spec/) | Yes — the source of truth | RFC-style: versioned, normative (MUST/SHOULD/MAY), carefully reviewed |
+    14	| Reference implementation | [`reference/`](reference/) | No — *one* valid impl | Normal code-review discipline |
+    15	| Conformance suite | [`conformance/`](conformance/) | Normative for tests | Black-box; must be implementation-agnostic |
+    16	
+    17	Non-normative human docs live in [`docs/`](docs/).
+    18	
+    19	## Current phase
+    20	
+    21	**Phase 0 (bootstrap) in progress.** Scaffolding is in place; the commit
+    22	
+    23	+ push + branch protection steps finish the phase. No code yet. See
+    24	[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan. The
+    25	spec itself is not yet written — [`spec/v0/README.md`](spec/v0/README.md)
+    26	lists the planned chapters with their target phases.
+    27	
+    28	## Commands
+    29	
+    30	At Phase 0 only markdown linting is in play.
+    31	
+    32	| Command | Purpose |
+    33	|---|---|
+    34	| `markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (matches CI exactly) |
+    35	
+    36	### Commands that will exist in later phases
+    37	
+    38	These are listed for orientation; none of the tooling is wired up yet.
+    39	
+    40	| Command | Lands in |
+    41	|---|---|
+    42	| `uv sync` | Phase 3 (first `pyproject.toml`) |
+    43	| `uv run ruff check .` | Phase 3 |
+    44	| `uv run pyright` | Phase 3 |
+    45	| `uv run pytest -q` | Phase 3 |
+    46	| `check-jsonschema --schemafile ...` | Phase 1 (first JSON Schema) |
+    47	| Schema ↔ Pydantic parity check | Phase 3 |
+    48	| `docker compose up` end-to-end | Phase 10 |
+    49	
+    50	## Contribution conventions
+    51	
+    52	### Spec edits
+    53	
+    54	+ Every cross-component contract (wire format, state machine, invariant)
+    55	  is defined in `spec/` first, then implemented in `reference/`. When
+    56	  they disagree, the spec wins and the impl gets a bug.
+    57	+ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
+    58	+ Spec versions are frozen once stable (`spec/v0/` is a single lineage;
+    59	  breaking changes go to `spec/v1/`).
+    60	+ Schema changes must update the spec prose, the JSON Schema file, and
+    61	  (from Phase 3 onward) the Pydantic bindings in lockstep. CI will
+    62	  enforce schema ↔ model parity once both exist.
+    63	
+    64	### Reference implementation
+    65	
+    66	+ Normal code-review discipline.
+    67	+ Normative behavior is tested against the conformance suite (once it
+    68	  exists in Phase 11).
+    69	+ The reference impl is explicitly not a monopoly on correctness. A
+    70	  third-party implementation that passes conformance is equally valid.
+    71	
+    72	## Commit guidelines
+    73	
+    74	+ Short imperative subjects (e.g., "Add event protocol chapter",
+    75	  "Pin task state machine").
+    76	+ For pull requests, include: what the change is, which phase it
+    77	  advances, and any spec ↔ impl implications.
+    78	
+    79	## Related docs
+    80	
+    81	+ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
+    82	+ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with
+    83	  unit-level decomposition.
+    84	+ [`docs/plans/`](docs/plans/) — active implementation plans.
+    85	+ [`docs/archive/`](docs/archive/) — historical reference docs.
+    86	+ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
+    87	+ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+
+exec
+/bin/zsh -lc "nl -ba conformance/README.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba .github/workflows/ci.yml | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/naming.md | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	name: ci
+     2	
+     3	on:
+     4	  push:
+     5	    branches: [main]
+     6	  pull_request:
+     7	    branches: [main]
+     8	
+     9	jobs:
+    10	  docs-lint:
+    11	    name: docs-lint
+    12	    runs-on: ubuntu-latest
+    13	    steps:
+    14	      - uses: actions/checkout@v4
+    15	
+    16	      - name: Set up Node
+    17	        uses: actions/setup-node@v4
+    18	        with:
+    19	          node-version: '20'
+    20	
+    21	      - name: Install markdownlint-cli2
+    22	        run: npm install -g markdownlint-cli2@0.14.0
+    23	
+    24	      - name: Lint markdown
+    25	        run: |
+    26	          markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"
+
+ succeeded in 0ms:
+     1	# EDEN Conformance Suite
+     2	
+     3	Black-box test suite that any third-party implementation of an EDEN
+     4	component can run against itself to prove conformance with the protocol
+     5	specification.
+     6	
+     7	## Status
+     8	
+     9	**Stub — lands in Phase 11.** No scenarios are implemented yet. This
+    10	directory currently exists only to reserve the location and frame the
+    11	intent.
+    12	
+    13	## Intent
+    14	
+    15	- **Implementation-agnostic.** Scenarios drive an
+    16	  implementation-under-test via its advertised protocol surface (HTTP,
+    17	  wire messages), not via language-specific hooks. This is what lets a
+    18	  suite written in Python validate a component written in Go.
+    19	- **Per-component.** Separate scenarios for each role — task store,
+    20	  orchestrator, planner worker host, integrator, event log, storage.
+    21	  You run the subset that matches the component you're testing.
+    22	- **Spec-anchored.** Every scenario cites the spec paragraph it
+    23	  validates. When the spec changes, the suite changes.
+    24	
+    25	## Planned scenarios
+    26	
+    27	See [`../docs/roadmap.md`](../docs/roadmap.md#phase-11--conformance-suite-v1).
+    28	Summary:
+    29	
+    30	- State-machine scenarios (task lifecycle, claim-token semantics,
+    31	  transactional event invariant).
+    32	- Role-contract scenarios (planner submission, implementer submission,
+    33	  evaluator submission, backpressure, idempotency).
+    34	- Integrator scenarios (squash shape, eval-manifest shape, `work/*`
+    35	  access discipline).
+    36	
+    37	The reference implementation in [`../reference/`](../reference/) will be
+    38	the first subject run through the suite when Phase 11 lands, but the
+    39	harness is designed to run against any implementation.
+
+ succeeded in 0ms:
+     1	# EDEN
+     2	
+     3	**E**ric's **D**irected **E**volution **N**exus — the meeting point where
+     4	intelligent planning and evolutionary selection converge.
+     5	
+     6	## Tagline
+     7	
+     8	> Intelligent evolution.
+     9	
+    10	## Short description
+    11	
+    12	EDEN is a protocol for orchestrating directed code evolution, with an
+    13	open reference implementation. Planners propose experiments, parallel trials
+    14	run against a shared data model, results feed back into the next round — an
+    15	automated loop of diversify, evaluate, amplify. Anyone can build a conforming
+    16	planner, implementer, evaluator, or backing store in any language and
+    17	interoperate with other conforming components.
+    18	
+    19	## Elevator pitch
+    20	
+    21	Most research automation tools are either a single-agent loop (try something,
+    22	check if it worked, repeat) or a static job runner (execute a fixed matrix of
+    23	experiments). EDEN is neither — and, importantly, EDEN is not a single system.
+    24	It is a **protocol**: a specification that defines the roles (planner,
+    25	implementer, evaluator, integrator), the messages they exchange, and the
+    26	invariants they must honor. A conforming system coordinates concurrent
+    27	research trials in which a planner — human, AI, or hybrid — proposes
+    28	experiments, an integrator dispatches them against a versioned workspace,
+    29	implementers modify code on isolated branches, and evaluators score the
+    30	results against a fitness function. Results flow back to the planner to
+    31	inform the next generation of proposals. The architecture mirrors directed
+    32	evolution in the lab: generate a library of variants, screen them, amplify
+    33	the winners, repeat.
+    34	
+    35	The repo ships one complete **reference implementation** of the protocol,
+    36	plus a **conformance suite** that any independently-built component can run
+    37	against itself. The planner brings the intelligence; EDEN's contracts bring
+    38	the infrastructure to run the search at scale, regardless of which
+    39	implementation is plugged in where.
+    40	
+    41	## Etymology
+    42	
+    43	The name operates on two levels.
+    44	
+    45	**The acronym:** Eric's Directed Evolution Nexus — a nexus where experimental
+    46	proposals, parallel execution, and evaluative selection meet. The system is the
+    47	convergence point between a planner's intelligence and the outcomes of automated
+    48	trials.
+    49	
+    50	**The allusion:** The Garden of Eden is where creation happens by design — an
+    51	omniscient creator, a deliberate act. Directed evolution is the opposite: creation
+    52	through iterative selection, not foresight. EDEN sits in the tension between
+    53	these two ideas. The planner brings intent and strategy (intelligent design), but
+    54	the mechanism is evolutionary — propose variants, run trials, select the fittest,
+    55	repeat. The tagline "Intelligent evolution" captures this tension directly: it
+    56	inverts "intelligent design," preserving the cadence but swapping the noun.
+    57	
+    58	## Scientific lineage
+    59	
+    60	Directed evolution is a Nobel Prize-winning technique (Frances Arnold, 2018)
+    61	for engineering proteins through iterative cycles of diversification, screening,
+    62	and amplification. A researcher generates a library of variants, evaluates them
+    63	against a fitness function, and uses the best results as the template for the
+    64	next round.
+    65	
+    66	The parallel to EDEN's architecture is nearly 1:1:
+    67	
+    68	| Directed Evolution          | EDEN                                        |
+    69	| --------------------------- | ------------------------------------------- |
+    70	| Library of variants         | Parallel trials in isolated git worktrees   |
+    71	| Screening / assay           | Eval script producing JSON metrics          |
+    72	| Amplification (next round)  | Planner reads results, proposes next batch  |
+    73	| Iterative rounds            | The propose / execute / evaluate loop       |
+    74	| Mutagenesis                 | Planner proposes modifications to the code  |
+    75	| Intelligent guidance        | Planner is strategic, not random            |
+    76	
+    77	## Package name (reference implementation, planned)
+    78	
+    79	The Python reference implementation **will be published** as `direvo`
+    80	(**dir**ected **evo**lution) once it exists (landing in Phase 3 per
+    81	`docs/roadmap.md`). Both `direvo` and `eden` will work as CLI commands
+    82	after install — users can think of the tool as EDEN while the package
+    83	name stays short, unique, and conflict-free.
+    84	
+    85	```bash
+    86	# After Phase 3 lands, installation will look like:
+    87	pip install direvo
+    88	eden run --config .eden/config.yaml
+    89	```
+    90	
+    91	The name "eden" is heavily used across the software ecosystem (Eden AI,
+    92	Eden emulator, multiple PyPI packages), making it impractical as a
+    93	package name. The dual-name strategy avoids all registry conflicts while
+    94	giving users the brand name at the command line.
+    95	
+    96	This naming applies to the Python reference implementation only.
+    97	Third-party implementations in other languages / ecosystems are free to
+    98	choose their own names and should not use `direvo` or `eden` without
+    99	coordination; the protocol version they target (e.g. `eden-protocol/v0`)
+   100	is the identity that matters for interoperability.
+   101	
+   102	## Availability (package name: direvo)
+   103	
+   104	| Registry     | Name      | Status    |
+   105	| ------------ | --------- | --------- |
+   106	| PyPI         | direvo    | Available |
+   107	| GitHub user  | direvo    | Available |
+   108	| GitHub org   | direvo    | Available |
+   109	| npm          | direvo    | Available |
+   110	
+   111	Checked 2025-03-27.
+
+exec
+/bin/zsh -lc 'markdownlint-cli2 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"' in /Users/ericalt/Documents/eden
+ exited 1 in 246ms:
+markdownlint-cli2 v0.20.0 (markdownlint v0.40.0)
+Finding: **/*.md !node_modules !.venv !docs/archive/** !docs/plans/review/**
+Linting: 12 file(s)
+Summary: 76 error(s)
+AGENTS.md:12:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+AGENTS.md:12:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+AGENTS.md:12:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+AGENTS.md:12:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+AGENTS.md:12:9 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+AGENTS.md:12:13 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+AGENTS.md:12:13 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+AGENTS.md:12:17 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+AGENTS.md:33:5 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+AGENTS.md:33:9 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+AGENTS.md:34:101 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+AGENTS.md:34:150 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+AGENTS.md:41:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+AGENTS.md:41:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+AGENTS.md:41:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+AGENTS.md:41:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+CLAUDE.md:12:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+CLAUDE.md:12:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+CLAUDE.md:12:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+CLAUDE.md:12:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+CLAUDE.md:12:9 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+CLAUDE.md:12:13 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+CLAUDE.md:12:13 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+CLAUDE.md:12:17 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+CLAUDE.md:33:5 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+CLAUDE.md:33:9 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+CLAUDE.md:34:101 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+CLAUDE.md:34:150 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+CLAUDE.md:41:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+CLAUDE.md:41:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+CLAUDE.md:41:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+CLAUDE.md:41:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+README.md:18:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+README.md:18:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+README.md:18:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+README.md:18:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:18:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+reference/README.md:18:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:18:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+reference/README.md:18:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:18:9 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+reference/README.md:18:13 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:29:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+reference/README.md:29:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:29:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+reference/README.md:29:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:29:9 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+reference/README.md:29:13 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+reference/README.md:38:5 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:38:9 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:38:13 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:39:60 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:39:197 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:39:208 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:44:5 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:44:9 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:44:13 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:45:26 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:45:95 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+reference/README.md:45:106 error MD060/table-column-style Table column style [Table pipe does not align with header for style "aligned"]
+spec/v0/README.md:9:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+spec/v0/README.md:9:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+spec/v0/README.md:9:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+spec/v0/README.md:9:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+spec/v0/README.md:9:9 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+spec/v0/README.md:9:13 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+spec/v0/README.md:27:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+spec/v0/README.md:27:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+spec/v0/README.md:27:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+spec/v0/README.md:27:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+STYLE_GUIDE.md:26:1 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+STYLE_GUIDE.md:26:5 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+STYLE_GUIDE.md:26:5 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+STYLE_GUIDE.md:26:9 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+STYLE_GUIDE.md:26:9 error MD060/table-column-style Table column style [Table pipe is missing space to the right for style "compact"]
+STYLE_GUIDE.md:26:13 error MD060/table-column-style Table column style [Table pipe is missing space to the left for style "compact"]
+
+codex
+The first-pass fixes landed, but the re-read surfaced a few new formatting/content regressions introduced in round 1. I’m checking those now before I close this review so I don’t just rubber-stamp the previous fixes.
+exec
+/bin/zsh -lc "sed -n '19,27p' AGENTS.md && printf '\\n---\\n' && sed -n '50,88p' AGENTS.md && printf '\\n---\\n' && sed -n '105,112p' docs/roadmap.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+## Current phase
+
+**Phase 0 (bootstrap) in progress.** Scaffolding is in place; the commit
+
++ push + branch protection steps finish the phase. No code yet. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan. The
+spec itself is not yet written — [`spec/v0/README.md`](spec/v0/README.md)
+lists the planned chapters with their target phases.
+
+
+---
+## Contribution conventions
+
+### Spec edits
+
++ Every cross-component contract (wire format, state machine, invariant)
+  is defined in `spec/` first, then implemented in `reference/`. When
+  they disagree, the spec wins and the impl gets a bug.
++ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
++ Spec versions are frozen once stable (`spec/v0/` is a single lineage;
+  breaking changes go to `spec/v1/`).
++ Schema changes must update the spec prose, the JSON Schema file, and
+  (from Phase 3 onward) the Pydantic bindings in lockstep. CI will
+  enforce schema ↔ model parity once both exist.
+
+### Reference implementation
+
++ Normal code-review discipline.
++ Normative behavior is tested against the conformance suite (once it
+  exists in Phase 11).
++ The reference impl is explicitly not a monopoly on correctness. A
+  third-party implementation that passes conformance is equally valid.
+
+## Commit guidelines
+
++ Short imperative subjects (e.g., "Add event protocol chapter",
+  "Pin task state machine").
++ For pull requests, include: what the change is, which phase it
+  advances, and any spec ↔ impl implications.
+
+## Related docs
+
++ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
++ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with
+  unit-level decomposition.
++ [`docs/plans/`](docs/plans/) — active implementation plans.
++ [`docs/archive/`](docs/archive/) — historical reference docs.
++ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
++ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+
+---
+**Units:**
+
+- **3a** — Pydantic models for the six v0 schemas. Root `pyproject.toml`
+  (uv workspace root) + `reference/packages/eden-contracts/pyproject.toml`
+  - `.python-version`. Ruff/pyright config ported from direvo.
+  CI jobs: `python-lint` (ruff), `python-typecheck` (pyright),
+  `python-test` (pytest).
+- **3b** — Schema ↔ model parity check. CI job `schema-parity` that
+
+exec
+/bin/zsh -lc "rg -n '"'^'"\\+' AGENTS.md docs/roadmap.md README.md CONTRIBUTING.md conformance/README.md docs/naming.md spec/README.md spec/v0/README.md reference/README.md STYLE_GUIDE.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+AGENTS.md:23:+ push + branch protection steps finish the phase. No code yet. See
+AGENTS.md:54:+ Every cross-component contract (wire format, state machine, invariant)
+AGENTS.md:57:+ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
+AGENTS.md:58:+ Spec versions are frozen once stable (`spec/v0/` is a single lineage;
+AGENTS.md:60:+ Schema changes must update the spec prose, the JSON Schema file, and
+AGENTS.md:66:+ Normal code-review discipline.
+AGENTS.md:67:+ Normative behavior is tested against the conformance suite (once it
+AGENTS.md:69:+ The reference impl is explicitly not a monopoly on correctness. A
+AGENTS.md:74:+ Short imperative subjects (e.g., "Add event protocol chapter",
+AGENTS.md:76:+ For pull requests, include: what the change is, which phase it
+AGENTS.md:81:+ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
+AGENTS.md:82:+ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with
+AGENTS.md:84:+ [`docs/plans/`](docs/plans/) — active implementation plans.
+AGENTS.md:85:+ [`docs/archive/`](docs/archive/) — historical reference docs.
+AGENTS.md:86:+ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
+AGENTS.md:87:+ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+
+exec
+/bin/zsh -lc 'links=$(for f in README.md AGENTS.md CONTRIBUTING.md STYLE_GUIDE.md spec/README.md spec/v0/README.md reference/README.md conformance/README.md docs/roadmap.md docs/naming.md; do perl -ne '"'while(/\\[["'^'"\\]]+\\]\\((["'^)#]+)(?:#[''^)]+)?'"\\)/g){print \""'$ARGV'"\\t"'$1'"\\n\"}' \""'$f"; done); printf '"'%s
+' \""'$links" | while IFS=$'"'\\t' read -r src link; do case \""'$link" in http*|mailto:*|'"'') continue;; esac; dir="'$(dirname "$src"); target=$(cd "$dir" && realpath "$link" 2>/dev/null || true); if [ -z "$target" ] || [ ! -e "$target" ]; then echo "BROKEN $src -> $link"; fi; done' in /Users/ericalt/Documents/eden
+ succeeded in 170ms:
+codex
+**Findings**
+
+- **Risk** — [docs/naming.md](/Users/ericalt/Documents/eden/docs/naming.md:35): The package section is improved, but this doc still mixes planned and present-tense state. Lines 35-39 say “The repo ships one complete reference implementation ... plus a conformance suite,” and lines 102-111 present an availability table dated `2025-03-27`. That is still inconsistent with the rest of the Phase 0 docs, which say the implementation and suite are not here yet. Fix by making the whole implementation/package portion explicitly planned or historical until those artifacts actually exist.
+
+- **Risk** — [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:34), [CONTRIBUTING.md](/Users/ericalt/Documents/eden/CONTRIBUTING.md:69), [ci.yml](/Users/ericalt/Documents/eden/.github/workflows/ci.yml:22): The command text now matches CI, but local verification is still version-sensitive. Running the exact command here with the installed `markdownlint-cli2 v0.20.0` produces 76 `MD060` table-style errors; CI is only green because it pins `0.14.0`. Fix by either documenting the required local version explicitly, e.g. `npx markdownlint-cli2@0.14.0 ...`, or by reformatting tables / config so newer markdownlint releases also pass.
+
+- **Nit** — [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:21): The status sentence was softened correctly, but line 23 now starts with `+ push + branch protection...`, which renders as malformed prose/list syntax. Fix by making it a normal continuation of the sentence: “the commit + push + branch protection steps finish the phase.”
+
+- **Nit** — [docs/roadmap.md](/Users/ericalt/Documents/eden/docs/roadmap.md:107): Phase 3 unit `3a` now has an accidental nested `- \`.python-version\`` on line 109. Section E describes this as an inline part of the unit’s file list, not a sub-bullet. Fix by restoring the inline wording: ``... + `reference/packages/eden-contracts/pyproject.toml` + `.python-version`...``.
+
+**Overall Assessment**
+
+The substantive round-0 issues are fixed: Phases 9 and 10 are back in sync with the plan, the premature “Phase 0 complete” claims are gone, the conformance wording matches the roadmap, and the roadmap opening prose is fixed. I’d treat this as close to sign-off, with one small follow-up pass still warranted for the lingering `docs/naming.md` inconsistency and the two formatting regressions above.
+tokens used
+101,119

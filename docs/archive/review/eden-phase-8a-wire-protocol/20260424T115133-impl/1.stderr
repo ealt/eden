@@ -1,0 +1,1756 @@
+Reading prompt from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc0e3-55cd-7d11-83fc-e69f3650ab1d
+--------
+user
+Round 1 update. I addressed all four findings. Summary:
+
+1. Long-poll subscribe: server.py now actually blocks via asyncio.sleep loop, polling the store until events appear or the configured timeout elapses. make_app gained subscribe_timeout + subscribe_poll_interval kwargs. StoreClient.subscribe accepts an optional timeout query param. Spec §6.2 contract now holds. Tests use short timeout (0.2s) to keep idle polls fast.
+
+2. Success response codes: submit returns 200 + {}; integrate_trial returns 200 + {} (success + same-value idempotent); create_proposal and create_trial return 200 + the full entity (matching the entity schemas per §3 and §4).
+
+3. Schema/model parity: claim-response.schema.json now rejects explicit null on expires_at (aligned with the NotNone discipline). Added tests/test_wire_schema_parity.py covering every wire model (request, response, events, error envelope) with accept + reject fixtures.
+
+4. Tests rewritten:
+   - TestIndeterminateIntegration now uses httpx.MockTransport with a handler that either (a) relays the request through a real TestClient to commit server-side before raising ConnectError on the original (confirmed-success branch), or (b) raises ConnectError without commit (indeterminate / divergence branches). No monkeypatching of StoreClient; no model_copy(update=...) on internal store state. The seed path uses _run_trial_to_success which drives the trial to success via the real Store API.
+   - Added test_already_exists and test_conflicting_resubmission.
+   - test_invalid_precondition now actually triggers InvalidPrecondition (integrate on a non-success trial), not IllegalTransition.
+   - Added TestResponseCodes explicitly verifying 200s on submit/integrate and entity bodies on create_proposal/create_trial.
+
+384 tests pass total (43 in eden-wire, up from 16). Ruff, pyright, markdownlint, spec-xref all clean.
+
+Please re-review, focused on whether the four findings are actually resolved.
+
+codex
+I’m checking the updated wire files and tests directly against the four prior findings, then I’ll rerun the targeted verification so I can say whether each issue is actually closed or only partially addressed.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/src/eden_wire/client.py | sed -n '1,320p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""``StoreClient`` — a ``Store``-Protocol-compatible HTTP client.
+     2	
+     3	``StoreClient`` makes the EDEN wire binding look exactly like a
+     4	direct ``Store`` to callers. The dispatch driver, integrator, and
+     5	conformance scenarios all work against it unchanged: structural
+     6	Protocol conformance means "talks to a store" doesn't commit to a
+     7	transport.
+     8	
+     9	Transport-indeterminate reconciliation on ``integrate_trial``
+    10	follows ``spec/v0/07-wire-protocol.md`` §5 — read-back resolves to
+    11	confirmed success, confirmed divergence (raise
+    12	``AtomicityViolation`` surfaced as ``InvalidPrecondition`` at the
+    13	store boundary so ``Integrator`` can distinguish it), or
+    14	``IndeterminateIntegration``.
+    15	
+    16	The client does **not** retry other mutations (claim, submit,
+    17	reject, reclaim, accept) on indeterminate failures; those are the
+    18	caller's responsibility per the binding's §8.3.
+    19	"""
+    20	
+    21	from __future__ import annotations
+    22	
+    23	from collections.abc import Iterator
+    24	from contextlib import contextmanager
+    25	from datetime import datetime
+    26	from typing import Any
+    27	
+    28	import httpx
+    29	from eden_contracts import (
+    30	    EvaluateTask,
+    31	    Event,
+    32	    FailReason,
+    33	    ImplementTask,
+    34	    PlanTask,
+    35	    Proposal,
+    36	    ReclaimCause,
+    37	    Task,
+    38	    TaskAdapter,
+    39	    TaskClaim,
+    40	    Trial,
+    41	)
+    42	from eden_storage.errors import InvalidPrecondition
+    43	from eden_storage.submissions import (
+    44	    EvaluateSubmission,
+    45	    ImplementSubmission,
+    46	    PlanSubmission,
+    47	    Submission,
+    48	)
+    49	
+    50	from .errors import raise_for_envelope
+    51	
+    52	__all__ = ["IndeterminateIntegration", "StoreClient"]
+    53	
+    54	
+    55	class IndeterminateIntegration(RuntimeError):
+    56	    """An ``integrate_trial`` call's outcome cannot be determined.
+    57	
+    58	    Raised by :meth:`StoreClient.integrate_trial` when a transport-
+    59	    indeterminate failure cannot be resolved by a read-back of the
+    60	    trial (read-back itself fails, or shows no
+    61	    ``trial_commit_sha``). The caller (typically
+    62	    ``Integrator.integrate``) MUST NOT assume the server has not
+    63	    committed, and MUST NOT compensate the ref. Operator
+    64	    intervention is required.
+    65	    """
+    66	
+    67	
+    68	class StoreClient:
+    69	    """HTTP client that satisfies the ``eden_storage.Store`` Protocol."""
+    70	
+    71	    def __init__(
+    72	        self,
+    73	        base_url: str,
+    74	        experiment_id: str,
+    75	        *,
+    76	        client: httpx.Client | None = None,
+    77	        timeout: float = 30.0,
+    78	        read_back_attempts: int = 3,
+    79	    ) -> None:
+    80	        self._experiment_id = experiment_id
+    81	        self._base = f"{base_url.rstrip('/')}/v0/experiments/{experiment_id}"
+    82	        self._ref_base = f"{base_url.rstrip('/')}/_reference/experiments/{experiment_id}"
+    83	        self._headers = {"X-Eden-Experiment-Id": experiment_id}
+    84	        self._owns_client = client is None
+    85	        self._client = client if client is not None else httpx.Client(timeout=timeout)
+    86	        self._read_back_attempts = read_back_attempts
+    87	
+    88	    # ------------------------------------------------------------------
+    89	    # Lifecycle
+    90	    # ------------------------------------------------------------------
+    91	
+    92	    def close(self) -> None:
+    93	        if self._owns_client:
+    94	            self._client.close()
+    95	
+    96	    def __enter__(self) -> StoreClient:
+    97	        return self
+    98	
+    99	    def __exit__(self, *_exc: Any) -> None:
+   100	        self.close()
+   101	
+   102	    @property
+   103	    def experiment_id(self) -> str:
+   104	        return self._experiment_id
+   105	
+   106	    # ------------------------------------------------------------------
+   107	    # Request plumbing
+   108	    # ------------------------------------------------------------------
+   109	
+   110	    def _request(
+   111	        self,
+   112	        method: str,
+   113	        path: str,
+   114	        *,
+   115	        params: dict[str, Any] | None = None,
+   116	        json: Any = None,
+   117	    ) -> httpx.Response:
+   118	        resp = self._client.request(
+   119	            method,
+   120	            path,
+   121	            params=params,
+   122	            json=json,
+   123	            headers=self._headers,
+   124	        )
+   125	        if 400 <= resp.status_code < 600:
+   126	            body = self._maybe_json(resp)
+   127	            if isinstance(body, dict) and "type" in body:
+   128	                raise_for_envelope(body)
+   129	            resp.raise_for_status()
+   130	        return resp
+   131	
+   132	    @staticmethod
+   133	    def _maybe_json(resp: httpx.Response) -> Any:
+   134	        try:
+   135	            return resp.json()
+   136	        except Exception:
+   137	            return None
+   138	
+   139	    # ------------------------------------------------------------------
+   140	    # Reads
+   141	    # ------------------------------------------------------------------
+   142	
+   143	    def read_task(self, task_id: str) -> Task:
+   144	        resp = self._request("GET", f"{self._base}/tasks/{task_id}")
+   145	        return TaskAdapter.validate_python(resp.json())
+   146	
+   147	    def read_proposal(self, proposal_id: str) -> Proposal:
+   148	        resp = self._request("GET", f"{self._base}/proposals/{proposal_id}")
+   149	        return Proposal.model_validate(resp.json())
+   150	
+   151	    def read_trial(self, trial_id: str) -> Trial:
+   152	        resp = self._request("GET", f"{self._base}/trials/{trial_id}")
+   153	        return Trial.model_validate(resp.json())
+   154	
+   155	    def read_submission(self, task_id: str) -> Submission | None:
+   156	        resp = self._request("GET", f"{self._base}/tasks/{task_id}/submission")
+   157	        if resp.status_code == 204:
+   158	            return None
+   159	        body = resp.json()
+   160	        return _submission_from_wire(body["kind"], body)
+   161	
+   162	    def list_tasks(
+   163	        self,
+   164	        *,
+   165	        kind: str | None = None,
+   166	        state: str | None = None,
+   167	    ) -> list[Task]:
+   168	        params: dict[str, Any] = {}
+   169	        if kind is not None:
+   170	            params["kind"] = kind
+   171	        if state is not None:
+   172	            params["state"] = state
+   173	        resp = self._request("GET", f"{self._base}/tasks", params=params)
+   174	        return [TaskAdapter.validate_python(item) for item in resp.json()]
+   175	
+   176	    def list_proposals(self, *, state: str | None = None) -> list[Proposal]:
+   177	        params = {"state": state} if state is not None else None
+   178	        resp = self._request("GET", f"{self._base}/proposals", params=params)
+   179	        return [Proposal.model_validate(item) for item in resp.json()]
+   180	
+   181	    def list_trials(self, *, status: str | None = None) -> list[Trial]:
+   182	        params = {"status": status} if status is not None else None
+   183	        resp = self._request("GET", f"{self._base}/trials", params=params)
+   184	        return [Trial.model_validate(item) for item in resp.json()]
+   185	
+   186	    def events(self) -> list[Event]:
+   187	        return self.replay()
+   188	
+   189	    def replay(self) -> list[Event]:
+   190	        return self.read_range()
+   191	
+   192	    def read_range(self, cursor: int | None = None) -> list[Event]:
+   193	        params: dict[str, Any] = {"cursor": cursor or 0}
+   194	        resp = self._request("GET", f"{self._base}/events", params=params)
+   195	        body = resp.json()
+   196	        return [Event.model_validate(e) for e in body["events"]]
+   197	
+   198	    def subscribe(
+   199	        self, cursor: int | None = None, *, timeout: float | None = None
+   200	    ) -> list[Event]:
+   201	        """Long-poll one batch from the subscribe endpoint.
+   202	
+   203	        ``timeout`` overrides the server-side long-poll window
+   204	        (``07-wire-protocol.md`` §6.2). When omitted, the server's
+   205	        configured default applies (30s in the reference impl).
+   206	        """
+   207	        params: dict[str, Any] = {"cursor": cursor or 0}
+   208	        if timeout is not None:
+   209	            params["timeout"] = timeout
+   210	        resp = self._request("GET", f"{self._base}/events/subscribe", params=params)
+   211	        body = resp.json()
+   212	        return [Event.model_validate(e) for e in body["events"]]
+   213	
+   214	    # ------------------------------------------------------------------
+   215	    # Task lifecycle
+   216	    # ------------------------------------------------------------------
+   217	
+   218	    def create_task(self, task: Task) -> Task:
+   219	        resp = self._request(
+   220	            "POST",
+   221	            f"{self._base}/tasks",
+   222	            json=task.model_dump(mode="json", exclude_none=True),
+   223	        )
+   224	        return TaskAdapter.validate_python(resp.json())
+   225	
+   226	    def create_plan_task(self, task_id: str) -> PlanTask:
+   227	        task = PlanTask.model_validate(
+   228	            {
+   229	                "task_id": task_id,
+   230	                "kind": "plan",
+   231	                "state": "pending",
+   232	                "created_at": _now(),
+   233	                "updated_at": _now(),
+   234	                "payload": {"experiment_id": self._experiment_id},
+   235	            }
+   236	        )
+   237	        created = self.create_task(task)
+   238	        assert isinstance(created, PlanTask)
+   239	        return created
+   240	
+   241	    def create_implement_task(self, task_id: str, proposal_id: str) -> ImplementTask:
+   242	        task = ImplementTask.model_validate(
+   243	            {
+   244	                "task_id": task_id,
+   245	                "kind": "implement",
+   246	                "state": "pending",
+   247	                "created_at": _now(),
+   248	                "updated_at": _now(),
+   249	                "payload": {"proposal_id": proposal_id},
+   250	            }
+   251	        )
+   252	        created = self.create_task(task)
+   253	        assert isinstance(created, ImplementTask)
+   254	        return created
+   255	
+   256	    def create_evaluate_task(self, task_id: str, trial_id: str) -> EvaluateTask:
+   257	        task = EvaluateTask.model_validate(
+   258	            {
+   259	                "task_id": task_id,
+   260	                "kind": "evaluate",
+   261	                "state": "pending",
+   262	                "created_at": _now(),
+   263	                "updated_at": _now(),
+   264	                "payload": {"trial_id": trial_id},
+   265	            }
+   266	        )
+   267	        created = self.create_task(task)
+   268	        assert isinstance(created, EvaluateTask)
+   269	        return created
+   270	
+   271	    def claim(
+   272	        self,
+   273	        task_id: str,
+   274	        worker_id: str,
+   275	        *,
+   276	        expires_at: datetime | str | None = None,
+   277	    ) -> TaskClaim:
+   278	        body: dict[str, Any] = {"worker_id": worker_id}
+   279	        if expires_at is not None:
+   280	            body["expires_at"] = _as_wire_datetime(expires_at)
+   281	        resp = self._request("POST", f"{self._base}/tasks/{task_id}/claim", json=body)
+   282	        return TaskClaim.model_validate(resp.json())
+   283	
+   284	    def submit(self, task_id: str, token: str, submission: Submission) -> None:
+   285	        payload = _submission_to_wire(submission)
+   286	        self._request(
+   287	            "POST",
+   288	            f"{self._base}/tasks/{task_id}/submit",
+   289	            json={"token": token, "payload": payload},
+   290	        )
+   291	
+   292	    def accept(self, task_id: str) -> None:
+   293	        self._request("POST", f"{self._base}/tasks/{task_id}/accept")
+   294	
+   295	    def reject(self, task_id: str, reason: FailReason) -> None:
+   296	        self._request("POST", f"{self._base}/tasks/{task_id}/reject", json={"reason": reason})
+   297	
+   298	    def reclaim(self, task_id: str, cause: ReclaimCause) -> None:
+   299	        self._request(
+   300	            "POST",
+   301	            f"{self._base}/tasks/{task_id}/reclaim",
+   302	            json={"cause": cause},
+   303	        )
+   304	
+   305	    def validate_acceptance(self, task_id: str) -> str | None:
+   306	        decision, reason = self.validate_terminal(task_id)
+   307	        if decision == "accept":
+   308	            return None
+   309	        return reason
+   310	
+   311	    def validate_terminal(self, task_id: str) -> tuple[str, str | None]:
+   312	        resp = self._request(
+   313	            "GET",
+   314	            f"{self._ref_base}/tasks/{task_id}/validate-terminal",
+   315	        )
+   316	        body = resp.json()
+   317	        return body["decision"], body.get("reason")
+   318	
+   319	    # ------------------------------------------------------------------
+   320	    # Proposals / trials
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/tests/test_wire_schema_parity.py | sed -n '1,340p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Schema-parity check for the wire models.
+     2	
+     3	Every Pydantic model in ``eden_wire.models`` has a corresponding JSON
+     4	Schema under ``spec/v0/schemas/wire/``. The parity test asserts that
+     5	a valid instance of the Pydantic model serializes to something that
+     6	the schema also accepts, and — where the schemas list mandatory
+     7	fields — that the model rejects inputs missing them.
+     8	
+     9	This is the wire-side analog of the ``eden-contracts`` schema-parity
+    10	tests. Drift between the model and the schema (seen concretely on
+    11	``claim-response.schema.json`` where an earlier draft permitted
+    12	``null`` on a ``NotNone`` field) surfaces here rather than in
+    13	production.
+    14	"""
+    15	
+    16	from __future__ import annotations
+    17	
+    18	import json
+    19	from pathlib import Path
+    20	from typing import Any
+    21	
+    22	import jsonschema
+    23	import pytest
+    24	from eden_wire.errors import ProblemJson
+    25	from eden_wire.models import (
+    26	    ClaimRequest,
+    27	    ClaimResponse,
+    28	    EventsResponse,
+    29	    IntegrateRequest,
+    30	    ReclaimRequest,
+    31	    RejectRequest,
+    32	    SubmitRequest,
+    33	)
+    34	from pydantic import ValidationError
+    35	
+    36	SCHEMA_DIR = Path(__file__).resolve().parents[4] / "spec" / "v0" / "schemas" / "wire"
+    37	
+    38	
+    39	def _load_schema(name: str) -> dict[str, Any]:
+    40	    return json.loads((SCHEMA_DIR / name).read_text())
+    41	
+    42	
+    43	def _validate_against(schema_name: str, instance: dict[str, Any]) -> None:
+    44	    schema = _load_schema(schema_name)
+    45	    jsonschema.validate(
+    46	        instance,
+    47	        schema,
+    48	        cls=jsonschema.Draft202012Validator,
+    49	        format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+    50	    )
+    51	
+    52	
+    53	class TestClaimRequestParity:
+    54	    def test_accept_minimum(self) -> None:
+    55	        model = ClaimRequest(worker_id="worker-1")
+    56	        dumped = model.model_dump(mode="json", exclude_none=True)
+    57	        _validate_against("claim-request.schema.json", dumped)
+    58	
+    59	    def test_accept_with_expires_at(self) -> None:
+    60	        model = ClaimRequest(worker_id="w", expires_at="2026-04-24T00:00:00Z")
+    61	        _validate_against(
+    62	            "claim-request.schema.json", model.model_dump(mode="json", exclude_none=True)
+    63	        )
+    64	
+    65	    def test_reject_missing_worker(self) -> None:
+    66	        with pytest.raises(ValidationError):
+    67	            ClaimRequest.model_validate({})
+    68	
+    69	
+    70	class TestClaimResponseParity:
+    71	    def test_accept_with_expires_at_absent(self) -> None:
+    72	        model = ClaimResponse(
+    73	            token="tok", worker_id="w", claimed_at="2026-04-24T00:00:00Z"
+    74	        )
+    75	        dumped = model.model_dump(mode="json", exclude_none=True)
+    76	        assert "expires_at" not in dumped
+    77	        _validate_against("claim-response.schema.json", dumped)
+    78	
+    79	    def test_accept_with_expires_at_present(self) -> None:
+    80	        model = ClaimResponse(
+    81	            token="tok",
+    82	            worker_id="w",
+    83	            claimed_at="2026-04-24T00:00:00Z",
+    84	            expires_at="2026-04-24T01:00:00Z",
+    85	        )
+    86	        _validate_against(
+    87	            "claim-response.schema.json",
+    88	            model.model_dump(mode="json", exclude_none=True),
+    89	        )
+    90	
+    91	    def test_schema_rejects_null(self) -> None:
+    92	        # The NotNone discipline is enforced on both sides: model rejects
+    93	        # explicit null, and the schema does too.
+    94	        with pytest.raises(jsonschema.ValidationError):
+    95	            _validate_against(
+    96	                "claim-response.schema.json",
+    97	                {
+    98	                    "token": "tok",
+    99	                    "worker_id": "w",
+   100	                    "claimed_at": "2026-04-24T00:00:00Z",
+   101	                    "expires_at": None,
+   102	                },
+   103	            )
+   104	
+   105	
+   106	class TestSubmitRequestParity:
+   107	    def test_accept(self) -> None:
+   108	        model = SubmitRequest(token="tok", payload={"kind": "plan", "status": "success"})
+   109	        _validate_against(
+   110	            "submit-request.schema.json",
+   111	            model.model_dump(mode="json", exclude_none=True),
+   112	        )
+   113	
+   114	
+   115	class TestRejectRequestParity:
+   116	    @pytest.mark.parametrize("reason", ["worker_error", "validation_error", "policy_limit"])
+   117	    def test_accept(self, reason: str) -> None:
+   118	        model = RejectRequest(reason=reason)
+   119	        _validate_against(
+   120	            "reject-request.schema.json",
+   121	            model.model_dump(mode="json", exclude_none=True),
+   122	        )
+   123	
+   124	    def test_reject_out_of_vocabulary(self) -> None:
+   125	        with pytest.raises(ValidationError):
+   126	            RejectRequest(reason="anything_else")
+   127	
+   128	
+   129	class TestReclaimRequestParity:
+   130	    @pytest.mark.parametrize("cause", ["expired", "operator", "health_policy"])
+   131	    def test_accept(self, cause: str) -> None:
+   132	        model = ReclaimRequest(cause=cause)
+   133	        _validate_against(
+   134	            "reclaim-request.schema.json",
+   135	            model.model_dump(mode="json", exclude_none=True),
+   136	        )
+   137	
+   138	
+   139	class TestIntegrateRequestParity:
+   140	    def test_accept_sha1(self) -> None:
+   141	        model = IntegrateRequest(trial_commit_sha="a" * 40)
+   142	        _validate_against(
+   143	            "integrate-request.schema.json",
+   144	            model.model_dump(mode="json", exclude_none=True),
+   145	        )
+   146	
+   147	    def test_accept_sha256(self) -> None:
+   148	        model = IntegrateRequest(trial_commit_sha="a" * 64)
+   149	        _validate_against(
+   150	            "integrate-request.schema.json",
+   151	            model.model_dump(mode="json", exclude_none=True),
+   152	        )
+   153	
+   154	    def test_reject_malformed_sha(self) -> None:
+   155	        with pytest.raises(ValidationError):
+   156	            IntegrateRequest(trial_commit_sha="not-a-sha")
+   157	
+   158	
+   159	class TestEventsResponseParity:
+   160	    def test_accept_empty(self) -> None:
+   161	        model = EventsResponse(events=[], cursor=0)
+   162	        _validate_against(
+   163	            "events-response.schema.json",
+   164	            model.model_dump(mode="json", exclude_none=True),
+   165	        )
+   166	
+   167	
+   168	class TestErrorEnvelopeParity:
+   169	    def test_accept(self) -> None:
+   170	        envelope = ProblemJson(
+   171	            type="eden://error/not-found",
+   172	            title="Not Found",
+   173	            status=404,
+   174	            detail="trial missing",
+   175	            instance="http://host/x",
+   176	        )
+   177	        _validate_against("error.schema.json", envelope.to_dict())
+   178	
+   179	    def test_schema_rejects_unknown_type(self) -> None:
+   180	        with pytest.raises(jsonschema.ValidationError):
+   181	            _validate_against(
+   182	                "error.schema.json",
+   183	                {"type": "eden://error/made-up", "title": "x", "status": 400},
+   184	            )
+
+exec
+/bin/zsh -lc "nl -ba spec/v0/schemas/wire/claim-response.schema.json | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	{
+     2	  "$schema": "https://json-schema.org/draft/2020-12/schema",
+     3	  "title": "EDEN wire — claim response",
+     4	  "description": "Response body for a successful POST /v0/experiments/{E}/tasks/{T}/claim. See 07-wire-protocol.md §2.3; the `claim` object matches task.schema.json §3.4.",
+     5	  "type": "object",
+     6	  "required": ["token", "worker_id", "claimed_at"],
+     7	  "additionalProperties": false,
+     8	  "properties": {
+     9	    "token": {
+    10	      "type": "string",
+    11	      "minLength": 1
+    12	    },
+    13	    "worker_id": {
+    14	      "type": "string",
+    15	      "minLength": 1
+    16	    },
+    17	    "claimed_at": {
+    18	      "type": "string",
+    19	      "format": "date-time",
+    20	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    21	    },
+    22	    "expires_at": {
+    23	      "type": "string",
+    24	      "format": "date-time",
+    25	      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+    26	      "description": "Optional — omitted from the response when absent; never emitted as explicit null (aligned with the NotNone discipline used across eden-contracts)."
+    27	    }
+    28	  }
+    29	}
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/tests/test_wire_roundtrip.py | sed -n '1,420p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""End-to-end round trip: StoreClient → FastAPI server → InMemoryStore.
+     2	
+     3	Every test here drives an in-process HTTP stack: FastAPI's TestClient
+     4	wraps the ASGI app with an httpx-compatible transport so every request
+     5	crosses the full serialization path without opening a real socket.
+     6	StoreClient is constructed against that same TestClient so its
+     7	request plumbing is identical to a subprocess-over-loopback run.
+     8	
+     9	Tests that need to simulate transport-indeterminate failures use
+    10	``httpx.MockTransport`` to interpose on the single integrate call,
+    11	leaving the rest of the requests (the pre-seed workflow, the
+    12	reconciliation read-back) going through the real ASGI stack.
+    13	"""
+    14	
+    15	from __future__ import annotations
+    16	
+    17	from typing import Any
+    18	
+    19	import pytest
+    20	from eden_contracts import MetricsSchema, Proposal, Trial
+    21	from eden_storage import InMemoryStore
+    22	from eden_storage.errors import (
+    23	    AlreadyExists,
+    24	    ConflictingResubmission,
+    25	    IllegalTransition,
+    26	    InvalidPrecondition,
+    27	    NotFound,
+    28	    WrongToken,
+    29	)
+    30	from eden_storage.submissions import (
+    31	    EvaluateSubmission,
+    32	    ImplementSubmission,
+    33	    PlanSubmission,
+    34	)
+    35	from eden_wire import StoreClient, make_app
+    36	from eden_wire.client import IndeterminateIntegration
+    37	from eden_wire.errors import ExperimentIdMismatch
+    38	from fastapi.testclient import TestClient
+    39	from httpx import Client, MockTransport, Request, Response
+    40	
+    41	EXPERIMENT_ID = "exp-wire"
+    42	SHORT_SUBSCRIBE_TIMEOUT = 0.2  # keep idle long-polls fast in tests
+    43	
+    44	
+    45	@pytest.fixture
+    46	def store() -> InMemoryStore:
+    47	    schema = MetricsSchema.model_validate({"loss": "real", "acc": "real"})
+    48	    return InMemoryStore(EXPERIMENT_ID, metrics_schema=schema)
+    49	
+    50	
+    51	@pytest.fixture
+    52	def app(store: InMemoryStore) -> Any:
+    53	    return make_app(
+    54	        store,
+    55	        subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+    56	        subscribe_poll_interval=0.02,
+    57	    )
+    58	
+    59	
+    60	@pytest.fixture
+    61	def client(app: Any) -> Client:
+    62	    return TestClient(app, base_url="http://wire.test")
+    63	
+    64	
+    65	@pytest.fixture
+    66	def store_client(client: Client) -> StoreClient:
+    67	    return StoreClient("http://wire.test", EXPERIMENT_ID, client=client)
+    68	
+    69	
+    70	def _make_proposal_body(proposal_id: str) -> dict[str, Any]:
+    71	    return {
+    72	        "proposal_id": proposal_id,
+    73	        "experiment_id": EXPERIMENT_ID,
+    74	        "state": "drafting",
+    75	        "slug": proposal_id,
+    76	        "parent_commits": ["a" * 40],
+    77	        "rationale": "test",
+    78	        "priority": 1.0,
+    79	        "artifacts_uri": "file:///tmp/artifacts",
+    80	        "created_at": "2026-04-24T00:00:00Z",
+    81	        "updated_at": "2026-04-24T00:00:00Z",
+    82	    }
+    83	
+    84	
+    85	def _make_trial_body(trial_id: str, proposal_id: str) -> dict[str, Any]:
+    86	    return {
+    87	        "trial_id": trial_id,
+    88	        "experiment_id": EXPERIMENT_ID,
+    89	        "proposal_id": proposal_id,
+    90	        "branch": f"work/{trial_id}",
+    91	        "parent_commits": ["a" * 40],
+    92	        "status": "starting",
+    93	        "started_at": "2026-04-24T00:00:00Z",
+    94	    }
+    95	
+    96	
+    97	def _run_trial_to_success(
+    98	    store_client: StoreClient,
+    99	    *,
+   100	    task_prefix: str,
+   101	    proposal_id: str,
+   102	    trial_id: str,
+   103	) -> None:
+   104	    """Drive a trial to ``status="success"`` via the real Store API.
+   105	
+   106	    This is the seed routine for integrate_trial tests. It goes
+   107	    through the full plan → implement → evaluate → accept pipeline
+   108	    over HTTP, matching what the real dispatch driver would do.
+   109	    No internal-state mutation; no ``model_copy(update=...)``.
+   110	    """
+   111	    # Plan phase — produces a ready proposal.
+   112	    store_client.create_plan_task(f"{task_prefix}-plan")
+   113	    claim = store_client.claim(f"{task_prefix}-plan", "planner")
+   114	    store_client.create_proposal(Proposal.model_validate(_make_proposal_body(proposal_id)))
+   115	    store_client.mark_proposal_ready(proposal_id)
+   116	    store_client.submit(
+   117	        f"{task_prefix}-plan",
+   118	        claim.token,
+   119	        PlanSubmission(status="success", proposal_ids=(proposal_id,)),
+   120	    )
+   121	    store_client.accept(f"{task_prefix}-plan")
+   122	
+   123	    # Implement phase — produces a trial with commit_sha.
+   124	    store_client.create_implement_task(f"{task_prefix}-impl", proposal_id)
+   125	    claim = store_client.claim(f"{task_prefix}-impl", "implementer")
+   126	    store_client.create_trial(Trial.model_validate(_make_trial_body(trial_id, proposal_id)))
+   127	    store_client.submit(
+   128	        f"{task_prefix}-impl",
+   129	        claim.token,
+   130	        ImplementSubmission(status="success", trial_id=trial_id, commit_sha="b" * 40),
+   131	    )
+   132	    store_client.accept(f"{task_prefix}-impl")
+   133	
+   134	    # Evaluate phase — transitions trial to success with metrics.
+   135	    store_client.create_evaluate_task(f"{task_prefix}-eval", trial_id)
+   136	    claim = store_client.claim(f"{task_prefix}-eval", "evaluator")
+   137	    store_client.submit(
+   138	        f"{task_prefix}-eval",
+   139	        claim.token,
+   140	        EvaluateSubmission(
+   141	            status="success",
+   142	            trial_id=trial_id,
+   143	            metrics={"loss": 0.1, "acc": 0.9},
+   144	            artifacts_uri="file:///tmp/artifacts",
+   145	        ),
+   146	    )
+   147	    store_client.accept(f"{task_prefix}-eval")
+   148	
+   149	
+   150	class TestFullExperiment:
+   151	    """Plan → implement → evaluate → integrate over HTTP."""
+   152	
+   153	    def test_plan_implement_evaluate_integrate(
+   154	        self, store_client: StoreClient
+   155	    ) -> None:
+   156	        _run_trial_to_success(
+   157	            store_client, task_prefix="t1", proposal_id="prop-1", trial_id="trial-1"
+   158	        )
+   159	        trial_commit_sha = "c" * 40
+   160	        store_client.integrate_trial("trial-1", trial_commit_sha)
+   161	
+   162	        trials = store_client.list_trials(status="success")
+   163	        assert len(trials) == 1
+   164	        assert trials[0].trial_commit_sha == trial_commit_sha
+   165	
+   166	
+   167	class TestErrorEnvelopeRoundtrip:
+   168	    """Every StorageError maps to a problem+json body and raises the same class."""
+   169	
+   170	    def test_not_found(self, store_client: StoreClient) -> None:
+   171	        with pytest.raises(NotFound):
+   172	            store_client.read_task("missing")
+   173	
+   174	    def test_already_exists(self, store_client: StoreClient) -> None:
+   175	        store_client.create_plan_task("dup")
+   176	        with pytest.raises(AlreadyExists):
+   177	            store_client.create_plan_task("dup")
+   178	
+   179	    def test_illegal_transition(self, store_client: StoreClient) -> None:
+   180	        store_client.create_plan_task("p1")
+   181	        store_client.claim("p1", "w1")
+   182	        with pytest.raises(IllegalTransition):
+   183	            store_client.claim("p1", "w2")
+   184	
+   185	    def test_wrong_token(self, store_client: StoreClient) -> None:
+   186	        store_client.create_plan_task("p2")
+   187	        store_client.claim("p2", "w1")
+   188	        with pytest.raises(WrongToken):
+   189	            store_client.submit(
+   190	                "p2", "not-the-token", PlanSubmission(status="success")
+   191	            )
+   192	
+   193	    def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
+   194	        store_client.create_plan_task("p3")
+   195	        claim = store_client.claim("p3", "w1")
+   196	        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("pr-a")))
+   197	        store_client.mark_proposal_ready("pr-a")
+   198	        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("pr-b")))
+   199	        store_client.mark_proposal_ready("pr-b")
+   200	        store_client.submit(
+   201	            "p3", claim.token, PlanSubmission(status="success", proposal_ids=("pr-a",))
+   202	        )
+   203	        with pytest.raises(ConflictingResubmission):
+   204	            store_client.submit(
+   205	                "p3", claim.token, PlanSubmission(status="success", proposal_ids=("pr-b",))
+   206	            )
+   207	
+   208	    def test_invalid_precondition(self, store_client: StoreClient) -> None:
+   209	        """An integrate call against a non-success trial raises InvalidPrecondition."""
+   210	        store_client.create_proposal(Proposal.model_validate(_make_proposal_body("prop-x")))
+   211	        store_client.mark_proposal_ready("prop-x")
+   212	        store_client.create_trial(Trial.model_validate(_make_trial_body("t-starting", "prop-x")))
+   213	        # Trial is still "starting"; integrate must refuse.
+   214	        with pytest.raises(InvalidPrecondition):
+   215	            store_client.integrate_trial("t-starting", "c" * 40)
+   216	
+   217	
+   218	class TestExperimentIdHeader:
+   219	    """§1.3 — header-vs-path mismatch is rejected."""
+   220	
+   221	    def test_missing_header(self, client: Client) -> None:
+   222	        resp = client.get(f"/v0/experiments/{EXPERIMENT_ID}/tasks")
+   223	        assert resp.status_code == 400
+   224	        assert resp.json()["type"] == "eden://error/experiment-id-mismatch"
+   225	
+   226	    def test_header_mismatch(self, client: Client) -> None:
+   227	        resp = client.get(
+   228	            f"/v0/experiments/{EXPERIMENT_ID}/tasks",
+   229	            headers={"X-Eden-Experiment-Id": "wrong"},
+   230	        )
+   231	        assert resp.status_code == 400
+   232	        assert resp.json()["type"] == "eden://error/experiment-id-mismatch"
+   233	
+   234	
+   235	class TestResponseCodes:
+   236	    """Spec §2.4, §3, §4, §5: success status codes and bodies."""
+   237	
+   238	    def test_submit_returns_200(self, client: Client, store_client: StoreClient) -> None:
+   239	        store_client.create_plan_task("sc1")
+   240	        claim = store_client.claim("sc1", "w")
+   241	        resp = client.post(
+   242	            f"/v0/experiments/{EXPERIMENT_ID}/tasks/sc1/submit",
+   243	            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+   244	            json={"token": claim.token, "payload": {"kind": "plan", "status": "success"}},
+   245	        )
+   246	        assert resp.status_code == 200
+   247	
+   248	    def test_integrate_returns_200(
+   249	        self, client: Client, store_client: StoreClient
+   250	    ) -> None:
+   251	        _run_trial_to_success(
+   252	            store_client, task_prefix="sc2", proposal_id="sc2-prop", trial_id="sc2-trial"
+   253	        )
+   254	        resp = client.post(
+   255	            f"/v0/experiments/{EXPERIMENT_ID}/trials/sc2-trial/integrate",
+   256	            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+   257	            json={"trial_commit_sha": "c" * 40},
+   258	        )
+   259	        assert resp.status_code == 200
+   260	
+   261	    def test_create_proposal_returns_entity(
+   262	        self, client: Client
+   263	    ) -> None:
+   264	        resp = client.post(
+   265	            f"/v0/experiments/{EXPERIMENT_ID}/proposals",
+   266	            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+   267	            json=_make_proposal_body("body-prop"),
+   268	        )
+   269	        assert resp.status_code == 200
+   270	        body = resp.json()
+   271	        assert body["proposal_id"] == "body-prop"
+   272	        assert body["state"] == "drafting"
+   273	
+   274	    def test_create_trial_returns_entity(
+   275	        self, client: Client, store_client: StoreClient
+   276	    ) -> None:
+   277	        store_client.create_proposal(
+   278	            Proposal.model_validate(_make_proposal_body("ct-prop"))
+   279	        )
+   280	        store_client.mark_proposal_ready("ct-prop")
+   281	        resp = client.post(
+   282	            f"/v0/experiments/{EXPERIMENT_ID}/trials",
+   283	            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+   284	            json=_make_trial_body("ct-trial", "ct-prop"),
+   285	        )
+   286	        assert resp.status_code == 200
+   287	        body = resp.json()
+   288	        assert body["trial_id"] == "ct-trial"
+   289	        assert body["status"] == "starting"
+   290	
+   291	
+   292	class TestIntegrateIdempotency:
+   293	    """§5 same-value idempotency; different-SHA divergence."""
+   294	
+   295	    def test_same_sha_idempotent(
+   296	        self, store: InMemoryStore, store_client: StoreClient
+   297	    ) -> None:
+   298	        _run_trial_to_success(
+   299	            store_client, task_prefix="idem", proposal_id="idem-prop", trial_id="idem-t"
+   300	        )
+   301	        sha = "c" * 40
+   302	        store_client.integrate_trial("idem-t", sha)
+   303	        store_client.integrate_trial("idem-t", sha)  # no-op
+   304	        integrated_events = [e for e in store.events() if e.type == "trial.integrated"]
+   305	        assert len(integrated_events) == 1
+   306	
+   307	    def test_different_sha_rejected(
+   308	        self, store_client: StoreClient
+   309	    ) -> None:
+   310	        _run_trial_to_success(
+   311	            store_client, task_prefix="div", proposal_id="div-prop", trial_id="div-t"
+   312	        )
+   313	        store_client.integrate_trial("div-t", "c" * 40)
+   314	        with pytest.raises(InvalidPrecondition):
+   315	            store_client.integrate_trial("div-t", "d" * 40)
+   316	
+   317	
+   318	class TestSubscribe:
+   319	    """§6.2 long-poll and §6.1 non-blocking polling."""
+   320	
+   321	    def test_events_returns_immediately_when_present(
+   322	        self, store_client: StoreClient
+   323	    ) -> None:
+   324	        store_client.create_plan_task("ev1")
+   325	        events = store_client.read_range()
+   326	        assert len(events) >= 1
+   327	
+   328	    def test_subscribe_returns_immediately_when_events_available(
+   329	        self, store_client: StoreClient
+   330	    ) -> None:
+   331	        store_client.create_plan_task("ev2")
+   332	        events = store_client.subscribe(cursor=0, timeout=SHORT_SUBSCRIBE_TIMEOUT)
+   333	        assert len(events) >= 1
+   334	
+   335	    def test_subscribe_times_out_on_idle(
+   336	        self, store_client: StoreClient
+   337	    ) -> None:
+   338	        """When no events are available, subscribe returns empty after the
+   339	        configured timeout rather than hanging forever."""
+   340	        store_client.create_plan_task("ev3")
+   341	        initial = store_client.read_range()
+   342	        # All events consumed; a follow-up subscribe should long-poll then
+   343	        # return an empty batch after the timeout.
+   344	        tail = store_client.subscribe(
+   345	            cursor=len(initial), timeout=SHORT_SUBSCRIBE_TIMEOUT
+   346	        )
+   347	        assert tail == []
+   348	
+   349	    def test_replay_from_zero(self, store_client: StoreClient) -> None:
+   350	        store_client.create_plan_task("r1")
+   351	        store_client.create_plan_task("r2")
+   352	        events = store_client.replay()
+   353	        assert len(events) == 2
+   354	        assert all(e.type == "task.created" for e in events)
+   355	
+   356	
+   357	def _transport_that_loses(
+   358	    app: Any, *, lose_path_substring: str, after_commit: bool
+   359	) -> MockTransport:
+   360	    """A composite transport that defers to the ASGI app except for one
+   361	    specific request path, which it handles specially.
+   362	
+   363	    - ``after_commit=True``: the "server" commits the write first by
+   364	      issuing the equivalent request through a ``TestClient`` (which
+   365	      runs the ASGI app fully), then raises ``httpx.ConnectError`` on
+   366	      the original — simulating the response being lost after durable
+   367	      commit.
+   368	    - ``after_commit=False``: raises ``httpx.ConnectError`` without
+   369	      touching the app — simulates "request never arrived" or
+   370	      "server aborted before commit."
+   371	
+   372	    All other requests pass through a real ``TestClient`` wrapping the
+   373	    same ASGI app. ``TestClient`` handles the sync-over-async bridge
+   374	    internally so we never have to nest event loops ourselves.
+   375	    """
+   376	    import httpx
+   377	
+   378	    passthrough = TestClient(app, base_url="http://wire.test")
+   379	
+   380	    def _relay(request: Request) -> Response:
+   381	        result = passthrough.request(
+   382	            request.method,
+   383	            str(request.url),
+   384	            content=request.content,
+   385	            headers=dict(request.headers),
+   386	        )
+   387	        return Response(
+   388	            status_code=result.status_code,
+   389	            headers=dict(result.headers),
+   390	            content=result.content,
+   391	        )
+   392	
+   393	    def handler(request: Request) -> Response:
+   394	        if lose_path_substring in str(request.url) and request.method == "POST":
+   395	            if after_commit:
+   396	                response = _relay(request)
+   397	                assert 200 <= response.status_code < 300, (
+   398	                    f"simulated server commit expected 2xx, got {response.status_code}"
+   399	                )
+   400	            raise httpx.ConnectError("simulated transport loss")
+   401	        return _relay(request)
+   402	
+   403	    return MockTransport(handler)
+   404	
+   405	
+   406	class TestIndeterminateIntegration:
+   407	    """§5 three-outcome reconciliation on transport-indeterminate failures.
+   408	
+   409	    The tests do not monkeypatch StoreClient; they install a custom
+   410	    httpx transport that loses the single ``integrate`` response (with
+   411	    or without the server having already committed) and lets every
+   412	    other request — including the reconciliation read-back — cross
+   413	    the real ASGI boundary.
+   414	    """
+   415	
+   416	    def _make_client(
+   417	        self, store: InMemoryStore, *, after_commit: bool
+   418	    ) -> tuple[StoreClient, Client]:
+   419	        app = make_app(
+   420	            store,
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M AGENTS.md
+ M docs/roadmap.md
+ M pyproject.toml
+ M reference/packages/eden-git/src/eden_git/integrator.py
+ M reference/packages/eden-storage/src/eden_storage/_base.py
+ M spec/v0/README.md
+ M uv.lock
+?? .claude/
+?? docs/plans/eden-phase-8a-wire-protocol.md
+?? docs/plans/review/eden-phase-8a-wire-protocol/
+?? reference/packages/eden-wire/
+?? spec/v0/07-wire-protocol.md
+?? spec/v0/schemas/wire/
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/src/eden_wire/server.py | sed -n '1,280p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""FastAPI server that exposes a ``Store`` over the EDEN wire protocol.
+     2	
+     3	:func:`make_app` takes a single ``Store`` and returns a fresh
+     4	``FastAPI`` instance that routes every ``/v0/experiments/{E}/...``
+     5	endpoint specified in ``spec/v0/07-wire-protocol.md`` to the
+     6	corresponding ``Store`` method.
+     7	
+     8	Error handling:
+     9	
+    10	- Any ``StorageError`` raised by the store maps to the matching
+    11	  ``eden://error/<name>`` problem+json body via
+    12	  :func:`eden_wire.errors.envelope_for_error`.
+    13	- ``BadRequest`` covers schema-validation failures; FastAPI's
+    14	  ``RequestValidationError`` is caught and rewritten.
+    15	- ``ExperimentIdMismatch`` guards the header-vs-path invariant (§1.3).
+    16	
+    17	The server does **not** contain business logic: every endpoint is a
+    18	thin adapter that validates the request, calls the store, and
+    19	serializes the result.
+    20	"""
+    21	
+    22	from __future__ import annotations
+    23	
+    24	import asyncio
+    25	import time
+    26	from typing import Any
+    27	
+    28	from eden_contracts import Proposal, TaskAdapter, Trial
+    29	from eden_storage import Store
+    30	from eden_storage.errors import StorageError
+    31	from eden_storage.submissions import (
+    32	    EvaluateSubmission,
+    33	    ImplementSubmission,
+    34	    PlanSubmission,
+    35	    Submission,
+    36	)
+    37	from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
+    38	from fastapi.exceptions import RequestValidationError
+    39	from fastapi.responses import JSONResponse, Response
+    40	from pydantic import ValidationError
+    41	
+    42	from .errors import (
+    43	    BadRequest,
+    44	    ExperimentIdMismatch,
+    45	    envelope_for_error,
+    46	)
+    47	from .models import (
+    48	    ClaimRequest,
+    49	    EventsResponse,
+    50	    IntegrateRequest,
+    51	    ReclaimRequest,
+    52	    RejectRequest,
+    53	    SubmitRequest,
+    54	    ValidateMetricsRequest,
+    55	    ValidateTerminalResponse,
+    56	)
+    57	
+    58	PROBLEM_JSON = "application/problem+json"
+    59	
+    60	
+    61	def make_app(
+    62	    store: Store,
+    63	    *,
+    64	    subscribe_timeout: float = 30.0,
+    65	    subscribe_poll_interval: float = 0.1,
+    66	) -> FastAPI:
+    67	    """Build a FastAPI app that exposes ``store`` over the wire binding.
+    68	
+    69	    The app is stateless beyond the injected ``store``; multiple apps
+    70	    for different experiments can coexist in one process, each with
+    71	    their own ``Store`` instance.
+    72	
+    73	    ``subscribe_timeout`` is the long-poll window per
+    74	    ``07-wire-protocol.md`` §6.2 (default 30s). Tests typically pass
+    75	    a short value. ``subscribe_poll_interval`` is how often the
+    76	    server re-checks the event log for new entries; finer values
+    77	    reduce latency at the cost of CPU.
+    78	    """
+    79	    app = FastAPI(
+    80	        title=f"EDEN task store — {store.experiment_id}",
+    81	        version="0",
+    82	    )
+    83	
+    84	    def _problem(status: int, type_: str, title: str, detail: str, instance: str) -> JSONResponse:
+    85	        return JSONResponse(
+    86	            status_code=status,
+    87	            media_type=PROBLEM_JSON,
+    88	            content={
+    89	                "type": type_,
+    90	                "title": title,
+    91	                "status": status,
+    92	                "detail": detail,
+    93	                "instance": instance,
+    94	            },
+    95	        )
+    96	
+    97	    def _check_experiment(path_exp: str, header_exp: str | None, url: str) -> None:
+    98	        if header_exp is None:
+    99	            raise ExperimentIdMismatch(
+   100	                f"missing X-Eden-Experiment-Id header (expected {path_exp!r})"
+   101	            )
+   102	        if header_exp != path_exp:
+   103	            raise ExperimentIdMismatch(
+   104	                f"X-Eden-Experiment-Id header {header_exp!r} does not match "
+   105	                f"URL segment {path_exp!r}"
+   106	            )
+   107	        if path_exp != store.experiment_id:
+   108	            raise ExperimentIdMismatch(
+   109	                f"URL segment {path_exp!r} does not match server's experiment "
+   110	                f"{store.experiment_id!r}"
+   111	            )
+   112	
+   113	    @app.exception_handler(StorageError)
+   114	    async def _storage_error_handler(request: Request, exc: StorageError) -> JSONResponse:
+   115	        envelope = envelope_for_error(exc, instance=str(request.url))
+   116	        return JSONResponse(
+   117	            status_code=envelope.status,
+   118	            media_type=PROBLEM_JSON,
+   119	            content=envelope.to_dict(),
+   120	        )
+   121	
+   122	    @app.exception_handler(BadRequest)
+   123	    async def _bad_request_handler(request: Request, exc: BadRequest) -> JSONResponse:
+   124	        envelope = envelope_for_error(exc, instance=str(request.url))
+   125	        return JSONResponse(
+   126	            status_code=envelope.status,
+   127	            media_type=PROBLEM_JSON,
+   128	            content=envelope.to_dict(),
+   129	        )
+   130	
+   131	    @app.exception_handler(ExperimentIdMismatch)
+   132	    async def _exp_mismatch_handler(
+   133	        request: Request, exc: ExperimentIdMismatch
+   134	    ) -> JSONResponse:
+   135	        envelope = envelope_for_error(exc, instance=str(request.url))
+   136	        return JSONResponse(
+   137	            status_code=envelope.status,
+   138	            media_type=PROBLEM_JSON,
+   139	            content=envelope.to_dict(),
+   140	        )
+   141	
+   142	    @app.exception_handler(RequestValidationError)
+   143	    async def _request_validation_handler(
+   144	        request: Request, exc: RequestValidationError
+   145	    ) -> JSONResponse:
+   146	        return _problem(
+   147	            400,
+   148	            "eden://error/bad-request",
+   149	            "Bad Request",
+   150	            "; ".join(str(e) for e in exc.errors()),
+   151	            str(request.url),
+   152	        )
+   153	
+   154	    @app.exception_handler(ValidationError)
+   155	    async def _pydantic_validation_handler(
+   156	        request: Request, exc: ValidationError
+   157	    ) -> JSONResponse:
+   158	        return _problem(
+   159	            400,
+   160	            "eden://error/bad-request",
+   161	            "Bad Request",
+   162	            exc.errors()[0].get("msg", "validation error") if exc.errors() else "validation error",
+   163	            str(request.url),
+   164	        )
+   165	
+   166	    # ------------------------------------------------------------------
+   167	    # Tasks
+   168	    # ------------------------------------------------------------------
+   169	
+   170	    base = "/v0/experiments/{experiment_id}"
+   171	
+   172	    @app.post(f"{base}/tasks")
+   173	    async def _create_task(
+   174	        experiment_id: str,
+   175	        body: dict[str, Any] = Body(...),
+   176	        x_eden_experiment_id: str | None = Header(None),
+   177	    ) -> dict[str, Any]:
+   178	        _check_experiment(
+   179	            experiment_id,
+   180	            x_eden_experiment_id,
+   181	            f"/v0/experiments/{experiment_id}/tasks",
+   182	        )
+   183	        try:
+   184	            task = TaskAdapter.validate_python(body)
+   185	        except ValidationError as exc:
+   186	            raise BadRequest(str(exc)) from exc
+   187	        created = store.create_task(task)
+   188	        return created.model_dump(mode="json", exclude_none=True)
+   189	
+   190	    @app.get(f"{base}/tasks")
+   191	    async def _list_tasks(
+   192	        experiment_id: str,
+   193	        kind: str | None = Query(None),
+   194	        state: str | None = Query(None),
+   195	        x_eden_experiment_id: str | None = Header(None),
+   196	    ) -> list[dict[str, Any]]:
+   197	        _check_experiment(
+   198	            experiment_id,
+   199	            x_eden_experiment_id,
+   200	            f"/v0/experiments/{experiment_id}/tasks",
+   201	        )
+   202	        tasks = store.list_tasks(kind=kind, state=state)
+   203	        return [t.model_dump(mode="json", exclude_none=True) for t in tasks]
+   204	
+   205	    @app.get(f"{base}/tasks/{{task_id}}")
+   206	    async def _read_task(
+   207	        experiment_id: str,
+   208	        task_id: str,
+   209	        x_eden_experiment_id: str | None = Header(None),
+   210	    ) -> dict[str, Any]:
+   211	        _check_experiment(
+   212	            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/tasks/{task_id}"
+   213	        )
+   214	        task = store.read_task(task_id)
+   215	        return task.model_dump(mode="json", exclude_none=True)
+   216	
+   217	    @app.get(f"{base}/tasks/{{task_id}}/submission")
+   218	    async def _read_submission(
+   219	        experiment_id: str,
+   220	        task_id: str,
+   221	        x_eden_experiment_id: str | None = Header(None),
+   222	    ) -> Response:
+   223	        _check_experiment(
+   224	            experiment_id,
+   225	            x_eden_experiment_id,
+   226	            f"/v0/experiments/{experiment_id}/tasks/{task_id}/submission",
+   227	        )
+   228	        submission = store.read_submission(task_id)
+   229	        if submission is None:
+   230	            return Response(status_code=204)
+   231	        return JSONResponse(content=_submission_to_wire(submission))
+   232	
+   233	    @app.post(f"{base}/tasks/{{task_id}}/claim")
+   234	    async def _claim(
+   235	        experiment_id: str,
+   236	        task_id: str,
+   237	        body: ClaimRequest,
+   238	        x_eden_experiment_id: str | None = Header(None),
+   239	    ) -> dict[str, Any]:
+   240	        _check_experiment(
+   241	            experiment_id,
+   242	            x_eden_experiment_id,
+   243	            f"/v0/experiments/{experiment_id}/tasks/{task_id}/claim",
+   244	        )
+   245	        claim = store.claim(task_id, body.worker_id, expires_at=body.expires_at)
+   246	        resp: dict[str, Any] = {
+   247	            "token": claim.token,
+   248	            "worker_id": claim.worker_id,
+   249	            "claimed_at": claim.claimed_at,
+   250	        }
+   251	        if claim.expires_at is not None:
+   252	            resp["expires_at"] = claim.expires_at
+   253	        return resp
+   254	
+   255	    @app.post(f"{base}/tasks/{{task_id}}/submit")
+   256	    async def _submit(
+   257	        experiment_id: str,
+   258	        task_id: str,
+   259	        body: SubmitRequest,
+   260	        x_eden_experiment_id: str | None = Header(None),
+   261	    ) -> dict[str, Any]:
+   262	        _check_experiment(
+   263	            experiment_id,
+   264	            x_eden_experiment_id,
+   265	            f"/v0/experiments/{experiment_id}/tasks/{task_id}/submit",
+   266	        )
+   267	        task = store.read_task(task_id)
+   268	        submission = _submission_from_wire(task.kind, body.payload)
+   269	        store.submit(task_id, body.token, submission)
+   270	        return {}
+   271	
+   272	    @app.post(f"{base}/tasks/{{task_id}}/accept")
+   273	    async def _accept(
+   274	        experiment_id: str,
+   275	        task_id: str,
+   276	        x_eden_experiment_id: str | None = Header(None),
+   277	    ) -> Response:
+   278	        _check_experiment(
+   279	            experiment_id,
+   280	            x_eden_experiment_id,
+
+exec
+/bin/zsh -lc "git diff -- reference/packages/eden-wire/src/eden_wire/server.py reference/packages/eden-wire/src/eden_wire/client.py reference/packages/eden-wire/src/eden_wire/models.py reference/packages/eden-wire/tests/test_wire_roundtrip.py reference/packages/eden-wire/tests/test_wire_schema_parity.py spec/v0/schemas/wire/claim-response.schema.json spec/v0/07-wire-protocol.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+codex
+I’ve got the updated code open. I’m reading the lower half of `server.py` and the rest of the rewritten transport tests now; then I’ll rerun the focused wire suite plus a couple of direct probes against the changed endpoints.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/tests/test_wire_roundtrip.py | sed -n '420,620p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   420	            store,
+   421	            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+   422	            subscribe_poll_interval=0.02,
+   423	        )
+   424	        seed_client = TestClient(app, base_url="http://wire.test")
+   425	        seed_store_client = StoreClient(
+   426	            "http://wire.test", EXPERIMENT_ID, client=seed_client
+   427	        )
+   428	        return seed_store_client, seed_client, app  # type: ignore[return-value]
+   429	
+   430	    def test_confirmed_success_after_response_lost(
+   431	        self, store: InMemoryStore
+   432	    ) -> None:
+   433	        """Server commits; response is lost; client read-back observes the
+   434	        expected SHA → return success (no exception, no compensation)."""
+   435	        app = make_app(
+   436	            store,
+   437	            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+   438	            subscribe_poll_interval=0.02,
+   439	        )
+   440	        seed = TestClient(app, base_url="http://wire.test")
+   441	        seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
+   442	        _run_trial_to_success(
+   443	            seed_client, task_prefix="cs", proposal_id="cs-prop", trial_id="cs-t"
+   444	        )
+   445	
+   446	        flaky = Client(
+   447	            transport=_transport_that_loses(
+   448	                app,
+   449	                lose_path_substring="/trials/cs-t/integrate",
+   450	                after_commit=True,
+   451	            ),
+   452	            base_url="http://wire.test",
+   453	        )
+   454	        with StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc:
+   455	            flaky_sc.integrate_trial("cs-t", "c" * 40)  # MUST NOT raise
+   456	        assert store.read_trial("cs-t").trial_commit_sha == "c" * 40
+   457	
+   458	    def test_indeterminate_when_no_sha(self, store: InMemoryStore) -> None:
+   459	        """Server never committed; read-back shows trial_commit_sha=None →
+   460	        IndeterminateIntegration (must NOT compensate)."""
+   461	        app = make_app(
+   462	            store,
+   463	            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+   464	            subscribe_poll_interval=0.02,
+   465	        )
+   466	        seed = TestClient(app, base_url="http://wire.test")
+   467	        seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
+   468	        _run_trial_to_success(
+   469	            seed_client, task_prefix="ind", proposal_id="ind-prop", trial_id="ind-t"
+   470	        )
+   471	
+   472	        flaky = Client(
+   473	            transport=_transport_that_loses(
+   474	                app,
+   475	                lose_path_substring="/trials/ind-t/integrate",
+   476	                after_commit=False,
+   477	            ),
+   478	            base_url="http://wire.test",
+   479	        )
+   480	        with (
+   481	            StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc,
+   482	            pytest.raises(IndeterminateIntegration),
+   483	        ):
+   484	            flaky_sc.integrate_trial("ind-t", "c" * 40)
+   485	        assert store.read_trial("ind-t").trial_commit_sha is None
+   486	
+   487	    def test_confirmed_divergence(self, store: InMemoryStore) -> None:
+   488	        """Server committed a *different* SHA previously; transport fails on
+   489	        the new attempt; read-back surfaces the different SHA →
+   490	        InvalidPrecondition, no compensation."""
+   491	        app = make_app(
+   492	            store,
+   493	            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+   494	            subscribe_poll_interval=0.02,
+   495	        )
+   496	        seed = TestClient(app, base_url="http://wire.test")
+   497	        seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
+   498	        _run_trial_to_success(
+   499	            seed_client, task_prefix="dv", proposal_id="dv-prop", trial_id="dv-t"
+   500	        )
+   501	        seed_client.integrate_trial("dv-t", "d" * 40)  # pre-commit a different SHA
+   502	
+   503	        flaky = Client(
+   504	            transport=_transport_that_loses(
+   505	                app,
+   506	                lose_path_substring="/trials/dv-t/integrate",
+   507	                after_commit=False,
+   508	            ),
+   509	            base_url="http://wire.test",
+   510	        )
+   511	        with (
+   512	            StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc,
+   513	            pytest.raises(InvalidPrecondition),
+   514	        ):
+   515	            flaky_sc.integrate_trial("dv-t", "c" * 40)
+   516	        # The pre-existing SHA is untouched; the client did not compensate.
+   517	        assert store.read_trial("dv-t").trial_commit_sha == "d" * 40
+   518	
+   519	
+   520	def test_experiment_id_mismatch_error_type() -> None:
+   521	    """ExperimentIdMismatch is exposed at the wire binding entry."""
+   522	    assert ExperimentIdMismatch.__name__ == "ExperimentIdMismatch"
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-wire/src/eden_wire/server.py | sed -n '280,560p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   280	            x_eden_experiment_id,
+   281	            f"/v0/experiments/{experiment_id}/tasks/{task_id}/accept",
+   282	        )
+   283	        store.accept(task_id)
+   284	        return Response(status_code=204)
+   285	
+   286	    @app.post(f"{base}/tasks/{{task_id}}/reject")
+   287	    async def _reject(
+   288	        experiment_id: str,
+   289	        task_id: str,
+   290	        body: RejectRequest,
+   291	        x_eden_experiment_id: str | None = Header(None),
+   292	    ) -> Response:
+   293	        _check_experiment(
+   294	            experiment_id,
+   295	            x_eden_experiment_id,
+   296	            f"/v0/experiments/{experiment_id}/tasks/{task_id}/reject",
+   297	        )
+   298	        store.reject(task_id, body.reason)  # type: ignore[arg-type]
+   299	        return Response(status_code=204)
+   300	
+   301	    @app.post(f"{base}/tasks/{{task_id}}/reclaim")
+   302	    async def _reclaim(
+   303	        experiment_id: str,
+   304	        task_id: str,
+   305	        body: ReclaimRequest,
+   306	        x_eden_experiment_id: str | None = Header(None),
+   307	    ) -> Response:
+   308	        _check_experiment(
+   309	            experiment_id,
+   310	            x_eden_experiment_id,
+   311	            f"/v0/experiments/{experiment_id}/tasks/{task_id}/reclaim",
+   312	        )
+   313	        store.reclaim(task_id, body.cause)  # type: ignore[arg-type]
+   314	        return Response(status_code=204)
+   315	
+   316	    # ------------------------------------------------------------------
+   317	    # Proposals
+   318	    # ------------------------------------------------------------------
+   319	
+   320	    @app.post(f"{base}/proposals")
+   321	    async def _create_proposal(
+   322	        experiment_id: str,
+   323	        body: dict[str, Any] = Body(...),
+   324	        x_eden_experiment_id: str | None = Header(None),
+   325	    ) -> dict[str, Any]:
+   326	        _check_experiment(
+   327	            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/proposals"
+   328	        )
+   329	        try:
+   330	            proposal = Proposal.model_validate(body)
+   331	        except ValidationError as exc:
+   332	            raise BadRequest(str(exc)) from exc
+   333	        store.create_proposal(proposal)
+   334	        # §3: response body matches proposal.schema.json; return the
+   335	        # stored proposal so the caller sees what landed.
+   336	        return store.read_proposal(proposal.proposal_id).model_dump(
+   337	            mode="json", exclude_none=True
+   338	        )
+   339	
+   340	    @app.get(f"{base}/proposals")
+   341	    async def _list_proposals(
+   342	        experiment_id: str,
+   343	        state: str | None = Query(None),
+   344	        x_eden_experiment_id: str | None = Header(None),
+   345	    ) -> list[dict[str, Any]]:
+   346	        _check_experiment(
+   347	            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/proposals"
+   348	        )
+   349	        proposals = store.list_proposals(state=state)
+   350	        return [p.model_dump(mode="json", exclude_none=True) for p in proposals]
+   351	
+   352	    @app.get(f"{base}/proposals/{{proposal_id}}")
+   353	    async def _read_proposal(
+   354	        experiment_id: str,
+   355	        proposal_id: str,
+   356	        x_eden_experiment_id: str | None = Header(None),
+   357	    ) -> dict[str, Any]:
+   358	        _check_experiment(
+   359	            experiment_id,
+   360	            x_eden_experiment_id,
+   361	            f"/v0/experiments/{experiment_id}/proposals/{proposal_id}",
+   362	        )
+   363	        return store.read_proposal(proposal_id).model_dump(mode="json", exclude_none=True)
+   364	
+   365	    @app.post(f"{base}/proposals/{{proposal_id}}/mark-ready")
+   366	    async def _mark_proposal_ready(
+   367	        experiment_id: str,
+   368	        proposal_id: str,
+   369	        x_eden_experiment_id: str | None = Header(None),
+   370	    ) -> Response:
+   371	        _check_experiment(
+   372	            experiment_id,
+   373	            x_eden_experiment_id,
+   374	            f"/v0/experiments/{experiment_id}/proposals/{proposal_id}/mark-ready",
+   375	        )
+   376	        store.mark_proposal_ready(proposal_id)
+   377	        return Response(status_code=204)
+   378	
+   379	    # ------------------------------------------------------------------
+   380	    # Trials
+   381	    # ------------------------------------------------------------------
+   382	
+   383	    @app.post(f"{base}/trials")
+   384	    async def _create_trial(
+   385	        experiment_id: str,
+   386	        body: dict[str, Any] = Body(...),
+   387	        x_eden_experiment_id: str | None = Header(None),
+   388	    ) -> dict[str, Any]:
+   389	        _check_experiment(
+   390	            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/trials"
+   391	        )
+   392	        try:
+   393	            trial = Trial.model_validate(body)
+   394	        except ValidationError as exc:
+   395	            raise BadRequest(str(exc)) from exc
+   396	        store.create_trial(trial)
+   397	        # §4: response body matches trial.schema.json.
+   398	        return store.read_trial(trial.trial_id).model_dump(
+   399	            mode="json", exclude_none=True
+   400	        )
+   401	
+   402	    @app.get(f"{base}/trials")
+   403	    async def _list_trials(
+   404	        experiment_id: str,
+   405	        status: str | None = Query(None),
+   406	        x_eden_experiment_id: str | None = Header(None),
+   407	    ) -> list[dict[str, Any]]:
+   408	        _check_experiment(
+   409	            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/trials"
+   410	        )
+   411	        return [
+   412	            t.model_dump(mode="json", exclude_none=True)
+   413	            for t in store.list_trials(status=status)
+   414	        ]
+   415	
+   416	    @app.get(f"{base}/trials/{{trial_id}}")
+   417	    async def _read_trial(
+   418	        experiment_id: str,
+   419	        trial_id: str,
+   420	        x_eden_experiment_id: str | None = Header(None),
+   421	    ) -> dict[str, Any]:
+   422	        _check_experiment(
+   423	            experiment_id,
+   424	            x_eden_experiment_id,
+   425	            f"/v0/experiments/{experiment_id}/trials/{trial_id}",
+   426	        )
+   427	        return store.read_trial(trial_id).model_dump(mode="json", exclude_none=True)
+   428	
+   429	    @app.post(f"{base}/trials/{{trial_id}}/declare-eval-error")
+   430	    async def _declare_trial_eval_error(
+   431	        experiment_id: str,
+   432	        trial_id: str,
+   433	        x_eden_experiment_id: str | None = Header(None),
+   434	    ) -> Response:
+   435	        _check_experiment(
+   436	            experiment_id,
+   437	            x_eden_experiment_id,
+   438	            f"/v0/experiments/{experiment_id}/trials/{trial_id}/declare-eval-error",
+   439	        )
+   440	        store.declare_trial_eval_error(trial_id)
+   441	        return Response(status_code=204)
+   442	
+   443	    @app.post(f"{base}/trials/{{trial_id}}/integrate")
+   444	    async def _integrate_trial(
+   445	        experiment_id: str,
+   446	        trial_id: str,
+   447	        body: IntegrateRequest,
+   448	        x_eden_experiment_id: str | None = Header(None),
+   449	    ) -> dict[str, Any]:
+   450	        _check_experiment(
+   451	            experiment_id,
+   452	            x_eden_experiment_id,
+   453	            f"/v0/experiments/{experiment_id}/trials/{trial_id}/integrate",
+   454	        )
+   455	        # §5: 200 + empty body on success and same-value idempotent
+   456	        # retries; 409 invalid-precondition on different-SHA divergence
+   457	        # (raised by Store.integrate_trial).
+   458	        store.integrate_trial(trial_id, body.trial_commit_sha)
+   459	        return {}
+   460	
+   461	    # ------------------------------------------------------------------
+   462	    # Events
+   463	    # ------------------------------------------------------------------
+   464	
+   465	    @app.get(f"{base}/events")
+   466	    async def _read_range(
+   467	        experiment_id: str,
+   468	        cursor: int = Query(0, ge=0),
+   469	        x_eden_experiment_id: str | None = Header(None),
+   470	    ) -> dict[str, Any]:
+   471	        _check_experiment(
+   472	            experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/events"
+   473	        )
+   474	        events = store.read_range(cursor=cursor if cursor > 0 else None)
+   475	        resp = EventsResponse(events=events, cursor=cursor + len(events))
+   476	        return resp.model_dump(mode="json", exclude_none=True)
+   477	
+   478	    @app.get(f"{base}/events/subscribe")
+   479	    async def _subscribe(
+   480	        experiment_id: str,
+   481	        cursor: int = Query(0, ge=0),
+   482	        timeout: float | None = Query(None, ge=0),
+   483	        x_eden_experiment_id: str | None = Header(None),
+   484	    ) -> dict[str, Any]:
+   485	        # §6.2 long-poll: hold the connection open until at least one
+   486	        # event is available after `cursor` or ``timeout`` (default
+   487	        # ``subscribe_timeout``) elapses. The underlying ``Store`` is
+   488	        # a synchronous in-process object, so we poll ``read_range``
+   489	        # in a loop with a short interval. An asyncio.sleep yields to
+   490	        # the event loop, so other requests (e.g. the write that
+   491	        # unblocks us) progress concurrently.
+   492	        _check_experiment(
+   493	            experiment_id,
+   494	            x_eden_experiment_id,
+   495	            f"/v0/experiments/{experiment_id}/events/subscribe",
+   496	        )
+   497	        effective_timeout = timeout if timeout is not None else subscribe_timeout
+   498	        deadline = time.monotonic() + effective_timeout
+   499	        events = store.read_range(cursor=cursor if cursor > 0 else None)
+   500	        while not events and time.monotonic() < deadline:
+   501	            await asyncio.sleep(subscribe_poll_interval)
+   502	            events = store.read_range(cursor=cursor if cursor > 0 else None)
+   503	        resp = EventsResponse(events=events, cursor=cursor + len(events))
+   504	        return resp.model_dump(mode="json", exclude_none=True)
+   505	
+   506	    # ------------------------------------------------------------------
+   507	    # Reference-only helpers (non-normative)
+   508	    # ------------------------------------------------------------------
+   509	
+   510	    ref_base = "/_reference/experiments/{experiment_id}"
+   511	
+   512	    @app.get(f"{ref_base}/tasks/{{task_id}}/validate-terminal")
+   513	    async def _validate_terminal(
+   514	        experiment_id: str,
+   515	        task_id: str,
+   516	        x_eden_experiment_id: str | None = Header(None),
+   517	    ) -> dict[str, Any]:
+   518	        _check_experiment(
+   519	            experiment_id,
+   520	            x_eden_experiment_id,
+   521	            f"/_reference/experiments/{experiment_id}/tasks/{task_id}/validate-terminal",
+   522	        )
+   523	        decision, reason = store.validate_terminal(task_id)
+   524	        return ValidateTerminalResponse(
+   525	            decision=decision, reason=reason
+   526	        ).model_dump(mode="json", exclude_none=True)
+   527	
+   528	    @app.post(f"{ref_base}/validate/metrics")
+   529	    async def _validate_metrics(
+   530	        experiment_id: str,
+   531	        body: ValidateMetricsRequest,
+   532	        x_eden_experiment_id: str | None = Header(None),
+   533	    ) -> Response:
+   534	        _check_experiment(
+   535	            experiment_id,
+   536	            x_eden_experiment_id,
+   537	            f"/_reference/experiments/{experiment_id}/validate/metrics",
+   538	        )
+   539	        store.validate_metrics(body.metrics)
+   540	        return Response(status_code=204)
+   541	
+   542	    return app
+   543	
+   544	
+   545	def _submission_to_wire(submission: Submission) -> dict[str, Any]:
+   546	    if isinstance(submission, PlanSubmission):
+   547	        return {
+   548	            "kind": "plan",
+   549	            "status": submission.status,
+   550	            "proposal_ids": list(submission.proposal_ids),
+   551	        }
+   552	    if isinstance(submission, ImplementSubmission):
+   553	        body: dict[str, Any] = {
+   554	            "kind": "implement",
+   555	            "status": submission.status,
+   556	            "trial_id": submission.trial_id,
+   557	        }
+   558	        if submission.commit_sha is not None:
+   559	            body["commit_sha"] = submission.commit_sha
+   560	        return body
+
+exec
+/bin/zsh -lc 'uv run ruff check reference/packages/eden-wire/src/eden_wire reference/packages/eden-wire/tests' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+All checks passed!
+
+exec
+/bin/zsh -lc 'uv run pytest -q reference/packages/eden-wire/tests/test_wire_roundtrip.py reference/packages/eden-wire/tests/test_wire_schema_parity.py' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'uv run pyright reference/packages/eden-wire/src/eden_wire' in /Users/ericalt/Documents/eden
+ succeeded in 1134ms:
+0 errors, 0 warnings, 0 informations
+
+ succeeded in 1230ms:
+...........................................                              [100%]
+43 passed in 0.93s
+
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+import time
+from fastapi.testclient import TestClient
+from eden_contracts import MetricsSchema, Proposal, Trial
+from eden_storage import InMemoryStore
+from eden_wire import make_app
+
+EXP='exp-wire'
+store=InMemoryStore(EXP, metrics_schema=MetricsSchema.model_validate({'loss':'real'}))
+app=make_app(store, subscribe_timeout=0.2, subscribe_poll_interval=0.02)
+client=TestClient(app, base_url='http://wire.test')
+H={'X-Eden-Experiment-Id':EXP}
+
+# create proposal body check
+proposal = {
+ 'proposal_id':'p1','experiment_id':EXP,'state':'drafting','slug':'p1','parent_commits':['a'*40],
+ 'rationale':'x','priority':1.0,'artifacts_uri':'file:///tmp/a','created_at':'2026-04-24T00:00:00Z','updated_at':'2026-04-24T00:00:00Z'
+}
+resp=client.post(f'/v0/experiments/{EXP}/proposals', headers=H, json=proposal)
+print('create_proposal', resp.status_code, sorted(resp.json().keys())[:3], resp.json()['proposal_id'])
+
+# idle subscribe should wait about timeout then return empty
+start=time.monotonic()
+resp=client.get(f'/v0/experiments/{EXP}/events/subscribe', headers=H, params={'cursor':999,'timeout':0.2})
+elapsed=time.monotonic()-start
+print('subscribe_idle', resp.status_code, resp.json(), round(elapsed, 3))
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 487ms:
+create_proposal 200 ['artifacts_uri', 'created_at', 'experiment_id'] p1
+subscribe_idle 200 {'events': [], 'cursor': 999} 0.223
+
+codex
+1. Risk: `integrate_trial` still does not match the spec’s success body exactly. [server.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/server.py:443) now returns `200`, but it returns `{}`, which FastAPI serializes as a JSON body. [07-wire-protocol.md](/Users/ericalt/Documents/eden/spec/v0/07-wire-protocol.md:183) says the success response is `200, empty body`. So prior finding 2 is only partially resolved.
+
+The other three findings look resolved on re-review. `/events/subscribe` now actually long-polls: [server.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/server.py:478) loops with `asyncio.sleep`, and a direct probe against the app showed an idle subscribe with `timeout=0.2` returning after about `0.223s`, not immediately. `create_proposal` and `create_trial` now return full entities ([server.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/server.py:320), [server.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/src/eden_wire/server.py:383)); the claim-response null drift is fixed in [claim-response.schema.json](/Users/ericalt/Documents/eden/spec/v0/schemas/wire/claim-response.schema.json:22) and covered by [test_wire_schema_parity.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/tests/test_wire_schema_parity.py:70); and the rewritten indeterminate-integration tests now use a real transport boundary instead of monkeypatching `StoreClient` ([test_wire_roundtrip.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/tests/test_wire_roundtrip.py:357), [test_wire_roundtrip.py](/Users/ericalt/Documents/eden/reference/packages/eden-wire/tests/test_wire_roundtrip.py:406)).
+
+I re-ran `uv run pytest -q reference/packages/eden-wire/tests/test_wire_roundtrip.py reference/packages/eden-wire/tests/test_wire_schema_parity.py` (`43 passed`), `uv run pyright reference/packages/eden-wire/src/eden_wire` (`0 errors`), and `uv run ruff check reference/packages/eden-wire/src/eden_wire reference/packages/eden-wire/tests` (clean). If you want the last spec mismatch gone, change `_integrate_trial` to return `Response(status_code=200)` rather than `{}`.
+tokens used
+209,437

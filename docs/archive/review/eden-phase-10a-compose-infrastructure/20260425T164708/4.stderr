@@ -1,0 +1,394 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc70a-6e46-7062-95a2-bf21eadd3584
+--------
+user
+Round-3 fixes applied: (a) the stale 'created and writable' inline comment is gone — comment now says 'exists at compose-up time' matching the contract; (b) the smoke-script exit-code check now uses 'docker inspect --format {{.State.ExitCode}} eden-blob-init' against the explicit container_name, dodging docker compose ps --format json shape differences across Compose versions. Please review docs/plans/eden-phase-10a-compose-infrastructure.md.
+codex
+Reviewing the revised plan again. I’m checking the exact smoke-script and `blob-init` changes first, then I’ll continue through the remaining review levels if those fixes hold.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10a-compose-infrastructure.md | sed -n '120,320p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   120	  before we have anything to issue tokens for.)
+   121	- **Blob volume = named volume + one-shot `blob-init` mounter.**
+   122	  Empirical Compose behavior verified during planning: a
+   123	  top-level `volumes:` declaration **does not** cause Compose to
+   124	  create the volume unless at least one service mounts it. A
+   125	  bare declaration (no mount, no init service) leaves
+   126	  `docker volume ls` empty after `compose up`. To make 10a's
+   127	  deliverable real, we ship a one-shot `blob-init` busybox
+   128	  container that mounts `eden-blob-data` at `/var/lib/eden/blobs`,
+   129	  runs `mkdir -p`, and exits 0. `restart: "no"` prevents the
+   130	  exited container from looping; `docker compose up --wait`
+   131	  semantics for one-shot services were also verified during
+   132	  planning — `--wait` returns exit 0 when a one-shot container
+   133	  exits 0, so the smoke test gets a clean signal. Downstream
+   134	  services in 10b/10d mount the same volume.
+   135	- **10a's blob-volume guarantee is "volume exists," not
+   136	  "writable by the eventual 10d producer."** `blob-init` runs as
+   137	  BusyBox root, and any in-container writability check 10a runs
+   138	  is also from a root container — that proves "root can write,"
+   139	  which is uninformative for the eventual non-root LLM-worker
+   140	  containers in 10d. We deliberately do **not** make a
+   141	  uid/gid/perm contract in 10a. 10d picks the user model when
+   142	  the first real producer lands and is responsible for any
+   143	  ownership/`chmod`/`chown` step it needs. 10a's smoke test
+   144	  asserts existence (`docker volume inspect`) and that the
+   145	  `blob-init` container exited 0 — nothing more about the volume.
+   146	- **Compose file format = `compose.yaml` (no `version:` field).**
+   147	  Modern Docker Compose deprecated the top-level `version:` key and
+   148	  Docker recommends using just `compose.yaml`. We name the file
+   149	  `compose.yaml` (not `docker-compose.yml`) and omit `version:`.
+   150	  `docker compose` (v2 plugin, the only supported flavor) accepts
+   151	  both filenames; users on extremely old `docker-compose` (v1, EOL)
+   152	  may be surprised, and that's an acceptable cost — v1 has been
+   153	  unmaintained for 18+ months.
+   154	
+   155	## What Gets Created
+   156	
+   157	```text
+   158	reference/compose/
+   159	├── README.md                 # How to bring it up + what each service does + ops notes
+   160	├── compose.yaml              # The Compose file. Three services + three volumes.
+   161	├── .env.example              # Default env values; gitignored ".env" is the real file.
+   162	└── healthcheck/
+   163	    └── smoke.sh              # Bash script: bring up, wait for healthy, assert volume,
+   164	                              # tear down. Used by both the human verification step
+   165	                              # and the new compose-smoke CI job.
+   166	
+   167	.github/workflows/ci.yml      # New job: compose-smoke
+   168	.gitignore                    # Add: reference/compose/.env
+   169	docs/roadmap.md               # Mark 10a complete
+   170	reference/README.md           # Update Compose row from "Phase 10" → "Phase 10 chunk 10a"
+   171	AGENTS.md                     # Append Phase 10 chunk 10a paragraph
+   172	```
+   173	
+   174	**Not** created in 10a:
+   175	
+   176	- Any Dockerfile under `reference/services/*/` — those land in 10b.
+   177	- Any `PostgresStore` code in `reference/packages/eden-storage/` —
+   178	  defers until 10b ships the consumer.
+   179	- `reference/packages/eden-blob/*.py` — defers to 10d.
+   180	- `reference/scripts/setup-experiment/` content — that's 10c.
+   181	- A repo-root `compose.yaml` — only `reference/compose/compose.yaml`.
+   182	
+   183	## File-by-file design
+   184	
+   185	### `reference/compose/compose.yaml`
+   186	
+   187	Three services and three named volumes. `postgres` and `gitea`
+   188	mount their own data volumes; `blob-init` is a one-shot service
+   189	whose only purpose is to ensure `eden-blob-data` is created.
+   190	
+   191	```yaml
+   192	name: eden-reference
+   193	
+   194	services:
+   195	  postgres:
+   196	    image: postgres:16.6-alpine
+   197	    container_name: eden-postgres
+   198	    restart: unless-stopped
+   199	    environment:
+   200	      POSTGRES_DB: ${POSTGRES_DB:-eden}
+   201	      POSTGRES_USER: ${POSTGRES_USER:-eden}
+   202	      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+   203	    ports:
+   204	      - "${POSTGRES_HOST_PORT:-5433}:5432"
+   205	    volumes:
+   206	      - eden-postgres-data:/var/lib/postgresql/data
+   207	    healthcheck:
+   208	      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eden} -d ${POSTGRES_DB:-eden}"]
+   209	      interval: 5s
+   210	      timeout: 3s
+   211	      retries: 10
+   212	      start_period: 10s
+   213	
+   214	  gitea:
+   215	    image: gitea/gitea:1.22.6-rootless
+   216	    container_name: eden-gitea
+   217	    restart: unless-stopped
+   218	    environment:
+   219	      GITEA__server__DOMAIN: localhost
+   220	      GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
+   221	      GITEA__server__HTTP_PORT: "3000"
+   222	      # SSH_PORT is the *advertised* port (shown in clone URLs); it must
+   223	      # match the host-side mapping so SSH clones work. SSH_LISTEN_PORT
+   224	      # is what Gitea binds inside the container, kept fixed at 2222
+   225	      # so the published mapping below stays valid even when a user
+   226	      # overrides GITEA_SSH_HOST_PORT to dodge a host collision.
+   227	      GITEA__server__SSH_PORT: "${GITEA_SSH_HOST_PORT:-2222}"
+   228	      GITEA__server__SSH_LISTEN_PORT: "2222"
+   229	      GITEA__database__DB_TYPE: sqlite3
+   230	      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+   231	      GITEA__security__INSTALL_LOCK: "true"
+   232	      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
+   233	      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
+   234	      GITEA__service__DISABLE_REGISTRATION: "true"
+   235	      GITEA__metrics__ENABLED: "false"
+   236	      GITEA__log__LEVEL: Warn
+   237	    ports:
+   238	      - "${GITEA_HOST_PORT:-3001}:3000"
+   239	      - "${GITEA_SSH_HOST_PORT:-2222}:2222"
+   240	    volumes:
+   241	      - eden-gitea-data:/var/lib/gitea
+   242	    healthcheck:
+   243	      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
+   244	      interval: 5s
+   245	      timeout: 3s
+   246	      retries: 20
+   247	      start_period: 30s
+   248	
+   249	  blob-init:
+   250	    # One-shot service whose only job is to ensure eden-blob-data
+   251	    # exists at compose-up time. Compose does NOT create an unmounted
+   252	    # top-level volume — that was verified during planning by a quick
+   253	    # spike — so without this service the volume would not exist
+   254	    # until 10b/10d's first real mounter ran. 10a's contract is
+   255	    # "volume exists" only; ownership/perms are 10d's responsibility.
+   256	    image: busybox:1.36.1
+   257	    container_name: eden-blob-init
+   258	    restart: "no"
+   259	    # Deliberately no chmod/chown: 10a's contract is "volume exists,"
+   260	    # not "writable by the eventual 10d producer." Ownership belongs
+   261	    # to whichever uid/gid 10d picks for its blob-writing service.
+   262	    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && echo blob-volume ready"]
+   263	    volumes:
+   264	      - eden-blob-data:/var/lib/eden/blobs
+   265	
+   266	volumes:
+   267	  eden-postgres-data:
+   268	  eden-gitea-data:
+   269	  eden-blob-data:
+   270	```
+   271	
+   272	Notes on shape choices:
+   273	
+   274	- `name: eden-reference` is the project name. `compose up`,
+   275	  `compose down`, and `compose ps` use this; without it the project
+   276	  defaults to the directory name (`compose`) which is uselessly
+   277	  generic.
+   278	- `${VAR:?msg}` syntax for required secrets means `compose up`
+   279	  fails fast with a clear message if the user hasn't copied
+   280	  `.env.example` to `.env`. `${VAR:-default}` for optional values.
+   281	- Port collisions on the host are likely (a developer probably has
+   282	  Postgres 5432 in use; some have Gitea 3000). Defaulting host-side
+   283	  to 5433 / 3001 / 2222 sidesteps the most common collisions.
+   284	- `GITEA__security__INSTALL_LOCK: "true"` — skip the first-run
+   285	  installer wizard. With `INSTALL_LOCK=true` plus
+   286	  `DISABLE_REGISTRATION=true`, Gitea boots straight into headless
+   287	  mode. Admin user creation happens in 10c.
+   288	- The blob volume is declared at the top level and mounted by the
+   289	  one-shot `blob-init` service so Compose actually creates it at
+   290	  `compose up` (an unmounted declaration alone does not, per the
+   291	  empirical spike noted in Core Design Decisions). Downstream
+   292	  services in 10b/10d mount the same volume at `/var/lib/eden/blobs`.
+   293	  `--wait` exits 0 when `blob-init` exits 0; the smoke test re-checks
+   294	  via `docker volume inspect`.
+   295	- No `networks:` block: services land on Compose's default
+   296	  bridge network. Service discovery via container name
+   297	  (`postgres:5432`, `gitea:3000`) just works; explicit network
+   298	  declarations matter for multi-stack overlap, which 10a doesn't
+   299	  have.
+   300	
+   301	### `reference/compose/.env.example`
+   302	
+   303	Plain dotenv. Comments document each value. Ships dev-only secrets:
+   304	
+   305	```dotenv
+   306	# EDEN reference Compose stack — example environment.
+   307	# Copy to ".env" for local use; "compose up" reads from .env automatically.
+   308	# CI uses these defaults verbatim; do NOT use these in production.
+   309	
+   310	# --- Postgres ---
+   311	POSTGRES_DB=eden
+   312	POSTGRES_USER=eden
+   313	POSTGRES_PASSWORD=eden-dev-password-change-me
+   314	POSTGRES_HOST_PORT=5433
+   315	
+   316	# --- Gitea ---
+   317	# SECRET_KEY: gitea uses this for cookie / CSRF / 2FA encryption.
+   318	# Generate with: gitea generate secret SECRET_KEY  (or 64 hex chars).
+   319	GITEA_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+   320	# INTERNAL_TOKEN: gitea uses this for inter-component auth.
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10a-compose-infrastructure.md | sed -n '348,460p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   348	
+   349	### `reference/compose/healthcheck/smoke.sh`
+   350	
+   351	Bash script, exits 0 on success. Used by the new CI job and runnable
+   352	locally for verification. Behavior:
+   353	
+   354	```bash
+   355	#!/usr/bin/env bash
+   356	set -euo pipefail
+   357	
+   358	# Bring the stack up using .env.example as the source of truth.
+   359	# (Copy to a temp .env if invoked from CI to avoid mutating the
+   360	# checked-in file.)
+   361	TMPENV="$(mktemp)"
+   362	trap 'rm -f "$TMPENV"; docker compose -f compose.yaml --env-file "$TMPENV" down -v' EXIT
+   363	cp .env.example "$TMPENV"
+   364	
+   365	docker compose -f compose.yaml --env-file "$TMPENV" up -d --wait --wait-timeout 120
+   366	
+   367	# Assert both long-running services are healthy.
+   368	# `--wait` already enforces this, but we re-check for clarity in CI logs.
+   369	docker compose -f compose.yaml --env-file "$TMPENV" ps
+   370	
+   371	# Assert all three named volumes were created at compose-up time.
+   372	# blob-init mounts eden-blob-data so Compose creates it; postgres and
+   373	# gitea mount their own data volumes the usual way. Project-prefixed
+   374	# volume names follow the "<project>_<volume>" convention; the project
+   375	# name is fixed by `name: eden-reference` in compose.yaml and is also
+   376	# echoed below for traceability.
+   377	PROJECT="$(docker compose -f compose.yaml --env-file "$TMPENV" \
+   378	            config --format json | jq -r '.name')"
+   379	test "$PROJECT" = "eden-reference" \
+   380	    || { echo "unexpected project name: $PROJECT"; exit 1; }
+   381	for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
+   382	    docker volume inspect "${PROJECT}_${vol}" >/dev/null
+   383	done
+   384	
+   385	# Confirm blob-init actually exited 0 (--wait would have failed
+   386	# otherwise, but re-checking gives a useful CI log line). Using
+   387	# `docker inspect` against the explicit container_name avoids
+   388	# `docker compose ps --format json` shape variations across Compose
+   389	# versions (some emit NDJSON, some emit a JSON array).
+   390	test "$(docker inspect --format '{{.State.ExitCode}}' eden-blob-init)" = "0"
+   391	
+   392	# Assert Postgres is accepting connections (independent of healthcheck).
+   393	docker compose -f compose.yaml --env-file "$TMPENV" exec -T postgres \
+   394	    pg_isready -U eden -d eden
+   395	
+   396	# Assert Gitea API responds.
+   397	GITEA_PORT="$(grep ^GITEA_HOST_PORT "$TMPENV" | cut -d= -f2)"
+   398	curl -fsS "http://localhost:${GITEA_PORT}/api/v1/version" | grep -q '"version":'
+   399	
+   400	echo "PASS"
+   401	```
+   402	
+   403	Notes:
+   404	
+   405	- The `trap` ensures teardown runs even on assertion failure, so
+   406	  CI runs don't leave dangling volumes.
+   407	- `--wait --wait-timeout 120` (Compose v2 feature) makes `up`
+   408	  block until every service is healthy or 2min elapses, exiting
+   409	  non-zero if any service fails. This is the cleanest way to
+   410	  encode "everything came up healthy" in a script.
+   411	- The volume name is the standard `<project>_<volume>` Compose
+   412	  convention. The script reads the project name from
+   413	  `docker compose config` and asserts it equals
+   414	  `eden-reference` (matching the `name:` field in `compose.yaml`)
+   415	  before applying the prefix, so a future rename of `name:`
+   416	  fails the smoke test loudly rather than silently checking
+   417	  the wrong volumes.
+   418	
+   419	### `.github/workflows/ci.yml` — new `compose-smoke` job
+   420	
+   421	```yaml
+   422	  compose-smoke:
+   423	    name: compose-smoke
+   424	    runs-on: ubuntu-latest
+   425	    steps:
+   426	      - uses: actions/checkout@v4
+   427	      - name: Verify docker compose is available
+   428	        run: docker compose version
+   429	      - name: Run compose smoke
+   430	        working-directory: reference/compose
+   431	        run: bash healthcheck/smoke.sh
+   432	```
+   433	
+   434	GitHub Actions' `ubuntu-latest` runners ship with Docker and the
+   435	Compose v2 plugin pre-installed; no extra setup needed.
+   436	
+   437	We do **not** add `compose-smoke` to branch protection in this PR.
+   438	Reasoning: the existing required checks (`docs-lint`,
+   439	`schema-validity`, `python-lint`, `python-typecheck`, `python-test`,
+   440	`schema-parity`) are sufficient to gate a 10a merge; adding
+   441	`compose-smoke` to protection on the *same* PR that introduces it
+   442	risks a chicken-and-egg if the job is flaky on first run. Add to
+   443	protection in 10b once the job has a few clean runs under its belt.
+   444	
+   445	### `.gitignore`
+   446	
+   447	Append:
+   448	
+   449	```text
+   450	# Compose secrets — example template is committed; real .env is not.
+   451	reference/compose/.env
+   452	```
+   453	
+   454	### Doc updates
+   455	
+   456	- `docs/roadmap.md` — under Phase 10, change `**10a** — …` to
+   457	  `**10a** — complete.` with a one-paragraph summary mirroring the
+   458	  Phase 8a / 9 chunk patterns.
+   459	- `reference/README.md` — Compose row goes from "Phase 10" to
+   460	  "Phase 10 chunk 10a"; update Status section to mention the infra
+
+exec
+/bin/zsh -lc 'rg -n "blob-init|ExitCode|docker inspect|created and writable|volume exists|compose-up time|container_name|ps --format json" docs/plans/eden-phase-10a-compose-infrastructure.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+121:- **Blob volume = named volume + one-shot `blob-init` mounter.**
+127:  deliverable real, we ship a one-shot `blob-init` busybox
+135:- **10a's blob-volume guarantee is "volume exists," not
+136:  "writable by the eventual 10d producer."** `blob-init` runs as
+145:  `blob-init` container exited 0 — nothing more about the volume.
+188:mount their own data volumes; `blob-init` is a one-shot service
+197:    container_name: eden-postgres
+216:    container_name: eden-gitea
+249:  blob-init:
+251:    # exists at compose-up time. Compose does NOT create an unmounted
+255:    # "volume exists" only; ownership/perms are 10d's responsibility.
+257:    container_name: eden-blob-init
+259:    # Deliberately no chmod/chown: 10a's contract is "volume exists,"
+289:  one-shot `blob-init` service so Compose actually creates it at
+293:  `--wait` exits 0 when `blob-init` exits 0; the smoke test re-checks
+371:# Assert all three named volumes were created at compose-up time.
+372:# blob-init mounts eden-blob-data so Compose creates it; postgres and
+385:# Confirm blob-init actually exited 0 (--wait would have failed
+387:# `docker inspect` against the explicit container_name avoids
+388:# `docker compose ps --format json` shape variations across Compose
+390:test "$(docker inspect --format '{{.State.ExitCode}}' eden-blob-init)" = "0"
+479:   `blob-init` `exited (0)`. Then:
+
+codex
+**Missing Context**
+
+Brief assessment: the plan is now clear. The blob-volume contract, the `blob-init` role, and the project-name logic are all understandable.
+
+**Feasibility**
+
+Brief assessment: the current approach looks workable. I do not see a blocking feasibility issue in this draft.
+
+**Alternatives**
+
+Brief assessment: the chosen approach is reasonable for 10a. Using a one-shot `blob-init` service to force volume creation is a pragmatic answer to the empirically verified Compose behavior.
+
+**Completeness**
+
+Brief assessment: one cleanup area remains around “healthy” terminology after reintroducing the one-shot init service.
+
+- The plan still describes some outputs as if all three services end up healthy, but `blob-init` is now expected to exit `0`, not stay healthy. The README outline says Quickstart should show “all three healthy” at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:331), while the verification section correctly expects `blob-init` to be `exited (0)` at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:475). The same drift shows up in the core design claim that “each service in 10a defines a `healthcheck:` block” at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:89) and in the smoke-script note that `up` proves “everything came up healthy” at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:404). Those should be tightened to “the long-running services become healthy, and `blob-init` exits 0.”
+
+**Edge Cases and Risks**
+
+Brief assessment: no major new risk, but there is one tooling assumption worth making explicit.
+
+- The smoke script now depends on `jq` via `docker compose config --format json | jq -r '.name'` at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:377). The CI job only verifies Docker Compose availability at [docs/plans/eden-phase-10a-compose-infrastructure.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10a-compose-infrastructure.md:423), and the README outline does not currently call out `jq` as a prerequisite. I would either document `jq` explicitly or add a quick preflight check in `smoke.sh` so failures are obvious.
+
+**Overall Assessment**
+
+This is in good shape. I do not see a blocker now. The remaining work is mostly consistency cleanup: update the “healthy” wording to account for the one-shot init service, and make the `jq` dependency explicit.
+2026-04-25T23:59:39.594612Z ERROR codex_core::session: failed to record rollout items: thread 019dc70a-6e46-7062-95a2-bf21eadd3584 not found
+tokens used
+303,244

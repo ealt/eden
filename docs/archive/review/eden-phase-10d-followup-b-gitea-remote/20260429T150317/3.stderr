@@ -1,0 +1,929 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019ddb44-a74d-7d61-ba5b-d3d21aad35e4
+--------
+user
+Round-2 fixes:
+1. Integrator step-2 transport-indeterminate failure now has an explicit ls-remote read-back ladder distinguishing 'remote absent' (rollback only), 'remote == our SHA' (run BOTH 4a and 4b), 'remote at different SHA' (RefRefused semantics, 4b only), and 'ls-remote also transport-fails' (defer to startup sweep with critical log).
+2. §D.7c's remote-orphan trial_id recovery now reads the spec-authoritative  path from the commit tree (chapter 6 §3.2). Ref-name parsing is explicitly NOT used; trial_id stays opaque per chapter 2 §1.3.
+3. Stale 'git://' wording fixed; clarified TLS termination story without using the wrong URL scheme.
+codex
+I’m checking the two round-2 correctness fixes directly in the plan text: the step-2 transport read-back ladder and the remote-orphan `trial_id` recovery path. If those are now wired concretely, this should be down to readiness rather than blockers.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-b-gitea-remote.md | sed -n '360,720p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-b-gitea-remote.md | sed -n '96,360p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    96	
+    97	### D.3 Auth flow — HTTP Basic via per-experiment credential helper
+    98	
+    99	The reference Gitea is exposed on plain HTTP inside the compose
+   100	network (no TLS). That matches the existing soft-isolation
+   101	posture documented in §7 of
+   102	[`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md):
+   103	the reference deployment trades isolation for operational
+   104	simplicity. A hardened deployment terminates TLS at a sidecar or
+   105	Gitea-side reverse proxy, swapping the `http://gitea:3000/...`
+   106	URL for `https://gitea/...`; the workers' `--gitea-url` flag is
+   107	opaque to the rest of the design. We document this caveat
+   108	alongside the existing DooD soft boundary; the secret-handling
+   109	boundary widens by exactly one channel (now the eden user's
+   110	Gitea password is also visible to anyone with daemon access).
+   111	
+   112	setup-experiment.sh, after starting Gitea + waiting for healthy:
+   113	
+   114	1. Generate a per-experiment password `GITEA_REMOTE_PASSWORD`
+   115	   (32 hex bytes; same shape as other reference secrets).
+   116	2. Provision the eden user (idempotent — first checks via
+   117	   `gitea admin user list`):
+   118	
+   119	   ```bash
+   120	   docker compose exec -T gitea gitea admin user create \
+   121	       --username eden \
+   122	       --password "${GITEA_REMOTE_PASSWORD}" \
+   123	       --email eden@invalid \
+   124	       --admin
+   125	   ```
+   126	
+   127	   Re-running with a different password updates the existing
+   128	   user (`gitea admin user change-password`) so re-runs of
+   129	   setup-experiment with new env files don't desync.
+   130	3. Generate a per-experiment access token (used only by
+   131	   setup-experiment for repo creation, NOT by workers; workers
+   132	   use Basic auth):
+   133	
+   134	   ```bash
+   135	   curl -fsS -u "eden:${GITEA_REMOTE_PASSWORD}" \
+   136	       -X POST http://localhost:${GITEA_HOST_PORT}/api/v1/users/eden/tokens \
+   137	       -d '{"name":"setup","scopes":["write:repository"]}'
+   138	   ```
+   139	
+   140	4. Create the repo `eden/<EXPERIMENT_ID>.git` via
+   141	   `POST /api/v1/user/repos` (idempotent — handle 409).
+   142	5. Write the **credential-helper script** to a host-side path
+   143	   `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/credential-helper.sh`,
+   144	   substituting the password into a template. The script:
+   145	
+   146	   ```sh
+   147	   #!/bin/sh
+   148	   case "$1" in
+   149	     get)
+   150	       cat <<EOF
+   151	   username=eden
+   152	   password=__GITEA_REMOTE_PASSWORD__
+   153	   EOF
+   154	       ;;
+   155	   esac
+   156	   ```
+   157	
+   158	   Mode 0755. Mounted read-only into every worker host container
+   159	   at `/etc/eden/credential-helper.sh`.
+   160	
+   161	Workers configure git to use the helper via repo-local config
+   162	written at clone time (NOT global config — keeps the secret out
+   163	of the worker's home dir):
+   164	
+   165	```bash
+   166	git -c credential.helper="/etc/eden/credential-helper.sh" \
+   167	    -c http.extraHeader="" \
+   168	    clone http://gitea:3000/eden/<EXPERIMENT_ID>.git \
+   169	    /var/lib/eden/repo
+   170	git -C /var/lib/eden/repo config credential.helper \
+   171	    "/etc/eden/credential-helper.sh"
+   172	```
+   173	
+   174	Subsequent `git fetch` / `git push` invocations from that repo
+   175	pick up the helper automatically. The chunk-10d-followup-A
+   176	soft-boundary caveat (§7) is extended to cover this: the eden
+   177	user's Gitea password is on the host filesystem at
+   178	`${COMPOSE_DIR}/.gitea-creds-<id>/credential-helper.sh` mode 0755,
+   179	readable by anyone on the host and (under DooD) by any
+   180	concurrent `*_command`.
+   181	
+   182	### D.4 setup-experiment.sh sequencing — option (a) selected
+   183	
+   184	`setup-experiment.sh` already runs the bare-repo seed step
+   185	synchronously via `compose run --rm --no-deps eden-repo-init`.
+   186	This sub-chunk extends that pattern: setup-experiment now also
+   187	**brings Gitea up** synchronously (before the rest of the stack)
+   188	and provisions it before writing the operator's next-step
+   189	instructions. No deferred work in the operator's own
+   190	`compose up`.
+   191	
+   192	Concrete sequence (replaces the current "seed bare repo, write
+   193	.env, exit" flow):
+   194	
+   195	1. Generate / preserve all secrets (existing flow), including
+   196	   the new `GITEA_REMOTE_PASSWORD`.
+   197	2. Write the partial `.env` (without `EDEN_BASE_COMMIT_SHA` —
+   198	   filled in step 7).
+   199	3. **Bring Gitea up:**
+   200	   `docker compose --env-file "$ENV_FILE" up -d --wait gitea`
+   201	   (uses Gitea's existing healthcheck).
+   202	4. **Provision Gitea** per §D.3 (eden user, access token, repo).
+   203	5. **Write the credential-helper script** under
+   204	   `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/`.
+   205	6. **Seed + push** via `compose run --rm --no-deps eden-repo-init`,
+   206	   which now takes a `--push-to <url>` flag and pushes the seed
+   207	   commit to Gitea after creating the local bare repo.
+   208	7. Capture the seed SHA, replace the `.env` placeholder
+   209	   (existing pattern).
+   210	8. Print operator next-steps (existing — `compose up -d --wait`).
+   211	
+   212	The shared `eden-bare-repo` volume is removed from `compose.yaml`
+   213	in the cutover; `eden-repo-init` keeps writing to it locally only
+   214	so the seed-and-push step is self-contained, then the volume is
+   215	discarded by the existing `compose down -v` posture.
+   216	
+   217	**Idempotency:** all four provisioning operations (user create,
+   218	token mint, repo create, ref push) are idempotent. Re-running
+   219	setup-experiment with the same env file is a no-op for Gitea
+   220	state. Re-running with a NEW env file (different
+   221	`GITEA_REMOTE_PASSWORD`) updates the user's password via
+   222	`gitea admin user change-password`.
+   223	
+   224	### D.5 Per-service compose changes
+   225	
+   226	Each worker host gains:
+   227	
+   228	- A *private* named volume for its clone:
+   229	  `eden-implementer-repo`, `eden-evaluator-repo`,
+   230	  `eden-orchestrator-repo` (no shared `eden-bare-repo` anymore).
+   231	- The credential-helper script bind-mounted RO at
+   232	  `/etc/eden/credential-helper.sh`.
+   233	- A new `--gitea-url <http-url>` CLI flag on each host.
+   234	
+   235	Each worker host's startup logic:
+   236	
+   237	1. If `/var/lib/eden/repo` is not yet a git repo, `clone_from`
+   238	   from Gitea via `clone --bare` (per §D.8a — all worker hosts
+   239	   are bare clones).
+   240	2. Otherwise, `git fetch --prune origin '+refs/heads/*:refs/heads/*'`
+   241	   to refresh local heads and prune any local heads that no
+   242	   longer exist on the remote (one-shot orphan cleanup as a
+   243	   fetch side effect).
+   244	3. **Integrator-only: reconcile orphan REMOTE refs.** The
+   245	   orchestrator's startup additionally walks the remote
+   246	   `refs/heads/trial/*` via `git ls-remote origin
+   247	   'refs/heads/trial/*'`. For each ref the spec gives us a
+   248	   **machine-parseable artifact** at the commit tip — chapter 6
+   249	   §3.2 mandates the squash commit's tree contains
+   250	   `.eden/trials/<trial_id>/eval.json`. The reconciliation
+   251	   reads `<commit_sha>:.eden/trials/` via `git ls-tree --name-only
+   252	   <commit_sha> .eden/trials/` to recover the trial_id (a
+   253	   single subdir name; reject if zero or more than one — that
+   254	   commit isn't a valid integrator squash). Then the
+   255	   integrator calls `Store.read_trial(trial_id)`:
+   256	   - If the trial doesn't exist OR has no `trial_commit_sha`
+   257	     (i.e., `trial.integrated` was never committed), issue
+   258	     `delete_remote_ref` against Gitea to clean up.
+   259	   - Otherwise the trial is properly integrated; leave the ref
+   260	     alone.
+   261	
+   262	   This is the recovery rule for the §D.6 step-4a failure mode
+   263	   ("remote publish succeeded, store write failed, remote
+   264	   compensating delete failed") AND for transport-indeterminate
+   265	   step-2 failures whose post-failure read-back also failed (the
+   266	   only case §D.7d's branch-decision-tree leaves to the sweep).
+   267	   The trial_id-from-tree path is spec-authoritative; ref-name
+   268	   parsing is not, since the spec treats trial_id as opaque.
+   269	   Branch names happen to follow `trial/<trial_id>-<slug>` as a
+   270	   reference-impl convention, but the integrator's reconciliation
+   271	   does NOT depend on that convention.
+   272	4. Enter the normal poll loop.
+   273	
+   274	**Per-operation freshness for long-lived clones.** The orchestrator
+   275	loop and the web-ui's admin/implementer modules are long-lived;
+   276	remote refs change under their feet between the startup fetch and
+   277	the next operation. Two policies:
+   278	
+   279	- **Read-before-write:** any service path that's about to write a
+   280	  ref via `repo.create_ref` first runs `git fetch origin <ref>`
+   281	  to refresh its local view. This keeps `--force-with-lease`'s
+   282	  expected-old-sha aligned with the remote.
+   283	- **Read-before-display:** the web-ui admin work-refs GC page
+   284	  (chunk-9e) runs `git fetch origin '+refs/heads/work/*:refs/heads/work/*'`
+   285	  on every GET so the operator's view matches the remote. The
+   286	  per-op fetch budget here is one HTTP roundtrip + a small ref
+   287	  list, well under 100ms in the reference deployment.
+   288	
+   289	Failure mode: if Gitea is unreachable at startup, the host exits
+   290	non-zero and compose's `restart: on-failure` (existing posture)
+   291	retries until healthy. Mid-operation Gitea unreachability raises
+   292	`GitTransportError` from `eden_git`; service-level handlers catch
+   293	it role-specifically per [chapter 3](../../spec/v0/03-roles.md):
+   294	
+   295	- **Implementer** (chapter 3 §3.3): infrastructure faults during
+   296	  worker-side execution map to `ImplementSubmission(status="error",
+   297	  trial_id=..., commit_sha=None)`. The trial composite-commits
+   298	  to `error` atomically with the task transition. Same posture
+   299	  as today's chunk-10d "subprocess timeout" path.
+   300	- **Evaluator** (chapter 3 §4.4): infrastructure faults map to
+   301	  `EvaluateSubmission(status="eval_error", trial_id=..., metrics=None)`.
+   302	  The trial stays at its prior status (`success` from the
+   303	  implementer) so the trial can be re-evaluated; this is the
+   304	  spec-mandated distinction between `error` (worker-determined
+   305	  bad outcome) and `eval_error` (infrastructure failure).
+   306	- **Integrator** (chapter 6 §3.4): two distinct cases.
+   307	  - A **definite remote rejection** (`RefRefused`) on `push_ref`
+   308	    means the remote did not accept the ref — only step 1's
+   309	    local create exists, and step 4b's local rollback alone is
+   310	    sufficient.
+   311	  - A **transport-indeterminate failure** (`GitTransportError`)
+   312	    on `push_ref` means we don't know if the remote accepted —
+   313	    the ack was lost. We MUST disambiguate by immediately
+   314	    running `git ls-remote origin <ref>`:
+   315	    - If the remote ref is absent → rollback step 4b (local) only.
+   316	    - If the remote ref equals our pushed SHA → the push DID
+   317	      land, so run BOTH 4a (remote delete) and 4b (local).
+   318	    - If the remote ref exists at a different SHA → another
+   319	      integrator integrated a different commit on the same
+   320	      trial id; this is `RefRefused` semantics, run 4b only.
+   321	    - If `ls-remote` itself transport-fails (Gitea still down)
+   322	      → log critical-severity and rely on §D.7c's startup sweep
+   323	      to clean up. This is the only case where an orphan can
+   324	      persist across the integrator restart, and the sweep is
+   325	      its backstop.
+   326	  - A transport failure during `delete_remote_ref` (step 4a)
+   327	    falls through to §D.7c likewise.
+   328	
+   329	### D.6 Integrator (orchestrator) changes — explicit four-step flow
+   330	
+   331	The current integrator at
+   332	[`reference/packages/eden-git/src/eden_git/integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py)
+   333	does (chapter 6 §3.2 / §3.4):
+   334	
+   335	```text
+   336	1. local create_ref     # CAS-guarded
+   337	2. store.integrate_trial
+   338	3. on store failure: local delete_ref (compensating)
+   339	```
+   340	
+   341	After this sub-chunk, the flow becomes a literal four-step
+   342	publish-then-commit-then-rollback ladder:
+   343	
+   344	```text
+   345	1. local create_ref           # CAS-guarded local
+   346	2. remote push_ref            # publish to Gitea (force-with-lease)
+   347	3. store.integrate_trial      # writes trial_commit_sha + trial.integrated
+   348	4. on store failure:
+   349	   4a. remote delete_ref      # compensating remote delete
+   350	   4b. local delete_ref       # compensating local delete
+   351	```
+   352	
+   353	The new step 4a — **remote compensating delete** — is load-bearing
+   354	under chapter 6 §3.4: leaving `trial/*` on Gitea without the
+   355	matching `trial.integrated` event in the store is a protocol
+   356	violation, because the next replay of the event log would see a
+   357	ref that no event explains. We MUST run step 4a before step 4b
+   358	so a re-tried integration sees a clean Gitea slate.
+   359	
+   360	`GitRepo` therefore needs a fourth new method:
+
+ succeeded in 0ms:
+   360	`GitRepo` therefore needs a fourth new method:
+   361	
+   362	- `delete_remote_ref(ref: str, expected_sha: str | None) -> None`
+   363	  — `git push origin --delete <ref>` with a CAS guard via
+   364	  `--force-with-lease=<ref>:<sha>`. If the remote ref has
+   365	  diverged (someone else integrated a different commit on the
+   366	  same trial id), raise `RefRefused` and let the caller decide.
+   367	
+   368	If step 2 fails (push rejected — concurrent integrator won
+   369	the race), only step 1's local ref exists; we run step 4b
+   370	(local delete) and skip 4a. If step 3 fails after step 2
+   371	succeeded, we run BOTH 4a and 4b. If step 4a itself fails (Gitea
+   372	unreachable), we log a critical-severity diagnostic and leave
+   373	the local ref in place — the next integrator startup's
+   374	fetch-and-reconcile pass (§D.7c below) cleans up.
+   375	
+   376	**Important:** `trial.integrated` is emitted by step 3 (atomically
+   377	with the trial's `trial_commit_sha` write). Step 1 alone does NOT
+   378	emit anything — only the *committed-and-published* ref counts.
+   379	This preserves chapter 5 §2.2's "events emit only on committed
+   380	state changes."
+   381	
+   382	### D.7 Implementer changes
+   383	
+   384	The implementer's existing flow per [chapter 03 §3.2](../../spec/v0/03-roles.md):
+   385	
+   386	```text
+   387	1. Store.create_trial(status="starting")
+   388	2. git worktree add <path> <parent>
+   389	3. <user command writes commits>
+   390	4. repo.create_ref("refs/heads/work/<…>", commit_sha)
+   391	5. Store.submit(...)
+   392	```
+   393	
+   394	becomes:
+   395	
+   396	```text
+   397	1. Store.create_trial(status="starting")
+   398	2. git worktree add <path> <parent>      # local
+   399	3. <user command writes commits>
+   400	4. repo.create_ref("refs/heads/work/<…>")  # local
+   401	5. repo.push_ref("refs/heads/work/<…>")    # publish to Gitea
+   402	6. Store.submit(...)
+   403	```
+   404	
+   405	The submit's `commit_sha` is the local SHA that we just pushed.
+   406	If push fails, we roll back the local ref (so the trial doesn't
+   407	linger as a "starting" trial that references a non-published
+   408	commit) and submit `status="error"`.
+   409	
+   410	### D.8 Evaluator changes
+   411	
+   412	The evaluator runs **before** integration, so the commit it
+   413	must check out lives on the implementer's `work/*` branch
+   414	(stored as `trial.branch` and `trial.commit_sha` per chapter
+   415	3 §3.2 step 3) — NOT on `trial/*`, which is the post-integration
+   416	namespace.
+   417	
+   418	After cutover, the evaluator's pre-worktree-add step is:
+   419	
+   420	```python
+   421	repo.fetch_ref(trial.branch)        # work/<slug>-<trial_id>
+   422	# fetch_ref returns the remote SHA; assert it equals
+   423	# trial.commit_sha or surface eval_error
+   424	repo.task_worktree_add(commit=trial.commit_sha)
+   425	```
+   426	
+   427	The chapter-3 contract is unchanged; only the local fetch is
+   428	added so the worker's clone sees the implementer's freshly-
+   429	pushed commit. Evaluator never pushes.
+   430	
+   431	### D.8a Bare-clone topology for ALL worker hosts
+   432	
+   433	The current implementer/evaluator hosts use `git worktree add`
+   434	against a bare repo (`TaskWorktree` in
+   435	[`reference/services/_common/src/eden_service_common/worktrees.py`](../../reference/services/_common/src/eden_service_common/worktrees.py)
+   436	takes a bare-repo path). Bare-clone topology is preserved
+   437	post-cutover for ALL worker hosts:
+   438	
+   439	- orchestrator / integrator: bare clone
+   440	- implementer host: bare clone
+   441	- evaluator host: bare clone
+   442	- web-ui (chunk-9c implementer module + chunk-9e admin
+   443	  work-refs GC): bare clone
+   444	
+   445	`git worktree add` works fine against a bare repo; that's how
+   446	chunk-10d already runs. The `clone_from` operation passes
+   447	`--bare` unconditionally for worker hosts.
+   448	
+   449	The startup-refresh fetch becomes:
+   450	
+   451	```bash
+   452	git fetch --prune origin '+refs/heads/*:refs/heads/*'
+   453	```
+   454	
+   455	`--prune` removes local heads that no longer exist on remote
+   456	(orphan-cleanup as a side effect of fetch). This works on bare
+   457	repos because there's no checked-out branch to refuse-update.
+   458	
+   459	### D.9 What does NOT change
+   460	
+   461	- Spec chapters 03 / 04 / 06 — the role contracts and integrator
+   462	  invariants are silent on whether the workers share storage or
+   463	  use a remote. Both fit the existing prose.
+   464	- The `Store` Protocol — entirely separate from git.
+   465	- The chunk-10d JSON-line `*_command` protocol — unchanged.
+   466	- `eden-runtime:dev` and the experiment image — git is already
+   467	  installed.
+   468	
+   469	## Implementation surface
+   470	
+   471	Files added:
+   472	
+   473	- `reference/scripts/setup-experiment/provision-gitea.sh` —
+   474	  idempotent Gitea admin + repo + token provisioning. Called
+   475	  by `setup-experiment.sh` when Gitea is healthy.
+   476	- `reference/scripts/setup-experiment/credential-helper.sh.tmpl`
+   477	  — template; setup-experiment substitutes the password and
+   478	  writes it under `${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/`.
+   479	- `reference/packages/eden-git/tests/test_remote_ops.py` —
+   480	  unit-level tests for `clone_from` / `push_ref` / `fetch_ref`
+   481	  against a local file URL (no Gitea daemon needed for unit).
+   482	- `reference/compose/healthcheck/smoke-gitea-remote.sh` (or
+   483	  extend an existing smoke — TBD at impl time, see §F).
+   484	
+   485	Files modified:
+   486	
+   487	- `reference/packages/eden-git/src/eden_git/repo.py` — three
+   488	  new methods + a small `RemoteConfig` helper.
+   489	- `reference/packages/eden-git/src/eden_git/integrator.py` —
+   490	  fold `push_ref` into the integrator flow per §D.6.
+   491	- `reference/services/_common/src/eden_service_common/repo_init.py`
+   492	  — `--push-to <url>` flag for the seed step.
+   493	- `reference/services/{implementer,evaluator}/src/eden_*_host/`
+   494	  — startup-time clone/fetch + per-task fetch/push as per §D.7,
+   495	  §D.8.
+   496	- `reference/services/orchestrator/src/eden_orchestrator/cli.py`
+   497	  — same startup-time clone/fetch.
+   498	- `reference/services/web-ui/src/eden_web_ui/cli.py` — same
+   499	  (the chunk-9c web-ui implementer module also writes refs).
+   500	- `reference/scripts/setup-experiment/setup-experiment.sh` —
+   501	  call provision-gitea after healthcheck; wire env vars; mount
+   502	  credential helper.
+   503	- `reference/compose/compose.yaml` — add per-service repo
+   504	  volumes; remove `eden-bare-repo` from the shared services
+   505	  list; mount credential-helper into each worker.
+   506	- `reference/compose/compose.subprocess.yaml` and
+   507	  `compose.docker-exec.yaml` — propagate the credential-helper
+   508	  mount to spawned children **only** in the implementer/evaluator
+   509	  case where the user `*_command` may run git commands. (For
+   510	  the planner, no git ops happen in the user command.)
+   511	- Test fixtures: see §F-T (Cutover blast-radius inventory)
+   512	  below for the concrete file count.
+   513	
+   514	## Tests
+   515	
+   516	Three tiers, each driving the **public entry point** the
+   517	production code calls (per the AGENTS.md "test the actual code
+   518	path" pitfall) — no helper-only assertions.
+   519	
+   520	### Unit (`reference/packages/eden-git/tests/test_remote_ops.py`)
+   521	
+   522	Run against a local file-URL git remote (`file:///path/to/bare`)
+   523	— no Gitea daemon, no http. Sufficient because git's transport
+   524	abstraction makes file:// share the same ref-update code path as
+   525	http:// for our four new operations.
+   526	
+   527	- `GitRepo.clone_from(url=file://…, dest=…)` produces a working
+   528	  clone at `dest`.
+   529	- `GitRepo.push_ref(ref, expected_old_sha)` succeeds when the
+   530	  remote ref matches `expected_old_sha`; raises `RefRefused`
+   531	  when the remote has diverged.
+   532	- `GitRepo.fetch_ref(ref)` updates the local ref to match
+   533	  remote; returns the fetched SHA.
+   534	- `GitRepo.delete_remote_ref(ref, expected_sha)` succeeds when
+   535	  the remote matches; raises `RefRefused` on divergence; raises
+   536	  `RefRefused` (not silent success) when the remote ref is
+   537	  already gone (idempotency caveat: callers handle the
+   538	  already-gone case explicitly because chapter-6 §3.4
+   539	  rollback semantics distinguish "no-op" from "won the race").
+   540	- Credential-helper roundtrip: drive a real `git http-backend`
+   541	  via Python's `http.server` + the helper script generated by
+   542	  setup-experiment's template. Assert that without the helper
+   543	  the push fails 401, with the helper the push succeeds. This
+   544	  proves the helper is wired correctly end-to-end at unit
+   545	  speed; argv-only inspection would NOT.
+   546	
+   547	### Integration (`reference/packages/eden-git/tests/test_remote_integrator.py`)
+   548	
+   549	Drive the **public `Integrator.integrate(trial_id)` method**
+   550	through each failure mode, using a real local-file remote +
+   551	a monkey-patched Store:
+   552	
+   553	- Happy path: `integrate` succeeds → local ref + remote ref +
+   554	  `trial.integrated` event all present.
+   555	- Push race (step 2 fails): set the remote `trial/<trial_id>-<slug>` ref to
+   556	  a different SHA before `integrate` runs. Assert: local ref
+   557	  rolled back, remote untouched, no `trial.integrated` event.
+   558	- Store failure after push (step 3 fails): monkeypatch
+   559	  `Store.integrate_trial` to raise `DispatchError`. Assert:
+   560	  remote ref deleted (compensating push), local ref deleted,
+   561	  no `trial.integrated` event.
+   562	- Compensating delete itself fails (step 4a fails): monkeypatch
+   563	  `delete_remote_ref` to raise `GitTransportError`. Assert:
+   564	  the integrator logs a critical-severity diagnostic AND the
+   565	  next-startup reconciliation pass (§D.7c) cleans up the orphan
+   566	  on Gitea. (Tested via a second `Integrator()` instance after
+   567	  the first's failure.)
+   568	
+   569	### Smoke (`compose-smoke-*` extensions)
+   570	
+   571	Extends both `compose-smoke` and `compose-smoke-subprocess(-docker)`
+   572	with one new post-quiescence assertion:
+   573	
+   574	```bash
+   575	git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EXPERIMENT_ID}.git \
+   576	    | grep -E 'refs/heads/trial/' | wc -l
+   577	```
+   578	
+   579	≥3 (matches the existing `trial.integrated` event count
+   580	assertion). Proves the remote actually has the integrated trial
+   581	refs, not just the local clones.
+   582	
+   583	A new `compose-e2e` extension covers the chunk-9e admin
+   584	work-refs GC page driving a `delete_remote_ref` against Gitea
+   585	(asserts the remote ref is gone after the operator-clicks-delete
+   586	flow).
+   587	
+   588	### `eden_git` testing scope: file-URL is enough
+   589	
+   590	The new unit + integration tests use `file://` URLs for the
+   591	remote. We do NOT add a `pytest.mark.gitea` marker. Justification:
+   592	
+   593	- `git push --force-with-lease` and `git push --delete` use the
+   594	  same wire protocol over file:// as over http://. The CAS
+   595	  semantics are server-side (the remote's reflog), not transport-
+   596	  dependent.
+   597	- HTTP transport is exercised end-to-end by the smoke scripts
+   598	  against the real Gitea container — that's where any
+   599	  http-specific issue (auth, redirect, content-length, etc.)
+   600	  surfaces.
+   601	- A separate marker would split coverage and require yet another
+   602	  CI service container (Gitea), with no proof that http exposes
+   603	  bugs the file:// path doesn't already catch.
+   604	
+   605	The credential-helper unit test is the one exception: it spins
+   606	up a tiny http server in-process so the auth round-trip is real,
+   607	no external dependency needed.
+   608	
+   609	## F-T. Cutover blast-radius inventory
+   610	
+   611	Concrete file count from `grep -l "init_bare\|GitRepo.*bare"`
+   612	across the repo (excluding READMEs):
+   613	
+   614	- **`reference/packages/eden-git/tests/`** (4 files —
+   615	  `test_repo_branches_worktrees.py`, `test_repo_plumbing.py`,
+   616	  `test_environment_isolation.py`, `conftest.py`) — these
+   617	  exercise local-only `GitRepo` ops; they STAY on local-only
+   618	  paths because the new ops are tested separately in
+   619	  `test_remote_ops.py`.
+   620	- **`reference/packages/eden-git/src/eden_git/repo.py`** — the
+   621	  module under modification. New methods land here.
+   622	- **Service tests that init a local bare repo:**
+   623	  - `reference/services/_common/tests/test_worktrees.py` — pure
+   624	    worktree behavior, no remote — STAYS local.
+   625	  - `reference/services/planner/tests/test_planner_subprocess.py`
+   626	    — planner doesn't touch git refs (only proposals) — STAYS
+   627	    local.
+   628	  - `reference/services/implementer/tests/test_implementer_subprocess.py`,
+   629	    `test_host.py` — these exercise `_run_subprocess` and
+   630	    submit flows. The implementer change in §D.7 adds a single
+   631	    `repo.push_ref` call after the existing `repo.create_ref`.
+   632	    Tests gain a tiny bare-repo `init --bare` as the local
+   633	    "remote" + assertion that `push_ref` was invoked. Net
+   634	    change per test: ~5 lines.
+   635	  - `reference/services/evaluator/tests/test_evaluator_subprocess.py`
+   636	    — evaluator gains `fetch_ref` before worktree-add. Same
+   637	    pattern: local "remote" + one-line assertion.
+   638	  - `reference/services/orchestrator/tests/test_e2e.py`,
+   639	    `test_subprocess_e2e.py` — these are the heavyweights.
+   640	    Each spawns the full 5-process stack against an in-memory /
+   641	    sqlite store. Adding a real local file-URL remote here
+   642	    means: setUp creates `tmp_path/remote.git` as a bare repo,
+   643	    the test's `seed_bare_repo` pushes to it, each spawned
+   644	    service gets `--gitea-url file://<path>` instead of
+   645	    `--repo-path <path>`. Net change per file: ~30 lines, no
+   646	    new processes. Both tests are already `pytest.mark.e2e`,
+   647	    skipped on Windows.
+   648	
+   649	**Total file changes for the cutover:** ~14 source files modified,
+   650	plus ~3 new files. Tests that don't touch a real bare repo
+   651	(everything in `_common/tests/test_common.py`, web-ui non-flow
+   652	tests, contracts tests, storage tests) are entirely unaffected.
+   653	
+   654	The "most existing tests can stay on local-only paths" claim is
+   655	defensible because the **only** tests that previously exercised
+   656	the implementer/evaluator/integrator flows did so against an
+   657	in-process bare repo on disk; switching that bare repo to be
+   658	the remote (via `file://`) and adding a tiny local working clone
+   659	is mechanical — no new architecture surfaces.
+   660	
+   661	## Verification
+   662	
+   663	1. `uv run pytest -q` — full suite + new unit tests + new
+   664	   `test_remote_integrator.py` integration tests pass. (No
+   665	   `pytest.mark.gitea` marker — see §F-Tests for why
+   666	   `file://` is sufficient at unit/integration speed; HTTP
+   667	   transport is exercised by the smokes against the real
+   668	   Gitea container.)
+   669	2. `bash healthcheck/smoke.sh` — host-mode smoke passes,
+   670	   workers actually push to Gitea, integrator promotes via
+   671	   Gitea (asserted via `git ls-remote`).
+   672	3. `bash healthcheck/smoke-subprocess.sh` and
+   673	   `bash healthcheck/smoke-subprocess-docker.sh` — same.
+   674	4. `bash healthcheck/e2e.sh` — Web UI flow still passes; Web UI
+   675	   implementer module now pushes to Gitea on submit.
+   676	5. CI: all 11 jobs green; no new required jobs in this chunk
+   677	   (per the chunk-10d / 10e posture).
+   678	
+   679	## Out of scope
+   680	
+   681	- **Gitea HA / multi-instance.** Single Gitea, single bare-repo
+   682	  there. HA is a Phase 12+ control-plane concern.
+   683	- **SSH or HTTPS-with-TLS instead of plain HTTP.** SSH key
+   684	  management and TLS termination are their own follow-ups; plain
+   685	  HTTP Basic is enough for the reference (Gitea is on the
+   686	  compose internal network only; the same soft-boundary as the
+   687	  existing reference posture).
+   688	- **Gitea webhooks.** The orchestrator polls `Store` directly
+   689	  for state; Gitea doesn't need to notify anyone.
+   690	- **Multi-experiment Gitea.** This chunk creates ONE repo per
+   691	  experiment, named after the experiment id. Coexistence of
+   692	  multiple experiments on the same Gitea works naturally
+   693	  (different repo names) but no special wiring.
+   694	- **Branch protection inside Gitea.** The reference relies on
+   695	  CAS at the git layer (`--force-with-lease`); a Gitea-side
+   696	  branch protection rule would be redundant.
+   697	- **Updating branch protection on the GitHub side** to require
+   698	  any new CI job. Same posture as 10c/10d/10e/follow-up-A.
+   699	
+   700	## Risks
+   701	
+   702	- **Local ref + remote push atomicity.** Between the local
+   703	  `create_ref` and the remote `push_ref` there's a window
+   704	  where the local ref exists but the remote doesn't. If the
+   705	  worker host crashes there, the next startup's `git fetch
+   706	  --prune` removes the local-only orphan as a side effect
+   707	  (covers `work/*`). For local-only orphan `trial/*` refs in
+   708	  the orchestrator's clone, the same prune-on-fetch removes
+   709	  them. For orphan `trial/*` refs that ended up REMOTELY
+   710	  published (the §D.6 step-4a-failed case), §D.7c's
+   711	  store-authoritative reconciliation pass handles cleanup at
+   712	  integrator startup.
+   713	- **Credential exposure.** The credential-helper script lives
+   714	  on the host filesystem with mode 0755 (executable; mounted
+   715	  ro into the worker). Any process on the host with read
+   716	  access can grab the password. This matches the existing
+   717	  soft-isolation posture; documented in §7 of the
+   718	  reference-binding chapter alongside the existing DooD
+   719	  caveats. Hardened deployments substitute Docker secrets,
+   720	  Vault, or sysbox-isolated workers; the wrap shape is
+
+exec
+/bin/zsh -lc 'rg -n "transport-indeterminate|ls-remote read-back ladder|remote absent|remote == our SHA|different SHA|remote-orphan|commit tree|NOT used|opaque|git://|TLS termination" docs/plans/eden-phase-10d-followup-b-gitea-remote.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+107:opaque to the rest of the design. We document this caveat
+264:   compensating delete failed") AND for transport-indeterminate
+268:   parsing is not, since the spec treats trial_id as opaque.
+311:  - A **transport-indeterminate failure** (`GitTransportError`)
+318:    - If the remote ref exists at a different SHA → another
+556:  a different SHA before `integrate` runs. Assert: local ref
+684:  management and TLS termination are their own follow-ups; plain
+
+codex
+The core mechanics look coherent now. I’m checking one last runtime detail in the current orchestrator loop: whether an unresolved integrator branch actually restarts the process or just logs-and-continues, because the new backstop relies on a startup sweep.
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/loop.py | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Orchestrator main loop.
+     2	
+     3	Drives ``run_orchestrator_iteration`` from ``eden_dispatch`` against
+     4	a ``StoreClient`` (HTTP) plus an ``Integrator`` bound to a local bare
+     5	git repo. Exits cleanly when quiescent or when the ``stopping`` flag
+     6	is set.
+     7	"""
+     8	
+     9	from __future__ import annotations
+    10	
+    11	import uuid
+    12	from collections.abc import Callable
+    13	from datetime import UTC, datetime
+    14	
+    15	from eden_dispatch import run_orchestrator_iteration, sweep_expired_claims
+    16	from eden_git import Identity, Integrator
+    17	from eden_service_common import StopFlag, get_logger
+    18	from eden_storage import Store
+    19	from eden_storage.errors import AlreadyExists
+    20	
+    21	log = get_logger(__name__)
+    22	
+    23	
+    24	def make_id_factory(prefix: str) -> Callable[[], str]:
+    25	    """Return a factory that produces ``<prefix><short-uuid>`` IDs.
+    26	
+    27	    UUIDs avoid cross-restart collisions on orchestrator-generated IDs.
+    28	    """
+    29	
+    30	    def _next() -> str:
+    31	        return f"{prefix}{uuid.uuid4().hex[:12]}"
+    32	
+    33	    return _next
+    34	
+    35	
+    36	def run_orchestrator_loop(
+    37	    *,
+    38	    store: Store,
+    39	    integrator: Integrator,
+    40	    plan_task_ids: list[str],
+    41	    implement_task_prefix: str,
+    42	    evaluate_task_prefix: str,
+    43	    poll_interval: float,
+    44	    max_quiescent_iterations: int,
+    45	    stop: StopFlag,
+    46	) -> None:
+    47	    """Seed plan tasks, then loop finalize + dispatch + integrate to quiescence.
+    48	
+    49	    Returns when either ``stop`` is set or the orchestrator has observed
+    50	    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    51	    """
+    52	    for task_id in plan_task_ids:
+    53	        try:
+    54	            store.create_plan_task(task_id)
+    55	        except AlreadyExists as exc:
+    56	            # Restart-safe: a previous orchestrator already seeded this
+    57	            # task. Anything else (transport, auth, illegal-transition)
+    58	            # surfaces immediately.
+    59	            log.info("plan_task_seed_skip", task_id=task_id, reason=str(exc))
+    60	
+    61	    implement_factory = make_id_factory(implement_task_prefix)
+    62	    evaluate_factory = make_id_factory(evaluate_task_prefix)
+    63	
+    64	    def integrate(trial_id: str) -> None:
+    65	        integrator.integrate(trial_id)
+    66	
+    67	    quiescent = 0
+    68	    while not stop.is_set():
+    69	        reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
+    70	        progress = run_orchestrator_iteration(
+    71	            store,
+    72	            implement_task_id_factory=implement_factory,
+    73	            evaluate_task_id_factory=evaluate_factory,
+    74	            integrate_trial=integrate,
+    75	        )
+    76	        if reclaimed or progress:
+    77	            quiescent = 0
+    78	        else:
+    79	            quiescent += 1
+    80	            if quiescent >= max_quiescent_iterations:
+    81	                log.info("quiescent", iterations=quiescent)
+    82	                return
+    83	        if stop.wait(poll_interval):
+    84	            return
+    85	
+    86	
+    87	_INTEGRATOR_IDENTITY = Identity(
+    88	    name="EDEN Integrator",
+    89	    email="integrator@eden.invalid",
+    90	)
+    91	
+    92	
+    93	def integrator_identity() -> Identity:
+    94	    """Return the fixed identity used for integrator commits."""
+    95	    return _INTEGRATOR_IDENTITY
+
+exec
+/bin/zsh -lc "rg -n \"integrate\\(|AtomicityViolation|IntegratorError|except .*integrat|trial_commit_sha\" reference/services/orchestrator/src reference/packages/eden-dispatch/src -g '"'!**/.venv/**'"' | sed -n '1,240p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/orchestrator/src/eden_orchestrator/loop.py:64:    def integrate(trial_id: str) -> None:
+reference/services/orchestrator/src/eden_orchestrator/loop.py:65:        integrator.integrate(trial_id)
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:45:    trial that still has no ``trial_commit_sha``. Typically this is
+reference/packages/eden-dispatch/src/eden_dispatch/driver.py:111:        if trial.trial_commit_sha is not None:
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-dispatch/src/eden_dispatch/driver.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Orchestrator-side iteration body for the EDEN reference dispatch.
+     2	
+     3	``run_orchestrator_iteration`` runs one finalize + dispatch + integrate
+     4	pass against a ``Store``. The standalone orchestrator service in
+     5	``reference/services/orchestrator/`` calls it in a poll loop against a
+     6	``StoreClient`` (which satisfies the same Protocol). Workers live in
+     7	their own processes and drive the store through the wire binding; this
+     8	module never invokes them.
+     9	
+    10	Every write goes through the store, so the transactional invariant
+    11	(``05-event-protocol.md`` §2) is enforced regardless of caller behavior.
+    12	This module's responsibility is scheduling: decide which task to move
+    13	next.
+    14	
+    15	Finalization honors ``04-task-protocol.md`` §4.3: a submission that
+    16	declared ``success`` but does not satisfy the role's success contract,
+    17	or a `status="error"` evaluate submission whose metrics/artifacts_uri
+    18	would fail validation, turns into ``task.failed`` with
+    19	``reason=validation_error``. The orchestrator asks the store via
+    20	``validate_terminal`` which terminal transition to issue — accept,
+    21	reject(worker_error), or reject(validation_error) — and takes that
+    22	action.
+    23	"""
+    24	
+    25	from __future__ import annotations
+    26	
+    27	from collections.abc import Callable
+    28	
+    29	from eden_contracts import EvaluateTask
+    30	from eden_storage import Store
+    31	
+    32	
+    33	def run_orchestrator_iteration(
+    34	    store: Store,
+    35	    *,
+    36	    implement_task_id_factory: Callable[[], str],
+    37	    evaluate_task_id_factory: Callable[[], str],
+    38	    integrate_trial: Callable[[str], object] | None = None,
+    39	) -> bool:
+    40	    """Run one orchestrator pass: finalize + dispatch + integrate.
+    41	
+    42	    Returns ``True`` if any transition fired this iteration.
+    43	
+    44	    ``integrate_trial``, if supplied, is called once per ``success``
+    45	    trial that still has no ``trial_commit_sha``. Typically this is
+    46	    ``Integrator.integrate`` from ``eden_git``, which handles the full
+    47	    §3.2 / §3.4 promotion (writing the ref, the trial field, and the
+    48	    event atomically). The return value is ignored.
+    49	    """
+    50	    progress = False
+    51	    progress |= _finalize_submitted(store, kind="plan")
+    52	    progress |= _dispatch_implement_tasks(store, implement_task_id_factory)
+    53	    progress |= _finalize_submitted(store, kind="implement")
+    54	    progress |= _dispatch_evaluate_tasks(store, evaluate_task_id_factory)
+    55	    progress |= _finalize_submitted(store, kind="evaluate")
+    56	    if integrate_trial is not None:
+    57	        progress |= _promote_successful_trials(store, integrate_trial)
+    58	    return progress
+    59	
+    60	
+    61	def _finalize_submitted(store: Store, *, kind: str) -> bool:
+    62	    """Accept/reject every submitted task of ``kind``.
+    63	
+    64	    Uses ``store.validate_terminal`` to pick the right terminal
+    65	    transition: accept, reject(worker_error), or reject(validation_error).
+    66	    Malformed payloads on either success or error submissions surface
+    67	    as ``validation_error`` rather than propagating as exceptions, so
+    68	    the task always reaches a terminal state (``04-task-protocol.md``
+    69	    §4.3).
+    70	    """
+    71	    progress = False
+    72	    for task in store.list_tasks(kind=kind, state="submitted"):
+    73	        decision, _reason = store.validate_terminal(task.task_id)
+    74	        if decision == "accept":
+    75	            store.accept(task.task_id)
+    76	        elif decision == "reject_worker":
+    77	            store.reject(task.task_id, "worker_error")
+    78	        else:
+    79	            store.reject(task.task_id, "validation_error")
+    80	        progress = True
+    81	    return progress
+    82	
+    83	
+    84	def _dispatch_implement_tasks(
+    85	    store: Store, factory: Callable[[], str]
+    86	) -> bool:
+    87	    progress = False
+    88	    for proposal in store.list_proposals(state="ready"):
+    89	        task_id = factory()
+    90	        store.create_implement_task(task_id, proposal.proposal_id)
+    91	        progress = True
+    92	    return progress
+    93	
+    94	
+    95	def _dispatch_evaluate_tasks(
+    96	    store: Store, factory: Callable[[], str]
+    97	) -> bool:
+    98	    progress = False
+    99	    for trial in _list_trials_needing_evaluation(store):
+   100	        task_id = factory()
+   101	        store.create_evaluate_task(task_id, trial.trial_id)
+   102	        progress = True
+   103	    return progress
+   104	
+   105	
+   106	def _promote_successful_trials(
+   107	    store: Store, integrate_trial: Callable[[str], object]
+   108	) -> bool:
+   109	    progress = False
+   110	    for trial in store.list_trials(status="success"):
+   111	        if trial.trial_commit_sha is not None:
+   112	            continue
+   113	        integrate_trial(trial.trial_id)
+   114	        progress = True
+   115	    return progress
+   116	
+   117	
+   118	def _list_trials_needing_evaluation(store: Store):  # noqa: ANN202 - iterator
+   119	    dispatched = _trials_with_evaluate_task(store)
+   120	    out = []
+   121	    for trial in store.list_trials(status="starting"):
+   122	        if trial.commit_sha is None:
+   123	            continue
+   124	        if trial.trial_id in dispatched:
+   125	            continue
+   126	        out.append(trial)
+   127	    return out
+   128	
+   129	
+   130	def _trials_with_evaluate_task(store: Store) -> set[str]:
+   131	    dispatched: set[str] = set()
+   132	    for task in store.list_tasks(kind="evaluate"):
+   133	        assert isinstance(task, EvaluateTask)
+   134	        dispatched.add(task.payload.trial_id)
+   135	    return dispatched
+
+codex
+**Findings**
+No blocking findings.
+
+The round-2 revisions close the remaining correctness gaps I had flagged:
+- step-2 integrator transport ambiguity now has an explicit immediate `ls-remote` read-back ladder, rather than assuming transport failure means “remote untouched” ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:306>));
+- remote-orphan cleanup no longer depends on parsing `trial_id` out of the ref name, and instead uses the spec-owned `.eden/trials/<trial_id>/eval.json` tree shape ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:244>));
+- the HTTP/TLS wording is now internally consistent ([plan](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:99>)).
+
+**Residual risks**
+- The new `§D.7c` sweep logic is load-bearing enough that I would make sure the implementation adds at least one test for a malformed “trial-like” remote commit: zero or multiple `.eden/trials/*` entries should fail closed and log loudly.
+- The “push transport-fails, then `ls-remote` also transport-fails” branch is now well-described, but it depends on the orchestrator actually failing out and restarting so the startup sweep runs. That is consistent with the current loop shape, but it is worth preserving in tests.
+
+**Assessment**
+Ready to implement.
+2026-04-29T22:19:09.839742Z ERROR codex_core::session: failed to record rollout items: thread 019ddb44-a74d-7d61-ba5b-d3d21aad35e4 not found
+tokens used
+427,685

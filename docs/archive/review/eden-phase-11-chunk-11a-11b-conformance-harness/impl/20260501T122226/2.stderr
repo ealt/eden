@@ -1,0 +1,572 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019de4ff-1578-7980-8f4f-9d5c855fdc1d
+--------
+user
+Round 2: addressed all three of your round-1 findings. Brief at docs/plans/review/eden-phase-11-chunk-11a-11b-conformance-harness/impl/20260501T122226/1.md (round 2 section appended at end). Highlights:
+
+1. Misbehaving-adapter proxy-leak fix: tracked proxy instance before the try-block; cleanup now stops the proxy on partial-startup failure before tearing down the upstream subprocess.
+
+2. Chapter-9 coverage guard: parses the §5 table directly via parse_chapter_9_index(), supports comma-chain section refs, matches descendant sections, mutation-tested by deleting test_atomicity.py to confirm it triggers a 'no valid citing test' failure for that group. Also amended chapter 9 to spell out '§2, §3, §4, §5, §6' instead of the irregular '§§2-6' for the Status codes row.
+
+3. Empty-batch test removal: documented as an explicit 'Deviation' callout in plan §E.9 (and §D paragraph cleaned up), with the spec-side reasoning (chapter 7 §6.2's response shape and timeout are both SHOULDs).
+
+If everything looks good, please say so explicitly so we can move to commit and PR.
+codex
+I’m reading the round-2 notes in the review brief and the revised files for the three remaining findings, then I’ll rerun the conformance checks.
+exec
+/bin/zsh -lc "nl -ba conformance/src/conformance/tools/check_citations.py | sed -n '1,340p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba spec/v0/09-conformance.md | sed -n '40,70p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/review/eden-phase-11-chunk-11a-11b-conformance-harness/impl/20260501T122226/1.md | sed -n '90,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    40	## 5. Scenario index
+    41	
+    42	The v1 scenario groups, with their primary spec citations:
+    43	
+    44	| Group | Scope | Spec citations |
+    45	|---|---|---|
+    46	| Task lifecycle | Every legal/illegal transition. | [`04-task-protocol.md`](04-task-protocol.md) §1, §3, §4 |
+    47	| Claim tokens | Freshness, authorization, no-reclaim-while-claimed. | [`04-task-protocol.md`](04-task-protocol.md) §3 |
+    48	| Submit idempotency | Content-equivalent / divergent / post-terminal. | [`04-task-protocol.md`](04-task-protocol.md) §4.2, §4.4 |
+    49	| Reclamation | Case matrix; token invalidation; trial reconciliation. | [`04-task-protocol.md`](04-task-protocol.md) §5 |
+    50	| Atomicity (regression test) | State + event consistency around a transition. Best-effort, not a certification. | [`04-task-protocol.md`](04-task-protocol.md) §1.3 |
+    51	| Event envelope | Envelope shape; uniqueness. | [`05-event-protocol.md`](05-event-protocol.md) §1, §1.1 |
+    52	| Per-type event payloads | Each registered type's required fields. | [`05-event-protocol.md`](05-event-protocol.md) §3 |
+    53	| Composite commits | Implement-dispatch, implement-terminal, evaluate-terminal cases, retry-exhausted `eval_error` terminalization, implement-reclaim-with-starting-trial. | [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
+    54	| Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §6.2 |
+    55	| Status codes | Each operation's spec-pinned status. | [`07-wire-protocol.md`](07-wire-protocol.md) §2, §3, §4, §5, §6 |
+    56	| Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
+    57	| Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
+    58	| Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
+    59	| Integrate idempotency | Same-value / different-value / preconditions. | [`07-wire-protocol.md`](07-wire-protocol.md) §5 |
+    60	
+    61	The **v1+roles** and **v1+roles+integrator** levels add their own scenario groups; their contents are out of scope for the chapter 9 v1 ship and will be appended in chunks 11c and 11d respectively.
+    62	
+    63	## 6. Adapter (informative)
+    64	
+    65	A v1 IUT does NOT need to ship a Python adapter. The reference suite's adapter shape — under [`conformance/harness/adapter.py`](../../conformance/harness/adapter.py) — is one convenience for IUTs that prefer to integrate with the reference Python harness; it is not a normative requirement. A non-Python implementor MAY:
+    66	
+    67	- Write a Python `IutAdapter` subclass that spawns their service.
+    68	- Run the suite against an already-running IUT pointed at by an environment variable, via a thin Python adapter that simply returns an `IutHandle` to that URL.
+    69	- Re-implement the suite in another language entirely, asserting the same MUSTs.
+    70	
+
+ succeeded in 0ms:
+     1	"""Verify every conformance scenario cites a real spec MUST.
+     2	
+     3	Walks every test under ``conformance/scenarios/`` (excluding ``_meta/``),
+     4	extracts the first docstring line, parses out
+     5	``spec/v0/<chapter>.md §<sec>``, and asserts:
+     6	
+     7	1. The cited section exists in the target chapter.
+     8	2. The cited section (or any ancestor section in the same chapter)
+     9	   contains a normative MUST. Per chapter 9 §3, the suite asserts
+    10	   MUSTs only; SHOULDs and MAYs are interop guidance, not interop
+    11	   contracts. The hierarchy walk lets a §3.2-level citation inherit
+    12	   from a §3-level MUST.
+    13	3. Every chapter-9 §5 scenario-index group has at least one citing test.
+    14	
+    15	Exit 0 on clean, 1 on unresolved citations, 2 on setup errors.
+    16	"""
+    17	
+    18	from __future__ import annotations
+    19	
+    20	import ast
+    21	import re
+    22	import sys
+    23	from pathlib import Path
+    24	
+    25	REPO_ROOT = Path(__file__).resolve().parents[4]
+    26	SPEC_DIR = REPO_ROOT / "spec" / "v0"
+    27	SCENARIOS_DIR = REPO_ROOT / "conformance" / "scenarios"
+    28	
+    29	CITATION_RE = re.compile(
+    30	    r"spec/v0/(?P<chapter>[0-9]{2}-[a-z-]+\.md)\s+§(?P<section>\d+(?:\.\d+)*)"
+    31	)
+    32	HEADING_RE = re.compile(r"^(?P<hashes>#{2,4})\s+(?P<num>\d+(?:\.\d+)*)(?:[.\s]|$)")
+    33	MUST_RE = re.compile(r"\bMUST\b")
+    34	
+    35	# Spec citation parsed from §5 index rows.
+    36	# Example: "[`04-task-protocol.md`](04-task-protocol.md) §1, §3, §4"
+    37	# — match the link + chain of §refs, then peel each §ref off the chain.
+    38	INDEX_LINK_RE = re.compile(
+    39	    r"\]\((?P<chapter>[0-9]{2}-[a-z-]+\.md)\)"
+    40	    r"(?P<chain>\s+§\d+(?:\.\d+)*(?:\s*,\s*§\d+(?:\.\d+)*)*)"
+    41	)
+    42	SECTION_REF_RE = re.compile(r"§(\d+(?:\.\d+)*)")
+    43	
+    44	
+    45	def _heading_depth(num: str) -> int:
+    46	    return num.count(".") + 1
+    47	
+    48	
+    49	def parse_chapter_9_index() -> list[tuple[str, str, set[tuple[str, str]]]]:
+    50	    """Parse the §5 scenario-index table from chapter 9.
+    51	
+    52	    Returns a list of ``(group_name, scope_text, citations)`` tuples
+    53	    where ``citations`` is the set of ``(chapter_filename, section)``
+    54	    pairs each group cites. Coverage requires at least one valid
+    55	    citing test for each *group*, where "valid" means a test whose
+    56	    own citation is to one of the group's chapters/sections (or any
+    57	    descendant of one).
+    58	    """
+    59	    chapter_9 = SPEC_DIR / "09-conformance.md"
+    60	    text = chapter_9.read_text()
+    61	    # Locate the section index table. The §5 heading is "## 5. ..."
+    62	    # and the table runs until the next heading of <= depth.
+    63	    index_re = re.compile(r"^##\s+5\.[^\n]*\n", re.MULTILINE)
+    64	    m = index_re.search(text)
+    65	    if not m:
+    66	        raise RuntimeError("chapter 9 §5 not found")
+    67	    body = text[m.end() :]
+    68	    next_heading = re.search(r"^##\s+\d+\.", body, re.MULTILINE)
+    69	    if next_heading:
+    70	        body = body[: next_heading.start()]
+    71	    # Each row is like "| Group name | Scope. | citations |" — three
+    72	    # pipe-delimited columns plus leading/trailing pipes.
+    73	    groups: list[tuple[str, str, set[tuple[str, str]]]] = []
+    74	    for line in body.splitlines():
+    75	        if not line.startswith("|"):
+    76	            continue
+    77	        cols = [c.strip() for c in line.strip("|").split("|")]
+    78	        if len(cols) != 3:
+    79	            continue
+    80	        group, scope, raw_cites = cols
+    81	        if group in {"Group", "---"} or not group:
+    82	            continue
+    83	        cites: set[tuple[str, str]] = set()
+    84	        for cm in INDEX_LINK_RE.finditer(raw_cites):
+    85	            chapter_name = cm.group("chapter")
+    86	            for ref in SECTION_REF_RE.finditer(cm.group("chain")):
+    87	                cites.add((chapter_name, ref.group(1)))
+    88	        if cites:
+    89	            groups.append((group, scope, cites))
+    90	    return groups
+    91	
+    92	
+    93	def _section_or_ancestor_has_must(
+    94	    sections: dict[str, str], section: str
+    95	) -> bool:
+    96	    r"""Check that the section, or any ancestor in the same chapter, has MUST.
+    97	
+    98	    Walks from the cited section up to its top-level parent; returns
+    99	    True if any of those texts contains a `\bMUST\b` token.
+   100	    """
+   101	    parts = section.split(".")
+   102	    while parts:
+   103	        candidate = ".".join(parts)
+   104	        text = sections.get(candidate)
+   105	        if text and MUST_RE.search(text):
+   106	            return True
+   107	        parts.pop()
+   108	    return False
+   109	
+   110	
+   111	def build_section_text_index() -> dict[str, dict[str, str]]:
+   112	    """Return ``{filename: {section_num: text}}`` for every spec heading.
+   113	
+   114	    The "text" is everything from the heading line through (but not
+   115	    including) the next heading whose depth is the same or shallower.
+   116	    This lets the MUST-check examine the full section body.
+   117	    """
+   118	    index: dict[str, dict[str, str]] = {}
+   119	    for f in sorted(SPEC_DIR.glob("*.md")):
+   120	        sections: dict[str, str] = {}
+   121	        lines = f.read_text().splitlines()
+   122	        # Pre-extract heading positions.
+   123	        positions: list[tuple[int, str, int]] = []
+   124	        for i, line in enumerate(lines):
+   125	            m = HEADING_RE.match(line)
+   126	            if m:
+   127	                positions.append((i, m.group("num"), _heading_depth(m.group("num"))))
+   128	        for idx, (start, num, depth) in enumerate(positions):
+   129	            end = len(lines)
+   130	            for j in range(idx + 1, len(positions)):
+   131	                _next_start, _next_num, next_depth = positions[j]
+   132	                if next_depth <= depth:
+   133	                    end = positions[j][0]
+   134	                    break
+   135	            sections[num] = "\n".join(lines[start:end])
+   136	        index[f.name] = sections
+   137	    return index
+   138	
+   139	
+   140	def iter_test_functions(path: Path):
+   141	    """Yield (path, function_name, first_docstring_line) for every test_*."""
+   142	    tree = ast.parse(path.read_text())
+   143	    for node in ast.walk(tree):
+   144	        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+   145	            doc = ast.get_docstring(node)
+   146	            first_line = doc.splitlines()[0] if doc else ""
+   147	            yield (path, node.name, first_line)
+   148	
+   149	
+   150	def _matches_group_citation(
+   151	    test_chapter: str,
+   152	    test_section: str,
+   153	    group_cites: set[tuple[str, str]],
+   154	) -> bool:
+   155	    """Check whether a test's citation lies inside one of an index group's pairs.
+   156	
+   157	    A test matches an index group if its citation is at one of the
+   158	    group's chapter+section pairs OR a descendant section in the
+   159	    same chapter.
+   160	    """
+   161	    test_parts = test_section.split(".")
+   162	    for group_chapter, group_section in group_cites:
+   163	        if test_chapter != group_chapter:
+   164	            continue
+   165	        gs = group_section.split(".")
+   166	        if test_parts[: len(gs)] == gs:
+   167	            return True
+   168	    return False
+   169	
+   170	
+   171	def main() -> int:
+   172	    """Run the citation check and report findings."""
+   173	    if not SCENARIOS_DIR.is_dir():
+   174	        print(f"FAIL: {SCENARIOS_DIR} not found", file=sys.stderr)
+   175	        return 2
+   176	    spec_index = build_section_text_index()
+   177	    try:
+   178	        chapter_9_groups = parse_chapter_9_index()
+   179	    except RuntimeError as e:
+   180	        print(f"FAIL: {e}", file=sys.stderr)
+   181	        return 2
+   182	    failures: list[str] = []
+   183	    coverage: dict[str, list[tuple[Path, str, str]]] = {
+   184	        chapter: [] for chapter in spec_index
+   185	    }
+   186	    valid_citing_tests: list[tuple[Path, str, str, str]] = []
+   187	    for test_file in sorted(SCENARIOS_DIR.glob("test_*.py")):
+   188	        for path, name, first_line in iter_test_functions(test_file):
+   189	            m = CITATION_RE.search(first_line)
+   190	            if not m:
+   191	                failures.append(
+   192	                    f"{path.relative_to(REPO_ROOT)}::{name}: docstring "
+   193	                    f"first line missing 'spec/v0/<chapter>.md §<sec>' citation:\n"
+   194	                    f"    {first_line!r}"
+   195	                )
+   196	                continue
+   197	            chapter = m.group("chapter")
+   198	            section = m.group("section")
+   199	            sections = spec_index.get(chapter)
+   200	            if sections is None:
+   201	                failures.append(
+   202	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites unknown "
+   203	                    f"chapter {chapter}"
+   204	                )
+   205	                continue
+   206	            text = sections.get(section)
+   207	            if text is None:
+   208	                failures.append(
+   209	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   210	                    f"{chapter} §{section} (no such section in target)"
+   211	                )
+   212	                continue
+   213	            if not _section_or_ancestor_has_must(sections, section):
+   214	                failures.append(
+   215	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   216	                    f"{chapter} §{section}, but neither that section nor "
+   217	                    f"any ancestor contains a normative MUST. Per "
+   218	                    f"chapter 9 §3 the suite asserts MUSTs only; either "
+   219	                    f"cite a different section or strengthen the spec."
+   220	                )
+   221	                continue
+   222	            coverage[chapter].append((path, name, section))
+   223	            valid_citing_tests.append((path, name, chapter, section))
+   224	    # Index-group coverage check — derived from chapter 9 §5, not
+   225	    # hardcoded. Each index group must have ≥ 1 valid citing test
+   226	    # whose citation is to one of the group's chapter+section pairs
+   227	    # (or a descendant).
+   228	    for group, _scope, cites in chapter_9_groups:
+   229	        matching = [
+   230	            (path, name)
+   231	            for (path, name, ch, sec) in valid_citing_tests
+   232	            if _matches_group_citation(ch, sec, cites)
+   233	        ]
+   234	        if not matching:
+   235	            failures.append(
+   236	                f"chapter 9 §5 index group {group!r}: no valid citing "
+   237	                f"test in conformance/scenarios/. Expected a test with "
+   238	                f"a docstring citing one of: "
+   239	                f"{sorted(f'{c} §{s}' for (c, s) in cites)}"
+   240	            )
+   241	    if failures:
+   242	        print("Citation-check FAILURES:")
+   243	        for f in failures:
+   244	            print(f"  - {f}")
+   245	        return 1
+   246	    total = sum(len(v) for v in coverage.values())
+   247	    print(f"OK: {total} scenarios cite valid spec MUSTs.")
+   248	    for chapter in sorted(coverage):
+   249	        if not coverage[chapter]:
+   250	            continue
+   251	        sections = sorted({s for (_p, _n, s) in coverage[chapter]})
+   252	        print(f"  {chapter}: §§ {', '.join(sections)}")
+   253	    return 0
+   254	
+   255	
+   256	if __name__ == "__main__":
+   257	    raise SystemExit(main())
+
+ succeeded in 0ms:
+    90	
+    91	## Verification post-round-1
+    92	
+    93	- `uv run pytest -q conformance/` — 86 passed in ~49s (3 successive runs stable).
+    94	- `uv run python conformance/src/conformance/tools/check_citations.py` — 85 scenarios cite valid MUSTs.
+    95	- `uv run ruff check conformance/` — clean.
+    96	- `uv run pyright conformance/` — clean.
+    97	
+    98	## Round 2 changes (in response to round 1)
+    99	
+   100	| Round-1 finding | Severity | Fix |
+   101	|---|---|---|
+   102	| 1: misbehaving-adapter partial proxy startup leaks | Bug | Initialize `proxy: MisbehaveProxy | None = None` BEFORE the try; in the except path, call `proxy.stop()` if non-None before tearing down upstream. |
+   103	| 2: chapter-9 coverage guard hardcoded | Risk | Tool now parses chapter 9 §5 table directly. New `parse_chapter_9_index()` function reads `## 5.` body, extracts `(chapter, section)` pairs from each row's citations chain, and the coverage check matches each test's citation against the parsed groups (with descendant-section support). Verified by mutation: deleting `test_atomicity.py` produces "chapter 9 §5 index group 'Atomicity (regression test)': no valid citing test...". Also amended chapter 9's status-codes row from `§§2-6` (irregular range syntax) to the explicit comma chain `§2, §3, §4, §5, §6` so the parser handles it. |
+   104	| 3: empty-batch test removed without spec-surface update | Risk | Plan §E.9 row replaced with a "Deviation" callout explaining why the empty-batch shape was dropped (chapter 7 §6.2's empty-batch description and timeout window are both SHOULDs, not MUSTs). Plan §D paragraph also updated to remove the dropped-test reference. |
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md | sed -n '680,760p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   680	| `test_total_order_per_experiment` | Two reads of the event log return events in the same order. | 05 §4.1 |
+   681	| `test_replay_from_cursor_zero_returns_all_events` | After driving N transitions, `GET /events?cursor=0` returns all N events. | 05 §4.4 |
+   682	| `test_replay_repeatable` | Repeated `GET /events?cursor=0` returns the same set across calls (replay is deterministic across reads). | 05 §4.4 |
+   683	| `test_subscribe_at_least_once_via_reconnect` | Open `GET /events/subscribe?cursor=N` and consume one event; reconnect with `cursor=N` (not the post-batch cursor) and observe the same event again. The chapter 05 §4.3 MUST is "deliver every appended event to every active subscriber at least once"; reconnect-with-prior-cursor is the test that an event remains delivered after a recover/restart. (Codex review round 1 finding 4.) | 05 §4.3 |
+   684	| `test_subscribe_long_poll_yields_event` | Open `GET /events/subscribe?cursor=N` then issue a transition; the long-poll returns the new event within the configured timeout. The §4.3 MUST ("deliver every appended event") backs this assertion via the §6.2 long-poll binding. | 05 §4.3 |
+   685	
+   686	**Deviation from the pre-implementation draft (impl review round 1 finding 3):** an earlier draft of this index also included `test_subscribe_empty_batch_after_timeout`, asserting the empty-batch shape that chapter 7 §6.2 describes for quiescent subscribes. During implementation the citation check (§I) flagged the citation as non-MUST: chapter 7 §6.2 makes both the timeout window (RECOMMENDED 30s — a SHOULD) and the empty-batch response shape descriptive rather than normative MUSTs. The test was dropped under the "MUSTs only" rule from chapter 9 §3 rather than re-cited to a stretchy ancestor MUST. If a future spec amendment elevates the empty-batch shape to a MUST, the scenario should be restored.
+   687	
+   688	#### E.10 Status codes (`test_status_codes.py`)
+   689	
+   690	| Test | Asserts | Citation |
+   691	|---|---|---|
+   692	| `test_create_task_returns_200` | Successful create returns 200. | 07 §2.1 |
+   693	| `test_create_duplicate_task_returns_409_already_exists` | Two `POST /tasks` with the same `task_id` field: second returns 409 + `eden://error/already-exists`. (Codex review round 1 finding 3 — without this, the §E.12 vocabulary-closure test cannot observe `already-exists` and the closure assertion either fails or silently stops being exhaustive.) | 07 §7 |
+   694	| `test_read_unknown_task_returns_404` | Unknown task returns 404 + `eden://error/not-found`. | 07 §2.2; §7 |
+   695	| `test_claim_non_pending_returns_409` | Claim on non-pending returns 409 + `eden://error/illegal-transition`. | 07 §2.3 |
+   696	| `test_submit_wrong_token_returns_403` | Submit with wrong token returns 403 + `eden://error/wrong-token`. | 07 §2.4 |
+   697	| `test_submit_divergent_returns_409` | Submit with divergent payload returns 409 + `eden://error/conflicting-resubmission`. | 07 §2.4 |
+   698	| `test_integrate_different_sha_returns_409` | Integrate with different SHA returns 409 + `eden://error/invalid-precondition`. | 07 §5 |
+   699	| `test_bad_request_body_returns_400` | Schema-invalid body returns 400 + `eden://error/bad-request`. | 07 §7 |
+   700	| `test_replay_returns_200_with_cursor` | `GET /events` returns 200 + body shape `{events, cursor}`. | 07 §6.1 |
+   701	| `test_reclaim_cause_vocabulary_closed` | `POST /tasks/{T}/reclaim cause="garbage"` returns 400 `eden://error/bad-request` (the §7 vocabulary closure forces this; the task store's reclaim-cause closure pinned in chapter 04 §5.1 is upheld via the wire-binding's bad-request mechanism). | 07 §2.6, §7 |
+   702	
+   703	#### E.11 Problem+json envelope (`test_problem_json.py`)
+   704	
+   705	For each error class observed in §E.10, assert:
+   706	
+   707	- `Content-Type: application/problem+json; charset=utf-8`.
+   708	- Body parses as JSON and matches
+   709	  [`spec/v0/schemas/wire/error.schema.json`](../../spec/v0/schemas/wire/error.schema.json).
+   710	- `type` is a URI matching `eden://error/<name>`.
+   711	- `status` field equals the HTTP status.
+   712	- `title`, `detail`, `instance` are non-empty strings.
+   713	
+   714	Citation: 07 §7.
+   715	
+   716	#### E.12 Error vocabulary closure (`test_error_vocabulary.py`)
+   717	
+   718	| Test | Asserts | Citation |
+   719	|---|---|---|
+   720	| `test_observed_types_are_in_v0_vocabulary` | Across the entire suite run, every observed `type` URI is in the chapter 07 §7 closed table. | 07 §7 |
+   721	| `test_v0_vocabulary_each_observed_at_least_once` | Across the suite, each entry of the §7 vocabulary is observed by at least one test. | 07 §7 |
+   722	
+   723	This is implemented via a session-scoped fixture that records every
+   724	non-2xx response's `type`. The two assertions run as two pytest items
+   725	collected last in the session via `pytest-ordering`. (Pinned in
+   726	`conformance/pyproject.toml`.) The `test_no_internal_eden_error_type_for_auth`
+   727	scenario from the pre-review draft is dropped: chapter 07 §11-12 makes
+   728	auth informative.
+   729	
+   730	#### E.13 Experiment-id header disagreement (`test_experiment_id_header.py`)
+   731	
+   732	| Test | Asserts | Citation |
+   733	|---|---|---|
+   734	| `test_header_disagrees_returns_400` | A request whose `X-Eden-Experiment-Id` header value differs from its path segment returns 400 `eden://error/experiment-id-mismatch`. | 07 §1.3 |
+   735	
+   736	The pre-review draft's `test_v0_root_required` (404 on missing /v0/),
+   737	`test_experiment_id_header_required` (header absence), and
+   738	`test_reference_paths_not_required_for_conformance` are dropped: none
+   739	are pinned by a normative MUST (codex review round 0 finding #2).
+   740	
+   741	#### E.14 Integrate idempotency (`test_integrate_idempotency.py`)
+   742	
+   743	The fixture model is **simplified** from the pre-review draft per
+   744	codex review round 0 finding #8: instead of driving plan → implement →
+   745	evaluate to produce a real `success` trial, the test seeds the trial
+   746	directly through the storage endpoints in chapter 07 §3-4. The wire
+   747	endpoint's normative contract (chapter 07 §5) treats `trial_commit_sha`
+   748	as a "well-formed commit SHA" — only the regex shape is checked at the
+   749	task-store layer. Reachability is the integrator's MUST (chapter 06
+   750	§2), not the task store's. The v1 test uses placeholder 40-hex SHAs.
+   751	
+   752	| Test | Asserts | Citation |
+   753	|---|---|---|
+   754	| `test_first_integrate_returns_200_emits_event` | First call with `trial_commit_sha=<40-hex>` returns 200; one `trial.integrated` event appears. | 07 §5 |
+   755	| `test_same_value_idempotency` | Second call with the same SHA returns 200; still exactly one `trial.integrated` event. | 07 §5 |
+   756	| `test_different_sha_returns_409` | Second call with a different SHA returns 409 `eden://error/invalid-precondition`; stored value unchanged. | 07 §5 |
+   757	| `test_integrate_against_non_success_trial_returns_409` | Trial with `status != "success"` rejects integrate with `invalid-precondition`. | 07 §5 |
+   758	
+   759	The setup helper (`integrate_test_trial_factory`):
+   760	
+
+exec
+/bin/zsh -lc 'git diff --name-only -- conformance spec/v0/09-conformance.md docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba conformance/src/conformance/_meta/misbehaving_adapter.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""ReferenceAdapter wrapper that fronts the IUT with the misbehaving proxy.
+     2	
+     3	Used by the self-validation meta scenario via --iut-adapter. This is
+     4	NOT a normal conformance adapter; it deliberately violates spec to
+     5	prove the harness has teeth.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	from pathlib import Path
+    11	
+    12	from conformance.adapters.reference.adapter import ReferenceAdapter
+    13	from conformance.harness.adapter import IutHandle
+    14	
+    15	from .misbehave_proxy import MisbehaveProxy, hit_counter_path_from_env
+    16	
+    17	
+    18	class MisbehavingAdapter(ReferenceAdapter):
+    19	    """Wraps the reference adapter with a proxy that mutates one wrong-token response."""
+    20	
+    21	    def __init__(self) -> None:
+    22	        super().__init__()
+    23	        self._proxy: MisbehaveProxy | None = None
+    24	
+    25	    def start(
+    26	        self,
+    27	        *,
+    28	        experiment_config_path: Path,
+    29	        experiment_id: str,
+    30	    ) -> IutHandle:
+    31	        real = super().start(
+    32	            experiment_config_path=experiment_config_path,
+    33	            experiment_id=experiment_id,
+    34	        )
+    35	        # Defensive: if proxy creation/start raises after the upstream
+    36	        # subprocess has been spawned (or after the proxy itself
+    37	        # partially started threads/sockets), tear down BOTH the proxy
+    38	        # and the upstream so we don't leak the eden-task-store-server
+    39	        # process or the proxy thread/listener.
+    40	        proxy: MisbehaveProxy | None = None
+    41	        try:
+    42	            proxy = MisbehaveProxy(
+    43	                upstream_base_url=real.base_url,
+    44	                hit_counter_path=hit_counter_path_from_env(),
+    45	            )
+    46	            proxy.start()
+    47	        except BaseException:
+    48	            if proxy is not None:
+    49	                try:
+    50	                    proxy.stop()
+    51	                except Exception:  # noqa: BLE001
+    52	                    pass
+    53	            super().stop()
+    54	            raise
+    55	        self._proxy = proxy
+    56	        return IutHandle(
+    57	            base_url=proxy.base_url,
+    58	            experiment_id=real.experiment_id,
+    59	            extra_headers=real.extra_headers,
+    60	        )
+    61	
+    62	    def stop(self) -> None:
+    63	        if self._proxy is not None:
+    64	            try:
+    65	                self._proxy.stop()
+    66	            except Exception:  # noqa: BLE001
+    67	                pass
+    68	            self._proxy = None
+    69	        super().stop()
+
+ succeeded in 0ms:
+conformance/README.md
+
+codex
+The round-2 code changes look aligned with the three remaining findings. I’m rerunning the citation checker and full suite one more time before I give you a final call.
+exec
+/bin/zsh -lc 'uv run python conformance/src/conformance/tools/check_citations.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+OK: 85 scenarios cite valid spec MUSTs.
+  02-data-model.md: §§ 3.4
+  04-task-protocol.md: §§ 1.1, 1.2, 1.3, 2, 3.2, 3.3, 3.4, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.4
+  05-event-protocol.md: §§ 1, 1.1, 2.2, 3.1, 3.2, 3.3, 4.1, 4.3, 4.4
+  07-wire-protocol.md: §§ 1.3, 2.1, 2.2, 2.3, 2.4, 2.6, 5, 7
+
+exec
+/bin/zsh -lc 'uv run pytest -q conformance/' in /Users/ericalt/Documents/eden
+ succeeded in 49436ms:
+........................................................................ [ 83%]
+..............                                                           [100%]
+86 passed in 49.13s
+
+codex
+I found one subtle place where the new chapter-9 coverage logic may still be too permissive: groups that share the same citation can be “covered” by each other’s tests. I’m checking that with a quick simulation rather than guessing.
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from pathlib import Path
+from conformance.src.conformance.tools import check_citations as cc
+# build valid citations from current files, but exclude test_error_vocabulary.py
+spec_index = cc.build_section_text_index()
+valid=[]
+for test_file in sorted(cc.SCENARIOS_DIR.glob('test_*.py')):
+    if test_file.name == 'test_error_vocabulary.py':
+        continue
+    for path,name,first_line in cc.iter_test_functions(test_file):
+        m = cc.CITATION_RE.search(first_line)
+        if not m:
+            continue
+        chapter = m.group('chapter'); section = m.group('section')
+        sections = spec_index.get(chapter)
+        if sections is None or sections.get(section) is None:
+            continue
+        if not cc._section_or_ancestor_has_must(sections, section):
+            continue
+        valid.append((path,name,chapter,section))
+for group,_scope,cites in cc.parse_chapter_9_index():
+    matching=[(p.name,n,ch,sec) for (p,n,ch,sec) in valid if cc._matches_group_citation(ch,sec,cites)]
+    print(group, 'MATCHES', len(matching))
+    if group=='Error vocabulary closure':
+        print(matching[:10])
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+Task lifecycle MATCHES 22
+Claim tokens MATCHES 5
+Submit idempotency MATCHES 6
+Reclamation MATCHES 7
+Atomicity (regression test) MATCHES 1
+Event envelope MATCHES 6
+Per-type event payloads MATCHES 15
+Composite commits MATCHES 7
+Event delivery MATCHES 6
+Status codes MATCHES 11
+Problem+json envelope MATCHES 6
+Error vocabulary closure MATCHES 6
+[('test_problem_json.py', 'test_problem_json_400_bad_request', '07-wire-protocol.md', '7'), ('test_problem_json.py', 'test_problem_json_403_wrong_token', '07-wire-protocol.md', '7'), ('test_problem_json.py', 'test_problem_json_404_not_found', '07-wire-protocol.md', '7'), ('test_problem_json.py', 'test_problem_json_409_illegal_transition', '07-wire-protocol.md', '7'), ('test_status_codes.py', 'test_create_duplicate_task_returns_409_already_exists', '07-wire-protocol.md', '7'), ('test_status_codes.py', 'test_bad_request_body_returns_400', '07-wire-protocol.md', '7')]
+Experiment-id header disagreement MATCHES 1
+Integrate idempotency MATCHES 5
+
+codex
+- Risk — [check_citations.py](/Users/ericalt/Documents/eden/conformance/src/conformance/tools/check_citations.py:150) and [check_citations.py](/Users/ericalt/Documents/eden/conformance/src/conformance/tools/check_citations.py:228): the new chapter-9 coverage guard parses the §5 table correctly, but it still treats “same spec citation” as “same scenario group.” That is too permissive for groups that intentionally share citations. I verified this by simulating the suite without `test_error_vocabulary.py`: the tool still considers the `Error vocabulary closure` group covered, because `test_problem_json.py` and `test_status_codes.py` also cite `07-wire-protocol.md §7`. The same structural problem applies anywhere two groups share a cited section. The fix is to add explicit group identity on the test side, such as a module-level `CONFORMANCE_GROUP = "Error vocabulary closure"` or a dedicated marker/fixture per group, and then check chapter-9 coverage against that explicit group mapping rather than citation overlap alone.
+
+Everything else I checked looks good. I reran `uv run python conformance/src/conformance/tools/check_citations.py` and `uv run pytest -q conformance/`; both passed, with the suite green at `86 passed in 49.13s`. I would not clear this for commit/PR yet because the chapter-9 drift guard is still not enforcing group coverage the way the plan says it should.
+2026-05-01T19:51:00.525764Z ERROR codex_core::session: failed to record rollout items: thread 019de4ff-1578-7980-8f4f-9d5c855fdc1d not found
+tokens used
+350,787

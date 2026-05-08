@@ -1,0 +1,1169 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019ddba2-d650-7c22-9bff-869e92277200
+--------
+user
+Round-0 fixes:
+
+1. reconcile_remote_orphans now narrows to NotFound only (eden_storage.errors.NotFound). Any other Store.read_trial exception (DispatchError, transport-shaped, anything else) → leave the remote ref alone, log nothing, let the next startup retry. Spec-authoritative deletion only.
+
+2. web-ui admin work-refs page now does read-before-display (fetch_all_heads when origin configured) AND remote-delete first, then local-delete. Stderr classification recognizes 'stale info' / 'rejected' (CAS mismatch → ?error=ref-changed) and 'deleting unknown ref' / 'remote ref does not exist' (?error=not-found). Pre-cutover (no --gitea-url) deployments fall through to the existing local-only path via the _repo_has_origin gate.
+
+3. Three new public-path integration tests added in test_remote_integrator.py covering the indeterminate-push step-2 branches: remote-landed (4a+4b run via ls-remote read-back; original DispatchError re-raised), remote-absent (4b only; GitTransportError propagates), remote-diverged (4b only; mapped to RefRefused). Plus a fourth test for the fix in (1) — indeterminate Store.read_trial does NOT delete the remote ref. All 12 tests pass.
+
+All gates green: ruff, pyright, full pytest (708 pass), markdownlint, and the three compose smokes pass locally end-to-end through Gitea.
+codex
+Re-checking the round-0 fixes against the concrete code paths now. I’m focusing on the four changed areas you called out: remote-orphan narrowing, web-ui admin remote GC, the new indeterminate-push tests, and any residual plan/impl drift after those changes.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/integrator.py | sed -n '530,565p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/tests/test_remote_integrator.py | sed -n '170,430p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/admin.py | sed -n '545,690p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   530	        deleted: list[str] = []
+   531	        if not _has_origin(self._repo):
+   532	            return deleted
+   533	        try:
+   534	            remote_refs = self._repo.ls_remote("refs/heads/trial/*")
+   535	        except GitTransportError:
+   536	            # Gitea unreachable at startup — caller exits non-zero
+   537	            # and compose's restart loop retries. Don't raise here
+   538	            # because we don't want to block startup if the only
+   539	            # transient is reconciliation; the next startup tries
+   540	            # again.
+   541	            return deleted
+   542	        for ref, ref_sha in remote_refs:
+   543	            trial_id = self._recover_trial_id_from_remote_commit(ref, ref_sha)
+   544	            if trial_id is None:
+   545	                continue
+   546	            try:
+   547	                trial = self._store.read_trial(trial_id)
+   548	            except NotFound:
+   549	                # Authoritative: the trial truly doesn't exist in the
+   550	                # store. Safe to delete the orphan ref.
+   551	                trial = None
+   552	            except Exception:  # noqa: BLE001
+   553	                # Indeterminate: transport / server failure. We MUST
+   554	                # NOT delete a remote ref that may correspond to a
+   555	                # valid integrated trial — chapter 6 §3.4 only
+   556	                # authorizes the delete when the store is
+   557	                # authoritatively missing the trial. Skip and let
+   558	                # the next startup retry.
+   559	                continue
+   560	            if trial is None or trial.trial_commit_sha is None:
+   561	                try:
+   562	                    self._repo.delete_remote_ref(ref, expected_sha=ref_sha)
+   563	                    deleted.append(ref)
+   564	                except Exception:  # noqa: BLE001 — best-effort
+   565	                    # The next startup tries again. Don't raise.
+
+ succeeded in 0ms:
+   545	            "admin_work_refs.html",
+   546	            {
+   547	                "session": session,
+   548	                "csrf_token": session.csrf,
+   549	                "repo_enabled": False,
+   550	                "groups": None,
+   551	                "outcome": outcome,
+   552	            },
+   553	        )
+   554	    store = request.app.state.store
+   555	    # Phase 10d follow-up B §D.7c read-before-display: fetch from
+   556	    # the remote so the operator's view of work/* matches Gitea.
+   557	    # No-op when origin is not configured (legacy local-only mode).
+   558	    if _repo_has_origin(repo):
+   559	        try:
+   560	            repo.fetch_all_heads()
+   561	        except Exception:  # noqa: BLE001 — git or transport
+   562	            return _read_failure_response(
+   563	                request, "could not fetch from gitea"
+   564	            )
+   565	    try:
+   566	        groups = _classify_work_refs(repo, store)
+   567	    except Exception:  # noqa: BLE001 — git or transport
+   568	        return _read_failure_response(request, "could not list work refs")
+   569	    return request.app.state.templates.TemplateResponse(
+   570	        request,
+   571	        "admin_work_refs.html",
+   572	        {
+   573	            "session": session,
+   574	            "csrf_token": session.csrf,
+   575	            "repo_enabled": True,
+   576	            "groups": groups,
+   577	            "outcome": outcome,
+   578	        },
+   579	    )
+   580	
+   581	
+   582	@router.post("/work-refs/delete", response_model=None)
+   583	async def work_refs_delete(
+   584	    request: Request,
+   585	    ref_name: str = Form(""),
+   586	    expected_old_sha: str = Form(""),  # noqa: ARG001 — accepted for symmetry, never trusted
+   587	    csrf_token: str = Form(""),
+   588	) -> RedirectResponse | HTMLResponse:
+   589	    session = get_session(request)
+   590	    if session is None:
+   591	        return RedirectResponse(url="/signin", status_code=303)
+   592	    if not csrf_ok(session, csrf_token):
+   593	        return _csrf_failure_response()
+   594	    repo = request.app.state.repo
+   595	    if repo is None:
+   596	        return RedirectResponse(
+   597	            url="/admin/work-refs/?error=invalid-ref-name", status_code=303
+   598	        )
+   599	    if not _WORK_REF_RE.match(ref_name) or ".." in ref_name:
+   600	        return RedirectResponse(
+   601	            url="/admin/work-refs/?error=invalid-ref-name", status_code=303
+   602	        )
+   603	    store = request.app.state.store
+   604	    groups = _classify_work_refs(repo, store)
+   605	    target = None
+   606	    for entry in (*groups["eligible"], *groups["orphan"]):
+   607	        if entry["ref_name"] == ref_name:
+   608	            target = entry
+   609	            break
+   610	    if target is None:
+   611	        # Could be a not-eligible entry (still listed) or vanished.
+   612	        for entry in groups["not_eligible"]:
+   613	            if entry["ref_name"] == ref_name:
+   614	                return RedirectResponse(
+   615	                    url="/admin/work-refs/?error=not-eligible", status_code=303
+   616	                )
+   617	        return RedirectResponse(
+   618	            url="/admin/work-refs/?error=not-found", status_code=303
+   619	        )
+   620	    live_sha = target["current_sha"]
+   621	    from eden_git.repo import GitError
+   622	
+   623	    # Phase 10d follow-up B §D.7c: when origin is configured, the
+   624	    # remote IS the source of truth — delete there first. Local
+   625	    # delete still happens after so the local clone matches.
+   626	    if _repo_has_origin(repo):
+   627	        try:
+   628	            repo.delete_remote_ref(ref_name, expected_sha=live_sha)
+   629	        except GitError as exc:
+   630	            stderr = (exc.stderr or "").lower()
+   631	            if "stale info" in stderr or "rejected" in stderr:
+   632	                return RedirectResponse(
+   633	                    url="/admin/work-refs/?error=ref-changed",
+   634	                    status_code=303,
+   635	                )
+   636	            if (
+   637	                "deleting unknown ref" in stderr
+   638	                or "remote ref does not exist" in stderr
+   639	            ):
+   640	                return RedirectResponse(
+   641	                    url="/admin/work-refs/?error=not-found",
+   642	                    status_code=303,
+   643	                )
+   644	            raise
+   645	
+   646	    try:
+   647	        repo.delete_ref(ref_name, expected_old_sha=live_sha)
+   648	    except GitError as exc:
+   649	        stderr = (exc.stderr or "").lower()
+   650	        # ``git update-ref -d <ref> <oldvalue>`` exits 1 with two
+   651	        # operationally-different stderrs:
+   652	        # - "expected ... but is ..." → CAS mismatch (the SHA we
+   653	        #   read at GET-time is no longer the ref's current SHA).
+   654	        # - "unable to resolve reference ..." → the ref vanished
+   655	        #   between our list_refs read and the delete call.
+   656	        # When origin was configured, the remote-delete already
+   657	        # succeeded; a local-delete failure here only affects the
+   658	        # local clone (a `fetch_all_heads --prune` on the next
+   659	        # restart will align it). Surface as the same operator
+   660	        # banner as before.
+   661	        if "expected" in stderr and "but is" in stderr:
+   662	            return RedirectResponse(
+   663	                url="/admin/work-refs/?error=ref-changed", status_code=303
+   664	            )
+   665	        if "unable to resolve reference" in stderr:
+   666	            return RedirectResponse(
+   667	                url="/admin/work-refs/?error=not-found", status_code=303
+   668	            )
+   669	        raise
+   670	    return RedirectResponse(
+   671	        url="/admin/work-refs/?deleted=ok", status_code=303
+   672	    )
+   673	
+   674	
+   675	def _classify_work_refs(repo: Any, store: Any) -> dict[str, list[dict[str, Any]]]:
+   676	    """Group ``refs/heads/work/*`` refs by GC eligibility.
+   677	
+   678	    Ownership is keyed off exact ``trial.branch`` equality (chunk 9e
+   679	    plan §A.7), not by parsing the ref name.
+   680	    """
+   681	    trials = store.list_trials()
+   682	    branch_index: dict[str, Trial] = {
+   683	        tr.branch: tr for tr in trials if tr.branch is not None
+   684	    }
+   685	    pairs = repo.list_refs("refs/heads/work/*")
+   686	    eligible: list[dict[str, Any]] = []
+   687	    not_eligible: list[dict[str, Any]] = []
+   688	    orphan: list[dict[str, Any]] = []
+   689	    for refname, current_sha in pairs:
+   690	        branch_name = refname.removeprefix("refs/heads/")
+
+ succeeded in 0ms:
+   170	# ---------------------------------------------------------------- happy path
+   171	
+   172	
+   173	def test_integrate_publishes_to_remote(tmp_path: Path) -> None:
+   174	    store, remote, clone, base = _setup(tmp_path)
+   175	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   176	    integrator = _make_integrator(store, clone)
+   177	
+   178	    result = integrator.integrate(trial.trial_id)
+   179	
+   180	    assert not result.already_integrated
+   181	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   182	    # Local AND remote both have the trial ref at the new commit.
+   183	    assert clone.resolve_ref(branch_ref) == result.trial_commit_sha
+   184	    assert remote.resolve_ref(branch_ref) == result.trial_commit_sha
+   185	    # Store has the trial integrated.
+   186	    after = store.read_trial(trial.trial_id)
+   187	    assert after.trial_commit_sha == result.trial_commit_sha
+   188	
+   189	
+   190	# ---------------------------------------------------------------- step 2: definite rejection
+   191	
+   192	
+   193	def test_integrate_rolls_back_local_on_remote_rejection(tmp_path: Path) -> None:
+   194	    """Push race: another integrator already wrote a different SHA at the same trial ref."""
+   195	    store, remote, clone, base = _setup(tmp_path)
+   196	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   197	    integrator = _make_integrator(store, clone)
+   198	
+   199	    # Pre-publish a different commit at the trial ref on the remote so
+   200	    # our --force-with-lease=zero push is rejected.
+   201	    blob = remote.write_blob(b"intruder\n")
+   202	    tree = remote.write_tree_from_entries(
+   203	        [TreeEntry(mode="100644", type="blob", sha=blob, path="THEIRS")]
+   204	    )
+   205	    intruder = remote.commit_tree(
+   206	        tree,
+   207	        parents=[base],
+   208	        message="intruder",
+   209	        author=TEST_AUTHOR,
+   210	        author_date=FIXED_DATE,
+   211	        committer_date=FIXED_DATE,
+   212	    )
+   213	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   214	    remote.create_ref(branch_ref, intruder)
+   215	
+   216	    with pytest.raises(RefRefused):
+   217	        integrator.integrate(trial.trial_id)
+   218	
+   219	    # Local ref rolled back; remote untouched.
+   220	    assert clone.resolve_ref(branch_ref) is None
+   221	    assert remote.resolve_ref(branch_ref) == intruder
+   222	    # Store still has trial as `success` (no integrate_trial happened).
+   223	    after = store.read_trial(trial.trial_id)
+   224	    assert after.trial_commit_sha is None
+   225	
+   226	
+   227	# ---------------------------------------------------------------- step 3: store failure after push
+   228	
+   229	
+   230	def test_integrate_compensates_remote_on_store_failure(
+   231	    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+   232	) -> None:
+   233	    """Step 3 fails after step 2 succeeded: BOTH 4a and 4b run."""
+   234	    store, remote, clone, base = _setup(tmp_path)
+   235	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   236	    integrator = _make_integrator(store, clone)
+   237	
+   238	    # Force store.integrate_trial to fail.
+   239	    def _boom(*args: object, **kwargs: object) -> None:
+   240	        raise DispatchError("simulated store outage")
+   241	    monkeypatch.setattr(store, "integrate_trial", _boom)
+   242	
+   243	    with pytest.raises(DispatchError):
+   244	        integrator.integrate(trial.trial_id)
+   245	
+   246	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   247	    # Both local AND remote refs deleted (4a + 4b).
+   248	    assert clone.resolve_ref(branch_ref) is None
+   249	    assert remote.resolve_ref(branch_ref) is None
+   250	    # Store still has trial as `success` (no integrate_trial committed).
+   251	    after = store.read_trial(trial.trial_id)
+   252	    assert after.trial_commit_sha is None
+   253	
+   254	
+   255	def test_integrate_atomicity_violation_when_remote_delete_fails(
+   256	    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+   257	) -> None:
+   258	    """Step 4a fails: AtomicityViolation raised, local 4b still runs."""
+   259	    store, remote, clone, base = _setup(tmp_path)
+   260	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   261	    integrator = _make_integrator(store, clone)
+   262	
+   263	    def _boom(*args: object, **kwargs: object) -> None:
+   264	        raise DispatchError("simulated store outage")
+   265	    monkeypatch.setattr(store, "integrate_trial", _boom)
+   266	
+   267	    # Force the compensating remote-delete to fail too.
+   268	    real_delete = clone.delete_remote_ref
+   269	
+   270	    def _boom_delete(*args: object, **kwargs: object) -> None:
+   271	        raise GitTransportError(
+   272	            ["push", "origin", "--delete", "stub"],
+   273	            128, "", "fatal: unable to access (simulated)",
+   274	        )
+   275	    monkeypatch.setattr(clone, "delete_remote_ref", _boom_delete)
+   276	
+   277	    with pytest.raises(AtomicityViolation) as exc:
+   278	        integrator.integrate(trial.trial_id)
+   279	
+   280	    assert isinstance(exc.value.original, DispatchError)
+   281	    assert isinstance(exc.value.rollback, GitTransportError)
+   282	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   283	    # Local 4b still ran (best-effort consistency for the next retry).
+   284	    assert clone.resolve_ref(branch_ref) is None
+   285	    # The remote ref is the orphan that §D.7c reconciliation cleans up.
+   286	    real_delete_result = remote.resolve_ref(branch_ref)
+   287	    assert real_delete_result is not None
+   288	    # Restore for cleanup.
+   289	    monkeypatch.setattr(clone, "delete_remote_ref", real_delete)
+   290	
+   291	
+   292	# ---------------------------------------------------------------- §D.7c reconciliation
+   293	
+   294	
+   295	def test_reconcile_remote_orphans_deletes_orphan_with_no_store_record(
+   296	    tmp_path: Path,
+   297	) -> None:
+   298	    """An orphan remote trial/* with no Store.read_trial → deleted."""
+   299	    store, remote, clone, base = _setup(tmp_path)
+   300	    # Forge an orphan: a commit whose tree contains
+   301	    # .eden/trials/orphan-trial-id/eval.json, pushed to a trial/* ref,
+   302	    # with NO matching trial in the store.
+   303	    blob = clone.write_blob(b'{"trial_id": "orphan-trial-id"}\n')
+   304	    eval_path = ".eden/trials/orphan-trial-id/eval.json"
+   305	    worker_blob = clone.write_blob(b"worker\n")
+   306	    worker_tree = clone.write_tree_from_entries(
+   307	        [TreeEntry(mode="100644", type="blob", sha=worker_blob, path="WORK")]
+   308	    )
+   309	    full_tree = clone.write_tree_with_file(
+   310	        worker_tree, eval_path, blob, mode="100644"
+   311	    )
+   312	    orphan_commit = clone.commit_tree(
+   313	        full_tree,
+   314	        parents=[base],
+   315	        message="trial: orphan-trial-id porphan\n",
+   316	        author=TEST_AUTHOR,
+   317	        author_date=FIXED_DATE,
+   318	        committer_date=FIXED_DATE,
+   319	    )
+   320	    branch_ref = "refs/heads/trial/orphan-trial-id-porphan"
+   321	    clone.create_ref(branch_ref, orphan_commit)
+   322	    clone.push_ref(branch_ref)
+   323	    assert remote.resolve_ref(branch_ref) == orphan_commit
+   324	
+   325	    integrator = _make_integrator(store, clone)
+   326	    deleted = integrator.reconcile_remote_orphans()
+   327	    assert branch_ref in deleted
+   328	    assert remote.resolve_ref(branch_ref) is None
+   329	
+   330	
+   331	def test_reconcile_remote_orphans_leaves_valid_integrated_refs(
+   332	    tmp_path: Path,
+   333	) -> None:
+   334	    """A remote trial/* whose Store.read_trial has trial_commit_sha → kept."""
+   335	    store, remote, clone, base = _setup(tmp_path)
+   336	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   337	    integrator = _make_integrator(store, clone)
+   338	    integrator.integrate(trial.trial_id)
+   339	    # Now the trial is properly integrated. Reconciling must leave
+   340	    # the ref alone.
+   341	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   342	    deleted = integrator.reconcile_remote_orphans()
+   343	    assert deleted == []
+   344	    assert remote.resolve_ref(branch_ref) is not None
+   345	
+   346	
+   347	def test_reconcile_skips_malformed_trial_commits(tmp_path: Path) -> None:
+   348	    """A remote trial/* whose tree lacks .eden/trials/<id>/eval.json
+   349	    is left alone (fail closed; the operator decides)."""
+   350	    store, remote, clone, base = _setup(tmp_path)
+   351	    # Forge a malformed "trial" commit whose tree has no .eden/trials/.
+   352	    blob = clone.write_blob(b"plain\n")
+   353	    tree = clone.write_tree_from_entries(
+   354	        [TreeEntry(mode="100644", type="blob", sha=blob, path="README")]
+   355	    )
+   356	    bad_commit = clone.commit_tree(
+   357	        tree,
+   358	        parents=[base],
+   359	        message="not actually a trial",
+   360	        author=TEST_AUTHOR,
+   361	        author_date=FIXED_DATE,
+   362	        committer_date=FIXED_DATE,
+   363	    )
+   364	    branch_ref = "refs/heads/trial/zz-malformed"
+   365	    clone.create_ref(branch_ref, bad_commit)
+   366	    clone.push_ref(branch_ref)
+   367	
+   368	    integrator = _make_integrator(store, clone)
+   369	    deleted = integrator.reconcile_remote_orphans()
+   370	    # Malformed: the integrator can't recover the trial_id, so it
+   371	    # leaves the ref alone.
+   372	    assert branch_ref not in deleted
+   373	    assert remote.resolve_ref(branch_ref) == bad_commit
+   374	
+   375	
+   376	# ---------------------------------------------------------------- local-only fallback
+   377	
+   378	
+   379	def test_integrate_indeterminate_push_remote_landed_runs_4a_and_4b(
+   380	    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+   381	) -> None:
+   382	    """Step 2 transport-fails AFTER the remote applied the ref → 4a + 4b.
+   383	
+   384	    Drives `_reconcile_indeterminate_push`'s "remote == our SHA"
+   385	    branch: push raises GitTransportError but the remote actually
+   386	    accepted the ref before the ack was lost. The ladder must
+   387	    detect this via ls_remote and run BOTH compensating deletes
+   388	    when the subsequent store.integrate_trial fails.
+   389	    """
+   390	    store, remote, clone, base = _setup(tmp_path)
+   391	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   392	    integrator = _make_integrator(store, clone)
+   393	
+   394	    real_push = clone.push_ref
+   395	    real_lsremote = clone.ls_remote
+   396	
+   397	    def _push_then_transport_fail(ref, *args, **kwargs):
+   398	        # Actually do the push (so the remote DID apply the ref)
+   399	        # then raise as if the ack was lost.
+   400	        real_push(ref, *args, **kwargs)
+   401	        raise GitTransportError(
+   402	            ["push", "origin", ref], 128, "", "fatal: unable to access (simulated)"
+   403	        )
+   404	
+   405	    monkeypatch.setattr(clone, "push_ref", _push_then_transport_fail)
+   406	
+   407	    def _boom(*args: object, **kwargs: object) -> None:
+   408	        raise DispatchError("simulated store outage")
+   409	    monkeypatch.setattr(store, "integrate_trial", _boom)
+   410	
+   411	    # When 4a + 4b both succeed, the integrator re-raises the
+   412	    # original store error (DispatchError) — AtomicityViolation
+   413	    # is only raised when one of the compensating deletes ITSELF
+   414	    # fails. This proves the integrator detected the push had
+   415	    # landed (via ls_remote) and ran BOTH deletes successfully.
+   416	    with pytest.raises(DispatchError):
+   417	        integrator.integrate(trial.trial_id)
+   418	
+   419	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   420	    # Local AND remote must both be cleaned up: 4a deleted the
+   421	    # remote (the integrator detected the push had landed via
+   422	    # ls_remote), 4b deleted the local.
+   423	    assert clone.resolve_ref(branch_ref) is None
+   424	    assert remote.resolve_ref(branch_ref) is None
+   425	
+   426	    # Restore so monkeypatch's teardown cleanup works.
+   427	    monkeypatch.setattr(clone, "push_ref", real_push)
+   428	    monkeypatch.setattr(clone, "ls_remote", real_lsremote)
+   429	
+   430	
+
+exec
+/bin/zsh -lc 'rg -n "NotFound|fetch_all_heads|delete_remote_ref|stale info|deleting unknown ref|remote ref does not exist|_repo_has_origin|GitTransportError" reference/services/web-ui/src/eden_web_ui/routes/admin.py reference/packages/eden-git/src/eden_git/integrator.py reference/packages/eden-git/tests/test_remote_integrator.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-git/src/eden_git/integrator.py:28:from eden_storage import InvalidPrecondition, NotFound, Store
+reference/packages/eden-git/src/eden_git/integrator.py:31:from .errors import GitError, GitTransportError, RefRefused
+reference/packages/eden-git/src/eden_git/integrator.py:180:            except GitTransportError as push_transport:
+reference/packages/eden-git/src/eden_git/integrator.py:222:                    self._repo.delete_remote_ref(
+reference/packages/eden-git/src/eden_git/integrator.py:298:        push_error: GitTransportError,
+reference/packages/eden-git/src/eden_git/integrator.py:305:        ls-remote-also-fails, raises :class:`GitTransportError` —
+reference/packages/eden-git/src/eden_git/integrator.py:311:        except GitTransportError:
+reference/packages/eden-git/src/eden_git/integrator.py:535:        except GitTransportError:
+reference/packages/eden-git/src/eden_git/integrator.py:548:            except NotFound:
+reference/packages/eden-git/src/eden_git/integrator.py:562:                    self._repo.delete_remote_ref(ref, expected_sha=ref_sha)
+reference/packages/eden-git/src/eden_git/integrator.py:591:            except (GitTransportError, GitError):
+reference/packages/eden-git/tests/test_remote_integrator.py:27:from eden_git.errors import GitTransportError
+reference/packages/eden-git/tests/test_remote_integrator.py:268:    real_delete = clone.delete_remote_ref
+reference/packages/eden-git/tests/test_remote_integrator.py:271:        raise GitTransportError(
+reference/packages/eden-git/tests/test_remote_integrator.py:275:    monkeypatch.setattr(clone, "delete_remote_ref", _boom_delete)
+reference/packages/eden-git/tests/test_remote_integrator.py:281:    assert isinstance(exc.value.rollback, GitTransportError)
+reference/packages/eden-git/tests/test_remote_integrator.py:289:    monkeypatch.setattr(clone, "delete_remote_ref", real_delete)
+reference/packages/eden-git/tests/test_remote_integrator.py:385:    branch: push raises GitTransportError but the remote actually
+reference/packages/eden-git/tests/test_remote_integrator.py:401:        raise GitTransportError(
+reference/packages/eden-git/tests/test_remote_integrator.py:437:    push raises GitTransportError and ls_remote shows the ref
+reference/packages/eden-git/tests/test_remote_integrator.py:447:        raise GitTransportError(
+reference/packages/eden-git/tests/test_remote_integrator.py:453:    with pytest.raises(GitTransportError):
+reference/packages/eden-git/tests/test_remote_integrator.py:492:        raise GitTransportError(
+reference/packages/eden-git/tests/test_remote_integrator.py:514:    indistinguishable from NotFound — so a transient store outage
+reference/packages/eden-git/tests/test_remote_integrator.py:516:    ref. Only NotFound authorizes deletion now.
+reference/packages/eden-git/tests/test_remote_integrator.py:527:    # NOT NotFound — so the integrator must NOT delete the ref.
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:22:from eden_storage.errors import NotFound as StorageNotFound
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:274:    # ``StorageNotFound`` propagates to the app-wide 404 handler.
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:279:    except StorageNotFound:
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:423:    except StorageNotFound:
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:558:    if _repo_has_origin(repo):
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:560:            repo.fetch_all_heads()
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:626:    if _repo_has_origin(repo):
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:628:            repo.delete_remote_ref(ref_name, expected_sha=live_sha)
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:631:            if "stale info" in stderr or "rejected" in stderr:
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:637:                "deleting unknown ref" in stderr
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:638:                or "remote ref does not exist" in stderr
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:658:        # local clone (a `fetch_all_heads --prune` on the next
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:735:def _repo_has_origin(repo: Any) -> bool:
+
+codex
+I’ve verified the two previously blocking fixes in code. I’m doing one last pass over the new integrator tests and the web-ui remote-delete path for any remaining edge-case mismatch before I close this out.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/admin.py | sed -n '730,750p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/tests/test_remote_integrator.py | sed -n '430,545p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   730	# ---------------------------------------------------------------------
+   731	# Helpers
+   732	# ---------------------------------------------------------------------
+   733	
+   734	
+   735	def _repo_has_origin(repo: Any) -> bool:
+   736	    """Return True if the GitRepo has an origin remote configured.
+   737	
+   738	    Phase 10d follow-up B: gates the read-before-display fetch and
+   739	    the remote-delete on the work-refs admin page. Pre-cutover (no
+   740	    --gitea-url) deployments skip the new code paths entirely.
+   741	    """
+   742	    try:
+   743	        result = repo._run(["remote"], check=False)
+   744	    except Exception:  # noqa: BLE001
+   745	        return False
+   746	    return "origin" in result.stdout.split()
+   747	
+   748	
+   749	def _csrf_failure_response() -> HTMLResponse:
+   750	    return HTMLResponse(content="CSRF token missing or invalid", status_code=403)
+
+ succeeded in 0ms:
+   430	
+   431	def test_integrate_indeterminate_push_remote_absent_runs_4b_only(
+   432	    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+   433	) -> None:
+   434	    """Step 2 transport-fails BEFORE the remote applied the ref → 4b only.
+   435	
+   436	    Drives `_reconcile_indeterminate_push`'s "remote absent" branch:
+   437	    push raises GitTransportError and ls_remote shows the ref
+   438	    didn't land. Only the local rollback runs.
+   439	    """
+   440	    store, remote, clone, base = _setup(tmp_path)
+   441	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   442	    integrator = _make_integrator(store, clone)
+   443	
+   444	    def _push_transport_fail_no_apply(ref, *args, **kwargs):
+   445	        # Don't actually push; raise as if it never reached the
+   446	        # server.
+   447	        raise GitTransportError(
+   448	            ["push", "origin", ref], 128, "", "fatal: unable to access (simulated)"
+   449	        )
+   450	
+   451	    monkeypatch.setattr(clone, "push_ref", _push_transport_fail_no_apply)
+   452	
+   453	    with pytest.raises(GitTransportError):
+   454	        integrator.integrate(trial.trial_id)
+   455	
+   456	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   457	    # Local rolled back; remote was never touched (and ls_remote
+   458	    # confirmed it).
+   459	    assert clone.resolve_ref(branch_ref) is None
+   460	    assert remote.resolve_ref(branch_ref) is None
+   461	
+   462	
+   463	def test_integrate_indeterminate_push_remote_diverged_runs_4b_only(
+   464	    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+   465	) -> None:
+   466	    """Step 2 transport-fails AND remote has a different SHA → 4b only.
+   467	
+   468	    Drives `_reconcile_indeterminate_push`'s "remote at different
+   469	    SHA" branch: another integrator integrated a different commit
+   470	    on the same trial id, our push (which would have failed
+   471	    `--force-with-lease=zero` anyway) racially encountered a
+   472	    transport failure, ls_remote shows a different SHA. Mapped
+   473	    to RefRefused semantics: 4b only.
+   474	    """
+   475	    store, remote, clone, base = _setup(tmp_path)
+   476	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   477	    integrator = _make_integrator(store, clone)
+   478	
+   479	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   480	    # Pre-publish a different SHA on the remote.
+   481	    blob = remote.write_blob(b"intruder\n")
+   482	    tree = remote.write_tree_from_entries(
+   483	        [TreeEntry(mode="100644", type="blob", sha=blob, path="THEIRS")]
+   484	    )
+   485	    intruder = remote.commit_tree(
+   486	        tree, parents=[base], message="intruder",
+   487	        author=TEST_AUTHOR, author_date=FIXED_DATE, committer_date=FIXED_DATE,
+   488	    )
+   489	    remote.create_ref(branch_ref, intruder)
+   490	
+   491	    def _push_transport_fail(ref, *args, **kwargs):
+   492	        raise GitTransportError(
+   493	            ["push", "origin", ref], 128, "", "fatal: unable to access (simulated)"
+   494	        )
+   495	
+   496	    monkeypatch.setattr(clone, "push_ref", _push_transport_fail)
+   497	
+   498	    with pytest.raises(RefRefused):
+   499	        integrator.integrate(trial.trial_id)
+   500	
+   501	    # Local rolled back; remote untouched.
+   502	    assert clone.resolve_ref(branch_ref) is None
+   503	    assert remote.resolve_ref(branch_ref) == intruder
+   504	
+   505	
+   506	def test_reconcile_skips_orphan_when_store_read_fails_indeterminately(
+   507	    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+   508	) -> None:
+   509	    """Indeterminate Store.read_trial → leave the remote ref alone.
+   510	
+   511	    Reviewer round-0 finding: the original code treated ANY
+   512	    Store.read_trial exception as 'trial missing' and deleted
+   513	    the remote ref. Under the wire client, transport failures are
+   514	    indistinguishable from NotFound — so a transient store outage
+   515	    during startup reconciliation could destroy a valid integrated
+   516	    ref. Only NotFound authorizes deletion now.
+   517	    """
+   518	    store, remote, clone, base = _setup(tmp_path)
+   519	    trial = _seed_success_trial(store=store, repo=clone, base_sha=base)
+   520	    integrator = _make_integrator(store, clone)
+   521	    integrator.integrate(trial.trial_id)
+   522	    branch_ref = f"refs/heads/trial/{trial.trial_id}-p0"
+   523	    assert remote.resolve_ref(branch_ref) is not None
+   524	
+   525	    # Simulate a transport-level Store failure (e.g., the
+   526	    # task-store-server is briefly down at orchestrator startup).
+   527	    # NOT NotFound — so the integrator must NOT delete the ref.
+   528	    def _boom(*args: object, **kwargs: object) -> None:
+   529	        raise DispatchError("store transport hiccup")
+   530	    monkeypatch.setattr(store, "read_trial", _boom)
+   531	
+   532	    deleted = integrator.reconcile_remote_orphans()
+   533	    assert deleted == []
+   534	    # The valid integrated ref MUST still be on the remote.
+   535	    assert remote.resolve_ref(branch_ref) is not None
+   536	
+   537	
+   538	def test_integrate_without_origin_skips_remote_publish(tmp_path: Path) -> None:
+   539	    """Repos with no `origin` remote use the local-only flow (back-compat
+   540	    for pre-cutover tests). All existing eden-git tests exercise this
+   541	    path; this test pins it explicitly."""
+   542	    store, _, repo, base = _setup(tmp_path, register_origin=False)
+   543	    # repo here is the bare repo itself (no origin).
+   544	    trial = _seed_success_trial(store=store, repo=repo, base_sha=base)
+   545	    integrator = _make_integrator(store, repo)
+
+exec
+/bin/zsh -lc "rg -n \"fetch_failed|fetch_ref|gitea-url|push_ref_failed|status=\\\"eval_error\\\"|status=\\\"error\\\"\" reference/services/implementer/tests reference/services/evaluator/tests reference/services/web-ui/tests | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "rg -n \"implementer_push_ref_failed|evaluator_fetch_failed|push_ref\\(|fetch_ref\\(|delete_remote_ref\\(|fetch_all_heads\\(\" reference/services/implementer/tests reference/services/evaluator/tests reference/services/web-ui/tests" in /Users/ericalt/Documents/eden
+ exited 1 in 0ms:
+exec
+/bin/zsh -lc "rg -n \"implementer_push_ref_failed|evaluator_fetch_failed|fetch_ref\\(|push_ref\\(|delete_remote_ref\\(|fetch_all_heads\\(\" reference | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/orchestrator/src/eden_orchestrator/cli.py:173:        repo.fetch_all_heads()
+reference/services/implementer/src/eden_implementer_host/cli.py:124:        GitRepo(path).fetch_all_heads()
+reference/services/evaluator/src/eden_evaluator_host/cli.py:122:        GitRepo(path).fetch_all_heads()
+reference/services/evaluator/src/eden_evaluator_host/subprocess_mode.py:80:    repo.fetch_ref(f"refs/heads/{branch}")
+reference/services/evaluator/src/eden_evaluator_host/subprocess_mode.py:165:                "evaluator_fetch_failed",
+reference/services/_common/src/eden_service_common/scripted.py:124:                repo.push_ref(f"refs/heads/{branch_short}")
+reference/services/implementer/src/eden_implementer_host/subprocess_mode.py:313:            repo.push_ref(f"refs/heads/{branch}")
+reference/services/implementer/src/eden_implementer_host/subprocess_mode.py:316:                "implementer_push_ref_failed",
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:560:            repo.fetch_all_heads()
+reference/services/web-ui/src/eden_web_ui/routes/admin.py:628:            repo.delete_remote_ref(ref_name, expected_sha=live_sha)
+reference/services/web-ui/src/eden_web_ui/cli.py:151:                repo.fetch_all_heads()
+reference/services/web-ui/src/eden_web_ui/routes/implementer.py:338:                repo.push_ref(f"refs/heads/{branch}")
+reference/packages/eden-git/src/eden_git/repo.py:640:    def push_ref(
+reference/packages/eden-git/src/eden_git/repo.py:669:    def fetch_ref(
+reference/packages/eden-git/src/eden_git/repo.py:692:    def fetch_all_heads(self, *, remote: str = "origin") -> None:
+reference/packages/eden-git/src/eden_git/repo.py:712:    def delete_remote_ref(
+reference/packages/eden-git/src/eden_git/integrator.py:167:                self._repo.push_ref(branch_ref, expected_old_sha=self._repo.zero_oid())
+reference/packages/eden-git/src/eden_git/integrator.py:222:                    self._repo.delete_remote_ref(
+reference/packages/eden-git/src/eden_git/integrator.py:562:                    self._repo.delete_remote_ref(ref, expected_sha=ref_sha)
+reference/packages/eden-git/src/eden_git/integrator.py:590:                self._repo.fetch_ref(ref)
+reference/packages/eden-git/tests/test_remote_ops.py:117:    cloned.push_ref("refs/heads/work/p0-trial-x")
+reference/packages/eden-git/tests/test_remote_ops.py:159:        cloned.push_ref(
+reference/packages/eden-git/tests/test_remote_ops.py:189:    fetched = cloned.fetch_ref("refs/heads/work/x-trial-y")
+reference/packages/eden-git/tests/test_remote_ops.py:201:    assert cloned.fetch_ref("refs/heads/nope") is None
+reference/packages/eden-git/tests/test_remote_ops.py:214:    cloned.fetch_all_heads()
+reference/packages/eden-git/tests/test_remote_ops.py:229:    cloned.delete_remote_ref(
+reference/packages/eden-git/tests/test_remote_ops.py:260:        cloned.delete_remote_ref(
+reference/packages/eden-git/tests/test_remote_integrator.py:142:        repo.push_ref(f"refs/heads/{branch}")
+reference/packages/eden-git/tests/test_remote_integrator.py:322:    clone.push_ref(branch_ref)
+reference/packages/eden-git/tests/test_remote_integrator.py:366:    clone.push_ref(branch_ref)
+
+exec
+/bin/zsh -lc 'rg -n "delete_remote_ref|fetch_all_heads|gitea|origin" reference/services/web-ui/tests/test_admin_* reference/services/web-ui/tests/test_implementer_*' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/web-ui/tests/test_admin_security.py:180:        original_delete = GitRepo.delete_ref
+reference/services/web-ui/tests/test_admin_security.py:184:            return original_delete(self, refname, expected_old_sha=expected_old_sha)
+reference/services/web-ui/tests/test_implementer_partial_write.py:136:        original = store.submit
+reference/services/web-ui/tests/test_implementer_partial_write.py:144:            original(task_id, token, submission)
+reference/services/web-ui/tests/test_implementer_partial_write.py:173:        original = store.submit
+reference/services/web-ui/tests/test_implementer_partial_write.py:180:                original(task_id, token, submission)
+reference/services/web-ui/tests/test_implementer_partial_write.py:398:        original_read_task = store.read_task
+reference/services/web-ui/tests/test_implementer_partial_write.py:408:            return original_read_task(task_id)
+reference/services/web-ui/tests/test_implementer_partial_write.py:445:        original_submit = store.submit
+reference/services/web-ui/tests/test_implementer_partial_write.py:455:                original_submit(task_id, token, submission)
+reference/services/web-ui/tests/test_implementer_partial_write.py:490:    chunk-9c implementer module originally treated
+reference/services/web-ui/tests/test_implementer_partial_write.py:549:        original_submit = store.submit
+reference/services/web-ui/tests/test_implementer_partial_write.py:557:            original_submit(task_id_, token, submission)
+reference/services/web-ui/tests/test_implementer_partial_write.py:612:        original_read_task = store.read_task
+reference/services/web-ui/tests/test_implementer_partial_write.py:613:        original_read_submission = store.read_submission
+reference/services/web-ui/tests/test_implementer_partial_write.py:634:        monkeypatch.setattr(store, "read_task", original_read_task)
+reference/services/web-ui/tests/test_implementer_partial_write.py:635:        monkeypatch.setattr(store, "read_submission", original_read_submission)
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/implementer.py | sed -n '320,350p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   320	    # the orchestrator's clone can fetch the work/* commit. Push
+   321	    # failure rolls back the local ref + classifies as orphan.
+   322	    if draft.status == "success":
+   323	        assert draft.commit_sha is not None
+   324	        try:
+   325	            repo.create_ref(f"refs/heads/{branch}", draft.commit_sha)
+   326	        except Exception as exc:  # noqa: BLE001 — git/transport-shaped
+   327	            return _render_orphaned(
+   328	                request,
+   329	                task_id=task_id,
+   330	                trial_id=trial_id,
+   331	                commit_sha=draft.commit_sha,
+   332	                branch=branch,
+   333	                banner=f"repo error: {exc.__class__.__name__}",
+   334	                recovery_kind="auto",
+   335	            )
+   336	        if _repo_has_origin(repo):
+   337	            try:
+   338	                repo.push_ref(f"refs/heads/{branch}")
+   339	            except Exception as exc:  # noqa: BLE001
+   340	                # Roll back local ref so we don't leave a local-only
+   341	                # work/* the orchestrator can never integrate. The
+   342	                # next host startup's fetch_all_heads --prune is the
+   343	                # backstop if delete_ref itself fails here.
+   344	                import contextlib
+   345	                with contextlib.suppress(Exception):
+   346	                    repo.delete_ref(
+   347	                        f"refs/heads/{branch}",
+   348	                        expected_old_sha=draft.commit_sha,
+   349	                    )
+   350	                return _render_orphaned(
+
+exec
+/bin/zsh -lc "rg -n \"fetch_ref\\(|fetch_all_heads\\(|read_trial\\(|integrate\\(\" reference/services/orchestrator/src/eden_orchestrator -g'*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/services/orchestrator/src/eden_orchestrator/cli.py:173:        repo.fetch_all_heads()
+reference/services/orchestrator/src/eden_orchestrator/loop.py:64:    def integrate(trial_id: str) -> None:
+reference/services/orchestrator/src/eden_orchestrator/loop.py:65:        integrator.integrate(trial_id)
+
+codex
+I found a potentially more serious consistency question than the round-0 issues: I don’t see the orchestrator fetching newly-pushed `work/*` refs after startup, even though it now integrates from a private clone. I’m tracing that path end-to-end in the orchestrator loop before I finalize, because if there isn’t a fetch on the integrate path that would be a real blocker despite the passing smokes.
+exec
+/bin/zsh -lc "sed -n '1,220p' reference/services/orchestrator/src/eden_orchestrator/loop.py" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+"""Orchestrator main loop.
+
+Drives ``run_orchestrator_iteration`` from ``eden_dispatch`` against
+a ``StoreClient`` (HTTP) plus an ``Integrator`` bound to a local bare
+git repo. Exits cleanly when quiescent or when the ``stopping`` flag
+is set.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
+
+from eden_dispatch import run_orchestrator_iteration, sweep_expired_claims
+from eden_git import Identity, Integrator
+from eden_service_common import StopFlag, get_logger
+from eden_storage import Store
+from eden_storage.errors import AlreadyExists
+
+log = get_logger(__name__)
+
+
+def make_id_factory(prefix: str) -> Callable[[], str]:
+    """Return a factory that produces ``<prefix><short-uuid>`` IDs.
+
+    UUIDs avoid cross-restart collisions on orchestrator-generated IDs.
+    """
+
+    def _next() -> str:
+        return f"{prefix}{uuid.uuid4().hex[:12]}"
+
+    return _next
+
+
+def run_orchestrator_loop(
+    *,
+    store: Store,
+    integrator: Integrator,
+    plan_task_ids: list[str],
+    implement_task_prefix: str,
+    evaluate_task_prefix: str,
+    poll_interval: float,
+    max_quiescent_iterations: int,
+    stop: StopFlag,
+) -> None:
+    """Seed plan tasks, then loop finalize + dispatch + integrate to quiescence.
+
+    Returns when either ``stop`` is set or the orchestrator has observed
+    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    """
+    for task_id in plan_task_ids:
+        try:
+            store.create_plan_task(task_id)
+        except AlreadyExists as exc:
+            # Restart-safe: a previous orchestrator already seeded this
+            # task. Anything else (transport, auth, illegal-transition)
+            # surfaces immediately.
+            log.info("plan_task_seed_skip", task_id=task_id, reason=str(exc))
+
+    implement_factory = make_id_factory(implement_task_prefix)
+    evaluate_factory = make_id_factory(evaluate_task_prefix)
+
+    def integrate(trial_id: str) -> None:
+        integrator.integrate(trial_id)
+
+    quiescent = 0
+    while not stop.is_set():
+        reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
+        progress = run_orchestrator_iteration(
+            store,
+            implement_task_id_factory=implement_factory,
+            evaluate_task_id_factory=evaluate_factory,
+            integrate_trial=integrate,
+        )
+        if reclaimed or progress:
+            quiescent = 0
+        else:
+            quiescent += 1
+            if quiescent >= max_quiescent_iterations:
+                log.info("quiescent", iterations=quiescent)
+                return
+        if stop.wait(poll_interval):
+            return
+
+
+_INTEGRATOR_IDENTITY = Identity(
+    name="EDEN Integrator",
+    email="integrator@eden.invalid",
+)
+
+
+def integrator_identity() -> Identity:
+    """Return the fixed identity used for integrator commits."""
+    return _INTEGRATOR_IDENTITY
+
+exec
+/bin/zsh -lc "sed -n '120,220p' reference/packages/eden-git/src/eden_git/integrator.py" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+        committer: Identity | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._store = store
+        self._repo = repo
+        self._author = author
+        self._committer = committer if committer is not None else author
+        self._clock = clock if clock is not None else _default_clock
+
+    def integrate(self, trial_id: str) -> IntegrationResult:
+        """Promote ``trial_id`` per §3.2 / §3.4.
+
+        Returns ``already_integrated=True`` on the idempotent no-op
+        path (§5.3 bullet 1). Raises ``IntegratorError`` subclasses on
+        precondition failure; ``GitError`` / ``StorageError`` from
+        underlying operations propagate unchanged.
+        """
+        trial = self._store.read_trial(trial_id)
+        proposal = self._store.read_proposal(trial.proposal_id)
+        slug = proposal.slug
+        branch = f"trial/{trial.trial_id}-{slug}"
+        branch_ref = f"refs/heads/{branch}"
+
+        if trial.trial_commit_sha is not None:
+            return self._check_idempotent(trial, branch, branch_ref)
+
+        self._require_promotion_preconditions(trial)
+        self._require_reachability(trial)
+        manifest_path = _manifest_path(trial.trial_id)
+        self._require_no_manifest_collision(trial, manifest_path)
+
+        assert trial.commit_sha is not None
+        tree_sha = self._build_squash_tree(trial, manifest_path)
+        commit_sha = self._commit_squash(trial, slug, tree_sha)
+
+        # Step 1: local CAS-guarded ref write.
+        self._repo.create_ref(branch_ref, commit_sha)
+
+        # Step 2: publish to remote (if origin is configured).
+        # Phase 10d follow-up B §D.6: when the integrator's repo has
+        # an `origin` remote (the Gitea cutover), publish the ref
+        # there before committing the store-side trial state. Skip
+        # the push for repos with no origin (the local-only test
+        # path stays a single-step integration).
+        published = False
+        if _has_origin(self._repo):
+            try:
+                self._repo.push_ref(branch_ref, expected_old_sha=self._repo.zero_oid())
+                published = True
+            except RefRefused as push_rejected:
+                # Definite remote rejection — only step-1's local
+                # ref exists. Roll back local; do NOT touch remote
+                # (the remote either has a different SHA on the same
+                # ref, in which case another integrator wrote a
+                # different commit and our ref does not belong, or
+                # the remote refused for a hook-level reason).
+                self._rollback_local_only(
+                    branch_ref, commit_sha, push_rejected
+                )
+                raise
+            except GitTransportError as push_transport:
+                # Transport-indeterminate: the remote may or may
+                # not have applied the ref. Disambiguate via
+                # ls-remote per §D.7d.
+                published = self._reconcile_indeterminate_push(
+                    branch_ref, commit_sha, push_transport
+                )
+
+        # Step 3: store integrate_trial (atomic with trial.integrated).
+        try:
+            self._store.integrate_trial(trial.trial_id, commit_sha)
+        except BaseException as store_error:
+            # Distinguish the different-SHA divergence branch of §5
+            # same-value idempotency (sole-writer §1.2 already
+            # violated; no safe compensation) from other synchronous
+            # failures (compensate the ref per §3.4). Authoritative
+            # test is a post-failure read of the trial: if it now
+            # carries a *different* trial_commit_sha, divergence is
+            # confirmed and the ref we just wrote must not be
+            # deleted — the other integrator's artifacts, whatever
+            # their state, take priority, and the situation requires
+            # operator intervention.
+            try:
+                post_failure = self._store.read_trial(trial.trial_id)
+            except BaseException:
+                post_failure = None
+            if (
+                post_failure is not None
+                and post_failure.trial_commit_sha is not None
+                and post_failure.trial_commit_sha != commit_sha
+            ):
+                raise AtomicityViolation(
+                    f"integrator for trial {trial.trial_id!r} observed a "
+                    f"different trial_commit_sha {post_failure.trial_commit_sha!r} "
+                    f"already recorded; §1.2 sole-writer rule violated upstream. "
+                    f"Ref {branch_ref!r} pointing at {commit_sha} has NOT been "
+                    f"compensated; operator intervention required.",
+                    original=store_error,
+                ) from store_error
+            # Step 4a: remote compensating delete (if we published).
+            if published:
+
+exec
+/bin/zsh -lc "rg -n \"fetch_ref\\(|fetch_all_heads\\(|trial.branch|resolve_ref\\(|list_trials\\(|validate_terminal\\(|accept\\(|integrate_trial\\(\" reference/services/orchestrator/src reference/packages/eden-git/src reference/services/_common/src reference/services/implementer/src -g'*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-git/src/eden_git/integrator.py:190:            self._store.integrate_trial(trial.trial_id, commit_sha)
+reference/packages/eden-git/src/eden_git/integrator.py:355:        if trial.branch is None:
+reference/packages/eden-git/src/eden_git/integrator.py:360:        branch_ref = f"refs/heads/{trial.branch}"
+reference/packages/eden-git/src/eden_git/integrator.py:361:        tip = self._repo.resolve_ref(branch_ref)
+reference/packages/eden-git/src/eden_git/integrator.py:364:                f"trial {trial.trial_id!r} branch {trial.branch!r} does not exist"
+reference/packages/eden-git/src/eden_git/integrator.py:371:                f"is not reachable from branch {trial.branch!r} tip {tip!r}"
+reference/packages/eden-git/src/eden_git/integrator.py:442:        ref_tip = self._repo.resolve_ref(branch_ref)
+reference/packages/eden-git/src/eden_git/integrator.py:590:                self._repo.fetch_ref(ref)
+reference/services/implementer/src/eden_implementer_host/cli.py:124:        GitRepo(path).fetch_all_heads()
+reference/services/orchestrator/src/eden_orchestrator/cli.py:173:        repo.fetch_all_heads()
+reference/services/_common/src/eden_service_common/repo_init.py:62:    return repo.resolve_ref("refs/heads/main")
+reference/packages/eden-git/src/eden_git/repo.py:228:    def resolve_ref(self, refname: str) -> str | None:
+reference/packages/eden-git/src/eden_git/repo.py:669:    def fetch_ref(
+reference/packages/eden-git/src/eden_git/repo.py:690:        return self.resolve_ref(ref)
+reference/packages/eden-git/src/eden_git/repo.py:692:    def fetch_all_heads(self, *, remote: str = "origin") -> None:
+
+codex
+I found a blocker that’s orthogonal to the round-0 fixes: the orchestrator still appears to fetch from Gitea only once at startup, but it integrates later from a private clone. I’m pulling exact line refs for that path now because it looks like a missing fetch of the implementer’s `work/*` branch before integration.
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/loop.py | sed -n '50,75p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/orchestrator/src/eden_orchestrator/cli.py | sed -n '150,185p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    50	    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    51	    """
+    52	    for task_id in plan_task_ids:
+    53	        try:
+    54	            store.create_plan_task(task_id)
+    55	        except AlreadyExists as exc:
+    56	            # Restart-safe: a previous orchestrator already seeded this
+    57	            # task. Anything else (transport, auth, illegal-transition)
+    58	            # surfaces immediately.
+    59	            log.info("plan_task_seed_skip", task_id=task_id, reason=str(exc))
+    60	
+    61	    implement_factory = make_id_factory(implement_task_prefix)
+    62	    evaluate_factory = make_id_factory(evaluate_task_prefix)
+    63	
+    64	    def integrate(trial_id: str) -> None:
+    65	        integrator.integrate(trial_id)
+    66	
+    67	    quiescent = 0
+    68	    while not stop.is_set():
+    69	        reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
+    70	        progress = run_orchestrator_iteration(
+    71	            store,
+    72	            implement_task_id_factory=implement_factory,
+    73	            evaluate_task_id_factory=evaluate_factory,
+    74	            integrate_trial=integrate,
+    75	        )
+
+ succeeded in 0ms:
+   150	    *,
+   151	    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+   152	    repo_path: str,
+   153	    gitea_url: str | None,
+   154	    credential_helper: str | None,
+   155	) -> GitRepo:
+   156	    """Materialize the integrator's local repo per Phase 10d follow-up B §D.5.
+   157	
+   158	    When ``gitea_url`` is set:
+   159	      - if ``repo_path`` is not yet a git repo, clone --bare from gitea;
+   160	      - otherwise, fetch_all_heads to refresh + prune.
+   161	
+   162	    When ``gitea_url`` is None, return a plain ``GitRepo(repo_path)``
+   163	    over the existing local bare repo (chunk-10d behavior, no remote).
+   164	    """
+   165	    from pathlib import Path
+   166	
+   167	    path = Path(repo_path)
+   168	    if gitea_url is None:
+   169	        return GitRepo(path)
+   170	    if (path / "HEAD").is_file() or (path / ".git" / "HEAD").is_file():
+   171	        log.info("fetching_remote_heads", url=gitea_url)
+   172	        repo = GitRepo(path)
+   173	        repo.fetch_all_heads()
+   174	        return repo
+   175	    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+   176	    return GitRepo.clone_from(
+   177	        url=gitea_url,
+   178	        dest=path,
+   179	        bare=True,
+   180	        credential_helper=credential_helper,
+   181	    )
+   182	
+   183	
+   184	def main(argv: list[str] | None = None) -> int:
+   185	    """Entry point for ``python -m eden_orchestrator``."""
+
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/integrator.py | sed -n '132,175p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10d-followup-b-gitea-remote.md | sed -n '274,286p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-git/src/eden_git/integrator.py | sed -n '350,372p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   274	**Per-operation freshness for long-lived clones.** The orchestrator
+   275	loop and the web-ui's admin/implementer modules are long-lived;
+   276	remote refs change under their feet between the startup fetch and
+   277	the next operation. Two policies:
+   278	
+   279	- **Read-before-write:** any service path that's about to write a
+   280	  ref via `repo.create_ref` first runs `git fetch origin <ref>`
+   281	  to refresh its local view. This keeps `--force-with-lease`'s
+   282	  expected-old-sha aligned with the remote.
+   283	- **Read-before-display:** the web-ui admin work-refs GC page
+   284	  (chunk-9e) runs `git fetch origin '+refs/heads/work/*:refs/heads/work/*'`
+   285	  on every GET so the operator's view matches the remote. The
+   286	  per-op fetch budget here is one HTTP roundtrip + a small ref
+
+ succeeded in 0ms:
+   132	        Returns ``already_integrated=True`` on the idempotent no-op
+   133	        path (§5.3 bullet 1). Raises ``IntegratorError`` subclasses on
+   134	        precondition failure; ``GitError`` / ``StorageError`` from
+   135	        underlying operations propagate unchanged.
+   136	        """
+   137	        trial = self._store.read_trial(trial_id)
+   138	        proposal = self._store.read_proposal(trial.proposal_id)
+   139	        slug = proposal.slug
+   140	        branch = f"trial/{trial.trial_id}-{slug}"
+   141	        branch_ref = f"refs/heads/{branch}"
+   142	
+   143	        if trial.trial_commit_sha is not None:
+   144	            return self._check_idempotent(trial, branch, branch_ref)
+   145	
+   146	        self._require_promotion_preconditions(trial)
+   147	        self._require_reachability(trial)
+   148	        manifest_path = _manifest_path(trial.trial_id)
+   149	        self._require_no_manifest_collision(trial, manifest_path)
+   150	
+   151	        assert trial.commit_sha is not None
+   152	        tree_sha = self._build_squash_tree(trial, manifest_path)
+   153	        commit_sha = self._commit_squash(trial, slug, tree_sha)
+   154	
+   155	        # Step 1: local CAS-guarded ref write.
+   156	        self._repo.create_ref(branch_ref, commit_sha)
+   157	
+   158	        # Step 2: publish to remote (if origin is configured).
+   159	        # Phase 10d follow-up B §D.6: when the integrator's repo has
+   160	        # an `origin` remote (the Gitea cutover), publish the ref
+   161	        # there before committing the store-side trial state. Skip
+   162	        # the push for repos with no origin (the local-only test
+   163	        # path stays a single-step integration).
+   164	        published = False
+   165	        if _has_origin(self._repo):
+   166	            try:
+   167	                self._repo.push_ref(branch_ref, expected_old_sha=self._repo.zero_oid())
+   168	                published = True
+   169	            except RefRefused as push_rejected:
+   170	                # Definite remote rejection — only step-1's local
+   171	                # ref exists. Roll back local; do NOT touch remote
+   172	                # (the remote either has a different SHA on the same
+   173	                # ref, in which case another integrator wrote a
+   174	                # different commit and our ref does not belong, or
+   175	                # the remote refused for a hook-level reason).
+
+ succeeded in 0ms:
+   350	            )
+   351	        if trial.commit_sha is None:
+   352	            raise NotReadyForIntegration(
+   353	                f"trial {trial.trial_id!r} has no commit_sha"
+   354	            )
+   355	        if trial.branch is None:
+   356	            raise NotReadyForIntegration(
+   357	                f"trial {trial.trial_id!r} has no branch"
+   358	            )
+   359	
+   360	        branch_ref = f"refs/heads/{trial.branch}"
+   361	        tip = self._repo.resolve_ref(branch_ref)
+   362	        if tip is None:
+   363	            raise NotReadyForIntegration(
+   364	                f"trial {trial.trial_id!r} branch {trial.branch!r} does not exist"
+   365	            )
+   366	        if tip != trial.commit_sha and not self._repo.is_ancestor(
+   367	            trial.commit_sha, tip
+   368	        ):
+   369	            raise NotReadyForIntegration(
+   370	                f"trial {trial.trial_id!r} commit_sha {trial.commit_sha!r} "
+   371	                f"is not reachable from branch {trial.branch!r} tip {tip!r}"
+   372	            )
+
+codex
+1. High: the orchestrator still appears to refresh its private clone only once at startup, but `Integrator.integrate()` later promotes from that clone without fetching the implementer-pushed `work/*` branch first. [reference/services/orchestrator/src/eden_orchestrator/cli.py:156](</Users/ericalt/Documents/eden/reference/services/orchestrator/src/eden_orchestrator/cli.py:156>) does the startup-only `fetch_all_heads()`, [reference/services/orchestrator/src/eden_orchestrator/loop.py:64](</Users/ericalt/Documents/eden/reference/services/orchestrator/src/eden_orchestrator/loop.py:64>) just calls `integrator.integrate()`, and [reference/packages/eden-git/src/eden_git/integrator.py:137](</Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:137>) / [reference/packages/eden-git/src/eden_git/integrator.py:360](</Users/ericalt/Documents/eden/reference/packages/eden-git/src/eden_git/integrator.py:360>) immediately require `trial.branch` and its objects to already exist locally. That contradicts the plan’s long-lived-clone freshness rule at [docs/plans/eden-phase-10d-followup-b-gitea-remote.md:274](</Users/ericalt/Documents/eden/docs/plans/eden-phase-10d-followup-b-gitea-remote.md:274>). Absent another fetch path outside the reviewed surface, the integrator clone can miss newly-pushed `work/*` refs and fail promotion.
+
+The round-0 fixes themselves look good. The `reconcile_remote_orphans()` narrowing to `NotFound` is the right correction, and the web-ui admin work-ref flow now matches the intended remote-first model.
+
+Overall assessment: not ready to ship yet. I would require one more revision: fetch the relevant `trial.branch` into the integrator clone before promotion, or otherwise refresh remote state on the integrate path, and add a regression test that proves promotion works from a private clone when the `work/*` ref was pushed after orchestrator startup. If there is already another code path doing that fetch outside the files above, point me to it; otherwise this remains a blocker.
+2026-04-29T23:56:58.561208Z ERROR codex_core::session: failed to record rollout items: thread 019ddba2-d650-7c22-9bff-869e92277200 not found
+tokens used
+342,374

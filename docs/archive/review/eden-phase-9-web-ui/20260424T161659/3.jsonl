@@ -1,0 +1,3 @@
+This has converged. The three round-2 cleanup items are fixed in the current plan, and I do not see any new substantive issues.
+
+The only meaningful caveat still in the document is the already-acknowledged Phase-2→Phase-3 residual window for `ready` proposals before plan submit commits. That is now clearly documented as an accepted reference-impl limitation rather than an accidental gap. Given that, this is ready to implement.

@@ -1,0 +1,708 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc744-9c71-7e40-92de-14311280426f
+--------
+user
+I've updated the plan based on your round 0 feedback. Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md.
+
+Key changes since round 0:
+1. New 'Roadmap delta' section explicitly amending the roadmap for the one-shared-image choice and the deferred 10c sub-jobs.
+2. Bare-repo bootstrap collapsed to ONE owner: setup-experiment.sh runs 'docker compose run --rm eden-repo-init' synchronously, captures the seed SHA, writes it into .env. eden-repo-init has profile=setup so it is NOT a 'compose up' dependency.
+3. Full service config matrix added (every flag, source, mounts, healthcheck, depends_on for all 6 EDEN services + eden-repo-init).
+4. Dockerfile install command corrected to 'uv sync --frozen --no-dev --all-packages' with a comment explaining the workspace layout requires --all-packages.
+5. Idempotency story corrected to 'docker compose up -d' (which detects and recreates services on config drift) instead of 'restart'.
+6. New 'F.1 Generated .env shape' section showing the full env file.
+
+Continue evaluating per the same five criteria as round 0.
+codex
+I’m rereading the updated plan end to end and checking whether the round-0 blockers are actually resolved in the document, not just summarized in the changelog. After that I’ll decide how far down the five review levels it’s stable enough to go.
+exec
+/bin/zsh -lc "wc -l docs/plans/eden-phase-10bc-dockerize-and-setup.md && nl -ba docs/plans/eden-phase-10bc-dockerize-and-setup.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10bc-dockerize-and-setup.md | sed -n '521,760p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-10bc-dockerize-and-setup.md | sed -n '261,520p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   521	  — extended in place.
+   522	- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh)
+   523	  — extended in place.
+   524	- The 10a impl-review patterns: setup script must read the
+   525	  generated `.env` rather than duplicating values; trap-cleanup
+   526	  ordering in shell scripts.
+   527	
+   528	## Verification
+   529	
+   530	Run before declaring done:
+   531	
+   532	1. `uv run ruff check .` clean.
+   533	2. `uv run pyright` clean.
+   534	3. `uv run pytest -q` clean (postgres rows skip without DSN).
+   535	4. With Postgres running locally: `EDEN_TEST_POSTGRES_DSN=…
+   536	   uv run pytest reference/packages/eden-storage/tests` — full
+   537	   parametrized backend coverage green.
+   538	5. `cd reference/compose && bash
+   539	   ../scripts/setup-experiment/setup-experiment.sh
+   540	   ../../tests/fixtures/experiment/.eden/config.yaml
+   541	   --experiment-id smoke-exp` generates a sensible `.env` +
+   542	   `experiment-config.yaml`.
+   543	6. `docker compose --env-file .env up --wait` — every service
+   544	   reaches its terminal state (healthy / exited-0 / running)
+   545	   within the wait window.
+   546	7. `bash healthcheck/smoke.sh` — full extended smoke green
+   547	   locally.
+   548	8. `docker compose down -v` cleans up.
+   549	9. CI green on all jobs including the new `python-test-postgres`
+   550	   and the extended `compose-smoke`.
+   551	
+   552	## Execution order
+   553	
+   554	1. **PostgresStore** (chunk-internal milestone 1).
+   555	   1. New `postgres.py` + `_postgres_schema.py`.
+   556	   2. `task-store-server` URL dispatch.
+   557	   3. Tests parametrized over the new backend.
+   558	   4. Local + CI green before moving on.
+   559	2. **Service Dockerfile + .dockerignore**.
+   560	   1. Add `Dockerfile` + `.dockerignore`.
+   561	   2. `docker build` against repo root succeeds; image runs each
+   562	      service module under a smoke `--help` invocation.
+   563	3. **Compose service entries**.
+   564	   1. Wire all six EDEN services + the bare-repo init service.
+   565	   2. `docker compose up --wait` brings the whole stack online.
+   566	4. **setup-experiment script**.
+   567	   1. Wire the script.
+   568	   2. End-to-end: `setup-experiment.sh && docker compose up
+   569	      --wait` runs the fixture experiment to quiescence.
+   570	5. **Smoke + CI extension**.
+   571	   1. Extend `smoke.sh` with the new assertions.
+   572	   2. Add `python-test-postgres` job.
+   573	6. **Documentation refresh**.
+   574	
+   575	If implementation runs over context, stop at the next **chunk-internal
+   576	milestone** boundary — never mid-milestone.
+   577	
+   578	## Out of scope
+   579	
+   580	- **Gitea integration** as the workers' actual git remote (deferred
+   581	  to a follow-up sub-chunk after 10d).
+   582	- **Experiment-specific images** for the LLM implementer's sandbox
+   583	  (10d).
+   584	- **Control-plane registration** (Phase 12).
+   585	- **Postgres connection pooling** (single connection per store
+   586	  instance is fine for one orchestrator + one task-store-server).
+   587	- **Multi-replica orchestrator coordination** (Phase 12).
+   588	- **Resource limits** on Compose services (10d when LLM workers
+   589	  introduce real cost).
+   590	- **Branch-protection update** to require the new
+   591	  `python-test-postgres` job — defer to a follow-up after a few
+   592	  clean runs (same posture 10a took for `compose-smoke`).
+   593	
+   594	## Risks / things to watch
+   595	
+   596	- **`uv sync --frozen` in Docker requires `uv.lock`.** If the lock
+   597	  file ever becomes stale relative to `pyproject.toml`, `--frozen`
+   598	  fails the build. We commit `uv.lock`; the existing `python-lint`
+   599	  / `python-typecheck` / `python-test` jobs all use `--frozen`
+   600	  successfully, so this is consistent with current discipline.
+   601	
+   602	- **`postgres:16.6-alpine` image hash.** 10a pinned the major.minor;
+   603	  we should consider pinning the digest in CI for absolute
+   604	  determinism. Currently we don't — out of scope for this chunk.
+   605	
+   606	- **Compose `configs:` vs bind-mounting the experiment-config
+   607	  YAML.** Compose configs are nicer (immutable, declared centrally)
+   608	  but only work in Swarm or a recent-enough Compose v2. The
+   609	  fallback is a `volumes:` entry mounting the file. Verify whether
+   610	  CI's Compose version supports `configs:` in non-Swarm mode; if
+   611	  not, fall back to a regular bind-mount. (Compose v2.20+ supports
+   612	  it; CI's `ubuntu-latest` ships v2.27+; should be fine.)
+   613	
+   614	- **psycopg's binary wheel availability on Linux/arm64.** Most
+   615	  platforms have wheels for `psycopg[binary]>=3.2`; if a CI runner
+   616	  doesn't, fall back to building from source — adds ~30s to image
+   617	  build. Acceptable.
+   618	
+   619	- **Image bloat.** The shared image will be ~400MB (Python slim +
+   620	  workspace + git). If this becomes problematic later, multi-stage
+   621	  with a `wheels` builder is the standard fix; not needed yet.
+   622	
+   623	- **The web-ui's `--repo-path` flag.** The web-ui needs the bare
+   624	  repo for the work-refs admin sub-page. We mount it. The flag
+   625	  also gates the entire implementer module (chunk 9c), which the
+   626	  scripted implementer-host service makes redundant — both modules
+   627	  now race for the same tasks. **In Compose**, only the
+   628	  implementer-host should claim implement tasks; the web-ui's
+   629	  implementer module is for human override / debugging. We keep
+   630	  both available; the user opens whichever they prefer. Document
+   631	  this in the compose README.
+
+ succeeded in 0ms:
+   261	`--artifacts-dir`; isolates UI artifact writes from any host path).
+   262	
+   263	**`EDEN_SESSION_SECRET`** is a new env var setup-experiment
+   264	generates (32 bytes hex). Preserved across re-runs like the other
+   265	secrets.
+   266	
+   267	**The web-ui `/healthz` endpoint.** Currently the web-ui has only
+   268	auth-gated routes; Compose's healthcheck must be unauthenticated so
+   269	it can run before any user signs in. Add `routes/_healthz.py` (or
+   270	inline in `make_app`) returning HTTP 200 `{"status":"ok"}` from
+   271	`GET /healthz`. The route is unauthenticated by design — it carries
+   272	no secrets and reveals only "the process is up." Document this in
+   273	the web-ui README.
+   274	
+   275	**`postgres` healthcheck** already exists (10a). The healthcheck is
+   276	what `service_healthy` keys off; downstream services don't need
+   277	their own dependency on `blob-init` (they don't touch
+   278	`eden-blob-data`).
+   279	
+   280	**Resource posture:** no `cpus:` / `memory:` limits this chunk —
+   281	local dev, scripted workers; we add limits in 10d when LLM workers
+   282	land and profiling matters.
+   283	
+   284	**The `name: eden-reference` project name stays load-bearing.** All
+   285	volumes resolve as `eden-reference_<volume>`.
+   286	
+   287	### D. Bare-repo bootstrap — one authoritative owner
+   288	
+   289	**Owner:** `setup-experiment.sh`. The repo is seeded **before**
+   290	`docker compose up` runs, so the seed SHA is known synchronously and
+   291	can be written into `.env` for downstream service flags.
+   292	
+   293	**Mechanism:** setup-experiment runs a one-shot
+   294	
+   295	```bash
+   296	docker compose --env-file <generated-env> run --rm eden-repo-init
+   297	```
+   298	
+   299	against a new `eden-repo-init` service in `compose.yaml`. That
+   300	service:
+   301	
+   302	1. `image:` references the same shared `eden-reference:dev` image
+   303	   (so it has Python + the workspace + git available).
+   304	2. Mounts only the `eden-bare-repo` named volume at
+   305	   `/var/lib/eden/repo`.
+   306	3. `command: ["python", "-m", "eden_service_common.repo_init",
+   307	   "--repo-path", "/var/lib/eden/repo"]` — a new module that:
+   308	   a. If `/var/lib/eden/repo/HEAD` already exists, prints
+   309	      `EDEN_REPO_ALREADY_SEEDED sha=<existing-sha>` and exits 0.
+   310	   b. Otherwise: runs `git init --bare
+   311	      --initial-branch=main`, calls `seed_bare_repo`, prints
+   312	      `EDEN_REPO_SEEDED sha=<hex>` to stdout, exits 0.
+   313	
+   314	The script captures stdout, parses the SHA, and writes it to `.env`
+   315	as `EDEN_BASE_COMMIT_SHA=<hex>`. Then the operator runs `docker
+   316	compose up`.
+   317	
+   318	**Crucially:** `eden-repo-init` is **NOT** in any other service's
+   319	`depends_on`. It is a setup-time tool, invoked by setup-experiment
+   320	via `compose run --rm`, not a `compose up`-time dependency. This
+   321	collapses the dual-owner contradiction codex flagged in plan-review
+   322	round 0: setup-experiment is the sole owner of repo seeding, and
+   323	the seed SHA is known *before* any service starts.
+   324	
+   325	The compose `profiles:` keyword keeps `eden-repo-init` out of plain
+   326	`docker compose up`'s service set:
+   327	
+   328	```yaml
+   329	eden-repo-init:
+   330	  profiles: ["setup"]
+   331	  ...
+   332	```
+   333	
+   334	`compose run --rm <name>` runs services regardless of profile, so
+   335	setup-experiment invokes it normally; plain `compose up` skips it.
+   336	
+   337	**Re-runnability:** `setup-experiment.sh` is idempotent. Running it
+   338	a second time:
+   339	
+   340	- Re-runs `eden-repo-init`, which short-circuits on the existing
+   341	  `HEAD` and re-prints the existing SHA.
+   342	- Preserves existing secrets (postgres password, shared token) so
+   343	  re-running doesn't rotate them by accident.
+   344	- Overwrites `EDEN_PLAN_TASKS` and `experiment-config.yaml`.
+   345	
+   346	### E. setup-experiment script
+   347	
+   348	**File:** [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)
+   349	(plus `README.md`).
+   350	
+   351	**Why bash, not Python:** the script's job is mostly to (a) read a
+   352	YAML field from an existing config, (b) generate a `.env` file from
+   353	a template, (c) print human-readable next steps. Bash is the
+   354	simplest tool that fits, and it doesn't introduce a "you must `uv
+   355	sync` before you can set up an experiment" bootstrap problem.
+   356	Python would make the YAML read prettier (vs. `yq` or `python3 -c
+   357	"import yaml; …"`), but trades it for the bootstrap requirement.
+   358	The bash script will use a one-line `python3 -c` for YAML parsing
+   359	since CI's runner has Python — that single dependency stays minor.
+   360	
+   361	**Inputs:**
+   362	
+   363	- Required positional arg: path to an experiment config YAML
+   364	  (defaults to repo's fixture at
+   365	  `tests/fixtures/experiment/.eden/config.yaml`).
+   366	- `--experiment-id <id>` (default: derived from config filename
+   367	  parent directory).
+   368	- `--shared-token <T>` (default: a freshly generated 32-byte hex
+   369	  string).
+   370	- `--postgres-password <P>` (default: read from existing `.env` if
+   371	  present, else freshly generated).
+   372	
+   373	**Outputs:**
+   374	
+   375	- `reference/compose/.env` (or `--env-file <path>`) — generated
+   376	  Compose env. See section F for the full variable list.
+   377	- `reference/compose/experiment-config.yaml` — copy of the input
+   378	  config the task-store-server reads at boot via Compose `configs:`.
+   379	- Stdout: a short "next steps" message — `docker compose up -d
+   380	  --wait`. (**`up -d`, not `restart`** — `restart` does not pick
+   381	  up changes to `command:`, env files, or `configs:`. `up -d`
+   382	  detects config drift and recreates affected services. See
+   383	  https://docs.docker.com/reference/cli/docker/compose/up/.)
+   384	
+   385	**Step ordering** (one-shot, synchronous, no chicken-and-egg):
+   386	
+   387	1. Generate / preserve secrets. Write a partial `.env` with
+   388	   everything except `EDEN_BASE_COMMIT_SHA`.
+   389	2. Copy the input config to `reference/compose/experiment-config.yaml`.
+   390	3. `docker compose --env-file .env run --rm eden-repo-init`,
+   391	   capture stdout, parse the seed SHA.
+   392	4. Append `EDEN_BASE_COMMIT_SHA=<sha>` to `.env`.
+   393	5. Print next-steps message.
+   394	
+   395	If step 3 fails (e.g., the image isn't built yet), the script
+   396	errors clearly with the suggestion to run `docker compose
+   397	--env-file .env build eden-repo-init` first.
+   398	
+   399	### F. Compose dependency graph
+   400	
+   401	Final shape (post-setup-experiment):
+   402	
+   403	```
+   404	postgres          → healthy (10a)
+   405	gitea             → healthy (10a, idle this chunk)
+   406	blob-init         → exited 0 (10a)
+   407	eden-repo-init    → exited 0 (new; profile=setup, NOT in `compose up`)
+   408	task-store-server → healthy [depends_on: postgres]
+   409	orchestrator      → running [depends_on: task-store-server]
+   410	planner-host      → running [depends_on: task-store-server]
+   411	implementer-host  → running [depends_on: task-store-server]
+   412	evaluator-host    → running [depends_on: task-store-server]
+   413	web-ui            → healthy [depends_on: task-store-server]
+   414	```
+   415	
+   416	`eden-repo-init` is invoked once by setup-experiment via
+   417	`compose run --rm` *before* `compose up`; the bare-repo volume is
+   418	already seeded by the time `compose up` starts the long-running
+   419	services, so no `compose up`-time dependency on `eden-repo-init` is
+   420	needed.
+   421	
+   422	Worker hosts and orchestrator are long-running clients without HTTP
+   423	healthchecks; `compose up --wait` waits on `service_healthy` for
+   424	healthcheck-declaring services and `service_started` for the
+   425	others. Acceptable for this chunk.
+   426	
+   427	### F.1 Generated `.env` shape
+   428	
+   429	`reference/compose/.env` after a successful setup-experiment run:
+   430	
+   431	```dotenv
+   432	# 10a (preserved or generated)
+   433	POSTGRES_DB=eden
+   434	POSTGRES_USER=eden
+   435	POSTGRES_PASSWORD=<32-hex>
+   436	POSTGRES_HOST_PORT=5433
+   437	GITEA_SECRET_KEY=<64-hex>
+   438	GITEA_INTERNAL_TOKEN=<64-hex>
+   439	GITEA_HOST_PORT=3001
+   440	GITEA_SSH_HOST_PORT=2222
+   441	
+   442	# 10b/c (new)
+   443	EDEN_EXPERIMENT_ID=<from --experiment-id>
+   444	EDEN_SHARED_TOKEN=<32-hex>
+   445	EDEN_SESSION_SECRET=<32-hex>
+   446	EDEN_STORE_URL=postgresql://eden:<password>@postgres:5432/eden
+   447	EDEN_PLAN_TASKS=3
+   448	EDEN_BASE_COMMIT_SHA=<seed-sha>
+   449	WEB_UI_HOST_PORT=8090
+   450	```
+   451	
+   452	### G. `compose-smoke` CI job extension
+   453	
+   454	The existing `compose-smoke` job (10a) already brings the stack up
+   455	with `--wait` and asserts a few invariants. With 10b/10c added, it
+   456	extends to:
+   457	
+   458	1. Run `bash reference/scripts/setup-experiment/setup-experiment.sh
+   459	   tests/fixtures/experiment/.eden/config.yaml --experiment-id
+   460	   smoke-exp` to generate `.env`.
+   461	2. `docker compose --env-file .env up -d --wait --wait-timeout
+   462	   180`.
+   463	3. Existing volume + Postgres + Gitea assertions.
+   464	4. **New:** assert `eden-repo-init` exited 0 + a seed commit exists
+   465	   (`docker compose exec orchestrator git -C /var/lib/eden/repo
+   466	   show-ref refs/heads/main` returns a SHA).
+   467	5. **New:** wait up to 60s for the orchestrator to exit 0 (the
+   468	   scripted workers run a 3-trial experiment and the orchestrator's
+   469	   `--max-quiescent-iterations` flag triggers exit).
+   470	6. **New:** assert the final task-store state — read `/v0/.../events`
+   471	   over HTTP via `curl` + `jq` and confirm presence of a
+   472	   `task.terminated` event for each plan task.
+   473	
+   474	Steps 5 + 6 turn the 10a smoke into a *light* end-to-end test —
+   475	*not* the comprehensive 10e e2e (which adds Web UI walkthroughs,
+   476	admin actions, and termination scenarios), but enough to catch a
+   477	broken Compose wiring before merge. The tradeoff: smoke wallclock
+   478	goes up from ~30s to ~90s. Acceptable.
+   479	
+   480	**Test job for parametrized backends:** A new `python-test-postgres`
+   481	CI job brings up `postgres:16.6-alpine` as a service container,
+   482	sets `EDEN_TEST_POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/eden`,
+   483	and runs the parametrized backend tests. This is in addition to —
+   484	not replacing — the existing `python-test` job, which continues to
+   485	run with the `EDEN_TEST_POSTGRES_DSN` unset (so the postgres rows
+   486	skip). Splitting keeps the fast `python-test` job fast and isolates
+   487	the postgres flakiness if any surfaces.
+   488	
+   489	### H. Documentation
+   490	
+   491	- [`reference/compose/README.md`](../../reference/compose/README.md):
+   492	  - Replace "What's not here yet" list with the post-10c reality.
+   493	  - Document setup-experiment workflow.
+   494	  - Document the **Gitea-is-idle** posture explicitly so a reader
+   495	    doesn't think it's a bug.
+   496	- [`reference/scripts/setup-experiment/README.md`](../../reference/scripts/setup-experiment/README.md):
+   497	  new. Documents inputs, outputs, idempotency.
+   498	- [`reference/services/task-store-server/README.md`](../../reference/services/task-store-server/README.md):
+   499	  add `--store-url` documentation.
+   500	- `AGENTS.md`: prepend a "Phase 10 chunk 10b + 10c complete" paragraph;
+   501	  refresh the commands table (new `--store-url` flag, new
+   502	  setup-experiment command, new compose `up` workflow).
+   503	- `docs/roadmap.md`: mark 10b + 10c complete with a paragraph
+   504	  summary.
+   505	
+   506	## Files to reference
+   507	
+   508	- [`reference/packages/eden-storage/src/eden_storage/sqlite.py`](../../reference/packages/eden-storage/src/eden_storage/sqlite.py)
+   509	  + [`_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py)
+   510	  — SqliteStore is the structural template for PostgresStore.
+   511	- [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
+   512	  — shared transition logic; PostgresStore extends `_StoreBase`.
+   513	- [`reference/services/task-store-server/src/eden_task_store_server/app.py`](../../reference/services/task-store-server/src/eden_task_store_server/app.py)
+   514	  — `build_store` URL dispatch.
+   515	- [`reference/services/task-store-server/src/eden_task_store_server/cli.py`](../../reference/services/task-store-server/src/eden_task_store_server/cli.py)
+   516	  — CLI flag rename.
+   517	- [`reference/services/orchestrator/tests/test_e2e.py`](../../reference/services/orchestrator/tests/test_e2e.py)
+   518	  — pre-existing real-subprocess e2e is the closest cousin to what
+   519	  the smoke job exercises.
+   520	- [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml)
+
+ succeeded in 0ms:
+     631 docs/plans/eden-phase-10bc-dockerize-and-setup.md
+     1	# EDEN Phase 10 chunks 10b + 10c: Dockerize services + setup-experiment
+     2	
+     3	## Context
+     4	
+     5	Phase 10 chunk 10a shipped the Compose infrastructure layer: Postgres,
+     6	Gitea (headless), and a `blob-init` one-shot that creates the
+     7	`eden-blob-data` volume. No EDEN services are dockerized yet; Postgres
+     8	sits idle; Gitea sits idle.
+     9	
+    10	This chunk closes the gap **for the scripted reference services that
+    11	already exist**:
+    12	
+    13	> **10b** — Each reference service dockerized with its own image.
+    14	>
+    15	> **10c** — `setup-experiment` script: registers an experiment
+    16	> end-to-end (initializes the bare git repo, writes per-service
+    17	> sub-configs, …).
+    18	>
+    19	> *Chunks: 10b + 10c one chunk* — dockerize and setup co-evolve.
+    20	
+    21	After this chunk, `cd reference/compose && bash scripts/setup-experiment.sh
+    22	<config.yaml> && docker compose up` brings the whole reference stack
+    23	online and the fixture experiment runs to quiescence. The end-to-end
+    24	integration test that *asserts* this in CI is 10e (deferred per the
+    25	roadmap); 10b+10c just makes it possible.
+    26	
+    27	## Roadmap delta
+    28	
+    29	The roadmap's wording for 10b/10c was written ahead of detail; this
+    30	chunk amends it explicitly. The amendments below should be reflected
+    31	in `docs/roadmap.md` as part of the chunk's diff so the source of
+    32	truth doesn't drift.
+    33	
+    34	| Roadmap text (current) | This chunk does | Why the change |
+    35	|---|---|---|
+    36	| "10b — Each reference service dockerized with its own image." | One shared `eden-reference:dev` image, services selected by Compose `command:`. | The seven services share most deps (FastAPI, uvicorn, eden-contracts, eden-storage, eden-wire, eden-service-common). N images means either replicating the workspace into each (greater total image bytes than one) or a multi-stage tower whose complexity outweighs the benefit. Phase 13 (k8s, Helm) is when "one image per service with its own minimal closure" becomes valuable; not now. |
+    37	| "10c — builds experiment-specific image" | **Deferred to 10d.** | The scripted workers don't need an experiment-specific image. The LLM implementer (10d) does, since its sandbox runs the experiment's `implement_command`. Pinning the work to the chunk that *uses* it. |
+    38	| "10c — registers with the control plane" | **Deferred to Phase 12.** | No control plane exists yet. "Registration" reduces to "generate the right env file," which is what setup-experiment does. |
+    39	| (Implicit) workers integrate with Gitea as the bare-repo remote | **Deferred to a follow-up sub-chunk after 10d.** | Workers currently use local bare repos via `eden_git.GitRepo` (subprocess `git`). HTTPS push/pull against Gitea requires either remote-aware refactoring of `GitRepo` or per-worker local-clone+sync logic — a substantial body of work, not what 10b/10c is asking for. Same posture 10a took toward the blob volume (infrastructure exists; consumer arrives later). |
+    40	
+    41	The roadmap update commits alongside this chunk's code so future
+    42	readers see the amendment.
+    43	
+    44	## Critical scope clarifications
+    45	
+    46	Re-stating, with the deltas above accounted for, the four 10c
+    47	sub-jobs:
+    48	
+    49	| 10c sub-job | Disposition |
+    50	|---|---|
+    51	| Initialize the bare git repo + seed it | **In scope.** Repo lives in a Compose-shared volume `eden-bare-repo`; setup-experiment runs a one-shot `docker compose run --rm eden-repo-init` that seeds the volume and prints the seed SHA. |
+    52	| Write per-service sub-configs | **In scope.** The script emits a generated `.env` Compose reads; service `command:` entries thread the right flags. |
+    53	| Build experiment-specific image | **Deferred to 10d** (see Roadmap delta above). |
+    54	| Register with the control plane | **Deferred to Phase 12** (see Roadmap delta above). |
+    55	
+    56	**Gitea stays idle this chunk** (see Roadmap delta). Document the
+    57	smell explicitly in `reference/compose/README.md` so a reader doesn't
+    58	wonder why Gitea is running.
+    59	
+    60	**`PostgresStore` is in scope.** 10a's chunk note explicitly reserved
+    61	Postgres for "`PostgresStore` consumption in 10b". A new
+    62	`reference/packages/eden-storage/src/eden_storage/postgres.py` adds a
+    63	third backend that satisfies the same `Store` Protocol as
+    64	`InMemoryStore` and `SqliteStore`, sharing the transition logic in
+    65	`_base.py`. Test parametrization runs the same conformance scenarios
+    66	against all three backends. CI gains a test job that brings up a
+    67	disposable Postgres container for the parametrized backend tests.
+    68	
+    69	## What gets created/changed
+    70	
+    71	### A. `eden-storage` — `PostgresStore`
+    72	
+    73	**New module:** [`reference/packages/eden-storage/src/eden_storage/postgres.py`](../../reference/packages/eden-storage/src/eden_storage/postgres.py)
+    74	
+    75	**Design:**
+    76	
+    77	- Backed by [`psycopg[binary]>=3.2`](https://www.psycopg.org/psycopg3/) — pure
+    78	  Python with prebuilt binaries; no system libpq dependency. Pin to
+    79	  `>=3.2,<4`.
+    80	- Single connection per `PostgresStore` instance (matches the
+    81	  single-process reference pattern; chapter 8 §1.2 atomicity needs
+    82	  ordered locking, which is simplest with one connection serialized
+    83	  by `_lock`). Pooling is a Phase 12 concern when multiple orchestrator
+    84	  replicas appear.
+    85	- `BEGIN ISOLATION LEVEL SERIALIZABLE` per public op, mirroring
+    86	  `SqliteStore`'s `BEGIN IMMEDIATE`. Serializable is the strongest
+    87	  isolation Postgres provides; it's the right starting default for
+    88	  "make this work; tune later."
+    89	- Schema mirrors `_schema.py`'s SQLite version 1 with type
+    90	  substitutions:
+    91	  - `TEXT` → `text`
+    92	  - `AUTOINCREMENT` → `BIGINT GENERATED ALWAYS AS IDENTITY`
+    93	  - `data TEXT` → `data jsonb` (lets us index by `data->>'…'`
+    94	    later if needed; the SqliteStore writes the same JSON shape, so
+    95	    semantically identical)
+    96	  - `event(seq … AUTOINCREMENT)` → `event(seq BIGINT GENERATED
+    97	    ALWAYS AS IDENTITY PRIMARY KEY)`
+    98	- `ensure_schema(conn)` lives in a new `_postgres_schema.py` so the
+    99	  SqliteStore's `_schema.py` stays SQLite-specific. Migrations table
+   100	  is `schema_version(version int primary key)` — same shape as
+   101	  SQLite.
+   102	- `experiment_id` and `metrics_schema` reopen-validation matches
+   103	  SqliteStore exactly (chapter 8 §4.2).
+   104	- The `event_id` resumption logic — re-resuming the per-process
+   105	  counter from `MAX(seq)` on reopen — ports verbatim.
+   106	
+   107	**Public API:**
+   108	
+   109	```python
+   110	class PostgresStore(_StoreBase):
+   111	    def __init__(
+   112	        self,
+   113	        experiment_id: str,
+   114	        dsn: str,                    # postgresql://… libpq URL
+   115	        *,
+   116	        metrics_schema: MetricsSchema | None = None,
+   117	        now: Callable[[], datetime] | None = None,
+   118	        event_id_factory: Callable[[], str] | None = None,
+   119	        token_factory: Callable[[], str] | None = None,
+   120	    ) -> None: ...
+   121	    def close(self) -> None: ...
+   122	```
+   123	
+   124	**Tests:** [`reference/packages/eden-storage/tests/test_postgres_store.py`](../../reference/packages/eden-storage/tests/test_postgres_store.py).
+   125	The existing parametrized conformance scenarios (`test_store_*`) gain
+   126	a third backend factory keyed on a new `EDEN_TEST_POSTGRES_DSN`
+   127	environment variable; if unset, the parametrization skips the
+   128	postgres rows. (Same pattern Python projects use for opt-in
+   129	integration tests.) CI sets the env var so coverage is enforced
+   130	there.
+   131	
+   132	**`task-store-server` integration:** [`reference/services/task-store-server/src/eden_task_store_server/app.py`](../../reference/services/task-store-server/src/eden_task_store_server/app.py)'s
+   133	`build_store(db_path, …)` becomes `build_store(store_url, …)`. The
+   134	URL scheme dispatches:
+   135	
+   136	- `:memory:` → `InMemoryStore`
+   137	- `sqlite:///<path>` (or bare `<path>`, for compatibility) →
+   138	  `SqliteStore`
+   139	- `postgresql://…` → `PostgresStore`
+   140	
+   141	CLI flag rename: `--db-path` → `--store-url`. The old `--db-path`
+   142	flag stays as a deprecated alias for one phase to avoid churn —
+   143	emits a deprecation warning, mapped to `sqlite:///<value>` when the
+   144	value isn't `:memory:`. (We can drop it entirely in 10d; nothing in
+   145	the production tree uses it.)
+   146	
+   147	### B. Service Dockerfiles
+   148	
+   149	**Image strategy: one shared image** containing the whole uv
+   150	workspace. Per-service `command:` in `compose.yaml` selects which
+   151	module runs.
+   152	
+   153	**Why one image, not seven:** the seven services share most
+   154	dependencies (FastAPI, uvicorn, eden-contracts, eden-storage,
+   155	eden-wire, eden-service-common). Building seven images requires
+   156	either replicating the whole workspace into each (bigger total
+   157	storage than one image) or a multi-stage trick whose complexity
+   158	outweighs the benefit. One shared image is what every reference
+   159	microservices repo I've worked on does; we get back to the
+   160	seven-image story in Phase 13 when each service ships its own Helm
+   161	chart with its own minimal image.
+   162	
+   163	**File:** [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile)
+   164	
+   165	```dockerfile
+   166	# syntax=docker/dockerfile:1.7
+   167	ARG PYTHON_VERSION=3.12.7
+   168	ARG UV_VERSION=0.5.4
+   169	
+   170	FROM python:${PYTHON_VERSION}-slim-bookworm AS base
+   171	ENV PYTHONDONTWRITEBYTECODE=1 \
+   172	    PYTHONUNBUFFERED=1 \
+   173	    PIP_DISABLE_PIP_VERSION_CHECK=1
+   174	# git is required by eden_git's subprocess wrapper (orchestrator,
+   175	# implementer, integrator, web-ui).
+   176	RUN apt-get update \
+   177	    && apt-get install -y --no-install-recommends git ca-certificates curl \
+   178	    && rm -rf /var/lib/apt/lists/*
+   179	RUN useradd --uid 1000 --create-home --shell /bin/bash eden
+   180	
+   181	FROM base AS builder
+   182	ARG UV_VERSION
+   183	RUN pip install --no-cache-dir uv==${UV_VERSION}
+   184	WORKDIR /app
+   185	# Copy the workspace layout first (pyproject + per-member pyproject)
+   186	# so dependency layers cache before source.
+   187	COPY pyproject.toml uv.lock ./
+   188	COPY reference/packages/eden-contracts/pyproject.toml reference/packages/eden-contracts/pyproject.toml
+   189	COPY reference/packages/eden-dispatch/pyproject.toml reference/packages/eden-dispatch/pyproject.toml
+   190	COPY reference/packages/eden-git/pyproject.toml      reference/packages/eden-git/pyproject.toml
+   191	COPY reference/packages/eden-storage/pyproject.toml  reference/packages/eden-storage/pyproject.toml
+   192	COPY reference/packages/eden-wire/pyproject.toml     reference/packages/eden-wire/pyproject.toml
+   193	COPY reference/services/_common/pyproject.toml          reference/services/_common/pyproject.toml
+   194	COPY reference/services/task-store-server/pyproject.toml reference/services/task-store-server/pyproject.toml
+   195	COPY reference/services/orchestrator/pyproject.toml      reference/services/orchestrator/pyproject.toml
+   196	COPY reference/services/planner/pyproject.toml           reference/services/planner/pyproject.toml
+   197	COPY reference/services/implementer/pyproject.toml       reference/services/implementer/pyproject.toml
+   198	COPY reference/services/evaluator/pyproject.toml         reference/services/evaluator/pyproject.toml
+   199	COPY reference/services/web-ui/pyproject.toml            reference/services/web-ui/pyproject.toml
+   200	# README files referenced from per-member pyproject (hatchling needs them).
+   201	COPY reference/packages reference/packages
+   202	COPY reference/services reference/services
+   203	# `--all-packages` installs every workspace member; without it the
+   204	# eden-* packages would be skipped because the root `pyproject.toml`
+   205	# is non-installable (`tool.uv.package = false`) and the workspace
+   206	# members are pulled in only via the `dev` group, which `--no-dev`
+   207	# excludes. Verified empirically: `uv sync --frozen --no-dev` against
+   208	# this workspace removes every eden-* package from the venv.
+   209	RUN uv sync --frozen --no-dev --all-packages
+   210	
+   211	FROM base AS runtime
+   212	WORKDIR /app
+   213	COPY --from=builder /app /app
+   214	# Make uv-installed venv binaries discoverable.
+   215	ENV PATH="/app/.venv/bin:${PATH}"
+   216	USER eden
+   217	# No ENTRYPOINT — compose.yaml's `command:` selects the service
+   218	# module.
+   219	```
+   220	
+   221	**Build context:** the **repo root** (so the workspace files are
+   222	reachable). compose.yaml uses `context: ..` and
+   223	`dockerfile: reference/compose/Dockerfile`.
+   224	
+   225	**`.dockerignore`** (new file at repo root) excludes `.git`,
+   226	`.venv`, `node_modules`, `__pycache__`, `*.egg-info`,
+   227	`.pytest_cache`, `.ruff_cache`, `dist`, `build`, `htmlcov`. Without
+   228	this, `uv sync --frozen` re-downloads every dep on each build
+   229	because the hash of the build context changes whenever `git`
+   230	internal files do.
+   231	
+   232	### C. Compose service entries
+   233	
+   234	[`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) gains six service entries
+   235	(below). Each service:
+   236	
+   237	1. `build:` references the shared image.
+   238	2. `depends_on:` waits for `postgres` (healthy) for those that talk
+   239	   to the task-store-server, which itself depends on postgres.
+   240	3. `command:` selects the module + threads the right flags from
+   241	   `${VAR}` substitutions, so setup-experiment generating a `.env`
+   242	   is the one source of dynamic config.
+   243	4. Bare-repo-touching services mount the named volume `eden-bare-repo`.
+   244	
+   245	**Service config matrix.** Each row spells out every required flag,
+   246	where the flag's value comes from, and what mounts the service
+   247	needs.
+   248	
+   249	| Service | `command:` flags | Source of each value | Mounts | `depends_on` (healthy) | Healthcheck | Host port |
+   250	|---|---|---|---|---|---|---|
+   251	| `task-store-server` | `--store-url $EDEN_STORE_URL`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--experiment-config /etc/eden/experiment-config.yaml`, `--shared-token $EDEN_SHARED_TOKEN`, `--host 0.0.0.0`, `--port 8080`, `--log-level info` | env from `.env` (setup-experiment); experiment-config from Compose `configs:` (setup-experiment) | `eden-experiment-config` (configs), no volumes | `postgres` | `curl -fsS http://localhost:8080/v0/experiments/$EDEN_EXPERIMENT_ID/events -H "Authorization: Bearer $EDEN_SHARED_TOKEN" -H "X-Eden-Experiment-Id: $EDEN_EXPERIMENT_ID"` | none (internal) |
+   252	| `orchestrator` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--repo-path /var/lib/eden/repo`, `--plan-tasks $EDEN_PLAN_TASKS`, `--log-level info` | env + Compose service DNS | `eden-bare-repo` at `/var/lib/eden/repo` | `task-store-server` | none (long-running client) | none |
+   253	| `planner-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id planner-1`, `--base-commit-sha $EDEN_BASE_COMMIT_SHA`, `--log-level info` | env (worker-id is a static literal in compose.yaml; override via env if multiple replicas needed later) | none | `task-store-server` | none | none |
+   254	| `implementer-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id implementer-1`, `--repo-path /var/lib/eden/repo`, `--log-level info` | env | `eden-bare-repo` at `/var/lib/eden/repo` | `task-store-server` | none | none |
+   255	| `evaluator-host` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--worker-id evaluator-1`, `--experiment-config /etc/eden/experiment-config.yaml`, `--log-level info` | env + configs | `eden-experiment-config` (configs) | `task-store-server` | none | none |
+   256	| `web-ui` | `--task-store-url http://task-store-server:8080`, `--experiment-id $EDEN_EXPERIMENT_ID`, `--shared-token $EDEN_SHARED_TOKEN`, `--experiment-config /etc/eden/experiment-config.yaml`, `--session-secret $EDEN_SESSION_SECRET`, `--artifacts-dir /var/lib/eden/artifacts`, `--repo-path /var/lib/eden/repo`, `--worker-id web-ui-1`, `--host 0.0.0.0`, `--port 8090`, `--log-level info` | env + configs | `eden-experiment-config` (configs); `eden-artifacts-data` at `/var/lib/eden/artifacts`; `eden-bare-repo` at `/var/lib/eden/repo` (read-only is enough for the admin work-refs page) | `task-store-server` | `curl -fsS http://localhost:8090/healthz` (new endpoint added in this chunk) | `${WEB_UI_HOST_PORT:-8090}:8090` |
+   257	| `eden-repo-init` (profile: setup) | `python -m eden_service_common.repo_init --repo-path /var/lib/eden/repo` | n/a — invoked by setup-experiment via `compose run --rm` | `eden-bare-repo` at `/var/lib/eden/repo` | none | n/a (one-shot) | n/a |
+   258	
+   259	**New named volumes**: `eden-bare-repo` (replaces the host-path repo
+   260	the existing CLIs assume) and `eden-artifacts-data` (web-ui's
+
+web search: 
+web search: site:docs.docker.com docker compose run build if image missing --build option
+codex
+**1. Missing Context**
+
+Assessment: much better. The round-0 blockers around roadmap drift, repo-seeding ownership, and env-file shape are now explicitly addressed. I do not see a major “reader can’t tell what this means” problem anymore.
+
+**2. Feasibility**
+
+Assessment: mostly feasible, but one first-run bootstrap gap remains.
+
+- The advertised `setup-experiment.sh && docker compose up` flow still appears to assume an image is available before setup can seed the repo. The script’s critical step is `docker compose … run --rm eden-repo-init` in [the bootstrap section](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md:293) and [the step ordering](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md:385), but the plan only says “if step 3 fails, tell the operator to build first” at [lines 395-397](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md:395). That leaves first-run behavior underdefined. I would make the script do the build itself, either by using `docker compose run --build --rm …` or by running an explicit `docker compose build eden-repo-init` first.
+
+**3. Alternatives**
+
+Assessment: the chosen approach is now defensible.
+
+- The new roadmap-delta section makes the shared-image choice and the deferred 10c sub-jobs explicit enough that I no longer think this needs a different high-level approach. I don’t have a stronger alternative than “keep this shape, but make the setup bootstrap self-sufficient.”
+
+**4. Completeness**
+
+Assessment: one important runtime contract is still inconsistent.
+
+- The `web-ui` row says the bare repo mount can be read-only because the admin work-refs page only needs reads in [the service matrix](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md:256). But in current code, passing `--repo-path` enables the whole implementer module, not just admin ref browsing: see [web-ui CLI](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/cli.py:75) and [app factory](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/app.py:89). That means `/implementer/*` would be live in Compose and would try to write refs against a read-only mount. The plan needs one of three explicit resolutions: mount read-write, split “admin repo access” from “implementer enabled,” or disable `/implementer/*` in the Compose deployment.
+
+**5. Edge Cases and Risks**
+
+Assessment: one likely CI flake remains.
+
+- The smoke test checks the seeded ref via `docker compose exec orchestrator git -C /var/lib/eden/repo show-ref refs/heads/main` in [lines 464-466](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md:464), then separately expects the orchestrator to exit on quiescence in [lines 467-469](/Users/ericalt/Documents/eden/docs/plans/eden-phase-10bc-dockerize-and-setup.md:467). If the experiment finishes quickly, step 4 becomes racey because `exec` requires a running container. I’d make that assertion through a one-shot container or direct volume inspection instead of depending on orchestrator liveness. I’d also consider `docker compose run --rm --no-deps eden-repo-init` to keep future dependency edits from changing setup behavior.
+
+**Overall Assessment**
+
+This is a substantial improvement over round 0. The plan is now coherent enough to review all five levels, and I think the high-level shape is sound. I would still fix the first-run bootstrap/build story and the web-ui `--repo-path` vs read-only-mount contradiction before treating it as implementation-ready.
+
+External docs checked for Compose behavior: https://docs.docker.com/reference/cli/docker/compose/run/ , https://docs.docker.com/reference/cli/docker/compose/up/
+2026-04-26T00:58:59.704015Z ERROR codex_core::session: failed to record rollout items: thread 019dc744-9c71-7e40-92de-14311280426f not found
+tokens used
+181,063

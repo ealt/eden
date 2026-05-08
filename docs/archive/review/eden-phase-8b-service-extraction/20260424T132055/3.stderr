@@ -1,0 +1,204 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc127-333f-7f72-8703-93293641e56d
+--------
+user
+Thanks — addressed all three:
+
+1. Multi-parent CRITICAL: implementer now passes list(proposal.parent_commits) straight into GitRepo.commit_tree (which takes Iterable[str]), so single-parent and merge-parent proposals both round-trip correctly. The scripted planner in 8b only emits single-parent proposals, but the implementer itself is not limited. Clarifying note added so the scripted/planner vs arbitrary/implementer asymmetry is intentional.
+
+2. Stale 'planner and implementer' phrasing fixed — the harness passes --base-commit-sha only to the planner; the implementer reads parents from the proposal.
+
+3. E2E assertions extended: trial.parent_commits == [base_sha], and repo.commit_parents(trial_commit_sha) == list(trial.parent_commits).
+
+Please review at /Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md.
+codex
+I’m checking the updated multi-parent handling and the strengthened E2E assertions now. If those land cleanly, I should be able to review through the remaining levels instead of stopping early.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '552,590p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '318,370p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   552	   terminal state, assert outcome, `stopping.set()` to tear down.
+   553	   Proves the host's poll loop honors SIGTERM semantics without
+   554	   forking subprocesses.
+   555	
+   556	5. **Unit — task-store-server app construction**
+   557	   (`reference/services/task-store-server/tests/test_app.py`). Loads
+   558	   the fixture experiment config, calls
+   559	   `app.build_app(args)`, asserts the returned FastAPI has the
+   560	   middleware installed iff `--shared-token` was passed.
+   561	
+   562	6. **Integration — real-subprocess E2E**
+   563	   (`reference/services/orchestrator/tests/test_e2e.py`).
+   564	   Uses `subprocess.Popen` with `python -m eden_task_store_server`,
+   565	   `python -m eden_planner_host`, etc. The harness:
+   566	
+   567	   - Creates a tempdir; `git init --bare` inside; calls
+   568	     `seed_bare_repo(path)` (the `_common` helper) to write an
+   569	     empty initial commit on `refs/heads/main` and capture its
+   570	     `base_sha` for threading into the planner's
+   571	     `--base-commit-sha`.
+   572	   - Creates a tempdir for the sqlite DB (`--db-path` pointing at a
+   573	     file, not `:memory:` — this exercises the SQLite path end-to-end).
+   574	   - Boots task-store-server on `--port 0`, reads
+   575	     `EDEN_TASK_STORE_LISTENING` from stdout to learn the port, then
+   576	     boots 3 workers + orchestrator against
+   577	     `http://127.0.0.1:<port>`. The implementer and orchestrator
+   578	     both point `--repo-path` at the bare repo; the planner and
+   579	     evaluator don't touch it. All 5 subprocesses share
+   580	     `--shared-token test-token` to exercise auth.
+   581	   - Waits up to 60 seconds for the orchestrator to exit 0.
+   582	   - On timeout or non-zero exit, dumps every subprocess's stderr
+   583	     into the pytest failure output (this is non-negotiable — the
+   584	     one thing that makes subprocess tests diagnosable is capturing
+   585	     every process's stderr on failure).
+   586	   - SIGTERMs the workers and task-store-server; awaits each for up
+   587	     to 10 seconds, then SIGKILLs.
+   588	   - Opens the DB with a fresh `SqliteStore`, asserts:
+   589	     - 3 accepted plan tasks, 3 accepted implement tasks, 3 accepted
+   590	       evaluate tasks.
+
+ succeeded in 0ms:
+   318	
+   319	Decision: the implementer host writes real commits directly, via a
+   320	`GitRepo` opened against the **same bare repo** the orchestrator's
+   321	`Integrator` reads from.
+   322	
+   323	- Implementer CLI gains `--repo-path PATH` — the bare repo it
+   324	  writes to. Same path the orchestrator passes to `--repo-path`.
+   325	- Implementer's scripted flow per task builds a real commit whose
+   326	  parent is the SHA the proposal named:
+   327	  1. Read `proposal.parent_commits` from the store — guaranteed
+   328	     non-empty by the proposal Pydantic binding's `min_length=1`
+   329	     constraint. The implementer honors the full list whatever
+   330	     its length: a single-parent proposal produces a single-parent
+   331	     commit; a multi-parent proposal produces a merge commit.
+   332	     `GitRepo.commit_tree(parents=Iterable[str], ...)` already
+   333	     accepts any number of parents, so there is no scripted /
+   334	     merge-only split in the implementation.
+   335	  2. Build a tree containing one deterministic blob (filename
+   336	     derived from the proposal slug, content derived from the
+   337	     trial ID) via `GitRepo.write_blob` +
+   338	     `write_tree_from_entries`.
+   339	  3. `commit_tree` with that tree,
+   340	     `parents=list(proposal.parent_commits)`, fixed author /
+   341	     committer identity, deterministic message derived from the
+   342	     proposal slug + trial ID.
+   343	  4. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
+   344	  5. Submit the new SHA on the implement task.
+   345	
+   346	  The scripted *planner* in 8b only emits single-parent proposals
+   347	  (see "Scripted logic across the subprocess boundary" above), but
+   348	  the scripted *implementer* accepts any valid proposal — so
+   349	  dropping the scripted planner into a larger mixed deployment
+   350	  (where some other planner produces merge proposals) does not
+   351	  turn the implementer into a silent protocol violator.
+   352	
+   353	  Because the proposal's `parent_commits` is populated and the
+   354	  implementer's new commit descends from it, the Integrator's §1.4
+   355	  reachability check (each `trial.parent_commits[i]` must be
+   356	  reachable from `commit_sha`) and its §2 check (`commit_sha` is
+   357	  reachable from `branch` tip) both hold.
+   358	
+   359	- **Seed commit.** The test harness seeds the bare repo with an
+   360	  empty initial commit before boot and passes its SHA to the
+   361	  planner as `--base-commit-sha`. The implementer picks up that
+   362	  SHA transitively — it reads parents off the proposal, which the
+   363	  planner authored. The orchestrator does not need the SHA either
+   364	  (it only reads what the store already records). Seeding is a
+   365	  tiny helper in `reference/services/_common/`
+   366	  (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+   367	
+   368	This keeps the implementer host's write path identical to how the
+   369	Phase 7b test prebuilds branches, just inside the service loop
+   370	rather than in a test fixture. Concurrency is fine: worker hosts
+
+exec
+/bin/zsh -lc "rg -n \"parent_commits\\[0\\]|list\\(proposal.parent_commits\\)|base-commit-sha|commit_parents\\(trial_commit_sha\\)|trial.parent_commits == \\[base_sha\\]\" docs/plans/eden-phase-8b-service-extraction.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+242:- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N`
+248:  `--base-commit-sha` flag.)
+282:  `--base-commit-sha HEX` CLI flag. (Proposals MUST carry ≥1 parent
+340:     `parents=list(proposal.parent_commits)`, fixed author /
+361:  planner as `--base-commit-sha`. The implementer picks up that
+571:     `--base-commit-sha`.
+592:     - Each `trial.parent_commits == [base_sha]` (lineage
+593:       threaded correctly from `--base-commit-sha`).
+595:       repo and `repo.commit_parents(trial_commit_sha) ==
+
+codex
+I’ve confirmed the multi-parent fix landed in the right place. I’m reading the final assertion block now so I can judge whether the plan’s verification covers the actual lineage guarantees it now depends on.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '588,600p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '236,250p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   236	- `--poll-interval SECONDS` — default `0.1`.
+   237	- `--startup-timeout SECONDS` — default `30`.
+   238	- `--log-level LEVEL`.
+   239	
+   240	Role-specific args:
+   241	
+   242	- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N`
+   243	  (default `1`). The fixed `plan_fn` emits proposals with
+   244	  `parent_commits=(base_commit_sha,)`.
+   245	- Implementer: `--repo-path PATH` (required) + `--fail-every N`
+   246	  (optional, default never). See "Implementer repo model" above.
+   247	  (The implementer reads parents from the proposal; no
+   248	  `--base-commit-sha` flag.)
+   249	- Evaluator: `--experiment-config PATH` (required, to know the
+   250	  metrics schema and emit matching keys) + `--fail-every N`
+
+ succeeded in 0ms:
+   588	   - Opens the DB with a fresh `SqliteStore`, asserts:
+   589	     - 3 accepted plan tasks, 3 accepted implement tasks, 3 accepted
+   590	       evaluate tasks.
+   591	     - 3 trials with `status="success"` and `trial_commit_sha` set.
+   592	     - Each `trial.parent_commits == [base_sha]` (lineage
+   593	       threaded correctly from `--base-commit-sha`).
+   594	     - Each `trial_commit_sha` is a valid git commit in the bare
+   595	       repo and `repo.commit_parents(trial_commit_sha) ==
+   596	       list(trial.parent_commits)` (matches the in-process
+   597	       real-integrator test's parent check at
+   598	       `reference/packages/eden-dispatch/tests/test_end_to_end.py`).
+   599	   - Tears down tempdirs.
+   600	
+
+codex
+**Missing Context**
+
+Assessment: clear now. The subprocess profile, repo seeding, and parent-lineage threading are all explicit.
+
+**Feasibility**
+
+Assessment: workable. Passing a real `base_commit_sha` into the planner and forwarding the full `proposal.parent_commits` list into `GitRepo.commit_tree` resolves the earlier protocol conflicts ([plan lines 327-340](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:327)).
+
+**Alternatives**
+
+Assessment: the chosen approach is the right tradeoff for 8b. Keeping the planner on a simple boot-time `--base-commit-sha` while making the implementer generic over any valid parent list is simpler than giving the planner repo access, and it avoids baking a single-parent limitation into the worker host.
+
+**Completeness**
+
+Assessment: mostly complete.
+
+- `SUGGESTION` Add one explicit test for the multi-parent path. The plan now says the implementer supports arbitrary `proposal.parent_commits` by passing the whole list to `commit_tree` ([plan lines 327-340](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:327)), but the subprocess E2E still exercises only the scripted planner’s single-parent profile ([lines 242-244](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:242), [lines 592-596](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:592)). A focused unit or integration test would lock in the behavior that just unblocked the review.
+
+**Edge Cases and Risks**
+
+Assessment: the main remaining operational risk is bad `--base-commit-sha` input.
+
+- `SUGGESTION` Call out or validate the misconfiguration path. Because the planner intentionally has no repo access ([plan lines 280-285](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:280)) and only receives raw `--base-commit-sha` text ([lines 242-244](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:242)), a nonexistent SHA won’t be caught there. The failure would surface later when the implementer tries to build a commit from that parent. That is acceptable for 8b, but it should be documented as a known risk or validated early in the harness/setup path.
+
+**Overall Assessment**
+
+The plan is now sound and implementation-ready. I don’t see a remaining blocking design issue; the only follow-ups I’d recommend are tighter coverage for the new multi-parent claim and a clearer story for bad `--base-commit-sha` input.
+tokens used
+143,810

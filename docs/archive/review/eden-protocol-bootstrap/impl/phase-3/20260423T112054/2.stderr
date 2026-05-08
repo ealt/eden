@@ -1,0 +1,1194 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbb93-e10b-7e02-9f4c-772085f30333
+--------
+user
+I've addressed the round 1 URI-fidelity finding. The round 2 brief at docs/plans/review/eden-protocol-bootstrap/impl/phase-3/20260423T112054/2.md lists the fix (using rfc3986-validator) and the new reject cases. Please re-read eden-contracts/src/eden_contracts/_common.py, tests/conftest.py, tests/cases.py, and reference/packages/eden-contracts/pyproject.toml, and re-review. Same criteria order.
+codex
+Re-reading the round 2 brief and the URI-related implementation/test files first, then I’ll verify the new validator behavior directly against the schemeful malformed cases that were still slipping through.
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/plans/review/eden-protocol-bootstrap/impl/phase-3/20260423T112054/2.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: EDEN Phase 3 — Round 2 update
+
+## Round 1 feedback addressed
+
+### Bug: URI "has a scheme" check not RFC 3986
+
+**Addressed.** Replaced the `urlparse`-based check in `_common.py` and
+in `conftest.py` with `rfc3986_validator.validate_rfc3986(v, rule="URI")`
+— the canonical JSON Schema URI format validator. Added
+`rfc3986-validator>=0.1.1` as a runtime dependency of `eden-contracts`
+so the model-side check uses the same implementation as the
+parity-side `FormatChecker`.
+
+Spot-checked the validator directly:
+
+```text
+'http://exa mple.com/path'  -> None (rejected)
+'http://example.com/bad%ZZ' -> None (rejected)
+'http://example.com'        -> match  (accepted)
+'s3://bucket/path'          -> match  (accepted)
+'file:///tmp/x'             -> match  (accepted)
+'just a string'             -> None (rejected)
+```
+
+New reject cases:
+
+- `proposal::artifacts_uri_space_in_host` — `http://exa mple.com/path`
+- `proposal::artifacts_uri_bad_percent_encoding` — `http://example.com/bad%ZZ`
+- `trial::artifacts_uri_space_in_host`
+
+All 78 tests pass.
+
+## Format coverage check
+
+Only `date-time` and `uri` formats appear anywhere in the six schemas
+(grep-verified). Both are now enforced on both sides — in-process by
+`rfc3986_validator` + `datetime.fromisoformat`, and via the custom
+`FormatChecker` on the `jsonschema` validator.
+
+## Gate status after round 2
+
+- `uv run ruff check .` — pass
+- `uv run pyright` — 0 errors, 0 warnings
+- `uv run pytest -q` — 78 passed
+- `markdownlint-cli2 ...` — 0 errors across 20 files
+- `check-jsonschema --check-metaschema ...` — ok
+
+## Review Status
+
+Round 2 — please re-verify the URI fidelity fix and let me know if
+anything else is blocking.
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/_common.py' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/pyproject.toml' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/tests/conftest.py' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/tests/cases.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Shared type aliases and validators for EDEN contract models.
+     2	
+     3	Every pattern here mirrors a pattern in the spec/v0 JSON Schemas. When a
+     4	schema changes, the corresponding alias here changes in lockstep.
+     5	"""
+     6	
+     7	from datetime import datetime
+     8	from typing import Annotated, Any
+     9	
+    10	from pydantic import AfterValidator, BeforeValidator, StringConstraints
+    11	from rfc3986_validator import validate_rfc3986
+    12	
+    13	DATETIME_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
+    14	
+    15	COMMIT_SHA_PATTERN = r"^[0-9a-f]{40}([0-9a-f]{24})?$"
+    16	
+    17	
+    18	def _check_datetime(value: str) -> str:
+    19	    # The regex shape is a necessary pre-filter, but accepts impossible values
+    20	    # like month 99. fromisoformat (3.11+) accepts trailing "Z" and parses the
+    21	    # components strictly, so it catches non-real dates.
+    22	    datetime.fromisoformat(value)
+    23	    return value
+    24	
+    25	
+    26	def _check_uri(value: str) -> str:
+    27	    if not validate_rfc3986(value, rule="URI"):
+    28	        raise ValueError(f"not a valid RFC 3986 URI: {value!r}")
+    29	    return value
+    30	
+    31	
+    32	def _reject_none(value: Any) -> Any:
+    33	    if value is None:
+    34	        raise ValueError(
+    35	            "field may be absent but MUST NOT be null; JSON Schema "
+    36	            "rejects explicit null for optional typed fields"
+    37	        )
+    38	    return value
+    39	
+    40	
+    41	DateTimeStr = Annotated[
+    42	    str,
+    43	    StringConstraints(pattern=DATETIME_PATTERN),
+    44	    AfterValidator(_check_datetime),
+    45	]
+    46	"""UTC ISO-8601 datetime string with a trailing ``Z``; must be a real datetime."""
+    47	
+    48	CommitSha = Annotated[str, StringConstraints(pattern=COMMIT_SHA_PATTERN)]
+    49	"""Lowercase hex SHA-1 (40 chars) or SHA-256 (64 chars) commit identifier."""
+    50	
+    51	UriStr = Annotated[str, AfterValidator(_check_uri)]
+    52	"""URI string — must have a scheme, per RFC 3986 (schema ``format: uri``)."""
+    53	
+    54	NotNone = BeforeValidator(_reject_none)
+    55	"""Annotate optional fields to reject explicit ``null`` on input while allowing absence."""
+
+ succeeded in 0ms:
+     1	[project]
+     2	name = "eden-contracts"
+     3	version = "0.0.1"
+     4	description = "Pydantic models for the EDEN protocol wire formats (reference bindings for spec/v0)."
+     5	readme = "README.md"
+     6	requires-python = ">=3.12"
+     7	license = "MIT"
+     8	dependencies = [
+     9	    "pydantic>=2.9,<3",
+    10	    "rfc3986-validator>=0.1.1",
+    11	]
+    12	
+    13	[build-system]
+    14	requires = ["hatchling"]
+    15	build-backend = "hatchling.build"
+    16	
+    17	[tool.hatch.build.targets.wheel]
+    18	packages = ["src/eden_contracts"]
+
+ succeeded in 0ms:
+     1	"""Shared fixtures: schema registry, per-schema validators, model validators.
+     2	
+     3	The parity tests need to run each case twice — once against the Pydantic
+     4	model and once against the hand-authored JSON Schema. This conftest wires
+     5	up both paths over the same case corpus so they stay in sync.
+     6	
+     7	A custom ``FormatChecker`` enables ``uri`` and ``date-time`` format
+     8	validation on the schema side; jsonschema's default does not enforce
+     9	``format`` keywords unless a checker is supplied. The model side enforces
+    10	the same semantics in :mod:`eden_contracts._common`.
+    11	"""
+    12	
+    13	from __future__ import annotations
+    14	
+    15	import json
+    16	from collections.abc import Callable
+    17	from datetime import datetime
+    18	from pathlib import Path
+    19	from typing import Any
+    20	
+    21	from eden_contracts import (
+    22	    Event,
+    23	    ExperimentConfig,
+    24	    MetricsSchema,
+    25	    Proposal,
+    26	    TaskAdapter,
+    27	    Trial,
+    28	)
+    29	from jsonschema import Draft202012Validator, FormatChecker
+    30	from referencing import Registry, Resource
+    31	from referencing.jsonschema import DRAFT202012
+    32	from rfc3986_validator import validate_rfc3986
+    33	
+    34	SCHEMAS_DIR: Path = Path(__file__).resolve().parents[4] / "spec" / "v0" / "schemas"
+    35	"""Resolves to ``<repo>/spec/v0/schemas``."""
+    36	
+    37	BASE_URI: str = "https://eden.local/schemas/"
+    38	"""Synthetic base URI so relative ``$ref``s between schema files resolve."""
+    39	
+    40	MODEL_NAMES: tuple[str, ...] = (
+    41	    "experiment-config",
+    42	    "task",
+    43	    "event",
+    44	    "proposal",
+    45	    "trial",
+    46	    "metrics-schema",
+    47	)
+    48	
+    49	
+    50	_FORMAT_CHECKER = FormatChecker()
+    51	
+    52	
+    53	@_FORMAT_CHECKER.checks("uri", raises=ValueError)
+    54	def _check_uri(instance: Any) -> bool:
+    55	    if not isinstance(instance, str):
+    56	        return True
+    57	    if not validate_rfc3986(instance, rule="URI"):
+    58	        raise ValueError(f"not a valid RFC 3986 URI: {instance!r}")
+    59	    return True
+    60	
+    61	
+    62	@_FORMAT_CHECKER.checks("date-time", raises=ValueError)
+    63	def _check_datetime(instance: Any) -> bool:
+    64	    if not isinstance(instance, str):
+    65	        return True
+    66	    datetime.fromisoformat(instance)
+    67	    return True
+    68	
+    69	
+    70	def _build_registry() -> Registry:
+    71	    registry: Registry = Registry()
+    72	    for path in SCHEMAS_DIR.glob("*.schema.json"):
+    73	        schema = json.loads(path.read_text())
+    74	        resource = Resource.from_contents(schema, default_specification=DRAFT202012)
+    75	        registry = registry.with_resource(uri=f"{BASE_URI}{path.name}", resource=resource)
+    76	    return registry
+    77	
+    78	
+    79	_REGISTRY: Registry = _build_registry()
+    80	
+    81	
+    82	def schema_validator(name: str) -> Draft202012Validator:
+    83	    """Return a validator for ``<name>.schema.json`` with refs + formats enforced."""
+    84	    return Draft202012Validator(
+    85	        schema={"$ref": f"{BASE_URI}{name}.schema.json"},
+    86	        registry=_REGISTRY,
+    87	        format_checker=_FORMAT_CHECKER,
+    88	    )
+    89	
+    90	
+    91	_MODEL_VALIDATORS: dict[str, Callable[[Any], object]] = {
+    92	    "experiment-config": ExperimentConfig.model_validate,
+    93	    "task": TaskAdapter.validate_python,
+    94	    "event": Event.model_validate,
+    95	    "proposal": Proposal.model_validate,
+    96	    "trial": Trial.model_validate,
+    97	    "metrics-schema": MetricsSchema.model_validate,
+    98	}
+    99	
+   100	
+   101	def model_validate(name: str, data: Any) -> object:
+   102	    """Validate ``data`` with the Pydantic model bound to schema ``name``."""
+   103	    return _MODEL_VALIDATORS[name](data)
+
+ succeeded in 0ms:
+     1	"""Accept/reject corpus, shared by the per-model and parity tests.
+     2	
+     3	Each case is a ``(name, data, should_pass)`` tuple. The corpus is the
+     4	single source of truth; its pairs drive both the Pydantic model tests
+     5	and the JSON Schema parity test. An asymmetry between the two would
+     6	mean a drift in the parity surface and is what the schema-parity job
+     7	catches.
+     8	"""
+     9	
+    10	from __future__ import annotations
+    11	
+    12	from typing import Any, NamedTuple
+    13	
+    14	
+    15	class Case(NamedTuple):
+    16	    """One fixture: a value to validate and whether validation must succeed."""
+    17	
+    18	    name: str
+    19	    data: Any
+    20	    should_pass: bool
+    21	
+    22	
+    23	_DT = "2026-04-23T12:00:00Z"
+    24	_DT2 = "2026-04-23T12:30:00.123Z"
+    25	_SHA1 = "a" * 40
+    26	_SHA256 = "a" * 40 + "b" * 24
+    27	
+    28	EXPERIMENT_CONFIG_CASES: list[Case] = [
+    29	    Case(
+    30	        "minimal",
+    31	        {
+    32	            "parallel_trials": 2,
+    33	            "max_trials": 50,
+    34	            "max_wall_time": "4h",
+    35	            "metrics_schema": {"accuracy": "real"},
+    36	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    37	        },
+    38	        True,
+    39	    ),
+    40	    Case(
+    41	        "with_optional",
+    42	        {
+    43	            "parallel_trials": 4,
+    44	            "max_trials": 200,
+    45	            "max_wall_time": "30m",
+    46	            "metrics_schema": {"loss": "real", "tokens": "integer", "note": "text"},
+    47	            "objective": {"expr": "loss", "direction": "minimize"},
+    48	            "convergence_window": 20,
+    49	            "target_condition": "loss < 0.01",
+    50	        },
+    51	        True,
+    52	    ),
+    53	    Case(
+    54	        "missing_parallel_trials",
+    55	        {
+    56	            "max_trials": 50,
+    57	            "max_wall_time": "4h",
+    58	            "metrics_schema": {"accuracy": "real"},
+    59	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    60	        },
+    61	        False,
+    62	    ),
+    63	    Case(
+    64	        "parallel_trials_zero",
+    65	        {
+    66	            "parallel_trials": 0,
+    67	            "max_trials": 50,
+    68	            "max_wall_time": "4h",
+    69	            "metrics_schema": {"accuracy": "real"},
+    70	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    71	        },
+    72	        False,
+    73	    ),
+    74	    Case(
+    75	        "wall_time_zero_prefix",
+    76	        {
+    77	            "parallel_trials": 2,
+    78	            "max_trials": 50,
+    79	            "max_wall_time": "0s",
+    80	            "metrics_schema": {"accuracy": "real"},
+    81	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    82	        },
+    83	        False,
+    84	    ),
+    85	    Case(
+    86	        "wall_time_bad_unit",
+    87	        {
+    88	            "parallel_trials": 2,
+    89	            "max_trials": 50,
+    90	            "max_wall_time": "4y",
+    91	            "metrics_schema": {"accuracy": "real"},
+    92	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    93	        },
+    94	        False,
+    95	    ),
+    96	    Case(
+    97	        "metrics_schema_empty",
+    98	        {
+    99	            "parallel_trials": 2,
+   100	            "max_trials": 50,
+   101	            "max_wall_time": "4h",
+   102	            "metrics_schema": {},
+   103	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   104	        },
+   105	        False,
+   106	    ),
+   107	    Case(
+   108	        "metrics_schema_reserved_key",
+   109	        {
+   110	            "parallel_trials": 2,
+   111	            "max_trials": 50,
+   112	            "max_wall_time": "4h",
+   113	            "metrics_schema": {"trial_id": "text"},
+   114	            "objective": {"expr": "trial_id", "direction": "maximize"},
+   115	        },
+   116	        False,
+   117	    ),
+   118	    Case(
+   119	        "objective_invalid_direction",
+   120	        {
+   121	            "parallel_trials": 2,
+   122	            "max_trials": 50,
+   123	            "max_wall_time": "4h",
+   124	            "metrics_schema": {"accuracy": "real"},
+   125	            "objective": {"expr": "accuracy", "direction": "sideways"},
+   126	        },
+   127	        False,
+   128	    ),
+   129	    Case(
+   130	        "parallel_trials_bool",
+   131	        {
+   132	            "parallel_trials": True,
+   133	            "max_trials": 50,
+   134	            "max_wall_time": "4h",
+   135	            "metrics_schema": {"accuracy": "real"},
+   136	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   137	        },
+   138	        False,
+   139	    ),
+   140	    Case(
+   141	        "max_trials_string",
+   142	        {
+   143	            "parallel_trials": 2,
+   144	            "max_trials": "50",
+   145	            "max_wall_time": "4h",
+   146	            "metrics_schema": {"accuracy": "real"},
+   147	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   148	        },
+   149	        False,
+   150	    ),
+   151	    Case(
+   152	        "convergence_window_string",
+   153	        {
+   154	            "parallel_trials": 2,
+   155	            "max_trials": 50,
+   156	            "max_wall_time": "4h",
+   157	            "metrics_schema": {"accuracy": "real"},
+   158	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   159	            "convergence_window": "3",
+   160	        },
+   161	        False,
+   162	    ),
+   163	    Case(
+   164	        "convergence_window_null",
+   165	        {
+   166	            "parallel_trials": 2,
+   167	            "max_trials": 50,
+   168	            "max_wall_time": "4h",
+   169	            "metrics_schema": {"accuracy": "real"},
+   170	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   171	            "convergence_window": None,
+   172	        },
+   173	        False,
+   174	    ),
+   175	]
+   176	
+   177	
+   178	_VALID_CLAIM = {
+   179	    "token": "claim-1",
+   180	    "worker_id": "worker-a",
+   181	    "claimed_at": _DT,
+   182	}
+   183	
+   184	TASK_CASES: list[Case] = [
+   185	    Case(
+   186	        "plan_pending",
+   187	        {
+   188	            "task_id": "t-1",
+   189	            "kind": "plan",
+   190	            "state": "pending",
+   191	            "payload": {"experiment_id": "exp-1"},
+   192	            "created_at": _DT,
+   193	            "updated_at": _DT,
+   194	        },
+   195	        True,
+   196	    ),
+   197	    Case(
+   198	        "implement_claimed",
+   199	        {
+   200	            "task_id": "t-2",
+   201	            "kind": "implement",
+   202	            "state": "claimed",
+   203	            "payload": {"proposal_id": "p-1"},
+   204	            "claim": _VALID_CLAIM,
+   205	            "created_at": _DT,
+   206	            "updated_at": _DT,
+   207	        },
+   208	        True,
+   209	    ),
+   210	    Case(
+   211	        "evaluate_submitted",
+   212	        {
+   213	            "task_id": "t-3",
+   214	            "kind": "evaluate",
+   215	            "state": "submitted",
+   216	            "payload": {"trial_id": "trial-1"},
+   217	            "claim": {**_VALID_CLAIM, "expires_at": _DT2},
+   218	            "created_at": _DT,
+   219	            "updated_at": _DT2,
+   220	        },
+   221	        True,
+   222	    ),
+   223	    Case(
+   224	        "plan_completed_no_claim",
+   225	        {
+   226	            "task_id": "t-4",
+   227	            "kind": "plan",
+   228	            "state": "completed",
+   229	            "payload": {"experiment_id": "exp-1"},
+   230	            "created_at": _DT,
+   231	            "updated_at": _DT2,
+   232	        },
+   233	        True,
+   234	    ),
+   235	    Case(
+   236	        "plan_failed_no_claim",
+   237	        {
+   238	            "task_id": "t-5",
+   239	            "kind": "plan",
+   240	            "state": "failed",
+   241	            "payload": {"experiment_id": "exp-1"},
+   242	            "created_at": _DT,
+   243	            "updated_at": _DT2,
+   244	        },
+   245	        True,
+   246	    ),
+   247	    Case(
+   248	        "claimed_without_claim",
+   249	        {
+   250	            "task_id": "t-6",
+   251	            "kind": "plan",
+   252	            "state": "claimed",
+   253	            "payload": {"experiment_id": "exp-1"},
+   254	            "created_at": _DT,
+   255	            "updated_at": _DT,
+   256	        },
+   257	        False,
+   258	    ),
+   259	    Case(
+   260	        "submitted_without_claim",
+   261	        {
+   262	            "task_id": "t-7",
+   263	            "kind": "evaluate",
+   264	            "state": "submitted",
+   265	            "payload": {"trial_id": "trial-1"},
+   266	            "created_at": _DT,
+   267	            "updated_at": _DT,
+   268	        },
+   269	        False,
+   270	    ),
+   271	    Case(
+   272	        "pending_with_claim",
+   273	        {
+   274	            "task_id": "t-8",
+   275	            "kind": "plan",
+   276	            "state": "pending",
+   277	            "payload": {"experiment_id": "exp-1"},
+   278	            "claim": _VALID_CLAIM,
+   279	            "created_at": _DT,
+   280	            "updated_at": _DT,
+   281	        },
+   282	        False,
+   283	    ),
+   284	    Case(
+   285	        "completed_with_claim",
+   286	        {
+   287	            "task_id": "t-9",
+   288	            "kind": "plan",
+   289	            "state": "completed",
+   290	            "payload": {"experiment_id": "exp-1"},
+   291	            "claim": _VALID_CLAIM,
+   292	            "created_at": _DT,
+   293	            "updated_at": _DT,
+   294	        },
+   295	        False,
+   296	    ),
+   297	    Case(
+   298	        "plan_task_missing_experiment_id",
+   299	        {
+   300	            "task_id": "t-10",
+   301	            "kind": "plan",
+   302	            "state": "pending",
+   303	            "payload": {},
+   304	            "created_at": _DT,
+   305	            "updated_at": _DT,
+   306	        },
+   307	        False,
+   308	    ),
+   309	    Case(
+   310	        "implement_task_missing_proposal_id",
+   311	        {
+   312	            "task_id": "t-11",
+   313	            "kind": "implement",
+   314	            "state": "pending",
+   315	            "payload": {"experiment_id": "exp-1"},
+   316	            "created_at": _DT,
+   317	            "updated_at": _DT,
+   318	        },
+   319	        False,
+   320	    ),
+   321	    Case(
+   322	        "invalid_kind",
+   323	        {
+   324	            "task_id": "t-12",
+   325	            "kind": "integrate",
+   326	            "state": "pending",
+   327	            "payload": {},
+   328	            "created_at": _DT,
+   329	            "updated_at": _DT,
+   330	        },
+   331	        False,
+   332	    ),
+   333	    Case(
+   334	        "invalid_state",
+   335	        {
+   336	            "task_id": "t-13",
+   337	            "kind": "plan",
+   338	            "state": "running",
+   339	            "payload": {"experiment_id": "exp-1"},
+   340	            "created_at": _DT,
+   341	            "updated_at": _DT,
+   342	        },
+   343	        False,
+   344	    ),
+   345	    Case(
+   346	        "missing_updated_at",
+   347	        {
+   348	            "task_id": "t-14",
+   349	            "kind": "plan",
+   350	            "state": "pending",
+   351	            "payload": {"experiment_id": "exp-1"},
+   352	            "created_at": _DT,
+   353	        },
+   354	        False,
+   355	    ),
+   356	    Case(
+   357	        "claim_bad_datetime",
+   358	        {
+   359	            "task_id": "t-15",
+   360	            "kind": "plan",
+   361	            "state": "claimed",
+   362	            "payload": {"experiment_id": "exp-1"},
+   363	            "claim": {"token": "c", "worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
+   364	            "created_at": _DT,
+   365	            "updated_at": _DT,
+   366	        },
+   367	        False,
+   368	    ),
+   369	    Case(
+   370	        "impossible_datetime",
+   371	        {
+   372	            "task_id": "t-16",
+   373	            "kind": "plan",
+   374	            "state": "pending",
+   375	            "payload": {"experiment_id": "exp-1"},
+   376	            "created_at": "2026-99-99T12:00:00Z",
+   377	            "updated_at": _DT,
+   378	        },
+   379	        False,
+   380	    ),
+   381	    Case(
+   382	        "claim_null_on_pending",
+   383	        {
+   384	            "task_id": "t-17",
+   385	            "kind": "plan",
+   386	            "state": "pending",
+   387	            "payload": {"experiment_id": "exp-1"},
+   388	            "claim": None,
+   389	            "created_at": _DT,
+   390	            "updated_at": _DT,
+   391	        },
+   392	        False,
+   393	    ),
+   394	]
+   395	
+   396	
+   397	EVENT_CASES: list[Case] = [
+   398	    Case(
+   399	        "task_claimed",
+   400	        {
+   401	            "event_id": "evt-1",
+   402	            "type": "task.claimed",
+   403	            "occurred_at": _DT,
+   404	            "experiment_id": "exp-1",
+   405	            "data": {"task_id": "t-1", "worker_id": "w-1"},
+   406	        },
+   407	        True,
+   408	    ),
+   409	    Case(
+   410	        "nested_type",
+   411	        {
+   412	            "event_id": "evt-2",
+   413	            "type": "trial.evaluated.success",
+   414	            "occurred_at": _DT2,
+   415	            "experiment_id": "exp-1",
+   416	            "data": {},
+   417	        },
+   418	        True,
+   419	    ),
+   420	    Case(
+   421	        "type_without_dot",
+   422	        {
+   423	            "event_id": "evt-3",
+   424	            "type": "claimed",
+   425	            "occurred_at": _DT,
+   426	            "experiment_id": "exp-1",
+   427	            "data": {},
+   428	        },
+   429	        False,
+   430	    ),
+   431	    Case(
+   432	        "type_uppercase",
+   433	        {
+   434	            "event_id": "evt-4",
+   435	            "type": "Task.Claimed",
+   436	            "occurred_at": _DT,
+   437	            "experiment_id": "exp-1",
+   438	            "data": {},
+   439	        },
+   440	        False,
+   441	    ),
+   442	    Case(
+   443	        "occurred_at_with_offset",
+   444	        {
+   445	            "event_id": "evt-5",
+   446	            "type": "task.claimed",
+   447	            "occurred_at": "2026-04-23T12:00:00+00:00",
+   448	            "experiment_id": "exp-1",
+   449	            "data": {},
+   450	        },
+   451	        False,
+   452	    ),
+   453	    Case(
+   454	        "missing_experiment_id",
+   455	        {
+   456	            "event_id": "evt-6",
+   457	            "type": "task.claimed",
+   458	            "occurred_at": _DT,
+   459	            "data": {},
+   460	        },
+   461	        False,
+   462	    ),
+   463	    Case(
+   464	        "data_not_object",
+   465	        {
+   466	            "event_id": "evt-7",
+   467	            "type": "task.claimed",
+   468	            "occurred_at": _DT,
+   469	            "experiment_id": "exp-1",
+   470	            "data": "hello",
+   471	        },
+   472	        False,
+   473	    ),
+   474	]
+   475	
+   476	
+   477	PROPOSAL_CASES: list[Case] = [
+   478	    Case(
+   479	        "drafting",
+   480	        {
+   481	            "proposal_id": "p-1",
+   482	            "experiment_id": "exp-1",
+   483	            "slug": "improve-tokenizer",
+   484	            "priority": 0.5,
+   485	            "parent_commits": [_SHA1],
+   486	            "artifacts_uri": "s3://bucket/proposals/p-1/",
+   487	            "state": "drafting",
+   488	            "created_at": _DT,
+   489	        },
+   490	        True,
+   491	    ),
+   492	    Case(
+   493	        "completed_sha256",
+   494	        {
+   495	            "proposal_id": "p-2",
+   496	            "experiment_id": "exp-1",
+   497	            "slug": "x",
+   498	            "priority": -1.0,
+   499	            "parent_commits": [_SHA256],
+   500	            "artifacts_uri": "file:///tmp/p-2",
+   501	            "state": "completed",
+   502	            "created_at": _DT2,
+   503	        },
+   504	        True,
+   505	    ),
+   506	    Case(
+   507	        "slug_uppercase",
+   508	        {
+   509	            "proposal_id": "p-3",
+   510	            "experiment_id": "exp-1",
+   511	            "slug": "Improve-Tokenizer",
+   512	            "priority": 0.0,
+   513	            "parent_commits": [_SHA1],
+   514	            "artifacts_uri": "s3://b/",
+   515	            "state": "drafting",
+   516	            "created_at": _DT,
+   517	        },
+   518	        False,
+   519	    ),
+   520	    Case(
+   521	        "slug_leading_dash",
+   522	        {
+   523	            "proposal_id": "p-4",
+   524	            "experiment_id": "exp-1",
+   525	            "slug": "-improve",
+   526	            "priority": 0.0,
+   527	            "parent_commits": [_SHA1],
+   528	            "artifacts_uri": "s3://b/",
+   529	            "state": "drafting",
+   530	            "created_at": _DT,
+   531	        },
+   532	        False,
+   533	    ),
+   534	    Case(
+   535	        "bad_state",
+   536	        {
+   537	            "proposal_id": "p-5",
+   538	            "experiment_id": "exp-1",
+   539	            "slug": "s",
+   540	            "priority": 0.0,
+   541	            "parent_commits": [_SHA1],
+   542	            "artifacts_uri": "s3://b/",
+   543	            "state": "accepted",
+   544	            "created_at": _DT,
+   545	        },
+   546	        False,
+   547	    ),
+   548	    Case(
+   549	        "empty_parent_commits",
+   550	        {
+   551	            "proposal_id": "p-6",
+   552	            "experiment_id": "exp-1",
+   553	            "slug": "s",
+   554	            "priority": 0.0,
+   555	            "parent_commits": [],
+   556	            "artifacts_uri": "s3://b/",
+   557	            "state": "drafting",
+   558	            "created_at": _DT,
+   559	        },
+   560	        False,
+   561	    ),
+   562	    Case(
+   563	        "bad_commit_sha_length",
+   564	        {
+   565	            "proposal_id": "p-7",
+   566	            "experiment_id": "exp-1",
+   567	            "slug": "s",
+   568	            "priority": 0.0,
+   569	            "parent_commits": ["abc123"],
+   570	            "artifacts_uri": "s3://b/",
+   571	            "state": "drafting",
+   572	            "created_at": _DT,
+   573	        },
+   574	        False,
+   575	    ),
+   576	    Case(
+   577	        "bad_commit_sha_uppercase",
+   578	        {
+   579	            "proposal_id": "p-8",
+   580	            "experiment_id": "exp-1",
+   581	            "slug": "s",
+   582	            "priority": 0.0,
+   583	            "parent_commits": ["A" * 40],
+   584	            "artifacts_uri": "s3://b/",
+   585	            "state": "drafting",
+   586	            "created_at": _DT,
+   587	        },
+   588	        False,
+   589	    ),
+   590	    Case(
+   591	        "priority_bool",
+   592	        {
+   593	            "proposal_id": "p-9",
+   594	            "experiment_id": "exp-1",
+   595	            "slug": "s",
+   596	            "priority": True,
+   597	            "parent_commits": [_SHA1],
+   598	            "artifacts_uri": "s3://b/",
+   599	            "state": "drafting",
+   600	            "created_at": _DT,
+   601	        },
+   602	        False,
+   603	    ),
+   604	    Case(
+   605	        "priority_string",
+   606	        {
+   607	            "proposal_id": "p-10",
+   608	            "experiment_id": "exp-1",
+   609	            "slug": "s",
+   610	            "priority": "1.5",
+   611	            "parent_commits": [_SHA1],
+   612	            "artifacts_uri": "s3://b/",
+   613	            "state": "drafting",
+   614	            "created_at": _DT,
+   615	        },
+   616	        False,
+   617	    ),
+   618	    Case(
+   619	        "artifacts_uri_no_scheme",
+   620	        {
+   621	            "proposal_id": "p-11",
+   622	            "experiment_id": "exp-1",
+   623	            "slug": "s",
+   624	            "priority": 0.0,
+   625	            "parent_commits": [_SHA1],
+   626	            "artifacts_uri": "just a plain string",
+   627	            "state": "drafting",
+   628	            "created_at": _DT,
+   629	        },
+   630	        False,
+   631	    ),
+   632	    Case(
+   633	        "artifacts_uri_space_in_host",
+   634	        {
+   635	            "proposal_id": "p-13",
+   636	            "experiment_id": "exp-1",
+   637	            "slug": "s",
+   638	            "priority": 0.0,
+   639	            "parent_commits": [_SHA1],
+   640	            "artifacts_uri": "http://exa mple.com/path",
+   641	            "state": "drafting",
+   642	            "created_at": _DT,
+   643	        },
+   644	        False,
+   645	    ),
+   646	    Case(
+   647	        "artifacts_uri_bad_percent_encoding",
+   648	        {
+   649	            "proposal_id": "p-14",
+   650	            "experiment_id": "exp-1",
+   651	            "slug": "s",
+   652	            "priority": 0.0,
+   653	            "parent_commits": [_SHA1],
+   654	            "artifacts_uri": "http://example.com/bad%ZZ",
+   655	            "state": "drafting",
+   656	            "created_at": _DT,
+   657	        },
+   658	        False,
+   659	    ),
+   660	    Case(
+   661	        "created_at_impossible",
+   662	        {
+   663	            "proposal_id": "p-12",
+   664	            "experiment_id": "exp-1",
+   665	            "slug": "s",
+   666	            "priority": 0.0,
+   667	            "parent_commits": [_SHA1],
+   668	            "artifacts_uri": "s3://b/",
+   669	            "state": "drafting",
+   670	            "created_at": "2026-13-32T25:00:00Z",
+   671	        },
+   672	        False,
+   673	    ),
+   674	]
+   675	
+   676	
+   677	TRIAL_CASES: list[Case] = [
+   678	    Case(
+   679	        "starting_minimal",
+   680	        {
+   681	            "trial_id": "trial-1",
+   682	            "experiment_id": "exp-1",
+   683	            "proposal_id": "p-1",
+   684	            "status": "starting",
+   685	            "parent_commits": [_SHA1],
+   686	            "started_at": _DT,
+   687	        },
+   688	        True,
+   689	    ),
+   690	    Case(
+   691	        "success_full",
+   692	        {
+   693	            "trial_id": "trial-2",
+   694	            "experiment_id": "exp-1",
+   695	            "proposal_id": "p-1",
+   696	            "status": "success",
+   697	            "parent_commits": [_SHA1],
+   698	            "branch": "work/trial-2",
+   699	            "commit_sha": "b" * 40,
+   700	            "trial_commit_sha": "c" * 40,
+   701	            "artifacts_uri": "s3://bucket/trial-2",
+   702	            "description": "improves accuracy",
+   703	            "metrics": {"accuracy": 0.91, "tokens": 12345},
+   704	            "started_at": _DT,
+   705	            "completed_at": _DT2,
+   706	        },
+   707	        True,
+   708	    ),
+   709	    Case(
+   710	        "eval_error",
+   711	        {
+   712	            "trial_id": "trial-3",
+   713	            "experiment_id": "exp-1",
+   714	            "proposal_id": "p-1",
+   715	            "status": "eval_error",
+   716	            "parent_commits": [_SHA1],
+   717	            "started_at": _DT,
+   718	        },
+   719	        True,
+   720	    ),
+   721	    Case(
+   722	        "branch_not_work",
+   723	        {
+   724	            "trial_id": "trial-4",
+   725	            "experiment_id": "exp-1",
+   726	            "proposal_id": "p-1",
+   727	            "status": "starting",
+   728	            "parent_commits": [_SHA1],
+   729	            "branch": "feature/foo",
+   730	            "started_at": _DT,
+   731	        },
+   732	        False,
+   733	    ),
+   734	    Case(
+   735	        "bad_status",
+   736	        {
+   737	            "trial_id": "trial-5",
+   738	            "experiment_id": "exp-1",
+   739	            "proposal_id": "p-1",
+   740	            "status": "running",
+   741	            "parent_commits": [_SHA1],
+   742	            "started_at": _DT,
+   743	        },
+   744	        False,
+   745	    ),
+   746	    Case(
+   747	        "bad_commit_sha",
+   748	        {
+   749	            "trial_id": "trial-6",
+   750	            "experiment_id": "exp-1",
+   751	            "proposal_id": "p-1",
+   752	            "status": "success",
+   753	            "parent_commits": [_SHA1],
+   754	            "commit_sha": "not-hex",
+   755	            "started_at": _DT,
+   756	        },
+   757	        False,
+   758	    ),
+   759	    Case(
+   760	        "empty_parent_commits",
+   761	        {
+   762	            "trial_id": "trial-7",
+   763	            "experiment_id": "exp-1",
+   764	            "proposal_id": "p-1",
+   765	            "status": "starting",
+   766	            "parent_commits": [],
+   767	            "started_at": _DT,
+   768	        },
+   769	        False,
+   770	    ),
+   771	    Case(
+   772	        "metrics_explicit_null",
+   773	        {
+   774	            "trial_id": "trial-8",
+   775	            "experiment_id": "exp-1",
+   776	            "proposal_id": "p-1",
+   777	            "status": "starting",
+   778	            "parent_commits": [_SHA1],
+   779	            "metrics": None,
+   780	            "started_at": _DT,
+   781	        },
+   782	        False,
+   783	    ),
+   784	    Case(
+   785	        "artifacts_uri_no_scheme",
+   786	        {
+   787	            "trial_id": "trial-9",
+   788	            "experiment_id": "exp-1",
+   789	            "proposal_id": "p-1",
+   790	            "status": "success",
+   791	            "parent_commits": [_SHA1],
+   792	            "artifacts_uri": "not a uri",
+   793	            "started_at": _DT,
+   794	        },
+   795	        False,
+   796	    ),
+   797	    Case(
+   798	        "artifacts_uri_space_in_host",
+   799	        {
+   800	            "trial_id": "trial-11",
+   801	            "experiment_id": "exp-1",
+   802	            "proposal_id": "p-1",
+   803	            "status": "success",
+   804	            "parent_commits": [_SHA1],
+   805	            "artifacts_uri": "http://exa mple.com/path",
+   806	            "started_at": _DT,
+   807	        },
+   808	        False,
+   809	    ),
+   810	    Case(
+   811	        "completed_at_null",
+   812	        {
+   813	            "trial_id": "trial-10",
+   814	            "experiment_id": "exp-1",
+   815	            "proposal_id": "p-1",
+   816	            "status": "starting",
+   817	            "parent_commits": [_SHA1],
+   818	            "started_at": _DT,
+   819	            "completed_at": None,
+   820	        },
+   821	        False,
+   822	    ),
+   823	]
+   824	
+   825	
+   826	METRICS_SCHEMA_CASES: list[Case] = [
+   827	    Case("one_real", {"accuracy": "real"}, True),
+   828	    Case("mixed", {"accuracy": "real", "tokens": "integer", "note": "text"}, True),
+   829	    Case("leading_underscore", {"_internal": "integer"}, True),
+   830	    Case("empty", {}, False),
+   831	    Case("reserved_trial_id", {"trial_id": "text"}, False),
+   832	    Case("reserved_completed_at", {"completed_at": "text"}, False),
+   833	    Case("invalid_type", {"x": "float"}, False),
+   834	    Case("numeric_first_char", {"1accuracy": "real"}, False),
+   835	    Case("hyphen_in_name", {"accu-racy": "real"}, False),
+   836	]
+   837	
+   838	
+   839	ALL_CASES: dict[str, list[Case]] = {
+   840	    "experiment-config": EXPERIMENT_CONFIG_CASES,
+   841	    "task": TASK_CASES,
+   842	    "event": EVENT_CASES,
+   843	    "proposal": PROPOSAL_CASES,
+   844	    "trial": TRIAL_CASES,
+   845	    "metrics-schema": METRICS_SCHEMA_CASES,
+   846	}
+
+codex
+The code reads as the intended fix. I’m validating the exact malformed URIs that failed round 1 and making sure the new runtime dependency is sufficient for both model-side and schema-side checks.
+exec
+/bin/zsh -lc 'UV_CACHE_DIR=.uv-cache uv sync --frozen' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+Checked 21 packages in 0.41ms
+
+exec
+/bin/zsh -lc 'uv run pytest -q' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from eden_contracts import Proposal, Trial
+samples = [
+    ('proposal_space_in_host', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'http://exa mple.com/path','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('proposal_bad_percent', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'http://example.com/bad%ZZ','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('proposal_ok_http', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'http://example.com/path','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('proposal_ok_s3', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'s3://bucket/path','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('trial_space_in_host', Trial.model_validate, {'trial_id':'t','experiment_id':'e','proposal_id':'p','status':'starting','parent_commits':['a'*40],'artifacts_uri':'http://exa mple.com/path','started_at':'2026-04-23T12:00:00Z'}),
+]
+for name, fn, data in samples:
+    try:
+        fn(data)
+    except Exception as e:
+        print(name, 'ERR', type(e).__name__)
+    else:
+        print(name, 'OK')
+PY" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+import json
+from pathlib import Path
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
+from rfc3986_validator import validate_rfc3986
+from datetime import datetime
+
+schemas_dir = Path('spec/v0/schemas')
+registry = Registry()
+for path in schemas_dir.glob('*.schema.json'):
+    registry = registry.with_resource(uri=f'https://eden.local/schemas/{path.name}', resource=Resource.from_contents(json.loads(path.read_text()), default_specification=DRAFT202012))
+fc = FormatChecker()
+@fc.checks('uri', raises=ValueError)
+def _check_uri(v):
+    if not isinstance(v, str):
+        return True
+    if not validate_rfc3986(v, rule='URI'):
+        raise ValueError('bad uri')
+    return True
+@fc.checks('date-time', raises=ValueError)
+def _check_datetime(v):
+    if not isinstance(v, str):
+        return True
+    datetime.fromisoformat(v)
+    return True
+validator = Draft202012Validator(schema={'"'$ref'"':'https://eden.local/schemas/proposal.schema.json'}, registry=registry, format_checker=fc)
+for uri in ['http://exa mple.com/path', 'http://example.com/bad%ZZ', 'http://example.com/path', 's3://bucket/path']:
+    data = {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':uri,'state':'drafting','created_at':'2026-04-23T12:00:00Z'}
+    try:
+        validator.validate(data)
+    except Exception as e:
+        print(uri, 'ERR', type(e).__name__)
+    else:
+        print(uri, 'OK')
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 106ms:
+ succeeded in 160ms:
+proposal_space_in_host ERR ValidationError
+proposal_bad_percent ERR ValidationError
+proposal_ok_http OK
+proposal_ok_s3 OK
+trial_space_in_host ERR ValidationError
+
+ succeeded in 321ms:
+........................................................................ [ 92%]
+......                                                                   [100%]
+78 passed in 0.05s
+
+codex
+No findings.
+
+The round 2 URI fix closes the remaining blocker. I re-read [_common.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/_common.py:1), [conftest.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/tests/conftest.py:1), [cases.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/tests/cases.py:1), and [pyproject.toml](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/pyproject.toml:1), then verified the previously problematic URIs directly: `http://exa mple.com/path` and `http://example.com/bad%ZZ` are now rejected on both the model side and the schema side, while `http://example.com/path` and `s3://bucket/path` still pass. `uv sync --frozen` succeeds, and `uv run pytest -q` is green at 78 tests.
+
+Overall assessment: Phase 3 now looks aligned with the plan, the schema-fidelity issues I flagged in rounds 0 and 1 are addressed, the parity/test harness is appropriately stronger, and I don’t see new scope creep or premature abstraction beyond the already-accepted corpus-based parity design. Residual risk is the intentional one already documented: parity is proven over the corpus, not over the full input space.
+tokens used
+125,289

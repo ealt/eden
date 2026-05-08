@@ -1,0 +1,1582 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019de4ff-1578-7980-8f4f-9d5c855fdc1d
+--------
+user
+I've addressed all 11 of your round-0 findings. The updated review brief at docs/plans/review/eden-phase-11-chunk-11a-11b-conformance-harness/impl/20260501T122226/1.md lists each fix. Please re-read the implementation files and review again.
+
+Specifically: the citation tool now enforces MUST language with hierarchical ancestor-section fallback; the atomicity test uses concurrent long-poll subscribe; the at-least-once test actually drives /events/subscribe; the readline race is fixed with a thread+queue pattern; subprocess startup failures clean up before re-raising; composite-commit tests assert both component events; problem+json instance is verified against request URL; self-validation tightened to the exact wrong-token assertion text.
+
+If everything looks good, please say so explicitly so we can move to commit and PR.
+codex
+I’m reading the updated review brief first, then the revised implementation files for each addressed finding so I can verify the fixes against the plan and the spec.
+exec
+/bin/zsh -lc "nl -ba docs/plans/review/eden-phase-11-chunk-11a-11b-conformance-harness/impl/20260501T122226/1.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# Implementation Review: eden-phase-11-chunk-11a-11b-conformance-harness
+     2	
+     3	## Plan
+     4	
+     5	- Path: docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md
+     6	- Summary: Phase 11 chunk 11a + 11b — ship the v1 conformance suite (harness +
+     7	  state-machine + wire-binding scenarios), spec chapter 9, reference IUT adapter,
+     8	  self-validation meta scenario, citation tooling, and the new `conformance` CI job.
+     9	
+    10	## Implementation Files
+    11	
+    12	### New (untracked)
+    13	
+    14	| File | Purpose | Plan section |
+    15	|---|---|---|
+    16	| `spec/v0/09-conformance.md` | Normative chapter 9 declaring conformance levels (v1 / v1+roles / v1+roles+integrator) | §G |
+    17	| `conformance/pyproject.toml` | uv-workspace member with deps (pytest, httpx, aiohttp, pytest-ordering, pytest-json-report, pyyaml) | §A, §K |
+    18	| `conformance/conftest.py` | Top-level conftest loading the harness pytest plugin | §A |
+    19	| `conformance/src/conformance/__init__.py` | Package marker | §A |
+    20	| `conformance/src/conformance/harness/__init__.py` | Package marker | §A |
+    21	| `conformance/src/conformance/harness/adapter.py` | `IutAdapter` Protocol + `IutHandle` dataclass (header-based auth via extra_headers) | §B |
+    22	| `conformance/src/conformance/harness/wire_client.py` | Thin httpx wrapper; observed-problem-types collector | §C |
+    23	| `conformance/src/conformance/harness/event_cursor.py` | EventLog helpers (replay_all, replay_from, subscribe) | §C |
+    24	| `conformance/src/conformance/harness/plugin.py` | pytest plugin: markers (`conformance`, `conformance_meta`), fixtures (`iut`, `wire_client`, `event_log`, `experiment_id`, session_observed_problem_types), `--iut-adapter` option | §C |
+    25	| `conformance/src/conformance/harness/_seed.py` | Wire-binding-only scenario seeding helpers (create_*, claim, submit_*, accept, reclaim, drive_to_starting_trial, drive_to_success_trial) | §B |
+    26	| `conformance/src/conformance/adapters/__init__.py` | Package marker | §A |
+    27	| `conformance/src/conformance/adapters/reference/__init__.py` | Package marker | §A |
+    28	| `conformance/src/conformance/adapters/reference/adapter.py` | ReferenceAdapter — spawns `python -m eden_task_store_server` against in-memory storage; passes `--subscribe-timeout 2.0` | §D |
+    29	| `conformance/src/conformance/_meta/__init__.py` | Package marker | §F |
+    30	| `conformance/src/conformance/_meta/misbehave_proxy.py` | aiohttp proxy that mutates one wrong-token 403 → 200; counts mutations | §F |
+    31	| `conformance/src/conformance/_meta/misbehaving_adapter.py` | MisbehavingAdapter — wraps ReferenceAdapter with the proxy | §F |
+    32	| `conformance/src/conformance/tools/__init__.py` | Package marker | §I |
+    33	| `conformance/src/conformance/tools/check_citations.py` | Walks scenario docstrings; verifies every cite resolves AND every chapter-9 §5 group has ≥ 1 citing test | §I |
+    34	| `conformance/src/conformance/fixtures/minimal-experiment.yaml` | Minimal experiment-config used by the harness | §A |
+    35	| `conformance/scenarios/test_task_lifecycle.py` | Task lifecycle scenarios (13 tests) | §E.1 |
+    36	| `conformance/scenarios/test_claim_tokens.py` | Claim-token scenarios (6 tests) | §E.2 |
+    37	| `conformance/scenarios/test_submit_idempotency.py` | Submit idempotency (5 tests) | §E.3 |
+    38	| `conformance/scenarios/test_reclamation.py` | Reclamation (5 tests) | §E.4 |
+    39	| `conformance/scenarios/test_atomicity.py` | Atomicity regression test (1 test, explicitly best-effort) | §E.5 |
+    40	| `conformance/scenarios/test_event_envelope.py` | Event envelope shape (6 tests) | §E.6 |
+    41	| `conformance/scenarios/test_event_payloads.py` | Per-type event payloads (15 tests) | §E.7 |
+    42	| `conformance/scenarios/test_composite_commits.py` | Composite-commit invariants (8 tests, includes retry-exhausted eval_error) | §E.8 |
+    43	| `conformance/scenarios/test_event_delivery.py` | Total order, replay, at-least-once via reconnect, long-poll subscribe (6 tests) | §E.9 |
+    44	| `conformance/scenarios/test_status_codes.py` | Status code mappings incl. duplicate-create → already-exists (10 tests) | §E.10 |
+    45	| `conformance/scenarios/test_problem_json.py` | RFC 7807 problem+json envelope (4 tests) | §E.11 |
+    46	| `conformance/scenarios/test_error_vocabulary.py` | Vocabulary closure both ways (2 tests, run last via pytest-ordering) | §E.12 |
+    47	| `conformance/scenarios/test_experiment_id_header.py` | Header-vs-path mismatch (1 test) | §E.13 |
+    48	| `conformance/scenarios/test_integrate_idempotency.py` | Integrate same-value idempotency (4 tests) | §E.14 |
+    49	| `conformance/scenarios/_meta/test_self_validation.py` | Self-validation meta scenario (control + broken + hit-counter sub-assertions) | §F |
+    50	
+    51	### Modified
+    52	
+    53	| File | Change | Plan section |
+    54	|---|---|---|
+    55	| `pyproject.toml` | Added `conformance` workspace member, `eden-conformance` source binding, dev dep, ruff per-file ignores | §A, §K |
+    56	| `uv.lock` | Refreshed for new conformance deps | §A |
+    57	| `.github/workflows/ci.yml` | New `conformance` job: uv sync + pytest conformance/ + directionality grep + check_citations.py | §H |
+    58	| `AGENTS.md` | Added 3 commands-table rows (conformance run / IUT-adapter override / citation check) | §J |
+    59	| `conformance/README.md` | v1 status and how-to-run | §A |
+    60	
+    61	## Change Summary
+    62	
+    63	- **86 v1 scenarios + 1 meta** all pass against the reference IUT (`uv run pytest -q conformance/` exits 0 in ~50s).
+    64	- **Citation check** — every scenario docstring's first line cites a normative MUST in `spec/v0/<chapter>.md §<sec>`; tool walks all scenarios and validates the citation resolves. CI gates this.
+    65	- **Vocabulary closure** — every chapter-7 §7 `eden://error/<name>` entry is observed at least once across the suite (incl. new duplicate-create scenario for `already-exists`); no other types appear.
+    66	- **Self-validation** — meta scenario runs subprocess pytest 3× (control / broken-adapter / hit-counter) to prove the harness has teeth.
+    67	- **Layer discipline** — directionality grep gates that `harness/`, `_meta/`, and `scenarios/` never import `reference/` packages; only `adapters/reference/` may.
+    68	- **Reference adapter** uses `secrets.token_hex` (not `token_urlsafe`) because the latter occasionally produces tokens starting with `-` that argparse interprets as a flag.
+    69	- **Subscribe timeout** is set to 2.0s on the reference adapter so the timeout-path subscribe scenario completes quickly; chapter 7 §6.2's 30s is a SHOULD, so this is conformant.
+    70	
+    71	## Review Status
+    72	
+    73	Round 0 — awaiting initial review.
+    74	
+    75	## Round 1 changes (in response to round 0)
+    76	
+    77	| Round-0 finding | Severity | Fix |
+    78	|---|---|---|
+    79	| 1: subscribe-empty-batch wall-clock bound | Bug | Test removed entirely (no MUST backs it; chapter 7 §6.2 is RECOMMENDED). |
+    80	| 2: at-least-once test never used /events/subscribe | Bug | Rewritten in [`test_event_delivery.py`](../../../../../conformance/scenarios/test_event_delivery.py) to use `event_log.subscribe()` for both reads. |
+    81	| 3: check_citations didn't enforce MUST | Bug | Tool now parses each cited section (with hierarchical fallback to ancestor sections) and asserts `\bMUST\b` is present. Three citations re-pointed to MUST-bearing sections; one test (subscribe-empty-batch) dropped because no MUST exists. |
+    82	| 4: subprocess leak on startup failure | Bug | Both [`ReferenceAdapter.start()`](../../../../../conformance/src/conformance/adapters/reference/adapter.py) and [`MisbehavingAdapter.start()`](../../../../../conformance/src/conformance/_meta/misbehaving_adapter.py) wrap post-Popen work in `try/except BaseException → stop() → re-raise`. |
+    83	| 5: readline blocks indefinitely | Risk | Replaced with daemon-thread+queue.Queue pattern; `q.get(timeout=...)` makes the 15s deadline real. |
+    84	| 6: atomicity test was post-hoc | Bug | Rewritten with concurrent long-poll subscribe; threads claim against the IUT while the poller waits, asserts `task.claimed` event observed AND post-event read shows `state == "claimed"`. |
+    85	| 7: composite-commits don't assert both events | Risk | `test_implement_terminal_completes_proposal` now asserts both `task.completed` AND `proposal.completed`; `test_evaluate_terminal_success_emits_trial_succeeded` asserts both `task.completed` AND `trial.succeeded`. |
+    86	| 8: problem+json `instance` not checked | Risk | `_assert_problem_envelope` now compares `body["instance"]` to `r.request.url` for each error response. |
+    87	| 9: AGENTS.md missing pitfall | Risk | Added the codification entry per plan §J. |
+    88	| 10: terminal_failed test only checked reclaim | Risk | Expanded to claim/submit/accept/reject/reclaim, mirroring the completed test. |
+    89	| 11: self-validation accepts loose substring | Risk | Tightened to `"Expected 403 wrong-token, got 200"` exact substring match. |
+    90	
+    91	## Verification post-round-1
+    92	
+    93	- `uv run pytest -q conformance/` — 86 passed in ~49s (3 successive runs stable).
+    94	- `uv run python conformance/src/conformance/tools/check_citations.py` — 85 scenarios cite valid MUSTs.
+    95	- `uv run ruff check conformance/` — clean.
+    96	- `uv run pyright conformance/` — clean.
+
+exec
+/bin/zsh -lc 'git status --short -- conformance spec/v0/09-conformance.md .github/workflows/ci.yml AGENTS.md pyproject.toml conformance/README.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M .github/workflows/ci.yml
+ M AGENTS.md
+ M conformance/README.md
+ M pyproject.toml
+?? conformance/conftest.py
+?? conformance/pyproject.toml
+?? conformance/scenarios/
+?? conformance/src/
+?? spec/v0/09-conformance.md
+
+exec
+/bin/zsh -lc 'git diff --name-only -- conformance spec/v0/09-conformance.md .github/workflows/ci.yml AGENTS.md pyproject.toml conformance/README.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+.github/workflows/ci.yml
+AGENTS.md
+conformance/README.md
+pyproject.toml
+
+codex
+I’ve got the round-1 brief. I’m checking the revised files directly now, then I’ll run the conformance checks the brief claims passed.
+exec
+/bin/zsh -lc "nl -ba conformance/src/conformance/tools/check_citations.py | sed -n '1,280p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Verify every conformance scenario cites a real spec MUST.
+     2	
+     3	Walks every test under ``conformance/scenarios/`` (excluding ``_meta/``),
+     4	extracts the first docstring line, parses out
+     5	``spec/v0/<chapter>.md §<sec>``, and asserts:
+     6	
+     7	1. The cited section exists in the target chapter.
+     8	2. The cited section (or any ancestor section in the same chapter)
+     9	   contains a normative MUST. Per chapter 9 §3, the suite asserts
+    10	   MUSTs only; SHOULDs and MAYs are interop guidance, not interop
+    11	   contracts. The hierarchy walk lets a §3.2-level citation inherit
+    12	   from a §3-level MUST.
+    13	3. Every chapter-9 §5 scenario-index group has at least one citing test.
+    14	
+    15	Exit 0 on clean, 1 on unresolved citations, 2 on setup errors.
+    16	"""
+    17	
+    18	from __future__ import annotations
+    19	
+    20	import ast
+    21	import re
+    22	import sys
+    23	from pathlib import Path
+    24	
+    25	REPO_ROOT = Path(__file__).resolve().parents[4]
+    26	SPEC_DIR = REPO_ROOT / "spec" / "v0"
+    27	SCENARIOS_DIR = REPO_ROOT / "conformance" / "scenarios"
+    28	
+    29	CITATION_RE = re.compile(
+    30	    r"spec/v0/(?P<chapter>[0-9]{2}-[a-z-]+\.md)\s+§(?P<section>\d+(?:\.\d+)*)"
+    31	)
+    32	HEADING_RE = re.compile(r"^(?P<hashes>#{2,4})\s+(?P<num>\d+(?:\.\d+)*)(?:[.\s]|$)")
+    33	MUST_RE = re.compile(r"\bMUST\b")
+    34	
+    35	# Index groups from spec/v0/09-conformance.md §5. Each group MUST have
+    36	# at least one citing test in conformance/scenarios/.
+    37	INDEX_FILE_PATTERNS = {
+    38	    "Task lifecycle": "test_task_lifecycle.py",
+    39	    "Claim tokens": "test_claim_tokens.py",
+    40	    "Submit idempotency": "test_submit_idempotency.py",
+    41	    "Reclamation": "test_reclamation.py",
+    42	    "Atomicity (regression test)": "test_atomicity.py",
+    43	    "Event envelope": "test_event_envelope.py",
+    44	    "Per-type event payloads": "test_event_payloads.py",
+    45	    "Composite commits": "test_composite_commits.py",
+    46	    "Event delivery": "test_event_delivery.py",
+    47	    "Status codes": "test_status_codes.py",
+    48	    "Problem+json envelope": "test_problem_json.py",
+    49	    "Error vocabulary closure": "test_error_vocabulary.py",
+    50	    "Experiment-id header disagreement": "test_experiment_id_header.py",
+    51	    "Integrate idempotency": "test_integrate_idempotency.py",
+    52	}
+    53	
+    54	
+    55	def _heading_depth(num: str) -> int:
+    56	    return num.count(".") + 1
+    57	
+    58	
+    59	def _section_or_ancestor_has_must(
+    60	    sections: dict[str, str], section: str
+    61	) -> bool:
+    62	    r"""Check that the section, or any ancestor in the same chapter, has MUST.
+    63	
+    64	    Walks from the cited section up to its top-level parent; returns
+    65	    True if any of those texts contains a `\bMUST\b` token.
+    66	    """
+    67	    parts = section.split(".")
+    68	    while parts:
+    69	        candidate = ".".join(parts)
+    70	        text = sections.get(candidate)
+    71	        if text and MUST_RE.search(text):
+    72	            return True
+    73	        parts.pop()
+    74	    return False
+    75	
+    76	
+    77	def build_section_text_index() -> dict[str, dict[str, str]]:
+    78	    """Return ``{filename: {section_num: text}}`` for every spec heading.
+    79	
+    80	    The "text" is everything from the heading line through (but not
+    81	    including) the next heading whose depth is the same or shallower.
+    82	    This lets the MUST-check examine the full section body.
+    83	    """
+    84	    index: dict[str, dict[str, str]] = {}
+    85	    for f in sorted(SPEC_DIR.glob("*.md")):
+    86	        sections: dict[str, str] = {}
+    87	        lines = f.read_text().splitlines()
+    88	        # Pre-extract heading positions.
+    89	        positions: list[tuple[int, str, int]] = []
+    90	        for i, line in enumerate(lines):
+    91	            m = HEADING_RE.match(line)
+    92	            if m:
+    93	                positions.append((i, m.group("num"), _heading_depth(m.group("num"))))
+    94	        for idx, (start, num, depth) in enumerate(positions):
+    95	            end = len(lines)
+    96	            for j in range(idx + 1, len(positions)):
+    97	                _next_start, _next_num, next_depth = positions[j]
+    98	                if next_depth <= depth:
+    99	                    end = positions[j][0]
+   100	                    break
+   101	            sections[num] = "\n".join(lines[start:end])
+   102	        index[f.name] = sections
+   103	    return index
+   104	
+   105	
+   106	def iter_test_functions(path: Path):
+   107	    """Yield (path, function_name, first_docstring_line) for every test_*."""
+   108	    tree = ast.parse(path.read_text())
+   109	    for node in ast.walk(tree):
+   110	        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+   111	            doc = ast.get_docstring(node)
+   112	            first_line = doc.splitlines()[0] if doc else ""
+   113	            yield (path, node.name, first_line)
+   114	
+   115	
+   116	def main() -> int:
+   117	    """Run the citation check and report findings."""
+   118	    if not SCENARIOS_DIR.is_dir():
+   119	        print(f"FAIL: {SCENARIOS_DIR} not found", file=sys.stderr)
+   120	        return 2
+   121	    spec_index = build_section_text_index()
+   122	    failures: list[str] = []
+   123	    coverage: dict[str, list[tuple[Path, str, str]]] = {
+   124	        chapter: [] for chapter in spec_index
+   125	    }
+   126	    file_to_tests: dict[str, list[str]] = {}
+   127	    for test_file in sorted(SCENARIOS_DIR.glob("test_*.py")):
+   128	        for path, name, first_line in iter_test_functions(test_file):
+   129	            file_to_tests.setdefault(test_file.name, []).append(name)
+   130	            m = CITATION_RE.search(first_line)
+   131	            if not m:
+   132	                failures.append(
+   133	                    f"{path.relative_to(REPO_ROOT)}::{name}: docstring "
+   134	                    f"first line missing 'spec/v0/<chapter>.md §<sec>' citation:\n"
+   135	                    f"    {first_line!r}"
+   136	                )
+   137	                continue
+   138	            chapter = m.group("chapter")
+   139	            section = m.group("section")
+   140	            sections = spec_index.get(chapter)
+   141	            if sections is None:
+   142	                failures.append(
+   143	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites unknown "
+   144	                    f"chapter {chapter}"
+   145	                )
+   146	                continue
+   147	            text = sections.get(section)
+   148	            if text is None:
+   149	                failures.append(
+   150	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   151	                    f"{chapter} §{section} (no such section in target)"
+   152	                )
+   153	                continue
+   154	            if not _section_or_ancestor_has_must(sections, section):
+   155	                failures.append(
+   156	                    f"{path.relative_to(REPO_ROOT)}::{name}: cites "
+   157	                    f"{chapter} §{section}, but neither that section nor "
+   158	                    f"any ancestor contains a normative MUST. Per "
+   159	                    f"chapter 9 §3 the suite asserts MUSTs only; either "
+   160	                    f"cite a different section or strengthen the spec."
+   161	                )
+   162	                continue
+   163	            coverage[chapter].append((path, name, section))
+   164	    # Index-group coverage check.
+   165	    for group, file_pattern in INDEX_FILE_PATTERNS.items():
+   166	        if not file_to_tests.get(file_pattern):
+   167	            failures.append(
+   168	                f"chapter 9 §5 index group {group!r}: no tests in expected "
+   169	                f"file conformance/scenarios/{file_pattern}"
+   170	            )
+   171	    if failures:
+   172	        print("Citation-check FAILURES:")
+   173	        for f in failures:
+   174	            print(f"  - {f}")
+   175	        return 1
+   176	    total = sum(len(v) for v in coverage.values())
+   177	    print(f"OK: {total} scenarios cite valid spec MUSTs.")
+   178	    for chapter in sorted(coverage):
+   179	        if not coverage[chapter]:
+   180	            continue
+   181	        sections = sorted({s for (_p, _n, s) in coverage[chapter]})
+   182	        print(f"  {chapter}: §§ {', '.join(sections)}")
+   183	    return 0
+   184	
+   185	
+   186	if __name__ == "__main__":
+   187	    raise SystemExit(main())
+
+exec
+/bin/zsh -lc "nl -ba conformance/scenarios/test_event_delivery.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Event delivery semantics — chapter 05 §4 + chapter 07 §6.2."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import threading
+     6	import time
+     7	
+     8	import pytest
+     9	from conformance.harness import _seed
+    10	from conformance.harness.event_cursor import EventLog
+    11	from conformance.harness.wire_client import WireClient
+    12	
+    13	pytestmark = pytest.mark.conformance
+    14	
+    15	
+    16	def _drive_some(client: WireClient) -> None:
+    17	    tid = _seed.create_plan_task(client)
+    18	    c = _seed.claim(client, tid)
+    19	    _seed.submit_plan(client, tid, token=c["token"])
+    20	    _seed.accept(client, tid)
+    21	
+    22	
+    23	def test_total_order_per_experiment(
+    24	    wire_client: WireClient, event_log: EventLog
+    25	) -> None:
+    26	    """spec/v0/05-event-protocol.md §4.1 — repeated reads observe the same total order."""
+    27	    _drive_some(wire_client)
+    28	    e1 = event_log.replay_all()
+    29	    e2 = event_log.replay_all()
+    30	    assert [e["event_id"] for e in e1] == [e["event_id"] for e in e2]
+    31	
+    32	
+    33	def test_replay_from_cursor_zero_returns_all_events(
+    34	    wire_client: WireClient, event_log: EventLog
+    35	) -> None:
+    36	    """spec/v0/05-event-protocol.md §4.4 — replay from cursor=0 returns the full stream."""
+    37	    _drive_some(wire_client)
+    38	    events = event_log.replay_all()
+    39	    assert len(events) >= 4  # task.created, task.claimed, task.submitted, task.completed
+    40	
+    41	
+    42	def test_replay_repeatable(
+    43	    wire_client: WireClient, event_log: EventLog
+    44	) -> None:
+    45	    """spec/v0/05-event-protocol.md §4.4 — replay is deterministic across reads."""
+    46	    _drive_some(wire_client)
+    47	    e1, _ = event_log.replay_from(0)
+    48	    e2, _ = event_log.replay_from(0)
+    49	    assert e1 == e2
+    50	
+    51	
+    52	def test_subscribe_at_least_once_via_reconnect(
+    53	    wire_client: WireClient, event_log: EventLog
+    54	) -> None:
+    55	    """spec/v0/05-event-protocol.md §4.3 — at-least-once delivery to active subscribers.
+    56	
+    57	    Subscribe and consume one batch, then reconnect to the subscribe
+    58	    endpoint with the same prior cursor; the IUT MUST redeliver the
+    59	    events from that point. The §4.3 MUST is "deliver every appended
+    60	    event to every active subscriber at least once"; reconnect-with-
+    61	    prior-cursor on the subscribe endpoint is the testable consequence.
+    62	    """
+    63	    _drive_some(wire_client)
+    64	    # First subscribe pass from cursor=0; pulls everything that's there.
+    65	    events_a, _cursor_after = event_log.subscribe(cursor=0, timeout=10.0)
+    66	    assert events_a, "subscribe should return existing events when cursor=0"
+    67	    # Reconnect with the SAME prior cursor; subscribe MUST redeliver.
+    68	    events_b, _ = event_log.subscribe(cursor=0, timeout=10.0)
+    69	    ids_a = [e["event_id"] for e in events_a]
+    70	    ids_b = [e["event_id"] for e in events_b]
+    71	    assert ids_a == ids_b, (
+    72	        "subscribe redelivery: same prior cursor must yield the same events"
+    73	    )
+    74	
+    75	
+    76	def test_subscribe_long_poll_yields_event(
+    77	    wire_client: WireClient, event_log: EventLog
+    78	) -> None:
+    79	    """spec/v0/05-event-protocol.md §4.3 — subscribe MUST deliver appended events.
+    80	
+    81	    The chapter-5 §4.3 MUST is "deliver every appended event to every
+    82	    active subscriber at least once". The §6.2 long-poll wiring is
+    83	    the binding through which we observe that delivery.
+    84	    """
+    85	    # Get current cursor.
+    86	    events_before, cursor = event_log.replay_from(0)
+    87	    started_count = len(events_before)
+    88	    yielded: list[dict] = []
+    89	
+    90	    def _poll() -> None:
+    91	        ev, _ = event_log.subscribe(cursor=started_count, timeout=10.0)
+    92	        yielded.extend(ev)
+    93	
+    94	    t = threading.Thread(target=_poll)
+    95	    t.start()
+    96	    time.sleep(0.2)  # ensure subscribe is in-flight before transition
+    97	    _drive_some(wire_client)
+    98	    t.join(timeout=10.0)
+    99	    assert not t.is_alive(), "subscribe poll did not return in time"
+   100	    assert yielded, "long-poll should yield at least the new events"
+   101	
+   102	
+   103	# NOTE: An earlier draft of this file had `test_subscribe_empty_batch_after_timeout`,
+   104	# which asserted that subscribe against a quiescent log returns the empty-batch
+   105	# shape `{events: [], cursor: <unchanged>}` on the server-chosen timeout. Chapter
+   106	# 7 §6.2 makes both the timeout (RECOMMENDED 30s, a SHOULD) and the empty-batch
+   107	# shape descriptive rather than MUST. With no normative MUST backing the
+   108	# assertion, that test was dropped per the citation-check rule.
+
+exec
+/bin/zsh -lc "nl -ba conformance/src/conformance/adapters/reference/adapter.py | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba conformance/src/conformance/_meta/misbehaving_adapter.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba conformance/scenarios/test_atomicity.py | sed -n '1,200p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Reference IUT adapter — spawns the EDEN reference task-store-server.
+     2	
+     3	The adapter is per-scenario: each test gets a fresh subprocess. Bonds
+     4	to in-memory SQLite storage for speed; conformance does not test
+     5	durability (eden-storage's own tests do).
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	import queue
+    11	import secrets
+    12	import subprocess
+    13	import sys
+    14	import threading
+    15	import time
+    16	from pathlib import Path
+    17	
+    18	from conformance.harness.adapter import IutAdapter, IutHandle
+    19	
+    20	
+    21	class ReferenceAdapter(IutAdapter):
+    22	    """Spawns ``python -m eden_task_store_server`` in a subprocess."""
+    23	
+    24	    _PORT_ANNOUNCE_TIMEOUT = 15.0
+    25	    _STOP_TIMEOUT = 5.0
+    26	    _SUBSCRIBE_TIMEOUT_S = 2.0  # see plan §D rationale
+    27	
+    28	    def __init__(self) -> None:
+    29	        self._proc: subprocess.Popen[str] | None = None
+    30	        self._stderr_lines: list[str] = []
+    31	        self._stderr_thread: threading.Thread | None = None
+    32	
+    33	    def start(
+    34	        self,
+    35	        *,
+    36	        experiment_config_path: Path,
+    37	        experiment_id: str,
+    38	    ) -> IutHandle:
+    39	        # Use token_hex (only [0-9a-f]) — token_urlsafe can start with
+    40	        # `-`, which argparse interprets as a new flag and the server
+    41	        # exits with code 2 before announcing its port.
+    42	        token = secrets.token_hex(24)
+    43	        self._proc = subprocess.Popen(
+    44	            [
+    45	                sys.executable,
+    46	                "-m",
+    47	                "eden_task_store_server",
+    48	                "--store-url",
+    49	                ":memory:",
+    50	                "--experiment-id",
+    51	                experiment_id,
+    52	                "--experiment-config",
+    53	                str(experiment_config_path),
+    54	                "--shared-token",
+    55	                token,
+    56	                "--subscribe-timeout",
+    57	                str(self._SUBSCRIBE_TIMEOUT_S),
+    58	                "--port",
+    59	                "0",
+    60	                "--host",
+    61	                "127.0.0.1",
+    62	            ],
+    63	            stdout=subprocess.PIPE,
+    64	            stderr=subprocess.PIPE,
+    65	            text=True,
+    66	        )
+    67	        # Defensive: if the port-announce read or stderr-drain start
+    68	        # raises, the spawned subprocess and its drain thread would leak
+    69	        # because the fixture never reached `yield` — `stop()` would not
+    70	        # be called. Catch, clean up, then re-raise.
+    71	        try:
+    72	            port = self._read_port_announcement()
+    73	            self._start_stderr_drain()
+    74	        except BaseException:
+    75	            self.stop()
+    76	            raise
+    77	        return IutHandle(
+    78	            base_url=f"http://127.0.0.1:{port}",
+    79	            experiment_id=experiment_id,
+    80	            extra_headers={"Authorization": f"Bearer {token}"},
+    81	        )
+    82	
+    83	    def stop(self) -> None:
+    84	        proc = self._proc
+    85	        if proc is None:
+    86	            return
+    87	        if proc.poll() is None:
+    88	            proc.terminate()
+    89	            try:
+    90	                proc.wait(timeout=self._STOP_TIMEOUT)
+    91	            except subprocess.TimeoutExpired:
+    92	                proc.kill()
+    93	                proc.wait(timeout=2.0)
+    94	        if self._stderr_thread is not None:
+    95	            self._stderr_thread.join(timeout=1.0)
+    96	        self._proc = None
+    97	
+    98	    @property
+    99	    def stderr_log(self) -> str:
+   100	        return "".join(self._stderr_lines)
+   101	
+   102	    # ----- internals -----
+   103	
+   104	    def _read_port_announcement(self) -> int:
+   105	        proc = self._proc
+   106	        assert proc is not None and proc.stdout is not None
+   107	        # readline() blocks indefinitely until a newline OR EOF, so a
+   108	        # hung server that never prints anything would wedge here for
+   109	        # the lifetime of the test process. Drain stdout from a
+   110	        # daemon thread into a queue so the timeout is real.
+   111	        q: queue.Queue[str] = queue.Queue()
+   112	
+   113	        def _reader() -> None:
+   114	            assert proc.stdout is not None
+   115	            try:
+   116	                for line in iter(proc.stdout.readline, ""):
+   117	                    q.put(line)
+   118	            finally:
+   119	                q.put("")  # EOF sentinel
+   120	
+   121	        reader = threading.Thread(target=_reader, daemon=True)
+   122	        reader.start()
+   123	        deadline = time.monotonic() + self._PORT_ANNOUNCE_TIMEOUT
+   124	        while True:
+   125	            remaining = deadline - time.monotonic()
+   126	            if remaining <= 0:
+   127	                raise RuntimeError(
+   128	                    "task-store-server did not announce port within "
+   129	                    f"{self._PORT_ANNOUNCE_TIMEOUT}s; stderr="
+   130	                    f"{self.stderr_log!r}"
+   131	                )
+   132	            try:
+   133	                line = q.get(timeout=min(remaining, 0.5))
+   134	            except queue.Empty:
+   135	                # Reader still alive, no line yet — loop and re-check.
+   136	                if proc.poll() is not None:
+   137	                    raise RuntimeError(
+   138	                        f"task-store-server exited early with code "
+   139	                        f"{proc.returncode}; stderr="
+   140	                        f"{self._read_remaining_stderr()!r}"
+   141	                    ) from None
+   142	                continue
+   143	            if line == "":
+   144	                # EOF: the subprocess closed stdout, so it likely exited.
+   145	                raise RuntimeError(
+   146	                    f"task-store-server stdout closed before announcing "
+   147	                    f"port; rc={proc.poll()!r}; stderr="
+   148	                    f"{self._read_remaining_stderr()!r}"
+   149	                )
+   150	            if line.startswith("EDEN_TASK_STORE_LISTENING"):
+   151	                parts = dict(p.split("=", 1) for p in line.strip().split()[1:])
+   152	                return int(parts["port"])
+   153	
+   154	    def _read_remaining_stderr(self) -> str:
+   155	        proc = self._proc
+   156	        assert proc is not None
+   157	        leftover = ""
+   158	        if proc.stderr is not None:
+   159	            try:
+   160	                leftover = proc.stderr.read() or ""
+   161	            except (OSError, ValueError):
+   162	                pass
+   163	        return self.stderr_log + leftover
+   164	
+   165	    def _start_stderr_drain(self) -> None:
+   166	        proc = self._proc
+   167	        assert proc is not None and proc.stderr is not None
+   168	
+   169	        def _drain() -> None:
+   170	            assert proc.stderr is not None
+   171	            for line in proc.stderr:
+   172	                self._stderr_lines.append(line)
+   173	
+   174	        thread = threading.Thread(target=_drain, daemon=True)
+   175	        thread.start()
+   176	        self._stderr_thread = thread
+
+ succeeded in 0ms:
+     1	"""ReferenceAdapter wrapper that fronts the IUT with the misbehaving proxy.
+     2	
+     3	Used by the self-validation meta scenario via --iut-adapter. This is
+     4	NOT a normal conformance adapter; it deliberately violates spec to
+     5	prove the harness has teeth.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	from pathlib import Path
+    11	
+    12	from conformance.adapters.reference.adapter import ReferenceAdapter
+    13	from conformance.harness.adapter import IutHandle
+    14	
+    15	from .misbehave_proxy import MisbehaveProxy, hit_counter_path_from_env
+    16	
+    17	
+    18	class MisbehavingAdapter(ReferenceAdapter):
+    19	    """Wraps the reference adapter with a proxy that mutates one wrong-token response."""
+    20	
+    21	    def __init__(self) -> None:
+    22	        super().__init__()
+    23	        self._proxy: MisbehaveProxy | None = None
+    24	
+    25	    def start(
+    26	        self,
+    27	        *,
+    28	        experiment_config_path: Path,
+    29	        experiment_id: str,
+    30	    ) -> IutHandle:
+    31	        real = super().start(
+    32	            experiment_config_path=experiment_config_path,
+    33	            experiment_id=experiment_id,
+    34	        )
+    35	        # Defensive: if proxy creation/start raises after the upstream
+    36	        # subprocess has been spawned, tear down the upstream so we
+    37	        # don't leak the eden-task-store-server process.
+    38	        try:
+    39	            proxy = MisbehaveProxy(
+    40	                upstream_base_url=real.base_url,
+    41	                hit_counter_path=hit_counter_path_from_env(),
+    42	            )
+    43	            proxy.start()
+    44	        except BaseException:
+    45	            super().stop()
+    46	            raise
+    47	        self._proxy = proxy
+    48	        return IutHandle(
+    49	            base_url=proxy.base_url,
+    50	            experiment_id=real.experiment_id,
+    51	            extra_headers=real.extra_headers,
+    52	        )
+    53	
+    54	    def stop(self) -> None:
+    55	        if self._proxy is not None:
+    56	            try:
+    57	                self._proxy.stop()
+    58	            except Exception:  # noqa: BLE001
+    59	                pass
+    60	            self._proxy = None
+    61	        super().stop()
+
+ succeeded in 0ms:
+     1	"""Atomicity (best-effort regression test).
+     2	
+     3	Per spec/v0/09-conformance.md §3, this is a regression-style test, NOT a
+     4	certification of the chapter-04 §1.3 atomicity invariant. Black-box
+     5	testing cannot prove the absence of a sufficiently-narrow window.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	import threading
+    11	import time
+    12	
+    13	import pytest
+    14	from conformance.harness import _seed
+    15	from conformance.harness.event_cursor import EventLog
+    16	from conformance.harness.wire_client import WireClient
+    17	
+    18	pytestmark = pytest.mark.conformance
+    19	
+    20	
+    21	def test_task_state_change_visible_only_after_event_appended(
+    22	    wire_client: WireClient, event_log: EventLog
+    23	) -> None:
+    24	    """spec/v0/04-task-protocol.md §1.3 — every state change is accompanied by its event.
+    25	
+    26	    NOTE: best-effort regression test, not a certification of §1.3
+    27	    linearizability. Black-box testing cannot prove the absence of a
+    28	    sufficiently-narrow window where the IUT briefly exposed a state
+    29	    without its event.
+    30	
+    31	    The test drives one transition (`pending → claimed`) while
+    32	    concurrently long-poll-subscribing to the event log. When subscribe
+    33	    yields the `task.claimed` event, an immediate task read MUST show
+    34	    `state == "claimed"` (not `pending`); a follow-up read MUST also
+    35	    be consistent. A regression that advanced state ahead of the event
+    36	    would be visible if the poller saw the new state before its event.
+    37	    """
+    38	    tid = _seed.create_plan_task(wire_client)
+    39	    # Drain the events from task creation so the subscribe waits past them.
+    40	    initial_events, cursor = event_log.replay_from(0)
+    41	    assert len(initial_events) >= 1, "task.created event expected"
+    42	
+    43	    yielded: list[dict] = []
+    44	    poll_done = threading.Event()
+    45	
+    46	    def _poll() -> None:
+    47	        try:
+    48	            ev, _ = event_log.subscribe(cursor=cursor, timeout=10.0)
+    49	            yielded.extend(ev)
+    50	        finally:
+    51	            poll_done.set()
+    52	
+    53	    poller = threading.Thread(target=_poll, daemon=True)
+    54	    poller.start()
+    55	    # Give subscribe a moment to land on the wire before transitioning.
+    56	    time.sleep(0.1)
+    57	
+    58	    _seed.claim(wire_client, tid, worker_id="atomic-w")
+    59	    poll_done.wait(timeout=10.0)
+    60	    assert poll_done.is_set(), "long-poll did not return after transition"
+    61	
+    62	    claimed_in_yield = [
+    63	        e
+    64	        for e in yielded
+    65	        if e.get("type") == "task.claimed" and e["data"].get("task_id") == tid
+    66	    ]
+    67	    assert claimed_in_yield, (
+    68	        f"subscribe should have yielded task.claimed for {tid}; "
+    69	        f"got {[e.get('type') for e in yielded]}"
+    70	    )
+    71	
+    72	    # Once the event has been observed, the task MUST be in `claimed`
+    73	    # state. A regression that exposed `claimed` to readers WITHOUT
+    74	    # appending the event would not be observable here directly, but
+    75	    # one that exposed the event without committing the state would be.
+    76	    task = _seed.read_task(wire_client, tid)
+    77	    assert task["state"] == "claimed", (
+    78	        f"observed task.claimed event but task state is {task['state']!r}"
+    79	    )
+    80	    # And the state must not regress on a follow-up read.
+    81	    task_followup = _seed.read_task(wire_client, tid)
+    82	    assert task_followup["state"] == "claimed"
+
+exec
+/bin/zsh -lc "nl -ba conformance/scenarios/test_problem_json.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""RFC 7807 problem+json envelope shape — chapter 07 §7."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import re
+     6	
+     7	import pytest
+     8	from conformance.harness import _seed
+     9	from conformance.harness.wire_client import WireClient
+    10	
+    11	pytestmark = pytest.mark.conformance
+    12	
+    13	_TYPE_URI_PATTERN = re.compile(r"^eden://error/[a-z][a-z0-9-]*$")
+    14	
+    15	
+    16	def _assert_problem_envelope(resp_status: int, body: dict, instance_url: str) -> None:
+    17	    """Common envelope-shape check applied to each error response.
+    18	
+    19	    Verifies all five §7 envelope fields, and asserts `instance`
+    20	    matches the URL the client requested (a server that returned a
+    21	    canned `instance` value would fail this check).
+    22	    """
+    23	    assert isinstance(body.get("type"), str), body
+    24	    assert _TYPE_URI_PATTERN.match(body["type"]), body
+    25	    assert isinstance(body.get("title"), str) and body["title"], body
+    26	    assert isinstance(body.get("status"), int) and body["status"] == resp_status, body
+    27	    assert isinstance(body.get("detail"), str) and body["detail"], body
+    28	    assert isinstance(body.get("instance"), str) and body["instance"], body
+    29	    assert body["instance"] == instance_url, (
+    30	        f"problem+json `instance` should equal request URL "
+    31	        f"{instance_url!r}, got {body['instance']!r}"
+    32	    )
+    33	
+    34	
+    35	def _assert_content_type(resp_headers) -> None:
+    36	    ctype = resp_headers.get("content-type", "")
+    37	    assert "application/problem+json" in ctype, ctype
+    38	
+    39	
+    40	def test_problem_json_400_bad_request(wire_client: WireClient) -> None:
+    41	    """spec/v0/07-wire-protocol.md §7 — 400 returns problem+json envelope."""
+    42	    r = wire_client.post(wire_client.tasks_path(), json={"bogus": True})
+    43	    assert r.status_code == 400
+    44	    _assert_content_type(r.headers)
+    45	    _assert_problem_envelope(400, r.json(), str(r.request.url))
+    46	
+    47	
+    48	def test_problem_json_403_wrong_token(wire_client: WireClient) -> None:
+    49	    """spec/v0/07-wire-protocol.md §7 — 403 wrong-token returns problem+json envelope."""
+    50	    tid = _seed.create_plan_task(wire_client)
+    51	    _seed.claim(wire_client, tid)
+    52	    r = _seed.submit_plan(wire_client, tid, token="WRONG")
+    53	    assert r.status_code == 403
+    54	    _assert_content_type(r.headers)
+    55	    _assert_problem_envelope(403, r.json(), str(r.request.url))
+    56	
+    57	
+    58	def test_problem_json_404_not_found(wire_client: WireClient) -> None:
+    59	    """spec/v0/07-wire-protocol.md §7 — 404 returns problem+json envelope."""
+    60	    r = wire_client.get(wire_client.tasks_path("nope"))
+    61	    assert r.status_code == 404
+    62	    _assert_content_type(r.headers)
+    63	    _assert_problem_envelope(404, r.json(), str(r.request.url))
+    64	
+    65	
+    66	def test_problem_json_409_illegal_transition(wire_client: WireClient) -> None:
+    67	    """spec/v0/07-wire-protocol.md §7 — 409 illegal-transition returns problem+json."""
+    68	    tid = _seed.create_plan_task(wire_client)
+    69	    r = _seed.accept(wire_client, tid)
+    70	    assert r.status_code == 409
+    71	    _assert_content_type(r.headers)
+    72	    _assert_problem_envelope(409, r.json(), str(r.request.url))
+
+exec
+/bin/zsh -lc "nl -ba conformance/scenarios/test_composite_commits.py | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Composite-commit invariants — chapter 05 §2.2.
+     2	
+     3	Covers the §2.2 composite-commit cases observable through task-store
+     4	wire endpoints (implement-dispatch, implement-terminal,
+     5	evaluate-terminal cases, retry-exhausted eval_error terminalization,
+     6	implement-reclaim with starting trial). The trial-promotion §2.2 case
+     7	is covered separately in test_integrate_idempotency.py because the
+     8	wire endpoint binding it lives in chapter 7 §5.
+     9	
+    10	Includes one non-composite control case
+    11	(`test_evaluate_terminal_eval_error_keeps_trial_starting`): the
+    12	worker-side eval_error per-attempt path explicitly does NOT compose
+    13	with a trial state change, per chapter 4 §4.3.
+    14	"""
+    15	
+    16	from __future__ import annotations
+    17	
+    18	import pytest
+    19	from conformance.harness import _seed
+    20	from conformance.harness.event_cursor import EventLog
+    21	from conformance.harness.wire_client import WireClient
+    22	
+    23	pytestmark = pytest.mark.conformance
+    24	
+    25	
+    26	def _types_for(events: list[dict], task_or_trial_id: str) -> set[str]:
+    27	    return {
+    28	        e["type"]
+    29	        for e in events
+    30	        if e["data"].get("task_id") == task_or_trial_id
+    31	        or e["data"].get("trial_id") == task_or_trial_id
+    32	        or e["data"].get("proposal_id") == task_or_trial_id
+    33	    }
+    34	
+    35	
+    36	def test_implement_dispatch_atomic(
+    37	    wire_client: WireClient, event_log: EventLog
+    38	) -> None:
+    39	    """spec/v0/05-event-protocol.md §2.2 — implement create + proposal dispatch atomic."""
+    40	    pid = _seed.create_proposal(wire_client)
+    41	    _seed.mark_proposal_ready(wire_client, pid)
+    42	    impl_tid = _seed.create_implement_task(wire_client, proposal_id=pid)
+    43	    events = event_log.replay_all()
+    44	    created = [
+    45	        e
+    46	        for e in event_log.find_by_type(events, "task.created")
+    47	        if e["data"].get("task_id") == impl_tid
+    48	    ]
+    49	    dispatched = [
+    50	        e
+    51	        for e in event_log.find_by_type(events, "proposal.dispatched")
+    52	        if e["data"].get("proposal_id") == pid
+    53	    ]
+    54	    assert len(created) == 1
+    55	    assert len(dispatched) == 1
+    56	    proposal = _seed.read_proposal(wire_client, pid)
+    57	    assert proposal["state"] == "dispatched"
+    58	
+    59	
+    60	def test_implement_terminal_completes_proposal(
+    61	    wire_client: WireClient, event_log: EventLog
+    62	) -> None:
+    63	    """spec/v0/05-event-protocol.md §2.2 — implement terminal + proposal completed atomic.
+    64	
+    65	    Asserts BOTH `task.completed` (on the implement task) AND
+    66	    `proposal.completed` (on the referenced proposal) appear; per
+    67	    §2.2 the composite commit is required.
+    68	    """
+    69	    trial_id = _seed.drive_to_starting_trial(wire_client)
+    70	    trial = _seed.read_trial(wire_client, trial_id)
+    71	    pid = trial["proposal_id"]
+    72	    events = event_log.replay_all()
+    73	    impl_completed = [
+    74	        e
+    75	        for e in event_log.find_by_type(events, "task.completed")
+    76	        if e["data"].get("task_id", "").startswith("impl-")
+    77	    ]
+    78	    completed_props = [
+    79	        e
+    80	        for e in event_log.find_by_type(events, "proposal.completed")
+    81	        if e["data"].get("proposal_id") == pid
+    82	    ]
+    83	    assert len(impl_completed) == 1, (
+    84	        "expected exactly one task.completed for the implement task"
+    85	    )
+    86	    assert len(completed_props) == 1
+    87	    proposal = _seed.read_proposal(wire_client, pid)
+    88	    assert proposal["state"] == "completed"
+    89	
+    90	
+    91	def test_implement_terminal_fails_proposal(
+    92	    wire_client: WireClient, event_log: EventLog
+    93	) -> None:
+    94	    """spec/v0/05-event-protocol.md §2.2 — implement task.failed + proposal.completed atomic.
+    95	
+    96	    Per chapter 4 §7 the proposal lifecycle reaches completed regardless
+    97	    of whether the implement task ended in completed or failed.
+    98	    """
+    99	    pid = _seed.create_proposal(wire_client)
+   100	    _seed.mark_proposal_ready(wire_client, pid)
+   101	    impl_tid = _seed.create_implement_task(wire_client, proposal_id=pid)
+   102	    impl_claim = _seed.claim(wire_client, impl_tid)
+   103	    trial_id = _seed.create_trial(wire_client, proposal_id=pid, status="starting")
+   104	    _seed.submit_implement(
+   105	        wire_client,
+   106	        impl_tid,
+   107	        token=impl_claim["token"],
+   108	        trial_id=trial_id,
+   109	        status="error",
+   110	    )
+   111	    _seed.reject(wire_client, impl_tid, reason="worker_error")
+   112	    events = event_log.replay_all()
+   113	    failed = [
+   114	        e
+   115	        for e in event_log.find_by_type(events, "task.failed")
+   116	        if e["data"].get("task_id") == impl_tid
+   117	    ]
+   118	    assert len(failed) == 1
+   119	    completed_props = [
+   120	        e
+   121	        for e in event_log.find_by_type(events, "proposal.completed")
+   122	        if e["data"].get("proposal_id") == pid
+   123	    ]
+   124	    assert len(completed_props) == 1
+   125	
+   126	
+   127	def test_evaluate_terminal_success_emits_trial_succeeded(
+   128	    wire_client: WireClient, event_log: EventLog
+   129	) -> None:
+   130	    """spec/v0/05-event-protocol.md §2.2 — evaluate success + trial.succeeded atomic.
+   131	
+   132	    Asserts BOTH `task.completed` (on the evaluate task) AND
+   133	    `trial.succeeded` (on the referenced trial) appear.
+   134	    """
+   135	    trial_id = _seed.drive_to_success_trial(wire_client)
+   136	    events = event_log.replay_all()
+   137	    [_succeeded] = [
+   138	        e
+   139	        for e in event_log.find_by_type(events, "trial.succeeded")
+   140	        if e["data"].get("trial_id") == trial_id
+   141	    ]
+   142	    eval_completed = [
+   143	        e
+   144	        for e in event_log.find_by_type(events, "task.completed")
+   145	        if e["data"].get("task_id", "").startswith("eval-")
+   146	    ]
+   147	    assert eval_completed, "expected at least one task.completed for the evaluate task"
+   148	    trial = _seed.read_trial(wire_client, trial_id)
+   149	    assert trial["status"] == "success"
+   150	
+   151	
+   152	def test_evaluate_terminal_error_emits_trial_errored(
+   153	    wire_client: WireClient, event_log: EventLog
+   154	) -> None:
+   155	    """spec/v0/05-event-protocol.md §2.2 — evaluate error + trial.errored atomic."""
+   156	    trial_id = _seed.drive_to_starting_trial(wire_client)
+   157	    eval_tid = _seed.create_evaluate_task(wire_client, trial_id=trial_id)
+   158	    eval_claim = _seed.claim(wire_client, eval_tid)
+   159	    _seed.submit_evaluate(
+   160	        wire_client,
+   161	        eval_tid,
+   162	        token=eval_claim["token"],
+   163	        trial_id=trial_id,
+   164	        status="error",
+   165	    )
+   166	    _seed.reject(wire_client, eval_tid, reason="worker_error")
+   167	    events = event_log.replay_all()
+   168	    [_failed] = [
+   169	        e
+   170	        for e in event_log.find_by_type(events, "task.failed")
+   171	        if e["data"].get("task_id") == eval_tid
+   172	    ]
+   173	    [_errored] = [
+   174	        e
+   175	        for e in event_log.find_by_type(events, "trial.errored")
+   176	        if e["data"].get("trial_id") == trial_id
+   177	    ]
+   178	    trial = _seed.read_trial(wire_client, trial_id)
+   179	    assert trial["status"] == "error"
+   180	
+   181	
+   182	def test_evaluate_terminal_eval_error_keeps_trial_starting(
+   183	    wire_client: WireClient, event_log: EventLog
+   184	) -> None:
+   185	    """spec/v0/04-task-protocol.md §4.3 — eval_error per-attempt does NOT compose with trial change.
+   186	
+   187	    This is the non-composite control test: the worker-side eval_error
+   188	    submission causes task.failed but explicitly leaves the trial in
+   189	    `starting` so a fresh evaluate task may be tried.
+   190	    """
+   191	    trial_id = _seed.drive_to_starting_trial(wire_client)
+   192	    eval_tid = _seed.create_evaluate_task(wire_client, trial_id=trial_id)
+   193	    eval_claim = _seed.claim(wire_client, eval_tid)
+   194	    _seed.submit_evaluate(
+   195	        wire_client,
+   196	        eval_tid,
+   197	        token=eval_claim["token"],
+   198	        trial_id=trial_id,
+   199	        status="eval_error",
+   200	    )
+   201	    _seed.reject(wire_client, eval_tid, reason="worker_error")
+   202	    events = event_log.replay_all()
+   203	    [_failed] = [
+   204	        e
+   205	        for e in event_log.find_by_type(events, "task.failed")
+   206	        if e["data"].get("task_id") == eval_tid
+   207	    ]
+   208	    eval_errored = [
+   209	        e
+   210	        for e in event_log.find_by_type(events, "trial.eval_errored")
+   211	        if e["data"].get("trial_id") == trial_id
+   212	    ]
+   213	    assert eval_errored == []
+   214	    trial = _seed.read_trial(wire_client, trial_id)
+   215	    assert trial["status"] == "starting"
+   216	
+   217	
+   218	def test_retry_exhausted_eval_error_terminalization(
+   219	    wire_client: WireClient, event_log: EventLog
+   220	) -> None:
+   221	    """spec/v0/05-event-protocol.md §2.2 — retry-exhausted trial.eval_errored composite.
+   222	
+   223	    The chapter-7 §4 `declare-eval-error` endpoint binds the chapter 4
+   224	    §4.3 retry-exhausted decision: it atomically transitions trial.status
+   225	    `starting → eval_error` and emits trial.eval_errored.
+   226	    """
+   227	    trial_id = _seed.drive_to_starting_trial(wire_client)
+   228	    r = _seed.declare_trial_eval_error(wire_client, trial_id)
+   229	    assert 200 <= r.status_code < 300, r.text
+   230	    trial = _seed.read_trial(wire_client, trial_id)
+   231	    assert trial["status"] == "eval_error"
+   232	    events = event_log.replay_all()
+   233	    [_event] = [
+   234	        e
+   235	        for e in event_log.find_by_type(events, "trial.eval_errored")
+   236	        if e["data"].get("trial_id") == trial_id
+   237	    ]
+   238	
+   239	
+   240	def test_implement_reclaim_with_starting_trial(
+   241	    wire_client: WireClient, event_log: EventLog
+   242	) -> None:
+   243	    """spec/v0/05-event-protocol.md §2.2 — implement reclaim + trial.errored atomic."""
+   244	    pid = _seed.create_proposal(wire_client)
+   245	    _seed.mark_proposal_ready(wire_client, pid)
+   246	    impl_tid = _seed.create_implement_task(wire_client, proposal_id=pid)
+   247	    _seed.claim(wire_client, impl_tid)
+   248	    trial_id = _seed.create_trial(wire_client, proposal_id=pid, status="starting")
+   249	    _seed.reclaim(wire_client, impl_tid, cause="operator")
+   250	    events = event_log.replay_all()
+   251	    [_reclaimed] = [
+   252	        e
+   253	        for e in event_log.find_by_type(events, "task.reclaimed")
+   254	        if e["data"].get("task_id") == impl_tid
+   255	    ]
+   256	    [_errored] = [
+   257	        e
+   258	        for e in event_log.find_by_type(events, "trial.errored")
+   259	        if e["data"].get("trial_id") == trial_id
+   260	    ]
+
+exec
+/bin/zsh -lc "nl -ba conformance/scenarios/test_task_lifecycle.py | sed -n '80,200p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba conformance/scenarios/_meta/test_self_validation.py | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    80	    _seed.submit_plan(client, tid, token=c["token"])
+    81	    _seed.reject(client, tid, reason="validation_error")
+    82	    return tid, c["token"]
+    83	
+    84	
+    85	def test_terminal_completed_rejects_writes(wire_client: WireClient) -> None:
+    86	    """spec/v0/04-task-protocol.md §4.4 — terminal `completed` rejects every write."""
+    87	    tid, token = _terminalize_completed(wire_client)
+    88	    # Re-claim
+    89	    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+    90	    assert r.status_code == 409
+    91	    assert r.json().get("type") == "eden://error/illegal-transition"
+    92	    # Re-submit
+    93	    r = _seed.submit_plan(wire_client, tid, token=token)
+    94	    assert r.status_code == 409
+    95	    assert r.json().get("type") == "eden://error/illegal-transition"
+    96	    # Re-accept / re-reject
+    97	    r = _seed.accept(wire_client, tid)
+    98	    assert r.status_code == 409
+    99	    r = _seed.reject(wire_client, tid, reason="worker_error")
+   100	    assert r.status_code == 409
+   101	    # Reclaim
+   102	    r = _seed.reclaim(wire_client, tid, cause="operator")
+   103	    assert r.status_code == 409
+   104	
+   105	
+   106	def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
+   107	    """spec/v0/04-task-protocol.md §1.1 — terminal `failed` rejects every write.
+   108	
+   109	    Mirrors `test_terminal_completed_rejects_writes`: every mutating
+   110	    operation against a `failed` task returns 409 illegal-transition.
+   111	    """
+   112	    tid, token = _terminalize_failed(wire_client)
+   113	    # Re-claim
+   114	    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+   115	    assert r.status_code == 409
+   116	    assert r.json().get("type") == "eden://error/illegal-transition"
+   117	    # Re-submit
+   118	    r = _seed.submit_plan(wire_client, tid, token=token)
+   119	    assert r.status_code == 409
+   120	    assert r.json().get("type") == "eden://error/illegal-transition"
+   121	    # Accept / reject
+   122	    r = _seed.accept(wire_client, tid)
+   123	    assert r.status_code == 409
+   124	    r = _seed.reject(wire_client, tid, reason="worker_error")
+   125	    assert r.status_code == 409
+   126	    # Reclaim
+   127	    r = _seed.reclaim(wire_client, tid, cause="operator")
+   128	    assert r.status_code == 409
+   129	    assert r.json().get("type") == "eden://error/illegal-transition"
+   130	
+   131	
+   132	def test_pending_rejects_submit(wire_client: WireClient) -> None:
+   133	    """spec/v0/04-task-protocol.md §1.2 — submit on pending is illegal."""
+   134	    tid = _seed.create_plan_task(wire_client)
+   135	    r = wire_client.post(
+   136	        wire_client.tasks_path(tid, "/submit"),
+   137	        json={"token": "any", "payload": {"kind": "plan", "status": "success", "proposal_ids": []}},
+   138	    )
+   139	    assert r.status_code == 409
+   140	    assert r.json().get("type") == "eden://error/illegal-transition"
+   141	
+   142	
+   143	def test_pending_rejects_accept(wire_client: WireClient) -> None:
+   144	    """spec/v0/04-task-protocol.md §1.2 — accept on pending is illegal."""
+   145	    tid = _seed.create_plan_task(wire_client)
+   146	    r = _seed.accept(wire_client, tid)
+   147	    assert r.status_code == 409
+   148	    assert r.json().get("type") == "eden://error/illegal-transition"
+   149	
+   150	
+   151	def test_pending_rejects_reject(wire_client: WireClient) -> None:
+   152	    """spec/v0/04-task-protocol.md §1.2 — reject on pending is illegal."""
+   153	    tid = _seed.create_plan_task(wire_client)
+   154	    r = _seed.reject(wire_client, tid, reason="validation_error")
+   155	    assert r.status_code == 409
+   156	    assert r.json().get("type") == "eden://error/illegal-transition"
+   157	
+   158	
+   159	def test_claimed_rejects_accept(wire_client: WireClient) -> None:
+   160	    """spec/v0/04-task-protocol.md §1.2 — accept-without-submit is illegal."""
+   161	    tid = _seed.create_plan_task(wire_client)
+   162	    _seed.claim(wire_client, tid)
+   163	    r = _seed.accept(wire_client, tid)
+   164	    assert r.status_code == 409
+   165	    assert r.json().get("type") == "eden://error/illegal-transition"
+   166	
+   167	
+   168	def test_claim_rejected_when_not_pending(wire_client: WireClient) -> None:
+   169	    """spec/v0/04-task-protocol.md §3.4 — re-claim of a `claimed` task is rejected."""
+   170	    tid = _seed.create_plan_task(wire_client)
+   171	    _seed.claim(wire_client, tid, worker_id="w1")
+   172	    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+   173	    assert r.status_code == 409
+   174	    assert r.json().get("type") == "eden://error/illegal-transition"
+   175	
+   176	
+   177	def test_terminal_rejects_reclaim(wire_client: WireClient) -> None:
+   178	    """spec/v0/04-task-protocol.md §5.1 — reclaim of a terminal task is rejected."""
+   179	    tid, _ = _terminalize_completed(wire_client)
+   180	    r = _seed.reclaim(wire_client, tid, cause="operator")
+   181	    assert r.status_code == 409
+   182	    assert r.json().get("type") == "eden://error/illegal-transition"
+
+ succeeded in 0ms:
+     1	"""Self-validation: prove the suite catches a deliberately broken adapter.
+     2	
+     3	Runs three subprocess pytest invocations:
+     4	
+     5	a. Control run: targeted test against the unmodified ReferenceAdapter
+     6	   (must pass).
+     7	b. Broken run: same targeted test against the MisbehavingAdapter
+     8	   (must fail with the specific test ID and assertion text).
+     9	c. Hit-counter check: the misbehaving proxy must have mutated ≥ 1
+    10	   response (otherwise the broken run failed for some other reason).
+    11	
+    12	A passing meta test is the proof the harness has teeth and the teeth
+    13	are biting the right victim.
+    14	"""
+    15	
+    16	from __future__ import annotations
+    17	
+    18	import json
+    19	import os
+    20	import subprocess
+    21	import sys
+    22	from pathlib import Path
+    23	
+    24	import pytest
+    25	
+    26	pytestmark = pytest.mark.conformance_meta
+    27	
+    28	_REPO_ROOT = Path(__file__).resolve().parents[3]
+    29	_TARGET_TEST = (
+    30	    "conformance/scenarios/test_claim_tokens.py::test_wrong_token_rejected"
+    31	)
+    32	_REFERENCE_ADAPTER = "conformance.adapters.reference.adapter:ReferenceAdapter"
+    33	_MISBEHAVING_ADAPTER = (
+    34	    "conformance._meta.misbehaving_adapter:MisbehavingAdapter"
+    35	)
+    36	_HIT_COUNTER_ENV = "EDEN_CONFORMANCE_MISBEHAVE_HIT_COUNTER"
+    37	
+    38	
+    39	def _run_pytest_subprocess(
+    40	    *,
+    41	    adapter: str,
+    42	    json_report_path: Path,
+    43	    hit_counter_path: Path,
+    44	) -> subprocess.CompletedProcess[str]:
+    45	    env = os.environ.copy()
+    46	    env[_HIT_COUNTER_ENV] = str(hit_counter_path)
+    47	    return subprocess.run(
+    48	        [
+    49	            sys.executable,
+    50	            "-m",
+    51	            "pytest",
+    52	            _TARGET_TEST,
+    53	            f"--iut-adapter={adapter}",
+    54	            "--no-header",
+    55	            "--tb=short",
+    56	            "-p",
+    57	            "no:cacheprovider",
+    58	            "--json-report",
+    59	            f"--json-report-file={json_report_path}",
+    60	        ],
+    61	        cwd=_REPO_ROOT,
+    62	        env=env,
+    63	        capture_output=True,
+    64	        text=True,
+    65	        timeout=120,
+    66	        check=False,
+    67	    )
+    68	
+    69	
+    70	def _read_json_report(path: Path) -> dict:
+    71	    return json.loads(path.read_text())
+    72	
+    73	
+    74	def test_self_validation(tmp_path: Path) -> None:
+    75	    """Harness self-validation per spec/v0/09-conformance.md §3.
+    76	
+    77	    Three sub-assertions are checked together: control passes, broken
+    78	    fails on the targeted test, and the misbehaving proxy actually
+    79	    mutated a response. All three must hold.
+    80	    """
+    81	    control_report = tmp_path / "control.json"
+    82	    broken_report = tmp_path / "broken.json"
+    83	    control_counter = tmp_path / "control-counter"
+    84	    broken_counter = tmp_path / "broken-counter"
+    85	
+    86	    # (a) Control run.
+    87	    control = _run_pytest_subprocess(
+    88	        adapter=_REFERENCE_ADAPTER,
+    89	        json_report_path=control_report,
+    90	        hit_counter_path=control_counter,
+    91	    )
+    92	    assert control.returncode == 0, (
+    93	        f"Control run failed unexpectedly:\n"
+    94	        f"stdout={control.stdout}\nstderr={control.stderr}"
+    95	    )
+    96	
+    97	    # (b) Broken run.
+    98	    broken = _run_pytest_subprocess(
+    99	        adapter=_MISBEHAVING_ADAPTER,
+   100	        json_report_path=broken_report,
+   101	        hit_counter_path=broken_counter,
+   102	    )
+   103	    assert broken.returncode != 0, (
+   104	        f"Broken run unexpectedly passed — harness lacks teeth.\n"
+   105	        f"stdout={broken.stdout}\nstderr={broken.stderr}"
+   106	    )
+   107	    report = _read_json_report(broken_report)
+   108	    target_results = [
+   109	        t
+   110	        for t in report.get("tests", [])
+   111	        if t.get("nodeid") == _TARGET_TEST
+   112	    ]
+   113	    assert target_results, f"Expected target test in report; got {report}"
+   114	    target = target_results[0]
+   115	    assert target.get("outcome") == "failed", target
+   116	    # Tighten the failure-shape assertion: the broken adapter must
+   117	    # cause the SPECIFIC wrong-token assertion to fail with the exact
+   118	    # message text from the production scenario. A looser substring
+   119	    # match would let unrelated failures (import errors, fixture
+   120	    # crashes) satisfy the meta test.
+   121	    longrepr_blob = json.dumps(target)
+   122	    assert "Expected 403 wrong-token, got 200" in longrepr_blob, (
+   123	        f"Failure repr did not match expected wrong-token assertion: {target}"
+   124	    )
+   125	
+   126	    # (c) Hit-counter check.
+   127	    assert broken_counter.exists(), (
+   128	        "Misbehaving proxy never wrote a hit counter — proxy was not exercised."
+   129	    )
+   130	    count = int(broken_counter.read_text().strip() or "0")
+   131	    assert count >= 1, "Misbehaving proxy mutated 0 responses; expected ≥ 1"
+
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '139,180p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   139	## Plan-writing pitfalls
+   140	
+   141	These are the recurring traps that have shown up across chunks 9c / 9d / 10d / 10e / 10d-followup-A / 10d-followup-B during `/codex-review`. Check each before submitting a plan that touches the orchestrator loop, the wire surface, or any role's submission flow.
+   142	
+   143	+ **Verify wire-touching shapes against the actual dataclasses, not the spec prose alone.** The submission types in [`reference/packages/eden-storage/src/eden_storage/submissions.py`](reference/packages/eden-storage/src/eden_storage/submissions.py) carry only `status` + role-specific id/payload fields — there is no free-form `description`. If your plan threads a `description` through the wire, you'll have to either drop it (route to host log only) or amend the spec + bindings + contracts together. Same discipline applies to event payloads: check [`reference/packages/eden-contracts/src/eden_contracts/event.py`](reference/packages/eden-contracts/src/eden_contracts/event.py) before assuming a field exists.
+   144	+ **Any code path that produces a trial must run `Store.create_trial(status="starting")` before any observable repo write.** This is [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §3.2 step 1, and the chunk-9c web-ui implementer at [`reference/services/web-ui/src/eden_web_ui/routes/implementer.py`](reference/services/web-ui/src/eden_web_ui/routes/implementer.py) is the canonical reference flow. Both the chunk-9c and 10d plans skipped the starting-trial step in their first revision until `/codex-review` caught it. The recovery path (chunk-1 expired-claim sweeper composite-commits the orphan trial to `error`) only works if the trial actually exists in `starting` state when the host crashes.
+   145	
+   146	+ **For compose-bound integration tests, audit which always-on services would race with the test.** The reference-host services (`planner-host`, `implementer-host`, `evaluator-host`) tight-loop-poll their respective task kinds on startup and claim *every* eligible task without filtering. So a test that wants to drive a task through the web UI cannot simply `compose up && stop <competing-host>` — by the time the stop returns, the competing host has already drained the seed. The chunk-10e [`e2e.sh`](reference/compose/healthcheck/e2e.sh) shows the right pattern: stage 1 brings up everything *except* the competing host, the test claims its targets via the UI, then stage 2 brings the competing host online so the rest of the experiment proceeds. Rule of thumb when planning: enumerate the polling services and ask "could the user's intent be drained before my test runs?" — if yes, defer the competing service to stage 2.
+   147	
+   148	+ **DooD wraps need explicit `name:` on every forwarded compose volume, and the spawned-child user identity must match the worker host's.** Two traps the 10d-followup-A implementation hit in succession during local-smoke debugging: (1) compose auto-prefixes volume names with the project (`eden-reference_eden-bare-repo`); a wrap that does `--mount source=eden-bare-repo` against the host docker daemon resolves to a *fresh empty volume* unless the compose volume has explicit `name:` matching the wrap's literal — see the `name:` discipline on [`compose.yaml`](reference/compose/compose.yaml) and [`compose.subprocess.yaml`](reference/compose/compose.subprocess.yaml). (2) The default container user differs between `eden-reference:dev` (eden:1000) and a freshly-pulled base image (root); spawned children that run as root against worktree files written by uid 1000 trip git's `dubious ownership` check, AND any commits they produce are uid-0-owned breaking subsequent integrator reads. The fix is to mirror the `eden:1000` user in `eden-runtime:dev` (the wrap deliberately doesn't pass `--user` so experiment-image USER overrides are honored). Rule of thumb when planning DooD: enumerate every forwarded volume and confirm `name:` is set; pin the spawned-child user to match the worker host's, not the spawned image's default.
+   149	
+   150	+ **DooD sibling containers survive SIGKILL of the local `docker run` client; the cidfile-driven `post_kill_callback` is load-bearing.** Killing the local `docker run` process via `os.killpg(SIGKILL)` does NOT propagate to the spawned container — the daemon parent keeps it running until the workload exits or it's killed externally. Plans that wrap `subprocess.Popen` with `docker run` must register a `post_kill_callback` (stored on the `Subprocess` instance, fires on the SIGKILL escalation branch) that reads the cidfile and runs `docker kill && docker rm -f`. The cleanup callback that unlinks the cidfile must run on **every** terminal exit branch (graceful, fast-path, and SIGKILL) — not just SIGKILL — because `--cidfile` errors if the path exists, so cidfile reuse without cleanup is a hard failure. See [`reference/services/_common/src/eden_service_common/container_exec.py`](reference/services/_common/src/eden_service_common/container_exec.py) and the §D.3 design notes in [`docs/plans/eden-phase-10d-followup-a-container-isolation.md`](docs/plans/eden-phase-10d-followup-a-container-isolation.md).
+   151	
+   152	+ **Three load-bearing wiring traps in any DooD sibling-container wrap.** The container-isolation chunk's CI burned through six rounds catching these in the wild; check each before submitting a plan that mounts the host docker socket into a worker. (1) **Privilege opt-in via separate overlay.** Putting `/var/run/docker.sock` mounts unconditionally in `compose.subprocess.yaml` would have granted DooD privilege to host-mode users by accident. The fix was a third overlay file ([`compose.docker-exec.yaml`](reference/compose/compose.docker-exec.yaml)) layered ON TOP of the subprocess overlay — that's the only file that mounts the socket and applies `group_add`. Both smoke scripts assert this directly via `docker inspect`. Rule of thumb: any deployment mode that needs new privilege (capability, host-network, socket mount, etc.) goes in its own compose overlay so the default keeps the privilege off. (2) **Paths in `docker run` flags resolve on the daemon side, NOT in the calling container's mount namespace.** `--cidfile <path>`, `--mount source=<path>`, `-v <host>:<container>` — all of these are interpreted on the host docker daemon, against the host filesystem. So a worker container that bind-mounts `${EDEN_CIDFILES_DIR_HOST}` at `/var/lib/eden/cidfiles` and passes `--cidfile /var/lib/eden/cidfiles/X.cid` will fail "permission denied" — that path doesn't exist on the host. The fix is to bind the cidfile dir at the SAME path inside the worker as on the host (`${EDEN_CIDFILES_DIR_HOST}:${EDEN_CIDFILES_DIR_HOST}`) so worker and daemon agree. Same posture for any path passed through `--mount source=`. (3) **`docker run -i` exits early on closed stdin.** Compose containers run with stdin closed by default; `docker run -i` propagates that closed-stdin to its parent's wait loop and exits *before* the workload has done useful work. Make `-i` conditional on whether the caller will pipe stdin to the spawn: planner subprocesses (long-running JSON-line protocol) need it; per-task implementer/evaluator spawns must NOT include it. See [`reference/services/_common/src/eden_service_common/container_exec.py`](reference/services/_common/src/eden_service_common/container_exec.py)'s `attach_stdin` parameter. (Bonus trap: `subprocess.Popen(shell=True)` runs `/bin/sh -c '<wrap>'`; on Linux that's typically dash, which exits on SIGTERM without forwarding to the docker run child. Prefix the wrap with `exec` so the shell `exec`s docker run in place — `popen.pid` then IS docker run.)
+   153	
+   154	+ **Any wire/network write that can leave server state unknown to the client needs a 3-outcome read-back ladder: confirmed-success / confirmed-divergence / indeterminate.** A `git push` that returns a transport error after the daemon may have already accepted the ref is the canonical example — there's no "did it land?" answer in the exit code alone. The 10d-followup-B integrator handles this by following the failed push with `ls_remote(trial.branch)` and routing on the three outcomes: remote==our-SHA → success (proceed to step 3), remote==different-SHA → divergence (compensating-delete local, raise `RefRefused`), remote-absent-or-unreadable → indeterminate (compensating-delete local, raise `IndeterminatePush`). Same shape as `StoreClient.integrate_trial`'s read-back from Phase 8a (chapter 07 §5). Rule of thumb when planning: any write to a remote system whose response can be lost in transit (HTTP `integrate_trial`, `git push`, future Postgres-over-network commits) needs a read-back step; do NOT collapse "transport error" into "definitely failed" — that would be a silent atomicity violation when the remote in fact accepted.
+   155	
+   156	+ **Recovery code must use spec-authoritative content paths, NOT ref-name parsing.** The 10d-followup-B remote-orphan reconciler needs to recover a `trial_id` from a remote-only ref (one that exists on Gitea but has no corresponding `Trial` record in the store). The first-cut plan parsed `refs/heads/trial/<id>-<slug>` with a regex; round-2 codex review caught that [`spec/v0/02-data-model.md`](spec/v0/02-data-model.md) §1.3 keeps `trial_id` opaque (any string ≤ 64 chars, the integrator's branch-name shape is non-normative). The fix walks the ref's commit tree and reads `.eden/trials/<id>/eval.json` — the spec-authoritative manifest path defined in chapter 6 §3.2. Rule of thumb when planning: anywhere recovery / reconciliation / GC code needs to extract a spec-defined identifier from a git artifact, the source of truth is the on-tree manifest the spec mandates, not the implementation's chosen branch-naming convention. Branch names are a reference-impl convenience.
+   157	
+   158	+ **Long-lived bare/non-bare clones need read-before-write/display fetches against the remote.** Two related round-0/round-1 findings on 10d-followup-B: (1) The admin work-refs page rendered from the local clone; if the integrator pushed a ref since the page-load, the admin's view was stale and the CAS-guarded delete-button could fail confusingly. The fix is `fetch_all_heads` immediately before reading refs to display, and `delete_remote_ref` BEFORE `delete_ref` so the remote-of-record is the source of truth. (2) The integrator's local clone may not have the work-branch the implementer pushed after orchestrator startup; an integrator that only fetches at startup misses any post-startup push. The fix is a per-promote-call `fetch_ref(trial.branch)` immediately before chapter-6 §2 reachability check. Rule of thumb when planning: any service that holds a clone of a remote-of-record must answer "when does this clone re-sync?" — at startup is rarely sufficient; the answer is usually "immediately before each operation that reads or writes a ref the remote could have changed."
+   159	
+   160	+ **Narrow exception handling on store reads when classifying authoritative-orphan vs indeterminate.** Impl round-0 on 10d-followup-B: `reconcile_remote_orphans` initially treated any `Exception` from `Store.read_trial(trial_id)` as "trial doesn't exist → orphan → delete the remote ref". A transient transport blip (StoreClient HTTP timeout, postgres connection drop) would have deleted legitimate in-flight integrator work. The fix narrows to `except NotFound: trial = None  # authoritative orphan` and routes any other exception to `continue  # indeterminate, leave the remote alone`. Rule of thumb when planning: anywhere a "missing → take destructive recovery action" branch is being written, the read that classifies "missing" must distinguish definitive `NotFound` from transport-indeterminate failure; collapsing the two is a silent data-loss vector.
+   161	
+   162	+ **Role-specific git/wire transport-failure mapping must match chapter 3 contracts.** Plan round-1 on 10d-followup-B: the first cut mapped any transport failure during git operations to a single failure mode. [`spec/v0/03-roles.md`](spec/v0/03-roles.md) actually differentiates by role — implementer transport failure on `push_ref` submits `status="error"` (chapter 3 §3.3); evaluator transport failure on `fetch_ref(trial.branch)` (preventing trial inspection) submits `status="eval_error"` (chapter 3 §4.4); integrator transport failure runs the chapter 6 §3.4 compensating-delete ladder (the integrator never "submits" — it composite-commits or rolls back). Rule of thumb when planning: when a wire/transport failure interrupts a role's flow, look up the failure-status vocabulary for THAT role in chapter 3 / chapter 6 — there is no shared "transport-failed" status across roles.
+   163	
+   164	+ **Tests for callbacks/lifecycle/atomicity must drive the actual code path through the public entry point, not just call the helper directly.** The chunk's first SIGKILL test called `kill_via_cidfile()` directly — it passed even though the production path through `Subprocess.terminate()`'s SIGKILL escalation branch was broken (the branch was being skipped because `popen.wait` returned success in 0.5s). Codex round-0 caught this; the fix was a rewrite that uses `eden_service_common.spawn(...)` + `sub.terminate(shutdown_deadline=0.5)` and asserts the spawned sibling container is gone after the public terminate call. See [`test_terminate_sigkill_path_invokes_post_kill_callback`](reference/services/_common/tests/test_container_exec_integration.py) for the canonical shape. Rule of thumb: when a callback is supposed to fire on a specific branch of a public method, the test must (a) construct the same setup the production caller would, (b) invoke the public method, and (c) assert the side effect. Helper-only tests can pass while the integrated path silently skips the branch.
+   165	
+   166	+ **Conformance assertions are spec citations, not impl observations.** When adding a scenario to [`conformance/scenarios/`](conformance/scenarios/), the test's docstring's first line MUST cite a normative MUST in `spec/v0/<chapter>.md §<sec>`; [`conformance/src/conformance/tools/check_citations.py`](conformance/src/conformance/tools/check_citations.py) walks every test, verifies the citation resolves, AND verifies the section (or any ancestor) contains a `\bMUST\b` token. CI gates this. If the assertion describes behavior the reference impl exhibits but no spec MUST mandates, the choice is to amend the spec (so the assertion is grounded) or drop the assertion (it's an impl-detail observation). Codifying impl observations as conformance assertions silently creates a second source of truth and locks third-party implementations into reference-impl quirks. The chapter-9 §5 scenario index is the curated v1 surface: each index group must have at least one citing test (tool also gates this).
+   167	
+   168	## Commit guidelines
+   169	
+   170	+ Short imperative subjects (e.g., "Add event protocol chapter", "Pin task state machine").
+   171	+ For pull requests, include: what the change is, which phase it advances, and any spec ↔ impl implications.
+   172	
+   173	## Related docs
+   174	
+   175	+ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
+   176	+ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with unit-level decomposition.
+   177	+ [`docs/plans/`](docs/plans/) — active implementation plans.
+   178	+ [`docs/archive/`](docs/archive/) — historical reference docs.
+   179	+ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
+   180	+ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+
+codex
+I’m checking the remaining wire-binding edge cases against the spec text directly. One of the revised rationale notes may have over-corrected by dropping a test the plan actually intended to keep.
+exec
+/bin/zsh -lc "sed -n '620,760p' docs/plans/eden-phase-11-chunk-11a-11b-conformance-harness.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+For each chapter 05 §3 registered type produced by v1 scenarios:
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_task_created_carries_task_id_and_kind` | `task.created` payload has `task_id`, `kind`. | 05 §3.1 |
+| `test_task_claimed_carries_worker_id` | `task.claimed` payload has `task_id`, `worker_id`. | 05 §3.1 |
+| `test_task_submitted_carries_task_id` | `task.submitted` payload has `task_id`. | 05 §3.1 |
+| `test_task_completed_carries_task_id` | `task.completed` payload has `task_id`. | 05 §3.1 |
+| `test_task_failed_carries_reason` | `task.failed` payload has `task_id`, `reason ∈ {worker_error, validation_error, policy_limit}`. | 05 §3.1 |
+| `test_task_reclaimed_carries_cause` | `task.reclaimed` payload has `task_id`, `cause ∈ {expired, operator, health_policy}`. | 05 §3.1 |
+| `test_proposal_drafted_carries_proposal_id` | `proposal.drafted` payload has `proposal_id`. | 05 §3.2 |
+| `test_proposal_ready_carries_proposal_id` | Same. | 05 §3.2 |
+| `test_proposal_dispatched_carries_task_id` | `proposal.dispatched` payload has `proposal_id`, `task_id`. The event MUST be exactly `proposal.dispatched`, not a synonym (codex review round 0 finding #7). | 05 §3.2; §2.2 |
+| `test_proposal_completed_carries_task_id` | `proposal.completed` payload has `proposal_id`, `task_id`. | 05 §3.2 |
+| `test_trial_started_carries_proposal_id` | `trial.started` payload has `trial_id`, `proposal_id`. | 05 §3.3 |
+| `test_trial_succeeded_carries_commit_sha` | `trial.succeeded` payload has `trial_id`, `commit_sha`. | 05 §3.3 |
+| `test_trial_errored_carries_trial_id` | `trial.errored` payload has `trial_id`. | 05 §3.3 |
+| `test_trial_eval_errored_carries_trial_id` | `trial.eval_errored` payload has `trial_id`. | 05 §3.3 |
+| `test_trial_integrated_carries_trial_commit_sha` | `trial.integrated` payload has `trial_id`, `trial_commit_sha`. | 05 §3.3 |
+
+#### E.8 Composite commits (`test_composite_commits.py`)
+
+This section covers the chapter 05 §2.2 composite-commit cases that
+are observable through task-store wire endpoints — implement
+dispatch, implement terminal, evaluate terminal (success / error),
+retry-exhausted eval_error terminalization, and implement reclaim
+with an in-flight trial. The remaining §2.2 case, **trial promotion**,
+is covered separately in §E.14 (integrate idempotency) because the
+wire endpoint binding it (`POST /trials/{T}/integrate`) lives in
+chapter 07 §5, not chapter 05.
+
+The section also includes one non-composite control case
+(`test_evaluate_terminal_eval_error_keeps_trial_starting`): the
+worker-side `eval_error` per-attempt path explicitly does NOT compose
+with a trial state change, per chapter 04 §4.3. The control test
+exists to fence the boundary between the per-attempt path and the
+retry-exhausted §2.2 case.
+
+Each test:
+
+- Drives the composite operation through the wire binding,
+- Reads the event log,
+- Asserts both component events are present (no partial visibility),
+- For atomicity-sensitive cases, reads the entity state and asserts
+  consistency with the events.
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_implement_dispatch_atomic` | Creating an `implement` task: `task.created` AND `proposal.dispatched` both appear, and `read_proposal` shows `state == "dispatched"`. | 05 §2.2 |
+| `test_implement_terminal_completes_proposal` | Implementer task's `submitted → completed` transition: `task.completed` AND `proposal.completed` both appear; proposal is `state == "completed"`. | 05 §2.2 |
+| `test_implement_terminal_fails_proposal` | Implementer task's `submitted → failed`: `task.failed` AND `proposal.completed` both appear (proposal still goes to completed per chapter 4 §7; the proposal lifecycle ends regardless of task outcome). | 05 §2.2; 04 §7 |
+| `test_evaluate_terminal_success_emits_trial_succeeded` | Evaluate `submitted → completed` with worker `status=success`: `task.completed` AND `trial.succeeded` both appear; trial is `status == "success"`. | 05 §2.2; 04 §4.3 |
+| `test_evaluate_terminal_error_emits_trial_errored` | Evaluate `submitted → failed` with worker `status=error`: `task.failed` AND `trial.errored` both appear; trial is `status == "error"`. | 05 §2.2; 04 §4.3 |
+| `test_evaluate_terminal_eval_error_keeps_trial_starting` | Evaluate `submitted → failed` with worker `status=eval_error`: `task.failed` appears; trial stays `status == "starting"` (NO `trial.eval_errored` event yet — that fires only when the orchestrator decides to terminalize the trial). | 04 §4.3 |
+| `test_retry_exhausted_eval_error_terminalization` | After one or more `eval_error` cycles, an explicit `POST /trials/{T}/declare-eval-error` (the chapter 07 §4 endpoint binding the chapter 04 §4.3 retry-exhausted decision) atomically terminalizes the trial: trial.status flips `starting → eval_error` AND a `trial.eval_errored` event appears. (Codex review round 1 finding 2.) | 05 §2.2 retry-exhausted; 04 §4.3 |
+| `test_implement_reclaim_with_starting_trial` | Implement reclaim on a task whose execution had created a starting trial: `task.reclaimed` AND `trial.errored` both appear atomically. | 05 §2.2; 04 §5.4 |
+
+#### E.9 Event delivery (`test_event_delivery.py`)
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_total_order_per_experiment` | Two reads of the event log return events in the same order. | 05 §4.1 |
+| `test_replay_from_cursor_zero_returns_all_events` | After driving N transitions, `GET /events?cursor=0` returns all N events. | 05 §4.4 |
+| `test_replay_repeatable` | Repeated `GET /events?cursor=0` returns the same set across calls (replay is deterministic across reads). | 05 §4.4 |
+| `test_subscribe_at_least_once_via_reconnect` | Open `GET /events/subscribe?cursor=N` and consume one event; reconnect with `cursor=N` (not the post-batch cursor) and observe the same event again. The chapter 05 §4.3 MUST is "deliver every appended event to every active subscriber at least once"; reconnect-with-prior-cursor is the test that an event remains delivered after a recover/restart. (Codex review round 1 finding 4.) | 05 §4.3 |
+| `test_subscribe_long_poll_yields_event` | Open `GET /events/subscribe?cursor=N` then issue a transition; the long-poll returns the new event within the configured timeout. | 07 §6.2 |
+| `test_subscribe_empty_batch_after_timeout` | Open subscribe against a quiescent log; after the server timeout, response is `{events: [], cursor: <unchanged>}`. The reference adapter's 2.0s timeout (§D) keeps this test fast. | 07 §6.2 |
+
+#### E.10 Status codes (`test_status_codes.py`)
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_create_task_returns_200` | Successful create returns 200. | 07 §2.1 |
+| `test_create_duplicate_task_returns_409_already_exists` | Two `POST /tasks` with the same `task_id` field: second returns 409 + `eden://error/already-exists`. (Codex review round 1 finding 3 — without this, the §E.12 vocabulary-closure test cannot observe `already-exists` and the closure assertion either fails or silently stops being exhaustive.) | 07 §7 |
+| `test_read_unknown_task_returns_404` | Unknown task returns 404 + `eden://error/not-found`. | 07 §2.2; §7 |
+| `test_claim_non_pending_returns_409` | Claim on non-pending returns 409 + `eden://error/illegal-transition`. | 07 §2.3 |
+| `test_submit_wrong_token_returns_403` | Submit with wrong token returns 403 + `eden://error/wrong-token`. | 07 §2.4 |
+| `test_submit_divergent_returns_409` | Submit with divergent payload returns 409 + `eden://error/conflicting-resubmission`. | 07 §2.4 |
+| `test_integrate_different_sha_returns_409` | Integrate with different SHA returns 409 + `eden://error/invalid-precondition`. | 07 §5 |
+| `test_bad_request_body_returns_400` | Schema-invalid body returns 400 + `eden://error/bad-request`. | 07 §7 |
+| `test_replay_returns_200_with_cursor` | `GET /events` returns 200 + body shape `{events, cursor}`. | 07 §6.1 |
+| `test_reclaim_cause_vocabulary_closed` | `POST /tasks/{T}/reclaim cause="garbage"` returns 400 `eden://error/bad-request` (the §7 vocabulary closure forces this; the task store's reclaim-cause closure pinned in chapter 04 §5.1 is upheld via the wire-binding's bad-request mechanism). | 07 §2.6, §7 |
+
+#### E.11 Problem+json envelope (`test_problem_json.py`)
+
+For each error class observed in §E.10, assert:
+
+- `Content-Type: application/problem+json; charset=utf-8`.
+- Body parses as JSON and matches
+  [`spec/v0/schemas/wire/error.schema.json`](../../spec/v0/schemas/wire/error.schema.json).
+- `type` is a URI matching `eden://error/<name>`.
+- `status` field equals the HTTP status.
+- `title`, `detail`, `instance` are non-empty strings.
+
+Citation: 07 §7.
+
+#### E.12 Error vocabulary closure (`test_error_vocabulary.py`)
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_observed_types_are_in_v0_vocabulary` | Across the entire suite run, every observed `type` URI is in the chapter 07 §7 closed table. | 07 §7 |
+| `test_v0_vocabulary_each_observed_at_least_once` | Across the suite, each entry of the §7 vocabulary is observed by at least one test. | 07 §7 |
+
+This is implemented via a session-scoped fixture that records every
+non-2xx response's `type`. The two assertions run as two pytest items
+collected last in the session via `pytest-ordering`. (Pinned in
+`conformance/pyproject.toml`.) The `test_no_internal_eden_error_type_for_auth`
+scenario from the pre-review draft is dropped: chapter 07 §11-12 makes
+auth informative.
+
+#### E.13 Experiment-id header disagreement (`test_experiment_id_header.py`)
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_header_disagrees_returns_400` | A request whose `X-Eden-Experiment-Id` header value differs from its path segment returns 400 `eden://error/experiment-id-mismatch`. | 07 §1.3 |
+
+The pre-review draft's `test_v0_root_required` (404 on missing /v0/),
+`test_experiment_id_header_required` (header absence), and
+`test_reference_paths_not_required_for_conformance` are dropped: none
+are pinned by a normative MUST (codex review round 0 finding #2).
+
+#### E.14 Integrate idempotency (`test_integrate_idempotency.py`)
+
+The fixture model is **simplified** from the pre-review draft per
+codex review round 0 finding #8: instead of driving plan → implement →
+evaluate to produce a real `success` trial, the test seeds the trial
+directly through the storage endpoints in chapter 07 §3-4. The wire
+endpoint's normative contract (chapter 07 §5) treats `trial_commit_sha`
+as a "well-formed commit SHA" — only the regex shape is checked at the
+task-store layer. Reachability is the integrator's MUST (chapter 06
+§2), not the task store's. The v1 test uses placeholder 40-hex SHAs.
+
+| Test | Asserts | Citation |
+|---|---|---|
+| `test_first_integrate_returns_200_emits_event` | First call with `trial_commit_sha=<40-hex>` returns 200; one `trial.integrated` event appears. | 07 §5 |
+| `test_same_value_idempotency` | Second call with the same SHA returns 200; still exactly one `trial.integrated` event. | 07 §5 |
+| `test_different_sha_returns_409` | Second call with a different SHA returns 409 `eden://error/invalid-precondition`; stored value unchanged. | 07 §5 |
+| `test_integrate_against_non_success_trial_returns_409` | Trial with `status != "success"` rejects integrate with `invalid-precondition`. | 07 §5 |
+
+The setup helper (`integrate_test_trial_factory`):
+
+
+codex
+I’ve checked the code paths for the addressed findings. I’m running the suite and citation checker now to confirm the updated behavior matches what the code claims.
+exec
+/bin/zsh -lc 'uv run pytest -q conformance/' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'uv run python conformance/src/conformance/tools/check_citations.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+OK: 85 scenarios cite valid spec MUSTs.
+  02-data-model.md: §§ 3.4
+  04-task-protocol.md: §§ 1.1, 1.2, 1.3, 2, 3.2, 3.3, 3.4, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.4
+  05-event-protocol.md: §§ 1, 1.1, 2.2, 3.1, 3.2, 3.3, 4.1, 4.3, 4.4
+  07-wire-protocol.md: §§ 1.3, 2.1, 2.2, 2.3, 2.4, 2.6, 5, 7
+
+codex
+The citation tool is clean. The full conformance run is still in flight; I’m polling it to make sure there aren’t any late regressions.
+ succeeded in 49158ms:
+........................................................................ [ 83%]
+..............                                                           [100%]
+86 passed in 48.83s
+
+codex
+1. Bug — [misbehaving_adapter.py](/Users/ericalt/Documents/eden/conformance/src/conformance/_meta/misbehaving_adapter.py:38): the startup-cleanup fix is still incomplete for partial proxy startup. If `proxy.start()` spins up the proxy thread/socket and then raises before returning, the `except` block only calls `super().stop()`, so the proxy itself is never stopped. Fix by initializing `proxy: MisbehaveProxy | None = None` before the `try`, and in the `except` path call `proxy.stop()` when it exists before tearing down the upstream adapter.
+
+2. Risk — [check_citations.py](/Users/ericalt/Documents/eden/conformance/src/conformance/tools/check_citations.py:35) and [check_citations.py](/Users/ericalt/Documents/eden/conformance/src/conformance/tools/check_citations.py:126): the MUST-check is fixed, but the chapter-9 coverage guard is still weaker than the plan. It hardcodes group names/file names instead of reading `spec/v0/09-conformance.md §5`, and it treats “file has tests” as coverage rather than “group has at least one valid citing test.” That means chapter-9 drift is still not actually detected the way plan §I described. Fix by parsing the §5 index from chapter 9 and counting valid citations per group, not raw file presence.
+
+3. Risk — [test_event_delivery.py](/Users/ericalt/Documents/eden/conformance/scenarios/test_event_delivery.py:103): the planned `test_subscribe_empty_batch_after_timeout` scenario was removed. I understand the rationale, but it is still a plan-adherence deviation from §E.9 and leaves the brief/plan out of sync with the implementation. If the team now agrees that `07 §6.2` is not citeable under the MUST-only rule, update the plan/review brief/chapter-9 surface accordingly; otherwise the implementation is still missing one planned scenario.
+
+The revised code is materially better. The suite and citation tool both run clean here: `uv run pytest -q conformance/` passed with 86 tests in 48.83s, and `uv run python conformance/src/conformance/tools/check_citations.py` passed with 85 scenario citations. I would not call it fully clear for commit/PR yet because of the remaining partial-startup leak and the still-weaker-than-planned chapter-9 coverage guard.
+2026-05-01T19:44:42.207639Z ERROR codex_core::session: failed to record rollout items: thread 019de4ff-1578-7980-8f4f-9d5c855fdc1d not found
+tokens used
+290,819

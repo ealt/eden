@@ -1,0 +1,1870 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dbb93-e10b-7e02-9f4c-772085f30333
+--------
+user
+I've addressed your round 0 feedback. The updated review brief at docs/plans/review/eden-protocol-bootstrap/impl/phase-3/20260423T112054/1.md lists each finding, what was fixed, and what was deliberately not changed (with reasoning). Please re-read the updated implementation files — the six model modules in reference/packages/eden-contracts/src/eden_contracts/, plus tests/conftest.py, tests/cases.py, and the refreshed status prose in AGENTS.md, README.md, CONTRIBUTING.md — and re-review. Use the same criteria order as round 0.
+codex
+Re-reading the updated review brief first, then the touched models, test harness/corpus, and the status prose updates to check whether the round 0 gaps are actually closed and whether any new drift was introduced.
+exec
+/bin/zsh -lc 'find reference/packages/eden-contracts/tests -maxdepth 1 -type f | sort' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'find reference/packages/eden-contracts/src/eden_contracts -maxdepth 1 -type f | sort' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "sed -n '1,260p' docs/plans/review/eden-protocol-bootstrap/impl/phase-3/20260423T112054/1.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-contracts/tests/__init__.py
+reference/packages/eden-contracts/tests/cases.py
+reference/packages/eden-contracts/tests/conftest.py
+reference/packages/eden-contracts/tests/test_existing_fixture.py
+reference/packages/eden-contracts/tests/test_roundtrip.py
+reference/packages/eden-contracts/tests/test_schema_parity.py
+reference/packages/eden-contracts/tests/test_task_behavior.py
+
+ succeeded in 0ms:
+reference/packages/eden-contracts/src/eden_contracts/__init__.py
+reference/packages/eden-contracts/src/eden_contracts/_common.py
+reference/packages/eden-contracts/src/eden_contracts/config.py
+reference/packages/eden-contracts/src/eden_contracts/event.py
+reference/packages/eden-contracts/src/eden_contracts/metrics.py
+reference/packages/eden-contracts/src/eden_contracts/proposal.py
+reference/packages/eden-contracts/src/eden_contracts/py.typed
+reference/packages/eden-contracts/src/eden_contracts/task.py
+reference/packages/eden-contracts/src/eden_contracts/trial.py
+
+ succeeded in 0ms:
+# Implementation Review: EDEN Phase 3 — Round 1 update
+
+## Round 0 feedback addressed
+
+### Bug: numeric coercion (config.py, proposal.py)
+
+**Addressed.** Every top-level model now sets
+`model_config = ConfigDict(strict=True, extra="allow")`. In Pydantic 2
+strict mode this rejects bool → int, str → int, str → float, and
+bool → float coercions while still allowing int → float (which JSON
+number semantics permit). New corpus cases now assert this directly:
+
+- `experiment-config::parallel_trials_bool`
+- `experiment-config::max_trials_string`
+- `experiment-config::convergence_window_string`
+- `proposal::priority_bool`
+- `proposal::priority_string`
+
+All six schema-parity + roundtrip tests over them pass.
+
+### Bug: artifacts_uri not format-validated (proposal.py, trial.py)
+
+**Addressed.** Introduced `UriStr` in `_common.py` —
+`Annotated[str, AfterValidator(_check_uri)]` — where `_check_uri` uses
+`urlparse` and rejects any value without a scheme. Applied to
+`Proposal.artifacts_uri` and `Trial.artifacts_uri`. The parity-side
+validator now carries a custom `FormatChecker` that enforces the same
+`uri` format semantics, so schema and model agree.
+
+New reject cases:
+
+- `proposal::artifacts_uri_no_scheme`
+- `trial::artifacts_uri_no_scheme`
+
+### Bug: date-time regex accepts impossible values (_common.py)
+
+**Addressed.** `DateTimeStr` is now
+`Annotated[str, StringConstraints(pattern=...), AfterValidator(_check_datetime)]`
+where `_check_datetime` calls `datetime.fromisoformat`. This catches
+impossible dates and times after the regex pre-filter. The parity
+`FormatChecker` does the same on the schema side.
+
+New reject cases:
+
+- `task::impossible_datetime`
+- `proposal::created_at_impossible`
+
+### Risk: parity job too weak (conftest.py, cases.py)
+
+**Addressed.** Two independent changes:
+
+1. `conftest.py` now passes a custom `FormatChecker` to the validator,
+   so schema-side `format: uri` and `format: date-time` checks actually
+   run. Without this, the schema validator silently ignored `format`
+   and the parity test could hide real drift.
+2. `cases.py` is expanded to cover the exact gaps Codex flagged:
+   bool/string numerics, invalid URIs, impossible timestamps, explicit
+   null on optional fields. 75 cases now (up from 61).
+
+### Risk: explicit null on optional fields (task.py, config.py, trial.py)
+
+**Addressed.** Added `NotNone = BeforeValidator(_reject_none)` in
+`_common.py` and applied it to every optional field across Trial,
+Task, TaskClaim, ExperimentConfig. By default Pydantic does not run
+validators on a field's default value (`validate_default=False`), so
+an omitted field still uses its default; only an explicit `null` in
+input triggers the validator, which raises. Net effect: absent is
+accepted, explicit null is rejected — matching JSON Schema semantics
+for optional typed fields.
+
+New reject cases:
+
+- `experiment-config::convergence_window_null`
+- `task::claim_null_on_pending`
+- `trial::metrics_explicit_null`
+- `trial::completed_at_null`
+
+### Nit: stale phase-status prose (AGENTS.md, CONTRIBUTING.md)
+
+**Addressed.** Folded the status flip into this PR rather than deferring
+it to a follow-up. `AGENTS.md` and `CONTRIBUTING.md` now read "Phase 3
+complete" and `README.md` is refreshed with a description of what the
+contracts package and CI gates actually provide. This replaces the
+two-PR pattern used in Phase 1/2 because the documentation edits are
+substantive in this PR, not just a header flip.
+
+## Gate status after round 1
+
+- `uv run ruff check .` — pass
+- `uv run pyright` — pass (0 errors, 0 warnings)
+- `uv run pytest -q` — 75 passed
+- `markdownlint-cli2 ...` — 0 errors across 20 files
+- `check-jsonschema --check-metaschema ...` — ok
+
+## Deliberately not changed
+
+- **Pyright typeCheckingMode.** Still `standard`, not `strict`.
+  Tightening Phase 3 further adds noise on Pydantic patterns without
+  catching the protocol-parity defects this PR is about. Easier to
+  revisit once there's more code consuming the contracts.
+- **Pydantic `AnyUrl` vs custom `UriStr`.** I kept a custom
+  `str`-returning validator rather than adopting `pydantic.AnyUrl`,
+  because `AnyUrl` stores a structured `Url` object and rewrites input
+  (e.g., adds trailing slashes) in ways that break byte-for-byte
+  round-trip. A plain string plus a schema-parity-equivalent
+  `_check_uri` keeps the model's serialized form identical to the
+  input, which is what the parity test requires.
+- **Auto-discovering workspace members.** Still an explicit list
+  (`["reference/packages/eden-contracts"]`) rather than a
+  `reference/packages/*` glob. The glob would pick up the Phase 0
+  placeholder directories. The alternative — seeding a stub
+  `pyproject.toml` in every placeholder — is more work for more code.
+
+## Review Status
+
+Round 1 — please re-read the updated model modules, `conftest.py`,
+`cases.py`, and the status-prose sections of `AGENTS.md`, `README.md`,
+`CONTRIBUTING.md`, and re-review.
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M .github/workflows/ci.yml
+ M AGENTS.md
+ M CONTRIBUTING.md
+ M README.md
+ D reference/packages/eden-contracts/.gitkeep
+?? .python-version
+?? docs/plans/review/eden-protocol-bootstrap/impl/phase-3/
+?? pyproject.toml
+?? reference/packages/eden-contracts/README.md
+?? reference/packages/eden-contracts/pyproject.toml
+?? reference/packages/eden-contracts/src/
+?? reference/packages/eden-contracts/tests/
+?? uv.lock
+
+codex
+The round 1 brief is specific enough that I’m checking each claimed fix directly in code and with a few live edge cases, rather than assuming the brief is accurate.
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/_common.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Shared type aliases and validators for EDEN contract models.
+     2	
+     3	Every pattern here mirrors a pattern in the spec/v0 JSON Schemas. When a
+     4	schema changes, the corresponding alias here changes in lockstep.
+     5	"""
+     6	
+     7	from datetime import datetime
+     8	from typing import Annotated, Any
+     9	from urllib.parse import urlparse
+    10	
+    11	from pydantic import AfterValidator, BeforeValidator, StringConstraints
+    12	
+    13	DATETIME_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
+    14	
+    15	COMMIT_SHA_PATTERN = r"^[0-9a-f]{40}([0-9a-f]{24})?$"
+    16	
+    17	
+    18	def _check_datetime(value: str) -> str:
+    19	    # The regex shape is a necessary pre-filter, but accepts impossible values
+    20	    # like month 99. fromisoformat (3.11+) accepts trailing "Z" and parses the
+    21	    # components strictly, so it catches non-real dates.
+    22	    datetime.fromisoformat(value)
+    23	    return value
+    24	
+    25	
+    26	def _check_uri(value: str) -> str:
+    27	    parts = urlparse(value)
+    28	    if not parts.scheme:
+    29	        raise ValueError(f"not a valid URI: {value!r}")
+    30	    return value
+    31	
+    32	
+    33	def _reject_none(value: Any) -> Any:
+    34	    if value is None:
+    35	        raise ValueError(
+    36	            "field may be absent but MUST NOT be null; JSON Schema "
+    37	            "rejects explicit null for optional typed fields"
+    38	        )
+    39	    return value
+    40	
+    41	
+    42	DateTimeStr = Annotated[
+    43	    str,
+    44	    StringConstraints(pattern=DATETIME_PATTERN),
+    45	    AfterValidator(_check_datetime),
+    46	]
+    47	"""UTC ISO-8601 datetime string with a trailing ``Z``; must be a real datetime."""
+    48	
+    49	CommitSha = Annotated[str, StringConstraints(pattern=COMMIT_SHA_PATTERN)]
+    50	"""Lowercase hex SHA-1 (40 chars) or SHA-256 (64 chars) commit identifier."""
+    51	
+    52	UriStr = Annotated[str, AfterValidator(_check_uri)]
+    53	"""URI string — must have a scheme, per RFC 3986 (schema ``format: uri``)."""
+    54	
+    55	NotNone = BeforeValidator(_reject_none)
+    56	"""Annotate optional fields to reject explicit ``null`` on input while allowing absence."""
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/event.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Event — envelope appended to an EDEN event log.
+     2	
+     3	Mirrors ``spec/v0/schemas/event.schema.json``. Type-specific payload shapes
+     4	live in spec/v0/05-event-protocol.md (Phase 4).
+     5	"""
+     6	
+     7	from __future__ import annotations
+     8	
+     9	from typing import Annotated, Any
+    10	
+    11	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    12	
+    13	from ._common import DateTimeStr
+    14	
+    15	EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
+    16	
+    17	
+    18	class Event(BaseModel):
+    19	    """Event envelope. The ``data`` payload shape is fixed by ``type``."""
+    20	
+    21	    model_config = ConfigDict(strict=True, extra="allow")
+    22	
+    23	    event_id: Annotated[str, Field(min_length=1)]
+    24	    type: Annotated[str, StringConstraints(pattern=EVENT_TYPE_PATTERN)]
+    25	    occurred_at: DateTimeStr
+    26	    experiment_id: Annotated[str, Field(min_length=1)]
+    27	    data: dict[str, Any]
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/proposal.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Proposal — planner output; implementation-work dispatch metadata.
+     2	
+     3	Mirrors ``spec/v0/schemas/proposal.schema.json``. Lifecycle semantics are
+     4	in spec/v0/04-task-protocol.md.
+     5	"""
+     6	
+     7	from __future__ import annotations
+     8	
+     9	from typing import Annotated, Literal
+    10	
+    11	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    12	
+    13	from ._common import CommitSha, DateTimeStr, UriStr
+    14	
+    15	ProposalState = Literal["drafting", "ready", "dispatched", "completed"]
+    16	"""Proposal lifecycle states; ``completed`` is terminal and covers both success and failure."""
+    17	
+    18	SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
+    19	Slug = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+    20	
+    21	
+    22	class Proposal(BaseModel):
+    23	    """Planner-produced proposal."""
+    24	
+    25	    model_config = ConfigDict(strict=True, extra="allow")
+    26	
+    27	    proposal_id: Annotated[str, Field(min_length=1)]
+    28	    experiment_id: Annotated[str, Field(min_length=1)]
+    29	    slug: Slug
+    30	    priority: float
+    31	    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+    32	    artifacts_uri: UriStr
+    33	    state: ProposalState
+    34	    created_at: DateTimeStr
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/metrics.py' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/config.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""MetricsSchema — declarative map from metric name to storage type.
+     2	
+     3	Mirrors ``spec/v0/schemas/metrics-schema.schema.json``. Appears as
+     4	``metrics_schema`` on :class:`ExperimentConfig` and constrains every
+     5	metrics payload an evaluator produces.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	import re
+    11	from typing import Annotated, Literal, Self
+    12	
+    13	from pydantic import ConfigDict, RootModel, StringConstraints, model_validator
+    14	
+    15	MetricType = Literal["integer", "real", "text"]
+    16	"""The three storage types a metric value may declare."""
+    17	
+    18	METRIC_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+    19	_METRIC_NAME_RE = re.compile(METRIC_NAME_PATTERN)
+    20	
+    21	RESERVED_METRIC_NAMES = frozenset(
+    22	    {
+    23	        "trial_id",
+    24	        "commit_sha",
+    25	        "parent_commits",
+    26	        "branch",
+    27	        "status",
+    28	        "artifacts_uri",
+    29	        "description",
+    30	        "timestamp",
+    31	        "started_at",
+    32	        "completed_at",
+    33	    }
+    34	)
+    35	"""Keys owned by the trial object; a metrics schema MUST NOT reuse them."""
+    36	
+    37	MetricName = Annotated[str, StringConstraints(pattern=METRIC_NAME_PATTERN)]
+    38	
+    39	
+    40	class MetricsSchema(RootModel[dict[str, MetricType]]):
+    41	    """Map from metric name to storage type; at least one entry required."""
+    42	
+    43	    model_config = ConfigDict(strict=True)
+    44	
+    45	    @model_validator(mode="after")
+    46	    def _validate(self) -> Self:
+    47	        if not self.root:
+    48	            raise ValueError("metrics_schema MUST declare at least one metric")
+    49	        for name in self.root:
+    50	            if not _METRIC_NAME_RE.match(name):
+    51	                raise ValueError(
+    52	                    f"metric name {name!r} does not match {METRIC_NAME_PATTERN}"
+    53	                )
+    54	            if name in RESERVED_METRIC_NAMES:
+    55	                raise ValueError(
+    56	                    f"metric name {name!r} is reserved by the trial schema"
+    57	                )
+    58	        return self
+
+ succeeded in 0ms:
+     1	"""ExperimentConfig — declarative input to an EDEN experiment.
+     2	
+     3	Mirrors ``spec/v0/schemas/experiment-config.schema.json``.
+     4	"""
+     5	
+     6	from __future__ import annotations
+     7	
+     8	from typing import Annotated, Literal
+     9	
+    10	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    11	
+    12	from ._common import NotNone
+    13	from .metrics import MetricsSchema
+    14	
+    15	Direction = Literal["maximize", "minimize"]
+    16	"""Objective direction — whether the scalar expression is to be maximized or minimized."""
+    17	
+    18	WALL_TIME_PATTERN = r"^[1-9][0-9]*[smhd]$"
+    19	WallTime = Annotated[str, StringConstraints(pattern=WALL_TIME_PATTERN)]
+    20	"""Duration string — positive integer followed by one of s, m, h, d."""
+    21	
+    22	
+    23	class ObjectiveSpec(BaseModel):
+    24	    """Scalar optimization target: expression over metrics + direction."""
+    25	
+    26	    model_config = ConfigDict(strict=True, extra="allow")
+    27	
+    28	    expr: Annotated[str, Field(min_length=1)]
+    29	    direction: Direction
+    30	
+    31	
+    32	class ExperimentConfig(BaseModel):
+    33	    """Declarative experiment input.
+    34	
+    35	    Role bindings (how the planner, implementer, and evaluator are hosted)
+    36	    are implementation-defined and flow through via ``extra="allow"`` until
+    37	    the spec pins them.
+    38	    """
+    39	
+    40	    model_config = ConfigDict(strict=True, extra="allow")
+    41	
+    42	    parallel_trials: Annotated[int, Field(ge=1)]
+    43	    max_trials: Annotated[int, Field(ge=1)]
+    44	    max_wall_time: WallTime
+    45	    metrics_schema: MetricsSchema
+    46	    objective: ObjectiveSpec
+    47	    convergence_window: Annotated[int | None, NotNone, Field(ge=1)] = None
+    48	    target_condition: Annotated[str | None, NotNone, Field(min_length=1)] = None
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/task.py' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/tests/conftest.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Task — unit of work dispatched to a role.
+     2	
+     3	Mirrors ``spec/v0/schemas/task.schema.json``. The ``kind`` field
+     4	discriminates the payload shape, and the ``claim`` field is present iff
+     5	``state`` is ``claimed`` or ``submitted`` (the state-dependent presence
+     6	is enforced by a model validator because JSON Schema expresses it via
+     7	``if/then/else`` at the root).
+     8	
+     9	State-machine semantics are defined in spec/v0/04-task-protocol.md.
+    10	"""
+    11	
+    12	from __future__ import annotations
+    13	
+    14	from typing import Annotated, Literal, Self
+    15	
+    16	from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+    17	
+    18	from ._common import DateTimeStr, NotNone
+    19	
+    20	TaskKind = Literal["plan", "implement", "evaluate"]
+    21	TaskState = Literal["pending", "claimed", "submitted", "completed", "failed"]
+    22	
+    23	_CLAIM_STATES: frozenset[str] = frozenset({"claimed", "submitted"})
+    24	
+    25	
+    26	class TaskClaim(BaseModel):
+    27	    """Claim token issued by the task store when a worker claims a task."""
+    28	
+    29	    model_config = ConfigDict(strict=True, extra="allow")
+    30	
+    31	    token: Annotated[str, Field(min_length=1)]
+    32	    worker_id: Annotated[str, Field(min_length=1)]
+    33	    claimed_at: DateTimeStr
+    34	    expires_at: Annotated[DateTimeStr | None, NotNone] = None
+    35	
+    36	
+    37	class PlanPayload(BaseModel):
+    38	    """Payload for ``kind=plan`` tasks."""
+    39	
+    40	    model_config = ConfigDict(strict=True, extra="allow")
+    41	
+    42	    experiment_id: Annotated[str, Field(min_length=1)]
+    43	
+    44	
+    45	class ImplementPayload(BaseModel):
+    46	    """Payload for ``kind=implement`` tasks."""
+    47	
+    48	    model_config = ConfigDict(strict=True, extra="allow")
+    49	
+    50	    proposal_id: Annotated[str, Field(min_length=1)]
+    51	
+    52	
+    53	class EvaluatePayload(BaseModel):
+    54	    """Payload for ``kind=evaluate`` tasks."""
+    55	
+    56	    model_config = ConfigDict(strict=True, extra="allow")
+    57	
+    58	    trial_id: Annotated[str, Field(min_length=1)]
+    59	
+    60	
+    61	class _TaskBase(BaseModel):
+    62	    """Fields shared across every task kind."""
+    63	
+    64	    model_config = ConfigDict(strict=True, extra="allow")
+    65	
+    66	    task_id: Annotated[str, Field(min_length=1)]
+    67	    state: TaskState
+    68	    claim: Annotated[TaskClaim | None, NotNone] = None
+    69	    created_at: DateTimeStr
+    70	    updated_at: DateTimeStr
+    71	
+    72	    @model_validator(mode="after")
+    73	    def _claim_presence(self) -> Self:
+    74	        if self.state in _CLAIM_STATES:
+    75	            if self.claim is None:
+    76	                raise ValueError(
+    77	                    f"claim is required when state is {self.state!r}"
+    78	                )
+    79	        elif self.claim is not None:
+    80	            raise ValueError(
+    81	                f"claim is forbidden when state is {self.state!r}"
+    82	            )
+    83	        return self
+    84	
+    85	
+    86	class PlanTask(_TaskBase):
+    87	    """Task of kind ``plan``."""
+    88	
+    89	    kind: Literal["plan"]
+    90	    payload: PlanPayload
+    91	
+    92	
+    93	class ImplementTask(_TaskBase):
+    94	    """Task of kind ``implement``."""
+    95	
+    96	    kind: Literal["implement"]
+    97	    payload: ImplementPayload
+    98	
+    99	
+   100	class EvaluateTask(_TaskBase):
+   101	    """Task of kind ``evaluate``."""
+   102	
+   103	    kind: Literal["evaluate"]
+   104	    payload: EvaluatePayload
+   105	
+   106	
+   107	Task = Annotated[
+   108	    PlanTask | ImplementTask | EvaluateTask,
+   109	    Field(discriminator="kind"),
+   110	]
+   111	"""Discriminated union keyed by ``kind`` — use :data:`TaskAdapter` to validate untyped input."""
+   112	
+   113	TaskAdapter: TypeAdapter[Task] = TypeAdapter(Task)
+   114	"""Pydantic adapter for validating arbitrary task objects into the union."""
+
+ succeeded in 0ms:
+     1	"""Shared fixtures: schema registry, per-schema validators, model validators.
+     2	
+     3	The parity tests need to run each case twice — once against the Pydantic
+     4	model and once against the hand-authored JSON Schema. This conftest wires
+     5	up both paths over the same case corpus so they stay in sync.
+     6	
+     7	A custom ``FormatChecker`` enables ``uri`` and ``date-time`` format
+     8	validation on the schema side; jsonschema's default does not enforce
+     9	``format`` keywords unless a checker is supplied. The model side enforces
+    10	the same semantics in :mod:`eden_contracts._common`.
+    11	"""
+    12	
+    13	from __future__ import annotations
+    14	
+    15	import json
+    16	from collections.abc import Callable
+    17	from datetime import datetime
+    18	from pathlib import Path
+    19	from typing import Any
+    20	from urllib.parse import urlparse
+    21	
+    22	from eden_contracts import (
+    23	    Event,
+    24	    ExperimentConfig,
+    25	    MetricsSchema,
+    26	    Proposal,
+    27	    TaskAdapter,
+    28	    Trial,
+    29	)
+    30	from jsonschema import Draft202012Validator, FormatChecker
+    31	from referencing import Registry, Resource
+    32	from referencing.jsonschema import DRAFT202012
+    33	
+    34	SCHEMAS_DIR: Path = Path(__file__).resolve().parents[4] / "spec" / "v0" / "schemas"
+    35	"""Resolves to ``<repo>/spec/v0/schemas``."""
+    36	
+    37	BASE_URI: str = "https://eden.local/schemas/"
+    38	"""Synthetic base URI so relative ``$ref``s between schema files resolve."""
+    39	
+    40	MODEL_NAMES: tuple[str, ...] = (
+    41	    "experiment-config",
+    42	    "task",
+    43	    "event",
+    44	    "proposal",
+    45	    "trial",
+    46	    "metrics-schema",
+    47	)
+    48	
+    49	
+    50	_FORMAT_CHECKER = FormatChecker()
+    51	
+    52	
+    53	@_FORMAT_CHECKER.checks("uri", raises=ValueError)
+    54	def _check_uri(instance: Any) -> bool:
+    55	    if not isinstance(instance, str):
+    56	        return True
+    57	    parts = urlparse(instance)
+    58	    if not parts.scheme:
+    59	        raise ValueError(f"not a valid URI: {instance!r}")
+    60	    return True
+    61	
+    62	
+    63	@_FORMAT_CHECKER.checks("date-time", raises=ValueError)
+    64	def _check_datetime(instance: Any) -> bool:
+    65	    if not isinstance(instance, str):
+    66	        return True
+    67	    datetime.fromisoformat(instance)
+    68	    return True
+    69	
+    70	
+    71	def _build_registry() -> Registry:
+    72	    registry: Registry = Registry()
+    73	    for path in SCHEMAS_DIR.glob("*.schema.json"):
+    74	        schema = json.loads(path.read_text())
+    75	        resource = Resource.from_contents(schema, default_specification=DRAFT202012)
+    76	        registry = registry.with_resource(uri=f"{BASE_URI}{path.name}", resource=resource)
+    77	    return registry
+    78	
+    79	
+    80	_REGISTRY: Registry = _build_registry()
+    81	
+    82	
+    83	def schema_validator(name: str) -> Draft202012Validator:
+    84	    """Return a validator for ``<name>.schema.json`` with refs + formats enforced."""
+    85	    return Draft202012Validator(
+    86	        schema={"$ref": f"{BASE_URI}{name}.schema.json"},
+    87	        registry=_REGISTRY,
+    88	        format_checker=_FORMAT_CHECKER,
+    89	    )
+    90	
+    91	
+    92	_MODEL_VALIDATORS: dict[str, Callable[[Any], object]] = {
+    93	    "experiment-config": ExperimentConfig.model_validate,
+    94	    "task": TaskAdapter.validate_python,
+    95	    "event": Event.model_validate,
+    96	    "proposal": Proposal.model_validate,
+    97	    "trial": Trial.model_validate,
+    98	    "metrics-schema": MetricsSchema.model_validate,
+    99	}
+   100	
+   101	
+   102	def model_validate(name: str, data: Any) -> object:
+   103	    """Validate ``data`` with the Pydantic model bound to schema ``name``."""
+   104	    return _MODEL_VALIDATORS[name](data)
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/src/eden_contracts/trial.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Trial — one in-flight or completed attempt to improve the objective.
+     2	
+     3	Mirrors ``spec/v0/schemas/trial.schema.json``. The ``metrics`` object's shape
+     4	is constrained by the experiment's ``metrics_schema``; this model does not
+     5	reproduce that constraint because metrics keys are per-experiment.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	from typing import Annotated, Any, Literal
+    11	
+    12	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    13	
+    14	from ._common import CommitSha, DateTimeStr, NotNone, UriStr
+    15	
+    16	TrialStatus = Literal["starting", "success", "error", "eval_error"]
+    17	"""Trial lifecycle statuses; ``success``, ``error``, ``eval_error`` are terminal."""
+    18	
+    19	WORK_BRANCH_PATTERN = r"^work/.+$"
+    20	WorkBranch = Annotated[str, StringConstraints(pattern=WORK_BRANCH_PATTERN)]
+    21	
+    22	
+    23	class Trial(BaseModel):
+    24	    """One attempt, in flight or terminal."""
+    25	
+    26	    model_config = ConfigDict(strict=True, extra="allow")
+    27	
+    28	    trial_id: Annotated[str, Field(min_length=1)]
+    29	    experiment_id: Annotated[str, Field(min_length=1)]
+    30	    proposal_id: Annotated[str, Field(min_length=1)]
+    31	    status: TrialStatus
+    32	    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+    33	    branch: Annotated[WorkBranch | None, NotNone] = None
+    34	    commit_sha: Annotated[CommitSha | None, NotNone] = None
+    35	    trial_commit_sha: Annotated[CommitSha | None, NotNone] = None
+    36	    artifacts_uri: Annotated[UriStr | None, NotNone] = None
+    37	    description: Annotated[str | None, NotNone] = None
+    38	    metrics: Annotated[dict[str, Any] | None, NotNone] = None
+    39	    started_at: DateTimeStr
+    40	    completed_at: Annotated[DateTimeStr | None, NotNone] = None
+
+exec
+/bin/zsh -lc 'nl -ba reference/packages/eden-contracts/tests/cases.py' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Accept/reject corpus, shared by the per-model and parity tests.
+     2	
+     3	Each case is a ``(name, data, should_pass)`` tuple. The corpus is the
+     4	single source of truth; its pairs drive both the Pydantic model tests
+     5	and the JSON Schema parity test. An asymmetry between the two would
+     6	mean a drift in the parity surface and is what the schema-parity job
+     7	catches.
+     8	"""
+     9	
+    10	from __future__ import annotations
+    11	
+    12	from typing import Any, NamedTuple
+    13	
+    14	
+    15	class Case(NamedTuple):
+    16	    """One fixture: a value to validate and whether validation must succeed."""
+    17	
+    18	    name: str
+    19	    data: Any
+    20	    should_pass: bool
+    21	
+    22	
+    23	_DT = "2026-04-23T12:00:00Z"
+    24	_DT2 = "2026-04-23T12:30:00.123Z"
+    25	_SHA1 = "a" * 40
+    26	_SHA256 = "a" * 40 + "b" * 24
+    27	
+    28	EXPERIMENT_CONFIG_CASES: list[Case] = [
+    29	    Case(
+    30	        "minimal",
+    31	        {
+    32	            "parallel_trials": 2,
+    33	            "max_trials": 50,
+    34	            "max_wall_time": "4h",
+    35	            "metrics_schema": {"accuracy": "real"},
+    36	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    37	        },
+    38	        True,
+    39	    ),
+    40	    Case(
+    41	        "with_optional",
+    42	        {
+    43	            "parallel_trials": 4,
+    44	            "max_trials": 200,
+    45	            "max_wall_time": "30m",
+    46	            "metrics_schema": {"loss": "real", "tokens": "integer", "note": "text"},
+    47	            "objective": {"expr": "loss", "direction": "minimize"},
+    48	            "convergence_window": 20,
+    49	            "target_condition": "loss < 0.01",
+    50	        },
+    51	        True,
+    52	    ),
+    53	    Case(
+    54	        "missing_parallel_trials",
+    55	        {
+    56	            "max_trials": 50,
+    57	            "max_wall_time": "4h",
+    58	            "metrics_schema": {"accuracy": "real"},
+    59	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    60	        },
+    61	        False,
+    62	    ),
+    63	    Case(
+    64	        "parallel_trials_zero",
+    65	        {
+    66	            "parallel_trials": 0,
+    67	            "max_trials": 50,
+    68	            "max_wall_time": "4h",
+    69	            "metrics_schema": {"accuracy": "real"},
+    70	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    71	        },
+    72	        False,
+    73	    ),
+    74	    Case(
+    75	        "wall_time_zero_prefix",
+    76	        {
+    77	            "parallel_trials": 2,
+    78	            "max_trials": 50,
+    79	            "max_wall_time": "0s",
+    80	            "metrics_schema": {"accuracy": "real"},
+    81	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    82	        },
+    83	        False,
+    84	    ),
+    85	    Case(
+    86	        "wall_time_bad_unit",
+    87	        {
+    88	            "parallel_trials": 2,
+    89	            "max_trials": 50,
+    90	            "max_wall_time": "4y",
+    91	            "metrics_schema": {"accuracy": "real"},
+    92	            "objective": {"expr": "accuracy", "direction": "maximize"},
+    93	        },
+    94	        False,
+    95	    ),
+    96	    Case(
+    97	        "metrics_schema_empty",
+    98	        {
+    99	            "parallel_trials": 2,
+   100	            "max_trials": 50,
+   101	            "max_wall_time": "4h",
+   102	            "metrics_schema": {},
+   103	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   104	        },
+   105	        False,
+   106	    ),
+   107	    Case(
+   108	        "metrics_schema_reserved_key",
+   109	        {
+   110	            "parallel_trials": 2,
+   111	            "max_trials": 50,
+   112	            "max_wall_time": "4h",
+   113	            "metrics_schema": {"trial_id": "text"},
+   114	            "objective": {"expr": "trial_id", "direction": "maximize"},
+   115	        },
+   116	        False,
+   117	    ),
+   118	    Case(
+   119	        "objective_invalid_direction",
+   120	        {
+   121	            "parallel_trials": 2,
+   122	            "max_trials": 50,
+   123	            "max_wall_time": "4h",
+   124	            "metrics_schema": {"accuracy": "real"},
+   125	            "objective": {"expr": "accuracy", "direction": "sideways"},
+   126	        },
+   127	        False,
+   128	    ),
+   129	    Case(
+   130	        "parallel_trials_bool",
+   131	        {
+   132	            "parallel_trials": True,
+   133	            "max_trials": 50,
+   134	            "max_wall_time": "4h",
+   135	            "metrics_schema": {"accuracy": "real"},
+   136	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   137	        },
+   138	        False,
+   139	    ),
+   140	    Case(
+   141	        "max_trials_string",
+   142	        {
+   143	            "parallel_trials": 2,
+   144	            "max_trials": "50",
+   145	            "max_wall_time": "4h",
+   146	            "metrics_schema": {"accuracy": "real"},
+   147	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   148	        },
+   149	        False,
+   150	    ),
+   151	    Case(
+   152	        "convergence_window_string",
+   153	        {
+   154	            "parallel_trials": 2,
+   155	            "max_trials": 50,
+   156	            "max_wall_time": "4h",
+   157	            "metrics_schema": {"accuracy": "real"},
+   158	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   159	            "convergence_window": "3",
+   160	        },
+   161	        False,
+   162	    ),
+   163	    Case(
+   164	        "convergence_window_null",
+   165	        {
+   166	            "parallel_trials": 2,
+   167	            "max_trials": 50,
+   168	            "max_wall_time": "4h",
+   169	            "metrics_schema": {"accuracy": "real"},
+   170	            "objective": {"expr": "accuracy", "direction": "maximize"},
+   171	            "convergence_window": None,
+   172	        },
+   173	        False,
+   174	    ),
+   175	]
+   176	
+   177	
+   178	_VALID_CLAIM = {
+   179	    "token": "claim-1",
+   180	    "worker_id": "worker-a",
+   181	    "claimed_at": _DT,
+   182	}
+   183	
+   184	TASK_CASES: list[Case] = [
+   185	    Case(
+   186	        "plan_pending",
+   187	        {
+   188	            "task_id": "t-1",
+   189	            "kind": "plan",
+   190	            "state": "pending",
+   191	            "payload": {"experiment_id": "exp-1"},
+   192	            "created_at": _DT,
+   193	            "updated_at": _DT,
+   194	        },
+   195	        True,
+   196	    ),
+   197	    Case(
+   198	        "implement_claimed",
+   199	        {
+   200	            "task_id": "t-2",
+   201	            "kind": "implement",
+   202	            "state": "claimed",
+   203	            "payload": {"proposal_id": "p-1"},
+   204	            "claim": _VALID_CLAIM,
+   205	            "created_at": _DT,
+   206	            "updated_at": _DT,
+   207	        },
+   208	        True,
+   209	    ),
+   210	    Case(
+   211	        "evaluate_submitted",
+   212	        {
+   213	            "task_id": "t-3",
+   214	            "kind": "evaluate",
+   215	            "state": "submitted",
+   216	            "payload": {"trial_id": "trial-1"},
+   217	            "claim": {**_VALID_CLAIM, "expires_at": _DT2},
+   218	            "created_at": _DT,
+   219	            "updated_at": _DT2,
+   220	        },
+   221	        True,
+   222	    ),
+   223	    Case(
+   224	        "plan_completed_no_claim",
+   225	        {
+   226	            "task_id": "t-4",
+   227	            "kind": "plan",
+   228	            "state": "completed",
+   229	            "payload": {"experiment_id": "exp-1"},
+   230	            "created_at": _DT,
+   231	            "updated_at": _DT2,
+   232	        },
+   233	        True,
+   234	    ),
+   235	    Case(
+   236	        "plan_failed_no_claim",
+   237	        {
+   238	            "task_id": "t-5",
+   239	            "kind": "plan",
+   240	            "state": "failed",
+   241	            "payload": {"experiment_id": "exp-1"},
+   242	            "created_at": _DT,
+   243	            "updated_at": _DT2,
+   244	        },
+   245	        True,
+   246	    ),
+   247	    Case(
+   248	        "claimed_without_claim",
+   249	        {
+   250	            "task_id": "t-6",
+   251	            "kind": "plan",
+   252	            "state": "claimed",
+   253	            "payload": {"experiment_id": "exp-1"},
+   254	            "created_at": _DT,
+   255	            "updated_at": _DT,
+   256	        },
+   257	        False,
+   258	    ),
+   259	    Case(
+   260	        "submitted_without_claim",
+   261	        {
+   262	            "task_id": "t-7",
+   263	            "kind": "evaluate",
+   264	            "state": "submitted",
+   265	            "payload": {"trial_id": "trial-1"},
+   266	            "created_at": _DT,
+   267	            "updated_at": _DT,
+   268	        },
+   269	        False,
+   270	    ),
+   271	    Case(
+   272	        "pending_with_claim",
+   273	        {
+   274	            "task_id": "t-8",
+   275	            "kind": "plan",
+   276	            "state": "pending",
+   277	            "payload": {"experiment_id": "exp-1"},
+   278	            "claim": _VALID_CLAIM,
+   279	            "created_at": _DT,
+   280	            "updated_at": _DT,
+   281	        },
+   282	        False,
+   283	    ),
+   284	    Case(
+   285	        "completed_with_claim",
+   286	        {
+   287	            "task_id": "t-9",
+   288	            "kind": "plan",
+   289	            "state": "completed",
+   290	            "payload": {"experiment_id": "exp-1"},
+   291	            "claim": _VALID_CLAIM,
+   292	            "created_at": _DT,
+   293	            "updated_at": _DT,
+   294	        },
+   295	        False,
+   296	    ),
+   297	    Case(
+   298	        "plan_task_missing_experiment_id",
+   299	        {
+   300	            "task_id": "t-10",
+   301	            "kind": "plan",
+   302	            "state": "pending",
+   303	            "payload": {},
+   304	            "created_at": _DT,
+   305	            "updated_at": _DT,
+   306	        },
+   307	        False,
+   308	    ),
+   309	    Case(
+   310	        "implement_task_missing_proposal_id",
+   311	        {
+   312	            "task_id": "t-11",
+   313	            "kind": "implement",
+   314	            "state": "pending",
+   315	            "payload": {"experiment_id": "exp-1"},
+   316	            "created_at": _DT,
+   317	            "updated_at": _DT,
+   318	        },
+   319	        False,
+   320	    ),
+   321	    Case(
+   322	        "invalid_kind",
+   323	        {
+   324	            "task_id": "t-12",
+   325	            "kind": "integrate",
+   326	            "state": "pending",
+   327	            "payload": {},
+   328	            "created_at": _DT,
+   329	            "updated_at": _DT,
+   330	        },
+   331	        False,
+   332	    ),
+   333	    Case(
+   334	        "invalid_state",
+   335	        {
+   336	            "task_id": "t-13",
+   337	            "kind": "plan",
+   338	            "state": "running",
+   339	            "payload": {"experiment_id": "exp-1"},
+   340	            "created_at": _DT,
+   341	            "updated_at": _DT,
+   342	        },
+   343	        False,
+   344	    ),
+   345	    Case(
+   346	        "missing_updated_at",
+   347	        {
+   348	            "task_id": "t-14",
+   349	            "kind": "plan",
+   350	            "state": "pending",
+   351	            "payload": {"experiment_id": "exp-1"},
+   352	            "created_at": _DT,
+   353	        },
+   354	        False,
+   355	    ),
+   356	    Case(
+   357	        "claim_bad_datetime",
+   358	        {
+   359	            "task_id": "t-15",
+   360	            "kind": "plan",
+   361	            "state": "claimed",
+   362	            "payload": {"experiment_id": "exp-1"},
+   363	            "claim": {"token": "c", "worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
+   364	            "created_at": _DT,
+   365	            "updated_at": _DT,
+   366	        },
+   367	        False,
+   368	    ),
+   369	    Case(
+   370	        "impossible_datetime",
+   371	        {
+   372	            "task_id": "t-16",
+   373	            "kind": "plan",
+   374	            "state": "pending",
+   375	            "payload": {"experiment_id": "exp-1"},
+   376	            "created_at": "2026-99-99T12:00:00Z",
+   377	            "updated_at": _DT,
+   378	        },
+   379	        False,
+   380	    ),
+   381	    Case(
+   382	        "claim_null_on_pending",
+   383	        {
+   384	            "task_id": "t-17",
+   385	            "kind": "plan",
+   386	            "state": "pending",
+   387	            "payload": {"experiment_id": "exp-1"},
+   388	            "claim": None,
+   389	            "created_at": _DT,
+   390	            "updated_at": _DT,
+   391	        },
+   392	        False,
+   393	    ),
+   394	]
+   395	
+   396	
+   397	EVENT_CASES: list[Case] = [
+   398	    Case(
+   399	        "task_claimed",
+   400	        {
+   401	            "event_id": "evt-1",
+   402	            "type": "task.claimed",
+   403	            "occurred_at": _DT,
+   404	            "experiment_id": "exp-1",
+   405	            "data": {"task_id": "t-1", "worker_id": "w-1"},
+   406	        },
+   407	        True,
+   408	    ),
+   409	    Case(
+   410	        "nested_type",
+   411	        {
+   412	            "event_id": "evt-2",
+   413	            "type": "trial.evaluated.success",
+   414	            "occurred_at": _DT2,
+   415	            "experiment_id": "exp-1",
+   416	            "data": {},
+   417	        },
+   418	        True,
+   419	    ),
+   420	    Case(
+   421	        "type_without_dot",
+   422	        {
+   423	            "event_id": "evt-3",
+   424	            "type": "claimed",
+   425	            "occurred_at": _DT,
+   426	            "experiment_id": "exp-1",
+   427	            "data": {},
+   428	        },
+   429	        False,
+   430	    ),
+   431	    Case(
+   432	        "type_uppercase",
+   433	        {
+   434	            "event_id": "evt-4",
+   435	            "type": "Task.Claimed",
+   436	            "occurred_at": _DT,
+   437	            "experiment_id": "exp-1",
+   438	            "data": {},
+   439	        },
+   440	        False,
+   441	    ),
+   442	    Case(
+   443	        "occurred_at_with_offset",
+   444	        {
+   445	            "event_id": "evt-5",
+   446	            "type": "task.claimed",
+   447	            "occurred_at": "2026-04-23T12:00:00+00:00",
+   448	            "experiment_id": "exp-1",
+   449	            "data": {},
+   450	        },
+   451	        False,
+   452	    ),
+   453	    Case(
+   454	        "missing_experiment_id",
+   455	        {
+   456	            "event_id": "evt-6",
+   457	            "type": "task.claimed",
+   458	            "occurred_at": _DT,
+   459	            "data": {},
+   460	        },
+   461	        False,
+   462	    ),
+   463	    Case(
+   464	        "data_not_object",
+   465	        {
+   466	            "event_id": "evt-7",
+   467	            "type": "task.claimed",
+   468	            "occurred_at": _DT,
+   469	            "experiment_id": "exp-1",
+   470	            "data": "hello",
+   471	        },
+   472	        False,
+   473	    ),
+   474	]
+   475	
+   476	
+   477	PROPOSAL_CASES: list[Case] = [
+   478	    Case(
+   479	        "drafting",
+   480	        {
+   481	            "proposal_id": "p-1",
+   482	            "experiment_id": "exp-1",
+   483	            "slug": "improve-tokenizer",
+   484	            "priority": 0.5,
+   485	            "parent_commits": [_SHA1],
+   486	            "artifacts_uri": "s3://bucket/proposals/p-1/",
+   487	            "state": "drafting",
+   488	            "created_at": _DT,
+   489	        },
+   490	        True,
+   491	    ),
+   492	    Case(
+   493	        "completed_sha256",
+   494	        {
+   495	            "proposal_id": "p-2",
+   496	            "experiment_id": "exp-1",
+   497	            "slug": "x",
+   498	            "priority": -1.0,
+   499	            "parent_commits": [_SHA256],
+   500	            "artifacts_uri": "file:///tmp/p-2",
+   501	            "state": "completed",
+   502	            "created_at": _DT2,
+   503	        },
+   504	        True,
+   505	    ),
+   506	    Case(
+   507	        "slug_uppercase",
+   508	        {
+   509	            "proposal_id": "p-3",
+   510	            "experiment_id": "exp-1",
+   511	            "slug": "Improve-Tokenizer",
+   512	            "priority": 0.0,
+   513	            "parent_commits": [_SHA1],
+   514	            "artifacts_uri": "s3://b/",
+   515	            "state": "drafting",
+   516	            "created_at": _DT,
+   517	        },
+   518	        False,
+   519	    ),
+   520	    Case(
+   521	        "slug_leading_dash",
+   522	        {
+   523	            "proposal_id": "p-4",
+   524	            "experiment_id": "exp-1",
+   525	            "slug": "-improve",
+   526	            "priority": 0.0,
+   527	            "parent_commits": [_SHA1],
+   528	            "artifacts_uri": "s3://b/",
+   529	            "state": "drafting",
+   530	            "created_at": _DT,
+   531	        },
+   532	        False,
+   533	    ),
+   534	    Case(
+   535	        "bad_state",
+   536	        {
+   537	            "proposal_id": "p-5",
+   538	            "experiment_id": "exp-1",
+   539	            "slug": "s",
+   540	            "priority": 0.0,
+   541	            "parent_commits": [_SHA1],
+   542	            "artifacts_uri": "s3://b/",
+   543	            "state": "accepted",
+   544	            "created_at": _DT,
+   545	        },
+   546	        False,
+   547	    ),
+   548	    Case(
+   549	        "empty_parent_commits",
+   550	        {
+   551	            "proposal_id": "p-6",
+   552	            "experiment_id": "exp-1",
+   553	            "slug": "s",
+   554	            "priority": 0.0,
+   555	            "parent_commits": [],
+   556	            "artifacts_uri": "s3://b/",
+   557	            "state": "drafting",
+   558	            "created_at": _DT,
+   559	        },
+   560	        False,
+   561	    ),
+   562	    Case(
+   563	        "bad_commit_sha_length",
+   564	        {
+   565	            "proposal_id": "p-7",
+   566	            "experiment_id": "exp-1",
+   567	            "slug": "s",
+   568	            "priority": 0.0,
+   569	            "parent_commits": ["abc123"],
+   570	            "artifacts_uri": "s3://b/",
+   571	            "state": "drafting",
+   572	            "created_at": _DT,
+   573	        },
+   574	        False,
+   575	    ),
+   576	    Case(
+   577	        "bad_commit_sha_uppercase",
+   578	        {
+   579	            "proposal_id": "p-8",
+   580	            "experiment_id": "exp-1",
+   581	            "slug": "s",
+   582	            "priority": 0.0,
+   583	            "parent_commits": ["A" * 40],
+   584	            "artifacts_uri": "s3://b/",
+   585	            "state": "drafting",
+   586	            "created_at": _DT,
+   587	        },
+   588	        False,
+   589	    ),
+   590	    Case(
+   591	        "priority_bool",
+   592	        {
+   593	            "proposal_id": "p-9",
+   594	            "experiment_id": "exp-1",
+   595	            "slug": "s",
+   596	            "priority": True,
+   597	            "parent_commits": [_SHA1],
+   598	            "artifacts_uri": "s3://b/",
+   599	            "state": "drafting",
+   600	            "created_at": _DT,
+   601	        },
+   602	        False,
+   603	    ),
+   604	    Case(
+   605	        "priority_string",
+   606	        {
+   607	            "proposal_id": "p-10",
+   608	            "experiment_id": "exp-1",
+   609	            "slug": "s",
+   610	            "priority": "1.5",
+   611	            "parent_commits": [_SHA1],
+   612	            "artifacts_uri": "s3://b/",
+   613	            "state": "drafting",
+   614	            "created_at": _DT,
+   615	        },
+   616	        False,
+   617	    ),
+   618	    Case(
+   619	        "artifacts_uri_no_scheme",
+   620	        {
+   621	            "proposal_id": "p-11",
+   622	            "experiment_id": "exp-1",
+   623	            "slug": "s",
+   624	            "priority": 0.0,
+   625	            "parent_commits": [_SHA1],
+   626	            "artifacts_uri": "just a plain string",
+   627	            "state": "drafting",
+   628	            "created_at": _DT,
+   629	        },
+   630	        False,
+   631	    ),
+   632	    Case(
+   633	        "created_at_impossible",
+   634	        {
+   635	            "proposal_id": "p-12",
+   636	            "experiment_id": "exp-1",
+   637	            "slug": "s",
+   638	            "priority": 0.0,
+   639	            "parent_commits": [_SHA1],
+   640	            "artifacts_uri": "s3://b/",
+   641	            "state": "drafting",
+   642	            "created_at": "2026-13-32T25:00:00Z",
+   643	        },
+   644	        False,
+   645	    ),
+   646	]
+   647	
+   648	
+   649	TRIAL_CASES: list[Case] = [
+   650	    Case(
+   651	        "starting_minimal",
+   652	        {
+   653	            "trial_id": "trial-1",
+   654	            "experiment_id": "exp-1",
+   655	            "proposal_id": "p-1",
+   656	            "status": "starting",
+   657	            "parent_commits": [_SHA1],
+   658	            "started_at": _DT,
+   659	        },
+   660	        True,
+   661	    ),
+   662	    Case(
+   663	        "success_full",
+   664	        {
+   665	            "trial_id": "trial-2",
+   666	            "experiment_id": "exp-1",
+   667	            "proposal_id": "p-1",
+   668	            "status": "success",
+   669	            "parent_commits": [_SHA1],
+   670	            "branch": "work/trial-2",
+   671	            "commit_sha": "b" * 40,
+   672	            "trial_commit_sha": "c" * 40,
+   673	            "artifacts_uri": "s3://bucket/trial-2",
+   674	            "description": "improves accuracy",
+   675	            "metrics": {"accuracy": 0.91, "tokens": 12345},
+   676	            "started_at": _DT,
+   677	            "completed_at": _DT2,
+   678	        },
+   679	        True,
+   680	    ),
+   681	    Case(
+   682	        "eval_error",
+   683	        {
+   684	            "trial_id": "trial-3",
+   685	            "experiment_id": "exp-1",
+   686	            "proposal_id": "p-1",
+   687	            "status": "eval_error",
+   688	            "parent_commits": [_SHA1],
+   689	            "started_at": _DT,
+   690	        },
+   691	        True,
+   692	    ),
+   693	    Case(
+   694	        "branch_not_work",
+   695	        {
+   696	            "trial_id": "trial-4",
+   697	            "experiment_id": "exp-1",
+   698	            "proposal_id": "p-1",
+   699	            "status": "starting",
+   700	            "parent_commits": [_SHA1],
+   701	            "branch": "feature/foo",
+   702	            "started_at": _DT,
+   703	        },
+   704	        False,
+   705	    ),
+   706	    Case(
+   707	        "bad_status",
+   708	        {
+   709	            "trial_id": "trial-5",
+   710	            "experiment_id": "exp-1",
+   711	            "proposal_id": "p-1",
+   712	            "status": "running",
+   713	            "parent_commits": [_SHA1],
+   714	            "started_at": _DT,
+   715	        },
+   716	        False,
+   717	    ),
+   718	    Case(
+   719	        "bad_commit_sha",
+   720	        {
+   721	            "trial_id": "trial-6",
+   722	            "experiment_id": "exp-1",
+   723	            "proposal_id": "p-1",
+   724	            "status": "success",
+   725	            "parent_commits": [_SHA1],
+   726	            "commit_sha": "not-hex",
+   727	            "started_at": _DT,
+   728	        },
+   729	        False,
+   730	    ),
+   731	    Case(
+   732	        "empty_parent_commits",
+   733	        {
+   734	            "trial_id": "trial-7",
+   735	            "experiment_id": "exp-1",
+   736	            "proposal_id": "p-1",
+   737	            "status": "starting",
+   738	            "parent_commits": [],
+   739	            "started_at": _DT,
+   740	        },
+   741	        False,
+   742	    ),
+   743	    Case(
+   744	        "metrics_explicit_null",
+   745	        {
+   746	            "trial_id": "trial-8",
+   747	            "experiment_id": "exp-1",
+   748	            "proposal_id": "p-1",
+   749	            "status": "starting",
+   750	            "parent_commits": [_SHA1],
+   751	            "metrics": None,
+   752	            "started_at": _DT,
+   753	        },
+   754	        False,
+   755	    ),
+   756	    Case(
+   757	        "artifacts_uri_no_scheme",
+   758	        {
+   759	            "trial_id": "trial-9",
+   760	            "experiment_id": "exp-1",
+   761	            "proposal_id": "p-1",
+   762	            "status": "success",
+   763	            "parent_commits": [_SHA1],
+   764	            "artifacts_uri": "not a uri",
+   765	            "started_at": _DT,
+   766	        },
+   767	        False,
+   768	    ),
+   769	    Case(
+   770	        "completed_at_null",
+   771	        {
+   772	            "trial_id": "trial-10",
+   773	            "experiment_id": "exp-1",
+   774	            "proposal_id": "p-1",
+   775	            "status": "starting",
+   776	            "parent_commits": [_SHA1],
+   777	            "started_at": _DT,
+   778	            "completed_at": None,
+   779	        },
+   780	        False,
+   781	    ),
+   782	]
+   783	
+   784	
+   785	METRICS_SCHEMA_CASES: list[Case] = [
+   786	    Case("one_real", {"accuracy": "real"}, True),
+   787	    Case("mixed", {"accuracy": "real", "tokens": "integer", "note": "text"}, True),
+   788	    Case("leading_underscore", {"_internal": "integer"}, True),
+   789	    Case("empty", {}, False),
+   790	    Case("reserved_trial_id", {"trial_id": "text"}, False),
+   791	    Case("reserved_completed_at", {"completed_at": "text"}, False),
+   792	    Case("invalid_type", {"x": "float"}, False),
+   793	    Case("numeric_first_char", {"1accuracy": "real"}, False),
+   794	    Case("hyphen_in_name", {"accu-racy": "real"}, False),
+   795	]
+   796	
+   797	
+   798	ALL_CASES: dict[str, list[Case]] = {
+   799	    "experiment-config": EXPERIMENT_CONFIG_CASES,
+   800	    "task": TASK_CASES,
+   801	    "event": EVENT_CASES,
+   802	    "proposal": PROPOSAL_CASES,
+   803	    "trial": TRIAL_CASES,
+   804	    "metrics-schema": METRICS_SCHEMA_CASES,
+   805	}
+
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '1,120p'; echo '---'; nl -ba README.md | sed -n '1,140p'; echo '---'; nl -ba CONTRIBUTING.md | sed -n '1,120p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# AGENTS.md
+     2	
+     3	This file provides guidance to AI agents working with this repository.
+     4	
+     5	## What this repo is
+     6	
+     7	EDEN is a **protocol** for directed-code-evolution orchestration, not a
+     8	single product. The repo contains three distinct kinds of artifact, each
+     9	with different change discipline:
+    10	
+    11	| Layer | Path | Authoritative? | Change discipline |
+    12	|---|---|---|---|
+    13	| Protocol specification | [`spec/`](spec/) | Yes — the source of truth | RFC-style: versioned, normative (MUST/SHOULD/MAY), carefully reviewed |
+    14	| Reference implementation | [`reference/`](reference/) | No — *one* valid impl | Normal code-review discipline |
+    15	| Conformance suite | [`conformance/`](conformance/) | Normative for tests | Black-box; must be implementation-agnostic |
+    16	
+    17	Non-normative human docs live in [`docs/`](docs/).
+    18	
+    19	## Current phase
+    20	
+    21	**Phase 3 complete.** The `reference/packages/eden-contracts` package
+    22	ships Pydantic v2 bindings for the six spec/v0 JSON Schemas, along with
+    23	the first Python toolchain wiring (uv workspace, ruff, pyright, pytest)
+    24	and four new CI jobs — `python-lint`, `python-typecheck`, `python-test`,
+    25	and `schema-parity`. All six CI checks on `main` are green. See
+    26	[`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan. Phase 4
+    27	is next: the event protocol, integrator chapter, and storage chapter —
+    28	and the corresponding event schema.
+    29	
+    30	## Commands
+    31	
+    32	At Phase 3, markdown linting, JSON Schema validation, and the Python
+    33	toolchain for the `eden-contracts` reference package are wired up.
+    34	
+    35	| Command | Purpose |
+    36	|---|---|
+    37	| `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
+    38	| `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
+    39	| `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
+    40	| `uv sync` | Install/refresh the workspace virtualenv (root + `reference/packages/eden-contracts`) |
+    41	| `uv run ruff check .` | Lint Python (config in root `pyproject.toml`) |
+    42	| `uv run pyright` | Type-check the reference Python packages |
+    43	| `uv run pytest -q` | Run the reference-package test suite (includes schema ↔ model parity) |
+    44	| `uv run pytest reference/packages/eden-contracts/tests/test_schema_parity.py` | Run only the schema ↔ Pydantic model parity check |
+    45	
+    46	### Commands that will exist in later phases
+    47	
+    48	These are listed for orientation; the tooling is not wired up yet.
+    49	
+    50	| Command | Lands in |
+    51	|---|---|
+    52	| `docker compose up` end-to-end | Phase 10 |
+    53	
+    54	## Contribution conventions
+    55	
+    56	### Spec edits
+    57	
+    58	+ Every cross-component contract (wire format, state machine, invariant)
+    59	  is defined in `spec/` first, then implemented in `reference/`. When
+    60	  they disagree, the spec wins and the impl gets a bug.
+    61	+ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
+    62	+ Spec versions are frozen once stable (`spec/v0/` is a single lineage;
+    63	  breaking changes go to `spec/v1/`).
+    64	+ Schema changes must update the spec prose, the JSON Schema file, and
+    65	  (from Phase 3 onward) the Pydantic bindings in lockstep. CI will
+    66	  enforce schema ↔ model parity once both exist.
+    67	
+    68	### Reference implementation
+    69	
+    70	+ Normal code-review discipline.
+    71	+ Normative behavior is tested against the conformance suite (once it
+    72	  exists in Phase 11).
+    73	+ The reference impl is explicitly not a monopoly on correctness. A
+    74	  third-party implementation that passes conformance is equally valid.
+    75	
+    76	## Commit guidelines
+    77	
+    78	+ Short imperative subjects (e.g., "Add event protocol chapter",
+    79	  "Pin task state machine").
+    80	+ For pull requests, include: what the change is, which phase it
+    81	  advances, and any spec ↔ impl implications.
+    82	
+    83	## Related docs
+    84	
+    85	+ [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
+    86	+ [`docs/roadmap.md`](docs/roadmap.md) — the 13-phase build-up plan with
+    87	  unit-level decomposition.
+    88	+ [`docs/plans/`](docs/plans/) — active implementation plans.
+    89	+ [`docs/archive/`](docs/archive/) — historical reference docs.
+    90	+ [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — formatting and naming conventions.
+    91	+ [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup and PR workflow.
+---
+     1	# EDEN
+     2	
+     3	**E**ric's **D**irected **E**volution **N**exus — a protocol for
+     4	orchestrating directed code evolution, with an open reference
+     5	implementation and a conformance suite.
+     6	
+     7	EDEN is not a single system. It is a specification that defines the roles
+     8	(planner, implementer, evaluator, integrator), the messages they exchange,
+     9	and the invariants they must honor. Anyone can build a conforming planner,
+    10	implementer, evaluator, or backing store in any language and interoperate
+    11	with other conforming components.
+    12	
+    13	> **Intelligent evolution.**
+    14	
+    15	## What's in this repo
+    16	
+    17	| Directory | Purpose |
+    18	|---|---|
+    19	| [`spec/`](spec/) | Normative protocol specification. Versioned (`spec/v0/`, `spec/v1/`, …). The authoritative source. |
+    20	| [`reference/`](reference/) | One complete implementation of the protocol. Labeled as a reference — *one* valid implementation, not *the* implementation. |
+    21	| [`conformance/`](conformance/) | Black-box test suite any third-party component can run against itself to prove it conforms. |
+    22	| [`docs/`](docs/) | Non-normative human documentation. Starts with [`docs/naming.md`](docs/naming.md) (what EDEN is) and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
+    23	
+    24	## Status
+    25	
+    26	**Phase 3 complete.** The reference repository now ships its first
+    27	Python package, `reference/packages/eden-contracts` — Pydantic v2
+    28	bindings for all six spec/v0 JSON Schemas, with a discriminated-union
+    29	task model, strict numeric parsing, URI and date-time format
+    30	validation, and enforcement of the cross-field invariants the schemas
+    31	express via `if/then/else` (task claim-presence, per-kind payloads,
+    32	reserved metric names). A uv workspace wires ruff, pyright, and pytest
+    33	at the repo root, and CI now runs six jobs — `docs-lint`,
+    34	`schema-validity`, `python-lint`, `python-typecheck`, `python-test`,
+    35	and `schema-parity`. The `schema-parity` job enforces that every
+    36	fixture accepted by the models is also accepted by the JSON Schemas
+    37	and vice versa, plus a round-trip check on `model_dump(exclude_none=
+    38	True)`. There is still **no end-to-end runnable orchestration** —
+    39	that starts landing in Phase 5. Phase 4 is next: event protocol,
+    40	integrator, and storage specification. See
+    41	[`docs/roadmap.md`](docs/roadmap.md) for the full Phase 0–13 plan.
+    42	
+    43	## Contributing
+    44	
+    45	See [`CONTRIBUTING.md`](CONTRIBUTING.md). Two paths:
+    46	
+    47	- **Spec contributions** follow RFC-style discipline: versioned, normative
+    48	  language (RFC 2119 MUST/SHOULD/MAY), careful review.
+    49	- **Reference-implementation contributions** follow standard code-review
+    50	  workflow.
+    51	
+    52	## License
+    53	
+    54	[MIT](LICENSE).
+---
+     1	# Contributing to EDEN
+     2	
+     3	Thanks for your interest in EDEN.
+     4	
+     5	EDEN is a **protocol** for directed-code-evolution orchestration. This repo
+     6	contains three kinds of artifact that call for different contribution
+     7	discipline: the **specification** (`spec/`), the **reference
+     8	implementation** (`reference/`), and the **conformance suite**
+     9	(`conformance/`). Read the section that matches where your change lives.
+    10	
+    11	## Current phase
+    12	
+    13	**Phase 3 complete.** The spec/v0 core concepts, role contracts, task
+    14	protocol, and six JSON Schemas are on the protected `main` alongside
+    15	the Pydantic reference bindings in `reference/packages/eden-contracts`
+    16	and a full Python toolchain (uv workspace + ruff + pyright + pytest).
+    17	CI runs six checks — `docs-lint`, `schema-validity`, `python-lint`,
+    18	`python-typecheck`, `python-test`, and `schema-parity`. See
+    19	[`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 4–13 work.
+    20	
+    21	If you want to contribute, the most useful next areas are the Phase 4
+    22	chapters (event protocol, integrator, storage) and any gaps you spot
+    23	in the spec or the contracts-package bindings.
+    24	
+    25	## Contributing to the spec
+    26	
+    27	The spec is the authoritative source of protocol semantics. A change to
+    28	the spec is a change to what "EDEN" means.
+    29	
+    30	### Spec conventions
+    31	
+    32	- **Versioning.** `spec/v0/` is a single lineage. Within a version,
+    33	  changes should be additive or clarifying. Breaking changes go to a new
+    34	  version (`spec/v1/`, …), never in-place.
+    35	- **Normative language.** Use RFC 2119 keywords: **MUST**, **SHOULD**,
+    36	  **MAY**. If prose doesn't use one, it's informative.
+    37	- **Wire-format changes propagate.** A change to a JSON Schema file
+    38	  under `spec/v*/schemas/` must be reflected in the Markdown chapter
+    39	  and in the Pydantic bindings in `reference/packages/eden-contracts/`.
+    40	  CI's `schema-parity` job enforces that models and schemas agree on
+    41	  the accept/reject corpus and on round-trip emission.
+    42	- **No technology choices in normative text.** The spec talks about
+    43	  *semantics*, not mechanisms. "A conforming task store MUST provide
+    44	  atomic claim with linearizable semantics" — yes. "Uses Postgres `SELECT
+    45	  ... FOR UPDATE`" — no, that's reference-impl detail.
+    46	
+    47	### Process
+    48	
+    49	1. Open an issue describing the change and why. Spec changes benefit from
+    50	   discussion before implementation.
+    51	2. Draft the prose + schema change in a branch.
+    52	3. Open a PR; expect careful review. Reviewers will check: RFC language,
+    53	   cross-reference consistency, whether the change is additive or
+    54	   breaking, and whether the change needs a conformance scenario.
+    55	
+    56	## Contributing to the reference implementation
+    57	
+    58	Standard code-review workflow applies.
+    59	
+    60	### Prerequisites
+    61	
+    62	Contributors touching the reference implementation need:
+    63	
+    64	- Python 3.12+
+    65	- [uv](https://docs.astral.sh/uv/) (run `uv sync` at the repo root to
+    66	  install the workspace virtualenv)
+    67	- (Phase 9+) Node.js 20+ for the reference web UI
+    68	- (Phase 10+) Docker for the Compose stack
+    69	
+    70	Spec-only contributors need only the Node-based markdown linter; see
+    71	[`AGENTS.md`](AGENTS.md#commands) for the exact pinned commands
+    72	(version-matched to CI to avoid works-locally / fails-in-CI drift).
+    73	
+    74	### Impl conventions
+    75	
+    76	- Normative behavior in the reference impl must match the spec. If the
+    77	  impl is correct and the spec is wrong, the spec should change first.
+    78	- Pass the conformance suite (Phase 11+).
+    79	- Follow the [style guide](STYLE_GUIDE.md).
+    80	
+    81	## Contributing to the conformance suite
+    82	
+    83	The conformance suite lands in Phase 11 and is not yet implementable.
+    84	Once it exists:
+    85	
+    86	- Scenarios must be **implementation-agnostic** — they drive an
+    87	  implementation-under-test via its advertised protocol surface, not via
+    88	  language-specific hooks.
+    89	- A scenario must cite the spec paragraph it validates.
+    90	
+    91	## Questions
+    92	
+    93	Open an issue.
+
+codex
+The code changes line up with the round 1 brief so far. I’m doing one more pass with execution against the previously failing edge cases plus the updated test suite, because the remaining question is whether there’s still any schema mismatch hiding behind the new custom validators.
+exec
+/bin/zsh -lc 'UV_CACHE_DIR=.uv-cache uv sync --frozen' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+Checked 20 packages in 0.39ms
+
+exec
+/bin/zsh -lc 'uv run pytest -q' in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from eden_contracts import ExperimentConfig, Proposal, Trial, TaskAdapter
+samples = [
+    ('parallel_bool', ExperimentConfig.model_validate, {'parallel_trials': True,'max_trials': 2,'max_wall_time':'1h','metrics_schema': {'acc':'real'},'objective':{'expr':'acc','direction':'maximize'}}),
+    ('max_trials_str', ExperimentConfig.model_validate, {'parallel_trials': 1,'max_trials': '2','max_wall_time':'1h','metrics_schema': {'acc':'real'},'objective':{'expr':'acc','direction':'maximize'}}),
+    ('proposal_priority_str', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':'1.5','parent_commits':['a'*40],'artifacts_uri':'s3://b','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('proposal_uri_plain', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'plain string','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('task_claim_null', TaskAdapter.validate_python, {'task_id':'t','kind':'plan','state':'pending','payload':{'experiment_id':'e'},'claim':None,'created_at':'2026-04-23T12:00:00Z','updated_at':'2026-04-23T12:00:00Z'}),
+    ('trial_metrics_null', Trial.model_validate, {'trial_id':'t','experiment_id':'e','proposal_id':'p','status':'starting','parent_commits':['a'*40],'metrics':None,'started_at':'2026-04-23T12:00:00Z'}),
+    ('proposal_bad_datetime', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'s3://b','state':'drafting','created_at':'2026-13-32T25:00:00Z'}),
+]
+for name, fn, data in samples:
+    try:
+        fn(data)
+    except Exception as e:
+        print(name, 'ERR', type(e).__name__)
+    else:
+        print(name, 'OK')
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 168ms:
+parallel_bool ERR ValidationError
+max_trials_str ERR ValidationError
+proposal_priority_str ERR ValidationError
+proposal_uri_plain ERR ValidationError
+task_claim_null ERR ValidationError
+trial_metrics_null ERR ValidationError
+proposal_bad_datetime ERR ValidationError
+
+ succeeded in 333ms:
+........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 0.05s
+
+codex
+One thing I’m checking carefully is whether the new URI fix is actually a URI validator or just a “has a scheme” check. `urlparse()` will happily split many malformed strings, so that’s the one place where the round 1 patch could still be weaker than the schema claims.
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from reference.packages.eden_contracts.tests.conftest import schema_validator
+# import path via repo root may not work; fallback to direct module import below if needed
+PY" in /Users/ericalt/Documents/eden
+ exited 1 in 0ms:
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+ModuleNotFoundError: No module named 'reference.packages.eden_contracts'
+
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+from eden_contracts import Proposal, Trial
+samples = [
+    ('proposal_space_in_host', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'http://exa mple.com/path','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('proposal_bare_scheme', Proposal.model_validate, {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':'http:','state':'drafting','created_at':'2026-04-23T12:00:00Z'}),
+    ('trial_space_in_host', Trial.model_validate, {'trial_id':'t','experiment_id':'e','proposal_id':'p','status':'starting','parent_commits':['a'*40],'artifacts_uri':'http://exa mple.com/path','started_at':'2026-04-23T12:00:00Z'}),
+]
+for name, fn, data in samples:
+    try:
+        fn(data)
+    except Exception as e:
+        print(name, 'ERR', type(e).__name__, e)
+    else:
+        print(name, 'OK')
+PY" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "uv run python - <<'PY'
+import json
+from pathlib import Path
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
+from urllib.parse import urlparse
+from datetime import datetime
+
+schemas_dir = Path('spec/v0/schemas')
+registry = Registry()
+for path in schemas_dir.glob('*.schema.json'):
+    registry = registry.with_resource(uri=f'https://eden.local/schemas/{path.name}', resource=Resource.from_contents(json.loads(path.read_text()), default_specification=DRAFT202012))
+fc = FormatChecker()
+@fc.checks('uri', raises=ValueError)
+def _check_uri(instance):
+    if not isinstance(instance, str):
+        return True
+    parts = urlparse(instance)
+    if not parts.scheme:
+        raise ValueError('bad')
+    return True
+validator = Draft202012Validator(schema={'"'$ref'"':'https://eden.local/schemas/proposal.schema.json'}, registry=registry, format_checker=fc)
+for uri in ['http://exa mple.com/path', 'http:', 'mailto:test@example.com']:
+    data = {'proposal_id':'p','experiment_id':'e','slug':'x','priority':1,'parent_commits':['a'*40],'artifacts_uri':uri,'state':'drafting','created_at':'2026-04-23T12:00:00Z'}
+    try:
+        validator.validate(data)
+    except Exception as e:
+        print(uri, 'ERR', type(e).__name__, e)
+    else:
+        print(uri, 'OK')
+PY" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+http://exa mple.com/path OK
+http: OK
+mailto:test@example.com OK
+
+ succeeded in 154ms:
+proposal_space_in_host OK
+proposal_bare_scheme OK
+trial_space_in_host OK
+
+codex
+**Findings**
+- `Bug` [_common.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/_common.py:26), [conftest.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/tests/conftest.py:53), [cases.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/tests/cases.py:618): the round 1 URI fix is still only a “has a scheme” check, not real URI validation. `urlparse()` will happily accept malformed schemeful strings, and both the model and schema-side checker now share that weakness, so parity stays green while bad inputs slip through. I verified that `Proposal.artifacts_uri="http://exa mple.com/path"` and `Trial.artifacts_uri="http://exa mple.com/path"` both validate today. Fix: use an actual RFC-3986 validator in the string-preserving path, then add reject corpus cases for malformed schemeful URIs, not just “missing scheme”.
+
+**Overall**
+This is much tighter than round 0. The numeric-coercion gap is closed, explicit `null` handling now matches the schemas, impossible datetimes are rejected, the parity harness is stronger, and the status prose updates are accurate. Phase 3 scope and CI/workspace integration look good; I re-verified `uv sync --frozen`, `uv run pytest -q`, and the previously failing numeric/null/datetime cases.
+
+I’d keep this at `Request Changes` for the remaining URI-fidelity bug. Other than that, I don’t see new regressions or meaningful scope creep in the round 1 update.
+tokens used
+110,387

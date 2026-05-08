@@ -1,0 +1,216 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc36e-3acf-72d1-91c1-7c98244e6775
+--------
+user
+Round 2: addressed your sole remaining finding. Summary:
+
+- Risk fixed: store.claim in routes/evaluator.py now also catches transport-shaped Exception and routes through the existing 303 + wire-error banner UX. Added a route test (test_claim_transport_failure_surfaces_banner) that monkeypatches store.claim to raise RuntimeError and asserts a 303 with task-store+transport+failure in the location.
+
+Updated brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9d-evaluator-module/impl/20260424T235706/2.md. Please re-read the implementation and review again.
+codex
+I’m re-checking the updated evaluator implementation and the new claim-transport test against the round-2 brief. I’ll read the revised brief and the touched files, then verify the remaining failure path is actually closed.
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/routes/evaluator.py | sed -n '130,170p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/tests/test_evaluator_routes.py | sed -n '90,140p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    90	        keys = list(evaluator_routes._CLAIMS.keys())
+    91	        assert len(keys) == 1
+    92	        _, recorded_trial = evaluator_routes._CLAIMS[keys[0]]
+    93	        assert recorded_trial == trial_id
+    94	
+    95	    def test_claim_already_claimed_surfaces_banner(
+    96	        self, signed_in_client: TestClient, store: InMemoryStore
+    97	    ) -> None:
+    98	        eval_id, _, _ = seed_evaluate_task(store)
+    99	        # Claim the task directly so the route's claim sees an
+   100	        # IllegalTransition.
+   101	        store.claim(eval_id, "other-w")
+   102	        csrf = get_csrf(signed_in_client)
+   103	        resp = _post_form(
+   104	            signed_in_client,
+   105	            f"/evaluator/{eval_id}/claim",
+   106	            [("csrf_token", csrf)],
+   107	        )
+   108	        assert resp.status_code == 303
+   109	        assert "/evaluator/?banner=" in resp.headers["location"]
+   110	        assert "illegal-transition" in resp.headers["location"]
+   111	
+   112	    def test_claim_transport_failure_surfaces_banner(
+   113	        self,
+   114	        signed_in_client: TestClient,
+   115	        store: InMemoryStore,
+   116	        monkeypatch: pytest.MonkeyPatch,
+   117	    ) -> None:
+   118	        eval_id, _, _ = seed_evaluate_task(store)
+   119	        # Patch store.claim to simulate the StoreClient transport
+   120	        # surface raising a generic exception. The route should
+   121	        # redirect to / with a banner instead of 500-ing.
+   122	        def boom(*a, **k):
+   123	            raise RuntimeError("network glitch")
+   124	
+   125	        monkeypatch.setattr(store, "claim", boom)
+   126	        csrf = get_csrf(signed_in_client)
+   127	        resp = _post_form(
+   128	            signed_in_client,
+   129	            f"/evaluator/{eval_id}/claim",
+   130	            [("csrf_token", csrf)],
+   131	        )
+   132	        assert resp.status_code == 303
+   133	        assert "task-store+transport+failure" in resp.headers["location"]
+   134	
+   135	    def test_claim_unknown_task_surfaces_banner(
+   136	        self, signed_in_client: TestClient
+   137	    ) -> None:
+   138	        csrf = get_csrf(signed_in_client)
+   139	        resp = _post_form(
+   140	            signed_in_client,
+
+ succeeded in 0ms:
+   130	            status_code=303,
+   131	        )
+   132	    if not isinstance(task, EvaluateTask):
+   133	        return RedirectResponse(
+   134	            url="/evaluator/?banner=task+is+not+an+evaluate+task",
+   135	            status_code=303,
+   136	        )
+   137	    trial_id = task.payload.trial_id
+   138	    now: Callable[[], Any] = request.app.state.now
+   139	    expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
+   140	    try:
+   141	        result = store.claim(task_id, session.worker_id, expires_at=expires_at)
+   142	    except (IllegalTransition, InvalidPrecondition) as exc:
+   143	        banner = _wire_error_banner(exc)
+   144	        return RedirectResponse(
+   145	            url=f"/evaluator/?banner={banner}", status_code=303
+   146	        )
+   147	    except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
+   148	        return RedirectResponse(
+   149	            url=(
+   150	                "/evaluator/?banner=task-store+transport+failure:+"
+   151	                f"{exc.__class__.__name__}"
+   152	            ),
+   153	            status_code=303,
+   154	        )
+   155	    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, trial_id)
+   156	    return RedirectResponse(url=f"/evaluator/{task_id}/draft", status_code=303)
+   157	
+   158	
+   159	@router.get("/{task_id}/draft", response_class=HTMLResponse, response_model=None)
+   160	async def draft_form(
+   161	    task_id: str,
+   162	    request: Request,
+   163	) -> HTMLResponse | RedirectResponse:
+   164	    session = get_session(request)
+   165	    if session is None:
+   166	        return RedirectResponse(url="/signin", status_code=303)
+   167	    entry = _CLAIMS.get(_claim_key(session.csrf, task_id))
+   168	    if entry is None:
+   169	        return RedirectResponse(
+   170	            url="/evaluator/?banner=claim+missing+from+session",
+
+exec
+/bin/zsh -lc "sed -n '1,260p' /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-9d-evaluator-module/impl/20260424T235706/2.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-9d-evaluator-module
+
+## Plan
+
+- Path: `/Users/ericalt/Documents/eden/docs/plans/eden-phase-9d-evaluator-module.md`
+- Summary: Add the evaluator role to the reference Web UI as the
+  fourth chunk of Phase 9. Adds `/evaluator/*` routes mounted
+  unconditionally (no CLI flag), with claim → draft → submit
+  walking `store.submit` with retry-before-orphan + read-back.
+  Differs from chunk 9c in three ways: no git work; trial pre-
+  exists; status has three values; `IllegalTransition` falls
+  through to read-back rather than short-circuiting.
+
+## Implementation Files
+
+| File | Action | Plan Section |
+|---|---|---|
+| `reference/services/web-ui/src/eden_web_ui/routes/evaluator.py` | Created | §A New routes module + §C Request flow |
+| `reference/services/web-ui/src/eden_web_ui/routes/_helpers.py` | Modified — extracted `_read_inline_artifact`, added `read_trial_artifact` | §A.1 Artifact trust boundary (helper generalization) |
+| `reference/services/web-ui/src/eden_web_ui/forms.py` | Modified — added `EvaluateDraft` + `parse_evaluate_form` + `_parse_metric_value` | §B Forms helper |
+| `reference/services/web-ui/src/eden_web_ui/app.py` | Modified — included `evaluator_routes.router` unconditionally | §F CLI |
+| `reference/services/web-ui/src/eden_web_ui/templates/base.html` | Modified — permanent navigation link | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_list.html` | Created | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html` | Created | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_submitted.html` | Created | §D Templates |
+| `reference/services/web-ui/src/eden_web_ui/templates/evaluator_orphaned.html` | Created | §D Templates |
+| `reference/services/web-ui/tests/conftest.py` | Modified — added `seed_evaluate_task` + `get_evaluate_submission` helpers | §I.test-fixture additions |
+| `reference/services/web-ui/tests/test_evaluator_routes.py` | Created | §I.1 |
+| `reference/services/web-ui/tests/test_evaluator_flow.py` | Created | §I.2 |
+| `reference/services/web-ui/tests/test_evaluator_partial_write.py` | Created | §I.3 |
+| `reference/services/web-ui/tests/test_evaluator_security.py` | Created | §I.4 |
+| `reference/services/web-ui/tests/test_evaluator_e2e.py` | Created | §I.5 |
+| `CLAUDE.md` (the project AGENTS.md) | Modified — phase-status block | §G Docs |
+| `reference/README.md` | Modified | §G Docs |
+| `reference/services/web-ui/README.md` | Modified — evaluator-module section | §G Docs |
+| `docs/roadmap.md` | Modified — 9d marked complete | §G Docs |
+
+## Change Summary
+
+- Added the evaluator module under `/evaluator/*` (list / claim /
+  draft / submit), mounted unconditionally; the trial_id is
+  read from `task.payload.trial_id` at claim time and stashed in
+  an in-process `_CLAIMS` dict (per-(csrf, task_id) isolation).
+- Generalized the chunk-9c `read_proposal_rationale` trust
+  boundary into `_read_inline_artifact(uri, artifacts_dir)` and
+  added `read_trial_artifact` for the trial-side surface.
+  `read_proposal_rationale` is now a thin wrapper.
+- New `parse_evaluate_form` validates per-metric types per the
+  spec (`integer` accepts wire-legal `1.0`, `real` rejects non-
+  finite, text non-empty after strip, `success` requires ≥ 1
+  metric), with closed-set status validation and accumulated
+  per-field errors.
+- `_retry_submit_with_readback` differs from chunk 9c: `WrongToken`
+  / `ConflictingResubmission` short-circuit; `InvalidPrecondition`
+  re-renders the form (fixable); `IllegalTransition` and other
+  transport-shaped exceptions feed the read-back arm. The read-
+  back uses `read_task` + `read_submission` +
+  `submissions_equivalent` to distinguish "we won, response
+  lost" from "lost the race" from "claim still ours".
+- 56 new tests (20 routes + 5 flow + 12 partial-write recovery +
+  18 security + 1 e2e). Full suite: 553 unit + 5 e2e green.
+
+## Review Status
+
+Round 0 — awaiting initial review.
+
+## Round 1 — fixes
+
+- **Bug fixed.** [evaluator.py:218–238](reference/services/web-ui/src/eden_web_ui/routes/evaluator.py): the submit handler now collects every submitted `metric.*` field (not just declared schema keys) and forwards them all to `parse_evaluate_form`, so a hand-crafted POST with `metric.ghost` is rejected. Default declared keys to `""` so the parser still sees blanks for the omit-on-empty branch. Companion change in [forms.py](reference/services/web-ui/src/eden_web_ui/forms.py): unknown keys surface as `add_overall(...)` rather than `add(0, name, ...)` so the rejection appears on the rendered form (the field doesn't exist on the page to render an inline error against).
+- **Risk fixed.** Read paths in [evaluator.py](reference/services/web-ui/src/eden_web_ui/routes/evaluator.py): `list_pending` (L82-87), `claim` (L114-122), `draft_form` (L156-162), and `submit` pre-reads (L213-219) now also catch transport-shaped `Exception` (the StoreClient surface) and route them through the existing wire-error UX (banner / 502) instead of letting them surface as 500.
+- **Risk fixed.** [test_evaluator_routes.py:243-264](reference/services/web-ui/tests/test_evaluator_routes.py): the unknown-metric-key test now drives the actual route via a hand-crafted POST that includes both `metric.score` and `metric.ghost` and asserts the 400 + "not in schema" banner. The previous parser-direct test is gone.
+- **Nit fixed.** [evaluator_claim.html](reference/services/web-ui/src/eden_web_ui/templates/evaluator_claim.html): added an `{% else %}` branch under the proposal-rationale block so the operator sees a "rationale not rendered inline" note when the artifact is outside the trust envelope.
+
+Verification: `uv run ruff check .` clean; `uv run pyright` clean; `uv run pytest -q` 553 passed; `uv run pytest -m e2e` 5 passed (chunk-9d e2e included).
+
+## Round 2 — fixes
+
+- **Risk fixed.** [evaluator.py:139-149](reference/services/web-ui/src/eden_web_ui/routes/evaluator.py): `store.claim` now also catches transport-shaped `Exception` and surfaces the wire-error UX (303 + `?banner=task-store+transport+failure:+<class>`) instead of letting it surface as 500. Added [`test_claim_transport_failure_surfaces_banner`](reference/services/web-ui/tests/test_evaluator_routes.py) — monkeypatches `store.claim` to raise and asserts the 303 + banner.
+
+exec
+/bin/zsh -lc "uv run pytest -q reference/services/web-ui/tests/test_evaluator_routes.py -k 'claim_transport_failure_surfaces_banner or claim_already_claimed_surfaces_banner or unknown_metric_key_rejected'" in /Users/ericalt/Documents/eden
+ succeeded in 931ms:
+...                                                                      [100%]
+3 passed, 18 deselected in 0.04s
+
+codex
+No findings.
+
+The round-2 change closes the remaining gap: `store.claim(...)` in [reference/services/web-ui/src/eden_web_ui/routes/evaluator.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/evaluator.py:140) now handles transport-shaped exceptions and degrades to the existing 303 banner flow instead of 500ing, and [test_claim_transport_failure_surfaces_banner](reference/services/web-ui/tests/test_evaluator_routes.py) covers that path directly. I re-ran the targeted evaluator route tests, including the unknown-metric and claim-banner cases, and they pass.
+
+Overall assessment: the implementation now matches the phase 9d plan closely, including the earlier `IllegalTransition -> read-back` behavior, server-pinned `trial_id`, trust-boundary helper reuse, and the route-level rejection of unknown `metric.*` fields. Residual risk is low and mostly in the usual reference-UI areas already acknowledged by the plan: transport failures during later submit/read-back reconciliation and the intentionally duplicated helper logic across modules.
+2026-04-25T07:07:53.489729Z ERROR codex_core::session: failed to record rollout items: thread 019dc36e-3acf-72d1-91c1-7c98244e6775 not found
+tokens used
+381,388

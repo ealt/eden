@@ -1,0 +1,583 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc3b5-808f-7cd3-a200-64badb111676
+--------
+user
+I've updated the plan based on your round-1 feedback. Please review the updated version at /Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md and tell me whether the three remaining issues are resolved (work-ref ownership by trial_id, replay-index-only ordering, NotFound exception handler), plus any other substantive concerns.
+codex
+Reviewing the revised 9e plan against the three round-1 issues specifically: work-ref ownership, replay-ordering, and NotFound handling. I’m reading the updated sections plus the acceptance/tests pass to see if they were actually wired through consistently.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9e-observability-and-admin.md | sed -n '260,430p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   260	back to `pending`, and the use case is "the orchestrator's response
+   261	got lost; the worker thinks it succeeded but the orchestrator never
+   262	finalized". The detail page surfaces a *separate* warning above the
+   263	button when `task.state == "submitted"`: "this task is in submitted
+   264	state; reclaiming will replay the work and may produce a different
+   265	trial". The button text changes from "reclaim" to "force-reclaim
+   266	(replays work)". The wire call is identical — the warning is a
+   267	pure-UX guardrail.
+   268	
+   269	### §A.5 Trial table + detail
+   270	
+   271	`GET /admin/trials/` filters by `status` ∈ {`starting`,
+   272	`success`, `error`, `eval_error`, `*`} via a querystring. Rows
+   273	surface: trial_id (links to detail), proposal_id (links to the
+   274	relevant work-refs entry when present), status, branch,
+   275	commit_sha (truncated to 12 chars + tooltip on full),
+   276	trial_commit_sha (when integrated), started_at, completed_at.
+   277	
+   278	A trial in `starting` whose owning implement task is terminal
+   279	(`failed` / `completed`) **with no other live claim** is flagged
+   280	with an `⚠ orphaned starting trial` badge. That can only legitimately
+   281	happen if a prior operator-reclaim hit a non-implement code path
+   282	that didn't drive the §5.2 starting-trial-→-error transition (the
+   283	`reclaim` path itself is fine — `_base.py:790` already does the
+   284	atomic transition for implement tasks). The badge is informational;
+   285	no GC button. If the operator wants to force the trial terminal,
+   286	the path is "reclaim the implement task" or "wait for the
+   287	orchestrator to advance it" — not a direct trial-edit.
+   288	
+   289	`GET /admin/trials/{trial_id}/`:
+   290	
+   291	- Trial fields (read-only).
+   292	- The proposal that produced it (`store.read_proposal(proposal_id)`).
+   293	- A filtered slice of `store.replay()` correlating to this trial.
+   294	  Correlation algorithm (concrete; the `Event` envelope has
+   295	  `data: dict[str, Any]`, not `payload` — see
+   296	  `reference/packages/eden-contracts/src/eden_contracts/event.py:36`):
+   297	
+   298	  1. Build the trial-id match set: every event whose
+   299	     `event.data.get("trial_id") == trial_id`. This catches
+   300	     `trial.started`, `trial.errored`, `trial.eval_errored`,
+   301	     `trial.succeeded`, `trial.integrated`, plus any task event
+   302	     whose `data` already carries `trial_id`.
+   303	  2. Build the task-id match set for **the implement task that
+   304	     produced this trial**: query
+   305	     `store.list_tasks(kind="implement")`, find the one whose
+   306	     `payload.proposal_id == trial.proposal_id`. If found,
+   307	     include events whose `event.data.get("task_id")` equals
+   308	     that implement task's id (this surfaces `task.created`,
+   309	     `task.claimed`, `task.submitted`, `task.completed`,
+   310	     `task.failed`, `task.reclaimed` for the implement leg).
+   311	  3. Build the task-id match set for **the evaluate task(s) for
+   312	     this trial** the same way: `store.list_tasks(kind="evaluate")`
+   313	     filtered by `payload.trial_id == trial_id`. There may be
+   314	     more than one (a fresh evaluate task can be created after
+   315	     `eval_error`); include task events for all of them.
+   316	  4. Union the three sets, sort by **replay-index position in the
+   317	     full `store.replay()` list** (computed before slicing — see
+   318	     §A.6's natural-index-before-slice discipline). Replay order
+   319	     is the only authoritative monotonic ordering; `event.event_id`
+   320	     comes from a pluggable factory
+   321	     (`reference/packages/eden-storage/src/eden_storage/_base.py`'s
+   322	     `event_id_factory`) and is **not** a reliable ordering
+   323	     contract. Cap at 50, render with newest first. "showing N of M"
+   324	     footer when `M > 50`.
+   325	
+   326	  This is implementable without any new fold helper in
+   327	  `eden-dispatch`; it composes already-public Store methods.
+   328	  An optional `_helpers.events_for_trial(store, trial_id)` helper
+   329	  may be extracted from the route handler if the test surface
+   330	  benefits, but it is not load-bearing.
+   331	
+   332	- Inline trial.description (autoescape) when set, identical to the
+   333	  evaluator-page rendering.
+   334	- `trial.artifacts_uri`: same scheme allowlist + `_read_inline_artifact`
+   335	  envelope chunk 9d already applies.
+   336	
+   337	### §A.6 Event log view
+   338	
+   339	`GET /admin/events/`:
+   340	
+   341	- `events_full = store.replay()`; capture `total = len(events_full)`
+   342	  *before* slicing.
+   343	- Apply optional `?type=` exact-match filter against `events_full`,
+   344	  preserving each event's natural index in the full log
+   345	  (`for idx, ev in enumerate(events_full, start=1): …`). The natural
+   346	  index is what makes the rendered position stable across
+   347	  filter / limit / reverse operations — we compute it before any
+   348	  of those.
+   349	- Take the last N entries of the filtered list (default N=200,
+   350	  configurable via `?limit=` capped at 1000). Reverse for display
+   351	  so newest renders first.
+   352	- Each row carries the natural index recorded in the previous
+   353	  step (1-based), `event.type`, `event.event_id`, `event.timestamp`,
+   354	  and `event.data` rendered as a `<details>` toggle.
+   355	- Footer: when the filtered list's length exceeds N, show
+   356	  "showing 200 of M filtered events (full log: total entries);
+   357	  pass `?limit=N` to see more."
+   358	
+   359	The cap exists so a runaway experiment doesn't exhaust the
+   360	operator's browser. Two distinct totals matter:
+   361	
+   362	- The full-log size (`total`) — observability into "how big is
+   363	  this experiment's history?".
+   364	- The filtered-list size (after `?type=`) — observability into
+   365	  "how many of these events match my filter?".
+   366	
+   367	Both render. The natural index is stable per event regardless of
+   368	filter, so an operator copy-pasting "event #4711" can reproduce
+   369	the position deterministically across reloads.
+   370	
+   371	### §A.7 Work-ref GC
+   372	
+   373	`GET /admin/work-refs/`:
+   374	
+   375	- When `app.state.repo is None`: render an explanatory placeholder
+   376	  ("work-ref GC requires `--repo-path`; restart the web-ui with
+   377	  the flag if you want to manage refs from this UI").
+   378	- When `repo` is set: call `repo.list_refs("refs/heads/work/*")`
+   379	  and classify each ref **by its name**, not by its current SHA.
+   380	  The canonical ref naming pinned by the implementer module is
+   381	  `refs/heads/work/<slug>-<trial_id>` (see
+   382	  `reference/services/web-ui/src/eden_web_ui/routes/implementer.py:69`
+   383	  and the `slug` regex `^[a-z0-9][a-z0-9-]*$` in
+   384	  `spec/v0/02-data-model.md` §5.1). Classification rule:
+   385	
+   386	  1. Strip the `refs/heads/work/` prefix; split on the **last**
+   387	     `-` to get `(slug, trial_id)` candidates. (`trial_id` is
+   388	     opaque per `02-data-model.md` §7.1; the slug is already
+   389	     constrained to a-z/0-9/`-`, so the rightmost `-` is the only
+   390	     reliable boundary.)
+   391	  2. Look up `trial = store.read_trial(trial_id)`. Three outcomes:
+   392	     - **Trial exists** and `trial.status` is terminal-and-handled
+   393	       (`error`, `eval_error`, or `success` with `trial_commit_sha`
+   394	       set) **and** the ref's current SHA equals
+   395	       `trial.commit_sha` → **GC-eligible**. Show a delete button.
+   396	     - **Trial exists** but is `starting`, or is `success` without
+   397	       `trial_commit_sha` (integrator hasn't promoted yet), or the
+   398	       ref's SHA does **not** match `trial.commit_sha` →
+   399	       **Not eligible**. List the reason; no delete button. The
+   400	       SHA-mismatch case is the dangerous one — it means a third
+   401	       party rewrote the work branch and the operator should
+   402	       investigate before deleting.
+   403	     - **Trial does not exist** (the parsed `trial_id` resolves
+   404	       to no trial) → **Orphan**. Most likely a leftover from a
+   405	       Pre-Phase-1 ref-collision retry that succeeded on a different
+   406	       name, or a manual `git update-ref` outside the system.
+   407	       Show a delete button + "no trial owns this ref" warning.
+   408	     - **Ref name does not parse** (no `-`, or empty slug or
+   409	       trial_id segment) → list as **Unparseable**. No delete
+   410	       button. The operator can clean these up via `git` directly
+   411	       if they know what they are.
+   412	
+   413	  This trial-id-from-name discipline is the trust boundary: a SHA
+   414	  collision between two trials, or a manual ref rewrite, cannot
+   415	  cause us to associate a ref with the wrong trial. The SHA check
+   416	  remains as the eligibility predicate for the parsed-and-known
+   417	  case.
+   418	
+   419	`POST /admin/work-refs/delete`:
+   420	
+   421	- Form body has `ref_name` (e.g. `refs/heads/work/slug-T-7`) +
+   422	  CSRF.
+   423	- Validate `ref_name` matches `^refs/heads/work/[A-Za-z0-9_\-/.]+$`
+   424	  and that the path's `work/<slug>-<trial_id>` subpath does not
+   425	  contain `..` or path-separator escapes. **Critical**: any value
+   426	  not matching the regex (in particular anything starting with
+   427	  `refs/heads/trial/`, `refs/tags/*`, `HEAD`, or relative refs)
+   428	  → 303 → `/admin/work-refs/?error=invalid-ref-name`. The regex
+   429	  is the trust boundary; we do not concatenate user input into a
+   430	  git plumbing command without it.
+
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9e-observability-and-admin.md | sed -n '500,700p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   500	- `admin_trial_detail.html` — trial detail + filtered events.
+   501	- `admin_events.html` — event log.
+   502	- `admin_work_refs.html` — work-ref GC.
+   503	- `admin_action_result.html` — *not actually a separate template*;
+   504	  the result banners render inline in each detail page. Listed
+   505	  here only to flag we considered and rejected a separate template.
+   506	
+   507	All extend `base.html` (so the topbar nav, sign-out, brand, and
+   508	HTMX script tag are inherited). Filter forms post to themselves
+   509	via GET (querystring) so back/forward / deep-linking works. The
+   510	reclaim and ref-delete forms POST to a distinct action URL and
+   511	303-redirect.
+   512	
+   513	## §D Navigation
+   514	
+   515	`base.html` gains a permanent "admin" link (the same way "evaluator"
+   516	got a permanent link in chunk 9d). Position: rightmost, after
+   517	"evaluator", so the role-progression read of the topbar (planner
+   518	→ implementer → evaluator → admin) matches the experiment
+   519	lifecycle.
+   520	
+   521	## §E CLI changes
+   522	
+   523	None. The web-ui's existing flags are sufficient. Specifically:
+   524	
+   525	- `--repo-path` was already optional; chunk 9e widens its consumer
+   526	  set (work-ref GC reads it) without changing the flag's
+   527	  optionality or default.
+   528	- No new admin-secret, no new admin-bind-host, no new RBAC config.
+   529	  Auth remains the chunk-9 cookie + sign-in form.
+   530	
+   531	## §F Security boundaries
+   532	
+   533	| Surface | Trust boundary |
+   534	|---|---|
+   535	| `/admin/*` GET | Signed-in cookie required; 303 → `/signin` otherwise |
+   536	| `/admin/*` POST | Signed-in cookie + CSRF token both required |
+   537	| `?limit=` / `?kind=` / `?state=` | Coerced + clamped at parse time; no echo into HTML |
+   538	| `?error=…` banner | Looked up in a closed dict; no arbitrary text echo |
+   539	| `ref_name` POST | Regex-validated to `^refs/heads/work/...$` + path-traversal check |
+   540	| `delete_ref` | CAS via `expected_old_sha` from the **request-time** read, not the POST body |
+   541	| Trial / proposal description | Jinja autoescape (same as evaluator page) |
+   542	| Trial / proposal artifacts_uri | Same `_read_inline_artifact` envelope as chunks 9c/9d |
+   543	| Trial / proposal artifacts_uri href | Same scheme allowlist (`http`/`https`/`file` only) |
+   544	
+   545	The `expected_old_sha` source matters: we read the ref SHA at the
+   546	GET-time render and stash it in a hidden form field, but the POST
+   547	handler **does not trust the form's hidden field** — it does its
+   548	own fresh `list_refs("refs/heads/work/<name>")` lookup, uses *that*
+   549	SHA as `expected_old_sha`, and only then calls `delete_ref`. The
+   550	hidden field is an optimization that lets us show a stale-state
+   551	banner ("the ref changed since you loaded the page") earlier; the
+   552	authoritative read is server-side.
+   553	
+   554	## §G Errors
+   555	
+   556	`/admin/*` routes catch:
+   557	
+   558	- `IllegalTransition` (storage-domain) on reclaim → banner.
+   559	- `NotFound` (from `eden_storage.errors` and re-raised by the
+   560	  `eden_wire` `StoreClient` for HTTP 404 problem+json responses) on
+   561	  every detail-route read (`store.read_task`, `read_trial`,
+   562	  `read_proposal`). The existing `@app.exception_handler(404)` in
+   563	  `reference/services/web-ui/src/eden_web_ui/app.py:90` only catches
+   564	  HTTP 404 *responses* — it does not catch raised
+   565	  `eden_storage.NotFound` / `eden_wire.NotFound` exceptions. Chunk
+   566	  9e adds an explicit handler in `make_app`:
+   567	
+   568	  ```python
+   569	  from eden_storage.errors import NotFound as StorageNotFound
+   570	
+   571	  @app.exception_handler(StorageNotFound)
+   572	  async def _storage_not_found(request, exc):
+   573	      return templates.TemplateResponse(
+   574	          request, "_error.html",
+   575	          {"title": "Not found", "message": str(exc)},
+   576	          status_code=404,
+   577	      )
+   578	  ```
+   579	
+   580	  Routes raise it implicitly via the `Store` calls; one app-wide
+   581	  handler covers every `/admin/*/<id>/` detail route plus any
+   582	  similar use elsewhere in the UI. The wire-side `NotFound` and
+   583	  the storage-side `NotFound` are the same exception class
+   584	  (`eden_storage.errors.NotFound`, re-raised by `StoreClient`),
+   585	  so a single handler suffices.
+   586	
+   587	- `GitError` on `list_refs` / `delete_ref` → re-raise as a 5xx
+   588	  via FastAPI's default; the operator sees the standard error
+   589	  page. Logging captures the git stderr.
+   590	- Transport-shaped `Exception` from `StoreClient` on every read
+   591	  *and* write call (per `feedback_impl_review_lenses.md` lens 11):
+   592	  surfaces a `?error=transport` banner on actions; renders an
+   593	  inline "transport failure; refresh to retry" placeholder on
+   594	  read views.
+   595	
+   596	## §H Tests
+   597	
+   598	Five test files mirroring the chunk 9c/9d coverage taxonomy:
+   599	
+   600	### `test_admin_routes.py` — per-route unit tests
+   601	
+   602	- `GET /admin/` renders counts that match the seeded store state.
+   603	- `GET /admin/tasks/` with each (`kind`, `state`) combination
+   604	  including the `*` sentinel → expected rowset.
+   605	- `GET /admin/tasks/<id>/` for each task state (pending, claimed,
+   606	  submitted, completed, failed) renders the right reclaim button
+   607	  variant (or none, for terminal).
+   608	- `GET /admin/trials/` for each status filter.
+   609	- `GET /admin/trials/<id>/` for `starting`, `success`-non-integrated,
+   610	  `success`-integrated, `error`, `eval_error`. Asserts the events
+   611	  filter only includes events whose payload mentions this trial_id.
+   612	- `GET /admin/events/` default + `?limit=` clamped at the cap.
+   613	- `GET /admin/work-refs/` with `repo=None`, with no refs, with
+   614	  eligible refs, with not-eligible refs, with orphan refs.
+   615	- `POST /admin/tasks/<id>/reclaim` — happy path (claimed → pending
+   616	  via redirect), submitted → pending (operator-reclaim of submitted),
+   617	  terminal → `?error=illegal-transition`, no session → 303 to
+   618	  `/signin`, with-session-but-no-CSRF → 403.
+   619	- `POST /admin/work-refs/delete` — happy path, regex rejection
+   620	  (`refs/heads/trial/...`, `..` in path, empty), missing-CSRF, ref
+   621	  not eligible at POST time, ref vanished between GET and POST,
+   622	  ref SHA changed (CAS miss).
+   623	
+   624	### `test_admin_flow.py` — cross-request flow
+   625	
+   626	- Sign in → claim a task via planner → admin dashboard reflects
+   627	  the claim → operator-reclaim from admin → planner page no
+   628	  longer claims that task. End-to-end flows that span modules.
+   629	- Sign in → submit a task via implementer → admin sees `submitted`
+   630	  → operator force-reclaim → admin sees `pending`.
+   631	- Sign in → planner submits a proposal → admin trial detail page
+   632	  for the resulting trial reflects the proposal context.
+   633	
+   634	### `test_admin_security.py` — security invariants
+   635	
+   636	- Unauthenticated `GET /admin/*` redirects to `/signin` (every
+   637	  route).
+   638	- Unauthenticated `POST /admin/*` redirects to `/signin` with
+   639	  status 303 (auth check fires *before* the CSRF check — the same
+   640	  order the planner / implementer / evaluator routes use; tests
+   641	  exercise this order explicitly).
+   642	- Authenticated `POST /admin/*` with a missing or wrong CSRF token
+   643	  returns 403 (after the auth check passes).
+   644	- `?error=<arbitrary-string>` does not echo into the HTML; only
+   645	  the closed-allowlist values render banners.
+   646	- `ref_name` regex: hand-crafted POSTs with each of
+   647	  `refs/heads/trial/x`, `refs/tags/x`, `HEAD`, `../etc/passwd`,
+   648	  `refs/heads/work/../trial/x`, `refs/heads/work/$(rm -rf /)`
+   649	  are rejected. The last two are the trust-boundary cases — we
+   650	  test both that the regex rejects them and that no subprocess
+   651	  invocation occurs (monkeypatched `subprocess.run` is asserted
+   652	  uncalled).
+   653	- The `expected_sha` used for `delete_ref` comes from the route's
+   654	  fresh `list_refs` lookup, not the form's hidden field. Verified
+   655	  by setting the hidden field to a different SHA and confirming
+   656	  the deletion still uses the live SHA.
+   657	- CSRF token mismatch on every mutating route returns 403.
+   658	- Trial / proposal artifacts_uri scheme allowlist applies to admin
+   659	  rendering too (no scheme injection via a `javascript:` href on
+   660	  the trial detail page).
+   661	- The `_read_inline_artifact` confinement test from chunk 9d is
+   662	  re-run against the admin trial detail route to confirm the
+   663	  envelope holds at this call site.
+   664	
+   665	### `test_admin_partial_write.py` — partial-write recovery
+   666	
+   667	- `store.reclaim` raises `IllegalTransition` on a terminal task →
+   668	  redirect with the right error code; the task is unchanged in
+   669	  the store.
+   670	- `store.reclaim` raises a transport-shaped `Exception` →
+   671	  redirect with `?error=transport`. The task may or may not have
+   672	  been reclaimed; we verify the route does not double-call.
+   673	- `repo.delete_ref` raises `GitError` mid-deletion → 5xx via
+   674	  default handler; ref is unchanged. Operator can refresh and
+   675	  retry.
+   676	- The work-ref GET-time eligibility filter and POST-time
+   677	  re-validation diverge (the trial moved back to `starting`
+   678	  between GET and POST) → POST refuses with `?error=not-eligible`;
+   679	  ref is preserved.
+   680	
+   681	### `test_admin_e2e.py` — `pytest.mark.e2e`
+   682	
+   683	One test that:
+   684	
+   685	1. Spawns task-store-server + web-ui (no orchestrator;
+   686	   admin-reclaim is the only state-changing action exercised, and
+   687	   the orchestrator wouldn't see it cleanly).
+   688	2. Drives a planner submit through real HTTP (real session, real
+   689	   CSRF) so a task moves to `submitted`.
+   690	3. Hits `/admin/tasks/` and confirms the row appears with state
+   691	   `submitted`.
+   692	4. Hits `POST /admin/tasks/<id>/reclaim` and follows the redirect.
+   693	5. Confirms via the wire surface (a fresh `StoreClient.read_task`)
+   694	   that the task is back in `pending` and a `task.reclaimed` event
+   695	   with `cause=operator` was logged.
+   696	
+   697	This test does not exercise the work-ref GC path (which would
+   698	require seeding a bare repo + creating refs); the unit tests in
+   699	`test_admin_routes.py` cover that surface against an in-memory
+   700	`GitRepo` double.
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/src/eden_web_ui/app.py | sed -n '80,110p'; nl -ba reference/services/web-ui/src/eden_web_ui/routes/implementer.py | sed -n '69,72p'; nl -ba reference/packages/eden-storage/src/eden_storage/_base.py | sed -n '166,177p'; nl -ba reference/packages/eden-git/src/eden_git/repo.py | sed -n '236,244p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    80	    app.state.templates = templates
+    81	    app.state.repo = repo
+    82	
+    83	    app.include_router(index_routes.router)
+    84	    app.include_router(auth_routes.router)
+    85	    app.include_router(planner_routes.router)
+    86	    app.include_router(evaluator_routes.router)
+    87	    if repo is not None:
+    88	        app.include_router(implementer_routes.router)
+    89	
+    90	    @app.exception_handler(404)
+    91	    async def _not_found(request: Request, _exc: object) -> HTMLResponse:
+    92	        return templates.TemplateResponse(
+    93	            request,
+    94	            "_error.html",
+    95	            {"title": "Not found", "message": "The page you requested does not exist."},
+    96	            status_code=404,
+    97	        )
+    98	
+    99	    return app
+    69	def _branch_name(slug: str, trial_id: str) -> str:
+    70	    return f"work/{slug}-{trial_id}"
+    71	
+    72	
+   166	        event_id_factory: Callable[[], str] | None = None,
+   167	        token_factory: Callable[[], str] | None = None,
+   168	    ) -> None:
+   169	        self._experiment_id = experiment_id
+   170	        self._metrics_schema = metrics_schema
+   171	        self._now = now or (lambda: datetime.now(UTC))
+   172	        self._event_ids = itertools.count(1)
+   173	        self._event_id_factory = event_id_factory or self._default_event_id
+   174	        self._token_factory = token_factory or (lambda: secrets.token_hex(16))
+   175	
+   176	    def _default_event_id(self) -> str:
+   177	        return f"evt-{next(self._event_ids):06d}"
+   236	    def list_refs(self, pattern: str) -> list[tuple[str, str]]:
+   237	        """Return ``(refname, sha)`` pairs matching a ``for-each-ref`` pattern."""
+   238	        result = self._run(
+   239	            ["for-each-ref", "--format=%(refname) %(objectname)", pattern],
+   240	        )
+   241	        pairs: list[tuple[str, str]] = []
+   242	        for line in result.stdout.splitlines():
+   243	            line = line.strip()
+   244	            if not line:
+
+codex
+The three targeted fixes are present in the revised text. I’m checking one more slice around the POST-side work-ref revalidation because that’s the place where name-based ownership can silently regress even if the GET-side rules are correct.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-9e-observability-and-admin.md | sed -n '430,470p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   430	  git plumbing command without it.
+   431	- Re-evaluate eligibility server-side from a fresh `list_refs` +
+   432	  `list_trials` snapshot. If the ref is no longer eligible (the
+   433	  trial moved back to `starting` somehow, or the ref no longer
+   434	  exists), redirect with `?error=not-eligible` / `?error=not-found`.
+   435	  The eligibility check at the **POST** site is what makes the
+   436	  GET-time eligibility filter a UX hint rather than a security
+   437	  boundary.
+   438	- Call `repo.delete_ref(ref_name, expected_old_sha=<the SHA we just
+   439	  read>)` (the existing primitive's kwarg is `expected_old_sha`,
+   440	  not `expected_sha`). The `expected_old_sha` argument turns the
+   441	  deletion into a CAS via `git update-ref -d <ref> <oldvalue>` —
+   442	  if a third party rewrote the ref between the GET and the POST,
+   443	  the deletion fails with `?error=ref-changed` and the operator
+   444	  has to re-confirm.
+   445	
+   446	### §A.8 Landing page
+   447	
+   448	`GET /admin/`:
+   449	
+   450	- Counts: total tasks by `(kind × state)` cross-tab, total trials
+   451	  by `status`, count of events, count of `work/*` refs (when
+   452	  `--repo-path` set; "—" otherwise).
+   453	- "Last 10 events" reverse-chronological table.
+   454	- Quick links to each sub-page.
+   455	- A small "stranded claims" callout at the top when any claimed
+   456	  task's `expires_at` is past `now`: "N claims have expired and
+   457	  will be reclaimed by the next sweeper iteration." Pure
+   458	  observability — no action button (the sweeper handles it; the
+   459	  callout is just a "you don't need to intervene" hint).
+   460	
+   461	## §B `eden-git` additions
+   462	
+   463	**None.** The required primitive already exists at
+   464	`reference/packages/eden-git/src/eden_git/repo.py:511`:
+   465	
+   466	```python
+   467	def delete_ref(self, refname: str, *, expected_old_sha: str | None = None) -> None:
+   468	    """Delete a ref, optionally guarded by ``expected_old_sha``."""
+   469	    args = ["update-ref", "-d", refname]
+   470	    if expected_old_sha is not None:
+
+ERROR: Reconnecting... 2/5
+codex
+One issue in the updated ownership fix is potentially more important than the earlier round-1 points: the proposed “split on the last `-`” parser for `work/<slug>-<trial_id>` is not reliable if `trial_id` itself contains hyphens, which the current implementer-generated IDs do (`trial-<hex>`). I’m checking the exact trial/ref fields now so I can say whether that’s just wording drift or a real remaining blocker.
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-contracts/src/eden_contracts/trial.py | sed -n '1,120p'; nl -ba reference/services/web-ui/src/eden_web_ui/routes/implementer.py | sed -n '65,71p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	"""Trial — one in-flight or completed attempt to improve the objective.
+     2	
+     3	Mirrors ``spec/v0/schemas/trial.schema.json``. The ``metrics`` object's shape
+     4	is constrained by the experiment's ``metrics_schema``; this model does not
+     5	reproduce that constraint because metrics keys are per-experiment.
+     6	"""
+     7	
+     8	from __future__ import annotations
+     9	
+    10	from typing import Annotated, Any, Literal
+    11	
+    12	from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+    13	
+    14	from ._common import CommitSha, DateTimeStr, NotNone, UriStr
+    15	
+    16	TrialStatus = Literal["starting", "success", "error", "eval_error"]
+    17	"""Trial lifecycle statuses; ``success``, ``error``, ``eval_error`` are terminal."""
+    18	
+    19	WORK_BRANCH_PATTERN = r"^work/.+$"
+    20	WorkBranch = Annotated[str, StringConstraints(pattern=WORK_BRANCH_PATTERN)]
+    21	
+    22	
+    23	class Trial(BaseModel):
+    24	    """One attempt, in flight or terminal."""
+    25	
+    26	    model_config = ConfigDict(strict=True, extra="allow")
+    27	
+    28	    trial_id: Annotated[str, Field(min_length=1)]
+    29	    experiment_id: Annotated[str, Field(min_length=1)]
+    30	    proposal_id: Annotated[str, Field(min_length=1)]
+    31	    status: TrialStatus
+    32	    parent_commits: Annotated[list[CommitSha], Field(min_length=1)]
+    33	    branch: Annotated[WorkBranch | None, NotNone] = None
+    34	    commit_sha: Annotated[CommitSha | None, NotNone] = None
+    35	    trial_commit_sha: Annotated[CommitSha | None, NotNone] = None
+    36	    artifacts_uri: Annotated[UriStr | None, NotNone] = None
+    37	    description: Annotated[str | None, NotNone] = None
+    38	    metrics: Annotated[dict[str, Any] | None, NotNone] = None
+    39	    started_at: DateTimeStr
+    40	    completed_at: Annotated[DateTimeStr | None, NotNone] = None
+    65	def _new_trial_id() -> str:
+    66	    return f"trial-{uuid.uuid4().hex[:12]}"
+    67	
+    68	
+    69	def _branch_name(slug: str, trial_id: str) -> str:
+    70	    return f"work/{slug}-{trial_id}"
+    71	
+
+exec
+/bin/zsh -lc "rg -n \"class Trial|branch:|trial_id:\" reference/packages/eden-contracts/src/eden_contracts -g '*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-contracts/src/eden_contracts/trial.py:23:class Trial(BaseModel):
+reference/packages/eden-contracts/src/eden_contracts/trial.py:28:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/trial.py:33:    branch: Annotated[WorkBranch | None, NotNone] = None
+reference/packages/eden-contracts/src/eden_contracts/event.py:161:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:165:class TrialStartedEvent(_RegisteredEventBase):
+reference/packages/eden-contracts/src/eden_contracts/event.py:174:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:178:class TrialSucceededEvent(_RegisteredEventBase):
+reference/packages/eden-contracts/src/eden_contracts/event.py:187:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:190:class TrialErroredEvent(_RegisteredEventBase):
+reference/packages/eden-contracts/src/eden_contracts/event.py:197:class TrialEvalErroredEvent(_RegisteredEventBase):
+reference/packages/eden-contracts/src/eden_contracts/event.py:206:    trial_id: Annotated[str, Field(min_length=1)]
+reference/packages/eden-contracts/src/eden_contracts/event.py:210:class TrialIntegratedEvent(_RegisteredEventBase):
+reference/packages/eden-contracts/src/eden_contracts/task.py:58:    trial_id: Annotated[str, Field(min_length=1)]
+
+codex
+Two of the three round-1 issues are resolved cleanly; one is not fully resolved.
+
+- **Replay-index-only ordering:** resolved. The trial-detail algorithm now explicitly uses replay-index position as the only ordering source and correctly rejects `event_id` as an ordering contract. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:316) and the underlying pluggable `event_id_factory` in [_base.py](/Users/ericalt/Documents/eden/reference/packages/eden-storage/src/eden_storage/_base.py:166).
+- **NotFound exception handler:** resolved. The plan now correctly notes that the existing `@app.exception_handler(404)` only handles HTTP 404 responses and adds an explicit handler for raised storage/wire `NotFound`. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:559) and the current app in [app.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/app.py:90).
+
+- **Work-ref ownership by trial_id:** not fully resolved yet. The plan correctly moved away from SHA-based ownership, but the new parser is wrong for the current naming scheme. It proposes splitting `work/<slug>-<trial_id>` on the last `-`, but current `trial_id`s themselves contain hyphens (`trial-<hex>`), so `work/foo-trial-abc123` would parse incorrectly. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:386), current branch construction in [implementer.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/implementer.py:69), and current trial-id generation in [implementer.py](/Users/ericalt/Documents/eden/reference/services/web-ui/src/eden_web_ui/routes/implementer.py:65).  
+  The clean fix is to key ownership off exact `trial.branch` equality, not by reparsing the branch name. The `Trial` model already stores `branch`, so the admin page can map `refs/heads/<trial.branch>` to its owning trial directly. See [trial.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/trial.py:33).
+
+Other substantive concern:
+
+- The event-log view still refers to `event.timestamp`, but the event model field is `occurred_at`. That is a real implementation bug if copied literally. See [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:352) and [event.py](/Users/ericalt/Documents/eden/reference/packages/eden-contracts/src/eden_contracts/event.py:34).
+
+Smaller cleanup drift remains in the tests text:
+- [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:610) still says “payload” instead of `data`.
+- [eden-phase-9e-observability-and-admin.md](/Users/ericalt/Documents/eden/docs/plans/eden-phase-9e-observability-and-admin.md:653) still says `expected_sha` instead of `expected_old_sha`.
+
+Overall assessment: the plan is close, but I would not call it implementation-ready until the work-ref ownership rule is rewritten around exact `trial.branch` matching and the `event.timestamp` field name is corrected. After that, the remaining issues are mostly editorial.
+2026-04-25T11:13:55.886758Z ERROR codex_core::session: failed to record rollout items: thread 019dc3b5-808f-7cd3-a200-64badb111676 not found
+tokens used
+474,248

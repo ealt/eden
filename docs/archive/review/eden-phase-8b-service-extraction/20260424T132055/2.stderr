@@ -1,0 +1,662 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc127-333f-7f72-8703-93293641e56d
+--------
+user
+Thanks — you were right, parent_commits min_length=1 is enforced. Updated the plan:
+
+- Planner host gains --base-commit-sha HEX (required). Its scripted plan_fn emits proposals with parent_commits=(base_commit_sha,).
+- Implementer reads proposal.parent_commits[0] as the parent for its new commit (no separate flag — it honors what the proposal carries).
+- Test harness seeds the bare repo with an empty initial commit via a new _common seed_bare_repo(path) helper; passes the resulting SHA to the planner as --base-commit-sha.
+- Spec reachability story (§1.4 + §2) restored to non-trivial: trial.parent_commits contains the base SHA, and the implementer's new commit descends from it.
+
+Please review the updated plan at /Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md.
+codex
+I’m reviewing the revised repo-lineage model first, then I’ll see whether that lets the review move down to alternatives and completeness instead of stopping at feasibility again.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '520,660p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '230,380p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   520	   `make_app(store, shared_token="T")` via `TestClient`; assert the
+   521	   status + problem+json envelope shape. Also assert that
+   522	   `make_app(store)` without `shared_token` admits anonymous
+   523	   requests (regression guard on the default path).
+   524	
+   525	2. **Unit — StoreClient auth header**
+   526	   (`reference/packages/eden-wire/tests/test_auth.py` same file). A
+   527	   `StoreClient(token="T")` routed through `MockTransport` captures
+   528	   the outgoing `Authorization` header; with no token, no
+   529	   `Authorization` header is sent.
+   530	
+   531	3. **Unit — `run_orchestrator_iteration` against a seeded store**
+   532	   (`reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`).
+   533	   For each of the six transitions the function performs, pre-seed a
+   534	   store so exactly one transition is applicable, call the function,
+   535	   assert the expected state change plus `progress is True`. Then a
+   536	   fully-quiesced store returns `progress is False`.
+   537	
+   538	4. **Unit — each worker host in isolation**
+   539	   (`reference/services/<role>/tests/test_host.py`). Boot the
+   540	   service's `host.run(...)` in a thread with a `StoreClient` backed
+   541	   by an in-process `TestClient`, seed a pending task, wait for the
+   542	   terminal state, assert outcome, `stopping.set()` to tear down.
+   543	   Proves the host's poll loop honors SIGTERM semantics without
+   544	   forking subprocesses.
+   545	
+   546	5. **Unit — task-store-server app construction**
+   547	   (`reference/services/task-store-server/tests/test_app.py`). Loads
+   548	   the fixture experiment config, calls
+   549	   `app.build_app(args)`, asserts the returned FastAPI has the
+   550	   middleware installed iff `--shared-token` was passed.
+   551	
+   552	6. **Integration — real-subprocess E2E**
+   553	   (`reference/services/orchestrator/tests/test_e2e.py`).
+   554	   Uses `subprocess.Popen` with `python -m eden_task_store_server`,
+   555	   `python -m eden_planner_host`, etc. The harness:
+   556	
+   557	   - Creates a tempdir; `git init --bare` inside; calls
+   558	     `seed_bare_repo(path)` (the `_common` helper) to write an
+   559	     empty initial commit on `refs/heads/main` and capture its
+   560	     `base_sha` for threading into the planner's
+   561	     `--base-commit-sha`.
+   562	   - Creates a tempdir for the sqlite DB (`--db-path` pointing at a
+   563	     file, not `:memory:` — this exercises the SQLite path end-to-end).
+   564	   - Boots task-store-server on `--port 0`, reads
+   565	     `EDEN_TASK_STORE_LISTENING` from stdout to learn the port, then
+   566	     boots 3 workers + orchestrator against
+   567	     `http://127.0.0.1:<port>`. The implementer and orchestrator
+   568	     both point `--repo-path` at the bare repo; the planner and
+   569	     evaluator don't touch it. All 5 subprocesses share
+   570	     `--shared-token test-token` to exercise auth.
+   571	   - Waits up to 60 seconds for the orchestrator to exit 0.
+   572	   - On timeout or non-zero exit, dumps every subprocess's stderr
+   573	     into the pytest failure output (this is non-negotiable — the
+   574	     one thing that makes subprocess tests diagnosable is capturing
+   575	     every process's stderr on failure).
+   576	   - SIGTERMs the workers and task-store-server; awaits each for up
+   577	     to 10 seconds, then SIGKILLs.
+   578	   - Opens the DB with a fresh `SqliteStore`, asserts:
+   579	     - 3 accepted plan tasks, 3 accepted implement tasks, 3 accepted
+   580	       evaluate tasks.
+   581	     - 3 trials with `status="success"` and `trial_commit_sha` set.
+   582	     - Each `trial_commit_sha` is a valid git commit in the bare repo.
+   583	   - Tears down tempdirs.
+   584	
+   585	   Test is decorated `@pytest.mark.e2e` so it can be selected /
+   586	   skipped independently; runs by default in the test suite, since
+   587	   without it Phase 8b has no integration coverage of the whole
+   588	   stack. Marked platform-skipped on Windows (signal handling is
+   589	   different; not worth supporting in v0).
+   590	
+   591	### Build & CI
+   592	
+   593	- Add 5 service directories + `reference/services/_common/` (not a
+   594	  service; a shared utility package) to the workspace members list in
+   595	  the root `pyproject.toml`.
+   596	- Each service's `pyproject.toml` declares its own dependencies
+   597	  (`eden-wire`, `eden-dispatch`, `eden-storage`, `eden-git`, plus
+   598	  `uvicorn[standard]` for task-store-server).
+   599	- Add `reference/services/*/tests/` to `testpaths` and
+   600	  `pyright.include`.
+   601	- New third-party dependency: `uvicorn[standard]` (already implicit
+   602	  via `fastapi` but now explicit because task-store-server actually
+   603	  runs a server). No other new deps — `httpx`, `pydantic`, `fastapi`
+   604	  all already in the workspace.
+   605	- No new CI jobs; existing `python-lint`, `python-typecheck`,
+   606	  `python-test`, `schema-validity`, `schema-parity` all cover the new
+   607	  code (no new schemas; the error type is reference-only).
+   608	- `spec-xref-check.py` picks up the new §8 automatically.
+   609	- The E2E test takes ~5–10 seconds when healthy; still well inside CI
+   610	  budget.
+   611	
+   612	## Algorithm — what the 3-trial experiment looks like across 5 processes
+   613	
+   614	```text
+   615	harness
+   616	  ├─> task-store-server (uvicorn, SqliteStore, shared_token=T)
+   617	  │       bound to 127.0.0.1:$PORT after printing EDEN_TASK_STORE_LISTENING
+   618	  ├─> planner-host  (StoreClient, ScriptedPlanner, worker-id=planner-1)
+   619	  ├─> implementer-host (StoreClient, ScriptedImplementer, worker-id=implementer-1)
+   620	  ├─> evaluator-host   (StoreClient, ScriptedEvaluator, worker-id=evaluator-1)
+   621	  └─> orchestrator (StoreClient, Integrator, plan-tasks=plan-1,plan-2,plan-3)
+   622	```
+   623	
+   624	1. Harness boots task-store-server, reads its port from stdout.
+   625	2. Harness boots the 3 workers and orchestrator in parallel with the
+   626	   URL and shared token. Each waits on readiness probe.
+   627	3. Orchestrator seeds plan-1, plan-2, plan-3.
+   628	4. Planner's next poll returns the 3 pending plan tasks. It claims
+   629	   each, drafts `--proposals-per-plan` proposals (each carrying
+   630	   `parent_commits=(base_commit_sha,)`), marks each ready, submits.
+   631	5. Orchestrator's next iteration: finalizes plan tasks (accepts
+   632	   each), dispatches an implement task per ready proposal.
+   633	6. Implementer claims each, writes a real commit on
+   634	   `refs/heads/work/<slug>-<trial_id>` in the shared bare repo via
+   635	   `GitRepo`, creates a trial carrying that branch + SHA, and
+   636	   submits `status=success`.
+   637	7. Orchestrator accepts implement tasks, dispatches evaluate tasks.
+   638	8. Evaluator claims each, submits metrics.
+   639	9. Orchestrator accepts evaluate tasks (this also writes metrics on
+   640	   the trial per the §2.2 composite commit). Trials are now
+   641	   `success`.
+   642	10. Orchestrator calls `Integrator.integrate(trial_id)` for each:
+   643	    writes `refs/heads/trial/<id>-<slug>` via zero-oid CAS into the
+   644	    bare repo, then `POST /trials/{id}/integrate` → store writes
+   645	    `trial_commit_sha` + `trial.integrated` event.
+   646	11. Next iteration finds no progress. Counter increments. After
+   647	    `--max-quiescent-iterations` zero-progress iterations in a row,
+   648	    orchestrator exits 0.
+   649	12. Harness observes the exit, asserts DB + repo state, SIGTERMs the
+   650	    workers + task-store-server, waits for them, tears down temp
+   651	    dirs.
+   652	
+   653	## Migration from 8a
+   654	
+   655	- `eden-wire.server.make_app(store)` → `make_app(store, *,
+   656	  shared_token=None)`. Default `None` preserves existing call sites.
+   657	- `eden-wire.client.StoreClient(base_url, experiment_id)` →
+   658	  `StoreClient(base_url, experiment_id, *, token=None)`. Default
+   659	  `None` preserves existing call sites.
+   660	- `eden_dispatch.run_experiment` keeps its signature; internally
+
+ succeeded in 0ms:
+   230	Common CLI across all three:
+   231	
+   232	- `--task-store-url URL`.
+   233	- `--experiment-id ID`.
+   234	- `--shared-token TOKEN`.
+   235	- `--worker-id ID` — required. Distinct per-process identifier.
+   236	- `--poll-interval SECONDS` — default `0.1`.
+   237	- `--startup-timeout SECONDS` — default `30`.
+   238	- `--log-level LEVEL`.
+   239	
+   240	Role-specific args:
+   241	
+   242	- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N`
+   243	  (default `1`). The fixed `plan_fn` emits proposals with
+   244	  `parent_commits=(base_commit_sha,)`.
+   245	- Implementer: `--repo-path PATH` (required) + `--fail-every N`
+   246	  (optional, default never). See "Implementer repo model" above.
+   247	  (The implementer reads parents from the proposal; no
+   248	  `--base-commit-sha` flag.)
+   249	- Evaluator: `--experiment-config PATH` (required, to know the
+   250	  metrics schema and emit matching keys) + `--fail-every N`
+   251	  (optional).
+   252	
+   253	Startup: readiness probe, construct `StoreClient`, construct
+   254	`ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` with
+   255	the existing scripted `plan_fn` / `implement_fn` / `evaluate_fn` (see
+   256	"Scripted logic" below). Loop: `run_pending(client)`; if it returned 0,
+   257	sleep `--poll-interval`; else loop again immediately (drain bursts
+   258	without sleeping).
+   259	
+   260	Workers never self-terminate on empty work. They exit on SIGTERM
+   261	only. This matches the Phase 9 UI-driven model too — a worker's
+   262	lifecycle is owned by its supervisor, not by task availability.
+   263	
+   264	**Scripted logic across the subprocess boundary.** Today
+   265	`ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator` take
+   266	user-supplied Python callables (`plan_fn`, `implement_fn`,
+   267	`evaluate_fn`) at construction. That arrangement does not survive
+   268	being put behind a CLI — Python callables don't cross a
+   269	`python -m eden_planner_host …` boundary.
+   270	
+   271	8b resolves this by **baking one built-in profile into each worker
+   272	host**. A new module `reference/services/_common/scripted.py` owns
+   273	the canonical 8b profile: the same deterministic "3 trials, all
+   274	succeed" shape the Phase 5 / 7b in-process tests use today, with a
+   275	couple of knobs configurable via CLI rather than by injecting a
+   276	function:
+   277	
+   278	- Planner host: fixed `plan_fn` that drafts `--proposals-per-plan`
+   279	  proposals per task (default `1`) with deterministic slugs derived
+   280	  from the plan task ID. Each proposal's `parent_commits` is
+   281	  `(base_commit_sha,)`, where `base_commit_sha` is read from the
+   282	  `--base-commit-sha HEX` CLI flag. (Proposals MUST carry ≥1 parent
+   283	  per [`02-data-model.md`](../../spec/v0/02-data-model.md) §5;
+   284	  threading a concrete SHA through boot-time config is the cleanest
+   285	  way to satisfy that without giving the planner repo access.)
+   286	- Implementer host: fixed `implement_fn` that writes a real git
+   287	  commit to the shared bare repo (see "Implementer repo model"
+   288	  below) and returns its SHA. `--fail-every N` (default: never
+   289	  fail) flips occasional trials to `status=error` to exercise
+   290	  rejection paths in tests.
+   291	- Evaluator host: fixed `evaluate_fn` that returns scripted metrics
+   292	  matching the experiment's `metrics_schema` (read from
+   293	  `--experiment-config` so the evaluator knows what keys to emit).
+   294	  `--fail-every N` flips occasional evaluations to
+   295	  `status=error` / `status=eval_error` if a test wants them.
+   296	
+   297	The `ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator`
+   298	classes stay callable-injected for Phase 5 / 7b in-process tests —
+   299	the worker hosts are the only callers that wrap them in the fixed
+   300	profile. This way nothing about the in-process test surface changes.
+   301	
+   302	Selector: a `--profile NAME` CLI flag is **not** introduced in 8b —
+   303	the fixed profile is the only option. When real LLM-backed workers
+   304	land (Phase 10 LLM hosts), they ship as separate worker hosts
+   305	(`eden_llm_planner_host`, etc.) rather than as a `--profile llm`
+   306	switch on the scripted host. Keeping the split explicit at the
+   307	binary level means the scripted and LLM hosts don't share
+   308	configuration surfaces that each only half-understands.
+   309	
+   310	**Implementer repo model.** The `Integrator` requires that the
+   311	`commit_sha` an implementer submits be a real, reachable commit on
+   312	a branch it can read
+   313	([integrator.py](../../reference/packages/eden-git/src/eden_git/integrator.py) §2
+   314	preconditions). Today's Phase 7b E2E fixture satisfies this by
+   315	prebuilding real `work/*` branches before running the experiment
+   316	and returning those real SHAs from the scripted `implement_fn`.
+   317	Phase 8b needs the equivalent inside a standalone process.
+   318	
+   319	Decision: the implementer host writes real commits directly, via a
+   320	`GitRepo` opened against the **same bare repo** the orchestrator's
+   321	`Integrator` reads from.
+   322	
+   323	- Implementer CLI gains `--repo-path PATH` — the bare repo it
+   324	  writes to. Same path the orchestrator passes to `--repo-path`.
+   325	- Implementer's scripted flow per task builds a real commit whose
+   326	  parent is the SHA the proposal named:
+   327	  1. Read `proposal.parent_commits` from the store — guaranteed
+   328	     non-empty by the proposal Pydantic binding's
+   329	     `min_length=1` constraint. The scripted planner's fixed
+   330	     profile always emits a single parent, so the implementer's
+   331	     scripted profile uses `proposal.parent_commits[0]` as the
+   332	     single commit parent. (A non-scripted future implementer
+   333	     could honor multi-parent proposals as merge commits;
+   334	     scripted 8b does not.)
+   335	  2. Build a tree containing one deterministic blob (filename
+   336	     derived from the proposal slug, content derived from the
+   337	     trial ID) via `GitRepo.write_blob` +
+   338	     `write_tree_from_entries`.
+   339	  3. `commit_tree` with that tree, `parent=parent_sha` from step
+   340	     1, fixed author / committer identity, deterministic message
+   341	     derived from the proposal slug + trial ID.
+   342	  4. `create_ref refs/heads/work/<slug>-<trial_id>` → new SHA.
+   343	  5. Submit the new SHA on the implement task.
+   344	
+   345	  Because the proposal's `parent_commits` is populated and the
+   346	  implementer's new commit descends from it, the Integrator's §1.4
+   347	  reachability check (each `trial.parent_commits[i]` must be
+   348	  reachable from `commit_sha`) and its §2 check (`commit_sha` is
+   349	  reachable from `branch` tip) both hold.
+   350	
+   351	- **Seed commit.** The test harness seeds the bare repo with an
+   352	  empty initial commit before boot and passes its SHA to the
+   353	  planner and implementer as `--base-commit-sha`. (The orchestrator
+   354	  does not need the SHA — it only reads what the store already
+   355	  records.) Seeding is a tiny helper in `reference/services/_common/`
+   356	  (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+   357	
+   358	This keeps the implementer host's write path identical to how the
+   359	Phase 7b test prebuilds branches, just inside the service loop
+   360	rather than in a test fixture. Concurrency is fine: worker hosts
+   361	only write `work/*` refs; the orchestrator's `Integrator` only
+   362	writes `trial/*` refs and reads `work/*` refs. Git's packed-refs +
+   363	loose-refs arrangement is safe under concurrent writers in
+   364	distinct ref namespaces.
+   365	
+   366	**ID allocation across restarts.** Counter-based prefixes
+   367	(`proposal-1`, `proposal-2`, …) collide on restart because a fresh
+   368	worker has no knowledge of persisted state. Decision: worker-
+   369	generated IDs (`proposal_id`, `trial_id`) are short UUIDv4 hex
+   370	strings prefixed by a role tag — `proposal-<uuid>`, `trial-<uuid>`.
+   371	The `--proposal-prefix` / `--trial-prefix` flags are dropped; the
+   372	orchestrator-allocated task IDs keep `--implement-task-prefix` /
+   373	`--evaluate-task-prefix` (because those are used for human-readable
+   374	IDs in logs and E2E assertions), but the per-iteration uniqueness
+   375	comes from appending a short UUID.
+   376	
+   377	The E2E test asserts on the *count* and *shape* of produced IDs,
+   378	not specific values — so UUIDs are fine. Plan task IDs remain
+   379	explicit (`--plan-tasks plan-1,plan-2,plan-3`) because the harness
+   380	needs to reference them in assertions.
+
+exec
+/bin/zsh -lc "rg -n \"base-commit-sha|seed_bare_repo|parent_commits|orphan|work/\\*\" docs/plans/eden-phase-8b-service-extraction.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+242:- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N`
+244:  `parent_commits=(base_commit_sha,)`.
+248:  `--base-commit-sha` flag.)
+280:  from the plan task ID. Each proposal's `parent_commits` is
+282:  `--base-commit-sha HEX` CLI flag. (Proposals MUST carry ≥1 parent
+315:prebuilding real `work/*` branches before running the experiment
+327:  1. Read `proposal.parent_commits` from the store — guaranteed
+331:     scripted profile uses `proposal.parent_commits[0]` as the
+345:  Because the proposal's `parent_commits` is populated and the
+347:  reachability check (each `trial.parent_commits[i]` must be
+353:  planner and implementer as `--base-commit-sha`. (The orchestrator
+356:  (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+361:only write `work/*` refs; the orchestrator's `Integrator` only
+362:writes `trial/*` refs and reads `work/*` refs. Git's packed-refs +
+558:     `seed_bare_repo(path)` (the `_common` helper) to write an
+561:     `--base-commit-sha`.
+630:   `parent_commits=(base_commit_sha,)`), marks each ready, submits.
+752:  later, orphaned). Default of 3 plus a poll interval of 0.1s
+
+codex
+The main design now looks workable. I’m doing one pass for stale contradictions and for whether the new base-lineage mechanism is actually covered by the proposed tests, since that’s where I’d expect the remaining gaps to be.
+exec
+/bin/zsh -lc "nl -ba docs/plans/eden-phase-8b-service-extraction.md | sed -n '690,840p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   690	   plan file, `07-wire-protocol.md` addendum, each service README,
+   691	   and AGENTS.md + CLAUDE.md + roadmap updates.
+   692	6. Manual: start task-store-server on a real port, curl
+   693	   `GET /v0/experiments/exp-1/events` without an `Authorization`
+   694	   header — returns 401 problem+json with `type:
+   695	   eden://reference-error/unauthorized`. Same request with
+   696	   `Authorization: Bearer <token>` returns 200 empty events.
+   697	7. Manual: kill the task-store-server with `kill -TERM` and confirm
+   698	   clean exit (no tracebacks, SQLite file well-formed).
+   699	
+   700	## Out of scope for 8b
+   701	
+   702	(Already listed in Non-goals; restated here as the commit guardrail.)
+   703	
+   704	- Removing in-process dispatch paths (Phase 8c).
+   705	- SSE / WebSocket push.
+   706	- Real auth (per-worker identities, rotation, expiry, transport
+   707	  security). Milestone 3.
+   708	- Artifact store transport (Phase 10).
+   709	- UI (Phase 9).
+   710	- Compose packaging (Phase 10).
+   711	- `healthz` endpoint.
+   712	- Multi-experiment (Phase 12).
+   713	- Worker claim-expiry / health-policy reclaim (spec-supported but
+   714	  not exercised by the E2E harness; it's not 8b's job to harden the
+   715	  reclaim path).
+   716	
+   717	## Known risks
+   718	
+   719	- **Subprocess-based integration tests are easy to write wrong.** The
+   720	  E2E spec above is explicit about: ephemeral ports announced on
+   721	  stdout; stderr capture on failure; bounded timeouts at every wait
+   722	  point; SIGKILL fallback on SIGTERM timeout; tempdir teardown on
+   723	  every exit path. Missing any of these yields a test that hangs CI
+   724	  or produces unrunnable "red for unknown reason" failures. These
+   725	  are codified in the test, not left to diligence.
+   726	- **Auth in the non-normative namespace is a cross-concern edit.**
+   727	  `eden_wire.errors._TYPE_BY_EXC` currently maps only `StorageError`
+   728	  subclasses to `eden://error/…`. The new `Unauthorized` exception
+   729	  lives outside that map because (a) it's not a `StorageError`, and
+   730	  (b) it's reference-only. Keep the two tables clearly separated so
+   731	  no future refactor accidentally leaks a reference-only type into
+   732	  the normative vocabulary.
+   733	- **Workers don't self-terminate.** Anything that boots a worker
+   734	  (test harness, future deployment) is responsible for killing it.
+   735	  SIGTERM triggers a clean exit within one poll interval; SIGKILL
+   736	  is the fallback after 10 seconds. Documented in each service's
+   737	  README.
+   738	- **Shared-token auth has no transport security.** The server is
+   739	  loopback-only in tests and documented as such. A real deployment
+   740	  of shared-token auth over a non-TLS link leaks the token. Auth
+   741	  scaffolding has a big caveat in its README pointing at Milestone
+   742	  3.
+   743	- **Windows signal handling.** `signal.SIGTERM` on Windows is
+   744	  missing; uvicorn's shutdown path uses `SIGBREAK` / SIGINT. The
+   745	  E2E test is `pytest.mark.skipif(sys.platform == "win32", …)`.
+   746	  Non-test code paths also work on Windows (uvicorn handles it),
+   747	  just not exercised in CI.
+   748	- **Quiescence counter ≥ 2.** If
+   749	  `--max-quiescent-iterations` is 1, the orchestrator can exit
+   750	  while a worker is mid-submit (the orchestrator reads tasks, sees
+   751	  nothing pending, exits; the worker's submit lands a moment
+   752	  later, orphaned). Default of 3 plus a poll interval of 0.1s
+   753	  means we wait ~0.2s of no-progress, which empirically covers
+   754	  scripted-worker latency with a wide margin. Documented as a
+   755	  tunable.
+   756	- **Ephemeral port assignment race.** We bind `--port 0`, read the
+   757	  port from stdout, then launch other processes pointing at it.
+   758	  Between `listen()` and the port being printed there's a
+   759	  flush-timing window where the harness might read an empty line;
+   760	  the harness must `readline()` in a loop until it gets the
+   761	  `EDEN_TASK_STORE_LISTENING` prefix. Harness code handles this.
+   762	- **`--plan-tasks N` (integer) vs explicit list.** The integer form
+   763	  is the common case; the explicit-list form exists so tests can
+   764	  pin deterministic IDs that assertions can reference.
+   765	- **Scripted `plan_fn` / `implement_fn` / `evaluate_fn` now live in
+   766	  shared code.** Tests that used to inject their own fn still can,
+   767	  by importing and parameterizing — no lock-in. The shared
+   768	  defaults are the deterministic "3 trials, all succeed" shape
+   769	  that the Phase 5 / 7b E2E uses.
+   770	
+   771	## Execution order
+   772	
+   773	This is execution-only; no scope decisions are deferred to here.
+   774	
+   775	1. Spec addendum: append §8 "Reference-only extensions" to
+   776	   [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md).
+   777	   Run `python3 scripts/spec-xref-check.py` to confirm no broken
+   778	   xrefs. Lint with markdownlint.
+   779	2. Refactor `eden-dispatch.driver`: extract
+   780	   `_run_orchestrator_iteration` (private) and keep
+   781	   `run_experiment` calling it. Add
+   782	   `reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py`.
+   783	3. Extend `eden-wire.server.make_app` with the `shared_token`
+   784	   kwarg + middleware. Extend `eden-wire.client.StoreClient` with
+   785	   `token` kwarg. Add `Unauthorized` exception + reference-only
+   786	   entry to `eden_wire.errors`. Add
+   787	   `reference/packages/eden-wire/tests/test_auth.py` covering
+   788	   server middleware + client header + error round-trip.
+   789	4. Land `reference/services/_common/` with logging, signal
+   790	   handling, readiness probe, arg parsing, and the scripted
+   791	   `plan_fn`/`implement_fn`/`evaluate_fn` extraction.
+   792	5. Land `reference/services/task-store-server/` with its tests
+   793	   (unit `test_app.py`).
+   794	6. Land `reference/services/orchestrator/` with its unit
+   795	   tests but not the E2E yet.
+   796	7. Land `reference/services/planner/`, `implementer/`,
+   797	   `evaluator/` with their host unit tests.
+   798	8. Land the E2E test
+   799	   `reference/services/orchestrator/tests/test_e2e.py`.
+   800	   Run locally — it is the acceptance gate for 8b. Capture stderr
+   801	   on failure from the beginning; do not add that feature as a
+   802	   "v2" polish.
+   803	9. Update `reference/README.md`: mark the five service directories
+   804	   as Phase 8b-complete.
+   805	10. Update `AGENTS.md` "Current phase" and the Commands table
+   806	    (python module invocation hints for the new services).
+   807	11. Update `docs/roadmap.md` Phase 8 section: mark 8b complete.
+   808	12. Run the full verification list above.
+   809	13. `/codex-review references/implementation.md` on the branch.
+   810	14. Codify findings; commit; PR.
+   811	
+   812	## Review gate
+   813	
+   814	Before handing to `/codex-review`:
+   815	
+   816	- The plan answers, for each of the five design decisions, what the
+   817	  chosen option is and why the alternatives were rejected:
+   818	  - **Quiescence by iteration counter vs by event subscription.**
+   819	    Counter chosen because (a) it matches how `run_experiment`
+   820	    already detects quiescence and (b) doesn't require the worker
+   821	    hosts to distinguish "I'm idle" from "I exited" on the
+   822	    subscriber end.
+   823	  - **Workers poll tasks vs subscribe to events.** Polling chosen
+   824	    for 8b because teardown (kill at any moment) is trivial and
+   825	    because the poll interval is a single tunable. Event-subscribe
+   826	    remains a future optimization.
+   827	  - **Shared-token in normative vocabulary vs reference-only
+   828	    namespace.** Reference-only chosen because the spec chapter
+   829	    07 explicitly defers auth to Milestone 3 and committing to a
+   830	    shape now would force rework then.
+   831	  - **Common scaffolding extracted vs inlined per service.**
+   832	    Extracted because three divergent CLIs are the predictable
+   833	    failure mode and because the extraction is small (< 200 LOC).
+   834	  - **Service directories — reuse stubs vs new names.** Reuse the
+   835	    four existing Phase 0 stubs (`planner/`, `implementer/`,
+   836	    `evaluator/`, `orchestrator/`) — they are the roadmap's blessed
+   837	    names and [`reference/README.md`](../../reference/README.md)
+   838	    already documents them. Add one new directory
+   839	    (`task-store-server/`) for the process that holds the store;
+   840	    there is no stub because Phase 0 didn't anticipate splitting
+
+exec
+/bin/zsh -lc 'rg -n "base-commit-sha|seed_bare_repo|trial_commit_sha|valid git commit|count and shape|proposal-<uuid>|trial-<uuid>|human-readable" docs/plans/eden-phase-8b-service-extraction.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+210:  any success trial lacking `trial_commit_sha`.
+242:- Planner: `--base-commit-sha HEX` (required) + `--proposals-per-plan N`
+248:  `--base-commit-sha` flag.)
+282:  `--base-commit-sha HEX` CLI flag. (Proposals MUST carry ≥1 parent
+353:  planner and implementer as `--base-commit-sha`. (The orchestrator
+356:  (`seed_bare_repo(path) -> str`) so service tests can reuse it.
+370:strings prefixed by a role tag — `proposal-<uuid>`, `trial-<uuid>`.
+373:`--evaluate-task-prefix` (because those are used for human-readable
+558:     `seed_bare_repo(path)` (the `_common` helper) to write an
+561:     `--base-commit-sha`.
+581:     - 3 trials with `status="success"` and `trial_commit_sha` set.
+582:     - Each `trial_commit_sha` is a valid git commit in the bare repo.
+645:    `trial_commit_sha` + `trial.integrated` event.
+
+exec
+/bin/zsh -lc "rg -n \"commit_parents|is_ancestor|resolve_ref|work/|trial/\" reference/packages/eden-dispatch/tests reference/packages/eden-git/tests -g '*.py'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+reference/packages/eden-dispatch/tests/test_end_to_end.py:220:    canonical ``trial/*`` commits with eval manifests, the store's
+reference/packages/eden-dispatch/tests/test_end_to_end.py:255:        branch = f"work/feat-{i}"
+reference/packages/eden-dispatch/tests/test_end_to_end.py:315:        ref = f"refs/heads/trial/{trial.trial_id}-{_lookup_proposal_slug(store, trial.proposal_id)}"
+reference/packages/eden-dispatch/tests/test_end_to_end.py:316:        assert repo.resolve_ref(ref) == trial.trial_commit_sha
+reference/packages/eden-dispatch/tests/test_end_to_end.py:321:        assert repo.commit_parents(trial.trial_commit_sha) == list(trial.parent_commits)
+reference/packages/eden-git/tests/test_integrator.py:58:    result = repo.resolve_ref("refs/heads/main")
+reference/packages/eden-git/tests/test_integrator.py:105:    """Create a ``work/*`` branch with one commit on top of ``parent``. Returns the commit SHA."""
+reference/packages/eden-git/tests/test_integrator.py:203:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:210:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:217:        assert result.branch == "trial/tr-1-speedup"
+reference/packages/eden-git/tests/test_integrator.py:219:        ref_sha = repo.resolve_ref("refs/heads/trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:229:        assert repo.commit_parents(result.trial_commit_sha) == list(
+reference/packages/eden-git/tests/test_integrator.py:240:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:247:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:261:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:268:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:331:        repo.update_ref("refs/heads/work/tr-m", merge_commit)
+reference/packages/eden-git/tests/test_integrator.py:341:                branch="work/tr-m",
+reference/packages/eden-git/tests/test_integrator.py:350:        assert repo.commit_parents(result.trial_commit_sha) == [seed_sha, second_parent]
+reference/packages/eden-git/tests/test_integrator.py:360:        work_commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:374:        repo.update_ref("refs/heads/work/tr-1", extra_commit)
+reference/packages/eden-git/tests/test_integrator.py:381:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:406:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:413:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:432:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:439:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:444:        repo.delete_ref("refs/heads/trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:478:        repo.update_ref("refs/heads/work/tr-1", other_root)
+reference/packages/eden-git/tests/test_integrator.py:489:                branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:500:        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:530:        repo.update_ref("refs/heads/work/tr-1", commit)
+reference/packages/eden-git/tests/test_integrator.py:538:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:545:        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:563:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:570:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:581:        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:590:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:597:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:601:        repo.delete_ref("refs/heads/work/tr-1")
+reference/packages/eden-git/tests/test_integrator.py:612:        work_commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:619:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:624:        repo.update_ref("refs/heads/work/tr-1", seed_sha, expected_old_sha=work_commit)
+reference/packages/eden-git/tests/test_integrator.py:642:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:649:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:655:        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:664:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:671:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:693:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:700:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:715:        assert repo.resolve_ref("refs/heads/trial/tr-1-speedup") is None
+reference/packages/eden-git/tests/test_integrator.py:729:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:736:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:770:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:777:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:798:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:805:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:828:    assert repo.resolve_ref(f"refs/heads/{branch}") is None
+reference/packages/eden-git/tests/test_integrator.py:854:    """§1.3 permits deleting work/* after promotion. Once the worker
+reference/packages/eden-git/tests/test_integrator.py:857:    no-op-ing — otherwise a corrupted trial/* commit with a matching
+reference/packages/eden-git/tests/test_integrator.py:867:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:874:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:879:        # §1.3: delete work/* and `git gc --prune=now`.
+reference/packages/eden-git/tests/test_integrator.py:880:        repo.delete_ref("refs/heads/work/tr-1")
+reference/packages/eden-git/tests/test_integrator.py:897:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:904:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:914:    """Codex round-1 reproduction: a trial/* commit with an extra file
+reference/packages/eden-git/tests/test_integrator.py:925:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:932:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:937:        # Rewrite the trial/* commit externally to have an extra path
+reference/packages/eden-git/tests/test_integrator.py:951:            "refs/heads/trial/tr-1-speedup",
+reference/packages/eden-git/tests/test_integrator.py:996:        commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:1003:            branch="work/tr-1",
+reference/packages/eden-git/tests/test_integrator.py:1009:        _assert_no_side_effects(store, repo, branch="trial/tr-1-speedup")
+reference/packages/eden-git/tests/test_integrator.py:1023:    commit = _make_work_branch(repo, branch="work/tr-1", parent=seed_sha)
+reference/packages/eden-git/tests/test_integrator.py:1030:        branch="work/tr-1",
+reference/packages/eden-git/tests/test_manifest.py:20:        "branch": "work/tr-1",
+reference/packages/eden-git/tests/test_repo_branches_worktrees.py:25:        repo.create_branch("work/t1-impl", "main")
+reference/packages/eden-git/tests/test_repo_branches_worktrees.py:26:        assert repo.resolve_ref("refs/heads/work/t1-impl") == seed
+reference/packages/eden-git/tests/test_repo_branches_worktrees.py:53:        repo.add_worktree(wt_path, start_point="main", branch="work/t1-impl")
+reference/packages/eden-git/tests/test_repo_plumbing.py:5:construction (``commit_tree``, ``commit_tree_sha``, ``commit_parents``,
+reference/packages/eden-git/tests/test_repo_plumbing.py:118:        assert repo.commit_parents(commit) == [seed]
+reference/packages/eden-git/tests/test_repo_plumbing.py:132:        assert bare_repo.commit_parents(commit) == []
+reference/packages/eden-git/tests/test_repo_plumbing.py:155:        repo.create_ref("refs/heads/trial/t1-demo", seed)
+reference/packages/eden-git/tests/test_repo_plumbing.py:156:        assert repo.ref_exists("refs/heads/trial/t1-demo")
+reference/packages/eden-git/tests/test_repo_plumbing.py:157:        assert repo.resolve_ref("refs/heads/trial/t1-demo") == seed
+reference/packages/eden-git/tests/test_repo_plumbing.py:162:        """§1.2: trial/* branches are immutable — create must not overwrite."""
+reference/packages/eden-git/tests/test_repo_plumbing.py:164:        repo.create_ref("refs/heads/trial/t1-demo", seed)
+reference/packages/eden-git/tests/test_repo_plumbing.py:166:            repo.create_ref("refs/heads/trial/t1-demo", seed)
+reference/packages/eden-git/tests/test_repo_plumbing.py:185:        assert repo.resolve_ref("refs/heads/tmp") == newer
+reference/packages/eden-git/tests/test_repo_plumbing.py:205:        assert repo.resolve_ref("refs/heads/tmp") is None
+reference/packages/eden-git/tests/test_repo_plumbing.py:211:        repo.create_ref("refs/heads/trial/t1-demo", seed)
+reference/packages/eden-git/tests/test_repo_plumbing.py:212:        repo.create_ref("refs/heads/trial/t2-demo", seed)
+reference/packages/eden-git/tests/test_repo_plumbing.py:213:        repo.create_ref("refs/heads/work/t1-impl", seed)
+reference/packages/eden-git/tests/test_repo_plumbing.py:214:        trial_refs = dict(repo.list_refs("refs/heads/trial/*"))
+reference/packages/eden-git/tests/test_repo_plumbing.py:216:            "refs/heads/trial/t1-demo",
+reference/packages/eden-git/tests/test_repo_plumbing.py:217:            "refs/heads/trial/t2-demo",
+reference/packages/eden-git/tests/test_repo_plumbing.py:224:    def test_is_ancestor_true(self, repo_with_main: tuple[GitRepo, str]) -> None:
+reference/packages/eden-git/tests/test_repo_plumbing.py:238:        assert repo.is_ancestor(seed, child) is True
+reference/packages/eden-git/tests/test_repo_plumbing.py:239:        assert repo.is_ancestor(seed, seed) is True  # self-ancestor
+reference/packages/eden-git/tests/test_repo_plumbing.py:241:    def test_is_ancestor_false_for_unrelated(
+reference/packages/eden-git/tests/test_repo_plumbing.py:257:        assert repo.is_ancestor(unrelated, seed) is False
+reference/packages/eden-git/tests/test_repo_plumbing.py:258:        assert repo.is_ancestor(seed, unrelated) is False
+reference/packages/eden-git/tests/test_repo_plumbing.py:306:        assert bare_repo.resolve_ref("refs/heads/does-not-exist") is None
+reference/packages/eden-git/tests/test_environment_isolation.py:12:  algorithm, so the §1.2 `trial/*` CAS-against-absent primitive works
+reference/packages/eden-git/tests/test_environment_isolation.py:115:        performs via ``commit_parents`` / ``is_ancestor``.
+reference/packages/eden-git/tests/test_environment_isolation.py:135:        # `is_ancestor(unrelated, seed)` return True.
+reference/packages/eden-git/tests/test_environment_isolation.py:142:        assert repo.is_ancestor(unrelated, seed) is False
+reference/packages/eden-git/tests/test_environment_isolation.py:143:        # commit_parents must report the true parents (none for seed,
+reference/packages/eden-git/tests/test_environment_isolation.py:145:        assert repo.commit_parents(seed) == []
+reference/packages/eden-git/tests/test_environment_isolation.py:229:        repo.create_ref("refs/heads/trial/t1-demo", seed)
+reference/packages/eden-git/tests/test_environment_isolation.py:230:        assert repo.resolve_ref("refs/heads/trial/t1-demo") == seed
+reference/packages/eden-git/tests/test_environment_isolation.py:270:        assert repo.resolve_ref("refs/heads/main") == commit
+
+codex
+**Missing Context**
+
+Assessment: resolved. The worker profile, repo seeding story, and base-lineage threading are now explicit enough to review the design.
+
+**Feasibility**
+
+Assessment: resolved. Requiring a real `base_commit_sha` and seeding the bare repo closes the earlier spec/model violation around empty `parent_commits`.
+
+**Alternatives**
+
+Assessment: the chosen approach is reasonable. For a scripted reference host, threading one concrete base SHA through the planner is a cleaner fit than giving the planner repo access or inventing more config surface.
+
+**Completeness**
+
+Assessment: one significant issue remains here, so I would stop at this level.
+
+- `CRITICAL` The implementer host still does not define correct behavior for valid multi-parent proposals. The plan says scripted 8b uses `proposal.parent_commits[0]` as the single parent and leaves true multi-parent handling to a future implementation ([plan lines 327-334](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:327)). But the protocol allows `parent_commits` to be one or many, and the implementer contract says the worker branch parent(s) are the proposal’s `parent_commits` ([02-data-model.md](/Users/ericalt/Documents/eden/spec/v0/02-data-model.md:159), [03-roles.md](/Users/ericalt/Documents/eden/spec/v0/03-roles.md:89)). Since this host consumes implement tasks from the store, not just proposals produced by its own scripted planner, silently truncating to the first parent would violate the contract on a valid input. The plan should either implement full multi-parent commit creation now, or explicitly reject multi-parent proposals at the implementer boundary rather than producing the wrong git shape.
+
+- `SUGGESTION` There is one stale contradiction in the text. The role-specific args section correctly says the implementer has no `--base-commit-sha` flag ([plan lines 245-248](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:245)), but the implementer repo model later says the harness passes the SHA to “the planner and implementer” as `--base-commit-sha` ([lines 351-354](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:351)). That should be reconciled.
+
+- `SUGGESTION` The E2E assertions should cover the new lineage behavior explicitly. Right now they stop at “`trial_commit_sha` exists and is a valid git commit” ([plan lines 578-582](/Users/ericalt/Documents/eden/docs/plans/eden-phase-8b-service-extraction.md:578)). Since this revision’s main change is parent propagation from `base_commit_sha`, add assertions that the stored `trial.parent_commits == [base_sha]` and that the resulting commit lineage matches it, similar to the existing in-process real-integrator test’s parent check ([test_end_to_end.py](/Users/ericalt/Documents/eden/reference/packages/eden-dispatch/tests/test_end_to_end.py:321)).
+
+**Overall Assessment**
+
+This is close. The earlier blockers are fixed, and the design now reads as implementable, but the plan still needs to decide how the scripted implementer handles valid multi-parent proposals before I’d call it complete.
+tokens used
+127,979

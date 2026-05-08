@@ -1,0 +1,308 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc773-b760-7743-9a18-ab1beaf4ced7
+--------
+user
+I've addressed your round 1 feedback. The updated review brief at /Users/ericalt/Documents/eden/docs/plans/review/eden-phase-10bc-dockerize-and-setup/impl/20260425T184108/2.md lists what was fixed. Please re-read the implementation files and review again.
+codex
+Re-reading the round-2 brief first, then I’ll verify the newly changed files directly and re-check the remaining shell, test, and docs surfaces.
+  → Read round-2 review brief
+  • Inspect files changed for round-2 fixes
+  • Confirm prior findings resolved and check for regressions
+  • Report any remaining findings and overall assessment
+exec
+/bin/zsh -lc "sed -n '1,260p' docs/plans/review/eden-phase-10bc-dockerize-and-setup/impl/20260425T184108/2.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-10bc-dockerize-and-setup — Round 2
+
+## Round 1 issues addressed
+
+- **Risk — task-store-server healthcheck shell-interpolation hazard.**
+  Both healthchecks (`task-store-server` and `web-ui`) switched from `CMD-SHELL` to `CMD` argv form in [`compose.yaml`](../../../../../reference/compose/compose.yaml). Compose still interpolates the env-file values exactly once at compose-load time, but no shell re-parses them — quotes / spaces / shell metacharacters in the token or experiment id can no longer break or alter the command.
+
+- **Nit — printed next-step uses hardcoded `.env`.**
+  [`setup-experiment.sh`](../../../../../reference/scripts/setup-experiment/setup-experiment.sh) now echoes the actual `${ENV_FILE}` path in both "Next steps" lines, so a custom `--env-file <path>` doesn't print stale guidance.
+
+- **Nit — `test_reopen_inherits_persisted_metrics_schema` didn't validate inheritance.**
+  Strengthened in [`test_postgres_store.py`](../../../../../reference/packages/eden-storage/tests/test_postgres_store.py): now exercises `validate_metrics()` after reopen — an unknown metric name raises `InvalidPrecondition`, the persisted name validates fine. A reopened store that failed to inherit the schema would accept the unknown name and fail this assertion.
+
+- **Nit — README sqlite path examples wrong.**
+  [`task-store-server/README.md`](../../../../../reference/services/task-store-server/README.md) and [`web-ui/README.md`](../../../../../reference/services/web-ui/README.md) updated to use a bare absolute path (`/tmp/eden.sqlite`) — unambiguous and matches what `build_store()` actually does. The task-store-server README also now documents the `sqlite:////<absolute-path>` four-slash form for readers who prefer the explicit URL scheme.
+
+## Local validation re-run
+
+- `uv run ruff check .` — clean.
+- `uv run pyright` — clean.
+- `EDEN_TEST_POSTGRES_DSN=… uv run pytest -q reference/packages/eden-storage/tests/test_postgres_store.py` — 5 passed (including the strengthened metrics-inheritance test).
+- `bash reference/compose/healthcheck/smoke.sh` — full extended smoke green end-to-end with the new CMD-argv healthchecks.
+
+## Review Status
+Round 2 — addressed round 1 cleanups; awaiting re-review.
+
+exec
+/bin/zsh -lc 'git diff --stat -- reference/compose/compose.yaml reference/scripts/setup-experiment/setup-experiment.sh reference/packages/eden-storage/tests/test_postgres_store.py reference/services/task-store-server/README.md reference/services/web-ui/README.md' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ reference/compose/compose.yaml                 | 270 +++++++++++++++++++++++++
+ reference/services/task-store-server/README.md |  20 +-
+ reference/services/web-ui/README.md            |   9 +-
+ 3 files changed, 296 insertions(+), 3 deletions(-)
+
+exec
+/bin/zsh -lc 'git status --short' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+ M .github/workflows/ci.yml
+ M AGENTS.md
+ M docs/roadmap.md
+ M reference/compose/README.md
+ M reference/compose/compose.yaml
+ M reference/compose/healthcheck/smoke.sh
+ M reference/packages/eden-storage/pyproject.toml
+ M reference/packages/eden-storage/src/eden_storage/__init__.py
+ M reference/packages/eden-storage/tests/conftest.py
+ D reference/scripts/setup-experiment/.gitkeep
+ M reference/services/orchestrator/tests/test_e2e.py
+ M reference/services/task-store-server/README.md
+ M reference/services/task-store-server/src/eden_task_store_server/app.py
+ M reference/services/task-store-server/src/eden_task_store_server/cli.py
+ M reference/services/task-store-server/tests/test_app.py
+ M reference/services/web-ui/README.md
+ M reference/services/web-ui/src/eden_web_ui/app.py
+ M reference/services/web-ui/tests/test_admin_e2e.py
+ M reference/services/web-ui/tests/test_e2e_real_subprocess.py
+ M reference/services/web-ui/tests/test_evaluator_e2e.py
+ M reference/services/web-ui/tests/test_implementer_e2e.py
+ M uv.lock
+?? .dockerignore
+?? docs/plans/eden-phase-10bc-dockerize-and-setup.md
+?? docs/plans/review/eden-phase-10bc-dockerize-and-setup/
+?? reference/compose/Dockerfile
+?? reference/packages/eden-storage/src/eden_storage/_postgres_schema.py
+?? reference/packages/eden-storage/src/eden_storage/postgres.py
+?? reference/packages/eden-storage/tests/test_postgres_store.py
+?? reference/scripts/setup-experiment/README.md
+?? reference/scripts/setup-experiment/setup-experiment.sh
+?? reference/services/_common/src/eden_service_common/repo_init.py
+
+codex
+The brief says the remaining round-1 items were all addressed. I’m verifying the actual file content now, especially the compose healthchecks and the strengthened Postgres reopen test.
+exec
+/bin/zsh -lc "nl -ba reference/scripts/setup-experiment/setup-experiment.sh | sed -n '242,262p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/compose/compose.yaml | sed -n '138,160p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   242	# If the operator passed a custom --env-file path, echo a
+   243	# next-step that uses an absolute path so they don't have to
+   244	# re-derive it. Compose's `--env-file` resolves relative paths
+   245	# from the current working directory, so a bare `.env` reference
+   246	# would silently disagree with whatever the script wrote.
+   247	cat <<EOF
+   248	setup-experiment complete.
+   249	
+   250	  experiment id:    ${EXPERIMENT_ID}
+   251	  store URL:        ${EDEN_STORE_URL}
+   252	  base commit SHA:  ${SEED_SHA}
+   253	  env file:         ${ENV_FILE}
+   254	
+   255	Next steps:
+   256	
+   257	  cd ${COMPOSE_DIR}
+   258	  docker compose --env-file ${ENV_FILE} up -d --wait
+   259	  open http://localhost:${WEB_UI_HOST_PORT}/
+   260	
+   261	Re-running setup-experiment is safe; existing secrets are preserved.
+   262	To pick up config changes, re-run setup-experiment + 'docker compose
+
+ succeeded in 0ms:
+   138	    configs:
+   139	      - source: eden-experiment-config
+   140	        target: /etc/eden/experiment-config.yaml
+   141	    healthcheck:
+   142	      # Authenticated GET against an experiment-scoped endpoint
+   143	      # confirms both that the process is up and that auth wiring
+   144	      # works. CMD argv form (NOT CMD-SHELL) so Compose interpolates
+   145	      # `.env` values exactly once; no shell re-parses them, so
+   146	      # quotes / spaces / shell metacharacters in the token or
+   147	      # experiment id can't break or alter the command.
+   148	      test:
+   149	        - CMD
+   150	        - curl
+   151	        - -fsS
+   152	        - -H
+   153	        - "Authorization: Bearer ${EDEN_SHARED_TOKEN}"
+   154	        - -H
+   155	        - "X-Eden-Experiment-Id: ${EDEN_EXPERIMENT_ID}"
+   156	        - http://localhost:8080/v0/experiments/${EDEN_EXPERIMENT_ID}/events
+   157	      interval: 5s
+   158	      timeout: 3s
+   159	      retries: 20
+   160	      start_period: 10s
+
+exec
+/bin/zsh -lc "nl -ba reference/services/task-store-server/README.md | sed -n '1,40p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/packages/eden-storage/tests/test_postgres_store.py | sed -n '108,140p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# eden-task-store-server
+     2	
+     3	Reference implementation of the EDEN task-store process. Hosts a `Store` (in-memory, SQLite, or Postgres) behind the FastAPI app from [`eden-wire`](../../packages/eden-wire/) and exposes it over the spec-chapter-07 HTTP binding.
+     4	
+     5	## Run
+     6	
+     7	```bash
+     8	python -m eden_task_store_server \
+     9	  --store-url /tmp/eden.sqlite \
+    10	  --experiment-id exp-1 \
+    11	  --experiment-config tests/fixtures/experiment/.eden/config.yaml \
+    12	  --host 127.0.0.1 --port 8080
+    13	```
+    14	
+    15	`--store-url` accepts:
+    16	
+    17	- `:memory:` — in-memory `Store` (non-durable).
+    18	- `sqlite:///<relative-path>` or `sqlite:////<absolute-path>` —
+    19	  `SqliteStore`. (Note the **four** leading slashes for an absolute
+    20	  path: the SQLite URL scheme uses three for the URL prefix and one
+    21	  for the leading slash of the path.)
+    22	- A bare filesystem path (no scheme) is also accepted as
+    23	  `SqliteStore` — interpreted literally, so `/tmp/eden.sqlite` is
+    24	  unambiguous.
+    25	- `postgresql://<user>:<pw>@<host>:5432/<db>` — `PostgresStore`.
+    26	
+    27	The deprecated `--db-path` alias (interpreted as a SQLite path or
+    28	`:memory:`) is kept for one phase; logs emit a deprecation warning
+    29	when it is used.
+    30	
+    31	On startup the first stdout line is `EDEN_TASK_STORE_LISTENING host=<host> port=<port>` so a supervisor / test harness can read the ephemeral port (`--port 0` to bind any).
+    32	
+    33	## Auth
+    34	
+    35	`--shared-token <T>` enables the reference-only bearer-token middleware from [`spec/v0/07-wire-protocol.md`](../../../spec/v0/07-wire-protocol.md) §12. Without it, the server accepts anonymous requests.
+    36	
+    37	## Shutdown
+    38	
+    39	SIGTERM / SIGINT drain in-flight requests, then close the store.
+
+ succeeded in 0ms:
+   108	            ),
+   109	        )
+   110	
+   111	
+   112	def test_reopen_inherits_persisted_metrics_schema(schema_dsn: str) -> None:
+   113	    """Reopen with no schema arg inherits whatever was persisted.
+   114	
+   115	    Validates inheritance by exercising metrics validation after
+   116	    reopen — `validate_metrics` returns a no-op for `None` schemas,
+   117	    so a reopened store that *failed* to inherit the schema would
+   118	    accept `{"unknown": 1.0}`. With inheritance, an unknown metric
+   119	    name raises `InvalidPrecondition`.
+   120	    """
+   121	    metrics = MetricsSchema.model_validate({"score": "real"})
+   122	    PostgresStore("exp-1", schema_dsn, metrics_schema=metrics).close()
+   123	
+   124	    reopened = PostgresStore("exp-1", schema_dsn)
+   125	    try:
+   126	        # The persisted schema knows only `score`; an unknown
+   127	        # metric name should raise.
+   128	        with pytest.raises(InvalidPrecondition):
+   129	            reopened.validate_metrics({"unknown": 1.0})
+   130	        # The valid metric still passes.
+   131	        reopened.validate_metrics({"score": 0.5})
+   132	    finally:
+   133	        reopened.close()
+   134	
+   135	
+   136	def test_event_id_counter_resumes_across_reopen(schema_dsn: str) -> None:
+   137	    """The default event-id counter resumes from MAX(seq) + 1 on reopen.
+   138	
+   139	    Without resumption, two stores on the same database would emit
+   140	    duplicate ``event_id`` values and violate the UNIQUE constraint.
+
+exec
+/bin/zsh -lc "nl -ba reference/services/web-ui/README.md | sed -n '31,52p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    31	## Run locally
+    32	
+    33	```bash
+    34	python3 -m eden_task_store_server \
+    35	    --store-url /tmp/eden.sqlite \
+    36	    --experiment-id exp-1 \
+    37	    --experiment-config tests/fixtures/experiment/.eden/config.yaml \
+    38	    --port 0 \
+    39	    --shared-token devtoken \
+    40	    &
+    41	
+    42	# (Read EDEN_TASK_STORE_LISTENING from stdout to learn the port.)
+    43	
+    44	python3 -m eden_web_ui \
+    45	    --task-store-url http://127.0.0.1:<port> \
+    46	    --experiment-id exp-1 \
+    47	    --experiment-config tests/fixtures/experiment/.eden/config.yaml \
+    48	    --shared-token devtoken \
+    49	    --session-secret "$(openssl rand -hex 32)" \
+    50	    --artifacts-dir /tmp/eden-artifacts \
+    51	    --port 0
+    52	```
+
+exec
+/bin/zsh -lc "nl -ba reference/compose/compose.yaml | sed -n '330,340p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   330	    volumes:
+   331	      - eden-bare-repo:/var/lib/eden/repo
+   332	      - eden-artifacts-data:/var/lib/eden/artifacts
+   333	    ports:
+   334	      - "${WEB_UI_HOST_PORT:-8090}:8090"
+   335	    healthcheck:
+   336	      # CMD argv form (no shell). The literal URL has no
+   337	      # interpolated user-controlled pieces, but staying consistent
+   338	      # with the task-store-server healthcheck above is cheaper than
+   339	      # leaving one shell-interpreted check around.
+   340	      test:
+
+exec
+/bin/zsh -lc "nl -ba reference/compose/compose.yaml | sed -n '340,346p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+   340	      test:
+   341	        - CMD
+   342	        - curl
+   343	        - -fsS
+   344	        - http://localhost:8090/healthz
+   345	      interval: 5s
+   346	      timeout: 3s
+
+codex
+I’ve verified the direct fixes. I’m doing one last consistency pass across the docs that summarize the smoke test, because the script’s assertions have become stricter than some of the higher-level chunk summaries.
+exec
+/bin/zsh -lc "rg -n \"trial\\.integrated|task\\.completed|smoke\" AGENTS.md docs/roadmap.md reference/compose/README.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+AGENTS.md:19:**Phase 10 chunks 10b + 10c complete.** Six EDEN reference services are now dockerized and wired into the Compose stack at [`reference/compose/`](reference/compose/), and a new [`reference/scripts/setup-experiment/setup-experiment.sh`](reference/scripts/setup-experiment/setup-experiment.sh) bootstraps a runnable stack from an experiment-config YAML in one shot. After `bash setup-experiment.sh <config.yaml> --experiment-id <id> && docker compose --env-file .env up -d --wait`, the fixture experiment runs to completion in Compose: orchestrator dispatches three plan tasks → planner-host claims/submits → orchestrator integrates → 3 trials succeed and integrate, with the orchestrator exiting 0 on quiescence (`restart: "on-failure"` so exit-0 sticks; tuned to `--poll-interval 1.0 --max-quiescent-iterations 30` for Compose worker-startup latency). All seven services (six EDEN services + setup-time `eden-repo-init`) share **one** `eden-reference:dev` image (multi-stage build with `uv sync --frozen --no-dev --all-packages` — the `--all-packages` flag is load-bearing because the workspace root pins `tool.uv.package = false` and lists the `eden-*` workspace members only in the `dev` group, which `--no-dev` would otherwise skip). The roadmap delta documenting the per-service-image deviation, the deferral of the LLM-implementer experiment-specific image to 10d, the deferral of control-plane registration to Phase 12, and the deferral of Gitea-as-the-workers'-actual-git-remote to a follow-up sub-chunk after 10d is recorded in the plan and reflected in the chunk's roadmap update. New `eden-storage.PostgresStore` ([`reference/packages/eden-storage/src/eden_storage/postgres.py`](reference/packages/eden-storage/src/eden_storage/postgres.py)) is the third backend conforming to the same `Store` Protocol as `InMemoryStore`/`SqliteStore`; backed by `psycopg[binary]>=3.2,<4` with `autocommit=True` + explicit per-op `BEGIN ISOLATION LEVEL SERIALIZABLE READ WRITE` (psycopg's auto-begin would error `ActiveSqlTransaction` on `BEGIN ISOLATION LEVEL`). Schema is byte-for-byte parallel to SQLite (`data text NOT NULL`, not `jsonb` — keeps the read path identical and defers indexing concerns). The new `python-test-postgres` CI job spins up `postgres:16.6-alpine` as a service container and runs the parametrized backend tests against it; the existing `python-test` job continues to run with `EDEN_TEST_POSTGRES_DSN` unset (so the postgres rows skip), keeping it fast. `task-store-server` gains a URL-based `--store-url` flag (`:memory:` / `sqlite:///<path>` / `postgresql://…` / bare-path-for-compat); the deprecated `--db-path` alias survives for one phase. Bare-repo bootstrap is owned **synchronously** by setup-experiment (one canonical command shape: `docker compose build eden-repo-init && docker compose run --rm --no-deps eden-repo-init` — `--no-deps` keeps future dependency edits from accidentally starting Postgres/Gitea just to seed). The seed SHA is captured from stdout and replaced into a placeholder line in `.env` (zero-padded sentinel) — *replaced*, not appended, so `grep -E '^EDEN_BASE_COMMIT_SHA='` returns one definition. The `eden-repo-init` service has `profiles: ["setup"]` so it's invisible to plain `compose up`. Volume permissions are pre-created in the Dockerfile via `RUN mkdir -p /var/lib/eden/{repo,artifacts} && chown -R eden:eden /var/lib/eden` — without this the named volume inherits root ownership from the volume driver and the eden user can't write. Healthchecks for `task-store-server` and `web-ui` use compose-load-time `${VAR}` interpolation (single `$`), not container-shell `$${VAR}`, because the env-file vars aren't propagated into the container's shell environment unless declared under `environment:`; baking the values into the literal command at compose-load is simpler. The web-ui mount is **read-write**, not read-only, because passing `--repo-path` activates the entire implementer module (chunk 9c) which writes refs on submit — read-only would 500. The redundancy with `implementer-host` is intentional (operators pick which they prefer; both race for claim atomicity via `Store.claim` chapter 04 §3). New `web-ui /healthz` endpoint is unauthenticated by design (compose healthchecks must work before any user signs in; reveals only "process is up"). Extended [`reference/compose/healthcheck/smoke.sh`](reference/compose/healthcheck/smoke.sh) (the `compose-smoke` CI job's invariant) now runs setup-experiment, asserts the seeded ref *before* `compose up` via a one-shot probe that reuses the already-built `eden-reference:dev` image (avoiding a floating `latest` tag), waits up to 180s for the orchestrator to exit 0 on quiescence, and verifies ≥3 `trial.integrated` events via the wire endpoint. Branch protection is **not** updated to require `python-test-postgres` in this chunk — that lands in a follow-up after the job has a few clean runs (same posture 10a took for `compose-smoke`).
+AGENTS.md:37:**Phase 7b complete.** `eden-git` now also ships the `Integrator` that composes `GitRepo` with a `Store` to promote `success` trials per chapter 6. Given a trial with a recorded `commit_sha`, `Integrator.integrate` builds the §3.2 single-commit squash (worker-tip tree plus the eval manifest at `.eden/trials/<trial_id>/eval.json`), writes the `refs/heads/trial/<id>-<slug>` ref via zero-oid CAS, and routes the store's atomic `integrate_trial` write for `trial_commit_sha` and the `trial.integrated` event. On store failure the ref is compensatingly deleted per §3.4, matching the post-promotion reading recorded in [`spec/v0/design-notes/integrator-atomicity.md`](spec/v0/design-notes/integrator-atomicity.md). Re-invocation on an already-promoted trial is a verified no-op (§5.3): ref SHA, squash tree shape, and manifest bytes are re-derived and compared. §2 preconditions (`status == success`, `commit_sha` reachable from `branch` tip), §1.4 reachability, and §2 metrics validity are all enforced up front; the new public `Store.validate_metrics` closes the §2 MUST-NOT-promote clause even if upstream orchestrator validation were bypassed. The spec itself was tightened at §3.4 to make the post-promotion reading explicit. The dispatch driver accepted `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder `integrator_commit_factory` parameter; in Phase 8c that hook moved to `run_orchestrator_iteration`. Eval-manifest bytes are deterministic (sorted keys, `indent=2`, trailing newline) to make §5.3 idempotency re-derivation stable.
+AGENTS.md:63:| `bash reference/compose/healthcheck/smoke.sh` | Run the extended Compose smoke test (mirrors the `compose-smoke` CI job — runs setup-experiment, brings the stack up, waits for orchestrator quiescence, asserts ≥3 `trial.integrated` events). |
+docs/roadmap.md:144:- **7b — complete.** `eden_git.Integrator` composes `GitRepo` with a `Store` to promote `success` trials: builds the §3.2 single-commit squash, writes the `refs/heads/trial/<id>-<slug>` ref via zero-oid CAS, routes the store's atomic `integrate_trial` write for `trial_commit_sha` + `trial.integrated`, and compensating-deletes the ref on store-side failure per §3.4. Re-invocation on a promoted trial is a verified no-op (§5.3). §2 preconditions, §1.4 reachability, and metrics validity are all enforced via the new public `Store.validate_metrics`. Spec §3.4 was tightened to make the post-promotion atomicity reading explicit; rationale in [`spec/v0/design-notes/integrator-atomicity.md`](../spec/v0/design-notes/integrator-atomicity.md). The dispatch driver accepted `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder factory; in Phase 8c that hook moved to `run_orchestrator_iteration`.
+docs/roadmap.md:198:- **10a — complete.** [`reference/compose/`](../reference/compose/) ships a Compose stack standing up Postgres (`postgres:16.6-alpine`, reserved for `PostgresStore` consumption in 10b — *not* used by Gitea), Gitea (`gitea/gitea:1.22.6-rootless`, headless), and a one-shot `blob-init` (`busybox:1.36.1`) whose mount triggers creation of the `eden-blob-data` named volume (a top-level `volumes:` declaration alone does *not* create the volume — verified empirically). Long-running services declare `depends_on: { blob-init: service_completed_successfully }` so `compose up --wait` interprets the one-shot's exit-0 as success. Required secrets use `${VAR:?msg}` so a missing `.env` fails loudly; defaults dodge the well-known host-side ports (5433/3001/2222). A new `compose-smoke` CI job runs [`reference/compose/healthcheck/smoke.sh`](../reference/compose/healthcheck/smoke.sh) which asserts named-volume existence, blob-init exit code via `docker inspect`, Postgres connectivity, and Gitea's `/api/v1/version` response. 10a's blob-volume contract is "volume exists" only; ownership/permissions are 10d's responsibility.
+docs/roadmap.md:199:- **10b + 10c — complete.** Six EDEN reference services (`task-store-server`, `orchestrator`, `planner-host`, `implementer-host`, `evaluator-host`, `web-ui`) plus a setup-time `eden-repo-init` profile-`setup` service are wired into [`reference/compose/compose.yaml`](../reference/compose/compose.yaml), backed by a single shared `eden-reference:dev` image (multi-stage `uv sync --frozen --no-dev --all-packages`). New `eden-storage.PostgresStore` consumes the 10a-deferred Postgres backend (psycopg v3, SERIALIZABLE per-op) and is conformance-tested across the same Protocol scenarios as `InMemoryStore`/`SqliteStore` via a new `python-test-postgres` CI job. New [`reference/scripts/setup-experiment/setup-experiment.sh`](../reference/scripts/setup-experiment/setup-experiment.sh) bootstraps a runnable stack from an experiment-config YAML in one shot: generates/preserves secrets, builds the shared image, runs `eden-repo-init` synchronously to seed the bare-repo volume, captures the seed SHA, and writes a complete `.env`. Operator workflow: `setup-experiment.sh <config> --experiment-id <id> && docker compose --env-file .env up -d --wait`. `task-store-server` gains a URL-based `--store-url` flag (`:memory:` / `sqlite:///<path>` / `postgresql://…` / bare-path-for-compat); the web-ui gains an unauthenticated `/healthz` endpoint for compose healthchecks. **Roadmap deltas committed with this chunk:** (1) one shared image, not per-service-image, because the workspace shares most deps and N images is a Phase-13/Helm concern; (2) experiment-specific image deferred to 10d (its only consumer is the LLM implementer's sandbox); (3) control-plane registration deferred to Phase 12 (no control plane yet); (4) workers integrate with Gitea as their actual git remote deferred to a follow-up sub-chunk after 10d (workers currently use a Compose-shared bare-repo volume; HTTPS-against-Gitea is its own refactor). The extended `compose-smoke` CI job runs setup-experiment, asserts the seeded ref before `compose up`, brings up the full stack with `--wait`, waits up to 180s for the orchestrator to exit 0 on quiescence, and verifies ≥3 `trial.integrated` events on the wire endpoint. Branch protection is **not** updated to require `python-test-postgres` in this chunk — that lands in a follow-up after the job has a few clean runs.
+reference/compose/README.md:77:- `jq` and `curl` are required for `healthcheck/smoke.sh`.
+reference/compose/README.md:85:    --experiment-id smoke-exp
+reference/compose/README.md:127:| Smoke test         | `bash healthcheck/smoke.sh`             |
+
+  ✓ Read round-2 review brief
+  ✓ Inspect files changed for round-2 fixes
+  ✓ Confirm prior findings resolved and check for regressions
+  ✓ Report any remaining findings and overall assessment
+codex
+**Findings**
+
+1. Nit — [AGENTS.md](/Users/ericalt/Documents/eden/AGENTS.md:19) and [docs/roadmap.md](/Users/ericalt/Documents/eden/docs/roadmap.md:199). The round-2 `smoke.sh` implementation now asserts more than `>=3 trial.integrated` events, but these summaries still describe only the older, weaker invariant. Fix by updating the high-level docs to mention the added `task.completed` / plan-task completion checks so the chunk summary matches the actual smoke contract.
+
+**Overall Assessment**
+
+The round-0 and round-1 issues are resolved. I do not see any remaining correctness, integration, or robustness blockers in the implementation itself from this review pass; the only thing left is minor documentation drift around what `compose-smoke` now asserts. From a review standpoint, this looks ready once that doc sync is cleaned up.
+2026-04-26T02:00:53.077386Z ERROR codex_core::session: failed to record rollout items: thread 019dc773-b760-7743-9a18-ab1beaf4ced7 not found
+tokens used
+208,611

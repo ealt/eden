@@ -1,0 +1,717 @@
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /Users/ericalt/Documents/eden
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/ericalt/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019dc71c-6789-7d00-9cf5-18804850ef6a
+--------
+user
+I've addressed your round-0 feedback. The updated review brief at docs/plans/review/eden-phase-10a-compose-infrastructure/impl/20260425T170617/0.md lists what was fixed (cleanup-order bug, pg_isready hardcoded values, stale reference/README.md status block). Please re-read the implementation files and review again.
+codex
+I’m re-reading the updated brief first, then the implementation files it points at, with focus on the three fixes and any knock-on issues they may have introduced.
+exec
+/bin/zsh -lc "sed -n '1,260p' docs/plans/review/eden-phase-10a-compose-infrastructure/impl/20260425T170617/0.md" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+# Implementation Review: eden-phase-10a-compose-infrastructure
+
+## Plan
+- Path: `docs/plans/eden-phase-10a-compose-infrastructure.md`
+- Summary: Phase 10 chunk 10a — ship a Compose stack at `reference/compose/` that stands up the third-party infrastructure (Postgres, Gitea, blob volume) the EDEN reference services will consume in 10b/10c/10d. No EDEN services are dockerized in 10a; no Python code added.
+
+## Implementation Files
+
+| File | Action | Plan Section |
+|---|---|---|
+| `reference/compose/compose.yaml` | Created | "File-by-file design — `reference/compose/compose.yaml`" |
+| `reference/compose/.env.example` | Created | "File-by-file design — `.env.example`" |
+| `reference/compose/healthcheck/smoke.sh` | Created | "File-by-file design — `smoke.sh`" |
+| `reference/compose/README.md` | Created | "File-by-file design — `README.md`" |
+| `reference/compose/.gitkeep` | Deleted | (no longer needed once the dir has real content) |
+| `.github/workflows/ci.yml` | Modified | "`compose-smoke` job" |
+| `.gitignore` | Modified | "`.gitignore`" |
+| `AGENTS.md` | Modified | "Doc updates" |
+| `docs/roadmap.md` | Modified | "Doc updates" |
+| `reference/README.md` | Modified | "Doc updates" |
+
+## Change Summary
+
+- A three-service Compose stack: `postgres` (16.6-alpine, healthchecked), `gitea` (1.22.6-rootless, headless via INSTALL_LOCK + DISABLE_REGISTRATION, healthchecked), `blob-init` (one-shot busybox that mounts `eden-blob-data` so Compose actually creates the volume — empirically verified that an unmounted top-level `volumes:` declaration alone does NOT trigger creation).
+- The two long-running services declare `depends_on: { blob-init: { condition: service_completed_successfully } }` so `compose up --wait` interprets the one-shot's exit-0 as success — also verified empirically that without this, `--wait` returns 1.
+- `${VAR:?msg}` syntax for required secrets (POSTGRES_PASSWORD, GITEA_SECRET_KEY, GITEA_INTERNAL_TOKEN) so a missing `.env` fails loudly. `.env.example` ships dev-only weak credentials.
+- Gitea SSH port wiring: `SSH_PORT` (advertised) tracks the host-side override; `SSH_LISTEN_PORT` is pinned at 2222 inside the container, so SSH clones survive a `GITEA_SSH_HOST_PORT` override.
+- A `compose-smoke` CI job runs `healthcheck/smoke.sh` end-to-end on every PR. The script preflights tooling (docker, jq, curl, docker compose plugin), brings up the stack with `--wait`, asserts the project name resolved from `docker compose config` is `eden-reference` before applying the standard `<project>_<volume>` prefix, inspects each named volume, checks blob-init's exit code via `docker inspect --format '{{.State.ExitCode}}' eden-blob-init` (avoids `docker compose ps --format json` shape variations across Compose versions), confirms postgres + gitea are reachable.
+- Branch protection is *not* updated to require `compose-smoke` in this chunk; deferred to a follow-up after the job has a few clean runs.
+- Smoke test runs cleanly locally on the developer's Docker Desktop; markdown-lints clean.
+
+## Review Status
+
+### Round 0 → Round 1 fixes
+- **Bug fixed** — `smoke.sh` cleanup order: trap now calls `docker compose ... down -v` *before* removing `$TMPENV`, wrapped in a `cleanup()` function that preserves the original exit status. Verified locally: after a passing run, `docker volume ls --filter name=eden-reference_` is empty.
+- **Risk fixed** — `pg_isready` no longer hardcodes `eden`; the script reads `POSTGRES_USER`/`POSTGRES_DB`/`GITEA_HOST_PORT` from `$TMPENV` so an `.env.example` rename propagates automatically. Used `grep -E '^VAR='` + `cut -d= -f2-` to handle values containing `=`.
+- **Nit fixed** — `reference/README.md` Status block refreshed top-to-bottom: now says "Through Phase 10 chunk 10a" (with the new infra summary) followed by "Through Phase 9 (chunks 9a–9e shipped)" with the admin module folded in. The web-ui Services row also no longer says admin "arrives in 9e" — it now says 9a/9b/9c/9d/9e shipped. The "spec chapters not yet written" disclaimer in the Targets line is updated to reflect that chapters 1-8 exist.
+
+### Round 1 — awaiting review.
+
+exec
+/bin/zsh -lc "nl -ba reference/compose/.env.example | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/README.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba reference/compose/healthcheck/smoke.sh | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN reference Compose stack — example environment.
+     2	# Copy to ".env" for local use; "docker compose up" reads from .env automatically.
+     3	# CI uses these defaults verbatim; do NOT use these in production.
+     4	
+     5	# --- Postgres ---
+     6	POSTGRES_DB=eden
+     7	POSTGRES_USER=eden
+     8	POSTGRES_PASSWORD=eden-dev-password-change-me
+     9	POSTGRES_HOST_PORT=5433
+    10	
+    11	# --- Gitea ---
+    12	# SECRET_KEY: gitea uses this for cookie / CSRF / 2FA encryption.
+    13	# Generate with: gitea generate secret SECRET_KEY  (or 64 hex chars).
+    14	GITEA_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+    15	# INTERNAL_TOKEN: gitea uses this for inter-component auth.
+    16	GITEA_INTERNAL_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+    17	GITEA_HOST_PORT=3001
+    18	GITEA_SSH_HOST_PORT=2222
+
+ succeeded in 0ms:
+     1	# EDEN Reference Implementation
+     2	
+     3	This directory contains one complete implementation of the EDEN protocol. It is explicitly labeled **reference** — *one* valid implementation, **not** *the* implementation. A third-party impl that passes the conformance suite is equally valid.
+     4	
+     5	**Targets:** `eden-protocol/v0` (chapters 1, 2, 3, 4, 5, 6, 7, 8 written; conformance chapter and control-plane chapter pending).
+     6	
+     7	## Status
+     8	
+     9	Through **Phase 10 chunk 10a**: the [`compose/`](compose/) directory ships a Docker Compose stack that stands up the third-party infrastructure the reference services will consume — Postgres (`postgres:16.6-alpine`, reserved for `PostgresStore` in 10b), Gitea (`gitea/gitea:1.22.6-rootless`, headless via `INSTALL_LOCK=true` + `DISABLE_REGISTRATION=true`), and a one-shot `blob-init` busybox that mounts `eden-blob-data` so Compose actually creates the volume. EDEN services themselves are not yet dockerized; that lands in 10b alongside the `PostgresStore` binding.
+    10	
+    11	Through **Phase 9** (chunks 9a–9e shipped): the reference Web UI hosts the planner / implementer / evaluator modules end-to-end plus an `/admin/*` observability + operator-reclaim surface. A human can sign in, claim a plan / implement / evaluate task, drive it through a browser, submit, and reclaim a stranded claim. Implementer-side, the user does git work in their own checkout, pushes their tip commit to the bare repo, then enters the resulting `commit_sha`; the UI verifies §3.3 reachability, creates the trial in `starting`, writes the canonical `work/<slug>-<trial_id>` ref, and submits with retry-before-orphan + committed-state read-back. Evaluator-side, the user inspects the trial out-of-band, then types metrics into a form generated from the experiment's `metrics_schema`; the UI parses each metric per its declared `MetricType` and submits with retry-before-orphan + read-back where `IllegalTransition` falls through to read-back so a "we won, response lost" sequence classifies as success rather than orphan. Admin-side, the operator browses tasks / trials / events, drives a `Store.reclaim(task_id, "operator")` per [`spec/v0/04-task-protocol.md`](../spec/v0/04-task-protocol.md) §5.1, and (when `--repo-path` is set) garbage-collects orphaned `work/*` refs via CAS-guarded `repo.delete_ref(expected_old_sha=…)`. Submissions round-trip through `eden_wire.StoreClient`. The implementer module is gated on `--repo-path`; planner- and evaluator-only deployments stay supported by omitting it.
+    12	
+    13	### Services
+    14	
+    15	| Path | Role | Lands in |
+    16	|---|---|---|
+    17	| [`services/_common/`](services/_common/) | Shared scaffolding (logging, signals, readiness, scripted profiles, repo seeding) | Phase 8b |
+    18	| [`services/task-store-server/`](services/task-store-server/) | Hosts the `Store` behind uvicorn over the chapter-07 wire binding | Phase 8b |
+    19	| [`services/orchestrator/`](services/orchestrator/) | Finalize + dispatch + integrate loop against a `StoreClient` | Phase 5 (in-proc) → Phase 8b (standalone) |
+    20	| [`services/planner/`](services/planner/) | Planner worker host (standalone process) | Phase 5 → Phase 8b |
+    21	| [`services/implementer/`](services/implementer/) | Implementer worker host (standalone process; writes real git commits) | Phase 5 → Phase 8b |
+    22	| [`services/evaluator/`](services/evaluator/) | Evaluator worker host (standalone process) | Phase 5 → Phase 8b |
+    23	| [`services/control-plane/`](services/control-plane/) | Experiment registration, lease issuance | Phase 12 |
+    24	| [`services/web-ui/`](services/web-ui/) | Browser-based UI shell + planner + implementer + evaluator + admin modules (BFF over `StoreClient`; implementer is opt-in via `--repo-path`; admin is unconditional, with the work-refs sub-page also opt-in via `--repo-path`) | Phase 9 chunks 9a + 9b + 9c + 9d + 9e |
+    25	
+    26	### Packages
+    27	
+    28	| Path | Purpose | Lands in |
+    29	|---|---|---|
+    30	| [`packages/eden-contracts/`](packages/eden-contracts/) | Pydantic bindings for the JSON Schemas; convenience for Python components | Phase 3 |
+    31	| [`packages/eden-dispatch/`](packages/eden-dispatch/) | Reference scripted workers, the orchestrator-iteration body (`run_orchestrator_iteration`), and the expired-claim sweeper (`sweep_expired_claims`); used by the worker hosts and the orchestrator service | Phase 5 / Phase 8b / Phase 8c / Phase 9 |
+    32	| [`packages/eden-storage/`](packages/eden-storage/) | Repository interface + concrete backends (in-memory, SQLite) | Phase 6 |
+    33	| [`packages/eden-git/`](packages/eden-git/) | Worktree + branch ops + integrator flow | Phase 7 |
+    34	| [`packages/eden-wire/`](packages/eden-wire/) | HTTP wire binding (FastAPI server + httpx client) for chapter 07; reference-only shared-token auth | Phase 8a / 8b |
+    35	| [`packages/eden-blob/`](packages/eden-blob/) | Blob storage interface + filesystem backend | Phase 10 |
+    36	
+    37	### Scripts
+    38	
+    39	| Path | Purpose | Lands in |
+    40	|---|---|---|
+    41	| [`scripts/setup-experiment/`](scripts/setup-experiment/) | CLI that registers an experiment, initializes the bare git repo, builds the experiment-specific image, creates per-service sub-configs | Phase 10 |
+    42	
+    43	### Compose
+    44	
+    45	| Path | Purpose | Lands in |
+    46	|---|---|---|
+    47	| [`compose/`](compose/) | Docker Compose stack — Phase 10a stands up the third-party infrastructure (Postgres, Gitea, blob volume); EDEN services dockerized in 10b | Phase 10 chunk 10a |
+    48	
+    49	## Relationship to the protocol spec
+    50	
+    51	- When the spec and this implementation disagree, the spec wins and the code gets a bug.
+    52	- Schema files in [`../spec/v0/schemas/`](../spec/v0/schemas/) are the source of truth for wire formats. Pydantic models in `packages/eden-contracts/` are generated from / aligned with them; CI enforces parity from Phase 3 onward.
+    53	- This is not a monopoly. A different orchestrator in Go, a different worker host in Rust, a different storage backend on Postgres — all welcome as long as they pass conformance.
+    54	
+    55	See [`../docs/roadmap.md`](../docs/roadmap.md) for the phase-by-phase build-up plan.
+
+ succeeded in 0ms:
+     1	#!/usr/bin/env bash
+     2	set -euo pipefail
+     3	
+     4	# Smoke test for the EDEN reference Compose infrastructure stack.
+     5	# Brings the stack up using .env.example as the source of truth (so
+     6	# CI does not mutate the checked-in file), waits for healthy, runs a
+     7	# few independent assertions, and tears the stack down on exit.
+     8	
+     9	# Tooling preflight — fail fast with a clear message if a required
+    10	# binary is missing.
+    11	for tool in docker jq curl; do
+    12	    command -v "$tool" >/dev/null || {
+    13	        echo "smoke.sh requires '$tool' on PATH" >&2
+    14	        exit 2
+    15	    }
+    16	done
+    17	docker compose version >/dev/null || {
+    18	    echo "smoke.sh requires the 'docker compose' v2 plugin" >&2
+    19	    exit 2
+    20	}
+    21	
+    22	cd "$(dirname "$0")/.."
+    23	
+    24	TMPENV="$(mktemp)"
+    25	cp .env.example "$TMPENV"
+    26	
+    27	# Tear the stack down BEFORE removing the env file — `docker compose
+    28	# down -v` needs --env-file to resolve the same project, so the order
+    29	# matters. Preserve the script's exit status across the cleanup.
+    30	cleanup() {
+    31	    local rc=$?
+    32	    docker compose -f compose.yaml --env-file "$TMPENV" down -v >/dev/null 2>&1 || true
+    33	    rm -f "$TMPENV"
+    34	    exit "$rc"
+    35	}
+    36	trap cleanup EXIT
+    37	
+    38	echo "--- bringing up the stack ---"
+    39	docker compose -f compose.yaml --env-file "$TMPENV" up -d --wait --wait-timeout 120
+    40	
+    41	echo "--- compose ps ---"
+    42	docker compose -f compose.yaml --env-file "$TMPENV" ps -a
+    43	
+    44	# Resolve the project name from compose config and assert it matches
+    45	# the value pinned in compose.yaml. Project-prefixed volume names
+    46	# follow the standard "<project>_<volume>" convention; pinning the
+    47	# project name here means a future rename of `name:` fails the smoke
+    48	# test loudly rather than silently checking the wrong volumes.
+    49	PROJECT="$(docker compose -f compose.yaml --env-file "$TMPENV" \
+    50	            config --format json | jq -r '.name')"
+    51	test "$PROJECT" = "eden-reference" || {
+    52	    echo "unexpected project name: $PROJECT" >&2
+    53	    exit 1
+    54	}
+    55	
+    56	echo "--- asserting all three named volumes exist ---"
+    57	for vol in eden-postgres-data eden-gitea-data eden-blob-data; do
+    58	    docker volume inspect "${PROJECT}_${vol}" >/dev/null
+    59	done
+    60	
+    61	echo "--- asserting blob-init exited 0 ---"
+    62	# Using `docker inspect` against the explicit container_name avoids
+    63	# `docker compose ps --format json` shape variations across Compose
+    64	# versions (some emit NDJSON, some emit a JSON array).
+    65	test "$(docker inspect --format '{{.State.ExitCode}}' eden-blob-init)" = "0"
+    66	
+    67	echo "--- asserting Postgres accepts connections ---"
+    68	# Read POSTGRES_USER / POSTGRES_DB / GITEA_HOST_PORT from $TMPENV
+    69	# rather than hardcoding so an .env.example bump propagates without
+    70	# silently breaking the smoke test.
+    71	PG_USER="$(grep -E '^POSTGRES_USER=' "$TMPENV" | cut -d= -f2-)"
+    72	PG_DB="$(grep -E '^POSTGRES_DB=' "$TMPENV" | cut -d= -f2-)"
+    73	docker compose -f compose.yaml --env-file "$TMPENV" exec -T postgres \
+    74	    pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null
+    75	
+    76	echo "--- asserting Gitea API responds ---"
+    77	GITEA_PORT="$(grep -E '^GITEA_HOST_PORT=' "$TMPENV" | cut -d= -f2-)"
+    78	curl -fsS "http://localhost:${GITEA_PORT}/api/v1/version" | jq -e '.version' >/dev/null
+    79	
+    80	echo "PASS"
+
+exec
+/bin/zsh -lc "nl -ba reference/compose/compose.yaml | sed -n '1,220p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	name: eden-reference
+     2	
+     3	services:
+     4	  postgres:
+     5	    image: postgres:16.6-alpine
+     6	    container_name: eden-postgres
+     7	    restart: unless-stopped
+     8	    # Depending on blob-init lets `compose up --wait` interpret
+     9	    # blob-init's exit-0 as success rather than failure. Without
+    10	    # this dependency, `--wait` returns non-zero for any service
+    11	    # that exits during the wait window. Postgres does not actually
+    12	    # consume the blob volume; the dependency is a stack-level
+    13	    # invariant ("all infra is ready") rather than a data-flow one.
+    14	    depends_on:
+    15	      blob-init:
+    16	        condition: service_completed_successfully
+    17	    environment:
+    18	      POSTGRES_DB: ${POSTGRES_DB:-eden}
+    19	      POSTGRES_USER: ${POSTGRES_USER:-eden}
+    20	      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    21	    ports:
+    22	      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    23	    volumes:
+    24	      - eden-postgres-data:/var/lib/postgresql/data
+    25	    healthcheck:
+    26	      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eden} -d ${POSTGRES_DB:-eden}"]
+    27	      interval: 5s
+    28	      timeout: 3s
+    29	      retries: 10
+    30	      start_period: 10s
+    31	
+    32	  gitea:
+    33	    image: gitea/gitea:1.22.6-rootless
+    34	    container_name: eden-gitea
+    35	    restart: unless-stopped
+    36	    # See postgres above — depending on blob-init's successful
+    37	    # completion makes `compose up --wait` happy.
+    38	    depends_on:
+    39	      blob-init:
+    40	        condition: service_completed_successfully
+    41	    environment:
+    42	      GITEA__server__DOMAIN: localhost
+    43	      GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
+    44	      GITEA__server__HTTP_PORT: "3000"
+    45	      # SSH_PORT is the *advertised* port (shown in clone URLs); it must
+    46	      # match the host-side mapping so SSH clones work. SSH_LISTEN_PORT
+    47	      # is what Gitea binds inside the container, kept fixed at 2222
+    48	      # so the published mapping below stays valid even when a user
+    49	      # overrides GITEA_SSH_HOST_PORT to dodge a host collision.
+    50	      GITEA__server__SSH_PORT: "${GITEA_SSH_HOST_PORT:-2222}"
+    51	      GITEA__server__SSH_LISTEN_PORT: "2222"
+    52	      GITEA__database__DB_TYPE: sqlite3
+    53	      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+    54	      GITEA__security__INSTALL_LOCK: "true"
+    55	      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
+    56	      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
+    57	      GITEA__service__DISABLE_REGISTRATION: "true"
+    58	      GITEA__metrics__ENABLED: "false"
+    59	      GITEA__log__LEVEL: Warn
+    60	    ports:
+    61	      - "${GITEA_HOST_PORT:-3001}:3000"
+    62	      - "${GITEA_SSH_HOST_PORT:-2222}:2222"
+    63	    volumes:
+    64	      - eden-gitea-data:/var/lib/gitea
+    65	    healthcheck:
+    66	      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
+    67	      interval: 5s
+    68	      timeout: 3s
+    69	      retries: 20
+    70	      start_period: 30s
+    71	
+    72	  blob-init:
+    73	    # One-shot service whose only job is to ensure eden-blob-data
+    74	    # exists at compose-up time. Compose does NOT create an unmounted
+    75	    # top-level volume — verified empirically — so without this service
+    76	    # the volume would not exist until 10b/10d's first real mounter
+    77	    # ran. 10a's contract is "volume exists" only; ownership and
+    78	    # permissions are 10d's responsibility.
+    79	    image: busybox:1.36.1
+    80	    container_name: eden-blob-init
+    81	    restart: "no"
+    82	    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && echo blob-volume ready"]
+    83	    volumes:
+    84	      - eden-blob-data:/var/lib/eden/blobs
+    85	
+    86	volumes:
+    87	  eden-postgres-data:
+    88	  eden-gitea-data:
+    89	  eden-blob-data:
+
+exec
+/bin/zsh -lc "nl -ba reference/compose/README.md | sed -n '1,260p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba .github/workflows/ci.yml | sed -n '120,170p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# EDEN reference Compose stack
+     2	
+     3	A Docker Compose stack that stands up the third-party infrastructure
+     4	the EDEN reference implementation runs against locally.
+     5	
+     6	**Phase 10 chunk 10a delivers infrastructure only.** The EDEN services
+     7	(`task-store-server`, `orchestrator`, `planner-host`,
+     8	`implementer-host`, `evaluator-host`, `web-ui`) are dockerized in
+     9	chunk 10b. The `setup-experiment` script lands in 10c. LLM-driven
+    10	worker hosts arrive in 10d. An end-to-end Compose integration test
+    11	ships in 10e.
+    12	
+    13	## What this stack provides
+    14	
+    15	| Service     | Image                                | Purpose                                             |
+    16	| ----------- | ------------------------------------ | --------------------------------------------------- |
+    17	| `postgres`  | `postgres:16.6-alpine`               | Durable backend for the EDEN task store (10b)       |
+    18	| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `trial/*` branches (10b/10c) |
+    19	| `blob-init` | `busybox:1.36.1`                     | One-shot — ensures the blob volume exists           |
+    20	
+    21	| Volume                | Mounted by      | Future consumer                       |
+    22	| --------------------- | --------------- | ------------------------------------- |
+    23	| `eden-postgres-data`  | `postgres`      | task-store-server backend (10b)       |
+    24	| `eden-gitea-data`     | `gitea`         | git host data (10b/10c)               |
+    25	| `eden-blob-data`      | `blob-init`     | implementer-host artifact storage (10d) |
+    26	
+    27	**Postgres backs the EDEN task store, not Gitea.** Gitea uses its
+    28	own embedded SQLite. Pointing Gitea at our Postgres would couple the
+    29	git host's recovery story to the task store schema; production
+    30	deployments must be free to swap either component independently.
+    31	
+    32	## Prerequisites
+    33	
+    34	- Docker Desktop **or** Docker Engine with the Compose v2 plugin
+    35	  (`docker compose` ≥ v2.20).
+    36	- `jq` and `curl` are required for `healthcheck/smoke.sh`.
+    37	
+    38	## Quickstart
+    39	
+    40	```bash
+    41	cd reference/compose
+    42	cp .env.example .env
+    43	docker compose up -d --wait
+    44	docker compose ps
+    45	```
+    46	
+    47	Expected output:
+    48	
+    49	- `eden-postgres` — `Up (healthy)`
+    50	- `eden-gitea` — `Up (healthy)`
+    51	- `eden-blob-init` — `Exited (0)`
+    52	
+    53	## Connection details (with `.env.example` defaults)
+    54	
+    55	| Service    | Host endpoint              | Default credentials                       |
+    56	| ---------- | -------------------------- | ----------------------------------------- |
+    57	| Postgres   | `localhost:5433`           | user `eden` / db `eden` / password from `.env` |
+    58	| Gitea HTTP | `http://localhost:3001/`   | no admin user yet (created in 10c)        |
+    59	| Gitea SSH  | `ssh://git@localhost:2222` | (admin user not provisioned until 10c)    |
+    60	| Blob volume | `eden-reference_eden-blob-data` (Docker named volume) | mounted at `/var/lib/eden/blobs` by future consumers |
+    61	
+    62	Defaults intentionally avoid the well-known ports (5432, 3000, 22)
+    63	to sidestep collisions with locally-running Postgres or Gitea
+    64	instances. Override via `.env`.
+    65	
+    66	## Operations
+    67	
+    68	| Task               | Command                                 |
+    69	| ------------------ | --------------------------------------- |
+    70	| Tail logs          | `docker compose logs -f`                |
+    71	| Get a `psql` shell | `docker compose exec postgres psql -U eden -d eden` |
+    72	| Stop the stack     | `docker compose stop`                   |
+    73	| Stop and clean     | `docker compose down`                   |
+    74	| **Wipe all data**  | `docker compose down -v`                |
+    75	| Smoke test         | `bash healthcheck/smoke.sh`             |
+    76	
+    77	`down -v` is destructive — it deletes all three named volumes.
+    78	Use `down` (no `-v`) to stop containers but keep data.
+    79	
+    80	## Troubleshooting
+    81	
+    82	- **Port collision on 5433/3001/2222.** A developer with their own
+    83	  Postgres on 5433 (or Gitea on 3001) will see `bind: address
+    84	  already in use`. Override `POSTGRES_HOST_PORT`, `GITEA_HOST_PORT`,
+    85	  or `GITEA_SSH_HOST_PORT` in `.env`.
+    86	- **`compose up` errors with `POSTGRES_PASSWORD must be set`.** You
+    87	  haven't copied `.env.example` to `.env` (or you've deleted a
+    88	  required variable). The Compose file uses `${VAR:?msg}` syntax to
+    89	  fail fast rather than silently fall back to a weak default.
+    90	- **Gitea healthcheck fails on first boot.** Cold-boot of the
+    91	  rootless image takes 15-25 seconds; the healthcheck has a 30s
+    92	  `start_period` to absorb this. If it consistently fails, check
+    93	  `docker compose logs gitea` for an obvious config error.
+    94	- **`docker compose down -v` doesn't reclaim the data.** The
+    95	  project name is pinned to `eden-reference` (set via the top-level
+    96	  `name:` field in `compose.yaml`); volumes are prefixed with that
+    97	  name. If you renamed the project, use `docker volume ls` to find
+    98	  the historical names.
+    99	
+   100	## Security note
+   101	
+   102	`.env.example` ships intentionally weak development credentials
+   103	(passwords, secret keys) that are committed to the repository.
+   104	**Never use these values in production.** Generate fresh values
+   105	for any deployment that handles real data.
+   106	
+   107	## What's not here yet
+   108	
+   109	- Dockerfiles for the EDEN services themselves — added in 10b.
+   110	- A `PostgresStore` backend in `eden-storage` — added in 10b
+   111	  alongside the dockerized `task-store-server`.
+   112	- The `setup-experiment` script — added in 10c.
+   113	- An admin user / API token for Gitea — created by the
+   114	  `setup-experiment` script in 10c.
+   115	- LLM-backed worker hosts — added in 10d.
+   116	- An end-to-end Compose integration test — added in 10e.
+
+ succeeded in 0ms:
+   120	
+   121	      - name: Schema ↔ model parity
+   122	        run: |
+   123	          uv run pytest -q \
+   124	            reference/packages/eden-contracts/tests/test_schema_parity.py \
+   125	            reference/packages/eden-contracts/tests/test_roundtrip.py
+   126	
+   127	  compose-smoke:
+   128	    name: compose-smoke
+   129	    runs-on: ubuntu-latest
+   130	    steps:
+   131	      - uses: actions/checkout@v4
+   132	
+   133	      - name: Verify docker compose + jq are available
+   134	        run: |
+   135	          docker compose version
+   136	          jq --version
+   137	
+   138	      - name: Run compose smoke
+   139	        working-directory: reference/compose
+   140	        run: bash healthcheck/smoke.sh
+
+exec
+/bin/zsh -lc "nl -ba AGENTS.md | sed -n '1,80p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+     1	# AGENTS.md
+     2	
+     3	This file provides guidance to AI agents working with this repository.
+     4	
+     5	## What this repo is
+     6	
+     7	EDEN is a **protocol** for directed-code-evolution orchestration, not a single product. The repo contains three distinct kinds of artifact, each with different change discipline:
+     8	
+     9	| Layer | Path | Authoritative? | Change discipline |
+    10	|---|---|---|---|
+    11	| Protocol specification | [`spec/`](spec/) | Yes — the source of truth | RFC-style: versioned, normative (MUST/SHOULD/MAY), carefully reviewed |
+    12	| Reference implementation | [`reference/`](reference/) | No — *one* valid impl | Normal code-review discipline |
+    13	| Conformance suite | [`conformance/`](conformance/) | Normative for tests | Black-box; must be implementation-agnostic |
+    14	
+    15	Non-normative human docs live in [`docs/`](docs/).
+    16	
+    17	## Current phase
+    18	
+    19	**Phase 10 chunk 10a complete.** The reference repo gains a Compose stack at [`reference/compose/`](reference/compose/) that stands up the third-party infrastructure the EDEN reference services run against locally: **postgres** (`postgres:16.6-alpine`, reserved for `PostgresStore` consumption in 10b — *not* used by Gitea, which keeps its embedded SQLite, so the git host's recovery story stays decoupled from the task store schema), **gitea** (`gitea/gitea:1.22.6-rootless`, headless via `INSTALL_LOCK=true` + `DISABLE_REGISTRATION=true`; `SSH_PORT` advertises the host-side port while `SSH_LISTEN_PORT` stays pinned at 2222 inside the container so SSH clones survive a `GITEA_SSH_HOST_PORT` override), and **blob-init** (one-shot `busybox:1.36.1` whose only job is to mount `eden-blob-data` so Compose actually creates the volume — verified empirically that an unmounted top-level `volumes:` declaration does NOT trigger creation). The two long-running services declare `depends_on: { blob-init: { condition: service_completed_successfully } }` so `compose up --wait` interprets blob-init's exit-0 as success rather than failure. 10a's blob-volume contract is "volume exists" only — ownership and permissions are 10d's responsibility once the first real producer lands. Default host-side ports (5433/3001/2222) sidestep the most common collisions; required secrets (`POSTGRES_PASSWORD`, `GITEA_SECRET_KEY`, `GITEA_INTERNAL_TOKEN`) use `${VAR:?msg}` syntax so a missing `.env` fails loudly. A new `compose-smoke` CI job runs [`reference/compose/healthcheck/smoke.sh`](reference/compose/healthcheck/smoke.sh) which preflights tooling (docker, jq, curl + the docker-compose v2 plugin), brings the stack up with `--wait`, asserts the project name resolved from `docker compose config` matches `eden-reference` before applying the standard `<project>_<volume>` prefix, inspects each named volume, checks blob-init's exit code via `docker inspect --format '{{.State.ExitCode}}' eden-blob-init` (avoids `docker compose ps --format json` shape variations across Compose versions), confirms postgres accepts connections, and verifies Gitea's `/api/v1/version` API responds. Branch protection is *not* updated to require `compose-smoke` in this chunk — that lands in a follow-up after the job has a few clean runs. **No EDEN services are dockerized in 10a; no PostgresStore implementation; no setup-experiment script — those land in 10b/10c/10d.**
+    20	
+    21	**Phase 9 complete (chunk 9e shipped).** The Web UI service gains an `/admin/*` surface that closes Phase 9: read-only dashboards over the experiment's tasks (filterable by `kind`/`state`, with claim-age + claim-expired badges), trials (filterable by `status`, with an orphaned-starting-trial badge for trials whose owning implement task went terminal without driving the trial atomically), and the event log (capped at a configurable limit; natural-index-before-slice discipline so an event's rendered position is stable across filter / limit / reverse operations); a per-task detail page that exposes operator `reclaim` via `Store.reclaim(task_id, "operator")` per [`spec/v0/04-task-protocol.md`](spec/v0/04-task-protocol.md) §5.1, with separate "reclaim" / "force-reclaim (replays work)" UI variants gating the `claimed` vs `submitted` cases and a closed allowlist of `?reclaimed=ok` / `?error=…` banner outcomes (no arbitrary text echo); a per-trial detail page with a related-events filter that unions `event.data.trial_id == trial_id` plus task-id matches for the implement task that produced this trial and any evaluate task that references it, ordered by replay-index position (the `event_id` factory is pluggable per [`reference/packages/eden-storage/src/eden_storage/_base.py`](reference/packages/eden-storage/src/eden_storage/_base.py) and is not a reliable ordering contract); and a `work/*` ref garbage-collection page (when `--repo-path` is set) that classifies each ref by **exact `trial.branch` equality** — not by parsing the ref name — and offers CAS-guarded `repo.delete_ref(ref_name, expected_old_sha=…)` deletion only for terminal-and-handled trials whose `commit_sha` matches the live ref SHA, plus orphan-ref deletion when no trial owns the branch. The route layer never trusts the form's hidden `expected_old_sha`; it does its own fresh `list_refs` lookup at POST time and uses *that* SHA. The auth-first POST discipline matches existing modules (planner / implementer / evaluator): `get_session(request)` runs before `csrf_ok`, so an unauthenticated POST redirects to `/signin` (303) and an authenticated POST with a missing/wrong CSRF token returns 403. The `make_app` factory gains an `@app.exception_handler(eden_storage.errors.NotFound)` that translates raised storage/wire `NotFound` into the same `_error.html` 404 page the existing HTTP-404 handler renders (the prior handler only caught HTTP 404 *responses*, not raised `NotFound` exceptions). [`routes/admin.py`](reference/services/web-ui/src/eden_web_ui/routes/admin.py) is mounted unconditionally; the work-refs sub-page handles the `repo=None` case in-template. Tests cover per-route validation (`test_admin_routes.py`, 33 tests), cross-request flows including planner-claim → admin-reclaim round trip + admin trial-detail rendering for an evaluator-seeded trial (`test_admin_flow.py`, 3 tests), security invariants including unauthenticated-POST-redirects-before-CSRF, error/reclaimed banner allowlist, ref-name regex rejection of every traversal/escape variant including `refs/heads/trial/*` / `HEAD` / shell-injection-shaped names with `subprocess.run` asserted uncalled, server-side `expected_old_sha` source (the form-hidden field is overridden by the live SHA), and the `javascript:` URI scheme allowlist on trial detail (`test_admin_security.py`, 21 tests), partial-write recovery for the four failure modes — `IllegalTransition` on terminal reclaim, transport-shaped `Exception` from the store with no auto-retry, GET-time/POST-time eligibility divergence, and CAS-miss → `?error=ref-changed` (`test_admin_partial_write.py`, 5 tests), and a `pytest.mark.e2e` real-subprocess test that drives planner-claim + admin-reclaim through real HTTP and verifies the resulting `task.reclaimed` event with `cause=operator` via a separate `StoreClient` (`test_admin_e2e.py`).
+    22	
+    23	**Phase 9 chunk 9d complete.** The Web UI service gains the evaluator module, mounted unconditionally (no CLI flag — the evaluator never touches a repo through the UI). [`routes/evaluator.py`](reference/services/web-ui/src/eden_web_ui/routes/evaluator.py) walks claim → draft → submit for `evaluate` tasks: list pending tasks, claim with TTL (the `trial_id` is read from `task.payload.trial_id` and stashed in the in-process `_CLAIMS` dict, never round-tripping through the request surface), render a draft form that surfaces the trial under evaluation (trial_id, branch, commit_sha, parent_commits, plus the implementer-set `trial.description` and `trial.artifacts_uri` per [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §3.2 step 3), the proposal context, and one input per metric in `experiment_config.metrics_schema` typed by declared `MetricType` (`number step=1` for integer, `number step=any` for real, text otherwise). The submit handler validates the form (`status ∈ {success, error, eval_error}` per §4.4; metric values type-check against the schema using the same rules `Store._validate_metrics` enforces, including the wire-legal integer form `1.0` per `02-data-model.md` §1.3 and rejection of non-finite floats; `status=success` requires at least one metric value), then runs `store.submit` with retry-before-orphan + a committed-state read-back. Exception classification differs from chunk 9c by design: `WrongToken` and `ConflictingResubmission` short-circuit (definitive); `InvalidPrecondition` re-renders the form with the wire-error banner (fixable, not orphan); `IllegalTransition` falls through to read-back (so a "we won, response lost, orchestrator already terminalized" sequence correctly classifies as success rather than orphan — the chunk-9c short-circuit pattern is flagged for symmetric repair in §K-2 of the plan). The read-back keys off `read_task` + `read_submission` + `submissions_equivalent`; for `EvaluateSubmission` equivalence is `status + trial_id + metrics` per chapter 04 §4.2 (`artifacts_uri` is *not* part of equivalence — first submission's value wins). The chunk-9c trust-boundary helper was generalized to `_read_inline_artifact(uri, artifacts_dir)` in [`routes/_helpers.py`](reference/services/web-ui/src/eden_web_ui/routes/_helpers.py); `read_proposal_rationale` is now a thin wrapper, and a sibling `read_trial_artifact` covers the trial-side surface with the same envelope (`file://`, contained in `--artifacts-dir`, ≤ 1 MiB). Tests cover per-route validation including the integer-`1.0` accept and `nan`-reject parity (`test_evaluator_routes.py`, 20 tests), the cross-request flow including validation-recovery and sweeper-driven stranded-claim recovery (`test_evaluator_flow.py`, 5 tests), every recovery branch including the new sub-cases I-a/I-b/I-c that exercise the `IllegalTransition` → read-back arm (`test_evaluator_partial_write.py`, 12 tests), security invariants including the trial-side `_read_inline_artifact` trust boundary, the `trial_id` non-leak, and `trial.description` Jinja autoescape (`test_evaluator_security.py`, 18 tests), and a `pytest.mark.e2e` two-process test that drives the full evaluator flow against a real task-store-server + web-ui subprocess (`test_evaluator_e2e.py`).
+    24	
+    25	**Phase 9 chunk 9c complete.** The Web UI service gains the implementer module, gated on a new optional `--repo-path <path>` CLI flag. With the flag set, [`routes/implementer.py`](reference/services/web-ui/src/eden_web_ui/routes/implementer.py) walks claim → draft → submit for `implement` tasks: list pending tasks, claim with TTL, render a draft form that surfaces the proposal's slug/priority/parent_commits/`artifacts_uri` (plus the rationale markdown rendered inline only when its `file://` path resolves inside `--artifacts-dir` and is ≤ 1 MiB — the §A.1 trust-boundary helper `read_proposal_rationale` lives in [`routes/_helpers.py`](reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)), then submit. The submit handler enforces [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §3.3 reachability via `eden_git.GitRepo.commit_exists` + `is_ancestor(parent, commit_sha)` against every parent in `proposal.parent_commits`, runs a Pre-Phase-1 ref-collision guard (`ref_exists("refs/heads/work/<slug>-<trial_id>")` short-circuits with a form error and no `create_trial`), then walks Phase 1 (`store.create_trial(status="starting")` — no commit_sha; `_accept_implement` writes commit_sha onto the trial later), Phase 2 (`repo.create_ref` on the canonical work branch — runs *after* `create_trial` so the §3.2 step-1 ordering "trial persisted before observable repo writes" holds), and Phase 3 (`store.submit` with retry-before-orphan: 3 attempts, exponential backoff, `WrongToken`/`IllegalTransition`/`ConflictingResubmission` short-circuit, transport-shaped exceptions retried). On retry exhaustion the route runs a committed-state read-back keyed off `read_task` + `read_submission` + `submissions_equivalent` (not `worker_id`, which is shared by default) — distinguishing "our submit committed; lost the response" (success page) from "never committed" (orphan page) from "different submission won the race" (orphan page, `eden://error/conflicting-resubmission`). Orphaned `starting` trials auto-recover via the chunk-1 expired-claim sweeper (`_base.reclaim` composite-commits the trial to `error` atomically with `pending`). `trial_id` is server-only — generated at claim time and stored in the in-process `_CLAIMS` dict alongside the claim token, never round-trips through the request surface; the rendered form has no `name="trial_id"` input and a forged form value is ignored. Tests cover per-route validation (`test_implementer_routes.py`), the cross-request flow including reachability rejections and the status=error path (`test_implementer_flow.py`), each branch of §C-recovery via monkeypatched failures (`test_implementer_partial_write.py`), security invariants including the artifact-rendering trust boundary and the `trial_id` non-leak (`test_implementer_security.py`), and a `pytest.mark.e2e` two-process test that drives the full implementer flow against a real task-store-server + web-ui subprocess (`test_implementer_e2e.py`).
+    26	
+    27	**Phase 9 chunk 1 complete.** A reference Web UI service ([`reference/services/web-ui/`](reference/services/web-ui/)) ships the UI shell + planner module. It is a backend-for-frontend over `eden_wire.StoreClient`: holds the shared bearer, talks to the task-store-server only via the wire binding, and renders server-side Jinja templates. HTMX 1.9.12 is vendored under `static/` (SHA-256 pinned in the service README) as a progressive-enhancement layer — every mutating route works without JS via plain form-POST + 303 redirect / re-render, and HTMX-aware routes also serve a fragment when the browser sends `HX-Request: true` (the chunk-1 example is "add another proposal row" inline). The session cookie is `itsdangerous`-signed (HttpOnly + SameSite=Lax + Path=/, plus opt-in `--secure-cookies` for TLS deployments) and carries a per-session CSRF token validated on every mutating route. The planner page surfaces the experiment's `objective` and `metrics_schema` (read-only) plus a recent-proposals/recent-trials context panel, then walks a 3-phase write — `create_proposal(state="drafting")` for every row, then `mark_proposal_ready` for each, then `submit` with retry-before-orphan (3 attempts, exponential backoff) leveraging chapter 07 §2.4 / §8.1 idempotent resubmit. The narrowest unsafe window (Phase 2 → Phase 3 ready-but-unreferenced proposals) is documented as a known limitation that applies equally to the existing scripted planner host. Cross-cutting addition: `eden_dispatch.sweep_expired_claims` runs once per `run_orchestrator_loop` iteration so UI claims with `expires_at` are reclaimed automatically when an abandoned tab strands a task. Tests cover unit (route-by-route + CSRF), cross-request flow (claim → submit + validation recovery + stranded-claim recovery via the sweeper), security invariants (cookie attributes + bearer non-leak), partial-write recovery (Phase-2 mid-loop failure leaves drafting-only; Phase-3 retry-then-orphan), and a two-process `pytest.mark.e2e` test that drives the full planner flow over real HTTP against a real task-store-server subprocess.
+    28	
+    29	**Phase 8c complete.** The in-process dispatch driver is removed: `eden-dispatch.run_experiment` was deleted and its public-API surface narrows to `run_orchestrator_iteration` plus the scripted workers (`ScriptedPlanner` / `ScriptedImplementer` / `ScriptedEvaluator`). The Phase 5 / 7b in-process end-to-end tests in `reference/packages/eden-dispatch/tests/test_end_to_end.py` were deleted; the lifecycle-reconstruction invariant they covered moved into `reference/services/orchestrator/tests/test_e2e.py` as a `_reconstruct_lifecycle` fold over the post-teardown `SqliteStore.read_range()`. The malformed-success → `validation_error` routing test in `eden-storage/tests/test_store_hardening.py` was rewritten to drive `run_orchestrator_iteration` directly through the legitimate `Store` API. The `pytest.mark.e2e` real-subprocess test from Phase 8b is now the only end-to-end coverage path; components communicate exclusively through the Phase 8a wire binding.
+    30	
+    31	**Phase 8b complete.** Five reference services under [`reference/services/`](reference/services/) extract the dispatch loop into independent OS processes that communicate only over the Phase 8a wire binding: [`task-store-server/`](reference/services/task-store-server/) hosts the `Store` behind uvicorn; [`orchestrator/`](reference/services/orchestrator/) runs the finalize/dispatch/integrate half of the loop against a `StoreClient`; [`planner/`](reference/services/planner/), [`implementer/`](reference/services/implementer/), and [`evaluator/`](reference/services/evaluator/) are standalone worker hosts. A new shared package [`reference/services/_common/`](reference/services/_common/) holds the JSON-line logger, SIGTERM/SIGINT stop flag, readiness probe, common argparse flags, scripted `plan_fn`/`implement_fn`/`evaluate_fn` profiles, and the `seed_bare_repo` helper. `eden-dispatch` exposes `run_orchestrator_iteration` as its orchestrator-side entry point so the standalone orchestrator drives only that half (the in-process `run_experiment` driver remained alongside it through 8b and was deleted in 8c). `eden-wire.make_app(store, *, shared_token=…)` and `eden-wire.StoreClient(…, token=…)` add reference-only bearer-token auth: requests without the right `Authorization: Bearer <token>` are rejected as `eden://reference-error/unauthorized` (HTTP 401), under a new namespace deliberately kept out of the normative `eden://error/…` vocabulary in [`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) §7. A new informative §12 in chapter 07 documents the scheme. The implementer host writes real git commits (single-parent or merge, honoring `proposal.parent_commits`) on `work/*` branches in the bare repo the orchestrator integrates from. A `pytest.mark.e2e` test in [`reference/services/orchestrator/tests/test_e2e.py`](reference/services/orchestrator/tests/test_e2e.py) forks all five processes on an ephemeral port, drives a 3-trial experiment to quiescence over real HTTP + real SQLite + real git, and tears down with SIGTERM → SIGKILL fallback.
+    32	
+    33	**Phase 8a complete.** `eden-wire` ships an HTTP binding for the chapter 4 / 5 / 6 §3.4 / 8 §§1.1–2.1 operations specified in the new [`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) chapter. The package exposes a FastAPI ``make_app(store)`` that routes every wire endpoint to a ``Store`` instance, and a ``StoreClient`` that satisfies the same ``Store`` Protocol against the HTTP surface — so existing callers (dispatch driver, integrator) work across the process boundary unchanged. Errors round-trip as RFC 7807 problem+json with a closed vocabulary of ``eden://error/<name>`` types (§7). ``Store.integrate_trial`` is now same-value idempotent (§5 of the chapter); the ``Integrator`` distinguishes different-SHA divergence (``AtomicityViolation``, no ref compensation) from other synchronous rejections (normal §3.4 compensating-delete flow). ``StoreClient.integrate_trial`` reconciles transport-indeterminate failures via read-back: the three outcomes are confirmed success, confirmed divergence (``InvalidPrecondition``), or ``IndeterminateIntegration`` when the server's outcome cannot be determined. Polling + long-poll-style subscribe are both bound (§6). Worker-process extraction, SSE/WebSocket push, and cut-over of in-process paths remain Phase 8b / 8c.
+    34	
+    35	**Phase 6 complete.** The `eden-storage` package ships the `Store` structural interface for the task store, event log, and proposal/trial persistence sides of chapter 8 — collapsed into a single Protocol per §7 implementation latitude. Two conforming backends satisfy it: `InMemoryStore` (fast, non-durable; moved from `eden-dispatch`) and `SqliteStore` (durable across restarts via a WAL-mode SQLite database with `synchronous=FULL`, matching §3.1's crash-survival requirement). The Protocol covers the spec-literal `create_task` / `replay` / `read_range` operations alongside the typed convenience helpers. Both backends share the transition logic in `_base.py`, and the same conformance scenarios are parametrized across both — drift from the Protocol surfaces in tests, not in production. Restart-safety tests close and reopen a SQLite store mid-experiment to confirm state, event log, and claim tokens survive, and a monkey-patched `_apply_commit` failure verifies rollback. The artifact store (§5), `subscribe` streaming (§2.1), and Postgres remain non-goals for Phase 6; they land in Phase 10 / Phase 8 / later respectively.
+    36	
+    37	**Phase 7b complete.** `eden-git` now also ships the `Integrator` that composes `GitRepo` with a `Store` to promote `success` trials per chapter 6. Given a trial with a recorded `commit_sha`, `Integrator.integrate` builds the §3.2 single-commit squash (worker-tip tree plus the eval manifest at `.eden/trials/<trial_id>/eval.json`), writes the `refs/heads/trial/<id>-<slug>` ref via zero-oid CAS, and routes the store's atomic `integrate_trial` write for `trial_commit_sha` and the `trial.integrated` event. On store failure the ref is compensatingly deleted per §3.4, matching the post-promotion reading recorded in [`spec/v0/design-notes/integrator-atomicity.md`](spec/v0/design-notes/integrator-atomicity.md). Re-invocation on an already-promoted trial is a verified no-op (§5.3): ref SHA, squash tree shape, and manifest bytes are re-derived and compared. §2 preconditions (`status == success`, `commit_sha` reachable from `branch` tip), §1.4 reachability, and §2 metrics validity are all enforced up front; the new public `Store.validate_metrics` closes the §2 MUST-NOT-promote clause even if upstream orchestrator validation were bypassed. The spec itself was tightened at §3.4 to make the post-promotion reading explicit. The dispatch driver accepted `integrate_trial: Callable[[str], object]` in place of the Phase 5 placeholder `integrator_commit_factory` parameter; in Phase 8c that hook moved to `run_orchestrator_iteration`. Eval-manifest bytes are deterministic (sorted keys, `indent=2`, trailing newline) to make §5.3 idempotency re-derivation stable.
+    38	
+    39	**Phase 7a complete.** `eden-git`'s subprocess wrapper ships `GitRepo` covering ref/object inspection (`rev_parse`, `resolve_ref`, `list_refs`, `is_ancestor`, `ls_tree`), plumbing (`write_blob`, `write_tree_from_entries`, `write_tree_with_file`, `commit_tree`, `create_ref`, `update_ref`), worktree management, and branch management. Author identity and `commit.gpgsign=false` are pinned per-invocation so the user's ambient git config never leaks into integrator commits. See [`docs/roadmap.md`](docs/roadmap.md) for the full 13-phase plan.
+    40	
+    41	## Commands
+    42	
+    43	At Phase 9 chunk 9d, markdown linting, JSON Schema validation, and the Python toolchain for the `eden-contracts`, `eden-dispatch`, `eden-git`, `eden-storage`, `eden-wire`, `eden-service-common`, `eden-task-store-server`, `eden-orchestrator`, `eden-planner-host`, `eden-implementer-host`, `eden-evaluator-host`, and `eden-web-ui` reference packages and services are wired up.
+    44	
+    45	| Command | Purpose |
+    46	|---|---|
+    47	| `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` | Lint all tracked markdown (pinned to CI's version; matches CI exactly) |
+    48	| `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` | Validate each schema file against the Draft 2020-12 meta-schema (version pinned to CI) |
+    49	| `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml` | Validate the fixture experiment config against its schema |
+    50	| `uv sync` | Install/refresh the workspace virtualenv (all reference packages + services) |
+    51	| `uv run ruff check .` | Lint Python (config in root `pyproject.toml`) |
+    52	| `uv run pyright` | Type-check the reference Python packages |
+    53	| `uv run pytest -q` | Run the full reference test suite (includes the `pytest.mark.e2e` real-subprocess test) |
+    54	| `uv run pytest -m e2e` | Run only the real-subprocess Phase 8b end-to-end test |
+    55	| `uv run pytest reference/packages/eden-contracts/tests/test_schema_parity.py` | Run only the schema ↔ Pydantic model parity check |
+    56	| `python3 -m eden_task_store_server --db-path :memory: --experiment-id exp-1 --experiment-config tests/fixtures/experiment/.eden/config.yaml --port 0` | Run the reference task-store-server (announces `EDEN_TASK_STORE_LISTENING host=… port=…` on stdout). |
+    57	| `python3 -m eden_orchestrator …` / `python3 -m eden_planner_host …` / `python3 -m eden_implementer_host …` / `python3 -m eden_evaluator_host …` / `python3 -m eden_web_ui …` | Run each reference service (see each service's `README.md` for full flag list). The web-ui announces `EDEN_WEB_UI_LISTENING host=… port=…` on stdout, mirroring the task-store-server convention. Pass `--repo-path <bare-repo>` to the web-ui to enable the implementer module; omit it for a planner+evaluator deployment. |
+    58	| `python3 scripts/spec-xref-check.py` | Validate every `§N.M` reference in `spec/v0/*.md` resolves to a real section heading in its target chapter. Run before committing a normative spec change. |
+    59	| `cd reference/compose && cp .env.example .env && docker compose up -d --wait` | Bring up the Phase 10a infrastructure stack (Postgres + Gitea + blob volume) locally |
+    60	| `bash reference/compose/healthcheck/smoke.sh` | Run the Phase 10a Compose smoke test (mirrors the `compose-smoke` CI job) |
+    61	
+    62	### Commands that will exist in later phases
+    63	
+    64	These are listed for orientation; the tooling is not wired up yet.
+    65	
+    66	| Command | Lands in |
+    67	|---|---|
+    68	| `docker compose up` end-to-end (with EDEN services) | Phase 10b/10c/10d/10e |
+    69	
+    70	## Contribution conventions
+    71	
+    72	### Spec edits
+    73	
+    74	+ Every cross-component contract (wire format, state machine, invariant) is defined in `spec/` first, then implemented in `reference/`. When they disagree, the spec wins and the impl gets a bug.
+    75	+ Spec chapters use RFC 2119 language: MUST, SHOULD, MAY.
+    76	+ Spec versions are frozen once stable (`spec/v0/` is a single lineage; breaking changes go to `spec/v1/`).
+    77	+ Schema changes must update the spec prose, the JSON Schema file, and (from Phase 3 onward) the Pydantic bindings in lockstep. CI will enforce schema ↔ model parity once both exist.
+    78	
+    79	### Reference implementation
+    80	
+
+exec
+/bin/zsh -lc "nl -ba docs/roadmap.md | sed -n '192,206p'" in /Users/ericalt/Documents/eden
+exec
+/bin/zsh -lc "nl -ba .gitignore | sed -n '38,48p'" in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+    38	
+    39	# Claude Code local runtime state (scheduled-task lock, etc.)
+    40	.claude/
+    41	
+    42	# Compose secrets — example template is committed; real .env is not.
+    43	reference/compose/.env
+
+ succeeded in 0ms:
+   192	## Phase 10 — Reference Compose stack
+   193	
+   194	Everything runs locally via `docker compose up`. Equivalent to the old microservices plan's Milestone 1, now explicitly "one valid deployment topology."
+   195	
+   196	**Units:**
+   197	
+   198	- **10a — complete.** [`reference/compose/`](../reference/compose/) ships a Compose stack standing up Postgres (`postgres:16.6-alpine`, reserved for `PostgresStore` consumption in 10b — *not* used by Gitea), Gitea (`gitea/gitea:1.22.6-rootless`, headless), and a one-shot `blob-init` (`busybox:1.36.1`) whose mount triggers creation of the `eden-blob-data` named volume (a top-level `volumes:` declaration alone does *not* create the volume — verified empirically). Long-running services declare `depends_on: { blob-init: service_completed_successfully }` so `compose up --wait` interprets the one-shot's exit-0 as success. Required secrets use `${VAR:?msg}` so a missing `.env` fails loudly; defaults dodge the well-known host-side ports (5433/3001/2222). A new `compose-smoke` CI job runs [`reference/compose/healthcheck/smoke.sh`](../reference/compose/healthcheck/smoke.sh) which asserts named-volume existence, blob-init exit code via `docker inspect`, Postgres connectivity, and Gitea's `/api/v1/version` response. 10a's blob-volume contract is "volume exists" only; ownership/permissions are 10d's responsibility.
+   199	- **10b** — Each reference service dockerized with its own image.
+   200	- **10c** — `setup-experiment` script: registers an experiment end-to-end (builds experiment-specific image, initializes the bare git repo, writes per-service sub-configs, registers with the control plane).
+   201	- **10d** — LLM worker hosts: planner host (context-accumulating Claude session), implementer host (spawns per-task sandbox containers running `implement_command`), evaluator host.
+   202	- **10e** — End-to-end Compose integration test exercising the full loop including Web UI, admin-reclaim, and termination.
+   203	
+   204	**Chunks:** 10a one; 10b + 10c one chunk (dockerize + setup script co-evolve — each image's env vars and entrypoints feed the script); 10d one; 10e one.
+   205	
+   206	**Non-goals:** k8s (Phase 13); S3 blob backend (Phase 13); Gitea auth (Phase 13).
+
+codex
+The three round-0 findings are fixed in the new revision. I’m doing one last pass with syntax/CLI checks so I can say clearly whether anything substantive remains.
+exec
+/bin/zsh -lc 'bash -n reference/compose/healthcheck/smoke.sh' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc 'command -v shellcheck >/dev/null && shellcheck reference/compose/healthcheck/smoke.sh || true' in /Users/ericalt/Documents/eden
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "docker compose -f reference/compose/compose.yaml --env-file reference/compose/.env.example config >/tmp/eden-compose-config-round1.out && sed -n '1,220p' /tmp/eden-compose-config-round1.out" in /Users/ericalt/Documents/eden
+ succeeded in 355ms:
+name: eden-reference
+services:
+  blob-init:
+    command:
+      - sh
+      - -c
+      - mkdir -p /var/lib/eden/blobs && echo blob-volume ready
+    container_name: eden-blob-init
+    image: busybox:1.36.1
+    networks:
+      default: null
+    restart: "no"
+    volumes:
+      - type: volume
+        source: eden-blob-data
+        target: /var/lib/eden/blobs
+        volume: {}
+  gitea:
+    container_name: eden-gitea
+    depends_on:
+      blob-init:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
+      GITEA__log__LEVEL: Warn
+      GITEA__metrics__ENABLED: "false"
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__INTERNAL_TOKEN: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+      GITEA__security__SECRET_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+      GITEA__server__DOMAIN: localhost
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__ROOT_URL: http://localhost:3001/
+      GITEA__server__SSH_LISTEN_PORT: "2222"
+      GITEA__server__SSH_PORT: "2222"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://localhost:3000/api/v1/version
+      timeout: 3s
+      interval: 5s
+      retries: 20
+      start_period: 30s
+    image: gitea/gitea:1.22.6-rootless
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3001"
+        protocol: tcp
+      - mode: ingress
+        target: 2222
+        published: "2222"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: eden-gitea-data
+        target: /var/lib/gitea
+        volume: {}
+  postgres:
+    container_name: eden-postgres
+    depends_on:
+      blob-init:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      POSTGRES_DB: eden
+      POSTGRES_PASSWORD: eden-dev-password-change-me
+      POSTGRES_USER: eden
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U eden -d eden
+      timeout: 3s
+      interval: 5s
+      retries: 10
+      start_period: 10s
+    image: postgres:16.6-alpine
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 5432
+        published: "5433"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: eden-postgres-data
+        target: /var/lib/postgresql/data
+        volume: {}
+networks:
+  default:
+    name: eden-reference_default
+volumes:
+  eden-blob-data:
+    name: eden-reference_eden-blob-data
+  eden-gitea-data:
+    name: eden-reference_eden-gitea-data
+  eden-postgres-data:
+    name: eden-reference_eden-postgres-data
+
+codex
+I’m running the actual smoke script now. The static checks are clean; this last step is just to see whether the fixed teardown and env-derived probes behave correctly at runtime.
+exec
+/bin/zsh -lc 'bash reference/compose/healthcheck/smoke.sh' in /Users/ericalt/Documents/eden
+ exited 1 in 654ms:
+--- bringing up the stack ---
+unable to get image 'busybox:1.36.1': permission denied while trying to connect to the Docker daemon socket at unix:///Users/ericalt/.docker/run/docker.sock: Get "http://%2FUsers%2Fericalt%2F.docker%2Frun%2Fdocker.sock/v1.51/images/busybox:1.36.1/json": dial unix /Users/ericalt/.docker/run/docker.sock: connect: operation not permitted
+
+codex
+**Findings**
+
+No findings.
+
+**Overall assessment**
+
+The round-0 issues are fixed. `reference/compose/healthcheck/smoke.sh` now preserves `"$TMPENV"` through teardown and preserves the original exit status, the Postgres probe now derives `POSTGRES_USER` and `POSTGRES_DB` from the env file instead of hardcoding them, and [reference/README.md](/Users/ericalt/Documents/eden/reference/README.md:5) is now consistent with the repo’s Phase 9e / 10a state.
+
+Plan adherence still looks good. I re-read the implementation files from the brief, `bash -n` passes for `reference/compose/healthcheck/smoke.sh`, and `docker compose -f reference/compose/compose.yaml --env-file reference/compose/.env.example config` resolves cleanly. I could not rerun the full smoke test end-to-end here because this environment cannot access the Docker daemon socket, so the only remaining gap is runtime verification from my side, not a substantive code concern.
+
+Official docs cross-check: [Docker Compose `up`](https://docs.docker.com/reference/cli/docker/compose/up/), [Compose services / `depends_on`](https://docs.docker.com/compose/compose-file/05-services/), [Gitea rootless Docker install](https://docs.gitea.com/1.24/installation/install-with-docker-rootless).
+2026-04-26T00:12:19.805135Z ERROR codex_core::session: failed to record rollout items: thread 019dc71c-6789-7d00-9cf5-18804850ef6a not found
+tokens used
+121,752
