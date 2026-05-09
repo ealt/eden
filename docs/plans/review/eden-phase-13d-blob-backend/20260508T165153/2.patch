@@ -1,0 +1,236 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13d-blob-backend/20260508T165153/1.md	2026-05-08 17:01:37
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13d-blob-backend.md	2026-05-08 17:06:52
+@@ -132,9 +132,13 @@
+     [`reference/services/executor/src/eden_executor_host/subprocess_mode.py`](../../reference/services/executor/src/eden_executor_host/subprocess_mode.py)
+     line 493's `_rationale_path_from_uri` (which only
+     accepts `file://` — anything else returns None), and
+-    hands that path to the user subprocess via the
+-    `EDEN_RATIONALE_PATH` env var. The role process opens
+-    the file directly.
++    writes that path into the `rationale_path` key of the
++    per-task `EDEN_TASK_JSON` brief
++    ([`reference/services/executor/src/eden_executor_host/subprocess_mode.py`](../../reference/services/executor/src/eden_executor_host/subprocess_mode.py)
++    line 392; surface defined at
++    [`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md)
++    §"executor subprocess inputs"). The role process opens
++    that path directly.
+   - **Web-ui ideator route.** Calls
+     `eden_web_ui.artifacts.write_idea_artifact` directly
+     on operator-typed rationale text — the same helper
+@@ -210,12 +214,25 @@
+    bucket+prefix membership). The `/artifacts` HTTP route
+    gains a backend-aware path that streams from
+    `Backend.fetch` when the URI scheme is non-file.
+-6. Worker-host services (executor / evaluator / ideator)
+-   gain identical `--blob-backend` configuration so their
+-   subprocess-mode artifact uploads go through the chosen
+-   backend instead of writing to a local file. The
+-   subprocess JSON-line protocol's `artifacts_uri` field
+-   semantics don't change — just where the bytes land.
++6. Worker-host services receive **per-role** changes
++   (per Decision 4 + §3.4):
++   - The **ideator host** gains `--blob-backend` and
++     replaces its local-file write in the
++     `rationale`-shape branch with `Backend.upload`. The
++     `artifacts_uri`-shape passthrough is unchanged.
++   - The **executor host** gains `--blob-backend` (and
++     `--blob-fallback-*` for §3.6 composite mode) and
++     adds a fetch-to-temp step in
++     `_rationale_path_from_uri` for non-`file://` URIs.
++   - The **evaluator host** stays a passthrough on the
++     artifact path in v0; the `--blob-backend` flag is
++     accepted (silently for symmetry) but not used.
++     Host-mediated evaluator upload is captured as a
++     future amendment in §11.
++
++   The subprocess JSON-line protocol's outcome-record
++   shape and the `EDEN_TASK_JSON` brief surface are
++   unchanged across the three hosts.
+ 7. Auth posture: AWS uses IAM-role-via-IRSA preferred,
+    static credentials via `existingSecret` as fallback; GCP
+    uses Workload Identity preferred, service-account-key
+@@ -269,11 +286,13 @@
+ | [`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py) lines 69-113 | Generalized. `_read_inline_artifact` becomes scheme-aware; size cap stays at 1 MiB. |
+ | [`reference/services/web-ui/src/eden_web_ui/routes/artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/routes/artifacts.py) | Generalized to dispatch through `Backend.fetch` for non-file schemes. The trust boundary becomes per-backend rather than file-only. |
+ | [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py) | Adds `--blob-backend` plus per-backend flags. `--artifacts-dir` remains as the LocalFsBackend's root-path knob. |
+-| [`reference/services/{executor,evaluator,ideator}/`](../../reference/services/) | Worker hosts gain identical `--blob-backend` configuration. Subprocess-mode artifact writes route through the chosen backend. |
++| [`reference/services/ideator/`](../../reference/services/ideator/) | Adds `--blob-backend` per §3.4.1; the `rationale`-shape branch in `subprocess_mode.py` line 250 calls the new `Backend.upload`-based `write_idea_artifact`. |
++| [`reference/services/executor/`](../../reference/services/executor/) | Adds `--blob-backend` (and `--blob-fallback-*` flags for §3.6 composite mode); `_rationale_path_from_uri` (line 493) gains fetch-to-temp dispatch by URI scheme per §3.4.3. The `rationale_path` written into `EDEN_TASK_JSON` (line 392) is unchanged in shape. |
++| [`reference/services/evaluator/`](../../reference/services/evaluator/) | Per §3.4.2: NO functional change in v0. The CLI MAY accept `--blob-backend` silently for argparse symmetry; the host stays a passthrough on the evaluator's `artifacts_uri` field. |
+ | [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | `blob-init` + `eden-blob-data` volume removed; `eden-artifacts-data` stays as the web-ui's bind. The `depends_on: blob-init` lines on postgres + gitea become unnecessary and are removed. |
+ | [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during MANUAL_UI_ISSUES §20's inline fix) is removed; nothing mounts at that path anymore. |
+-| [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) | Adds `blob.backend`, `blob.file.*`, `blob.s3.*`, `blob.gcs.*` blocks. The legacy `storage.artifactsSize` becomes effective only when `blob.backend=file`. |
+-| [`reference/helm/eden/templates/web-ui-statefulset.yaml`](../../reference/helm/eden/templates/web-ui-statefulset.yaml) | The artifacts PVC `volumeClaimTemplates` entry becomes conditional on `blob.backend=file`. The CLI args block adds the per-backend flags. |
++| [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) | Adds `blob.backend`, `blob.file.*`, `blob.s3.*`, `blob.gcs.*`, and the new `blob.migration.fileFallback.*` block per §3.6. The legacy `storage.artifactsSize` becomes effective only when `blob.backend=file`. |
++| [`reference/helm/eden/templates/web-ui-statefulset.yaml`](../../reference/helm/eden/templates/web-ui-statefulset.yaml) | The artifacts PVC `volumeClaimTemplates` entry becomes conditional on `blob.backend=file` OR `blob.migration.fileFallback.enabled=true` (per §3.6). When migration-mode is active, the Pod's `volumeMounts` entry is `readOnly: true`. The CLI args block adds the per-backend flags plus `--blob-fallback-*` when migration-mode is active. |
+ 
+ ### 1.3 Naming-discipline baseline
+ 
+@@ -379,14 +398,15 @@
+      read path.** Today only accepts `file://`. 13d adds
+      a fetch-to-temp step: when the URI is `s3://` /
+      `gs://`, the host calls `Backend.fetch(uri)`, writes
+-     the bytes to a per-task temp file inside the
+-     worktree-sibling directory, and passes that path to
+-     the user subprocess via the existing
+-     `EDEN_RATIONALE_PATH` env var. The temp file is
+-     cleaned up after the subprocess exits. The
+-     subprocess-protocol shape (the role still receives a
+-     filesystem path, never a URI) is unchanged. See
+-     §3.4.
++     the bytes to a per-task temp file in a
++     worktree-sibling directory, and writes that path
++     into the `rationale_path` key of the per-task
++     `EDEN_TASK_JSON` brief — the same surface used today.
++     The temp file is cleaned up after the subprocess
++     exits. The subprocess-protocol shape (the role still
++     receives a filesystem path via `EDEN_TASK_JSON`'s
++     `rationale_path` field, never a URI) is unchanged.
++     See §3.4.
+ 
+    So 13d adds CLI flag plumbing PLUS three real code
+    changes: replace local-file writes with `Backend.upload`
+@@ -1015,19 +1035,22 @@
+ [`reference/services/executor/src/eden_executor_host/subprocess_mode.py`](../../reference/services/executor/src/eden_executor_host/subprocess_mode.py)
+ line 493's `_rationale_path_from_uri` only accepts
+ `file://` URIs (anything else returns `None`). The
+-returned path is passed to the user subprocess via the
+-existing `EDEN_RATIONALE_PATH` env var. The role process
+-opens the file directly.
++returned path is written into the `rationale_path` key
++of the per-task `EDEN_TASK_JSON` brief at
++[`reference/services/executor/src/eden_executor_host/subprocess_mode.py`](../../reference/services/executor/src/eden_executor_host/subprocess_mode.py)
++line 392. The role process reads `EDEN_TASK_JSON` and
++opens the path directly.
+ 
+ 13d: when the URI is `s3://` / `gs://` (or a
+ `CompositeBackend`-resolved URI per §3.6), the host
+ fetches the bytes via `Backend.fetch(uri)` BEFORE
+ spawning the subprocess, writes them to a per-task temp
+-file, and passes that path to the user subprocess. The
+-temp file lives in a worktree-sibling directory (NOT
+-inside the worktree itself — the role's `git add` /
+-`git commit` would otherwise capture it). After the
+-subprocess exits the temp file is unlinked.
++file, and writes that path into the brief's
++`rationale_path` field. The temp file lives in a
++worktree-sibling directory (NOT inside the worktree
++itself — the role's `git add` / `git commit` would
++otherwise capture it). After the subprocess exits the
++temp file is unlinked.
+ 
+ Sketch:
+ 
+@@ -1067,8 +1090,8 @@
+ chunk-10d follow-up A's `container_exec.py`).
+ 
+ The subprocess-protocol shape (the role still receives
+-a filesystem path via `EDEN_RATIONALE_PATH`, never a URI)
+-is unchanged.
++a filesystem path via `EDEN_TASK_JSON`'s `rationale_path`
++field, never a URI) is unchanged.
+ 
+ #### 3.4.4 Future-amendment scope: write-side host-mediated evaluator upload
+ 
+@@ -1515,7 +1538,19 @@
+    ideator).** Same shape as 13c's drain (scale to 0,
+    operator-reclaim any stuck claims). The
+    task-store-server stays up.
+-2. **Bytes copy.** From the operator's workstation:
++2. **Bytes copy.** From the operator's workstation. The
++   sync is a one-way mirror of the legacy on-disk tree
++   into the bucket; the on-disk tree is whatever the
++   pre-13d writers produced (flat `<idea_id>.md` from
++   the web-ui ideator route plus the ideator host's
++   `rationale`-shape branch). The composite backend's
++   read-side dispatch is by URI scheme, NOT by path-shape
++   parity — pre-existing `file://` URIs continue resolving
++   via the LocalFs fallback regardless of where they
++   live in the source tree. The bucket layout from this
++   sync is for forward-compat (so a future GC of the PVC
++   doesn't lose the bytes), not for resolving the old
++   URIs.
+ 
+    ```bash
+    # Tunnel the artifacts PVC to the workstation via
+@@ -1531,19 +1566,27 @@
+    ```
+ 
+ 3. **Update chart values to composite mode.** Set
+-   `blob.backend=s3` AND keep `blob.file.mountPath`
+-   referencing the existing PVC; the chart renders the
+-   composite backend automatically. Bring workers back
+-   up.
++   `blob.backend=s3` (or `gcs`) AND
++   `blob.migration.fileFallback.enabled=true` per §3.6.
++   The chart re-renders: artifacts PVC stays mounted
++   (now `readOnly: true`); the web-ui Pod's CLI args grow
++   `--blob-fallback-backend file --blob-fallback-mount-path /var/lib/eden/artifacts`;
++   the runtime factory builds
++   `CompositeBackend(primary=S3, fallback=LocalFs(read_only=True))`.
++   `helm upgrade`; bring workers back up.
+ 4. **Soak.** Run for the experiment's retention window
+    (chapter-8 §5.2 minimum). Watch the
+    `blob_fallback=true` log line counter. Once that's been
+    zero for an entire retention period, the operator
+    knows nothing reads `file://` URIs anymore.
+-5. **Decommission.** Remove `blob.file` from values; the
+-   chart unmounts the artifacts PVC. Reclaim the PVC's
+-   storage out-of-band per the cluster's StorageClass
+-   `reclaimPolicy`.
++5. **Decommission.** Set
++   `blob.migration.fileFallback.enabled=false` and
++   `helm upgrade`. The chart's `volumeClaimTemplates`
++   entry stops rendering; per StatefulSet semantics
++   (chunk-13a §7.1) the PVC stays behind for manual
++   cleanup. `kubectl delete pvc -n eden-prod
++   <pvc-name>` reclaims the storage out-of-band per the
++   cluster's StorageClass `reclaimPolicy`.
+ 
+ #### 3.11.3 Why a runbook, not a script
+ 
+@@ -1612,9 +1655,13 @@
+   `eden.blob.envVars` (static creds), `eden.blob.fileSize`
+   (legacy fallback).
+ - Chart templates: web-ui StatefulSet's artifacts PVC
+-  becomes conditional on `blob.backend=file`. Worker-host
+-  templates similarly conditional. New ServiceAccount
+-  templates with IRSA / WI annotations.
++  becomes conditional on `blob.backend=file` OR
++  `blob.migration.fileFallback.enabled=true` (per §3.6 —
++  migration-mode keeps the PVC mounted read-only).
++  Worker-host templates: ideator + executor templates get
++  per-backend wiring; evaluator template is unchanged in
++  v0 per §3.4.2. New ServiceAccount templates with
++  IRSA / WI annotations.
+ - `reference/helm/eden/templates/serviceaccount-blob.yaml`
+   (new) — per §3.5.1 / §3.5.2.
+ - `reference/helm/eden/ci-values-blob-s3.yaml` (new) — for
+@@ -1750,7 +1797,9 @@
+ | `reference/helm/eden/templates/_helpers.tpl` | Add `eden.blob.fileSize` (with legacy fallback), `eden.blob.serviceAccountAnnotations` (IRSA / WI), `eden.blob.envVars` (static creds). |
+ | `reference/helm/eden/templates/serviceaccount-blob.yaml` (new) | ServiceAccount + (when irsa.enabled OR workloadIdentity.enabled) the cloud-provider annotation. |
+ | `reference/helm/eden/templates/web-ui-statefulset.yaml` | Artifacts PVC `volumeClaimTemplates` entry conditional on `blob.backend=file` OR `blob.migration.fileFallback.enabled=true` (per §3.6 — the migration mode renders the PVC even when the primary backend is non-file). When `blob.migration.fileFallback.enabled=true`, the Pod's `volumeMounts` entry for the artifacts volume is `readOnly: true`. ServiceAccountName references the new `eden-blob` SA when backend ∈ {s3, gcs}. CLI args block adds the per-backend flags via `eden.blob.cliArgs` helper, plus `--blob-fallback-*` flags when migration mode is active. |
+-| `reference/helm/eden/templates/{ideator,executor,evaluator}-host-{statefulset,deployment}.yaml` | Same per-backend wiring (no PVC for these — they only upload, never serve). |
++| `reference/helm/eden/templates/ideator-host-deployment.yaml` | Per-backend CLI args + ServiceAccountName (when backend ∈ {s3, gcs}) per §3.4.1. |
++| `reference/helm/eden/templates/executor-host-statefulset.yaml` | Per-backend CLI args + `--blob-fallback-*` when migration-mode active + ServiceAccountName per §3.4.3. |
++| `reference/helm/eden/templates/evaluator-host-statefulset.yaml` | Unchanged in v0 per §3.4.2 (the evaluator host is a passthrough on the artifact path). The `--blob-backend` flag is NOT passed; the evaluator pod has no per-backend dependency. |
+ 
+ ### 5.4 Compose changes
+ 
+@@ -2122,10 +2171,12 @@
+    `LocalFsBackend.upload`'s content-addressed layout.
+    Existing tests pass; new tests cover backend dispatch.
+ 
+-3. **Worker-host integration PR.** executor / evaluator /
+-   ideator hosts get the `--blob-*` flags +
+-   subprocess-mode artifact upload through the configured
+-   backend.
++3. **Worker-host integration PR.** Per-role per §3.4:
++   ideator host's `rationale`-shape branch switches to
++   `Backend.upload`; executor host adds fetch-to-temp in
++   `_rationale_path_from_uri` plus `--blob-fallback-*`
++   flags for §3.6 composite mode; evaluator host is
++   unchanged in v0.
+ 
+ 4. **Chart values + schema PR.** `blob.*` block;
+    `values.schema.json` clauses; `_helpers.tpl` updates;
