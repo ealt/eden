@@ -186,6 +186,8 @@ def build_subprocess_config(
     task_deadline: float,
     shutdown_deadline: float,
     wrap_factory: object | None = None,
+    worker_id: str = "",
+    worker_credential: str | None = None,
 ) -> IdeatorSubprocessConfig:
     """Helper for the CLI layer to construct the subprocess config.
 
@@ -193,6 +195,12 @@ def build_subprocess_config(
     subprocess loop calls it once per spawn to build a fresh wrapped
     command + per-spawn cleanup callbacks. Used by the docker exec
     mode for per-spawn cidfile management.
+
+    ``worker_id`` + ``worker_credential`` are forwarded into the
+    spawned child's env (``EDEN_WORKER_ID`` /
+    ``EDEN_WORKER_CREDENTIAL``) per the §13 reference-binding doc;
+    the secret half of the host's bearer is what the child
+    re-assembles into its own bearer.
     """
     return IdeatorSubprocessConfig(
         command=command,
@@ -202,4 +210,6 @@ def build_subprocess_config(
         task_deadline=task_deadline,
         shutdown_deadline=shutdown_deadline,
         wrap_factory=wrap_factory,  # type: ignore[arg-type]
+        worker_id=worker_id,
+        worker_credential=worker_credential,
     )

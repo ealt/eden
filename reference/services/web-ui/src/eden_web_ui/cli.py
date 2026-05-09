@@ -19,10 +19,10 @@ import uvicorn
 from eden_git import GitRepo
 from eden_service_common import (
     add_common_arguments,
-    bearer_from_shared_token,
     get_logger,
     load_experiment_config,
     parse_log_level,
+    resolve_worker_bearer,
 )
 from eden_service_common.logging import configure_logging
 from eden_wire import StoreClient
@@ -186,10 +186,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             repo = GitRepo(str(args.repo_path))
         repo.rev_parse("HEAD")
+    bearer = resolve_worker_bearer(
+        args, worker_id=args.worker_id, labels={"role": "web-ui"}
+    )
     store = StoreClient(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        token=bearer_from_shared_token(args.shared_token),
+        bearer=bearer,
     )
     app = make_app(
         store=store,

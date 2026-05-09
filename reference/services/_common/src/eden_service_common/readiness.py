@@ -45,7 +45,13 @@ def wait_for_task_store(
         try:
             with httpx.Client(timeout=2.0) as client:
                 resp = client.get(url, headers=headers)
-            if resp.status_code == 200:
+            # 200 = up + authorized. 401/403 = up but not authorized,
+            # which still proves the server is responding to HTTP. The
+            # caller's per-worker bootstrap will then use the admin
+            # bearer to register and obtain a credential. This keeps
+            # the readiness probe usable when the host doesn't yet
+            # have a credential (chicken-and-egg avoidance).
+            if resp.status_code in (200, 401, 403):
                 return
             last_error = RuntimeError(
                 f"task-store returned HTTP {resp.status_code}: {resp.text!r}"

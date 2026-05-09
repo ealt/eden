@@ -58,6 +58,14 @@ class IdeatorSubprocessConfig:
     ``--exec-mode=docker`` where each spawn needs a fresh cidfile.
     The ``command`` field still must be set (used as a fallback +
     for log diagnostics)."""
+    worker_id: str = ""
+    """The host's worker_id; forwarded to the spawned child as
+    ``EDEN_WORKER_ID`` so user code can authenticate against the
+    wire under the same identity."""
+    worker_credential: str | None = None
+    """The secret half of the host's §13.1 bearer; forwarded to the
+    spawned child as ``EDEN_WORKER_CREDENTIAL``. ``None`` when auth
+    is disabled (test posture)."""
 
 
 class ProtocolViolation(Exception):
@@ -213,10 +221,18 @@ def start_ideator_subprocess(config: IdeatorSubprocessConfig) -> IdeatorSubproce
         command, post_kill, cleanups = config.wrap_factory()
     else:
         command, post_kill, cleanups = config.command, None, []
+    # Forward the host's worker identity + per-worker credential into
+    # the spawned ideator child so user code can authenticate to the
+    # wire under the same identity (12a-1 §D.5; reference-binding doc).
+    env = dict(config.env)
+    if config.worker_id:
+        env["EDEN_WORKER_ID"] = config.worker_id
+    if config.worker_credential is not None:
+        env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
     sub = spawn(
         command=command,
         cwd=config.cwd,
-        env=config.env,
+        env=env,
         role="ideator",
         post_kill_callback=post_kill,
         cleanup_callbacks=cleanups,

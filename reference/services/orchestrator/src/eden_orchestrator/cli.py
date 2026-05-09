@@ -14,6 +14,7 @@ from eden_service_common import (
     get_logger,
     install_stop_handlers,
     parse_log_level,
+    resolve_worker_bearer,
     wait_for_task_store,
 )
 from eden_wire import StoreClient
@@ -58,6 +59,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="EDEN reference orchestrator service (finalize + dispatch + integrate).",
     )
     add_common_arguments(parser)
+    parser.add_argument(
+        "--worker-id",
+        default="orchestrator",
+        help=(
+            "worker_id under which the orchestrator registers itself "
+            "with the task-store at startup. Defaults to 'orchestrator'. "
+            "Required when --admin-token (or $EDEN_ADMIN_TOKEN) is set "
+            "so the orchestrator can bootstrap its per-worker bearer."
+        ),
+    )
     parser.add_argument(
         "--repo-path",
         required=True,
@@ -202,6 +213,9 @@ def main(argv: list[str] | None = None) -> int:
         token=bearer_from_shared_token(args.shared_token),
         deadline_seconds=args.startup_timeout,
     )
+    bearer = resolve_worker_bearer(
+        args, worker_id=args.worker_id, labels={"role": "orchestrator"}
+    )
 
     ideation_task_ids = _expand_ideation_tasks(args.ideation_tasks)
     log.info("starting", ideation_tasks=len(ideation_task_ids), repo=args.repo_path)
@@ -209,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
-        token=bearer_from_shared_token(args.shared_token),
+        bearer=bearer,
     ) as client:
         repo = _ensure_repo(
             log=log,

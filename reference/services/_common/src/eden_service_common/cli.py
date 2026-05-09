@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .auth import DEFAULT_CREDENTIALS_DIR
 from .container_exec import (
     BindMount,
     VolumeMount,
@@ -45,14 +46,26 @@ def add_common_arguments(
     parser.add_argument(
         "--shared-token",
         default=None,
+        help=argparse.SUPPRESS,  # legacy alias; prefer --admin-token + per-worker registration.
+    )
+    parser.add_argument(
+        "--admin-token",
+        default=None,
         help=(
-            "Wave-3 transitional bearer. Passed as 'Authorization: Bearer "
-            "<bearer>' on every request to the task-store. The §13 auth "
-            "middleware requires a '<principal>:<secret>' shape: bare "
-            "values are auto-prefixed with 'admin:' so the worker host "
-            "acts as the admin during 12a-1's multi-wave migration. "
-            "Wave 4 replaces this flag with per-worker --worker-id / "
-            "--worker-credential."
+            "Deployment admin token (also read from $EDEN_ADMIN_TOKEN). "
+            "Used at startup to register this worker with the task-store "
+            "if no persisted credential exists, or to reissue a stale "
+            "credential. Worker-host requests run under the per-worker "
+            "credential, NOT the admin token."
+        ),
+    )
+    parser.add_argument(
+        "--credentials-dir",
+        default=None,
+        help=(
+            "Directory where the worker's per-worker credential is "
+            "persisted (default: $EDEN_WORKER_CREDENTIALS_DIR or "
+            f"{DEFAULT_CREDENTIALS_DIR}). One token file per worker_id."
         ),
     )
     parser.add_argument(
@@ -61,6 +74,30 @@ def add_common_arguments(
         choices=list(_LOG_LEVELS),
         help="Log level (default: info).",
     )
+
+
+def resolve_admin_token(args: argparse.Namespace) -> str | None:
+    """Resolve the admin token from ``--admin-token`` or ``$EDEN_ADMIN_TOKEN``.
+
+    Returns ``None`` when neither source supplies a value; the caller
+    decides whether that's fatal (it is for first-time worker
+    registration; not for restart-with-persisted-credential).
+    """
+    explicit = getattr(args, "admin_token", None)
+    if explicit:
+        return explicit
+    return os.environ.get("EDEN_ADMIN_TOKEN")
+
+
+def resolve_credentials_dir(args: argparse.Namespace) -> Path:
+    """Resolve the credentials directory from CLI arg, env, or default."""
+    explicit = getattr(args, "credentials_dir", None)
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("EDEN_WORKER_CREDENTIALS_DIR")
+    if env:
+        return Path(env)
+    return DEFAULT_CREDENTIALS_DIR
 
 
 def bearer_from_shared_token(value: str | None) -> str | None:

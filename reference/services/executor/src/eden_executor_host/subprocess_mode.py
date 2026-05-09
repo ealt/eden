@@ -72,6 +72,11 @@ class ExecutorSubprocessConfig:
     """Where per-spawn cidfiles are written. Required in docker mode."""
     host_id: str = ""
     """Container hostname used as the ``eden.host=`` label."""
+    worker_credential: str | None = None
+    """The worker's per-worker bearer secret (the half after ``:`` in
+    the §13.1 bearer string), forwarded to spawned children as
+    ``EDEN_WORKER_CREDENTIAL`` so user code can authenticate as the
+    host. ``None`` when auth is disabled (test posture)."""
 
 
 def _repo_has_origin(repo: GitRepo) -> bool:
@@ -235,6 +240,7 @@ def _handle_one(
             variant_id=variant_id,
             branch=branch,
             config=config,
+            worker_id=worker_id,
         )
     except Exception:  # noqa: BLE001
         log.exception(
@@ -371,6 +377,7 @@ def _run_subprocess(
     variant_id: str,
     branch: str,
     config: ExecutorSubprocessConfig,
+    worker_id: str,
 ) -> dict[str, Any]:
     """Run ``execution_command`` and parse outcome.json.
 
@@ -399,6 +406,11 @@ def _run_subprocess(
     env["EDEN_OUTPUT"] = ".eden/outcome.json"
     env["EDEN_WORKTREE"] = str(wt_path)
     env["EDEN_EXPERIMENT_DIR"] = str(config.experiment_dir.resolve())
+    # Forward the host's worker identity + per-worker credential into
+    # the spawned child's env (12a-1 §D.5; reference-binding doc).
+    env["EDEN_WORKER_ID"] = worker_id
+    if config.worker_credential is not None:
+        env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
 
     command = config.command
     post_kill = None
