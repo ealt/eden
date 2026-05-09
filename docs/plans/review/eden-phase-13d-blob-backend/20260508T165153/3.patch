@@ -1,0 +1,88 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13d-blob-backend/20260508T165153/2.md	2026-05-08 17:07:11
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13d-blob-backend.md	2026-05-08 17:09:50
+@@ -1015,18 +1015,37 @@
+ binding so the evaluator role MAY emit a local-path
+ string the host uploads. Out of 13d's scope.
+ 
+-What 13d DOES add for the evaluator path: when the
+-evaluator role emits a `file://` URI on a deployment
+-where `blob.backend=s3` AND
+-`blob.migration.fileFallback.enabled=false`, the resulting
+-URI cannot resolve via the configured backend — the
+-deployment is in an inconsistent state. The runbook
+-flags this combination as an operator misconfiguration
+-and the chart's NOTES.txt warns. Operators who run S3 +
+-no-fallback MUST configure the evaluator role to upload
+-to S3 itself (e.g., via `aws s3 cp` in the role script,
+-plus a Workload Identity binding on the evaluator role's
+-container).
++What 13d DOES add for the evaluator path:
++
++- **Chart-level credential wiring on the evaluator pod.**
++  When `blob.backend ∈ {s3, gcs}`, the evaluator
++  StatefulSet template (per §5.3) sets
++  `serviceAccountName` to the chart-managed `eden-blob`
++  SA AND mounts the same auth env (IRSA-injected
++  `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE`, OR
++  static creds via `valueFrom: secretKeyRef:`, OR GCP
++  Workload Identity annotations OR a mounted SA-key
++  Secret). The host process never uses these credentials
++  — they sit in the Pod's environment for the role
++  subprocess the host spawns. So a role that runs
++  `aws s3 cp ...` or imports `boto3.client("s3")` finds
++  working credentials and a configured pod identity
++  without any role-side config.
++- **Documentation in the runbook + NOTES.txt.** When
++  `blob.backend=s3` AND
++  `blob.migration.fileFallback.enabled=false`, an
++  evaluator role that emits a `file://` URI produces a
++  URI the deployment cannot resolve. The chart's
++  NOTES.txt warns; the runbook flags this as an
++  operator-config error (the role MUST emit `s3://` /
++  `gs://`). When `fileFallback.enabled=true`, `file://`
++  evaluator URIs continue resolving via the LocalFs
++  fallback during the migration window.
++
++The evaluator host process itself stays a passthrough on
++the artifact path; the pod-level wiring is what makes
++role-side direct upload feasible without operator
++chart-template edits.
+ 
+ #### 3.4.3 Executor subprocess host's `_rationale_path_from_uri` read path
+ 
+@@ -1636,8 +1655,15 @@
+   §3.8.
+ - `routes/artifacts.py` dispatches by URI scheme.
+ - `cli.py` adds `--blob-backend` plus per-backend flags.
+-- Worker hosts (executor / evaluator / ideator) get the
+-  same `--blob-backend` plumbing per §3.4.
++- Worker hosts get per-role plumbing per §3.4: ideator
++  and executor wire `--blob-backend`; evaluator host CLI
++  is unchanged in v0. The evaluator's k8s POD however
++  receives the same SA + auth env wiring as the other
++  blob-touching pods (per §3.4.2 + §5.3) so role-side
++  direct upload works on `blob.backend ∈ {s3, gcs}`
++  deployments — the evaluator HOST process remains a
++  passthrough; the POD's credentials are for the role
++  process the host spawns.
+ 
+ Chart additions:
+ 
+@@ -1786,7 +1812,7 @@
+ | `reference/services/executor/src/eden_executor_host/subprocess_mode.py` | Update `_rationale_path_from_uri` (line 493) per §3.4.3: dispatch by URI scheme, fetch-to-temp for `s3://` / `gs://`, register cleanup. |
+ | `reference/services/evaluator/src/eden_evaluator_host/cli.py` | NO `--blob-backend` flag in v0 — the evaluator host is a passthrough on the artifact path per §3.4.2. (Optional: accept the flag silently for symmetry, but the evaluator never uses the resulting `Backend` instance.) |
+ | `reference/services/evaluator/src/eden_evaluator_host/subprocess_mode.py` | Unchanged in v0 per §3.4.2. |
+-| `reference/services/_common/src/eden_service_common/blob_args.py` (new) | Shared argparse helper that adds the `--blob-*` flags consistently across services. |
++| `reference/services/_common/src/eden_service_common/blob_args.py` (new) | Shared argparse helper that adds the `--blob-*` flags. Used by web-ui + ideator + executor CLIs (per §3.4.1 / §3.4.3); NOT used by the evaluator CLI in v0 per §3.4.2. |
+ 
+ ### 5.3 Chart additions
+ 
+@@ -1799,7 +1825,7 @@
+ | `reference/helm/eden/templates/web-ui-statefulset.yaml` | Artifacts PVC `volumeClaimTemplates` entry conditional on `blob.backend=file` OR `blob.migration.fileFallback.enabled=true` (per §3.6 — the migration mode renders the PVC even when the primary backend is non-file). When `blob.migration.fileFallback.enabled=true`, the Pod's `volumeMounts` entry for the artifacts volume is `readOnly: true`. ServiceAccountName references the new `eden-blob` SA when backend ∈ {s3, gcs}. CLI args block adds the per-backend flags via `eden.blob.cliArgs` helper, plus `--blob-fallback-*` flags when migration mode is active. |
+ | `reference/helm/eden/templates/ideator-host-deployment.yaml` | Per-backend CLI args + ServiceAccountName (when backend ∈ {s3, gcs}) per §3.4.1. |
+ | `reference/helm/eden/templates/executor-host-statefulset.yaml` | Per-backend CLI args + `--blob-fallback-*` when migration-mode active + ServiceAccountName per §3.4.3. |
+-| `reference/helm/eden/templates/evaluator-host-statefulset.yaml` | Unchanged in v0 per §3.4.2 (the evaluator host is a passthrough on the artifact path). The `--blob-backend` flag is NOT passed; the evaluator pod has no per-backend dependency. |
++| `reference/helm/eden/templates/evaluator-host-statefulset.yaml` | Host CLI args unchanged in v0 per §3.4.2 (the evaluator host is a passthrough on the artifact path). BUT the Pod still gets the same SA + auth wiring as the other blob-touching pods when `blob.backend ∈ {s3, gcs}` so the role process the host spawns can upload directly: `serviceAccountName` references the new `eden-blob` SA; static-cred env vars (when `existingSecret` is set) are mounted into the role process's environment via the same envFrom shape used for ideator + executor. The host process never imports `eden_blob` and never calls `Backend.upload`; the credentials are for the role subprocess. |
+ 
+ ### 5.4 Compose changes
+ 

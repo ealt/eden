@@ -1,0 +1,38 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13d-blob-backend/20260508T165153/3.md	2026-05-08 17:10:05
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13d-blob-backend.md	2026-05-08 17:12:00
+@@ -225,10 +225,13 @@
+      adds a fetch-to-temp step in
+      `_rationale_path_from_uri` for non-`file://` URIs.
+    - The **evaluator host** stays a passthrough on the
+-     artifact path in v0; the `--blob-backend` flag is
+-     accepted (silently for symmetry) but not used.
+-     Host-mediated evaluator upload is captured as a
+-     future amendment in §11.
++     artifact path in v0. The CLI does NOT add
++     `--blob-backend`; the host process never imports
++     `eden_blob`. The evaluator POD does receive
++     blob-auth wiring at the chart layer per §3.4.2 so
++     the role subprocess can upload directly. Host-
++     mediated evaluator upload is captured as a future
++     amendment in §11.
+ 
+    The subprocess JSON-line protocol's outcome-record
+    shape and the `EDEN_TASK_JSON` brief surface are
+@@ -288,7 +291,7 @@
+ | [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py) | Adds `--blob-backend` plus per-backend flags. `--artifacts-dir` remains as the LocalFsBackend's root-path knob. |
+ | [`reference/services/ideator/`](../../reference/services/ideator/) | Adds `--blob-backend` per §3.4.1; the `rationale`-shape branch in `subprocess_mode.py` line 250 calls the new `Backend.upload`-based `write_idea_artifact`. |
+ | [`reference/services/executor/`](../../reference/services/executor/) | Adds `--blob-backend` (and `--blob-fallback-*` flags for §3.6 composite mode); `_rationale_path_from_uri` (line 493) gains fetch-to-temp dispatch by URI scheme per §3.4.3. The `rationale_path` written into `EDEN_TASK_JSON` (line 392) is unchanged in shape. |
+-| [`reference/services/evaluator/`](../../reference/services/evaluator/) | Per §3.4.2: NO functional change in v0. The CLI MAY accept `--blob-backend` silently for argparse symmetry; the host stays a passthrough on the evaluator's `artifacts_uri` field. |
++| [`reference/services/evaluator/`](../../reference/services/evaluator/) | Per §3.4.2: NO functional change in v0. The CLI does NOT add `--blob-backend`; the host stays a passthrough on the evaluator's `artifacts_uri` field. The pod receives blob-auth wiring at the chart layer per §5.3 so role-side direct upload works. |
+ | [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | `blob-init` + `eden-blob-data` volume removed; `eden-artifacts-data` stays as the web-ui's bind. The `depends_on: blob-init` lines on postgres + gitea become unnecessary and are removed. |
+ | [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during MANUAL_UI_ISSUES §20's inline fix) is removed; nothing mounts at that path anymore. |
+ | [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) | Adds `blob.backend`, `blob.file.*`, `blob.s3.*`, `blob.gcs.*`, and the new `blob.migration.fileFallback.*` block per §3.6. The legacy `storage.artifactsSize` becomes effective only when `blob.backend=file`. |
+@@ -1810,7 +1813,7 @@
+ | `reference/services/ideator/src/eden_ideator_host/subprocess_mode.py` | The `rationale`-shape branch (line 250) calls the new `Backend.upload`-based `write_idea_artifact` instead of the local-file helper. The `artifacts_uri`-shape passthrough is unchanged. |
+ | `reference/services/executor/src/eden_executor_host/cli.py` | Add `--blob-backend` (and `--blob-fallback-*` flags for §3.6 composite mode). |
+ | `reference/services/executor/src/eden_executor_host/subprocess_mode.py` | Update `_rationale_path_from_uri` (line 493) per §3.4.3: dispatch by URI scheme, fetch-to-temp for `s3://` / `gs://`, register cleanup. |
+-| `reference/services/evaluator/src/eden_evaluator_host/cli.py` | NO `--blob-backend` flag in v0 — the evaluator host is a passthrough on the artifact path per §3.4.2. (Optional: accept the flag silently for symmetry, but the evaluator never uses the resulting `Backend` instance.) |
++| `reference/services/evaluator/src/eden_evaluator_host/cli.py` | NO `--blob-backend` flag in v0 — the evaluator host is a passthrough on the artifact path per §3.4.2. The host process never imports `eden_blob`. |
+ | `reference/services/evaluator/src/eden_evaluator_host/subprocess_mode.py` | Unchanged in v0 per §3.4.2. |
+ | `reference/services/_common/src/eden_service_common/blob_args.py` (new) | Shared argparse helper that adds the `--blob-*` flags. Used by web-ui + ideator + executor CLIs (per §3.4.1 / §3.4.3); NOT used by the evaluator CLI in v0 per §3.4.2. |
+ 
