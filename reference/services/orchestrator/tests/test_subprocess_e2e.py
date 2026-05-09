@@ -117,7 +117,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
 
     db_path = tmp_path / "eden.sqlite"
     experiment_id = "exp-e2e-sub"
-    token = "test-token"
     artifacts_dir = tmp_path / "artifacts"
     worktrees_dir = tmp_path / "worktrees"
     logs_dir = tmp_path / "logs"
@@ -137,8 +136,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -163,8 +160,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--worker-id",
             "ideator-1",
             "--experiment-config",
@@ -188,8 +183,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--worker-id",
             "executor-1",
             "--repo-path",
@@ -213,8 +206,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--worker-id",
             "evaluator-1",
             "--experiment-config",
@@ -240,8 +231,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--repo-path",
             str(bare_repo),
             "--ideation-tasks",

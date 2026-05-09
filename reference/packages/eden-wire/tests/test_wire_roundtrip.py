@@ -25,7 +25,7 @@ from eden_storage.errors import (
     IllegalTransition,
     InvalidPrecondition,
     NotFound,
-    WrongToken,
+    WrongClaimant,
 )
 from eden_storage.submissions import (
     EvaluationSubmission,
@@ -115,7 +115,7 @@ def _run_variant_to_success(
     store_client.mark_idea_ready(idea_id)
     store_client.submit(
         f"{task_prefix}-plan",
-        claim.token,
+        claim.worker_id,
         IdeaSubmission(status="success", idea_ids=(idea_id,)),
     )
     store_client.accept(f"{task_prefix}-plan")
@@ -126,7 +126,7 @@ def _run_variant_to_success(
     store_client.create_variant(Variant.model_validate(_make_variant_body(variant_id, idea_id)))
     store_client.submit(
         f"{task_prefix}-impl",
-        claim.token,
+        claim.worker_id,
         VariantSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
     )
     store_client.accept(f"{task_prefix}-impl")
@@ -136,7 +136,7 @@ def _run_variant_to_success(
     claim = store_client.claim(f"{task_prefix}-eval", "evaluator")
     store_client.submit(
         f"{task_prefix}-eval",
-        claim.token,
+        claim.worker_id,
         EvaluationSubmission(
             status="success",
             variant_id=variant_id,
@@ -182,12 +182,12 @@ class TestErrorEnvelopeRoundtrip:
         with pytest.raises(IllegalTransition):
             store_client.claim("p1", "w2")
 
-    def test_wrong_token(self, store_client: StoreClient) -> None:
+    def test_wrong_claimant(self, store_client: StoreClient) -> None:
         store_client.create_ideation_task("p2")
         store_client.claim("p2", "w1")
-        with pytest.raises(WrongToken):
+        with pytest.raises(WrongClaimant):
             store_client.submit(
-                "p2", "not-the-token", IdeaSubmission(status="success")
+                "p2", "w2", IdeaSubmission(status="success")
             )
 
     def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
@@ -198,11 +198,11 @@ class TestErrorEnvelopeRoundtrip:
         store_client.create_idea(Idea.model_validate(_make_idea_body("pr-b")))
         store_client.mark_idea_ready("pr-b")
         store_client.submit(
-            "p3", claim.token, IdeaSubmission(status="success", idea_ids=("pr-a",))
+            "p3", claim.worker_id, IdeaSubmission(status="success", idea_ids=("pr-a",))
         )
         with pytest.raises(ConflictingResubmission):
             store_client.submit(
-                "p3", claim.token, IdeaSubmission(status="success", idea_ids=("pr-b",))
+                "p3", claim.worker_id, IdeaSubmission(status="success", idea_ids=("pr-b",))
             )
 
     def test_invalid_precondition(self, store_client: StoreClient) -> None:
@@ -240,10 +240,16 @@ class TestResponseCodes:
     def test_submit_returns_200(self, client: Client, store_client: StoreClient) -> None:
         store_client.create_ideation_task("sc1")
         claim = store_client.claim("sc1", "w")
+        # The worker_id is taken from the authenticated bearer (§13);
+        # this test does not enable auth, so we forward it via the
+        # X-Eden-Worker-Id header (the wire's anonymous-mode override).
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/sc1/submit",
-            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
-            json={"token": claim.token, "payload": {"kind": "ideation", "status": "success"}},
+            headers={
+                "X-Eden-Experiment-Id": EXPERIMENT_ID,
+                "X-Eden-Worker-Id": claim.worker_id,
+            },
+            json={"payload": {"kind": "ideation", "status": "success"}},
         )
         assert resp.status_code == 200
 

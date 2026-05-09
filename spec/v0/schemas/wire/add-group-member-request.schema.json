@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — add-group-member request",
+  "description": "Request body for POST /v0/experiments/{E}/groups/{G}/members (07-wire-protocol.md §7.2). Admin-gated.",
+  "type": "object",
+  "required": ["member_id"],
+  "additionalProperties": false,
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    }
+  }
+}

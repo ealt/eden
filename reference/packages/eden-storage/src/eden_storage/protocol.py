@@ -77,7 +77,12 @@ class Store(Protocol):
     - ``NotFound`` — referenced entity does not exist.
     - ``AlreadyExists`` — insert collided with an existing id.
     - ``IllegalTransition`` — state transition not in the machine.
-    - ``WrongToken`` — presented token ≠ current claim token.
+    - ``WrongClaimant`` — submit's ``worker_id`` ≠ ``task.claim.worker_id``
+      (atomic claim-match per
+      [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+      §4.1).
+    - ``NotClaimed`` — submit against a task whose ``claim`` has been
+      cleared (reclaim or terminal).
     - ``ConflictingResubmission`` — resubmit disagreed with committed
       result.
     - ``InvalidPrecondition`` — referenced entity not in required
@@ -209,10 +214,19 @@ class Store(Protocol):
         """Atomically transition ``pending → claimed``; issue a token."""
         ...
 
-    def submit(self, task_id: str, token: str, submission: Submission) -> None:
+    def submit(
+        self, task_id: str, worker_id: str, submission: Submission
+    ) -> None:
         """Atomically transition ``claimed → submitted``.
 
-        Idempotent per ``04-task-protocol.md`` §4.2.
+        ``worker_id`` is the claimant on whose behalf the submit is
+        being made (typically supplied by the binding from the
+        authenticated identity per
+        [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §3.3 / §4.1). The Store atomically checks
+        ``task.claim.worker_id == worker_id`` and writes
+        ``task.submitted_by = worker_id`` as part of the same
+        transition. Idempotent per §4.2.
         """
         ...
 

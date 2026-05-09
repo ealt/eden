@@ -75,17 +75,28 @@ class StoreClient:
         base_url: str,
         experiment_id: str,
         *,
+        bearer: str | None = None,
         token: str | None = None,
         client: httpx.Client | None = None,
         timeout: float = 30.0,
         read_back_attempts: int = 3,
     ) -> None:
+        """Construct a wire-binding client.
+
+        Authentication: ``bearer`` is the §13 bearer in
+        ``"<principal>:<secret>"`` form (e.g. ``"admin:<admin_token>"``
+        or ``"<worker_id>:<registration_token>"``). The ``token``
+        keyword is a backward-compatible alias for ``bearer`` retained
+        for callers that haven't yet adopted the new naming; if both
+        are provided, ``bearer`` wins.
+        """
         self._experiment_id = experiment_id
         self._base = f"{base_url.rstrip('/')}/v0/experiments/{experiment_id}"
         self._ref_base = f"{base_url.rstrip('/')}/_reference/experiments/{experiment_id}"
         self._headers: dict[str, str] = {"X-Eden-Experiment-Id": experiment_id}
-        if token is not None:
-            self._headers["Authorization"] = f"Bearer {token}"
+        effective_bearer = bearer or token
+        if effective_bearer is not None:
+            self._headers["Authorization"] = f"Bearer {effective_bearer}"
         self._owns_client = client is None
         self._client = client if client is not None else httpx.Client(timeout=timeout)
         self._read_back_attempts = read_back_attempts
@@ -119,13 +130,17 @@ class StoreClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
+        headers = self._headers
+        if extra_headers:
+            headers = {**headers, **extra_headers}
         resp = self._client.request(
             method,
             path,
             params=params,
             json=json,
-            headers=self._headers,
+            headers=headers,
         )
         if 400 <= resp.status_code < 600:
             body = self._maybe_json(resp)
@@ -280,18 +295,37 @@ class StoreClient:
         *,
         expires_at: datetime | str | None = None,
     ) -> TaskClaim:
-        body: dict[str, Any] = {"worker_id": worker_id}
+        # Per §2.3 + §13: the server takes the claimant worker_id from
+        # the authenticated bearer, not the request body. The
+        # ``worker_id`` parameter survives on the client API for
+        # symmetry with the in-process Store contract; the client
+        # forwards it through ``X-Eden-Worker-Id`` so test deployments
+        # without auth still see the right caller (auth-enabled
+        # deployments ignore the header in favor of the bearer).
+        body: dict[str, Any] = {}
         if expires_at is not None:
             body["expires_at"] = _as_wire_datetime(expires_at)
-        resp = self._request("POST", f"{self._base}/tasks/{task_id}/claim", json=body)
+        resp = self._request(
+            "POST",
+            f"{self._base}/tasks/{task_id}/claim",
+            json=body,
+            extra_headers={"X-Eden-Worker-Id": worker_id},
+        )
         return TaskClaim.model_validate(resp.json())
 
-    def submit(self, task_id: str, token: str, submission: Submission) -> None:
+    def submit(
+        self, task_id: str, worker_id: str, submission: Submission
+    ) -> None:
+        # Per §2.4 + §13: server forwards the authenticated worker_id
+        # to Store.submit; client passes the same identity for
+        # symmetry. ``X-Eden-Worker-Id`` carries the value when auth
+        # is disabled (test posture); under §13 auth the bearer wins.
         payload = _submission_to_wire(submission)
         self._request(
             "POST",
             f"{self._base}/tasks/{task_id}/submit",
-            json={"token": token, "payload": payload},
+            json={"payload": payload},
+            extra_headers={"X-Eden-Worker-Id": worker_id},
         )
 
     def accept(self, task_id: str) -> None:
@@ -409,74 +443,121 @@ class StoreClient:
         )
 
     # ------------------------------------------------------------------
-    # Worker registry (12a-1) — wire endpoints land in wave 3
+    # Worker registry (12a-1) — chapter 7 §6 + §13
     # ------------------------------------------------------------------
-    #
-    # `StoreClient` is declared as Protocol-compatible; the §13 worker /
-    # group endpoints from `spec/v0/07-wire-protocol.md` and the
-    # corresponding HTTP-binding implementation here both land in wave
-    # 3. The stubs below preserve type-conformance with the `Store`
-    # Protocol so wave-2 callsites (which still talk to backends
-    # directly) continue to typecheck. Calling these on a `StoreClient`
-    # in wave 2 is a programmer error and surfaces at runtime.
 
     def register_worker(
         self,
         worker_id: str,
         *,
         labels: dict[str, str] | None = None,
-        registered_by: str | None = None,
+        registered_by: str | None = None,  # noqa: ARG002 — set by server-side principal
     ) -> tuple[Worker, str | None]:
-        raise NotImplementedError("StoreClient.register_worker lands in 12a-1 wave 3")
+        body: dict[str, Any] = {"worker_id": worker_id}
+        if labels:
+            body["labels"] = dict(labels)
+        resp = self._request("POST", f"{self._base}/workers", json=body)
+        data = resp.json()
+        token = data.pop("registration_token", None)
+        worker = Worker.model_validate(data)
+        return (worker, token)
 
     def reissue_credential(self, worker_id: str) -> str:
-        raise NotImplementedError(
-            "StoreClient.reissue_credential lands in 12a-1 wave 3"
+        resp = self._request(
+            "POST", f"{self._base}/workers/{worker_id}/reissue-credential"
         )
+        data = resp.json()
+        token = data.get("registration_token")
+        if not isinstance(token, str):
+            msg = "reissue_credential response missing registration_token"
+            raise RuntimeError(msg)
+        return token
 
     def verify_worker_credential(
-        self, worker_id: str, registration_token: str
+        self, worker_id: str, registration_token: str  # noqa: ARG002
     ) -> bool:
-        raise NotImplementedError(
-            "StoreClient.verify_worker_credential lands in 12a-1 wave 3"
+        # The §13 verifier is not exposed as a wire endpoint — the
+        # bearer is the credential, and the auth middleware does the
+        # check inline. ``StoreClient`` exposes ``verify_worker_credential``
+        # for Protocol-compatibility with the in-process Store; the
+        # right way to verify a credential over the wire is to call
+        # ``GET /v0/.../whoami`` while authenticated as that worker
+        # and match the returned ``worker_id``.
+        msg = (
+            "StoreClient.verify_worker_credential is not bound; verify "
+            "out-of-band by issuing a request authenticated as the worker "
+            "(e.g. GET /v0/experiments/{E}/whoami) and inspecting the "
+            "response or 401 outcome"
         )
+        raise NotImplementedError(msg)
+
+    def whoami(self) -> str:
+        """Return the ``worker_id`` the bearer authenticates as (§6.4)."""
+        resp = self._request("GET", f"{self._base}/whoami")
+        return str(resp.json()["worker_id"])
 
     def read_worker(self, worker_id: str) -> Worker:
-        raise NotImplementedError("StoreClient.read_worker lands in 12a-1 wave 3")
+        resp = self._request("GET", f"{self._base}/workers/{worker_id}")
+        return Worker.model_validate(resp.json())
 
     def list_workers(self) -> list[Worker]:
-        raise NotImplementedError("StoreClient.list_workers lands in 12a-1 wave 3")
+        resp = self._request("GET", f"{self._base}/workers")
+        return [Worker.model_validate(w) for w in resp.json()["workers"]]
 
     def register_group(
         self,
         group_id: str,
         *,
         members: Iterable[str] | None = None,
-        created_by: str | None = None,
+        created_by: str | None = None,  # noqa: ARG002 — set by server-side principal
     ) -> Group:
-        raise NotImplementedError("StoreClient.register_group lands in 12a-1 wave 3")
+        body: dict[str, Any] = {"group_id": group_id}
+        if members is not None:
+            body["members"] = list(members)
+        resp = self._request("POST", f"{self._base}/groups", json=body)
+        return Group.model_validate(resp.json())
 
     def add_to_group(self, group_id: str, member_id: str) -> Group:
-        raise NotImplementedError("StoreClient.add_to_group lands in 12a-1 wave 3")
+        resp = self._request(
+            "POST",
+            f"{self._base}/groups/{group_id}/members",
+            json={"member_id": member_id},
+        )
+        return Group.model_validate(resp.json())
 
     def remove_from_group(self, group_id: str, member_id: str) -> Group:
-        raise NotImplementedError(
-            "StoreClient.remove_from_group lands in 12a-1 wave 3"
+        resp = self._request(
+            "DELETE",
+            f"{self._base}/groups/{group_id}/members/{member_id}",
         )
+        return Group.model_validate(resp.json())
 
     def delete_group(self, group_id: str) -> None:
-        raise NotImplementedError("StoreClient.delete_group lands in 12a-1 wave 3")
+        self._request("DELETE", f"{self._base}/groups/{group_id}")
 
     def read_group(self, group_id: str) -> Group:
-        raise NotImplementedError("StoreClient.read_group lands in 12a-1 wave 3")
+        resp = self._request("GET", f"{self._base}/groups/{group_id}")
+        return Group.model_validate(resp.json())
 
     def list_groups(self) -> list[Group]:
-        raise NotImplementedError("StoreClient.list_groups lands in 12a-1 wave 3")
+        resp = self._request("GET", f"{self._base}/groups")
+        return [Group.model_validate(g) for g in resp.json()["groups"]]
 
-    def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
-        raise NotImplementedError(
-            "StoreClient.resolve_worker_in_group lands in 12a-1 wave 3"
+    def resolve_worker_in_group(
+        self, worker_id: str, group_id: str  # noqa: ARG002
+    ) -> bool:
+        # Group-membership resolution is a Store-side computation;
+        # the wire does not expose it as a normative endpoint in
+        # 12a-1 (claim-time enforcement happens at the wire's claim
+        # handler, where the Store call resolves membership directly).
+        # Clients that need to resolve membership over the wire walk
+        # the group graph via read_group.
+        msg = (
+            "StoreClient.resolve_worker_in_group is not bound; "
+            "transitive membership is resolved by the Store at "
+            "claim time, or callers can walk read_group themselves"
         )
+        raise NotImplementedError(msg)
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:

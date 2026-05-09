@@ -121,7 +121,7 @@ class TestReadIsolation:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -131,7 +131,7 @@ class TestReadIsolation:
         sub = EvaluationSubmission(
             status="success", variant_id="variant-1", evaluation=original_evaluation
         )
-        store.submit("t-eval", ec.token, sub)
+        store.submit("t-eval", ec.worker_id, sub)
         # Mutate caller-owned metrics and the object returned from read.
         original_evaluation["score"] = 999.0
         read_back = store.read_submission("t-eval")
@@ -157,7 +157,7 @@ class TestSubmissionBinding:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -166,7 +166,7 @@ class TestSubmissionBinding:
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-eval",
-                eclaim.token,
+                eclaim.worker_id,
                 EvaluationSubmission(
                     status="success", variant_id="not-variant-1", evaluation={"score": 0.9}
                 ),
@@ -187,7 +187,7 @@ class TestSubmissionBinding:
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-a",
-                ca.token,
+                ca.worker_id,
                 VariantSubmission(status="success", variant_id="variant-b", commit_sha="b" * 40),
             )
 
@@ -200,7 +200,7 @@ class TestSubmissionBinding:
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-ideation",
-                claim.token,
+                claim.worker_id,
                 IdeaSubmission(status="success", idea_ids=("never-existed",)),
             )
 
@@ -226,7 +226,7 @@ class TestSubmissionBinding:
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-ideation",
-                claim.token,
+                claim.worker_id,
                 IdeaSubmission(status="success", idea_ids=("p-draft",)),
             )
 
@@ -245,7 +245,7 @@ class TestValidationErrorRouting:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha=None),
         )
         reason = store.validate_acceptance("t-exec")
@@ -262,7 +262,7 @@ class TestValidationErrorRouting:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -270,7 +270,7 @@ class TestValidationErrorRouting:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(status="success", variant_id="variant-1", evaluation=None),
         )
         reason = store.validate_acceptance("t-eval")
@@ -289,7 +289,7 @@ class TestValidationErrorRouting:
         # Claims success but omits commit_sha — must be routed to validation_error.
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha=None),
         )
 
@@ -323,7 +323,7 @@ class TestEvaluationSchemaEnforcement:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -331,7 +331,7 @@ class TestEvaluationSchemaEnforcement:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -355,7 +355,7 @@ class TestEvaluationSchemaEnforcement:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -363,7 +363,7 @@ class TestEvaluationSchemaEnforcement:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -388,7 +388,7 @@ class TestEvaluationSchemaEnforcement:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -396,7 +396,7 @@ class TestEvaluationSchemaEnforcement:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success", variant_id="variant-1", evaluation={"score": True}
             ),
@@ -425,7 +425,7 @@ class TestFieldValidationOnUpdate:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(
                 status="success", variant_id="variant-1", commit_sha="not-a-sha"
             ),
@@ -454,7 +454,7 @@ class TestFieldValidationOnUpdate:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -462,7 +462,7 @@ class TestFieldValidationOnUpdate:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -503,7 +503,7 @@ class TestEvaluateResubmitEquivalence:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -511,7 +511,7 @@ class TestEvaluateResubmitEquivalence:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -519,7 +519,7 @@ class TestEvaluateResubmitEquivalence:
                 artifacts_uri=artifacts_uri,
             ),
         )
-        return ec.token
+        return ec.worker_id
 
     def test_resubmit_differing_only_in_artifacts_uri_accepted(
         self, make_store: Callable[..., Store]
@@ -573,7 +573,7 @@ class TestAcceptRejectSymmetry:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="error", variant_id="variant-1"),
         )
         store.reject("t-exec", "worker_error")
@@ -601,7 +601,7 @@ class TestEvaluationSchemaValidationIndependentOfSuccess:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -609,7 +609,7 @@ class TestEvaluationSchemaValidationIndependentOfSuccess:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="error",
                 variant_id="variant-1",

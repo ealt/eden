@@ -342,7 +342,7 @@ def seed_evaluate_task(
 
     store.submit(
         exec_task_id,
-        exec_claim.token,
+        exec_claim.worker_id,
         VariantSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
     )
     store.accept(exec_task_id)

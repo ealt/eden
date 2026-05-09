@@ -176,7 +176,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
 
 
 _VALID_CLAIM = {
-    "token": "claim-1",
     "worker_id": "worker-a",
     "claimed_at": _DT,
 }
@@ -360,7 +359,7 @@ TASK_CASES: list[Case] = [
             "kind": "ideation",
             "state": "claimed",
             "payload": {"experiment_id": "exp-1"},
-            "claim": {"token": "c", "worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
+            "claim": {"worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
             "created_at": _DT,
             "updated_at": _DT,
         },

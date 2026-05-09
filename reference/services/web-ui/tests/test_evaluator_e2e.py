@@ -111,7 +111,6 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     experiment_id = "exp-eval-e2e"
-    token = "eval-e2e-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -129,8 +128,6 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -147,8 +144,6 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             task_store_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--session-secret",
@@ -183,7 +178,6 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             artifact_path = artifacts_dir / "p-eval.md"
@@ -217,7 +211,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             claim = seed.claim("t-exec-1", "executor-w")
             seed.submit(
                 "t-exec-1",
-                claim.token,
+                claim.worker_id,
                 VariantSubmission(
                     status="success", variant_id="variant-1", commit_sha="b" * 40
                 ),

@@ -34,8 +34,9 @@ from eden_storage import (
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     VariantSubmission,
-    WrongToken,
+    WrongClaimant,
 )
 from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
@@ -128,7 +129,7 @@ async def claim(
             url=f"/executor/?banner={banner}", status_code=303
         )
     variant_id = _new_variant_id()
-    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, variant_id)
+    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.worker_id, variant_id)
     return RedirectResponse(url=f"/executor/{task_id}/draft", status_code=303)
 
 
@@ -418,7 +419,7 @@ def _retry_submit_with_readback(
       Used for retry exhaustion where the read-back showed the
       claim is still ours, where it shows a different claim, or
       where the task has been reclaimed back to ``pending``;
-      and for the ``WrongToken`` short-circuit (the prior reclaim
+      and for the ``NotClaimed`` short-circuit (the prior reclaim
       already errored our variant).
     - ``("conflict", banner)`` — orphan page; a different
       submission won the race (``ConflictingResubmission`` short-
@@ -433,8 +434,8 @@ def _retry_submit_with_readback(
     Exception classification (per
     ``feedback_retry_readback_test_mocks.md`` rule 1):
 
-    - ``WrongToken`` and ``ConflictingResubmission`` are definitive
-      short-circuits. ``WrongToken`` only fires when
+    - ``NotClaimed`` and ``ConflictingResubmission`` are definitive
+      short-circuits. ``NotClaimed`` only fires when
       ``task.state == "claimed"`` with a non-matching token, which
       a successful prior submit never produces (submit preserves
       our token). ``ConflictingResubmission`` is the spec-defined
@@ -456,14 +457,19 @@ def _retry_submit_with_readback(
         try:
             store.submit(task_id, token, submission)
             return "ok", None
-        except WrongToken as exc:
-            return "auto", _wire_error_banner(exc)
-        except ConflictingResubmission as exc:
-            return "conflict", _wire_error_banner(exc)
-        except IllegalTransition as exc:
+        except (NotClaimed, WrongClaimant, IllegalTransition) as exc:
+            # 12a-1 atomic claim-match outcomes (NotClaimed,
+            # WrongClaimant) plus the residual IllegalTransition
+            # branch all share the same recovery shape: read-back
+            # resolves to one of state==pending (we lost), state in
+            # {completed, failed, submitted} with our equivalent
+            # prior (we won, response lost), or state with non-
+            # equivalent prior (conflict).
             last_exc = exc
             needs_readback = True
             break
+        except ConflictingResubmission as exc:
+            return "conflict", _wire_error_banner(exc)
         except Exception as exc:  # noqa: BLE001 — transport-shaped
             last_exc = exc
             time.sleep(delay)
@@ -496,9 +502,9 @@ def _readback(
         )
     state = task.state
     if state == "claimed":
-        if task.claim is not None and task.claim.token == token:
+        if task.claim is not None and task.claim.worker_id == token:
             return ("auto", f"transport failure after retries: {last_name}")
-        return "auto", "eden://error/wrong-token"
+        return "auto", "eden://error/not-claimed"
     if state in {"submitted", "completed", "failed"}:
         try:
             prior = store.read_submission(task_id)
@@ -637,7 +643,7 @@ def _iso(dt: Any) -> str:
 
 
 _ERROR_NAMES: dict[type, str] = {
-    WrongToken: "eden://error/wrong-token",
+    NotClaimed: "eden://error/not-claimed",
     IllegalTransition: "eden://error/illegal-transition",
     ConflictingResubmission: "eden://error/conflicting-resubmission",
     InvalidPrecondition: "eden://error/invalid-precondition",

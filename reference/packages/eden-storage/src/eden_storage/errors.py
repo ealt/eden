@@ -32,10 +32,6 @@ class IllegalTransition(StorageError):
     """Requested state transition is not in the state machine."""
 
 
-class WrongToken(StorageError):
-    """Operation presented a token that does not match the current claim."""
-
-
 class ConflictingResubmission(StorageError):
     """Resubmit disagreed with the previously-committed result payload."""
 

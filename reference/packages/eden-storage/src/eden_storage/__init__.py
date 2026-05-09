@@ -23,7 +23,6 @@ from .errors import (
     WorkerNotEligible,
     WorkerNotRegistered,
     WrongClaimant,
-    WrongToken,
 )
 from .memory import InMemoryStore
 from .postgres import PostgresStore
@@ -61,7 +60,6 @@ __all__ = [
     "WorkerNotEligible",
     "WorkerNotRegistered",
     "WrongClaimant",
-    "WrongToken",
     "iter_events_by_type",
     "submissions_equivalent",
 ]

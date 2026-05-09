@@ -135,14 +135,12 @@ class PostgresStore(_StoreBase):
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
-        token_factory: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(
             experiment_id,
             evaluation_schema=evaluation_schema,
             now=now,
             event_id_factory=event_id_factory,
-            token_factory=token_factory,
         )
         self._dsn = dsn
         # autocommit=True + explicit BEGIN/COMMIT per op mirrors

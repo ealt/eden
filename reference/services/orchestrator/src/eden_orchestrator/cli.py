@@ -9,6 +9,7 @@ from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
+    bearer_from_shared_token,
     configure_logging,
     get_logger,
     install_stop_handlers,
@@ -198,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     wait_for_task_store(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        token=args.shared_token,
+        token=bearer_from_shared_token(args.shared_token),
         deadline_seconds=args.startup_timeout,
     )
 
@@ -208,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
-        token=args.shared_token,
+        token=bearer_from_shared_token(args.shared_token),
     ) as client:
         repo = _ensure_repo(
             log=log,

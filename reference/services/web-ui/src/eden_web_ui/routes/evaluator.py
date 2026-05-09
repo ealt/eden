@@ -15,7 +15,7 @@ experiment's ``evaluation_schema``) → submit, which runs
    through to read-back rather than short-circuiting (so the
    "we won, the orchestrator already terminalized, our retry
    only saw the new state" case is correctly classified as
-   success). ``WrongToken`` and ``ConflictingResubmission``
+   success). ``NotClaimed`` and ``ConflictingResubmission``
    short-circuit (definitive). ``InvalidPrecondition`` re-renders
    the draft form with a wire-error banner so a fixable metric
    drift does not orphan the operator.
@@ -39,7 +39,8 @@ from eden_storage import (
     EvaluationSubmission,
     IllegalTransition,
     InvalidPrecondition,
-    WrongToken,
+    NotClaimed,
+    WrongClaimant,
 )
 from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
@@ -152,7 +153,7 @@ async def claim(
             ),
             status_code=303,
         )
-    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.token, variant_id)
+    _CLAIMS[_claim_key(session.csrf, task_id)] = (result.worker_id, variant_id)
     return RedirectResponse(url=f"/evaluator/{task_id}/draft", status_code=303)
 
 
@@ -332,7 +333,7 @@ def _retry_submit_with_readback(
     - ``("ok", None)`` — submit committed (clean call, retry, or
       read-back found an equivalent prior submission).
     - ``("auto", banner)`` — orphan page; auto-recovers via
-      reclaim. Used for ``WrongToken`` short-circuit, transport
+      reclaim. Used for ``NotClaimed`` short-circuit, transport
       retry exhaustion with claim still ours, and the read-back
       branch where the task has been reclaimed.
     - ``("conflict", banner)`` — orphan page; a different
@@ -353,19 +354,21 @@ def _retry_submit_with_readback(
         try:
             store.submit(task_id, token, submission)
             return "ok", None
-        except WrongToken as exc:
-            return "auto", _wire_error_banner(exc)
+        except (NotClaimed, WrongClaimant, IllegalTransition) as exc:
+            # 12a-1 atomic claim-match outcomes (NotClaimed,
+            # WrongClaimant) plus the residual IllegalTransition
+            # branch all share the same recovery shape: read-back
+            # resolves to one of state==pending (we lost), state in
+            # {completed, failed, submitted} with our equivalent
+            # prior (we won, response lost), or state with non-
+            # equivalent prior (conflict).
+            last_exc = exc
+            needs_readback = True
+            break
         except ConflictingResubmission as exc:
             return "conflict", _wire_error_banner(exc)
         except InvalidPrecondition as exc:
             return "invalid-precondition", _wire_error_banner(exc)
-        except IllegalTransition as exc:
-            # Could be: state==pending (we lost) | completed/failed
-            # (we won, orchestrator terminalized) | submitted by
-            # someone else (conflict). Read-back resolves it.
-            last_exc = exc
-            needs_readback = True
-            break
         except Exception as exc:  # noqa: BLE001 — transport-shaped
             last_exc = exc
             time.sleep(delay)
@@ -398,9 +401,9 @@ def _readback(
         )
     state = task.state
     if state == "claimed":
-        if task.claim is not None and task.claim.token == token:
+        if task.claim is not None and task.claim.worker_id == token:
             return ("auto", f"transport failure after retries: {last_name}")
-        return "auto", "eden://error/wrong-token"
+        return "auto", "eden://error/not-claimed"
     if state in {"submitted", "completed", "failed"}:
         try:
             prior = store.read_submission(task_id)
@@ -533,7 +536,7 @@ def _csrf_failure_response(request: Request | None = None) -> HTMLResponse:
 
 
 _ERROR_NAMES: dict[type, str] = {
-    WrongToken: "eden://error/wrong-token",
+    NotClaimed: "eden://error/not-claimed",
     IllegalTransition: "eden://error/illegal-transition",
     ConflictingResubmission: "eden://error/conflicting-resubmission",
     InvalidPrecondition: "eden://error/invalid-precondition",

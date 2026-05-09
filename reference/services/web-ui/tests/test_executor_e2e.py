@@ -141,7 +141,6 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
     artifacts_dir.mkdir()
     repo_dir = tmp_path / "bare-repo.git"
     experiment_id = "exp-impl-e2e"
-    token = "impl-e2e-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -175,8 +174,6 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -193,8 +190,6 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             task_store_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--session-secret",
@@ -229,7 +224,6 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             artifact_path = artifacts_dir / "p-impl.md"

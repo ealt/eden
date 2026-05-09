@@ -224,14 +224,18 @@ class TestConflictPath:
         other = store.claim(eval_id, "evaluator-other")
         store.submit(
             eval_id,
-            other.token,
+            other.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id=variant_id,
                 evaluation={"score": 0.123},
             ),
         )
-        # Our session's submit hits WrongToken because our claim is gone.
+        # Our session's submit hits WrongClaimant (claim now belongs
+        # to evaluator-other). The route routes that through read-back,
+        # which finds state=submitted with a non-equivalent prior →
+        # "conflict" (the other submission won the race; ours is
+        # orphaned and operator intervention is needed to replay).
         resp = _post_form(
             signed_in_client,
             f"/evaluator/{eval_id}/submit",
@@ -242,5 +246,4 @@ class TestConflictPath:
             ],
         )
         assert resp.status_code == 502
-        # WrongToken short-circuits to recovery_kind=auto.
-        assert "auto-recovers" in resp.text
+        assert "operator intervention" in resp.text

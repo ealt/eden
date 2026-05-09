@@ -51,13 +51,8 @@
     },
     "claim": {
       "type": "object",
-      "required": ["token", "worker_id", "claimed_at"],
+      "required": ["worker_id", "claimed_at"],
       "properties": {
-        "token": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Pre-12a-1 per-claim authentication token. Retained on the schema until the storage / wire wave drops it; documented as removed in spec/v0/02-data-model.md §3.4 prose."
-        },
         "worker_id": {
           "type": "string",
           "minLength": 1,

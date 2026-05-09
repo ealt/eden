@@ -39,9 +39,9 @@ from eden_storage import (
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     Store,
     VariantSubmission,
-    WrongToken,
 )
 from eden_storage.submissions import submissions_equivalent
 
@@ -165,7 +165,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
@@ -196,7 +196,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
@@ -220,7 +220,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
@@ -258,7 +258,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
@@ -274,7 +274,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
@@ -295,7 +295,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=VariantSubmission(
                 status="error", variant_id=variant_id, commit_sha=None
             ),
@@ -330,7 +330,7 @@ def _handle_one(
             _submit_with_readback(
                 store=store,
                 task_id=task.task_id,
-                token=claim.token,
+                token=claim.worker_id,
                 submission=VariantSubmission(
                     status="error", variant_id=variant_id, commit_sha=None
                 ),
@@ -341,7 +341,7 @@ def _handle_one(
     _submit_with_readback(
         store=store,
         task_id=task.task_id,
-        token=claim.token,
+        token=claim.worker_id,
         submission=VariantSubmission(
             status="success", variant_id=variant_id, commit_sha=commit_sha
         ),
@@ -517,7 +517,7 @@ def _submit_with_readback(
         try:
             store.submit(task_id, token, submission)
             return
-        except (WrongToken, ConflictingResubmission, InvalidPrecondition):
+        except (NotClaimed, ConflictingResubmission, InvalidPrecondition):
             return
         except IllegalTransition:
             # The task may already be terminal (we won, response

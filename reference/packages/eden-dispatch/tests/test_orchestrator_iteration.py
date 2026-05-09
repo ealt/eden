@@ -63,7 +63,7 @@ def test_accepts_submitted_ideation_task() -> None:
     claim = store.claim(task_id, worker_id="ideator-1")
     store.submit(
         task_id,
-        claim.token,
+        claim.worker_id,
         IdeaSubmission(status="success", idea_ids=()),
     )
     # Precondition.
@@ -185,7 +185,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     store.create_idea(idea)
     store.mark_idea_ready("idea-1")
     store.submit(
-        "t-ideation-1", claim.token, IdeaSubmission(status="success", idea_ids=("idea-1",))
+        "t-ideation-1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("idea-1",))
     )
     store.accept("t-ideation-1")
     # Execution-task
@@ -203,7 +203,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     store.create_variant(variant)
     store.submit(
         "t-exec-1",
-        claim.token,
+        claim.worker_id,
         VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
     )
     store.accept("t-exec-1")
@@ -212,7 +212,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     claim = store.claim("t-eval-1", "evaluator-1")
     store.submit(
         "t-eval-1",
-        claim.token,
+        claim.worker_id,
         EvaluationSubmission(status="success", variant_id="variant-1", evaluation={"loss": 0.5}),
     )
     store.accept("t-eval-1")
@@ -302,7 +302,7 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     store.create_variant(good_variant)
     store.submit(
         "t-exec-good",
-        claim.token,
+        claim.worker_id,
         VariantSubmission(status="success", variant_id="variant-good", commit_sha="d" * 40),
     )
     store.accept("t-exec-good")
@@ -310,7 +310,7 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     eclaim = store.claim("t-eval-good", "evaluator-1")
     store.submit(
         "t-eval-good",
-        eclaim.token,
+        eclaim.worker_id,
         EvaluationSubmission(status="success", variant_id="variant-good", evaluation={"loss": 0.4}),
     )
     store.accept("t-eval-good")

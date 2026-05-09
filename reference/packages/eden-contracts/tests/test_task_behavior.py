@@ -17,7 +17,6 @@ from pydantic import ValidationError
 
 def _claim() -> dict[str, str]:
     return {
-        "token": "c",
         "worker_id": "w",
         "claimed_at": "2026-04-23T12:00:00Z",
     }

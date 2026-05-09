@@ -97,7 +97,7 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
     c = store.claim(f"t-bootstrap-{variant_id}", "execution-bootstrap")
     store.submit(
         f"t-bootstrap-{variant_id}",
-        c.token,
+        c.worker_id,
         VariantSubmission(status="success", variant_id=variant_id, commit_sha="b" * 40),
     )
     store.accept(f"t-bootstrap-{variant_id}")

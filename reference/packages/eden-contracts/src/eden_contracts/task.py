@@ -27,17 +27,15 @@ _CLAIM_STATES: frozenset[str] = frozenset({"claimed", "submitted"})
 class TaskClaim(BaseModel):
     """Claim record on a `claimed`/`submitted` task.
 
-    Per spec/v0/04-task-protocol.md §3 / §4 (12a-1), claim-ownership is
+    Per spec/v0/04-task-protocol.md §3 / §4, claim-ownership is
     enforced by matching the authenticated ``worker_id`` to
     ``claim.worker_id`` atomically with the submit transition. The
-    pre-12a-1 ``token`` field is retained on this model as required for
-    multi-wave compatibility with downstream packages; the token removal
-    lands in lockstep with the storage / wire wave.
+    pre-12a-1 ``token`` field has been removed; the schema and the
+    Pydantic model are now in lockstep with the spec.
     """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    token: Annotated[str, Field(min_length=1)]
     worker_id: WorkerId
     claimed_at: DateTimeStr
     expires_at: Annotated[DateTimeStr | None, NotNone] = None

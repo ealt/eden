@@ -60,12 +60,19 @@ def build_store(
 def build_app(
     *,
     store: Store,
-    shared_token: str | None = None,
+    admin_token: str | None = None,
     subscribe_timeout: float = 30.0,
 ) -> FastAPI:
-    """Build the FastAPI app that wraps ``store`` with optional auth."""
+    """Build the FastAPI app that wraps ``store`` with the §13 auth middleware.
+
+    ``admin_token`` is the deployment's ``EDEN_ADMIN_TOKEN``; when
+    ``None``, the server runs unauthenticated (test / in-process
+    posture). 12a-1 wave 3 replaced the pre-12a-1 ``shared_token``
+    parameter with this admin / per-worker scheme; the storage-side
+    ``Store.verify_worker_credential`` handles per-worker bearers.
+    """
     return make_app(
         store,
-        shared_token=shared_token,
+        admin_token=admin_token,
         subscribe_timeout=subscribe_timeout,
     )

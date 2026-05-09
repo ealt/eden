@@ -23,21 +23,12 @@ import pytest
 from eden_storage import InMemoryStore, PostgresStore, SqliteStore, Store
 
 
-@pytest.fixture
-def token_sequence() -> Callable[[], str]:
-    """Deterministic claim-token factory for token-comparison assertions."""
-    counter = itertools.count(1)
-    return lambda: f"tok-{next(counter):06d}"
-
-
 def _memory_factory(
-    token_factory: Callable[[], str],
     tmp_path: Path,  # noqa: ARG001 - accepted for uniform factory signature
 ) -> Callable[..., Store]:
     def _make(experiment_id: str = "exp-test", **kwargs: Any) -> Store:
         return InMemoryStore(
             experiment_id=experiment_id,
-            token_factory=token_factory,
             **kwargs,
         )
 
@@ -45,7 +36,6 @@ def _memory_factory(
 
 
 def _sqlite_factory(
-    token_factory: Callable[[], str],
     tmp_path: Path,
 ) -> Callable[..., Store]:
     counter = itertools.count(1)
@@ -58,7 +48,6 @@ def _sqlite_factory(
         return SqliteStore(
             experiment_id,
             db_path,
-            token_factory=token_factory,
             **kwargs,
         )
 
@@ -66,7 +55,6 @@ def _sqlite_factory(
 
 
 def _postgres_factory(
-    token_factory: Callable[[], str],
     tmp_path: Path,  # noqa: ARG001 - uniform factory signature
     dsn: str,
     cleanup: list[Callable[[], None]],
@@ -106,7 +94,6 @@ def _postgres_factory(
         store = PostgresStore(
             experiment_id,
             store_dsn,
-            token_factory=token_factory,
             **kwargs,
         )
 
@@ -135,7 +122,6 @@ _BACKEND_NAMES: list[str] = ["memory", "sqlite", "postgres"]
 @pytest.fixture(params=_BACKEND_NAMES, ids=_BACKEND_NAMES)
 def make_store(
     request: pytest.FixtureRequest,
-    token_sequence: Callable[[], str],
     tmp_path: Path,
 ) -> Iterator[Callable[..., Store]]:
     """Factory fixture parametrized across every backend.
@@ -146,10 +132,10 @@ def make_store(
     """
     name = request.param
     if name == "memory":
-        yield _memory_factory(token_sequence, tmp_path)
+        yield _memory_factory(tmp_path)
         return
     if name == "sqlite":
-        yield _sqlite_factory(token_sequence, tmp_path)
+        yield _sqlite_factory(tmp_path)
         return
     if name == "postgres":
         dsn = _postgres_dsn()
@@ -157,7 +143,7 @@ def make_store(
             pytest.skip("EDEN_TEST_POSTGRES_DSN not set")
         cleanup: list[Callable[[], None]] = []
         try:
-            yield _postgres_factory(token_sequence, tmp_path, dsn, cleanup)
+            yield _postgres_factory(tmp_path, dsn, cleanup)
         finally:
             for fn in reversed(cleanup):
                 with contextlib.suppress(Exception):

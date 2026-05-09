@@ -60,7 +60,7 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
 
     store.submit(
         "execution-1",
-        claim.token,
+        claim.worker_id,
         VariantSubmission(status="success", variant_id="variant-t1", commit_sha=seed_sha),
     )
     # Drive accept so the variant picks up commit_sha and we can dispatch evaluate.

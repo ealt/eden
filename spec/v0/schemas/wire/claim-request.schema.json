@@ -1,16 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN wire — claim request",
-  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/claim. See 07-wire-protocol.md §2.3 and 04-task-protocol.md §3.",
+  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/claim. The claimant worker_id is taken from the authenticated bearer (07-wire-protocol.md §2.3, §13). See also 04-task-protocol.md §3.",
   "type": "object",
-  "required": ["worker_id"],
   "additionalProperties": false,
   "properties": {
-    "worker_id": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Identifier the worker supplies at claim time (04-task-protocol.md §3.2)."
-    },
     "expires_at": {
       "type": "string",
       "format": "date-time",

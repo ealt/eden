@@ -19,6 +19,7 @@ import uvicorn
 from eden_git import GitRepo
 from eden_service_common import (
     add_common_arguments,
+    bearer_from_shared_token,
     get_logger,
     load_experiment_config,
     parse_log_level,
@@ -188,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     store = StoreClient(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        token=args.shared_token,
+        token=bearer_from_shared_token(args.shared_token),
     )
     app = make_app(
         store=store,

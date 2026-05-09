@@ -36,8 +36,8 @@ from eden_storage import (
     EvaluationSubmission,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     Store,
-    WrongToken,
 )
 from eden_storage.submissions import submissions_equivalent
 
@@ -168,7 +168,7 @@ def _handle_one(
             _submit_with_readback(
                 store=store,
                 task_id=task.task_id,
-                token=claim.token,
+                token=claim.worker_id,
                 submission=EvaluationSubmission(
                     status="evaluation_error",
                     variant_id=variant_id,
@@ -193,7 +193,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=EvaluationSubmission(
                 status="evaluation_error",
                 variant_id=variant_id,
@@ -238,7 +238,7 @@ def _handle_one(
     _submit_with_readback(
         store=store,
         task_id=task.task_id,
-        token=claim.token,
+        token=claim.worker_id,
         submission=submission,
     )
 
@@ -421,7 +421,7 @@ def _submit_with_readback(
         try:
             store.submit(task_id, token, submission)
             return
-        except (WrongToken, ConflictingResubmission, InvalidPrecondition):
+        except (NotClaimed, ConflictingResubmission, InvalidPrecondition):
             return
         except IllegalTransition:
             last_exc = None

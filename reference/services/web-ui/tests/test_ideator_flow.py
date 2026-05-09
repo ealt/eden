@@ -401,17 +401,17 @@ class TestDefinitiveSubmitErrors:
         store: InMemoryStore,
         monkeypatch,
     ) -> None:
-        from eden_storage import WrongToken
+        from eden_storage import NotClaimed
 
         token = self._setup_claim(signed_in_client, store, "t-wt")
 
         def fail(*args, **kwargs):
-            raise WrongToken("wrong token")
+            raise NotClaimed("wrong token")
 
         monkeypatch.setattr(store, "submit", fail)
         resp = self._submit(signed_in_client, "t-wt", token)
         assert resp.status_code == 502
-        assert "eden://error/wrong-token" in resp.text
+        assert "eden://error/not-claimed" in resp.text
         assert len(store.list_ideas(state="ready")) == 1
 
     def test_illegal_transition_feeds_readback(
@@ -657,7 +657,7 @@ class TestIllegalTransitionReadback:
         monkeypatch.setattr(store, "submit", fake_submit)
         resp = self._submit(signed_in_client, "t-wt2", csrf)
         assert resp.status_code == 502
-        assert "eden://error/wrong-token" in resp.text
+        assert "eden://error/not-claimed" in resp.text
 
 
 class TestRetryBeforeOrphan:

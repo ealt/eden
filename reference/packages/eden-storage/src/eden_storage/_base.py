@@ -78,9 +78,10 @@ from .errors import (
     CycleDetected,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     NotFound,
     ReservedIdentifier,
-    WrongToken,
+    WrongClaimant,
 )
 from .submissions import (
     EvaluationSubmission,
@@ -191,14 +192,12 @@ class _StoreBase:
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
-        token_factory: Callable[[], str] | None = None,
     ) -> None:
         self._experiment_id = experiment_id
         self._evaluation_schema = evaluation_schema
         self._now = now or (lambda: datetime.now(UTC))
         self._event_ids = itertools.count(1)
         self._event_id_factory = event_id_factory or self._default_event_id
-        self._token_factory = token_factory or (lambda: secrets.token_hex(16))
 
     def _default_event_id(self) -> str:
         return f"evt-{next(self._event_ids):06d}"
@@ -606,7 +605,9 @@ class _StoreBase:
         """Transition a pending task to claimed. Returns the issued claim.
 
         Rejects if the task is not in ``pending`` state
-        (``04-task-protocol.md`` §3.4). Issues a fresh token.
+        (``04-task-protocol.md`` §3.4). The Store trusts the supplied
+        ``worker_id`` as data — authentication of the caller against
+        that id is the binding's responsibility (§3.3).
         """
         with self._atomic_operation():
             task = self._require_task(task_id)
@@ -616,7 +617,6 @@ class _StoreBase:
                 )
             claimed_at = self._ts()
             claim_kwargs: dict[str, Any] = {
-                "token": self._token_factory(),
                 "worker_id": worker_id,
                 "claimed_at": claimed_at,
             }
@@ -638,22 +638,47 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(claim)
 
-    def submit(self, task_id: str, token: str, submission: Submission) -> None:
+    def submit(
+        self, task_id: str, worker_id: str, submission: Submission
+    ) -> None:
         """Transition a claimed task to submitted, persisting the result.
 
-        Idempotent per ``04-task-protocol.md`` §4.2: a resubmit with
-        the current token and a content-equivalent payload MUST
-        succeed without mutating state; an inconsistent resubmit MUST
-        be rejected.
+        Per ``04-task-protocol.md`` §4.1, the atomic claim-match
+        ``task.claim.worker_id == worker_id`` runs **as part of the
+        submit transition** — a non-atomic "read claim, compare, then
+        write" sequence would introduce a TOCTOU race against reclaim.
+        Mismatches raise ``WrongClaimant`` (claim exists, different
+        worker) or ``NotClaimed`` (claim cleared / task not in
+        ``claimed``).
+
+        Idempotent per §4.2: a resubmit by the same claimant with a
+        content-equivalent payload MUST succeed without mutating state;
+        an inconsistent resubmit MUST be rejected. Authentication of
+        the caller against ``worker_id`` is the binding's
+        responsibility (§3.3); the Store trusts the parameter as data.
+
+        Atomically writes ``task.submitted_by = worker_id`` so the
+        claimant identity survives the terminal transitions that clear
+        ``claim``.
         """
         with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state not in {"claimed", "submitted"}:
-                raise IllegalTransition(
-                    f"cannot submit task in state {task.state!r}"
+                # NotClaimed covers reclaimed-or-terminal tasks; non-claimed
+                # states all share the inverse of the §4.1 step-1 precondition.
+                raise NotClaimed(
+                    f"task {task_id!r} is in state {task.state!r}, not 'claimed'"
                 )
-            if task.claim is None or task.claim.token != token:
-                raise WrongToken(f"token does not match current claim on {task_id!r}")
+            if task.claim is None:
+                raise NotClaimed(
+                    f"task {task_id!r} has no active claim (claim cleared by reclaim "
+                    "or terminal transition)"
+                )
+            if task.claim.worker_id != worker_id:
+                raise WrongClaimant(
+                    f"submit by worker_id={worker_id!r} does not match "
+                    f"task.claim.worker_id={task.claim.worker_id!r}"
+                )
             self._require_submission_kind_matches(task, submission)
             self._validate_submission_ref_binding(task, submission)
 
@@ -671,7 +696,9 @@ class _StoreBase:
 
             now = self._ts()
             tx = _Tx()
-            tx.tasks[task_id] = _validated_update(task, state="submitted", updated_at=now)
+            tx.tasks[task_id] = _validated_update(
+                task, state="submitted", submitted_by=worker_id, updated_at=now
+            )
             tx.submissions[task_id] = copy.deepcopy(submission)
             tx.events.append(self._event("task.submitted", {"task_id": task_id}))
             self._apply_commit(tx)

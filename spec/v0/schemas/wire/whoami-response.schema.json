@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — whoami response",
+  "description": "Response body for GET /v0/experiments/{E}/whoami (07-wire-protocol.md §6.4). Returns the worker_id whose credential authenticated the request.",
+  "type": "object",
+  "required": ["worker_id"],
+  "additionalProperties": false,
+  "properties": {
+    "worker_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    }
+  }
+}

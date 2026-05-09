@@ -119,7 +119,7 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
     from eden_dispatch import IdeaSubmission
 
     store.submit(
-        "ideation-1", claim.token, IdeaSubmission(status="success", idea_ids=("p-mp",))
+        "ideation-1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p-mp",))
     )
     store.accept("ideation-1")
     store.create_execution_task("execution-1", "p-mp")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from .cli import (
     add_common_arguments,
     add_exec_arguments,
+    bearer_from_shared_token,
     parse_log_level,
     resolve_exec_args,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "VolumeMount",
     "add_common_arguments",
     "add_exec_arguments",
+    "bearer_from_shared_token",
     "cleanup_cidfile",
     "configure_logging",
     "get_logger",

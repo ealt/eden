@@ -16,11 +16,11 @@ from eden_storage import (
     IllegalTransition,
     InMemoryStore,
     InvalidPrecondition,
+    NotClaimed,
     NotFound,
     SqliteStore,
     Store,
     VariantSubmission,
-    WrongToken,
 )
 
 from .driver import run_orchestrator_iteration
@@ -43,7 +43,7 @@ __all__ = [
     "ScriptedIdeator",
     "SqliteStore",
     "Store",
-    "WrongToken",
+    "NotClaimed",
     "run_orchestrator_iteration",
     "sweep_expired_claims",
 ]

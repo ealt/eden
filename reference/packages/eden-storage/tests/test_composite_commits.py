@@ -103,7 +103,7 @@ class TestImplementTerminalComposite:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -123,7 +123,7 @@ class TestImplementTerminalComposite:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="error", variant_id="variant-1"),
         )
         store.reject("t-exec", "worker_error")
@@ -143,7 +143,7 @@ class TestEvaluateTerminalComposite:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -155,7 +155,7 @@ class TestEvaluateTerminalComposite:
         claim = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            claim.token,
+            claim.worker_id,
             EvaluationSubmission(
                 status="success", variant_id="variant-1", evaluation={"score": 0.9}
             ),
@@ -175,7 +175,7 @@ class TestEvaluateTerminalComposite:
         claim = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            claim.token,
+            claim.worker_id,
             EvaluationSubmission(status="error", variant_id="variant-1", evaluation={"score": 0.0}),
         )
         store.reject("t-eval", "worker_error")
@@ -195,7 +195,7 @@ class TestEvaluateTerminalComposite:
         claim = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            claim.token,
+            claim.worker_id,
             EvaluationSubmission(
                 status="evaluation_error",
                 variant_id="variant-1",
@@ -243,7 +243,7 @@ class TestEvalErrorTerminalComposite:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -268,7 +268,7 @@ class TestIntegrationComposite:
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         store.accept("t-exec")
@@ -276,7 +276,7 @@ class TestIntegrationComposite:
         ec = store.claim("t-eval", "evaluator-w")
         store.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success", variant_id="variant-1", evaluation={"score": 0.9}
             ),
@@ -308,7 +308,7 @@ class TestPlanSubmissionNoCompositeIdeaEvent:
         store = make_store()
         store.create_ideation_task("t-ideation")
         claim = store.claim("t-ideation", "ideator-w")
-        store.submit("t-ideation", claim.token, IdeaSubmission(status="success"))
+        store.submit("t-ideation", claim.worker_id, IdeaSubmission(status="success"))
         store.accept("t-ideation")
         types = _type_sequence(store)
         # ideation-task terminal transitions aren't in the composite list;

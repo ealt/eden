@@ -118,7 +118,7 @@ The `payload` object's shape depends on `kind`.
 
 The `claim` field MUST be present when `state ∈ {"claimed", "submitted"}` and MUST NOT be present for any other state. The claim is retained through `"submitted"` so that the task protocol can authorize resubmission by matching the authenticated worker's id against `claim.worker_id` ([`04-task-protocol.md`](04-task-protocol.md) §4.2); it is cleared on reclamation and on the terminal transition to `"completed"` or `"failed"`. The schema in [`schemas/task.schema.json`](schemas/task.schema.json) enforces this presence rule.
 
-As of 12a-1, claim ownership is established by matching the authenticated worker's id (per the binding's authentication scheme) against `claim.worker_id` atomically with the submit transition; the prior per-claim `token` field has lost its authentication role. The schema retains `token` as a required field on the `claim` object during the multi-wave land of 12a-1 to keep downstream packages compiling; the post-wave normative spec drops it. Conforming implementations MUST NOT rely on `token` for authentication or single-writer protection; they MAY emit the field for backwards-compat but the protocol's authority moves entirely to `claim.worker_id`.
+A `claim` object MUST NOT carry an opaque per-claim token. The pre-12a-1 `token` field has been removed: claim ownership is now established by matching the authenticated worker's id (per the binding's authentication scheme) against `claim.worker_id` atomically with the submit transition, eliminating the prior token's authentication role and the application-scoped claim it produced.
 
 ### 3.5 Target object
 

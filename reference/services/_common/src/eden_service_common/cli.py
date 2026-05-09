@@ -46,9 +46,13 @@ def add_common_arguments(
         "--shared-token",
         default=None,
         help=(
-            "Reference-only shared bearer token. If set, passed as "
-            "'Authorization: Bearer <token>' on every request (see "
-            "07-wire-protocol.md §12)."
+            "Wave-3 transitional bearer. Passed as 'Authorization: Bearer "
+            "<bearer>' on every request to the task-store. The §13 auth "
+            "middleware requires a '<principal>:<secret>' shape: bare "
+            "values are auto-prefixed with 'admin:' so the worker host "
+            "acts as the admin during 12a-1's multi-wave migration. "
+            "Wave 4 replaces this flag with per-worker --worker-id / "
+            "--worker-credential."
         ),
     )
     parser.add_argument(
@@ -57,6 +61,24 @@ def add_common_arguments(
         choices=list(_LOG_LEVELS),
         help="Log level (default: info).",
     )
+
+
+def bearer_from_shared_token(value: str | None) -> str | None:
+    """Normalize ``--shared-token`` to a §13-compliant bearer.
+
+    Wave-3 transitional helper. The §13 bearer format is
+    ``<principal>:<secret>``; bare strings without ``:`` are
+    interpreted as the admin token (so worker hosts authenticate as
+    the deployment admin during 12a-1's multi-wave migration). A value
+    that already contains ``:`` is forwarded unchanged so wave-4
+    callers can pass ``<worker_id>:<credential>`` once each host
+    registers itself.
+    """
+    if value is None:
+        return None
+    if ":" in value:
+        return value
+    return f"admin:{value}"
 
 
 def parse_log_level(value: str) -> int:

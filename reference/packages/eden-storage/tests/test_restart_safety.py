@@ -17,7 +17,6 @@ the same semantics hold *across* a process boundary.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -37,17 +36,12 @@ from eden_storage import (
 )
 
 
-def _token_seq() -> Callable[[], str]:
-    counter = iter(range(1, 10_000))
-    return lambda: f"tok-{next(counter):06d}"
-
-
 class TestStateSurvivesReopen:
     """Every acknowledged write (§3.1) MUST be visible after reopen."""
 
     def test_tasks_ideas_variants_and_events_survive(self, tmp_path: Path) -> None:
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
         first.create_idea(
             Idea(
                 idea_id="p1",
@@ -76,7 +70,7 @@ class TestStateSurvivesReopen:
         )
         first.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         first.accept("t-exec")
@@ -96,7 +90,7 @@ class TestStateSurvivesReopen:
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
         first.create_ideation_task("t-ideation")
         claim = first.claim("t-ideation", "ideator-w")
         first.close()
@@ -105,16 +99,16 @@ class TestStateSurvivesReopen:
         task = second.read_task("t-ideation")
         assert task.state == "claimed"
         assert task.claim is not None
-        assert task.claim.token == claim.token
+        assert task.claim.worker_id == claim.worker_id
         # The persisted token authorizes a fresh submit on the reopened store.
-        second.submit("t-ideation", claim.token, IdeaSubmission(status="success"))
+        second.submit("t-ideation", claim.worker_id, IdeaSubmission(status="success"))
         assert second.read_task("t-ideation").state == "submitted"
         second.close()
 
     def test_event_order_total_and_preserved(self, tmp_path: Path) -> None:
         """§2.2 single total order; §4.4 full replay from first event."""
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
         first.create_ideation_task("t1")
         first.create_ideation_task("t2")
         before = [e.event_id for e in first.events()]
@@ -237,11 +231,10 @@ class TestExperimentIdentityIsEnforced:
             "exp-a",
             path,
             evaluation_schema=EvaluationSchema({"score": "integer"}),
-            token_factory=_token_seq(),
         )
         first.close()
 
-        second = SqliteStore("exp-a", path, token_factory=_token_seq())
+        second = SqliteStore("exp-a", path)
         # Drive a full variant to the point of an evaluation-task submission and
         # assert the inherited schema rejects a wrong-type metric.
         second.create_idea(
@@ -272,7 +265,7 @@ class TestExperimentIdentityIsEnforced:
         )
         second.submit(
             "t-exec",
-            c.token,
+            c.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         second.accept("t-exec")
@@ -280,7 +273,7 @@ class TestExperimentIdentityIsEnforced:
         ec = second.claim("t-eval", "evaluator-w")
         second.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -308,7 +301,7 @@ class TestCrashRecoveryRollsBackPartialWrites:
         pre-operation checkpoint.
         """
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
         first.create_idea(
             Idea(
                 idea_id="p1",
@@ -355,7 +348,6 @@ class TestRunExperimentAcrossRestarts:
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "eden.db"
-        token_factory = _token_seq()
 
         idea_ids = iter([f"idea-{i:02d}" for i in range(1, 10)])
         variant_ids = iter([f"variant-{i:02d}" for i in range(1, 10)])
@@ -393,7 +385,7 @@ class TestRunExperimentAcrossRestarts:
             "execution-1", exec_fn, variant_id_factory=lambda: next(variant_ids), now=now
         )
 
-        first = SqliteStore("exp-r", path, token_factory=token_factory)
+        first = SqliteStore("exp-r", path)
         # Run ideator + executor only; leave variant awaiting evaluation.
         first.create_ideation_task("t-ideation-01")
         ideator.run_pending(first)
@@ -411,7 +403,7 @@ class TestRunExperimentAcrossRestarts:
 
         # Reopen; finish the experiment with a fresh evaluator.
         evaluator = ScriptedEvaluator("eval-1", eval_fn)
-        second = SqliteStore("exp-r", path, token_factory=token_factory)
+        second = SqliteStore("exp-r", path)
         second.create_evaluation_task(next(eval_task_ids), "variant-01")
         evaluator.run_pending(second)
         decision, _ = second.validate_terminal("t-eval-01")
@@ -442,7 +434,7 @@ class TestEventLogRetention:
 
     def test_close_reopen_preserves_every_event(self, tmp_path: Path) -> None:
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
         for i in range(5):
             first.create_ideation_task(f"t-{i:02d}")
         seen = [(e.event_id, e.type) for e in first.events()]

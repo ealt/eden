@@ -319,7 +319,7 @@ def handle_ideation_task(
             "ideator_dispatch_failed",
             extra={"task_id": task.task_id, "error": str(exc)},
         )
-        store.submit(task.task_id, claim.token, IdeaSubmission(status="error"))
+        store.submit(task.task_id, claim.worker_id, IdeaSubmission(status="error"))
         raise
     if terminator.get("event") == "ideation-error":
         log.warning(
@@ -330,7 +330,7 @@ def handle_ideation_task(
                 "ideas_seen": len(ideas),
             },
         )
-        store.submit(task.task_id, claim.token, IdeaSubmission(status="error"))
+        store.submit(task.task_id, claim.worker_id, IdeaSubmission(status="error"))
         return
     try:
         ids = _persist_ideas(
@@ -341,11 +341,11 @@ def handle_ideation_task(
             "ideator_idea_invalid",
             extra={"task_id": task.task_id, "error": str(exc)},
         )
-        store.submit(task.task_id, claim.token, IdeaSubmission(status="error"))
+        store.submit(task.task_id, claim.worker_id, IdeaSubmission(status="error"))
         return
     store.submit(
         task.task_id,
-        claim.token,
+        claim.worker_id,
         IdeaSubmission(status="success", idea_ids=tuple(ids)),
     )
 

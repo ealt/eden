@@ -10,7 +10,7 @@ from pathlib import Path
 from eden_contracts import ExperimentConfig, IdeationTask
 from eden_dispatch import ScriptedIdeator
 from eden_service_common import StopFlag, get_logger, make_plan_fn
-from eden_storage import IllegalTransition, Store, WrongToken
+from eden_storage import IllegalTransition, NotClaimed, Store
 
 from .subprocess_mode import (
     IdeatorSubprocess,
@@ -136,7 +136,7 @@ def run_ideator_subprocess_loop(
                         evaluation_schema=evaluation_schema,
                         artifacts_dir=artifacts_dir,
                     )
-                except (WrongToken, IllegalTransition) as exc:
+                except (NotClaimed, IllegalTransition) as exc:
                     # Another worker won the claim race or the task
                     # is no longer pending. This is a normal
                     # operational condition; the subprocess stays.

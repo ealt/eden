@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — register-group request",
+  "description": "Request body for POST /v0/experiments/{E}/groups (07-wire-protocol.md §7.1). Admin-gated.",
+  "type": "object",
+  "required": ["group_id"],
+  "additionalProperties": false,
+  "properties": {
+    "group_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      }
+    }
+  }
+}

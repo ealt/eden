@@ -107,7 +107,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     experiment_id = "exp-admin-e2e"
-    token = "admin-e2e-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -125,8 +124,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -143,8 +140,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             task_store_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--session-secret",
@@ -176,7 +171,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             seed.create_ideation_task("t-ideation-1")
@@ -221,7 +215,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
         verify = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             task = verify.read_task("t-ideation-1")

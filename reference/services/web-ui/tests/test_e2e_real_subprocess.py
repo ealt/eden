@@ -115,7 +115,6 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
     experiment_id = "exp-web-ui-e2e"
-    token = "e2e-test-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -133,8 +132,6 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -151,8 +148,6 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             task_store_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--session-secret",
@@ -185,7 +180,6 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             seed.create_ideation_task("t-ui-1")
@@ -294,7 +288,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     seed_bare_repo(str(bare_repo))
 
     experiment_id = "exp-strand"
-    token = "strand-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -312,8 +305,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -330,8 +321,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             task_store_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--session-secret",
@@ -364,7 +353,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             seed.create_ideation_task("t-strand")
@@ -401,8 +389,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 task_store_url,
                 "--experiment-id",
                 experiment_id,
-                "--shared-token",
-                token,
                 "--repo-path",
                 str(bare_repo),
                 "--ideation-tasks",
@@ -435,7 +421,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         client = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             assert client.read_task("t-strand").state == "pending"

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — register-worker request",
+  "description": "Request body for POST /v0/experiments/{E}/workers (07-wire-protocol.md §6.1). Admin-gated.",
+  "type": "object",
+  "required": ["worker_id"],
+  "additionalProperties": false,
+  "properties": {
+    "worker_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "labels": {
+      "type": "object",
+      "description": "Free-form deployment metadata; protocol does not interpret labels.",
+      "additionalProperties": {"type": "string"}
+    }
+  }
+}
