@@ -88,7 +88,14 @@ def _dispatch_execution_tasks(
     store: Store, factory: Callable[[], str]
 ) -> bool:
     progress = False
-    for idea in store.list_ideas(state="ready"):
+    # Sort by descending priority (higher priority dispatches earlier per
+    # spec/v0/02-data-model.md §5.1 and spec/v0/03-roles.md §2.3 / §2.4);
+    # idea_id is a stable tiebreak for equal-priority cases.
+    ideas = sorted(
+        store.list_ideas(state="ready"),
+        key=lambda idea: (-idea.priority, idea.idea_id),
+    )
+    for idea in ideas:
         task_id = factory()
         store.create_execution_task(task_id, idea.idea_id)
         progress = True
