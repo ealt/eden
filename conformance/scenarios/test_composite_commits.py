@@ -106,7 +106,7 @@ def test_execution_terminal_fails_idea(
     _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=exec_claim["token"],
+        worker_id=exec_claim["worker_id"],
         variant_id=variant_id,
         status="error",
     )
@@ -161,7 +161,7 @@ def test_evaluate_terminal_error_emits_variant_errored(
     _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=eval_claim["token"],
+        worker_id=eval_claim["worker_id"],
         variant_id=variant_id,
         status="error",
     )
@@ -196,7 +196,7 @@ def test_evaluate_terminal_eval_error_keeps_variant_starting(
     _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=eval_claim["token"],
+        worker_id=eval_claim["worker_id"],
         variant_id=variant_id,
         status="evaluation_error",
     )

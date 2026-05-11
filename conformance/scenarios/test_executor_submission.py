@@ -26,7 +26,7 @@ def test_submit_with_unknown_variant_rejected(wire_client: WireClient) -> None:
     r = _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id="does-not-exist",
         commit_sha="a" * 40,
     )
@@ -54,7 +54,7 @@ def test_submit_with_wrong_idea_variant_rejected(wire_client: WireClient) -> Non
     r = _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=foreign_variant,
         commit_sha="a" * 40,
     )
@@ -85,7 +85,7 @@ def test_success_without_commit_sha_must_not_complete_variant(
     r = wire_client.post(
         wire_client.tasks_path(exec_tid, "/submit"),
         json={
-            "token": c["token"],
+            "worker_id": c["worker_id"],
             "payload": {
                 "kind": "execution",
                 "status": "success",
@@ -147,7 +147,7 @@ def test_success_with_commit_sha_writes_variant_commit_sha(
     r = _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         commit_sha=sha,
     )
@@ -175,11 +175,11 @@ def test_resubmit_same_commit_sha_is_idempotent(
     c = _seed.claim(wire_client, exec_tid)
     sha = "d" * 40
     r1 = _seed.submit_variant(
-        wire_client, exec_tid, token=c["token"], variant_id=variant_id, commit_sha=sha
+        wire_client, exec_tid, worker_id=c["worker_id"], variant_id=variant_id, commit_sha=sha
     )
     assert r1.status_code == 200, r1.text
     r2 = _seed.submit_variant(
-        wire_client, exec_tid, token=c["token"], variant_id=variant_id, commit_sha=sha
+        wire_client, exec_tid, worker_id=c["worker_id"], variant_id=variant_id, commit_sha=sha
     )
     assert r2.status_code == 200, r2.text
     submitted = [
@@ -210,7 +210,7 @@ def test_status_error_terminalizes_variant_and_blocks_evaluate_dispatch(
     r = _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         status="error",
     )
@@ -255,7 +255,7 @@ def test_resubmit_divergent_commit_sha_rejected(wire_client: WireClient) -> None
     r1 = _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         commit_sha="1" * 40,
     )
@@ -263,7 +263,7 @@ def test_resubmit_divergent_commit_sha_rejected(wire_client: WireClient) -> None
     r2 = _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         commit_sha="2" * 40,
     )

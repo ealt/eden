@@ -42,10 +42,16 @@ def _now_factory():
 
 
 def _make_store() -> InMemoryStore:
-    return InMemoryStore(
+    store = InMemoryStore(
         experiment_id="exp-orch-iter",
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
+    # 12a-1 wave 5: Store.claim enforces the §3.5 step-2 registration
+    # check; pre-register the worker_ids the orchestrator-iteration
+    # tests use so the in-process claim calls succeed.
+    for wid in ("ideator-1", "executor-1", "evaluator-1"):
+        store.register_worker(wid)
+    return store
 
 
 def _exec_factory() -> str:

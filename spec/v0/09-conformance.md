@@ -44,7 +44,12 @@ The v1 scenario groups, with their primary spec citations:
 | Group | Scope | Spec citations |
 |---|---|---|
 | Task lifecycle | Every legal/illegal transition. | [`04-task-protocol.md`](04-task-protocol.md) §1, §2, §3, §4, §5 |
-| Claim tokens | Freshness, authorization, no-reclaim-while-claimed. | [`02-data-model.md`](02-data-model.md) §3.4; [`04-task-protocol.md`](04-task-protocol.md) §3, §5 |
+| Worker registration | Per-experiment registry; idempotent re-registration; grammar / reserved-identifier rejection. | [`02-data-model.md`](02-data-model.md) §6 |
+| Group resolution | Direct + transitive membership; cycle rejection; reserved-identifier rejection. | [`02-data-model.md`](02-data-model.md) §6.1, §7.2, §7.3 |
+| Claim ownership | Identity-keyed claim record; no-reclaim-while-claimed; submit-claimant match; claim cleared on reclaim. | [`02-data-model.md`](02-data-model.md) §3.4; [`04-task-protocol.md`](04-task-protocol.md) §3, §4.1, §4.2, §5 |
+| Claim eligibility | Claim-time ladder — registration check + target eligibility (null / worker / group). | [`04-task-protocol.md`](04-task-protocol.md) §3.5 |
+| Worker auth | Cross-application claim — same `worker_id` across distinct clients shares ownership; mismatched claimant rejected. | [`04-task-protocol.md`](04-task-protocol.md) §3.3, §4.1 |
+| Attribution persistence | `submitted_by` / `executed_by` / `evaluated_by` survive terminal transitions. | [`02-data-model.md`](02-data-model.md) §3.1, §9 |
 | Submit idempotency | Content-equivalent / divergent / post-terminal. | [`04-task-protocol.md`](04-task-protocol.md) §4.2, §4.4 |
 | Reclamation | Case matrix; token invalidation; variant reconciliation. | [`04-task-protocol.md`](04-task-protocol.md) §5 |
 | Atomicity (regression test) | State + event consistency around a transition. Best-effort, not a certification. | [`04-task-protocol.md`](04-task-protocol.md) §1.3 |

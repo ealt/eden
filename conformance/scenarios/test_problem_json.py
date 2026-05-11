@@ -47,11 +47,11 @@ def test_problem_json_400_bad_request(wire_client: WireClient) -> None:
     _assert_problem_envelope(400, r.json(), str(r.request.url))
 
 
-def test_problem_json_403_wrong_token(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §9 — 403 wrong-token returns problem+json envelope."""
+def test_problem_json_403_wrong_claimant(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §9 — 403 wrong-claimant returns problem+json envelope."""
     tid = _seed.create_ideation_task(wire_client)
-    _seed.claim(wire_client, tid)
-    r = _seed.submit_idea(wire_client, tid, token="WRONG")
+    _seed.claim(wire_client, tid, worker_id="worker-a")
+    r = _seed.submit_idea(wire_client, tid, worker_id="worker-b")
     assert r.status_code == 403
     _assert_content_type(r.headers)
     _assert_problem_envelope(403, r.json(), str(r.request.url))

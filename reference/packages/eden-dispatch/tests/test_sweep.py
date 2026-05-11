@@ -20,10 +20,24 @@ from eden_dispatch import (
 
 
 def _make_store() -> InMemoryStore:
-    return InMemoryStore(
+    store = InMemoryStore(
         experiment_id="exp-sweep",
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
+    # 12a-1 wave 5: §3.5 step-2 registration check requires every
+    # claimant to exist in the registry. Pre-register the common
+    # sweep-test worker_ids; specific tests register additional
+    # ids inline as needed.
+    for wid in (
+        "worker-a",
+        "worker-b",
+        "ideator-1",
+        "executor-1",
+        "evaluator-1",
+        "ui-1",
+    ):
+        store.register_worker(wid)
+    return store
 
 
 def _claim_with_expiry(

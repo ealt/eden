@@ -26,7 +26,7 @@ from eden_storage import (
 def test_register_worker_returns_token_first_time(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     worker, token = store.register_worker("eric")
     assert isinstance(worker, Worker)
     assert worker.worker_id == "eric"
@@ -40,7 +40,7 @@ def test_register_worker_returns_token_first_time(
 def test_register_worker_idempotent_returns_no_new_token(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     first, first_token = store.register_worker("eric")
     second, second_token = store.register_worker("eric")
     # The wire-visible record is unchanged.
@@ -56,7 +56,7 @@ def test_register_worker_idempotent_returns_no_new_token(
 def test_register_worker_grammar_rejected(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     for bad in ["Eric", "-eric", "_eric", "eric:secret", "eric/agent", "a" * 65]:
         with pytest.raises(InvalidPrecondition):
             store.register_worker(bad)
@@ -65,7 +65,7 @@ def test_register_worker_grammar_rejected(
 def test_register_worker_reserved_rejected(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     for reserved in ["admin", "system", "internal"]:
         with pytest.raises(ReservedIdentifier):
             store.register_worker(reserved)
@@ -74,7 +74,7 @@ def test_register_worker_reserved_rejected(
 def test_register_worker_persists_labels(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     store.register_worker(
         "agent-claude", labels={"role": "executor", "model": "claude-opus-4-7"}
     )
@@ -83,7 +83,7 @@ def test_register_worker_persists_labels(
 
 
 def test_read_worker_not_found(make_store: Callable[..., Store]) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     with pytest.raises(NotFound):
         store.read_worker("eric")
 
@@ -91,7 +91,7 @@ def test_read_worker_not_found(make_store: Callable[..., Store]) -> None:
 def test_list_workers_returns_sorted_snapshot(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     for wid in ["zara", "alice", "bob"]:
         store.register_worker(wid)
     workers = store.list_workers()
@@ -102,7 +102,7 @@ def test_list_workers_excludes_credential(
     make_store: Callable[..., Store],
 ) -> None:
     """The wire-visible Worker shape MUST NOT carry a credential or hash."""
-    store = make_store()
+    store = make_store(seed_workers=False)
     store.register_worker("eric")
     workers = store.list_workers()
     [worker] = workers
@@ -115,7 +115,7 @@ def test_list_workers_excludes_credential(
 def test_verify_worker_credential_accepts_current_token(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     _, token = store.register_worker("eric")
     assert token is not None
     assert store.verify_worker_credential("eric", token) is True
@@ -124,7 +124,7 @@ def test_verify_worker_credential_accepts_current_token(
 def test_verify_worker_credential_rejects_wrong_token(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     store.register_worker("eric")
     assert store.verify_worker_credential("eric", "wrong-token") is False
 
@@ -137,14 +137,14 @@ def test_verify_worker_credential_rejects_unknown_worker(
     The binding-layer caller collapses both arms (no such worker /
     wrong secret) into a single 401 without leaking which arm hit.
     """
-    store = make_store()
+    store = make_store(seed_workers=False)
     assert store.verify_worker_credential("ghost", "tok") is False
 
 
 def test_reissue_credential_invalidates_prior(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     _, first_token = store.register_worker("eric")
     assert first_token is not None
     second_token = store.reissue_credential("eric")
@@ -156,6 +156,150 @@ def test_reissue_credential_invalidates_prior(
 def test_reissue_credential_unknown_worker(
     make_store: Callable[..., Store],
 ) -> None:
-    store = make_store()
+    store = make_store(seed_workers=False)
     with pytest.raises(NotFound):
         store.reissue_credential("ghost")
+
+
+# ---------------------------------------------------------------------
+# Store.claim §3.5 RBAC enforcement (12a-1 wave 5)
+# ---------------------------------------------------------------------
+
+
+def test_claim_by_unregistered_worker_rejected(
+    make_store: Callable[..., Store],
+) -> None:
+    """§3.5 step 2 — claim by an unregistered worker raises WorkerNotRegistered."""
+    from eden_storage import WorkerNotRegistered
+
+    store = make_store(seed_workers=False)
+    store.create_ideation_task("t1")
+    with pytest.raises(WorkerNotRegistered):
+        store.claim("t1", "ghost")
+
+
+def test_claim_by_registered_worker_accepted_when_target_absent(
+    make_store: Callable[..., Store],
+) -> None:
+    """§3.5 — target=null permits any registered worker."""
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    store.create_ideation_task("t1")
+    claim = store.claim("t1", "eric")
+    assert claim.worker_id == "eric"
+
+
+def test_claim_with_worker_target_accepts_matching_worker(
+    make_store: Callable[..., Store],
+) -> None:
+    """§3.5 step 3 — target.kind=worker accepts only the named worker."""
+    from eden_contracts import IdeationPayload, IdeationTask, TaskTarget
+
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    target = TaskTarget(kind="worker", id="eric")
+    task = IdeationTask.model_validate(
+        {
+            "task_id": "t1",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": IdeationPayload(experiment_id=store.experiment_id).model_dump(
+                mode="json", exclude_none=True
+            ),
+            "target": target.model_dump(mode="json", exclude_none=True),
+            "created_at": "2026-04-23T00:00:00.000Z",
+            "updated_at": "2026-04-23T00:00:00.000Z",
+        }
+    )
+    store.create_task(task)
+    claim = store.claim("t1", "eric")
+    assert claim.worker_id == "eric"
+
+
+def test_claim_with_worker_target_rejects_other_worker(
+    make_store: Callable[..., Store],
+) -> None:
+    """§3.5 step 3 — target.kind=worker raises WorkerNotEligible on mismatch."""
+    from eden_contracts import IdeationPayload, IdeationTask, TaskTarget
+    from eden_storage import WorkerNotEligible
+
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    store.register_worker("alice")
+    target = TaskTarget(kind="worker", id="eric")
+    task = IdeationTask.model_validate(
+        {
+            "task_id": "t1",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": IdeationPayload(experiment_id=store.experiment_id).model_dump(
+                mode="json", exclude_none=True
+            ),
+            "target": target.model_dump(mode="json", exclude_none=True),
+            "created_at": "2026-04-23T00:00:00.000Z",
+            "updated_at": "2026-04-23T00:00:00.000Z",
+        }
+    )
+    store.create_task(task)
+    with pytest.raises(WorkerNotEligible):
+        store.claim("t1", "alice")
+
+
+def test_claim_with_group_target_accepts_transitive_member(
+    make_store: Callable[..., Store],
+) -> None:
+    """§3.5 step 3 — target.kind=group accepts any transitive member."""
+    from eden_contracts import IdeationPayload, IdeationTask, TaskTarget
+
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    store.register_worker("alice")
+    store.register_group("team-a", members=["eric", "alice"])
+    store.register_group("humans", members=["team-a"])
+    target = TaskTarget(kind="group", id="humans")
+    task = IdeationTask.model_validate(
+        {
+            "task_id": "t1",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": IdeationPayload(experiment_id=store.experiment_id).model_dump(
+                mode="json", exclude_none=True
+            ),
+            "target": target.model_dump(mode="json", exclude_none=True),
+            "created_at": "2026-04-23T00:00:00.000Z",
+            "updated_at": "2026-04-23T00:00:00.000Z",
+        }
+    )
+    store.create_task(task)
+    claim = store.claim("t1", "alice")
+    assert claim.worker_id == "alice"
+
+
+def test_claim_with_group_target_rejects_non_member(
+    make_store: Callable[..., Store],
+) -> None:
+    """§3.5 step 3 — target.kind=group rejects non-members."""
+    from eden_contracts import IdeationPayload, IdeationTask, TaskTarget
+    from eden_storage import WorkerNotEligible
+
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    store.register_worker("claude")
+    store.register_group("humans", members=["eric"])
+    target = TaskTarget(kind="group", id="humans")
+    task = IdeationTask.model_validate(
+        {
+            "task_id": "t1",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": IdeationPayload(experiment_id=store.experiment_id).model_dump(
+                mode="json", exclude_none=True
+            ),
+            "target": target.model_dump(mode="json", exclude_none=True),
+            "created_at": "2026-04-23T00:00:00.000Z",
+            "updated_at": "2026-04-23T00:00:00.000Z",
+        }
+    )
+    store.create_task(task)
+    with pytest.raises(WorkerNotEligible):
+        store.claim("t1", "claude")

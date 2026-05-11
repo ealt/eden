@@ -45,7 +45,26 @@ SHORT_SUBSCRIBE_TIMEOUT = 0.2  # keep idle long-polls fast in tests
 @pytest.fixture
 def store() -> InMemoryStore:
     schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
-    return InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
+    store = InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
+    # 12a-1 wave 5: Store.claim's §3.5 step-2 registration check
+    # requires every claimant to exist in the registry. Pre-register
+    # the worker ids the round-trip scenarios use; the wire surface
+    # itself is auth-disabled so the claim still goes through whatever
+    # the client passes as worker_id.
+    for wid in (
+        "w",
+        "w1",
+        "w2",
+        "wfresh",
+        "ideator",
+        "executor",
+        "evaluator",
+        "ideator-1",
+        "executor-1",
+        "evaluator-1",
+    ):
+        store.register_worker(wid)
+    return store
 
 
 @pytest.fixture

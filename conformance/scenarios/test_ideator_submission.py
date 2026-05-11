@@ -24,7 +24,7 @@ def test_submit_with_drafting_idea_rejected(wire_client: WireClient) -> None:
     # Deliberately do NOT mark the idea ready.
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    r = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid])
+    r = _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"], idea_ids=[pid])
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/illegal-transition"
 
@@ -42,7 +42,7 @@ def test_submit_with_unknown_idea_rejected(wire_client: WireClient) -> None:
     r = _seed.submit_idea(
         wire_client,
         tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         idea_ids=["does-not-exist"],
     )
     assert r.status_code == 409, r.text
@@ -61,7 +61,7 @@ def test_submit_zero_ideas_succeeds(
     """
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    r = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[])
+    r = _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"], idea_ids=[])
     assert r.status_code == 200, r.text
     submitted = [
         e
@@ -89,7 +89,7 @@ def test_submit_status_error_does_not_dispatch_drafting_ideas(
     # drafting idea exists in the store but the submission does
     # not reference it, so the test asserts the un-referenced draft
     # stays in drafting and is never dispatched.
-    r = _seed.submit_idea(wire_client, tid, token=c["token"], status="error")
+    r = _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"], status="error")
     assert r.status_code == 200, r.text
     idea = _seed.read_idea(wire_client, pid)
     assert idea["state"] == "drafting"

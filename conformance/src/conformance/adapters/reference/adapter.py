@@ -8,7 +8,6 @@ durability (eden-storage's own tests do).
 from __future__ import annotations
 
 import queue
-import secrets
 import subprocess
 import sys
 import threading
@@ -19,7 +18,17 @@ from conformance.harness.adapter import IutAdapter, IutHandle
 
 
 class ReferenceAdapter(IutAdapter):
-    """Spawns ``python -m eden_task_store_server`` in a subprocess."""
+    """Spawns ``python -m eden_task_store_server`` in a subprocess.
+
+    12a-1 wave 5: runs the server with ``--admin-token`` unset so auth
+    is disabled at the wire layer. The conformance suite still exercises
+    every claim-time RBAC MUST (registration check, target eligibility,
+    claim ownership) via the Store's own enforcement — auth is the
+    binding-layer concern (per chapter 04 §3.3) and is tested separately
+    by the wire's unit tests. With auth off, the server reads
+    ``X-Eden-Worker-Id`` from the request header to derive the
+    authenticated worker_id (server.py: ``_worker_id_from_request``).
+    """
 
     _PORT_ANNOUNCE_TIMEOUT = 15.0
     _STOP_TIMEOUT = 5.0
@@ -36,10 +45,6 @@ class ReferenceAdapter(IutAdapter):
         experiment_config_path: Path,
         experiment_id: str,
     ) -> IutHandle:
-        # Use token_hex (only [0-9a-f]) — token_urlsafe can start with
-        # `-`, which argparse interprets as a new flag and the server
-        # exits with code 2 before announcing its port.
-        token = secrets.token_hex(24)
         self._proc = subprocess.Popen(
             [
                 sys.executable,
@@ -51,8 +56,6 @@ class ReferenceAdapter(IutAdapter):
                 experiment_id,
                 "--experiment-config",
                 str(experiment_config_path),
-                "--shared-token",
-                token,
                 "--subscribe-timeout",
                 str(self._SUBSCRIBE_TIMEOUT_S),
                 "--port",
@@ -64,10 +67,6 @@ class ReferenceAdapter(IutAdapter):
             stderr=subprocess.PIPE,
             text=True,
         )
-        # Defensive: if the port-announce read or stderr-drain start
-        # raises, the spawned subprocess and its drain thread would leak
-        # because the fixture never reached `yield` — `stop()` would not
-        # be called. Catch, clean up, then re-raise.
         try:
             port = self._read_port_announcement()
             self._start_stderr_drain()
@@ -77,7 +76,7 @@ class ReferenceAdapter(IutAdapter):
         return IutHandle(
             base_url=f"http://127.0.0.1:{port}",
             experiment_id=experiment_id,
-            extra_headers={"Authorization": f"Bearer {token}"},
+            extra_headers={},
         )
 
     def stop(self) -> None:

@@ -1,9 +1,18 @@
 """Test-fixture helpers that seed wire-protocol entities through the chapter-7 binding only.
 
 Used by scenarios that need a precondition (e.g. a `claimed` task to
-test claim-token semantics, a `success` variant to test integrate
+test claim-ownership semantics, a `success` variant to test integrate
 idempotency). All helpers go through the WireClient — no shortcuts
 through the adapter or the underlying store.
+
+12a-1 wave 5: every claim against a non-registered worker_id is
+rejected by the §3.5 step-2 registration check. Tests that need a
+worker_id MUST first call :func:`register_worker` (or rely on the
+default-worker fixture that pre-registers
+:data:`DEFAULT_WORKER_IDS`). The wire's ``X-Eden-Worker-Id`` header
+substitutes for the bearer when the IUT runs with auth disabled
+(reference adapter does so by default; see
+``adapters/reference/adapter.py``).
 """
 
 from __future__ import annotations
@@ -14,6 +23,17 @@ from typing import Any
 from .wire_client import WireClient
 
 _NOW = "2026-05-01T00:00:00Z"
+
+# Worker_ids that the default-worker harness fixture pre-registers
+# against every fresh IUT. Scenarios that need additional ids should
+# call :func:`register_worker` explicitly.
+DEFAULT_WORKER_IDS: tuple[str, ...] = (
+    "test-worker",
+    "impl-worker",
+    "eval-worker",
+    "worker-a",
+    "worker-b",
+)
 
 
 def fresh_task_id(prefix: str = "task") -> str:
@@ -28,15 +48,95 @@ def fresh_variant_id(prefix: str = "tr") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
+def fresh_worker_id(prefix: str = "w") -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+
+def fresh_group_id(prefix: str = "g") -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+
+# Worker registry ------------------------------------------------------
+
+
+def register_worker(
+    client: WireClient,
+    worker_id: str,
+    *,
+    labels: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """POST /workers — register a worker for this experiment.
+
+    Per chapter 02 §6.3 registration is idempotent: a second call with
+    the same ``worker_id`` succeeds and returns the existing record.
+    The response body is the worker record; the first registration
+    additionally includes ``registration_token`` for bearer auth.
+    """
+    body: dict[str, Any] = {"worker_id": worker_id}
+    if labels is not None:
+        body["labels"] = labels
+    resp = client.post(_workers_path(client), json=body)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def register_default_workers(client: WireClient) -> None:
+    """Idempotently register every id in :data:`DEFAULT_WORKER_IDS`."""
+    for wid in DEFAULT_WORKER_IDS:
+        register_worker(client, wid)
+
+
+def create_group(
+    client: WireClient,
+    group_id: str,
+    *,
+    members: list[str] | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"group_id": group_id, "members": members or []}
+    resp = client.post(_groups_path(client), json=body)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def add_to_group(
+    client: WireClient,
+    group_id: str,
+    member_id: str,
+) -> Any:
+    return client.post(
+        _groups_path(client, group_id, "/members"),
+        json={"member_id": member_id},
+    )
+
+
+def _workers_path(client: WireClient) -> str:
+    return f"{client.base_path}/workers"
+
+
+def _groups_path(
+    client: WireClient,
+    group_id: str | None = None,
+    suffix: str = "",
+) -> str:
+    base = f"{client.base_path}/groups"
+    if group_id is None:
+        return base
+    return f"{base}/{group_id}{suffix}"
+
+
+# Task seeding ---------------------------------------------------------
+
+
 def create_ideation_task(
     client: WireClient,
     *,
     task_id: str | None = None,
     payload: dict[str, Any] | None = None,
+    target: dict[str, str] | None = None,
 ) -> str:
     """POST /tasks for a `ideation` task. Returns the task_id."""
     tid = task_id or fresh_task_id("ideation")
-    body = {
+    body: dict[str, Any] = {
         "task_id": tid,
         "kind": "ideation",
         "state": "pending",
@@ -44,6 +144,8 @@ def create_ideation_task(
         "created_at": _NOW,
         "updated_at": _NOW,
     }
+    if target is not None:
+        body["target"] = target
     resp = client.post(client.tasks_path(), json=body)
     resp.raise_for_status()
     return tid
@@ -54,10 +156,11 @@ def create_evaluation_task(
     *,
     variant_id: str,
     task_id: str | None = None,
+    target: dict[str, str] | None = None,
 ) -> str:
     """POST /tasks for an `evaluation` task referencing the given variant."""
     tid = task_id or fresh_task_id("eval")
-    body = {
+    body: dict[str, Any] = {
         "task_id": tid,
         "kind": "evaluation",
         "state": "pending",
@@ -65,6 +168,8 @@ def create_evaluation_task(
         "created_at": _NOW,
         "updated_at": _NOW,
     }
+    if target is not None:
+        body["target"] = target
     resp = client.post(client.tasks_path(), json=body)
     resp.raise_for_status()
     return tid
@@ -75,6 +180,7 @@ def create_execution_task(
     *,
     idea_id: str,
     task_id: str | None = None,
+    target: dict[str, str] | None = None,
 ) -> str:
     """POST /tasks for an `execution` task referencing a `ready` idea.
 
@@ -82,7 +188,7 @@ def create_execution_task(
     flips the idea `ready → dispatched` atomically with this insert.
     """
     tid = task_id or fresh_task_id("execution")
-    body = {
+    body: dict[str, Any] = {
         "task_id": tid,
         "kind": "execution",
         "state": "pending",
@@ -90,6 +196,8 @@ def create_execution_task(
         "created_at": _NOW,
         "updated_at": _NOW,
     }
+    if target is not None:
+        body["target"] = target
     resp = client.post(client.tasks_path(), json=body)
     resp.raise_for_status()
     return tid
@@ -102,11 +210,26 @@ def claim(
     worker_id: str = "test-worker",
     expires_at: str | None = None,
 ) -> dict[str, Any]:
-    """Claim a pending task; return the claim object (token, worker_id, ...)."""
-    body: dict[str, Any] = {"worker_id": worker_id}
+    """Claim a pending task on behalf of ``worker_id``.
+
+    Per chapter 04 §3.3 the claimant identity comes from the
+    binding's authenticated principal. With the reference adapter
+    running auth-disabled, the wire reads the ``X-Eden-Worker-Id``
+    header to derive the worker_id; this helper sets that header for
+    each call so scenarios drive multi-worker behavior without a
+    full credential dance.
+
+    Returns the claim object (``worker_id``, ``claimed_at``,
+    optionally ``expires_at``).
+    """
+    body: dict[str, Any] = {}
     if expires_at is not None:
         body["expires_at"] = expires_at
-    resp = client.post(client.tasks_path(task_id, "/claim"), json=body)
+    resp = client.post(
+        client.tasks_path(task_id, "/claim"),
+        json=body,
+        headers={"X-Eden-Worker-Id": worker_id},
+    )
     resp.raise_for_status()
     return resp.json()
 
@@ -115,7 +238,7 @@ def submit_idea(
     client: WireClient,
     task_id: str,
     *,
-    token: str,
+    worker_id: str = "test-worker",
     idea_ids: list[str] | None = None,
     status: str = "success",
 ) -> Any:
@@ -126,7 +249,8 @@ def submit_idea(
     }
     return client.post(
         client.tasks_path(task_id, "/submit"),
-        json={"token": token, "payload": payload},
+        json={"payload": payload},
+        headers={"X-Eden-Worker-Id": worker_id},
     )
 
 
@@ -134,7 +258,7 @@ def submit_variant(
     client: WireClient,
     task_id: str,
     *,
-    token: str,
+    worker_id: str = "impl-worker",
     variant_id: str,
     status: str = "success",
     commit_sha: str = "0" * 40,
@@ -148,7 +272,8 @@ def submit_variant(
         payload["commit_sha"] = commit_sha
     return client.post(
         client.tasks_path(task_id, "/submit"),
-        json={"token": token, "payload": payload},
+        json={"payload": payload},
+        headers={"X-Eden-Worker-Id": worker_id},
     )
 
 
@@ -156,7 +281,7 @@ def submit_evaluation(
     client: WireClient,
     task_id: str,
     *,
-    token: str,
+    worker_id: str = "eval-worker",
     variant_id: str,
     status: str = "success",
     evaluation: dict[str, Any] | None = None,
@@ -167,11 +292,6 @@ def submit_evaluation(
         "status": status,
         "variant_id": variant_id,
     }
-    # status=success defaults an evaluation object so well-formed
-    # successes don't need to repeat the boilerplate. Other statuses
-    # only get an evaluation when the caller explicitly passes one, so
-    # evaluation_error/error tests can drive the §4.4 "discard
-    # submission-carried evaluation" rule with a real wire payload.
     if evaluation is not None:
         payload["evaluation"] = evaluation
     elif status == "success":
@@ -180,7 +300,8 @@ def submit_evaluation(
         payload["artifacts_uri"] = artifacts_uri
     return client.post(
         client.tasks_path(task_id, "/submit"),
-        json={"token": token, "payload": payload},
+        json={"payload": payload},
+        headers={"X-Eden-Worker-Id": worker_id},
     )
 
 
@@ -292,7 +413,7 @@ def drive_to_starting_variant(
     pid = idea_id or create_idea(client)
     mark_idea_ready(client, pid)
     exec_tid = create_execution_task(client, idea_id=pid)
-    exec_claim = claim(client, exec_tid, worker_id="impl-worker")
+    _claim = claim(client, exec_tid, worker_id="impl-worker")
     variant_id = fresh_variant_id()
     # Executor creates the starting variant before submitting (chapter 3 §3.2 step 1).
     create_variant(
@@ -304,17 +425,13 @@ def drive_to_starting_variant(
     r = submit_variant(
         client,
         exec_tid,
-        token=exec_claim["token"],
+        worker_id=_claim["worker_id"],
         variant_id=variant_id,
         commit_sha=commit_sha,
     )
     r.raise_for_status()
     accepted = accept(client, exec_tid)
     accepted.raise_for_status()
-    # Sanity-check that the accept actually wrote commit_sha onto the
-    # variant — a setup regression that silently leaves the variant in an
-    # unexpected shape would otherwise surface as a misleading
-    # downstream test failure.
     variant = read_variant(client, variant_id)
     assert variant.get("commit_sha") == commit_sha, (
         f"setup precondition: variant {variant_id!r} should carry "
@@ -332,16 +449,12 @@ def drive_to_error_variant(
     """Drive a fresh idea through implement-status-error.
 
     Returns variant_id of a variant that landed at ``status="error"`` via
-    the chapter-3 §3.4 executor status=error path: executor
-    creates the starting variant, submits ``status="error"``, then the
-    orchestrator's reject path terminalizes the variant as error
-    atomically with the task.failed event (chapter 05 §2.2 composite
-    commit).
+    the chapter-3 §3.4 executor status=error path.
     """
     pid = idea_id or create_idea(client)
     mark_idea_ready(client, pid)
     exec_tid = create_execution_task(client, idea_id=pid)
-    exec_claim = claim(client, exec_tid, worker_id="impl-worker")
+    _claim = claim(client, exec_tid, worker_id="impl-worker")
     variant_id = fresh_variant_id()
     create_variant(
         client,
@@ -352,7 +465,7 @@ def drive_to_error_variant(
     r = submit_variant(
         client,
         exec_tid,
-        token=exec_claim["token"],
+        worker_id=_claim["worker_id"],
         variant_id=variant_id,
         status="error",
     )
@@ -373,14 +486,7 @@ def drive_to_evaluation_error_variant(
     idea_id: str | None = None,
     commit_sha: str = "1" * 40,
 ) -> str:
-    """Drive a fresh idea through to ``status="evaluation_error"``.
-
-    Drives implement-accept (so the variant reaches ``starting`` with
-    ``commit_sha``) and then calls ``declare_variant_evaluation_error`` to
-    terminalize the variant as ``evaluation_error`` per chapter 04 §4.3 retry-
-    exhaustion / chapter 05 §3.3 ``variant.evaluation_errored``. Returns
-    variant_id.
-    """
+    """Drive a fresh idea through to ``status="evaluation_error"``."""
     variant_id = drive_to_starting_variant(
         client, idea_id=idea_id, commit_sha=commit_sha
     )
@@ -410,11 +516,11 @@ def drive_to_success_variant(
         client, idea_id=idea_id, commit_sha=commit_sha
     )
     eval_tid = create_evaluation_task(client, variant_id=variant_id)
-    eval_claim = claim(client, eval_tid, worker_id="eval-worker")
+    _claim = claim(client, eval_tid, worker_id="eval-worker")
     r = submit_evaluation(
         client,
         eval_tid,
-        token=eval_claim["token"],
+        worker_id=_claim["worker_id"],
         variant_id=variant_id,
         evaluation=evaluation,
     )

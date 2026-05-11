@@ -147,6 +147,17 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
     port = _read_port_announcement(server_log, server)
     base_url = f"http://127.0.0.1:{port}"
 
+    # 12a-1 wave 5: pre-register the worker_ids the subprocess hosts use;
+    # Store.claim's §3.5 step-2 registration check rejects unregistered ids.
+    from eden_wire import StoreClient
+
+    _seed = StoreClient(base_url=base_url, experiment_id=experiment_id)
+    try:
+        for _wid in ("ideator-1", "executor-1", "evaluator-1"):
+            _seed.register_worker(_wid)
+    finally:
+        _seed.close()
+
     ideator_log = logs_dir / "ideator.log"
     ideator = _spawn(
         [

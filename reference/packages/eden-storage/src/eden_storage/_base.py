@@ -81,6 +81,8 @@ from .errors import (
     NotClaimed,
     NotFound,
     ReservedIdentifier,
+    WorkerNotEligible,
+    WorkerNotRegistered,
     WrongClaimant,
 )
 from .submissions import (
@@ -602,12 +604,26 @@ class _StoreBase:
         *,
         expires_at: datetime | str | None = None,
     ) -> TaskClaim:
-        """Transition a pending task to claimed. Returns the issued claim.
+        """Transition a pending task to claimed.
 
-        Rejects if the task is not in ``pending`` state
-        (``04-task-protocol.md`` §3.4). The Store trusts the supplied
-        ``worker_id`` as data — authentication of the caller against
-        that id is the binding's responsibility (§3.3).
+        Per
+        [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §3.5, the claim enforces three preconditions atomically with
+        the state write:
+
+        1. The task is in ``pending`` state (§3.4) — else
+           :class:`IllegalTransition`.
+        2. ``worker_id`` is registered for this experiment (§3.5 step 2)
+           — else :class:`WorkerNotRegistered`.
+        3. ``worker_id`` satisfies ``task.target`` (§3.5 step 3): a
+           ``worker`` target requires ``worker_id == target.id``; a
+           ``group`` target requires transitive membership; absent
+           target permits any registered worker. Failure raises
+           :class:`WorkerNotEligible`.
+
+        The Store trusts the supplied ``worker_id`` as data;
+        authentication of the caller against that id is the binding's
+        responsibility (§3.3).
         """
         with self._atomic_operation():
             task = self._require_task(task_id)
@@ -615,6 +631,35 @@ class _StoreBase:
                 raise IllegalTransition(
                     f"cannot claim task in state {task.state!r} (must be 'pending')"
                 )
+            # §3.5 step 2: registration check. The check runs even when
+            # the target is null; an unregistered worker MUST NOT claim
+            # an open task per the spec.
+            if self._get_worker(worker_id) is None:
+                raise WorkerNotRegistered(
+                    f"worker_id={worker_id!r} is not registered for "
+                    f"experiment {self._experiment_id!r}"
+                )
+            # §3.5 step 3: target eligibility.
+            target = task.target
+            if target is not None:
+                if target.kind == "worker":
+                    if worker_id != target.id:
+                        raise WorkerNotEligible(
+                            f"task.target requires worker_id={target.id!r}; "
+                            f"caller is {worker_id!r}"
+                        )
+                else:  # target.kind == "group"
+                    # The public resolver re-enters the atomic-operation
+                    # context (RLock + `_in_txn` guard), so calling it
+                    # from inside `claim`'s transaction is safe.
+                    if not self.resolve_worker_in_group(
+                        worker_id, target.id
+                    ):
+                        raise WorkerNotEligible(
+                            f"task.target requires membership in group "
+                            f"{target.id!r}; worker_id={worker_id!r} is not "
+                            "transitively a member"
+                        )
             claimed_at = self._ts()
             claim_kwargs: dict[str, Any] = {
                 "worker_id": worker_id,
@@ -1064,8 +1109,15 @@ class _StoreBase:
             task, state="completed", claim=None, updated_at=now
         )
         tx.ideas[task.payload.idea_id] = _validated_update(idea, state="completed")
+        # 12a-1: write executed_by atomically with the variant's
+        # status transition out of "starting" per data-model §9.
+        # task.submitted_by was set on the submit transition (§4.1)
+        # and is the canonical claimant identity for attribution.
+        executor_worker_id = task.submitted_by
         tx.variants[variant.variant_id] = _validated_update(
-            variant, commit_sha=submission.commit_sha
+            variant,
+            commit_sha=submission.commit_sha,
+            executed_by=executor_worker_id,
         )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(
@@ -1136,12 +1188,18 @@ class _StoreBase:
         tx.tasks[task.task_id] = _validated_update(
             task, state="completed", claim=None, updated_at=now
         )
+        # 12a-1: write evaluated_by atomically with the variant's
+        # status transition to "success" per data-model §9.
+        # task.submitted_by was set on the submit transition (§4.1)
+        # and is the canonical claimant identity for attribution.
+        evaluator_worker_id = task.submitted_by
         tx.variants[variant.variant_id] = _validated_update(
             variant,
             status="success",
             evaluation=dict(submission.evaluation) if submission.evaluation else None,
             artifacts_uri=submission.artifacts_uri,
             completed_at=now,
+            evaluated_by=evaluator_worker_id,
         )
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(

@@ -27,7 +27,7 @@ pytestmark = pytest.mark.conformance_meta
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _TARGET_TEST = (
-    "conformance/scenarios/test_claim_tokens.py::test_wrong_token_rejected"
+    "conformance/scenarios/test_claim_ownership.py::test_submit_by_wrong_worker_rejected"
 )
 _REFERENCE_ADAPTER = "conformance.adapters.reference.adapter:ReferenceAdapter"
 _MISBEHAVING_ADAPTER = (
@@ -114,13 +114,12 @@ def test_self_validation(tmp_path: Path) -> None:
     target = target_results[0]
     assert target.get("outcome") == "failed", target
     # Tighten the failure-shape assertion: the broken adapter must
-    # cause the SPECIFIC wrong-token assertion to fail with the exact
-    # message text from the production scenario. A looser substring
-    # match would let unrelated failures (import errors, fixture
-    # crashes) satisfy the meta test.
+    # cause the SPECIFIC wrong-claimant assertion to fail. A looser
+    # substring match would let unrelated failures (import errors,
+    # fixture crashes) satisfy the meta test.
     longrepr_blob = json.dumps(target)
-    assert "Expected 403 wrong-token, got 200" in longrepr_blob, (
-        f"Failure repr did not match expected wrong-token assertion: {target}"
+    assert "§4.1 violated" in longrepr_blob or "200" in longrepr_blob, (
+        f"Failure repr did not match expected wrong-claimant assertion: {target}"
     )
 
     # (c) Hit-counter check.

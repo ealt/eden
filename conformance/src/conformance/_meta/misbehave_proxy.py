@@ -1,10 +1,10 @@
 """Tiny aiohttp proxy that mutates one specific reference response.
 
 Used by the self-validation meta scenario. Forwards every request
-unchanged EXCEPT a wrong-token submit (one that the real IUT would
-return 403 `eden://error/wrong-token` for): in that case the proxy
-returns 200 OK with a fabricated success body, and increments a
-mutation counter.
+unchanged EXCEPT a wrong-claimant submit (one that the real IUT
+would return 403 ``eden://error/wrong-claimant`` for): in that case
+the proxy returns 200 OK with a fabricated success body, and
+increments a mutation counter.
 
 The mutation counter is exposed via a sidecar file so the meta test
 can read it after the subprocess pytest run exits — the proxy itself
@@ -90,7 +90,7 @@ class MisbehaveProxy:
             upstream_status = upstream_resp.status
             upstream_headers = dict(upstream_resp.headers)
 
-        # Mutation check: did the real IUT just return 403 wrong-token
+        # Mutation check: did the real IUT just return 403 wrong-claimant
         # for a submit request? If so, lie.
         if (
             request.method == "POST"
@@ -101,7 +101,7 @@ class MisbehaveProxy:
                 payload = json.loads(upstream_body)
             except (ValueError, UnicodeDecodeError):
                 payload = {}
-            if payload.get("type") == "eden://error/wrong-token":
+            if payload.get("type") == "eden://error/wrong-claimant":
                 self.mutation_count += 1
                 self._write_hit_counter()
                 return web.Response(status=200, body=b"{}", content_type="application/json")

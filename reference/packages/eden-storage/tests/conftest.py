@@ -22,15 +22,56 @@ from typing import Any
 import pytest
 from eden_storage import InMemoryStore, PostgresStore, SqliteStore, Store
 
+# Workers pre-registered against every freshly-built store. The
+# claim-time RBAC enforcement in `Store.claim` (spec §3.5 step 2)
+# requires the caller's worker_id to exist in the registry; auto-
+# registering this small set keeps the legacy state-machine tests
+# focused on transition shapes rather than registration plumbing.
+# Tests that exercise the RBAC checks themselves use bespoke
+# worker_ids and register them inline.
+_DEFAULT_WORKERS: tuple[str, ...] = (
+    "test-worker",
+    "worker-a",
+    "worker-b",
+    "ideator-1",
+    "ideator-2",
+    "ideator-w",
+    "ideator-x",
+    "executor-w",
+    "executor-bootstrap",
+    "execution-bootstrap",
+    "evaluator-w",
+    "evaluator-other",
+    "impl-worker",
+)
+
+
+def _seed_default_workers(store: Store) -> None:
+    """Register the standard test-worker set on a fresh store.
+
+    Idempotent on existing rows (per spec §6.3) so suites that share
+    a backend (postgres-per-schema) don't fail on second-call.
+    """
+    for wid in _DEFAULT_WORKERS:
+        store.register_worker(wid)
+
 
 def _memory_factory(
     tmp_path: Path,  # noqa: ARG001 - accepted for uniform factory signature
 ) -> Callable[..., Store]:
-    def _make(experiment_id: str = "exp-test", **kwargs: Any) -> Store:
-        return InMemoryStore(
+    def _make(
+        experiment_id: str = "exp-test",
+        *,
+        seed_workers: bool = True,
+        **kwargs: Any,
+    ) -> Store:
+        store = InMemoryStore(
             experiment_id=experiment_id,
             **kwargs,
         )
+        if seed_workers:
+            _seed_default_workers(store)
+        return store
 
     return _make
 
@@ -40,16 +81,24 @@ def _sqlite_factory(
 ) -> Callable[..., Store]:
     counter = itertools.count(1)
 
-    def _make(experiment_id: str = "exp-test", **kwargs: Any) -> Store:
+    def _make(
+        experiment_id: str = "exp-test",
+        *,
+        seed_workers: bool = True,
+        **kwargs: Any,
+    ) -> Store:
         # Each call gets its own database so the tests that create
         # multiple stores (e.g. an AlreadyExists collision test)
         # don't share state.
         db_path = tmp_path / f"store-{next(counter):04d}.db"
-        return SqliteStore(
+        store = SqliteStore(
             experiment_id,
             db_path,
             **kwargs,
         )
+        if seed_workers:
+            _seed_default_workers(store)
+        return store
 
     return _make
 
@@ -73,7 +122,12 @@ def _postgres_factory(
 
     counter = itertools.count(1)
 
-    def _make(experiment_id: str = "exp-test", **kwargs: Any) -> Store:
+    def _make(
+        experiment_id: str = "exp-test",
+        *,
+        seed_workers: bool = True,
+        **kwargs: Any,
+    ) -> Store:
         schema = f"test_{secrets.token_hex(8)}_{next(counter):04d}"
         # Pre-create the schema. PostgresStore opens its own
         # connection with `search_path` overridden so all DDL +
@@ -96,6 +150,8 @@ def _postgres_factory(
             store_dsn,
             **kwargs,
         )
+        if seed_workers:
+            _seed_default_workers(store)
 
         def _drop() -> None:
             store.close()

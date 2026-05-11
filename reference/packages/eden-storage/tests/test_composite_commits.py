@@ -110,7 +110,11 @@ class TestImplementTerminalComposite:
         types = _type_sequence(store)
         assert types[-2:] == ["task.completed", "idea.completed"]
         assert store.read_idea("p1").state == "completed"
-        assert store.read_variant("variant-1").commit_sha == "b" * 40
+        variant = store.read_variant("variant-1")
+        assert variant.commit_sha == "b" * 40
+        # 12a-1: executed_by written atomically with commit_sha
+        # per chapter 02 §9.
+        assert variant.executed_by == "executor-w"
 
     def test_reject_with_starting_variant_triples_composite(
         self, make_store: Callable[..., Store]
@@ -167,6 +171,9 @@ class TestEvaluateTerminalComposite:
         assert variant.status == "success"
         assert variant.evaluation == {"score": 0.9}
         assert variant.completed_at is not None
+        # 12a-1: evaluated_by written atomically with the
+        # variant.succeeded transition per chapter 02 §9.
+        assert variant.evaluated_by == "evaluator-w"
 
     def test_evaluate_error_composite(self, make_store: Callable[..., Store]) -> None:
         store = make_store()

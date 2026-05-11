@@ -180,6 +180,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             experiment_id=experiment_id,
         )
         try:
+            seed.register_worker("ui-eval")
+            seed.register_worker("executor-w")
             artifact_path = artifacts_dir / "p-eval.md"
             artifact_path.write_text("rationale")
             idea = Idea(

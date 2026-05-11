@@ -31,7 +31,7 @@ def test_pending_to_claimed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — `claim` transitions pending → claimed."""
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    assert "token" in c and c["token"]
+    assert c.get("worker_id") == "test-worker"
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "claimed"
 
@@ -39,8 +39,8 @@ def test_pending_to_claimed(wire_client: WireClient) -> None:
 def test_claimed_to_submitted(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.1 — `submit` transitions claimed → submitted."""
     tid = _seed.create_ideation_task(wire_client)
-    c = _seed.claim(wire_client, tid)
-    r = _seed.submit_idea(wire_client, tid, token=c["token"])
+    _seed.claim(wire_client, tid)
+    r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 200
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "submitted"
@@ -49,8 +49,8 @@ def test_claimed_to_submitted(wire_client: WireClient) -> None:
 def test_submitted_to_completed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.3 — `accept` transitions submitted → completed."""
     tid = _seed.create_ideation_task(wire_client)
-    c = _seed.claim(wire_client, tid)
-    _seed.submit_idea(wire_client, tid, token=c["token"])
+    _seed.claim(wire_client, tid)
+    _seed.submit_idea(wire_client, tid)
     r = _seed.accept(wire_client, tid)
     assert _is_2xx(r.status_code), r.status_code
     task = _seed.read_task(wire_client, tid)
@@ -60,41 +60,55 @@ def test_submitted_to_completed(wire_client: WireClient) -> None:
 def test_submitted_to_failed_via_reject(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.3 — `reject` transitions submitted → failed."""
     tid = _seed.create_ideation_task(wire_client)
-    c = _seed.claim(wire_client, tid)
-    _seed.submit_idea(wire_client, tid, token=c["token"])
+    _seed.claim(wire_client, tid)
+    _seed.submit_idea(wire_client, tid)
     r = _seed.reject(wire_client, tid, reason="validation_error")
     assert _is_2xx(r.status_code), r.status_code
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "failed"
 
 
-def _terminalize_completed(client: WireClient) -> tuple[str, str]:
+def _terminalize_completed(client: WireClient) -> str:
     tid = _seed.create_ideation_task(client)
-    c = _seed.claim(client, tid)
-    _seed.submit_idea(client, tid, token=c["token"])
+    _seed.claim(client, tid)
+    _seed.submit_idea(client, tid)
     _seed.accept(client, tid)
-    return tid, c["token"]
+    return tid
 
 
-def _terminalize_failed(client: WireClient) -> tuple[str, str]:
+def _terminalize_failed(client: WireClient) -> str:
     tid = _seed.create_ideation_task(client)
-    c = _seed.claim(client, tid)
-    _seed.submit_idea(client, tid, token=c["token"])
+    _seed.claim(client, tid)
+    _seed.submit_idea(client, tid)
     _seed.reject(client, tid, reason="validation_error")
-    return tid, c["token"]
+    return tid
+
+
+# Submit on a task with no live claim — pending or terminal — surfaces
+# as the §4 "current state is claimed" precondition: NotClaimed
+# (chapter 04 §4.1 step 1). Other write attempts surface as
+# illegal-transition.
+_NO_CLAIM_TYPES = {
+    "eden://error/illegal-transition",
+    "eden://error/not-claimed",
+}
 
 
 def test_terminal_completed_rejects_writes(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §4.4 — terminal `completed` rejects every write."""
-    tid, token = _terminalize_completed(wire_client)
+    tid = _terminalize_completed(wire_client)
     # Re-claim
-    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+    r = wire_client.post(
+        wire_client.tasks_path(tid, "/claim"),
+        json={},
+        headers={"X-Eden-Worker-Id": "worker-a"},
+    )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
-    # Re-submit
-    r = _seed.submit_idea(wire_client, tid, token=token)
+    # Re-submit (terminal task — claim cleared)
+    r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 409
-    assert r.json().get("type") == "eden://error/illegal-transition"
+    assert r.json().get("type") in _NO_CLAIM_TYPES
     # Re-accept / re-reject
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409
@@ -109,17 +123,22 @@ def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.1 — terminal `failed` rejects every write.
 
     Mirrors `test_terminal_completed_rejects_writes`: every mutating
-    operation against a `failed` task returns 409 illegal-transition.
+    operation against a `failed` task returns 409 illegal-transition
+    (or not-claimed for submit, since the claim is cleared).
     """
-    tid, token = _terminalize_failed(wire_client)
+    tid = _terminalize_failed(wire_client)
     # Re-claim
-    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+    r = wire_client.post(
+        wire_client.tasks_path(tid, "/claim"),
+        json={},
+        headers={"X-Eden-Worker-Id": "worker-a"},
+    )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
-    # Re-submit
-    r = _seed.submit_idea(wire_client, tid, token=token)
+    # Re-submit (terminal task — claim cleared)
+    r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 409
-    assert r.json().get("type") == "eden://error/illegal-transition"
+    assert r.json().get("type") in _NO_CLAIM_TYPES
     # Accept / reject
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409
@@ -132,14 +151,15 @@ def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
 
 
 def test_pending_rejects_submit(wire_client: WireClient) -> None:
-    """spec/v0/04-task-protocol.md §1.2 — submit on pending is illegal."""
+    """spec/v0/04-task-protocol.md §4.1 — submit on pending is rejected.
+
+    Per §4.1 step 1 the store raises ``NotClaimed`` when the task is
+    not currently claimed; pending tasks have no live claim.
+    """
     tid = _seed.create_ideation_task(wire_client)
-    r = wire_client.post(
-        wire_client.tasks_path(tid, "/submit"),
-        json={"token": "any", "payload": {"kind": "ideation", "status": "success", "idea_ids": []}},
-    )
+    r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 409
-    assert r.json().get("type") == "eden://error/illegal-transition"
+    assert r.json().get("type") in _NO_CLAIM_TYPES
 
 
 def test_pending_rejects_accept(wire_client: WireClient) -> None:
@@ -170,15 +190,19 @@ def test_claimed_rejects_accept(wire_client: WireClient) -> None:
 def test_claim_rejected_when_not_pending(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §3.4 — re-claim of a `claimed` task is rejected."""
     tid = _seed.create_ideation_task(wire_client)
-    _seed.claim(wire_client, tid, worker_id="w1")
-    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+    _seed.claim(wire_client, tid, worker_id="worker-a")
+    r = wire_client.post(
+        wire_client.tasks_path(tid, "/claim"),
+        json={},
+        headers={"X-Eden-Worker-Id": "worker-b"},
+    )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
 
 
 def test_terminal_rejects_reclaim(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §5.1 — reclaim of a terminal task is rejected."""
-    tid, _ = _terminalize_completed(wire_client)
+    tid = _terminalize_completed(wire_client)
     r = _seed.reclaim(wire_client, tid, cause="operator")
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"

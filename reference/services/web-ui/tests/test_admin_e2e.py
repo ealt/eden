@@ -173,6 +173,14 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             experiment_id=experiment_id,
         )
         try:
+            # 12a-1 wave 5: Store.claim enforces the §3.5 step-2
+            # registration check, so every worker_id that issues a
+            # claim must exist in the registry. The web-ui process
+            # uses --worker-id ui-admin; pre-register it here (the
+            # task-store-server runs auth-disabled in this e2e, so
+            # the registration call goes through without an admin
+            # bearer).
+            seed.register_worker("ui-admin")
             seed.create_ideation_task("t-ideation-1")
         finally:
             seed.close()

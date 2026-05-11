@@ -27,6 +27,10 @@ def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
         experiment_id=EXPERIMENT_ID,
         evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
     )
+    # 12a-1 wave 5: pre-register the worker_ids the executor-subprocess
+    # tests drive through Store.claim (§3.5 step-2 registration check).
+    for wid in ("ideator-1", "executor-1", "execution-1"):
+        store.register_worker(wid)
     idea_id = "idea-x1"
     artifacts_dir = tmp_path / "artifacts" / "ideas" / idea_id
     artifacts_dir.mkdir(parents=True)
