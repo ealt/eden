@@ -1,0 +1,428 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13e-gitea-hardening/20260511T121253/1.md	2026-05-11 12:22:58
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13e-gitea-hardening.md	2026-05-11 12:29:48
+@@ -211,11 +211,22 @@
+ 
+ 13e does NOT change:
+ 
+-- The wire protocol, conformance scenarios, or any spec text.
+-  Chapter 6 §1's branch-namespace ownership rules are already
+-  normative; 13e adds Gitea-side enforcement in addition to
+-  the integrator-behavior enforcement that satisfies the spec
+-  today.
++- Any normative spec text. The wire protocol gets ONE
++  small additive operation —
++  `update_worker_labels(worker_id, labels)` — described
++  in §3.0a.4 below. This is informative-binding additive
++  (the 12a-1 plan reserved the worker-record's `labels`
++  field as free-form operator metadata, and 12a-1's wire
++  surface only exposed `register_worker` for writing it;
++  13e needs label mutation for the migration backfill +
++  runtime relabeling). The new op is non-breaking
++  (existing 12a-1 clients keep working without it) and
++  conformance-impact-free (the existing scenarios test
++  observable behavior of registered workers, not the
++  mutation surface). Chapter 6 §1's branch-namespace
++  ownership rules are already normative; 13e adds
++  Gitea-side enforcement in addition to the integrator-
++  behavior enforcement that satisfies the spec today.
+ - The Compose deployment's default behavior. Operators who
+   don't opt into the new overlays continue using the shared
+   `eden` password.
+@@ -247,7 +258,7 @@
+ | [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) lines 32-70 | Unchanged on the default path. New opt-in overlays per §3.7 layer ACL + OAuth on top. |
+ | [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) (forecast by 13a) | Adds `gitea.auth.*`, `gitea.acl.*`, `gitea.pr.*`, `gitea.users.*` blocks per §3.5. |
+ | [`reference/helm/eden/templates/gitea-statefulset.yaml`](../../reference/helm/eden/templates/gitea-statefulset.yaml) (forecast by 13a) | Gains OAuth/OIDC env-var wiring conditional on `gitea.auth.oauth.enabled`. |
+-| Worker-host services' `--gitea-url` / `--credential-helper` plumbing (per 13a §3.3a + [`reference/services/_common/src/eden_service_common/repo_init.py`](../../reference/services/_common/src/eden_service_common/repo_init.py) line 76) | Unchanged in shape. The credential-helper script reads a per-worker token instead of the shared password from `GITEA_REMOTE_PASSWORD`; the env-var name and the script shape are the same. |
++| Worker-host services' `--gitea-url` / `--credential-helper` plumbing (per 13a §3.3a + [`reference/services/_common/src/eden_service_common/repo_init.py`](../../reference/services/_common/src/eden_service_common/repo_init.py) line 76) | The credential-helper script reads a per-worker token from a Secret-volume-mounted FILE at `/etc/eden/gitea-token` (NOT from `GITEA_REMOTE_PASSWORD` env). New CLI flag `--gitea-token-file <path>` replaces the design's earlier `--gitea-token-env`; see §3.6's Secret-rotation propagation reasoning. The credential-helper Python helper reads the file on every invocation so kubelet's Secret-volume sync (~60s) is the rotation-propagation latency. |
+ 
+ ### 1.3 Naming-discipline baseline
+ 
+@@ -275,13 +286,15 @@
+   `gitea.users.adminExistingSecret`,
+   `gitea.users.adminTokenKey`,
+   `gitea.users.workerTokenStore ∈ {chart-managed, externalSecret}`.
+-- New worker-host CLI flags: `--gitea-token-env <name>` (the
+-  worker reads the literal Gitea token from the named env
+-  var; the env var itself is set via `valueFrom: secretKeyRef:`
+-  wiring at the chart layer). The existing
+-  `--credential-helper <path>` flag stays unchanged in shape;
+-  the helper script's behavior changes (reads the per-worker
+-  token instead of the shared password).
++- New worker-host CLI flag: `--gitea-token-file <path>`
++  (the worker reads the literal Gitea token from the
++  named file; the file itself is mounted via a
++  Kubernetes Secret VOLUME so rotation propagates within
++  kubelet's sync window — see §3.6). The existing
++  `--credential-helper <path>` flag stays unchanged in
++  shape; the helper script's behavior changes (reads the
++  per-worker token from the file instead of the shared
++  password from an env var).
+ - New CLI script: `eden-gitea-admin` (entry point on the
+   `eden-gitea` package) for operator-driven user / token /
+   ACL provisioning + rotation. Used by both
+@@ -359,8 +372,10 @@
+    derived from the EDEN `worker_id` per §3.1.2's mapping
+    rule. Each user gets a per-worker scoped access token
+    (Gitea's "scoped tokens" feature lets us limit a token to
+-   `repo:write` on a specific repo — perfect for the
+-   experiment-scoped EDEN worker model). Rejected: keeping
++   `write:repository` coarse-scope + team-bound to a
++   single repo via §3.0.4 — fine-grained isolation comes
++   from team membership + branch protection, not the
++   token scope itself; see §3.0a's note + §8.2). Rejected: keeping
+    the shared `eden` user with finer-grained scope (Gitea's
+    per-token scoping helps, but a shared identity defeats
+    the audit-log + per-worker-rotation properties);
+@@ -688,16 +703,33 @@
+ 
+ | Value | Team membership | Token scope |
+ |---|---|---|
+-| `executor` | `eden-<experiment_id>-executor` | `repo:write` on `eden/<experiment_id>` |
+-| `human-executor` | `eden-<experiment_id>-human-executor` | `repo:write` on `eden/<experiment_id>` |
+-| `evaluator` | `eden-<experiment_id>-evaluator` | `repo:read` |
+-| `human-evaluator` | `eden-<experiment_id>-human-evaluator` | `repo:read` |
+-| `ideator` | `eden-<experiment_id>-ideator` | `repo:read` |
+-| `human-ideator` | `eden-<experiment_id>-human-ideator` | `repo:read` |
+-| `integrator` | `eden-<experiment_id>-integrator` | `repo:write` |
+-| `operator` | `eden-<experiment_id>-operator` | `repo:admin` |
++| `executor` | `eden-<experiment_id>-executor` | `write:repository` |
++| `human-executor` | `eden-<experiment_id>-human-executor` | `write:repository` |
++| `evaluator` | `eden-<experiment_id>-evaluator` | `read:repository` |
++| `human-evaluator` | `eden-<experiment_id>-human-evaluator` | `read:repository` |
++| `ideator` | `eden-<experiment_id>-ideator` | `read:repository` |
++| `human-ideator` | `eden-<experiment_id>-human-ideator` | `read:repository` |
++| `integrator` | `eden-<experiment_id>-integrator` | `write:repository` |
++| `operator` | `eden-<experiment_id>-operator` | `write:repository,read:organization,write:organization` |
+ | `none` | n/a (skip Gitea provisioning) | n/a |
+ 
++**Token scopes are NOT per-repository.** Per Gitea's
++documented scope vocabulary
++([API Usage — Scoped tokens](https://docs.gitea.com/development/api-usage)),
++scopes are coarse role-level grants like
++`write:repository`, `read:repository`, `read:organization` —
++they DO NOT support a per-repo gate. The fine-grained
++isolation comes from (a) the user's TEAM membership
++(per §3.0.4: a user is only a member of the
++`eden-<experiment_id>-<role>` team, which is bound to
++exactly that experiment's repo) AND (b) the §3.2
++branch-protection rules. The token scope is the coarse
++"this token can write to any repo this user has team
++access to"; the team membership is what restricts WHICH
++repo. Defense in depth comes from the §3.2 branch
++allow-lists rejecting wrong-branch pushes even if the
++user is a team member.
++
+ Values outside this set are rejected at provisioning
+ time with a clear error message; the runbook documents
+ the closed set.
+@@ -755,7 +787,61 @@
+ unknown sub-keys (forward-compat with future
+ binding-defined labels); `eden-gitea-admin` silently
+ ignores unknown `eden.*` keys.
++
++#### 3.0a.4 New wire op: `update_worker_labels`
+ 
++12a-1 only exposes `register_worker(worker_id, labels?)`
++for writing the labels field — `labels` are set
++idempotently at registration time but there's no mutation
++path. 13e's migration runbook (§3.8.2) needs to backfill
++`eden.role` on existing worker records that were
++registered without it. To avoid the workaround of
++"de-register + re-register" (which would invalidate the
++worker's existing credential per the 12a-1
++idempotency-on-existing-record semantics), 13e adds a
++minimal new op:
++
++```python
++# eden_storage.Store
++def update_worker_labels(
++    self,
++    worker_id: str,
++    labels: dict[str, str],
++    *,
++    mode: Literal["merge", "replace"] = "merge",
++) -> Worker:
++    """Update an existing worker's labels.
++
++    ``merge`` (default): existing labels survive; the
++    supplied keys overwrite or add. ``replace``: the
++    supplied dict becomes the new labels in full.
++
++    Raises NotFound if no worker matches. Raises
++    InvalidPrecondition if an `eden.*` key is set to a
++    type-invalid value (the only enforced rule today;
++    `eden.role` must be one of §3.0a.1's legal values).
++    """
++```
++
++Wire shape: `POST /v0/experiments/{E}/workers/{W}/labels`
++with body `{"labels": {...}, "mode": "merge"}`. Returns
++the updated `Worker` record. Authorization: requires the
++admin credential (per 12a-1 §"RBAC on the RBAC" — labels
++are operator-controlled, not worker-controlled).
++
++This is the SINGLE wire-surface addition 13e makes;
++everything else is deployment-substrate work. The op is
++non-breaking (clients that don't call it keep working);
++conformance scenarios are unaffected (existing scenarios
++exercise observable behavior of registered workers, not
++the mutation surface).
++
++The `eden-gitea-admin backfill-labels` command (§3.8.2)
++calls `update_worker_labels` with
++`mode="merge"`. Operators who want a runtime label-
++rewrite (e.g., re-roleing an existing worker) also call
++the op directly via the wire.
++
+ ### 3.1 Per-worker Gitea identities
+ 
+ #### 3.1.1 Provisioning model
+@@ -794,29 +880,71 @@
+    user-facing password is irrelevant — the worker
+    authenticates via token, not password; the password just
+    has to be syntactically valid + unguessable so it can't
+-   be used as an alternate auth path).
+-2. POSTs `/api/v1/users/{username}/tokens` to mint a scoped
+-   token. The token's scopes depend on the worker's
++   be used as an alternate auth path). Per Gitea's API
++   ([API Usage docs](https://docs.gitea.com/development/api-usage)),
++   admin user-creation is the supported path under
++   `BasicAuth+sudo` via the admin token.
++2. Mints a scoped access token on behalf of the user.
++   Gitea's API endpoint `POST /api/v1/users/{username}/tokens`
++   requires `BasicAuth` with the **target user's**
++   password — admin tokens are NOT accepted there
++   ([API Usage](https://docs.gitea.com/development/api-usage)).
++   Two paths are viable; 13e picks the CLI path:
++
++   - **Chosen — CLI inside the Gitea pod.**
++     `kubectl exec` (or `docker exec` for Compose) into
++     the Gitea container and run
++     `gitea admin user generate-access-token
++     --username <user> --scopes "<scopes>"
++     --token-name "<name>"`. The CLI subcommand runs as
++     the in-process Gitea admin against the local DB —
++     no API authentication needed
++     ([Gitea command-line — admin user generate-access-token](https://docs.gitea.com/administration/command-line)).
++     The CLI prints the token to stdout; the
++     bootstrap Job captures stdout and writes the value
++     to the chart-managed Secret. The Helm bootstrap
++     Job uses `kubectl exec`-into-Gitea via the
++     ServiceAccount's pod/exec RBAC (rendered when
++     `gitea.acl.enabled=true`). The Compose bootstrap
++     uses `docker exec`.
++   - *Rejected — BasicAuth-as-user.* Would require the
++     bootstrap Job to know each user's password, which
++     it does (we just generated it in step 1 with
++     `--must-change-password false`). Functional but
++     means leaking the password through one more
++     channel; the CLI path keeps the password local to
++     the Gitea container.
++   - *Rejected — Sudo header.* Gitea's `Sudo` header
++     lets admins act as other users for some endpoints,
++     but the token-mint endpoint specifically does not
++     accept it (the docs flag this endpoint as
++     "BasicAuth only").
++
++   The token's scopes depend on the worker's
+    `eden.role` label per §3.0a's table:
+    - `executor` / `human-executor`:
+-     `repo:write` on `eden/<experiment_id>` (the
+-     experiment's repo); no other access.
++     `write:repository` (coarse — applied to the user;
++     the user is bound to ONE repo via team membership
++     per §3.0.4, so this effectively grants write to
++     `eden/<experiment_id>` only).
+    - `evaluator` / `human-evaluator`:
+-     `repo:read` on `eden/<experiment_id>` (the evaluator
+-     reads the worker branch but never writes; the
+-     `chapter-3 §4.1` "evaluator MUST NOT modify the
+-     worker branch" rule is enforced by Gitea-side ACL +
+-     read-only token).
++     `read:repository` (the evaluator reads the worker
++     branch but never writes; the chapter-3 §4.1
++     "evaluator MUST NOT modify the worker branch" rule
++     is enforced by team-level read-only + branch
++     protection + read-only token; defense in depth).
+    - `ideator` / `human-ideator`:
+-     `repo:read` on `eden/<experiment_id>` (ideator
+-     produces ideas, not git commits — its read-only
+-     access is for inspecting parent_commits etc.).
+-   - `integrator`: `repo:write` on `eden/<experiment_id>`.
+-     The branch-protection rules (§3.2) restrict WHICH
+-     branches the integrator can write; the token scope
+-     just gates repo-level access.
+-   - `operator`: `repo:admin` on `eden/<experiment_id>`.
+-     Used only by the bootstrap + reclamation paths.
++     `read:repository` (ideator produces ideas, not git
++     commits — read-only access is for inspecting
++     parent_commits etc.).
++   - `integrator`: `write:repository`. The branch-
++     protection rules (§3.2) restrict WHICH branches the
++     integrator can push; the token scope is coarse.
++   - `operator`:
++     `write:repository,read:organization,write:organization`
++     (operator manages teams + their repo bindings;
++     needs org-admin scope for membership ops). Used
++     only by the bootstrap + reclamation paths.
+ 3. Adds the user to the Gitea team
+    `eden-<experiment_id>-<role>` (one team per role per
+    experiment); the team membership is what the
+@@ -1196,17 +1324,43 @@
+ 2. New 13e step: `eden-gitea-admin rotate-token
+    --worker-id <worker_id>` revokes the worker's existing
+    Gitea token (`DELETE /api/v1/users/{username}/tokens/{token-name}`)
+-   and mints a new one
+-   (`POST /api/v1/users/{username}/tokens`).
++   and mints a new one (CLI-based, per the §3.1.1 path —
++   `kubectl exec ... gitea admin user generate-access-token
++   ...`; admin-token API path is not available for token
++   mint per Gitea's BasicAuth-only requirement).
+ 3. The new Gitea token is written to the chart-managed
+-   Secret under the same `<worker_id>.token` key. Workers
+-   pick up the new token on their next pod restart (when
+-   the Secret is mounted via envFrom) OR on a configured
+-   reload signal (the worker's credential-helper script
+-   re-reads the env on each git operation, so a Secret
+-   update propagates as soon as kubelet re-syncs the pod's
+-   env — typically within seconds).
++   Secret under the same `<worker_id>.token` key.
++
++   **Propagation to running workers.** Kubernetes Secret
++   value updates DO NOT propagate to a pod's environment
++   variables without a pod restart
++   ([Distribute Credentials Securely](https://kubernetes.io/docs/tasks/inject-data-application/distribute-credentials-secure/)).
++   13e therefore mounts the per-worker Gitea token as a
++   FILE from a Secret VOLUME, not as an env var. Mounted
++   Secret volume updates ARE propagated by kubelet to
++   running containers within the kubelet's
++   sync-frequency (defaults to ~60s; controllable via the
++   pod-spec's
++   `containers[].env[].valueFrom.secretKeyRef` vs
++   `volumes[].secret` distinction). The credential-helper
++   script reads the token from
++   `/etc/eden/gitea-token` (file mount) on every git
++   operation; a Secret update lands as a new file content
++   within the kubelet sync window. The worker host's
++   `--gitea-token-env <name>` CLI flag is renamed in 13e
++   to `--gitea-token-file <path>` to match this file-
++   mount posture; the credential-helper Python helper
++   (§5.2's `credential_helper.py`) reads the file on
++   every invocation.
+ 
++   For workers that need IMMEDIATE rotation (no
++   kubelet-sync delay), the operator can additionally
++   trigger a pod restart via
++   `kubectl rollout restart statefulset/<worker>` after
++   the Secret update; the runbook documents this for the
++   compliance-driven case. The default flow tolerates
++   the ~60s sync window.
++
+ The Store-side hook is a post-commit listener wired into
+ the wire layer's `reissue_credential` handler (per 12a-1
+ §5's `register_worker` shape). The hook is **best-effort**:
+@@ -1505,7 +1659,8 @@
+ There is one place where the spec and 13e's ACL design
+ intersect worth flagging: chapter 3 §4.1 says the
+ evaluator MUST NOT modify the worker branch. 13e's
+-`evaluator` Gitea token has `repo:read` only — defense in
++`evaluator` Gitea token has `read:repository` only —
++defense in
+ depth that satisfies the spec rule with belt-and-
+ suspenders. If a future spec change relaxed the
+ no-evaluator-write rule, 13e's ACLs would also need to
+@@ -1556,7 +1711,7 @@
+   clauses per §3.5.1.
+ - `reference/helm/eden/templates/_helpers.tpl`: add
+   `eden.gitea.oauthEnv` (env-var block for OAuth secret
+-  refs), `eden.gitea.workerTokenEnv` (envFrom block for
++  refs), `eden.gitea.workerTokenVolumeMount` (Secret-volume mount block for
+   per-worker tokens).
+ - `reference/helm/eden/templates/gitea-statefulset.yaml`:
+   conditional OAuth env-var wiring per §3.4.2.
+@@ -1663,8 +1818,12 @@
+ 
+ | File | Change |
+ |---|---|
+-| `reference/services/_common/src/eden_service_common/gitea_args.py` (new) | Shared argparse helper that adds `--gitea-token-env <name>` consistently across executor + evaluator + ideator + web-ui. |
+-| `reference/services/_common/src/eden_service_common/credential_helper.py` (new) | Replaces the inline credential-helper-script generation in `setup-experiment.sh` with a Python helper that produces a script reading the named env var. Used by both `setup-experiment.sh` and `setup-experiment-helm.sh`. |
++| `reference/packages/eden-storage/src/eden_storage/protocol.py` | Add `update_worker_labels(worker_id, labels, *, mode)` to the `Store` Protocol per §3.0a.4. |
++| `reference/packages/eden-storage/src/eden_storage/{memory,sqlite,postgres}.py` | Implement `update_worker_labels` on each backend (small write op; merges by reading + re-serializing the JSON labels column). |
++| `reference/packages/eden-wire/src/eden_wire/server.py` | Add `POST /v0/experiments/{E}/workers/{W}/labels` route per §3.0a.4; admin-authorized. |
++| `reference/packages/eden-wire/src/eden_wire/client.py` | Add `StoreClient.update_worker_labels(...)` mirror. |
++| `reference/services/_common/src/eden_service_common/gitea_args.py` (new) | Shared argparse helper that adds `--gitea-token-file <path>` consistently across executor + evaluator + ideator + web-ui. |
++| `reference/services/_common/src/eden_service_common/credential_helper.py` (new) | Replaces the inline credential-helper-script generation in `setup-experiment.sh` with a Python helper that produces a script reading the per-worker token from the configured file path (per §3.6's Secret-volume-mount posture). Used by both `setup-experiment.sh` and `setup-experiment-helm.sh`. |
+ | `reference/services/{executor,evaluator,ideator,web-ui}/src/.../cli.py` | Adopt the shared `gitea_args.py` helper. The credential-helper plumbing surface is unchanged in shape. |
+ | `reference/services/orchestrator/src/eden_orchestrator/integrator.py` (or wherever the integrator runs in-process; per 12c may be the orchestrator) | Add the §3.3.2 PR-mediated integration path gated on `--integrator-pr-approval-enabled`. The default path is unchanged. |
+ | `reference/services/web-ui/src/eden_web_ui/routes/executor.py` (chunk 9c) | Add the §3.3.3 human-executor PR path gated on `--human-executor-pr-enabled`. |
+@@ -1675,7 +1834,7 @@
+ |---|---|
+ | `reference/helm/eden/values.yaml` | Add `gitea.auth.*`, `gitea.acl.*`, `gitea.pr.*`, `gitea.users.*` blocks per §3.4 / §3.5. |
+ | `reference/helm/eden/values.schema.json` | Add `if/then` clauses per §3.5.1; admin-token requirement; ACL-mode enum; PR-flag mutex (humanExecutor.enabled requires acl.enabled=true). |
+-| `reference/helm/eden/templates/_helpers.tpl` | Add `eden.gitea.oauthEnv`, `eden.gitea.workerTokenEnv`, `eden.gitea.tokenSecretName` helpers. |
++| `reference/helm/eden/templates/_helpers.tpl` | Add `eden.gitea.oauthEnv`, `eden.gitea.workerTokenVolumeMount` (Secret-volume mount block — see §3.6), `eden.gitea.tokenSecretName` helpers. |
+ | `reference/helm/eden/templates/gitea-statefulset.yaml` | Conditional OAuth env-var wiring per §3.4.2. |
+ | `reference/helm/eden/templates/serviceaccount-gitea-bootstrap.yaml` (new) | ServiceAccount used by the bootstrap Jobs (§5.3 below); has `secrets:get,patch` on the chart-managed secret holding worker tokens. |
+ | `reference/helm/eden/bootstrap/gitea-org-provision-job.yaml.tmpl` (new) | One-shot Job per §3.0.2: creates the `eden` org (idempotent). Gated on `gitea.org.bootstrap=true`. |
+@@ -1732,8 +1891,8 @@
+ real Gitea container (started by the test fixture):
+ 
+ - Round-trip user-provision + token-mint + branch-protection.
+-- ACL rejection: a token with repo:read attempts a push,
+-  Gitea returns 403.
++- ACL rejection: a `read:repository`-only token attempts
++  a push; Gitea returns 403.
+ - Token rotation: mint, use, rotate, old token rejected.
+ - PR open + auto-merge via API; verify resulting
+   `merge_commit_sha` matches the expected squash-commit
+@@ -1832,17 +1991,31 @@
+ 
+ ### 8.2 Gitea token scope granularity
+ 
+-Gitea's token scopes: `repo`, `read:user`, `admin:org`,
+-etc. — coarser than what we'd ideally have (no
+-"only-this-branch-namespace" scope; the `repo` scope
+-allows pushing to any branch). The §3.2 branch-protection
+-rules are the ENFORCEMENT layer; the token scope is the
+-COARSE layer. A token with `repo:write` on
+-`eden/<experiment>` could in principle push to any branch,
+-but Gitea checks branch protection BEFORE accepting the
+-push, so the effective allow-list is the intersection of
+-(token scope) ∩ (branch protection allow-list).
++Gitea's documented scope vocabulary
++([API Usage — Scoped tokens](https://docs.gitea.com/development/api-usage))
++is coarse: `read:repository`, `write:repository`,
++`read:organization`, `write:organization`,
++`read:user`, etc. There is **no** per-repository
++sub-scope (Gitea's tokens grant the scope to ANY repo
++the user has access to). Per-repo isolation in 13e
++comes from THREE layered mechanisms:
+ 
++1. **Team membership** (per §3.0.4): each user is a
++   member of exactly the `eden-<experiment_id>-<role>`
++   team. The team is bound to ONE repo
++   (`eden/<experiment_id>`) via team-repo binding.
++2. **Repo-level team access mode**: read-only teams get
++   `Read` access; write-capable teams get `Write` access.
++3. **Branch-protection allow-lists** (per §3.2): the
++   fine ACL that picks which TEAM can push which BRANCH.
++
++The token's `write:repository` scope is the coarse
++"this token can write to any repo this user has team-
++write to" gate; the team-membership gate restricts that
++to ONE repo; the branch-protection gate restricts that
++to specific branches. Effective allow-list is the
++intersection of all three.
++
+ This is fine for our threat model (bad config, not
+ malicious workers) but worth flagging — the token scope
+ is not by itself a tight ACL. Documented in §8.6.
+@@ -2061,7 +2234,7 @@
+    `GiteaAdmin` class; CLI; unit tests against mocked
+    responses + integration tests against a real Gitea
+    container.
+-2. **Service integration PR.** `--gitea-token-env` flag
++2. **Service integration PR.** `--gitea-token-file` flag
+    plumbing across executor / evaluator / ideator /
+    web-ui; credential-helper Python helper; `register_worker`
+    post-commit hook.
