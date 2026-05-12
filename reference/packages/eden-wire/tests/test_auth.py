@@ -351,3 +351,130 @@ def test_forbidden_round_trip(store: InMemoryStore) -> None:
         )
         with pytest.raises(Forbidden):
             client.register_worker("alice")
+
+
+# ----------------------------------------------------------------------
+# Auth-matrix coverage on task/idea/variant mutation routes (12a-1
+# codex-review #2).
+# ----------------------------------------------------------------------
+
+
+def _register_worker(client: TestClient, worker_id: str) -> str:
+    """Helper: register worker via admin bearer; return the token."""
+    resp = client.post(
+        _workers_url(),
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+        json={"worker_id": worker_id},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["registration_token"]
+
+
+_TASK_MUTATIONS = [
+    ("POST", "/tasks", {"task_id": "t1", "kind": "ideation", "state": "pending",
+                        "payload": {"experiment_id": EXPERIMENT_ID},
+                        "created_at": "2026-05-01T00:00:00Z",
+                        "updated_at": "2026-05-01T00:00:00Z"}),
+    ("POST", "/tasks/t1/claim", {}),
+    (
+        "POST",
+        "/tasks/t1/submit",
+        {"payload": {"kind": "ideation", "status": "success", "idea_ids": []}},
+    ),
+    ("POST", "/tasks/t1/accept", None),
+    ("POST", "/tasks/t1/reject", {"reason": "validation_error"}),
+    ("POST", "/tasks/t1/reclaim", {"cause": "operator"}),
+]
+
+_IDEA_MUTATIONS = [
+    ("POST", "/ideas", {"idea_id": "p1", "experiment_id": EXPERIMENT_ID,
+                        "slug": "x", "priority": 0.5, "state": "drafting",
+                        "parent_commits": ["0" * 40],
+                        "artifacts_uri": "file:///tmp/x",
+                        "created_at": "2026-05-01T00:00:00Z",
+                        "updated_at": "2026-05-01T00:00:00Z"}),
+    ("POST", "/ideas/p1/mark-ready", None),
+]
+
+_VARIANT_MUTATIONS = [
+    ("POST", "/variants", {"variant_id": "v1", "experiment_id": EXPERIMENT_ID,
+                           "idea_id": "p1", "status": "starting",
+                           "parent_commits": ["0" * 40],
+                           "started_at": "2026-05-01T00:00:00Z"}),
+    ("POST", "/variants/v1/declare-evaluation-error", None),
+    ("POST", "/variants/v1/integrate", {"variant_commit_sha": "a" * 40}),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    _TASK_MUTATIONS + _IDEA_MUTATIONS + _VARIANT_MUTATIONS,
+)
+def test_admin_bearer_rejected_on_worker_gated_mutations(
+    store: InMemoryStore, method: str, path: str, body: dict | None
+) -> None:
+    """§13.3 — admin bearer hitting any worker-gated mutation returns 403.
+
+    Confirms the auth-matrix dispatcher runs before the route handler
+    so the test doesn't depend on the resource existing. Each route
+    is exercised through ``_enforce_worker``.
+    """
+    app = make_app(store, admin_token=ADMIN_TOKEN)
+    client = TestClient(app)
+    headers = {
+        "X-Eden-Experiment-Id": EXPERIMENT_ID,
+        "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+    }
+    if body is not None:
+        resp = client.request(
+            method, f"/v0/experiments/{EXPERIMENT_ID}{path}", headers=headers, json=body
+        )
+    else:
+        resp = client.request(
+            method, f"/v0/experiments/{EXPERIMENT_ID}{path}", headers=headers
+        )
+    assert resp.status_code == 403, (
+        f"{method} {path} returned {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["type"] == "eden://error/forbidden"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    _TASK_MUTATIONS + _IDEA_MUTATIONS + _VARIANT_MUTATIONS,
+)
+def test_worker_bearer_admitted_through_auth_layer_on_mutations(
+    store: InMemoryStore, method: str, path: str, body: dict | None
+) -> None:
+    """§13.3 — worker bearer passes the auth-class gate on every mutation route.
+
+    The route handler may still reject for other reasons (404 not-found,
+    409 illegal-transition, 400 bad-request) — what we're asserting here
+    is that NONE of the rejections are 403 forbidden, i.e. the
+    auth-class gate admitted the worker bearer. Anything that gets past
+    ``_enforce_worker`` is acceptable for this test.
+    """
+    app = make_app(store, admin_token=ADMIN_TOKEN)
+    client = TestClient(app)
+    token = _register_worker(client, "eric")
+    headers = {
+        "X-Eden-Experiment-Id": EXPERIMENT_ID,
+        "Authorization": f"Bearer eric:{token}",
+    }
+    if body is not None:
+        resp = client.request(
+            method, f"/v0/experiments/{EXPERIMENT_ID}{path}", headers=headers, json=body
+        )
+    else:
+        resp = client.request(
+            method, f"/v0/experiments/{EXPERIMENT_ID}{path}", headers=headers
+        )
+    # Auth-class gate admitted; the rest is up to the route handler.
+    # 403 specifically would mean the gate rejected — that's the failure.
+    assert resp.status_code != 403, (
+        f"§13.3 violated: worker bearer rejected as 403 on worker-gated "
+        f"{method} {path} (body: {resp.text})"
+    )

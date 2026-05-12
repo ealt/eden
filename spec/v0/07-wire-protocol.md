@@ -24,19 +24,21 @@ Every normative path segment below `/v0/` begins with `experiments/{experiment_i
 
 ## 2. Task operations (chapter 4)
 
-The following endpoints bind the task-store operations in [`04-task-protocol.md`](04-task-protocol.md) §§1–5 and [`08-storage.md`](08-storage.md) §1.1. Each endpoint inherits the normative semantics of the underlying operation; this section lists only the wire shape.
+The following endpoints bind the task-store operations in [`04-task-protocol.md`](04-task-protocol.md) §§1–5 and [`08-storage.md`](08-storage.md) §1.1. Each endpoint inherits the normative semantics of the underlying operation; this section lists only the wire shape. The `Auth` column carries the §13.3 classification (`admin` / `worker` / `either`).
 
-| Operation | HTTP | Path |
-|---|---|---|
-| `create_task` | `POST` | `/v0/experiments/{E}/tasks` |
-| `list_tasks` | `GET`  | `/v0/experiments/{E}/tasks` |
-| `read_task` | `GET`  | `/v0/experiments/{E}/tasks/{T}` |
-| `read_submission` | `GET`  | `/v0/experiments/{E}/tasks/{T}/submission` |
-| `claim` | `POST` | `/v0/experiments/{E}/tasks/{T}/claim` |
-| `submit` | `POST` | `/v0/experiments/{E}/tasks/{T}/submit` |
-| `accept` | `POST` | `/v0/experiments/{E}/tasks/{T}/accept` |
-| `reject` | `POST` | `/v0/experiments/{E}/tasks/{T}/reject` |
-| `reclaim` | `POST` | `/v0/experiments/{E}/tasks/{T}/reclaim` |
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `create_task` | `POST` | `/v0/experiments/{E}/tasks` | worker |
+| `list_tasks` | `GET`  | `/v0/experiments/{E}/tasks` | either |
+| `read_task` | `GET`  | `/v0/experiments/{E}/tasks/{T}` | either |
+| `read_submission` | `GET`  | `/v0/experiments/{E}/tasks/{T}/submission` | either |
+| `claim` | `POST` | `/v0/experiments/{E}/tasks/{T}/claim` | worker |
+| `submit` | `POST` | `/v0/experiments/{E}/tasks/{T}/submit` | worker |
+| `accept` | `POST` | `/v0/experiments/{E}/tasks/{T}/accept` | worker |
+| `reject` | `POST` | `/v0/experiments/{E}/tasks/{T}/reject` | worker |
+| `reclaim` | `POST` | `/v0/experiments/{E}/tasks/{T}/reclaim` | worker |
+
+The mutating task operations are worker-gated: the orchestrator is a registered worker (per the Phase 12a-2 orchestrator-as-role contract) and drives `accept` / `reject` / `reclaim` / `create_task` under its own worker bearer; ideators / executors / evaluators drive `claim` / `submit` / `mark-ready` / `create_variant` under theirs. Future phases MAY narrow specific endpoints to a named group (e.g., an `orchestrator` group), but the v0 binding requires only "any authenticated worker".
 
 ### 2.1 Create
 
@@ -68,24 +70,24 @@ Atomicity, idempotency, and content-equivalence rules from [`04-task-protocol.md
 
 ## 3. Idea operations
 
-| Operation | HTTP | Path |
-|---|---|---|
-| `create_idea` | `POST` | `/v0/experiments/{E}/ideas` |
-| `list_ideas` | `GET` | `/v0/experiments/{E}/ideas` |
-| `read_idea` | `GET` | `/v0/experiments/{E}/ideas/{P}` |
-| `mark_idea_ready` | `POST` | `/v0/experiments/{E}/ideas/{P}/mark-ready` |
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `create_idea` | `POST` | `/v0/experiments/{E}/ideas` | worker |
+| `list_ideas` | `GET` | `/v0/experiments/{E}/ideas` | either |
+| `read_idea` | `GET` | `/v0/experiments/{E}/ideas/{P}` | either |
+| `mark_idea_ready` | `POST` | `/v0/experiments/{E}/ideas/{P}/mark-ready` | worker |
 
 Request and response bodies match [`schemas/idea.schema.json`](schemas/idea.schema.json). `list_ideas` accepts an optional `state` query parameter. `mark-ready` has an empty request body.
 
 ## 4. Variant operations
 
-| Operation | HTTP | Path |
-|---|---|---|
-| `create_variant` | `POST` | `/v0/experiments/{E}/variants` |
-| `list_variants` | `GET` | `/v0/experiments/{E}/variants` |
-| `read_variant` | `GET` | `/v0/experiments/{E}/variants/{T}` |
-| `declare_variant_evaluation_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-evaluation-error` |
-| `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` |
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `create_variant` | `POST` | `/v0/experiments/{E}/variants` | worker |
+| `list_variants` | `GET` | `/v0/experiments/{E}/variants` | either |
+| `read_variant` | `GET` | `/v0/experiments/{E}/variants/{T}` | either |
+| `declare_variant_evaluation_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-evaluation-error` | worker |
+| `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` | worker |
 
 `integrate_variant` binds [`06-integrator.md`](06-integrator.md) §3.4 and carries additional idempotency rules (§5 below); the other endpoints are transport-only bindings of their [`08-storage.md`](08-storage.md) §1.7 operations.
 
@@ -124,7 +126,7 @@ If `worker_id` is already registered, the server MUST return 200 with the existi
 
 ### 6.2 List and read
 
-- `GET /v0/experiments/{E}/workers` returns `{"workers": [Worker, ...]}` filtered by optional `label_<key>=<value>` query params. The wire-visible Worker shape MUST NOT include any credential or hash field ([`02-data-model.md`](02-data-model.md) §6.2).
+- `GET /v0/experiments/{E}/workers` returns `{"workers": [Worker, ...]}` containing every worker registered for the experiment. The wire-visible Worker shape MUST NOT include any credential or hash field ([`02-data-model.md`](02-data-model.md) §6.2). v0 does not define query-parameter filtering on this endpoint; a future phase (Phase 12a-3, alongside the per-decision-type dispatch hints) MAY introduce label-based filtering as a backward-compatible refinement.
 - `GET /v0/experiments/{E}/workers/{W}` returns the named Worker or 404 `eden://error/not-found`.
 
 ### 6.3 Reissue credential
@@ -167,10 +169,10 @@ Per-experiment group registry endpoints. All mutating ops are admin-gated; reads
 
 ## 8. Event log
 
-| Operation | HTTP | Path |
-|---|---|---|
-| `read_range` / `replay` | `GET` | `/v0/experiments/{E}/events` |
-| `subscribe` | `GET` | `/v0/experiments/{E}/events/subscribe` |
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `read_range` / `replay` | `GET` | `/v0/experiments/{E}/events` | either |
+| `subscribe` | `GET` | `/v0/experiments/{E}/events/subscribe` | either |
 
 ### 8.1 Read-range and replay
 
@@ -283,11 +285,17 @@ The §6.1 worker-id grammar excludes `:` so that the bearer parser can safely sp
 
 ### 13.3 Authorization
 
-The server MUST classify every endpoint as **admin-gated**, **worker-gated**, or **either** (denoted in §6 / §7 tables). The wire dispatcher:
+Every `/v0/` endpoint MUST be classified as **admin-gated**, **worker-gated**, or **either**. The classification appears in the `Auth` column of the per-section endpoint tables (§§2–4, §6, §7, §8). The wire dispatcher:
 
-- Accepts the request only if the authenticated principal class matches the endpoint class.
-- Returns `eden://error/forbidden` (HTTP 403) for principal-class mismatches (e.g., a worker bearer hitting an admin-gated route).
+- Accepts the request only if the authenticated principal class matches the endpoint class. `either` admits both classes; `worker` rejects admin bearers; `admin` rejects worker bearers.
+- Returns `eden://error/forbidden` (HTTP 403) for principal-class mismatches.
 - Forwards the authenticated `worker_id` to the Store on `claim` / `submit` so that §3 / §4 enforcement runs against the verified identity, not against a request-body field.
+
+Summary of the v0 classifications:
+
+- **admin-gated** — registry mutations: `register_worker`, `reissue_credential`, `register_group`, `add_to_group` / `remove_from_group` / `delete_group`.
+- **worker-gated** — every wire mutation NOT in the registry, plus the `whoami` probe: `create_task`, `claim`, `submit`, `accept`, `reject`, `reclaim`, `create_idea`, `mark_idea_ready`, `create_variant`, `declare_variant_evaluation_error`, `integrate_variant`, `verify_worker_credential`. Per [`02-data-model.md`](02-data-model.md) §6, the orchestrator is itself a registered worker; the v0 binding does not narrow these endpoints to a specific worker or group (Phase 12a-2 may add a group-membership refinement).
+- **either** — every read endpoint: `list_tasks` / `read_task` / `read_submission`, `list_ideas` / `read_idea`, `list_variants` / `read_variant`, `list_workers` / `read_worker`, `list_groups` / `read_group`, `read_range` / `subscribe`.
 
 The [`04-task-protocol.md`](04-task-protocol.md) §3.3 requirement that the binding verify the credential before invoking the Store is satisfied by this dispatcher.
 

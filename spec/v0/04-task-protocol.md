@@ -1,6 +1,6 @@
 # Task Protocol
 
-This chapter specifies the behavioral contract for tasks: the state machine they advance through, the claim tokens that grant exclusive execution, the idempotency rules for submission, and the reclamation policy that bounds worker liveness. It pins *what* observable behavior a conforming task store and a conforming orchestrator must exhibit; it does not pin *how* either is implemented.
+This chapter specifies the behavioral contract for tasks: the state machine they advance through, the identity-keyed claim ownership that grants exclusive execution, the idempotency rules for submission, and the reclamation policy that bounds worker liveness. It pins *what* observable behavior a conforming task store and a conforming orchestrator must exhibit; it does not pin *how* either is implemented.
 
 The task object's shape is defined in [`02-data-model.md`](02-data-model.md) §3; its JSON Schema is [`schemas/task.schema.json`](schemas/task.schema.json). The role contracts that drive the transitions defined here are in [`03-roles.md`](03-roles.md).
 
@@ -33,9 +33,9 @@ pending ─────────▶ claimed ───────────
                                              │
 ```
 
-- **claim** — `pending → claimed`. Atomic. Issues a fresh claim token. §3.
-- **submit** — `claimed → submitted`. Requires presenting the current claim token. Idempotent under identical payload. Performed for every completed attempt, whether the worker declares success or failure. §4.
-- **reclaim** — `claimed → pending` or `submitted → pending`. Invalidates the prior claim token. §5.
+- **claim** — `pending → claimed`. Atomic. Records the claimant's `worker_id` on the task. §3.
+- **submit** — `claimed → submitted`. Requires the authenticated `worker_id` to match the recorded claim. Idempotent under identical payload. Performed for every completed attempt, whether the worker declares success or failure. §4.
+- **reclaim** — `claimed → pending` or `submitted → pending`. Clears the recorded claim. §5.
 - **accept** — `submitted → completed`. Orchestrator-initiated. §4.3.
 - **reject** — `submitted → failed`. Orchestrator-initiated, including when the worker's own submission declared failure. §4.3.
 
@@ -240,6 +240,6 @@ The Store-layer typed errors raised on §3 / §4 enforcement form a closed vocab
 | `WorkerNotEligible` | `claim` | The worker is registered but does not satisfy `Task.target` per §3.5 step 3. |
 | `NotClaimed` | `submit` | The task is not in `claimed` state — it is `pending` (no claim), `submitted` with a different submission already in flight whose claim has been cleared, or terminal. |
 | `WrongClaimant` | `submit` | The supplied `worker_id` does not match `task.claim.worker_id`. The atomic match is performed as part of the submit transition; pre-flight binding-side checks would race. |
-| `ReservedIdentifier` | `register_worker`, `register_group` | The supplied id is one of the reserved values (`admin`, `system`, `internal`) or otherwise excluded by the §6.1 grammar / reservation rules. |
+| `ReservedIdentifier` | `register_worker`, `register_group` | The supplied id is one of the reserved values (`admin`, `system`, `internal`) per [`02-data-model.md`](02-data-model.md) §6.1's reservation list. Distinct from grammar-rejection: a syntactically invalid id surfaces as `InvalidPrecondition` (§6.1 grammar; chapter 07 §6.1 maps that to 400 `eden://error/bad-request`). |
 | `WorkerAlreadyRegistered` | `register_worker` | A different actor attempted to register a `worker_id` whose record already exists. (Idempotent re-registration by the same caller is a non-error per [`02-data-model.md`](02-data-model.md) §6.3.) |
 | `CycleDetected` | `register_group`, group-mutation ops | The mutation would introduce a cycle in the group DAG ([`02-data-model.md`](02-data-model.md) §7.3). |

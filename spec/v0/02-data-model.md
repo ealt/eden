@@ -216,7 +216,7 @@ The wire-visible Worker shape MUST NOT carry the worker's authentication credent
 
 - `register_worker(worker_id, labels?)` is **idempotent on the existing record**: a second registration of an already-registered `worker_id` MUST return the existing record and MUST NOT issue or rotate any credential. This keeps service-restart-after-crash cheap.
 - A separate explicit operation (`reissue_credential` in the reference binding) rotates a worker's credential; conflating it with re-registration leaves credential-recovery flows ambiguous. The exact name and shape of the rotation operation is binding-defined.
-- A registration that violates §6.1 (grammar or reservation) MUST be rejected.
+- A registration that violates §6.1 MUST be rejected. The two §6.1 violation modes raise distinct typed errors so a conforming binding can map them to different wire statuses: a grammar violation raises `InvalidPrecondition` ([`07-wire-protocol.md`](07-wire-protocol.md) §6.1 binds this to 400 `eden://error/bad-request`); a use of one of the reserved identifiers (`admin`, `system`, `internal`) raises `ReservedIdentifier` (chapter 07 §7 binds this to 409 `eden://error/reserved-identifier`).
 
 ## 7. Groups
 

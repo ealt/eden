@@ -303,3 +303,39 @@ def test_claim_with_group_target_rejects_non_member(
     store.create_task(task)
     with pytest.raises(WorkerNotEligible):
         store.claim("t1", "claude")
+
+
+def test_submit_by_deregistered_worker_rejected(
+    make_store: Callable[..., Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§3.5 step 2 extended to submit — a worker_id no longer registered
+    MUST NOT be able to submit even when it still holds a live claim.
+
+    Spec citation: chapter 04 §3.5 step 2 + §4.1. The §3.5 ladder runs
+    atomically with the claim write; the same registration check is
+    extended into the submit transition so a worker whose registry
+    row disappears between claim and submit cannot finish a stranded
+    claim. The reference impl doesn't expose ``delete_worker`` on the
+    public Store today, so this test simulates the post-claim
+    deregistration by monkey-patching ``_get_worker`` to return
+    ``None`` for the claimant during the submit call.
+    """
+    from eden_storage import IdeaSubmission, WorkerNotRegistered
+
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    store.create_ideation_task("t1")
+    store.claim("t1", "eric")
+
+    original_get_worker = store._get_worker  # type: ignore[attr-defined]
+
+    def _missing_eric(worker_id: str):
+        if worker_id == "eric":
+            return None
+        return original_get_worker(worker_id)
+
+    monkeypatch.setattr(store, "_get_worker", _missing_eric)
+
+    with pytest.raises(WorkerNotRegistered):
+        store.submit("t1", "eric", IdeaSubmission(status="success", idea_ids=()))

@@ -216,7 +216,7 @@ The worker registry holds the set of registered workers and groups for a single 
 | `reissue_credential` | `worker_id` | Atomically generates a fresh `registration_token`, replaces the stored hash on the existing record, and returns the new plaintext token. The prior credential becomes invalid atomically with this write. The worker registry row's `worker_id` and `registered_at` are unchanged. |
 | `verify_worker_credential` | presented `<worker_id>:<token>` | Returns the `worker_id` whose stored hash matches the presented token, or a well-defined unauthorized signal. The Store MUST use a constant-time comparison against the hash output to defend against timing oracles. |
 | `read_worker` | `worker_id` | Returns the wire-visible Worker shape (no credential / hash). |
-| `list_workers` | OPTIONAL filter (labels, etc.) | Returns matching workers in implementation-defined order. |
+| `list_workers` | — | Returns every registered worker in implementation-defined order. v0 does not define any filter parameter; future phases MAY add one as a backward-compatible refinement. |
 | `register_group` | `group_id`, OPTIONAL `members` | Atomically creates the group; MUST reject cycles (§9.3). |
 | `add_to_group`, `remove_from_group` | `group_id`, `member_id` | Atomically mutate the membership list; MUST reject cycles. |
 | `read_group`, `list_groups`, `delete_group` | as named | Read / enumerate / remove a group. `delete_group` does not affect membership of its members in other groups (members are referenced by id, not owned). |

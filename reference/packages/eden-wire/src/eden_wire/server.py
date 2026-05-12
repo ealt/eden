@@ -104,6 +104,19 @@ def make_app(
     if admin_token is not None:
         install_auth_middleware(app, admin_token=admin_token, store=store)
 
+    def _enforce_worker(request: Request) -> None:
+        """Worker-gated route guard (§13.3).
+
+        When auth is disabled (``admin_token is None``), the middleware
+        hasn't installed a principal and no enforcement runs — that's
+        the in-process / TestClient posture. When auth is enabled, any
+        admin bearer hitting a worker-gated route MUST 403 per the
+        chapter-7 §13.3 dispatcher contract.
+        """
+        if admin_token is None:
+            return
+        require_worker(request)
+
     def _problem(status: int, type_: str, title: str, detail: str, instance: str) -> JSONResponse:
         return JSONResponse(
             status_code=status,
@@ -216,6 +229,7 @@ def make_app(
 
     @app.post(f"{base}/tasks")
     async def _create_task(
+        request: Request,
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
@@ -225,6 +239,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks",
         )
+        _enforce_worker(request)
         try:
             task = TaskAdapter.validate_python(body)
         except ValidationError as exc:
@@ -288,6 +303,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/claim",
         )
+        _enforce_worker(request)
         # §2.3 + §13: claimant worker_id comes from the authenticated
         # bearer, not the request body. _worker_id_from_request reads
         # request.state.principal when auth is enabled and falls back
@@ -315,6 +331,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/submit",
         )
+        _enforce_worker(request)
         # §2.4 + §13: forward the authenticated worker_id to
         # Store.submit; the Store performs the §4.1 atomic claim-match
         # (WrongClaimant / NotClaimed). No pre-flight `read_task →
@@ -328,6 +345,7 @@ def make_app(
 
     @app.post(f"{base}/tasks/{{task_id}}/accept")
     async def _accept(
+        request: Request,
         experiment_id: str,
         task_id: str,
         x_eden_experiment_id: str | None = Header(None),
@@ -337,11 +355,13 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/accept",
         )
+        _enforce_worker(request)
         store.accept(task_id)
         return Response(status_code=204)
 
     @app.post(f"{base}/tasks/{{task_id}}/reject")
     async def _reject(
+        request: Request,
         experiment_id: str,
         task_id: str,
         body: RejectRequest,
@@ -352,11 +372,13 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/reject",
         )
+        _enforce_worker(request)
         store.reject(task_id, body.reason)  # type: ignore[arg-type]
         return Response(status_code=204)
 
     @app.post(f"{base}/tasks/{{task_id}}/reclaim")
     async def _reclaim(
+        request: Request,
         experiment_id: str,
         task_id: str,
         body: ReclaimRequest,
@@ -367,6 +389,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/reclaim",
         )
+        _enforce_worker(request)
         store.reclaim(task_id, body.cause)  # type: ignore[arg-type]
         return Response(status_code=204)
 
@@ -376,6 +399,7 @@ def make_app(
 
     @app.post(f"{base}/ideas")
     async def _create_idea(
+        request: Request,
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
@@ -383,6 +407,7 @@ def make_app(
         _check_experiment(
             experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/ideas"
         )
+        _enforce_worker(request)
         try:
             idea = Idea.model_validate(body)
         except ValidationError as exc:
@@ -421,6 +446,7 @@ def make_app(
 
     @app.post(f"{base}/ideas/{{idea_id}}/mark-ready")
     async def _mark_idea_ready(
+        request: Request,
         experiment_id: str,
         idea_id: str,
         x_eden_experiment_id: str | None = Header(None),
@@ -430,6 +456,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/ideas/{idea_id}/mark-ready",
         )
+        _enforce_worker(request)
         store.mark_idea_ready(idea_id)
         return Response(status_code=204)
 
@@ -439,6 +466,7 @@ def make_app(
 
     @app.post(f"{base}/variants")
     async def _create_variant(
+        request: Request,
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
@@ -446,6 +474,7 @@ def make_app(
         _check_experiment(
             experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/variants"
         )
+        _enforce_worker(request)
         try:
             variant = Variant.model_validate(body)
         except ValidationError as exc:
@@ -485,6 +514,7 @@ def make_app(
 
     @app.post(f"{base}/variants/{{variant_id}}/declare-evaluation-error")
     async def _declare_variant_eval_error(
+        request: Request,
         experiment_id: str,
         variant_id: str,
         x_eden_experiment_id: str | None = Header(None),
@@ -494,11 +524,13 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/variants/{variant_id}/declare-evaluation-error",
         )
+        _enforce_worker(request)
         store.declare_variant_evaluation_error(variant_id)
         return Response(status_code=204)
 
     @app.post(f"{base}/variants/{{variant_id}}/integrate")
     async def _integrate_variant(
+        request: Request,
         experiment_id: str,
         variant_id: str,
         body: IntegrateRequest,
@@ -509,6 +541,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/variants/{variant_id}/integrate",
         )
+        _enforce_worker(request)
         # §5: 200 + empty body on success and same-value idempotent
         # retries; 409 invalid-precondition on different-SHA divergence
         # (raised by Store.integrate_variant).

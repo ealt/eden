@@ -56,7 +56,7 @@ A **task** is a unit of work dispatched to a role. Tasks are the protocol's prim
 - A **kind** (plan, implement, evaluate).
 - A **payload** shaped per-kind (an idea reference, a commit to evaluate, etc.).
 - A **state** advancing through a state machine ([`04-task-protocol.md`](04-task-protocol.md)).
-- A **claim token** that grants a specific worker temporary exclusive right to execute it.
+- A **claim** that records the `worker_id` granted temporary exclusive right to execute it. Submission is authorized by matching the authenticated worker's id against the recorded claim ([`04-task-protocol.md`](04-task-protocol.md) §3, §4.1); the pre-12a-1 per-claim opaque token is removed.
 
 Schema: [`schemas/task.schema.json`](schemas/task.schema.json). The task is *stored data*; the task protocol is *how state transitions happen*.
 

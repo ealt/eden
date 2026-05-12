@@ -40,7 +40,6 @@ atomic operation aborts and no partial state becomes visible
 from __future__ import annotations
 
 import copy
-import hmac
 import itertools
 import math
 import re
@@ -49,9 +48,10 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from hashlib import sha256
 from typing import Any
 
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 from eden_contracts import (
     EvaluationPayload,
     EvaluationSchema,
@@ -718,6 +718,16 @@ class _StoreBase:
                 raise NotClaimed(
                     f"task {task_id!r} has no active claim (claim cleared by reclaim "
                     "or terminal transition)"
+                )
+            # §3.5 step 2 (extended to submit): the submitting worker_id MUST
+            # still be a registered worker. A worker that was registered at
+            # claim time and then removed from the registry MUST NOT be able
+            # to submit. Surfaces as the same WorkerNotRegistered error the
+            # claim path uses so the binding maps to the same wire status.
+            if self._get_worker(worker_id) is None:
+                raise WorkerNotRegistered(
+                    f"submit by worker_id={worker_id!r} rejected: worker is "
+                    f"not registered for experiment {self._experiment_id!r}"
                 )
             if task.claim.worker_id != worker_id:
                 raise WrongClaimant(
@@ -1581,14 +1591,23 @@ class _StoreBase:
     ) -> bool:
         """Return ``True`` iff ``registration_token`` is the current credential.
 
-        Constant-time hash comparison. Returns ``False`` for unknown
-        ``worker_id`` (rather than raising) so binding-layer callers
-        can collapse "no such worker" and "wrong secret" into a single
-        unauthorized outcome without leaking which arm hit.
+        Returns ``False`` for unknown ``worker_id`` (rather than
+        raising) so binding-layer callers can collapse "no such
+        worker" and "wrong secret" into a single unauthorized outcome
+        without leaking which arm hit. The unknown-worker branch
+        verifies against a class-level dummy hash so the two failure
+        modes incur the same argon2id cost — a timing oracle MUST NOT
+        be able to distinguish "worker absent" from "secret wrong".
         """
         with self._atomic_operation():
             stored = self._get_worker_credential_hash(worker_id)
             if stored is None:
+                # Constant-time defence: run verify against a dummy
+                # hash so the unknown-worker path takes the same time
+                # as a wrong-secret check. Discard the result.
+                self._check_credential_hash(
+                    registration_token, self._UNKNOWN_WORKER_DUMMY_HASH
+                )
                 return False
             return self._check_credential_hash(registration_token, stored)
 
@@ -1768,31 +1787,47 @@ class _StoreBase:
         """
         return secrets.token_hex(32)
 
-    def _hash_credential(self, registration_token: str) -> str:
-        """Return ``"<salt>:<hex-digest>"`` where digest = sha256(salt || token).
+    # argon2id PasswordHasher with the RFC 9106 SECOND-CHOICE-LOW-MEMORY
+    # parameters (`time_cost=3, memory_cost=64 MiB, parallelism=4`) —
+    # argon2-cffi's defaults as of v23. The slow-KDF properties are
+    # cited as the spec posture in chapter 07 §13.1 and chapter 08 §7.
+    _PASSWORD_HASHER = PasswordHasher()
 
-        Per chapter 8 §7 latitude: any offline-comparison-resistant
-        function suffices. With ≥256-bit random tokens, SHA-256 with a
-        random salt is sound — the slow-KDF properties of argon2id /
-        scrypt aren't load-bearing because the input is not
-        guess-prone. A backend that prefers argon2id MAY override this
-        method; the wire / registry contracts are unchanged.
+    # Dummy hash computed once at class-load so the unknown-worker
+    # branch of ``verify_worker_credential`` can perform a real
+    # argon2id verify against it (constant-time compared to a hit;
+    # see §13.4 / chunk-review item #4).
+    _UNKNOWN_WORKER_DUMMY_HASH: str = _PASSWORD_HASHER.hash("eden-unknown-worker-dummy")
+
+    def _hash_credential(self, registration_token: str) -> str:
+        """Return an argon2id-encoded hash of ``registration_token``.
+
+        Per chapter 07 §13.1 / chapter 08 §7, the reference backend
+        uses argon2id as the credential KDF. The encoded form is the
+        standard PHC string (carries algorithm, params, salt, and
+        digest together) so a single column stores everything needed
+        for verification.
         """
-        salt = secrets.token_hex(16)
-        digest = sha256((salt + registration_token).encode("utf-8")).hexdigest()
-        return f"{salt}:{digest}"
+        return self._PASSWORD_HASHER.hash(registration_token)
 
     def _check_credential_hash(self, registration_token: str, stored: str) -> bool:
-        """Constant-time compare of presented token against stored hash.
+        """Verify ``registration_token`` against ``stored`` (argon2id encoded).
 
-        Defends against timing oracles; the wire / Store contract
-        treats every credential check as a sensitive comparison.
+        Returns ``True`` on match, ``False`` otherwise.
+        ``argon2-cffi``'s verify is itself constant-time (the only
+        timing-meaningful difference is the brief decode-fail path for
+        a malformed ``stored``; legitimate hashes always reach the KDF
+        comparison).
         """
-        if ":" not in stored:
+        try:
+            return self._PASSWORD_HASHER.verify(stored, registration_token)
+        except VerifyMismatchError:
             return False
-        salt, expected = stored.split(":", 1)
-        digest = sha256((salt + registration_token).encode("utf-8")).hexdigest()
-        return hmac.compare_digest(digest, expected)
+        except Exception:
+            # Malformed stored encoding (corrupted record, wrong
+            # column type, etc.). Treat as mismatch rather than
+            # propagate; the credential check contract is binary.
+            return False
 
     def _require_no_cycle_after(self, staged_groups: dict[str, Group]) -> None:
         """Raise ``CycleDetected`` if ``staged_groups`` would close a cycle.
