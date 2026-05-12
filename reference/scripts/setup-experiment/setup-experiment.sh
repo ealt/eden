@@ -437,6 +437,12 @@ if [[ -n "$ARG_SEED_FROM" ]]; then
     SEED_FROM_MOUNT_ARGS=(-v "${SEED_FROM_ABS}:/seed:ro")
     SEED_FROM_PYTHON_ARGS=(--seed-from /seed)
     echo "--- seeding from host directory: ${SEED_FROM_ABS} ---" >&2
+    # Drop any prior staging volume so repo-init doesn't short-circuit
+    # via EDEN_REPO_ALREADY_SEEDED and silently ignore the new --seed-from
+    # content. See MANUAL_UI_ISSUES.md §8. The volume has explicit
+    # `name: eden-repo-init-staging` in compose.yaml so this rm works
+    # regardless of the compose project name.
+    docker volume rm eden-repo-init-staging >/dev/null 2>&1 || true
 fi
 # `${arr[@]+"${arr[@]}"}` is the bash-3.2-safe expansion for arrays
 # that may be empty under `set -u`.

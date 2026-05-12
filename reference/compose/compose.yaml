@@ -402,7 +402,14 @@ volumes:
   eden-evaluator-repo:
     name: eden-evaluator-repo
   eden-web-ui-repo:
+  # Staging volume gets an explicit `name:` so setup-experiment.sh can
+  # `docker volume rm eden-repo-init-staging` cleanly when --seed-from
+  # is passed (otherwise compose's `<project>_<volume>` prefix makes the
+  # name operator-deployment-dependent and re-seeds silently no-op
+  # because repo-init short-circuits with EDEN_REPO_ALREADY_SEEDED).
+  # See MANUAL_UI_ISSUES.md §8.
   eden-repo-init-staging:
+    name: eden-repo-init-staging
   # Artifacts volume kept with explicit `name:` for the chunk-10d
   # follow-up A docker-exec wrap that forwards it to spawned
   # children.

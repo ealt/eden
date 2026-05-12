@@ -12,16 +12,21 @@ items live in the #24 / #26 / #27 stream.
 | § | State | Tracker |
 |---|---|---|
 | 1 | open, design-bearing | Folds into Phase 12a-2 (orchestrator-as-role) |
-| 3 | open, fixable | [#52](https://github.com/ealt/eden/issues/52) |
-| 4 | open, fixable | [#53](https://github.com/ealt/eden/issues/53) |
-| 5 | open, fixable | [#54](https://github.com/ealt/eden/issues/54) |
-| 8 | open, fixable | [#55](https://github.com/ealt/eden/issues/55) |
 | 14 | open, design-bearing | Folds into Phase 12a-3 (lifecycle policy) |
-| 15 | open, fixable | [#56](https://github.com/ealt/eden/issues/56) |
-| 20 | partially resolved (Dockerfile typo); plumbing held for Phase 13 | Phase 13 |
-| 24 | rolling | Conformance audit stream (chunks landed in PRs #44 / #49) |
-| 26 | open conformance gap | Conformance stream |
-| 27 | open conformance gap | Conformance stream |
+| 20 | partially resolved (Dockerfile typo); plumbing held for Phase 13d | Phase 13d (plan PR [#75](https://github.com/ealt/eden/pull/75) merged; impl pending after 13a built) |
+| 24 | rolling; deferred until impl waves stabilize | Conformance audit stream (chunks landed in PRs #44 / #49); first-pass matrix at [`docs/conformance-coverage.md`](docs/conformance-coverage.md) |
+
+Resolved since the original audit (no longer in the open table; see each section's `Status:` line for the resolution detail):
+
+| § | What it was | Resolved by |
+|---|---|---|
+| 3 | Ideator form `parent_commits` had no SHA hints | PR [#71](https://github.com/ealt/eden/pull/71) (issue #52 closed) |
+| 4 | Executor submit `commit_exists` without prior fetch | PR [#71](https://github.com/ealt/eden/pull/71) (issue #53 closed) |
+| 5 | Executor page push-to-container-path instructions | PR [#71](https://github.com/ealt/eden/pull/71) (issue #54 closed) |
+| 8 | `compose down -v` leaves staging volume; `--seed-from` silently no-ops | This PR (closes issue #55) |
+| 15 | Idea `priority` field unused for dispatch ordering | This PR (closes issue #56) |
+| 26 | Worker-branch uniqueness MUST had no conformance scenario | PR [#70](https://github.com/ealt/eden/pull/70) |
+| 27 | Empty 2xx body MUST had no conformance scenario | PR [#70](https://github.com/ealt/eden/pull/70) |
 
 ---
 
@@ -286,9 +291,11 @@ the impact of #6 isn't "everything stops"; it's "everything proceeds at
 
 ---
 
-## 8. `compose down -v` doesn't remove `eden-repo-init-staging`
+## 8. ✅ Resolved. `compose down -v` doesn't remove `eden-repo-init-staging`
 
-**Status: open, tracked in [#55](https://github.com/ealt/eden/issues/55).**
+**Status: resolved. Issue [#55](https://github.com/ealt/eden/issues/55) closed.**
+
+**Resolution:** `compose.yaml`'s `eden-repo-init-staging` volume gained an explicit `name: eden-repo-init-staging` (matching the workaround pattern from chunk-10d-followup-A's worker volumes), so the volume is reachable by a stable name regardless of the compose project prefix. `setup-experiment.sh` now `docker volume rm eden-repo-init-staging` before re-seeding when `--seed-from` is set, so the new content actually lands rather than being silently ignored by `repo_init.py`'s `EDEN_REPO_ALREADY_SEEDED` short-circuit. The broader "should `compose down -v` understand profile-gated volumes?" question (fix candidate 2 in the original audit) is left to operator hygiene and not pursued in this PR.
 
 **What happened.** Tearing down the manual-ui-1 stack with `docker compose
 --env-file .env down -v` correctly wiped the postgres / gitea / artifacts
@@ -502,9 +509,11 @@ that aligns with the design doc. Latter is preferred per design.
 
 ---
 
-## 15. Idea `priority` field is unused for dispatch ordering
+## 15. ✅ Resolved. Idea `priority` field is unused for dispatch ordering
 
-**Status: open, tracked in [#56](https://github.com/ealt/eden/issues/56).**
+**Status: resolved. Issue [#56](https://github.com/ealt/eden/issues/56) closed.**
+
+**Resolution:** Picked option 1 from the original audit (sort the dispatch loop). `_dispatch_execution_tasks` in [`reference/packages/eden-dispatch/src/eden_dispatch/driver.py`](reference/packages/eden-dispatch/src/eden_dispatch/driver.py) now iterates `store.list_ideas(state="ready")` sorted by `(-priority, idea_id)` — higher priority dispatches earlier per the SHOULD-level claim in [`spec/v0/02-data-model.md`](spec/v0/02-data-model.md) §5.1 and [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §2.3 / §2.4. `idea_id` is a stable tiebreak for equal-priority cases. The fixture's uniform `priority: 1.0` continues to round-trip cleanly under this ordering (stable lexicographic tiebreak).
 
 **Spec text** ([`spec/v0/02-data-model.md`](spec/v0/02-data-model.md)
 §5.1 line 158, [`spec/v0/03-roles.md`](spec/v0/03-roles.md) §2.4 line
