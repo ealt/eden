@@ -1,0 +1,70 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13e-gitea-hardening/20260511T121253/2.md	2026-05-11 12:30:09
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13e-gitea-hardening.md	2026-05-11 12:33:41
+@@ -1642,15 +1642,18 @@
+ 
+ ### 3.10 Conformance impact
+ 
+-13e does not change the wire surface, the protocol, or
+-any spec text. Chapter 9 §6 says conformance is via the
+-chapter-7 HTTP binding, which Gitea isn't part of (the
+-binding is between role implementations and the
+-task-store-server; Gitea is on the side-channel git
+-remote). A deployment running with Gitea hardening passes
+-the same scenarios as a deployment running with shared
+-`eden` user. No new conformance scenarios are added in
+-13e.
++13e adds ONE additive wire op
++(`update_worker_labels`, §3.0a.4); it does not change
++any normative spec text or modify any existing wire op.
++Conformance scenarios are binding-agnostic per chapter
++9 §6 — they exercise observable behavior of registered
++workers, not the mutation surface. A deployment running
++with Gitea hardening passes the same scenarios as a
++deployment running with shared `eden` user, and a
++deployment whose Store backend doesn't implement
++`update_worker_labels` passes them too (the existing
++scenarios don't invoke the op). No new conformance
++scenarios are added in 13e.
+ 
+ The §3.9 CI job is the substrate-level proof; it asserts
+ the same end-state invariants the existing helm smokes do
+@@ -1684,11 +1687,15 @@
+ 
+ Service integration:
+ 
++- A new wire op `update_worker_labels` on the
++  `Store` Protocol + every backend + the
++  HTTP binding (per §3.0a.4 + §5.2). Non-breaking; the
++  single additive surface 13e introduces.
+ - Worker hosts (executor / evaluator / ideator) gain
+-  `--gitea-token-env <name>` flag; the credential-helper
+-  script reads the literal token from the named env var
+-  instead of the shared password from
+-  `GITEA_REMOTE_PASSWORD`. The
++  `--gitea-token-file <path>` flag; the credential-helper
++  script reads the per-worker token from the file (which
++  is a Secret-volume mount per §3.6) instead of the
++  shared password from `GITEA_REMOTE_PASSWORD`. The
+   `--credential-helper <path>` flag is unchanged.
+ - The integrator (lives inside the orchestrator service)
+   gains the opt-in PR-mediated path per §3.3.2 when
+@@ -1806,7 +1813,8 @@
+ |---|---|
+ | `reference/packages/eden-gitea/pyproject.toml` (new) | Workspace member; dep `requests>=2.32,<3`. |
+ | `reference/packages/eden-gitea/src/eden_gitea/__init__.py` (new) | Public re-exports: `GiteaAdmin`, `provision_user`, `provision_branch_protection`, `mint_token`, `revoke_token`, `open_pr`, `merge_pr`, `delete_branch`, `worker_id_to_username`, `GiteaError`. |
+-| `reference/packages/eden-gitea/src/eden_gitea/_admin.py` (new) | `GiteaAdmin` class wrapping `/api/v1/admin/users`, `/api/v1/users/{u}/tokens`, `/api/v1/repos/{o}/{r}/branch_protections`, `/api/v1/repos/{o}/{r}/pulls`. |
++| `reference/packages/eden-gitea/src/eden_gitea/_admin.py` (new) | `GiteaAdmin` class wrapping `/api/v1/admin/users`, `/api/v1/orgs`, `/api/v1/orgs/{org}/teams`, `/api/v1/repos/{o}/{r}/branch_protections`, `/api/v1/repos/{o}/{r}/pulls`. Note that token mint is NOT done via the API — see `_token.py` for the CLI-exec path required by Gitea (per §3.1.1). |
++| `reference/packages/eden-gitea/src/eden_gitea/_token.py` (new) | Token mint + revoke via `kubectl exec`/`docker exec`-into-Gitea-pod invocation of `gitea admin user generate-access-token` and `gitea admin user delete-token` CLIs (Gitea's API requires the target user's BasicAuth password for token mint, which the bootstrap doesn't carry; the CLI path bypasses this by running as the in-process admin with direct DB access). The helper detects whether it's running on Helm (via `KUBERNETES_SERVICE_HOST` env) and dispatches to `kubectl exec` vs `docker exec` accordingly. |
+ | `reference/packages/eden-gitea/src/eden_gitea/_username.py` (new) | `worker_id_to_username` per §3.1.2 mapping (truncation + content-hash for >40-char worker_ids). |
+ | `reference/packages/eden-gitea/src/eden_gitea/_cli.py` (new) | `eden-gitea-admin` entry point: subcommands `provision-user`, `provision-branch-protection`, `rotate-token`, `migrate`, `delete-user`. |
+ | `reference/packages/eden-gitea/tests/` (new) | Unit tests against a real Gitea container in CI; mocked `requests` responses for the unit-only path. |
+@@ -1836,7 +1844,8 @@
+ | `reference/helm/eden/values.schema.json` | Add `if/then` clauses per §3.5.1; admin-token requirement; ACL-mode enum; PR-flag mutex (humanExecutor.enabled requires acl.enabled=true). |
+ | `reference/helm/eden/templates/_helpers.tpl` | Add `eden.gitea.oauthEnv`, `eden.gitea.workerTokenVolumeMount` (Secret-volume mount block — see §3.6), `eden.gitea.tokenSecretName` helpers. |
+ | `reference/helm/eden/templates/gitea-statefulset.yaml` | Conditional OAuth env-var wiring per §3.4.2. |
+-| `reference/helm/eden/templates/serviceaccount-gitea-bootstrap.yaml` (new) | ServiceAccount used by the bootstrap Jobs (§5.3 below); has `secrets:get,patch` on the chart-managed secret holding worker tokens. |
++| `reference/helm/eden/templates/serviceaccount-gitea-bootstrap.yaml` (new) | ServiceAccount + Role + RoleBinding used by the bootstrap Jobs (§5.3 below). Role verbs: `secrets:get,patch` on the chart-managed Secret holding worker tokens, AND `pods/exec:create` on the gitea pod (label-selected) so the §3.1.1 `kubectl exec ... gitea admin user generate-access-token` path works. Both verbs scoped to the release namespace via a `Role` (not `ClusterRole`). |
++| `reference/helm/eden/bootstrap/*-job.yaml.tmpl` | Each bootstrap Job's pod template uses an image that includes `kubectl` (the chart's existing `eden-reference:dev` image already does — it's built from `reference/compose/Dockerfile` which `pip install`s `kubernetes` for the 13b k8s-job-mode dependency; that image's PATH includes the `kubectl` binary bundled in the base image). Per the 13b `eden-reference:dev` posture, no separate bootstrap image is needed. |
+ | `reference/helm/eden/bootstrap/gitea-org-provision-job.yaml.tmpl` (new) | One-shot Job per §3.0.2: creates the `eden` org (idempotent). Gated on `gitea.org.bootstrap=true`. |
+ | `reference/helm/eden/bootstrap/gitea-oauth-config-job.yaml.tmpl` (new) | One-shot Job. |
+ | `reference/helm/eden/bootstrap/gitea-acl-provision-job.yaml.tmpl` (new) | One-shot Job that also creates per-experiment teams under the `eden` org per §3.0.4 + provisions branch-protection rules with team-based allow-lists. |

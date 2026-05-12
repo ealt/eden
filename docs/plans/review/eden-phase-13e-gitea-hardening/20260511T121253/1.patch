@@ -1,0 +1,603 @@
+--- /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/review/eden-phase-13e-gitea-hardening/20260511T121253/0.md	2026-05-11 12:12:53
++++ /Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13e-gitea-hardening.md	2026-05-11 12:22:39
+@@ -102,11 +102,21 @@
+ - **No PR usage.** The integrator merges by direct push of the
+   squashed `variant/*` commit (per chapter 6 §3.4's atomic
+   three-step write).
+-- **Per-experiment Gitea repo.** The bootstrap creates
+-  `eden/<experiment_id>` via `gitea admin user create` +
++- **Per-experiment Gitea repo, owned by a USER.** The
++  bootstrap creates `eden/<experiment_id>` via
++  `gitea admin user create` +
+   `POST /api/v1/user/repos`
+   ([`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)
+-  lines 354-394).
++  lines 354-394). The repo's owner is the `eden` USER (not
++  a Gitea organization). This matters because Gitea's
++  branch-protection feature only supports team-based push
++  allow-lists on **organization-owned** repositories
++  ([Gitea docs — Protected branches](https://docs.gitea.com/usage/access-control/protected-branches));
++  user-owned repos can only use the
++  `push_whitelist_usernames` form. 13e MUST switch the
++  repo ownership to an organization to support the §3.2
++  team-based ACL design — see Decision 0 and §3.0 for the
++  new org topology + migration.
+ - **Worker identity (post-12a-1).** Every worker is registered
+   via `Store.register_worker(worker_id, ...)` and authenticates
+   to the task-store-server via a per-worker credential
+@@ -233,7 +243,7 @@
+ | [`spec/v0/06-integrator.md`](../../spec/v0/06-integrator.md) §1 | Unchanged. Branch-namespace ownership rules were already normative. |
+ | [`spec/v0/03-roles.md`](../../spec/v0/03-roles.md) §3.3 / §4.1 / §5.1 | Unchanged. Role responsibilities stay; Gitea-side ACLs are an additional defense layer. |
+ | [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §3.3 | Unchanged. Task-store auth is a separate channel from Gitea auth. |
+-| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) lines 354-394 | The single-shared-`eden`-user provisioning becomes a fallback path; the new admin-bootstrap helper takes over per-worker user provisioning when called from `setup-experiment-helm.sh` (per §3.1). |
++| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) lines 354-394 | (Default path unchanged.) When the `compose.gitea-perworker.yaml` overlay is active, the script (a) creates the `eden` ORG via `POST /api/v1/orgs` (renaming any pre-existing `eden` user to `eden-legacy` first — §3.0.5), (b) creates the repo under the org via `POST /api/v1/orgs/eden/repos`, (c) calls `eden-gitea-admin provision-user` per registered worker. The single-shared-`eden`-user user-creation step (the existing `gitea admin user create eden ...`) is skipped in the overlay path. |
+ | [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) lines 32-70 | Unchanged on the default path. New opt-in overlays per §3.7 layer ACL + OAuth on top. |
+ | [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) (forecast by 13a) | Adds `gitea.auth.*`, `gitea.acl.*`, `gitea.pr.*`, `gitea.users.*` blocks per §3.5. |
+ | [`reference/helm/eden/templates/gitea-statefulset.yaml`](../../reference/helm/eden/templates/gitea-statefulset.yaml) (forecast by 13a) | Gains OAuth/OIDC env-var wiring conditional on `gitea.auth.oauth.enabled`. |
+@@ -252,7 +262,11 @@
+   helpers. Optional dependency: `requests>=2.32` (since
+   Gitea's API is JSON over HTTPS; `requests` is already a
+   transitive dep via boto3 in 13d's eden-blob package).
+-- Chart values: `gitea.auth.mode ∈ {basic, oauth}`,
++- Reserved worker label: `eden.role` (per §3.0a; legal
++  values enumerated there).
++- Chart values: `gitea.org.bootstrap` (default true; gates
++  the §3.0.2 org-create Job),
++  `gitea.auth.mode ∈ {basic, oauth}`,
+   `gitea.auth.oauth.{provider,issuerUrl,clientIdKey,clientSecretKey}`,
+   `gitea.auth.oauth.existingSecret`, `gitea.acl.enabled`,
+   `gitea.acl.mode ∈ {enforce, advisory-only}`,
+@@ -284,7 +298,61 @@
+ 
+ These are the load-bearing design calls; §3 unpacks each.
+ 
+-1. **Per-worker Gitea identities, not shared `eden` user.**
++1. **Repo ownership moves from a USER to a Gitea
++   ORGANIZATION.** 13e introduces a per-deployment Gitea
++   organization named `eden` (one org per chart release;
++   the org name is `eden` literal, not parameterized — the
++   chart's release-name namespacing already isolates
++   deployments at the k8s namespace + Gitea-instance
++   level). Per-experiment repos move from `eden/<experiment_id>`
++   (user-owned in the 10d-fb baseline) to
++   `eden/<experiment_id>` (same path, but `eden` is now an
++   organization). This is required because Gitea's
++   branch-protection allow-lists support
++   `push_whitelist_teams` ONLY on organization-owned
++   repositories ([Gitea docs — Protected branches](https://docs.gitea.com/usage/access-control/protected-branches));
++   the §3.2 team-based ACL design depends on this. The
++   org is created at chart-install time by the
++   bootstrap Job (idempotent — uses
++   `POST /api/v1/orgs` and ignores
++   `422 Unprocessable Entity` on already-exists). Existing
++   workers + the `eden` user identity continue to exist;
++   the user becomes a member of the new org with admin
++   role for the migration window (§3.8.2). See §3.0 for
++   the topology details + migration story.
++
++2. **Worker role is sourced from a reserved label
++   `eden.role` on the 12a-1 `Worker` record.** 12a-1's
++    `register_worker(worker_id, labels?)` accepts free-form
++    `labels` (per
++    [`docs/plans/eden-phase-12a-1-worker-identity.md`](eden-phase-12a-1-worker-identity.md)
++    §"Worker shape"); 13e reserves the
++    `eden.role` label key for the role-value that
++    `eden-gitea-admin provision-user` uses to choose the
++    Gitea token's scopes + team membership. The legal
++    values match the §3.1.1 set
++    (`executor | evaluator | ideator | integrator |
++    operator | human-executor | human-evaluator |
++    human-ideator`). Workers without an `eden.role` label
++    are NOT auto-provisioned a Gitea identity — operators
++    can run them as scripted-mode workers that don't need
++    Gitea writes (e.g., ideator subprocess hosts that only
++    read), OR explicitly opt them out via
++    `labels["eden.role"] = "none"`. Rejected: deriving
++    role from `worker_id` substring matches (fragile);
++    making it a separate `Worker.role` field on the
++    record (12a-1 §10 spec is frozen for v0; adding a
++    field requires a future spec amendment); reading it
++    from a separate per-experiment YAML the operator
++    maintains alongside the chart values (one more file
++    to keep in sync). See §3.0a for the label-convention
++    details. The `eden.` label-prefix namespace is
++    consistent with the reserved-identifier rules in
++    12a-1 §"Worker-id grammar" — `eden.*` labels are
++    reserved for protocol-binding-defined metadata; other
++    labels remain operator-free-form.
++
++3. **Per-worker Gitea identities, not shared `eden` user.**
+    Each worker registered via 12a-1's `register_worker` gets a
+    corresponding Gitea user provisioned by the new
+    `eden_gitea` admin-bootstrap helper. The Gitea username is
+@@ -301,7 +369,7 @@
+    intersect; cross-binding the credentials adds operational
+    coupling for no benefit). See §3.1.
+ 
+-2. **Three branch-protection rules mirror chapter 6 §1.**
++4. **Three branch-protection rules mirror chapter 6 §1.**
+    - `main`: write-protected, no exceptions in the running
+      experiment. Pushed only at experiment-create time by
+      the bootstrap helper using the admin token; after that,
+@@ -327,7 +395,7 @@
+    (more flexible but more code; the branch-protection API
+    covers our four rules cleanly).
+ 
+-3. **Native PRs are opt-in, NOT a default.** Default
++5. **Native PRs are opt-in, NOT a default.** Default
+    posture: `gitea.pr.integratorApproval.enabled=false`,
+    `gitea.pr.humanExecutor.enabled=false`. Programmatic
+    integrator + scripted executor stay direct-push, gated by
+@@ -339,7 +407,7 @@
+    a keyboard. Neither applies to the default
+    helm-smoke-style automated experiment. See §3.3.
+ 
+-4. **OAuth/OIDC is for operator-facing logins only;
++6. **OAuth/OIDC is for operator-facing logins only;
+    programmatic worker auth is always per-worker scoped
+    tokens.** The Gitea web UI (operator browses repos /
+    reviews PRs / inspects history) authenticates via the
+@@ -353,7 +421,7 @@
+    `reissue_credential` flow + the §3.6 rotation
+    alignment. See §3.4.
+ 
+-5. **Operator-required values; no fictional defaults.**
++7. **Operator-required values; no fictional defaults.**
+    When `gitea.auth.oauth.enabled=true`,
+    `gitea.auth.oauth.issuerUrl` MUST be non-empty AND either
+    `gitea.auth.oauth.clientSecretKey` references a non-empty
+@@ -365,7 +433,7 @@
+    13a/13c/13d posture per the AGENTS.md substrate-plan
+    pitfall. See §3.5.
+ 
+-6. **Gitea worker tokens are derived secrets of the EDEN
++8. **Gitea worker tokens are derived secrets of the EDEN
+    worker credential.** When EDEN's
+    `reissue_credential(worker_id)` mints a new task-store
+    credential, the same operation triggers the
+@@ -386,7 +454,7 @@
+    couples the two auth surfaces' security models, which
+    are independently scoped today).
+ 
+-7. **Compose stays on the default shared-password path;
++9. **Compose stays on the default shared-password path;
+    13e adds opt-in overlays.** Per the same posture 13d
+    took for blob backends: forcing OAuth or per-worker
+    identities on Compose dev breaks the local-iteration
+@@ -400,7 +468,7 @@
+    opt-in via `docker compose -f compose.yaml -f
+    compose.gitea-acl.yaml ...`. See §3.7.
+ 
+-8. **Migration is documented, not scripted, with an
++10. **Migration is documented, not scripted, with an
+    exception for the `eden-gitea-admin migrate` command.**
+    Per the 13c/13d substrate-plan pattern: a migration
+    runbook covers the rollover from shared `eden` user to
+@@ -414,7 +482,7 @@
+    external user databases) follow the manual runbook.
+    See §3.8.
+ 
+-9. **CI: `helm-smoke-gitea-oauth` uses a static-config
++11. **CI: `helm-smoke-gitea-oauth` uses a static-config
+    OAuth provider, not real GitHub/Google.** Real-provider
+    tokens in CI are a flaky-network + secret-management
+    problem. A static-config provider (the
+@@ -424,7 +492,7 @@
+    endpoint and lets us test Gitea's OAuth integration
+    end-to-end without external dependencies. See §3.9.
+ 
+-10. **Conformance impact is none.** Gitea-side ACLs are
++12. **Conformance impact is none.** Gitea-side ACLs are
+     a deployment-substrate concern; chapter 9 §6 says
+     conformance is via the chapter-7 HTTP binding, which
+     Gitea isn't part of. The conformance suite continues
+@@ -433,24 +501,290 @@
+     Helm-default + Helm-with-OAuth). See §3.10.
+ 
+ ## 3. Design
++
++### 3.0 Gitea organization topology
++
++#### 3.0.1 Why an organization (not a user-owned repo)
++
++Per Decision 0: branch protection in Gitea supports
++`push_whitelist_teams` ONLY for repositories owned by a
++Gitea organization. User-owned repositories
++(the 10d-followup-B baseline shape, with the `eden` user
++owning every experiment's repo) can only allow-list
++specific usernames via `push_whitelist_usernames` — they
++can't reference a team. The §3.2 ACL design uses teams
++(`eden-<experiment_id>-integrator`,
++`eden-<experiment_id>-executor`,
++`eden-<experiment_id>-human-executor`) so the allow-list
++stays correct as workers are added or rotated; with the
++username-only form, every membership change would require
++re-PATCH'ing every branch-protection rule.
+ 
++#### 3.0.2 The `eden` organization
++
++13e introduces a per-deployment Gitea organization with
++the literal name `eden`. One org per chart release; one
++chart release per k8s namespace per Gitea instance (no
++cross-deployment collisions because each chart release
++runs its own Gitea instance per the 13a
++gitea-StatefulSet posture).
++
++The org is created at chart-install time by the new
++bootstrap Job `gitea-org-provision-job.yaml.tmpl` (under
++`bootstrap/`, out-of-tree per the 13a §3.5 + 13c §3.8
++substrate-plan posture). The Job runs:
++
++```bash
++curl -X POST \
++  -H "Authorization: token ${GITEA_ADMIN_TOKEN}" \
++  -H "Content-Type: application/json" \
++  http://eden-gitea:3000/api/v1/orgs \
++  -d '{"username": "eden", "visibility": "private"}'
++# 201 Created on first run; 422 Unprocessable Entity
++# on already-exists — both are success exits per the
++# helper's idempotency rule.
++```
++
++The Job is gated on `gitea.org.bootstrap=true` (default
++true). When false, the chart assumes the operator has
++pre-created the org out-of-band (e.g., via a federated
++external Gitea instance).
++
++#### 3.0.3 Per-experiment repos under the org
++
++Per-experiment repos move from `eden/<experiment_id>`
++(user-owned in 10d-fb) to `eden/<experiment_id>`
++(org-owned in 13e). The path string is identical — the
++ownership type changes underneath. Workers' clone URLs
++do not change (the `eden/<experiment_id>` path resolves
++to org-owned in 13e).
++
++Repo creation:
++
++```bash
++curl -X POST \
++  -H "Authorization: token ${GITEA_ADMIN_TOKEN}" \
++  -H "Content-Type: application/json" \
++  http://eden-gitea:3000/api/v1/orgs/eden/repos \
++  -d '{"name": "<experiment_id>", "private": true, "auto_init": false}'
++```
++
++Replaces the existing
++`POST /api/v1/user/repos` in
++[`setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)
++line 382 with the org-scoped variant.
++
++#### 3.0.4 Teams and their lifecycle
++
++For each registered worker role per experiment, the
++bootstrap helper creates a corresponding Gitea team
++under the `eden` org:
++
++- `eden-<experiment_id>-executor`
++- `eden-<experiment_id>-human-executor`
++- `eden-<experiment_id>-evaluator`
++- `eden-<experiment_id>-human-evaluator`
++- `eden-<experiment_id>-ideator`
++- `eden-<experiment_id>-human-ideator`
++- `eden-<experiment_id>-integrator`
++- `eden-<experiment_id>-operator`
++- `eden-<experiment_id>-integrator-approver` (only
++  rendered when `gitea.pr.integratorApproval.enabled=true`)
++
++Teams are created lazily (only the roles for which at
++least one worker has been registered) via
++`POST /api/v1/orgs/eden/teams`. Each team is granted
++`Read` repository access by default; the `executor`,
++`human-executor`, and `integrator` teams are additionally
++granted `Write` via team-repository assignment
++(`PUT /api/v1/teams/{id}/repos/{owner}/{repo}`). The
++team-level access is the coarse gate; the §3.2
++branch-protection rules are the fine gate that picks
++which branches each team can push.
++
++Teams are NOT shared across experiments — each
++experiment gets its own team set so that
++`eden-exp-1-executor`'s allow-list rights on
++`eden/exp-2` are nonexistent by construction.
++
++#### 3.0.5 Migration: existing `eden` USER → new `eden` ORG
++
++10d-fb-era deployments have an `eden` USER owning
++existing repos. 13e's migration runbook (§3.8.2)
++covers the rename:
++
++1. Bootstrap creates the new `eden` ORG.
++2. For each pre-existing repo `eden/<experiment_id>`
++   (user-owned), the runbook transfers ownership to the
++   org via `POST /api/v1/repos/{owner}/{repo}/transfer`
++   with `new_owner: "eden"`. Gitea handles this without
++   downtime; clone URLs are preserved (the
++   `eden/<experiment_id>` path resolves identically
++   post-transfer).
++3. The old `eden` USER (now distinct from the `eden`
++   ORG — Gitea allows the same login name for a user and
++   an org? Actually it does NOT — Gitea's username
++   uniqueness covers both users and organizations). The
++   pre-existing `eden` USER MUST be renamed BEFORE the
++   org is created. The runbook walks through:
++   `eden-gitea-admin rename-user eden eden-legacy`
++   (calls `PATCH /api/v1/admin/users/eden` with the new
++   name), then bootstrap creates the `eden` org. After
++   the migration soak, the operator deletes the
++   `eden-legacy` user via
++   `DELETE /api/v1/admin/users/eden-legacy`.
++
++The runbook + the chart's NOTES.txt flag this rename
++step. Operators on fresh installs (no prior `eden`
++user) skip step 3.
++
++#### 3.0.6 Why one `eden` org per deployment, not one per experiment
++
++Per-experiment orgs would isolate experiments at the org
++level + simplify cleanup (delete the org = delete every
++team + repo + member-binding in one shot). But:
++
++- The chart already runs its own Gitea instance per
++  deployment, so experiments are already isolated at the
++  Gitea-instance level.
++- One org per experiment means N orgs per deployment.
++  Gitea handles this fine, but the operator-facing
++  surface (UI navigation, audit-log filtering) gets
++  noisier.
++- The per-experiment team naming
++  (`eden-<experiment_id>-*`) keeps team-level isolation
++  within the shared org.
++
++Rejected. Documented as a future amendment in §11 in
++case a future deployment needs harder per-experiment
++isolation (e.g., shared Gitea across multiple charts —
++which is itself a §4.4 non-goal).
++
++### 3.0a Worker-role label convention
++
++#### 3.0a.1 The `eden.role` label
++
++Per Decision 0a: 12a-1's `Worker.labels` field is the
++canonical source for the worker's role. 13e reserves the
++`eden.role` label key. Operators set it at
++`register_worker` time:
++
++```python
++store.register_worker(
++    worker_id="exec-1",
++    labels={"eden.role": "executor"},
++)
++```
++
++The `eden-gitea-admin provision-user` helper reads
++`worker.labels["eden.role"]` to determine:
++
++- The Gitea team membership (per §3.0.4).
++- The token scope (per §3.1.1).
++- Whether to provision at all (workers with
++  `eden.role=none` or no `eden.role` label are skipped).
++
++Legal values for `eden.role`:
++
++| Value | Team membership | Token scope |
++|---|---|---|
++| `executor` | `eden-<experiment_id>-executor` | `repo:write` on `eden/<experiment_id>` |
++| `human-executor` | `eden-<experiment_id>-human-executor` | `repo:write` on `eden/<experiment_id>` |
++| `evaluator` | `eden-<experiment_id>-evaluator` | `repo:read` |
++| `human-evaluator` | `eden-<experiment_id>-human-evaluator` | `repo:read` |
++| `ideator` | `eden-<experiment_id>-ideator` | `repo:read` |
++| `human-ideator` | `eden-<experiment_id>-human-ideator` | `repo:read` |
++| `integrator` | `eden-<experiment_id>-integrator` | `repo:write` |
++| `operator` | `eden-<experiment_id>-operator` | `repo:admin` |
++| `none` | n/a (skip Gitea provisioning) | n/a |
++
++Values outside this set are rejected at provisioning
++time with a clear error message; the runbook documents
++the closed set.
++
++#### 3.0a.2 Where the `eden.role` label gets set
++
++For Helm deployments: `setup-experiment-helm.sh` writes
++`eden.role` per-worker as part of its
++`register_worker` invocation. The chart's values
++expose the role mapping per-service-type:
++
++- `replicas.executorHost` worker instances get
++  `eden.role=executor`.
++- `replicas.evaluatorHost` instances get
++  `eden.role=evaluator`.
++- `replicas.ideatorHost` instances get
++  `eden.role=ideator`.
++- `replicas.orchestrator` instances get
++  `eden.role=integrator` (because the orchestrator IS
++  the integrator per 12a-2's "orchestrator as role"
++  forecast; if a future amendment splits them, the
++  chart values gain a separate
++  `replicas.integratorHost`).
++- `replicas.webUi` instances get
++  `eden.role=operator` (admin-level access for the
++  web-ui's executor / evaluator route plumbing).
++
++For Compose deployments + `compose.gitea-perworker.yaml`
++overlay: `setup-experiment.sh` similarly maps each
++service to its role and writes the label at
++`register_worker` time.
++
++For runtime worker-add (via 12c's control plane): the
++operator passes `--label eden.role=<value>` to the
++worker-host CLI; the worker's first
++`register_worker` call includes the label. The 12c
++post-commit hook reads it.
++
++#### 3.0a.3 12a-1 label-namespace reservation
++
++12a-1's existing posture is that `Worker.labels` is
++free-form operator metadata. 13e doesn't change that
++generic posture — it only reserves the `eden.*`
++prefix for protocol-binding-defined keys (the same
++mechanism 13a Decision 8 used for `eden.*` k8s labels
++on Job resources, and 13b uses for `eden.task_id` /
++`eden.role` k8s labels on Job pods).
++
++The reservation is informative on the 12a-1 spec
++side (a future v1 amendment might pin this formally);
++on the implementation side, the
++`eden_storage.WorkerLabels` type-check accepts any
++keys but the documentation flags `eden.*` as reserved.
++`register_worker` does NOT reject `eden.*` labels with
++unknown sub-keys (forward-compat with future
++binding-defined labels); `eden-gitea-admin` silently
++ignores unknown `eden.*` keys.
++
+ ### 3.1 Per-worker Gitea identities
+ 
+ #### 3.1.1 Provisioning model
+ 
+-Each `register_worker(worker_id, ...)` call produces an EDEN
+-worker record. The new `eden_gitea` helper module ships an
+-`eden-gitea-admin provision-user` CLI that takes a worker
+-record and provisions the corresponding Gitea identity:
++Each `register_worker(worker_id, labels={"eden.role": ...})`
++call produces an EDEN worker record. The new `eden_gitea`
++helper module ships an `eden-gitea-admin provision-user`
++CLI that takes a worker record (looked up via the
++task-store wire) and provisions the corresponding Gitea
++identity:
+ 
+ ```bash
+ eden-gitea-admin provision-user \
++  --task-store-url http://task-store-server:8080 \
++  --eden-token-env EDEN_SHARED_TOKEN \
+   --gitea-url http://gitea:3000 \
+   --admin-token-env GITEA_ADMIN_TOKEN \
+   --worker-id <worker_id> \
+-  --role <executor|evaluator|ideator|integrator|operator> \
+   --experiment-id <experiment_id>
+ ```
++
++The CLI does NOT take a `--role` flag — the role is read
++from the worker record's `eden.role` label per §3.0a. A
++worker without the label OR with `eden.role=none` is
++skipped (the CLI exits 0 with a "skipped: no eden.role
++label" message, NOT an error — same shape as a no-op
++re-run). Workers with an unknown `eden.role` value exit
++non-zero with an `unknown role <bad-value>; legal values:
++{...}` message.
+ 
+ The command:
+ 
+@@ -462,7 +796,8 @@
+    has to be syntactically valid + unguessable so it can't
+    be used as an alternate auth path).
+ 2. POSTs `/api/v1/users/{username}/tokens` to mint a scoped
+-   token. The token's scopes depend on `--role`:
++   token. The token's scopes depend on the worker's
++   `eden.role` label per §3.0a's table:
+    - `executor` / `human-executor`:
+      `repo:write` on `eden/<experiment_id>` (the
+      experiment's repo); no other access.
+@@ -975,33 +1310,74 @@
+    step 1 (workers scale to 0 first, orchestrator-driven
+    reclaim of stuck claims via web-ui admin path, then
+    orchestrator + web-ui to 0). The Gitea pod stays up.
+-2. **Provision per-worker users + branch protection.**
+-   With Gitea still up and the chart still in `basic` mode,
+-   run `eden-gitea-admin migrate --from-shared-user eden
+-   --to-per-worker` against the experiment's repo. The
+-   command iterates `Store.list_workers()`, provisions a
+-   Gitea user per worker (per §3.1.1), writes the
+-   per-worker token to the chart-managed Secret, and runs
++2. **Backfill `eden.role` labels on existing workers.** If
++   the existing deployment registered workers without
++   the `eden.role` label (the 12a-1 / pre-13e shape),
++   the operator runs
++   `eden-gitea-admin backfill-labels --from-pod-role` once:
++   it iterates `Store.list_workers()`, infers the role
++   from each worker's `worker_id` prefix (`executor-*` →
++   `executor`, etc. per the chart's standard naming
++   convention), and writes the label via the existing
++   12a-1 `update_worker_labels` op. The runbook documents
++   that operators with non-standard worker_id prefixes
++   set the labels manually via
++   `eden-gitea-admin set-role --worker-id ... --role ...`
++   before continuing.
++3. **Rename `eden` USER → `eden-legacy` and create the
++   `eden` ORG.** Per §3.0.5: Gitea-side username
++   uniqueness means the `eden` USER must vacate the name
++   before the org can claim it. Run
++   `eden-gitea-admin rename-user eden eden-legacy` then
++   `eden-gitea-admin provision-org eden`. Pre-existing
++   repos owned by the user are unaffected by the rename
++   (Gitea preserves the repo's path under the new
++   username temporarily); step 4 transfers ownership.
++4. **Transfer repos to the new org.** For each
++   per-experiment repo `eden-legacy/<experiment_id>`,
++   run `eden-gitea-admin transfer-repo
++   --from eden-legacy --to eden --repo <experiment_id>`.
++   Clone URLs flip from `eden-legacy/<id>.git` to
++   `eden/<id>.git`. Workers still use the path
++   `eden/<experiment_id>` — the runbook's notes section
++   walks the operator through updating
++   `GITEA_REMOTE_URL` in `.env` (for Compose
++   deployments using the per-worker overlay) or
++   `values.yaml`'s
++   `gitea.repo.path` (for Helm).
++5. **Provision per-worker users + teams + branch
++   protection.** With Gitea still up and the chart in
++   `basic` mode, run `eden-gitea-admin migrate
++   --from-shared-user eden-legacy --to-per-worker`
++   against the experiment's repo. The command iterates
++   `Store.list_workers()`, provisions a Gitea user per
++   worker (per §3.1.1), creates per-role teams under the
++   `eden` org (per §3.0.4), writes the per-worker token
++   to the chart-managed Secret, and runs
+    `provision-branch-protection` with
+    `gitea.acl.mode=advisory-only` (so any pre-existing
+    pushes don't get rejected during the migration).
+-3. **Verify advisory-only ACLs.** Watch the Gitea webhook
++6. **Verify advisory-only ACLs.** Watch the Gitea webhook
+    notifications for any `would-have-rejected` events —
+    operator confirms no legitimate-but-misconfigured
+    push patterns exist. Soak for the operator's chosen
+    window.
+-4. **Switch to enforce mode.** Update values:
++7. **Switch to enforce mode.** Update values:
+    `gitea.acl.mode=enforce`. `helm upgrade`. Push
+    attempts that were silently logged in advisory-only
+    are now rejected.
+-5. **Switch to OAuth (optional).** Update values:
++8. **Switch to OAuth (optional).** Update values:
+    `gitea.auth.mode=oauth` plus the oauth sub-block.
+-   `helm upgrade`. Operators sign in via the new SSO;
+-   the existing shared `eden` user can be left in place
+-   (for break-glass) or deleted out-of-band via
+-   `eden-gitea-admin delete-user --username eden`.
+-6. **Bring workers back up.** Reverse-order from §3.8.2
+-   step 1.
++   `helm upgrade`. Operators sign in via the new SSO.
++9. **Decommission `eden-legacy` user (optional).** After
++   the migration soak, delete the renamed user via
++   `eden-gitea-admin delete-user --username eden-legacy`.
++   Skip this if the operator wants to retain the legacy
++   identity for break-glass access (it has no team
++   memberships in the new model so it can't push to any
++   protected branch anyway).
++10. **Bring workers back up.** Reverse-order from §3.8.2
++    step 1.
+ 
+ Total drain window: bounded by step 1's scale-down
+ (typically minutes per the 13c §3.8.2 sweeper budget) +
+@@ -1302,9 +1678,10 @@
+ | `reference/helm/eden/templates/_helpers.tpl` | Add `eden.gitea.oauthEnv`, `eden.gitea.workerTokenEnv`, `eden.gitea.tokenSecretName` helpers. |
+ | `reference/helm/eden/templates/gitea-statefulset.yaml` | Conditional OAuth env-var wiring per §3.4.2. |
+ | `reference/helm/eden/templates/serviceaccount-gitea-bootstrap.yaml` (new) | ServiceAccount used by the bootstrap Jobs (§5.3 below); has `secrets:get,patch` on the chart-managed secret holding worker tokens. |
++| `reference/helm/eden/bootstrap/gitea-org-provision-job.yaml.tmpl` (new) | One-shot Job per §3.0.2: creates the `eden` org (idempotent). Gated on `gitea.org.bootstrap=true`. |
+ | `reference/helm/eden/bootstrap/gitea-oauth-config-job.yaml.tmpl` (new) | One-shot Job. |
+-| `reference/helm/eden/bootstrap/gitea-acl-provision-job.yaml.tmpl` (new) | One-shot Job. |
+-| `reference/helm/eden/bootstrap/gitea-user-provision-job.yaml.tmpl` (new) | One-shot Job per worker (rendered + applied by `setup-experiment-helm.sh` per worker registration). |
++| `reference/helm/eden/bootstrap/gitea-acl-provision-job.yaml.tmpl` (new) | One-shot Job that also creates per-experiment teams under the `eden` org per §3.0.4 + provisions branch-protection rules with team-based allow-lists. |
++| `reference/helm/eden/bootstrap/gitea-user-provision-job.yaml.tmpl` (new) | One-shot Job per worker (rendered + applied by `setup-experiment-helm.sh` per worker registration). Reads `eden.role` label from the worker record to determine team membership + token scope. |
+ | `reference/helm/eden/ci/oauth2-mock-deployment.yaml` (new, out-of-tree) | CI helper. |
+ | `reference/helm/eden/ci-values-gitea-oauth.yaml` (new) | CI values. |
+ 

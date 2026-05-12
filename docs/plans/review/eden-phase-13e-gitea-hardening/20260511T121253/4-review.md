@@ -1,0 +1,5 @@
+One substantive inconsistency remains, so I would not call full convergence yet.
+
+- `CRITICAL` The plan now says two different things about **token revocation**. §3.6 still says `rotate-token` revokes the old token via the admin-authenticated HTTP `DELETE /api/v1/users/{username}/tokens/{token-name}` path and only uses remote exec for minting ([eden-phase-13e-gitea-hardening.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13e-gitea-hardening.md:1335)). But the `_token.py` implementation contract says token **mint + revoke** both happen via remote exec and Gitea CLI ([eden-phase-13e-gitea-hardening.md](/Users/ericalt/Documents/eden-worktrees/phase-13cde-substrate-plans/docs/plans/eden-phase-13e-gitea-hardening.md:1831)). The plan needs to choose one revoke path and align §3.6, §5.1, and the test surface to match it.
+
+Aside from that, I don’t see further substantive issues in this round. Once that revoke-path inconsistency is reconciled, I’d consider the review converged.
