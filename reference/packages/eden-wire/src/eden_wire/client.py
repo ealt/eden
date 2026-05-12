@@ -49,7 +49,7 @@ from eden_storage.submissions import (
     VariantSubmission,
 )
 
-from .errors import raise_for_envelope
+from .errors import Unauthorized, raise_for_envelope
 
 __all__ = ["IndeterminateIntegration", "StoreClient"]
 
@@ -91,13 +91,16 @@ class StoreClient:
         are provided, ``bearer`` wins.
         """
         self._experiment_id = experiment_id
-        self._base = f"{base_url.rstrip('/')}/v0/experiments/{experiment_id}"
-        self._ref_base = f"{base_url.rstrip('/')}/_reference/experiments/{experiment_id}"
+        self._base_url = base_url.rstrip("/")
+        self._base = f"{self._base_url}/v0/experiments/{experiment_id}"
+        self._ref_base = f"{self._base_url}/_reference/experiments/{experiment_id}"
         self._headers: dict[str, str] = {"X-Eden-Experiment-Id": experiment_id}
         effective_bearer = bearer or token
+        self._bearer: str | None = effective_bearer
         if effective_bearer is not None:
             self._headers["Authorization"] = f"Bearer {effective_bearer}"
         self._owns_client = client is None
+        self._timeout = timeout
         self._client = client if client is not None else httpx.Client(timeout=timeout)
         self._read_back_attempts = read_back_attempts
 
@@ -288,6 +291,36 @@ class StoreClient:
         assert isinstance(created, EvaluationTask)
         return created
 
+    def _assert_bearer_matches_worker_id(self, worker_id: str) -> None:
+        """Preflight that the call-supplied worker_id matches the bearer's principal.
+
+        Per chapter 04 §3.3, authentication is a binding-layer concern
+        and the §4.1 / §3.5 enforcement runs against the authenticated
+        ``worker_id``. The server in auth-enabled mode reads the
+        principal from the bearer and ignores any forwarded
+        ``X-Eden-Worker-Id`` header; without this client-side check, a
+        caller passing a mismatched ``worker_id`` would be silently
+        re-bound to the bearer's identity at the server. The check is
+        a no-op when no bearer is set (auth-disabled / TestClient
+        posture) or when the bearer principal is ``admin``: admin
+        bearers cannot reach worker-gated routes — the §13.3
+        dispatcher 403s them — so any disagreement is rejected at the
+        wire instead.
+        """
+        if self._bearer is None:
+            return
+        principal = self._bearer.split(":", 1)[0]
+        if principal == "admin":
+            return
+        if principal != worker_id:
+            raise ValueError(
+                f"StoreClient call-supplied worker_id={worker_id!r} disagrees "
+                f"with bearer principal {principal!r}; per chapter 04 §3.3 the "
+                f"authenticated identity is load-bearing — instantiate a "
+                f"separate StoreClient with the matching bearer to act as a "
+                f"different worker"
+            )
+
     def claim(
         self,
         task_id: str,
@@ -302,6 +335,7 @@ class StoreClient:
         # forwards it through ``X-Eden-Worker-Id`` so test deployments
         # without auth still see the right caller (auth-enabled
         # deployments ignore the header in favor of the bearer).
+        self._assert_bearer_matches_worker_id(worker_id)
         body: dict[str, Any] = {}
         if expires_at is not None:
             body["expires_at"] = _as_wire_datetime(expires_at)
@@ -320,6 +354,7 @@ class StoreClient:
         # to Store.submit; client passes the same identity for
         # symmetry. ``X-Eden-Worker-Id`` carries the value when auth
         # is disabled (test posture); under §13 auth the bearer wins.
+        self._assert_bearer_matches_worker_id(worker_id)
         payload = _submission_to_wire(submission)
         self._request(
             "POST",
@@ -474,22 +509,35 @@ class StoreClient:
         return token
 
     def verify_worker_credential(
-        self, worker_id: str, registration_token: str  # noqa: ARG002
+        self, worker_id: str, registration_token: str
     ) -> bool:
-        # The §13 verifier is not exposed as a wire endpoint — the
-        # bearer is the credential, and the auth middleware does the
-        # check inline. ``StoreClient`` exposes ``verify_worker_credential``
-        # for Protocol-compatibility with the in-process Store; the
-        # right way to verify a credential over the wire is to call
-        # ``GET /v0/.../whoami`` while authenticated as that worker
-        # and match the returned ``worker_id``.
-        msg = (
-            "StoreClient.verify_worker_credential is not bound; verify "
-            "out-of-band by issuing a request authenticated as the worker "
-            "(e.g. GET /v0/experiments/{E}/whoami) and inspecting the "
-            "response or 401 outcome"
+        """Return ``True`` iff the bearer ``<worker_id>:<registration_token>`` authenticates.
+
+        Implements the chapter 07 §6.4 / chapter 08 §9 Store-side
+        contract over the wire. The §13 verifier is exposed as
+        ``GET /whoami``: an authenticated probe that returns the
+        bearer's principal worker_id on success and 401
+        ``eden://error/unauthorized`` on a bad credential. This
+        method constructs a one-shot client with the candidate
+        bearer, issues the probe, and returns ``True`` only when
+        the returned worker_id equals ``worker_id`` (defends against
+        the §6.7 "wrong worker_id returned" recovery branch).
+        """
+        candidate_bearer = f"{worker_id}:{registration_token}"
+        probe = StoreClient(
+            base_url=self._base_url,
+            experiment_id=self._experiment_id,
+            bearer=candidate_bearer,
+            timeout=self._timeout,
         )
-        raise NotImplementedError(msg)
+        try:
+            try:
+                returned = probe.whoami()
+            except Unauthorized:
+                return False
+            return returned == worker_id
+        finally:
+            probe.close()
 
     def whoami(self) -> str:
         """Return the ``worker_id`` the bearer authenticates as (§6.4)."""
@@ -543,21 +591,35 @@ class StoreClient:
         resp = self._request("GET", f"{self._base}/groups")
         return [Group.model_validate(g) for g in resp.json()["groups"]]
 
-    def resolve_worker_in_group(
-        self, worker_id: str, group_id: str  # noqa: ARG002
-    ) -> bool:
-        # Group-membership resolution is a Store-side computation;
-        # the wire does not expose it as a normative endpoint in
-        # 12a-1 (claim-time enforcement happens at the wire's claim
-        # handler, where the Store call resolves membership directly).
-        # Clients that need to resolve membership over the wire walk
-        # the group graph via read_group.
-        msg = (
-            "StoreClient.resolve_worker_in_group is not bound; "
-            "transitive membership is resolved by the Store at "
-            "claim time, or callers can walk read_group themselves"
-        )
-        raise NotImplementedError(msg)
+    def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
+        """Return ``True`` iff ``worker_id`` is a transitive member of ``group_id``.
+
+        Walks the chapter 02 §7.2 transitive closure over the wire by
+        repeated ``read_group`` calls. Cycle-safe by construction:
+        the §7.3 cycle-detection at write-time guarantees the group
+        DAG terminates, and this walk tracks visited groups
+        defensively so a server that violated §7.3 cannot wedge the
+        client.
+
+        Non-existent groups resolve to membership=false per §7.1.
+        """
+        visited: set[str] = set()
+        stack: list[str] = [group_id]
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            try:
+                group = self.read_group(current)
+            except Exception:  # noqa: BLE001 — NotFound or transport hiccup → not a member
+                continue
+            for member in group.members:
+                if member == worker_id:
+                    return True
+                if member not in visited:
+                    stack.append(member)
+        return False
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:

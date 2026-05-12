@@ -1538,6 +1538,17 @@ class _StoreBase:
             existing = self._get_worker(worker_id)
             if existing is not None:
                 return (_deep(existing), None)
+            # §7.1 disjoint-namespaces: a group with the same id MUST
+            # NOT exist. Otherwise the resolver in §7.2 can't tell
+            # whether a string in `Group.members` resolves through the
+            # worker registry (leaf) or the group registry (recursive
+            # descent).
+            if self._get_group(worker_id) is not None:
+                raise AlreadyExists(
+                    f"id {worker_id!r} is already registered as a group; "
+                    f"worker / group namespaces MUST be disjoint per "
+                    f"chapter 02 §7.1"
+                )
             token = self._generate_credential_token()
             credential_hash = self._hash_credential(token)
             # Build via dict so optional fields whose value is None are
@@ -1652,6 +1663,14 @@ class _StoreBase:
         with self._atomic_operation():
             if self._get_group(group_id) is not None:
                 raise AlreadyExists(f"group {group_id!r}")
+            # §7.1 disjoint-namespaces: a worker with the same id MUST
+            # NOT exist. See the symmetric check in register_worker.
+            if self._get_worker(group_id) is not None:
+                raise AlreadyExists(
+                    f"id {group_id!r} is already registered as a worker; "
+                    f"worker / group namespaces MUST be disjoint per "
+                    f"chapter 02 §7.1"
+                )
             group_data: dict[str, Any] = {
                 "group_id": group_id,
                 "experiment_id": self._experiment_id,

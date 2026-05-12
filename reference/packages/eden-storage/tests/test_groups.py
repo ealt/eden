@@ -214,3 +214,31 @@ def test_cycle_detection_does_not_partially_write(
     with pytest.raises(CycleDetected):
         store.add_to_group("c", "a")
     assert store.read_group("c").members == []
+
+
+def test_register_worker_rejects_id_already_used_by_group(
+    make_store: Callable[..., Store],
+) -> None:
+    """Codex round-3 #3 — chapter 02 §7.1 disjoint-namespaces.
+
+    A `register_worker(id)` whose id is already registered as a group
+    MUST be rejected (and vice versa); the symmetric check appears in
+    `register_group`. Without this, the §7.2 resolver and §7.3
+    cycle-detector would have to guess whether a name in
+    `Group.members` resolves through the worker registry (leaf) or
+    the group registry (recursive descent).
+    """
+    store = make_store(seed_workers=False)
+    store.register_group("team-a", members=[])
+    with pytest.raises(AlreadyExists):
+        store.register_worker("team-a")
+
+
+def test_register_group_rejects_id_already_used_by_worker(
+    make_store: Callable[..., Store],
+) -> None:
+    """Chapter 02 §7.1 disjoint-namespaces — symmetric to the worker side."""
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    with pytest.raises(AlreadyExists):
+        store.register_group("eric", members=[])

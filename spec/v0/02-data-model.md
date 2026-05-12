@@ -236,6 +236,13 @@ A **group** is a named, recursively-resolved set of workers and other groups wit
 
 A group member named in `members` need not exist at write time; the resolver in §7.2 simply walks names. A reference to a non-existent worker / group resolves to membership=false.
 
+**Worker / group namespaces MUST be disjoint within an experiment.** Because group `members` are untagged strings, the resolver in §7.2 would otherwise have to guess whether a name resolves through the worker registry (terminal leaf) or the group registry (recursive descent). To eliminate that ambiguity, a conforming registry MUST reject:
+
+- a `register_worker(id)` when `id` already names a registered group, and
+- a `register_group(id, …)` when `id` already names a registered worker.
+
+The rejection MUST surface as `eden://error/already-exists` (the existing wire mapping for duplicate-registration at the cross-namespace level). Implementations MAY use any equivalent typed error at the Store layer.
+
 ### 7.2 Membership resolution
 
 A worker `w` is a **member** of group `g` if any of the following holds:
