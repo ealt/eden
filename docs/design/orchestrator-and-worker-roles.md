@@ -35,6 +35,8 @@ multiple competing auto-processes) can play.
 
 ### 1. Worker identity: ids and groups (RBAC-style)
 
+**Resolved by Phase 12a-1** — landed in [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §6 (worker registry), §7 (groups), §3.5 (`Task.target`) and [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §3.5 (claim-time RBAC ladder). The §3.5 ladder runs three preconditions atomically with the claim write: (1) state is `pending`; (2) `worker_id` is registered or → `WorkerNotRegistered`; (3) `worker_id` satisfies `Task.target` (null/worker/group) or → `WorkerNotEligible`. Transitive group resolution with cycle detection lives in `Store.resolve_worker_in_group`.
+
 - Every worker has a unique ``worker_id`` registered with the store.
 - Groups are named sets whose members are ``worker_id`` s and/or other
   groups. Recursion permitted; cycle-detection at resolution time.
@@ -113,6 +115,8 @@ mechanism (§6).
 
 ### 5. Worker attribution survives on artifacts
 
+**Resolved by Phase 12a-1** — `Task.submitted_by` / `Task.created_by`, `Idea.created_by`, and `Variant.executed_by` / `Variant.evaluated_by` shipped per [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §3.1, §5.1, §9. Each is written atomically with the transition that produces the artifact and preserved across the terminal transitions that clear `task.claim`. Wave-5 of the chunk wired the executor / evaluator accept-step writes; the conformance suite's `test_attribution_persistence.py` (chapter 9 §5 "Attribution persistence") pins the survival MUSTs.
+
 Currently ``Task.claim.worker_id`` is cleared after accept; attribution
 only survives in the event log. Make it a first-class field:
 
@@ -161,6 +165,8 @@ GitHub-style reassignment as an admin op:
 - Submitted/terminal: not reassignable; create a new task instead.
 
 ### 8. Claims are scoped to the worker, not to the application
+
+**Resolved by Phase 12a-1 (CLI-to-CLI side)** — `Task.claim` is now identity-keyed: the recorded `worker_id` is the sole identity the §4 submit transition matches against (per-claim opaque tokens were retired). Two clients authenticated as the same `worker_id` can collaborate on a claim — client A claims, client B submits — without exchanging an authentication artifact through the claim object. The conformance suite's `test_worker_auth.py::test_two_clients_share_a_claim_via_worker_identity` pins the cross-application MUST. **Deferred to a 12a-1b follow-up:** the Web-UI per-session retrofit (plan §D.5b) — at sign-in, web-ui uses its admin token to register the user as a worker and mint a session-scoped credential. This is orthogonal to the spec-level resolution above and is expected to land alongside the 12a-2 web-ui changes.
 
 **Observed friction.** During the manual-UI session it became clear
 that today's claim model ties a claim to whichever application

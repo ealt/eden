@@ -10,7 +10,6 @@ from eden_service_common import (
     StopFlag,
     add_common_arguments,
     add_exec_arguments,
-    bearer_from_shared_token,
     configure_logging,
     get_logger,
     install_stop_handlers,
@@ -133,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     wait_for_task_store(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        token=bearer_from_shared_token(args.shared_token),
+        token=None,
         deadline_seconds=args.startup_timeout,
     )
     bearer = resolve_worker_bearer(

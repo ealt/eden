@@ -175,19 +175,15 @@ def resolve_worker_bearer(
 ) -> str | None:
     """Return the bearer the host should use, registering as needed.
 
-    The wave-3 transitional helper ``bearer_from_shared_token`` and
-    the wave-4 per-worker bootstrap coexist via this resolver:
+    Two postures:
 
     1. If ``args.admin_token`` (or ``$EDEN_ADMIN_TOKEN``) is set →
        run :func:`bootstrap_worker_credential` and return the §13.1
-       ``<worker_id>:<token>`` bearer. This is the post-12a-1
+       ``<worker_id>:<token>`` bearer. This is the production
        deployment posture.
-    2. Else if ``args.shared_token`` is set → return the wave-3
-       transitional bearer (``admin:<value>`` for bare strings; pass
-       through if it already contains ``:``). Lets in-process tests
-       and pre-12a-1 deployments keep working during the migration.
-    3. Else → return ``None`` (auth disabled at the wire). Suitable
-       for the in-process / TestClient test posture.
+    2. Else → return ``None`` (auth disabled at the wire). Suitable
+       for in-process / TestClient test postures where the
+       task-store-server runs without ``--admin-token``.
 
     The resolver does not validate ``worker_id`` against the §6.1
     grammar; ``StoreClient.register_worker`` (and the admin register
@@ -196,23 +192,18 @@ def resolve_worker_bearer(
     """
     # Local import: cli.py imports auth.py for DEFAULT_CREDENTIALS_DIR,
     # so importing cli.py at module level here would create a cycle.
-    from .cli import (
-        bearer_from_shared_token,
-        resolve_admin_token,
-        resolve_credentials_dir,
-    )
+    from .cli import resolve_admin_token, resolve_credentials_dir
 
     admin_token = resolve_admin_token(args)
-    if admin_token is not None:
-        credentials_dir = resolve_credentials_dir(args)
-        credential = bootstrap_worker_credential(
-            base_url=args.task_store_url,
-            experiment_id=args.experiment_id,
-            worker_id=worker_id,
-            credentials_dir=credentials_dir,
-            admin_token=admin_token,
-            labels=labels,
-        )
-        return credential.bearer
-    legacy = bearer_from_shared_token(getattr(args, "shared_token", None))
-    return legacy
+    if admin_token is None:
+        return None
+    credentials_dir = resolve_credentials_dir(args)
+    credential = bootstrap_worker_credential(
+        base_url=args.task_store_url,
+        experiment_id=args.experiment_id,
+        worker_id=worker_id,
+        credentials_dir=credentials_dir,
+        admin_token=admin_token,
+        labels=labels,
+    )
+    return credential.bearer

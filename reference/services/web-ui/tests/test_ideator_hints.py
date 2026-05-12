@@ -50,7 +50,7 @@ def _seed_integrated_variant(
     eval_claim = store.claim(eval_task_id, "evaluator-w")
     store.submit(
         eval_task_id,
-        eval_claim.token,
+        eval_claim.worker_id,
         EvaluationSubmission(
             status="success",
             variant_id=variant_id,

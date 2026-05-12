@@ -37,8 +37,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
       - ideator-1
       - --mode
@@ -83,8 +83,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
       - executor-1
       - --repo-path
@@ -141,8 +141,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
       - evaluator-1
       - --experiment-config

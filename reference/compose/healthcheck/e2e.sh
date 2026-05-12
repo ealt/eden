@@ -134,12 +134,12 @@ test "$(docker inspect --format '{{.State.ExitCode}}' eden-orchestrator)" = "0" 
 }
 
 echo "--- asserting final task-store state ---"
-EDEN_SHARED_TOKEN="$(grep -E '^EDEN_SHARED_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
+EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 EVENTS_JSON="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         exec -T task-store-server \
         curl -fsS \
-            -H "Authorization: Bearer ${EDEN_SHARED_TOKEN}" \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
 )"

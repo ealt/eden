@@ -93,7 +93,7 @@ Expected output: every service `Up (healthy)` (or `Exited (0)` for
 (~10–30s for the fixture experiment) and then exits 0.
 
 **Re-running setup-experiment is safe.** Existing secrets
-(`POSTGRES_PASSWORD`, `EDEN_SHARED_TOKEN`, `EDEN_SESSION_SECRET`,
+(`POSTGRES_PASSWORD`, `EDEN_ADMIN_TOKEN`, `EDEN_SESSION_SECRET`,
 `GITEA_*`) are preserved across re-runs. To pick up a config
 change, re-run setup-experiment and then `docker compose
 --env-file .env up -d` (which detects config drift and recreates

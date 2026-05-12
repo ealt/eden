@@ -12,7 +12,6 @@ from .auth import (
 from .cli import (
     add_common_arguments,
     add_exec_arguments,
-    bearer_from_shared_token,
     parse_log_level,
     resolve_admin_token,
     resolve_credentials_dir,
@@ -64,7 +63,6 @@ __all__ = [
     "WorkerCredential",
     "add_common_arguments",
     "add_exec_arguments",
-    "bearer_from_shared_token",
     "bootstrap_worker_credential",
     "cleanup_cidfile",
     "credential_path",

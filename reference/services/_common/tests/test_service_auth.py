@@ -18,7 +18,6 @@ from eden_service_common.auth import (
     credential_path,
 )
 from eden_service_common.cli import (
-    bearer_from_shared_token,
     resolve_admin_token,
     resolve_credentials_dir,
 )
@@ -201,7 +200,3 @@ def test_resolve_credentials_dir_default_when_unset(
     assert resolve_credentials_dir(args) == Path("/var/lib/eden/credentials")
 
 
-def test_bearer_from_shared_token_admin_prefix() -> None:
-    assert bearer_from_shared_token(None) is None
-    assert bearer_from_shared_token("plain") == "admin:plain"
-    assert bearer_from_shared_token("eric:secret") == "eric:secret"

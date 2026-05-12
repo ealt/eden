@@ -130,8 +130,8 @@ services:
       - ${EDEN_EXPERIMENT_ID:?EDEN_EXPERIMENT_ID must be set (run setup-experiment)}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?EDEN_SHARED_TOKEN must be set (run setup-experiment)}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?EDEN_ADMIN_TOKEN must be set (run setup-experiment)}
       - --host
       - 0.0.0.0
       - --port
@@ -158,7 +158,7 @@ services:
         - curl
         - -fsS
         - -H
-        - "Authorization: Bearer ${EDEN_SHARED_TOKEN}"
+        - "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}"
         - -H
         - "X-Eden-Experiment-Id: ${EDEN_EXPERIMENT_ID}"
         - http://localhost:8080/v0/experiments/${EDEN_EXPERIMENT_ID}/events
@@ -189,8 +189,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --repo-path
       - /var/lib/eden/repo
       - --gitea-url
@@ -214,6 +214,7 @@ services:
       - info
     volumes:
       - eden-orchestrator-repo:/var/lib/eden/repo
+      - eden-orchestrator-credentials:/var/lib/eden/credentials
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   ideator-host:
@@ -234,14 +235,16 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
       - ideator-1
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --log-level
       - info
+    volumes:
+      - eden-ideator-credentials:/var/lib/eden/credentials
 
   executor-host:
     image: eden-reference:dev
@@ -261,8 +264,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
       - executor-1
       - --repo-path
@@ -275,6 +278,7 @@ services:
       - info
     volumes:
       - eden-executor-repo:/var/lib/eden/repo
+      - eden-executor-credentials:/var/lib/eden/credentials
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   evaluator-host:
@@ -295,8 +299,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
       - evaluator-1
       - --experiment-config
@@ -306,6 +310,8 @@ services:
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
+    volumes:
+      - eden-evaluator-credentials:/var/lib/eden/credentials
 
   web-ui:
     image: eden-reference:dev
@@ -325,8 +331,8 @@ services:
       - http://task-store-server:8080
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
-      - --shared-token
-      - ${EDEN_SHARED_TOKEN:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
       - --session-secret
@@ -357,6 +363,7 @@ services:
     volumes:
       - eden-web-ui-repo:/var/lib/eden/repo
       - eden-artifacts-data:/var/lib/eden/artifacts
+      - eden-web-ui-credentials:/var/lib/eden/credentials
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
     ports:
       - "${WEB_UI_HOST_PORT:-8090}:8090"
@@ -410,6 +417,16 @@ volumes:
   # See MANUAL_UI_ISSUES.md §8.
   eden-repo-init-staging:
     name: eden-repo-init-staging
+  # Per-host credentials volumes (12a-1 wave 6). Each worker host
+  # persists its bootstrapped per-worker credential at
+  # ``/var/lib/eden/credentials/<worker_id>.token`` so restart-with-
+  # persisted-credential skips the admin-gated re-registration path
+  # (chapter 02 §6.3, plan §D.1).
+  eden-orchestrator-credentials:
+  eden-ideator-credentials:
+  eden-executor-credentials:
+  eden-evaluator-credentials:
+  eden-web-ui-credentials:
   # Artifacts volume kept with explicit `name:` for the chunk-10d
   # follow-up A docker-exec wrap that forwards it to spawned
   # children.

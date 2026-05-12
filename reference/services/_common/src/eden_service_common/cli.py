@@ -32,7 +32,7 @@ _LOG_LEVELS = {
 def add_common_arguments(
     parser: argparse.ArgumentParser, *, require_task_store_url: bool = True
 ) -> None:
-    """Register ``--task-store-url``, ``--experiment-id``, ``--shared-token``, ``--log-level``."""
+    """Register ``--task-store-url``, ``--experiment-id``, ``--admin-token``, ``--log-level``."""
     parser.add_argument(
         "--task-store-url",
         required=require_task_store_url,
@@ -42,11 +42,6 @@ def add_common_arguments(
         "--experiment-id",
         required=True,
         help="Experiment identifier — must match the task-store's configured experiment.",
-    )
-    parser.add_argument(
-        "--shared-token",
-        default=None,
-        help=argparse.SUPPRESS,  # legacy alias; prefer --admin-token + per-worker registration.
     )
     parser.add_argument(
         "--admin-token",
@@ -98,24 +93,6 @@ def resolve_credentials_dir(args: argparse.Namespace) -> Path:
     if env:
         return Path(env)
     return DEFAULT_CREDENTIALS_DIR
-
-
-def bearer_from_shared_token(value: str | None) -> str | None:
-    """Normalize ``--shared-token`` to a §13-compliant bearer.
-
-    Wave-3 transitional helper. The §13 bearer format is
-    ``<principal>:<secret>``; bare strings without ``:`` are
-    interpreted as the admin token (so worker hosts authenticate as
-    the deployment admin during 12a-1's multi-wave migration). A value
-    that already contains ``:`` is forwarded unchanged so wave-4
-    callers can pass ``<worker_id>:<credential>`` once each host
-    registers itself.
-    """
-    if value is None:
-        return None
-    if ":" in value:
-        return value
-    return f"admin:{value}"
 
 
 def parse_log_level(value: str) -> int:
