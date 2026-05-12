@@ -254,3 +254,80 @@ def test_reissue_credential_invalidates_prior(
         fresh = c.get(f"/v0/experiments/{auth_server['experiment_id']}/whoami")
     assert fresh.status_code == 200, fresh.text
     assert fresh.json() == {"worker_id": wid}
+
+
+def test_create_task_stamps_created_by_from_principal(
+    auth_server: dict[str, str],
+) -> None:
+    """spec/v0/02-data-model.md §3.1 — created_by is stamped from the auth principal.
+
+    The binding overrides any client-supplied ``created_by`` field
+    with the authenticated principal's identity so a client cannot
+    spoof attribution. A worker bearer's task gets that worker's id;
+    omitting the field or supplying the matching id are both
+    accepted; supplying a disagreeing id raises 400 bad-request.
+    """
+    wid = "eric"
+    token = _admin_register(auth_server, wid)
+    body = {
+        "task_id": "t-stamp",
+        "kind": "ideation",
+        "state": "pending",
+        "payload": {"experiment_id": auth_server["experiment_id"]},
+        "created_at": "2026-05-01T00:00:00Z",
+        "updated_at": "2026-05-01T00:00:00Z",
+    }
+    with _client(auth_server, bearer=f"{wid}:{token}") as c:
+        resp = c.post(
+            f"/v0/experiments/{auth_server['experiment_id']}/tasks", json=body
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("created_by") == wid
+
+
+def test_create_task_rejects_spoofed_created_by(
+    auth_server: dict[str, str],
+) -> None:
+    """spec/v0/02-data-model.md §3.1 — disagreeing created_by → 400 bad-request."""
+    wid = "eric"
+    token = _admin_register(auth_server, wid)
+    body = {
+        "task_id": "t-spoof",
+        "kind": "ideation",
+        "state": "pending",
+        "payload": {"experiment_id": auth_server["experiment_id"]},
+        "created_by": "someone-else",
+        "created_at": "2026-05-01T00:00:00Z",
+        "updated_at": "2026-05-01T00:00:00Z",
+    }
+    with _client(auth_server, bearer=f"{wid}:{token}") as c:
+        resp = c.post(
+            f"/v0/experiments/{auth_server['experiment_id']}/tasks", json=body
+        )
+    assert resp.status_code == 400, resp.text
+    assert resp.json().get("type") == "eden://error/bad-request"
+
+
+def test_create_idea_stamps_created_by_from_principal(
+    auth_server: dict[str, str],
+) -> None:
+    """spec/v0/02-data-model.md §5.1 — Idea.created_by stamped from the auth principal."""
+    wid = "ideator"
+    token = _admin_register(auth_server, wid)
+    body = {
+        "idea_id": "p-stamp",
+        "experiment_id": auth_server["experiment_id"],
+        "slug": "x",
+        "priority": 0.5,
+        "state": "drafting",
+        "parent_commits": ["0" * 40],
+        "artifacts_uri": "file:///tmp/x",
+        "created_at": "2026-05-01T00:00:00Z",
+        "updated_at": "2026-05-01T00:00:00Z",
+    }
+    with _client(auth_server, bearer=f"{wid}:{token}") as c:
+        resp = c.post(
+            f"/v0/experiments/{auth_server['experiment_id']}/ideas", json=body
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("created_by") == wid

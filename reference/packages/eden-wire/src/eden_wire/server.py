@@ -117,6 +117,45 @@ def make_app(
             return
         require_worker(request)
 
+    def _stamp_created_by(
+        request: Request, body: dict[str, Any], field: str = "created_by"
+    ) -> dict[str, Any]:
+        """Stamp ``created_by`` on a create-* request body from the auth principal.
+
+        Per chapter 02 §3.1 / §5.1, ``created_by`` records the actor
+        identifier of the caller that produced the artifact. To prevent
+        a client from spoofing the attribution, the binding overrides
+        the field with the authenticated principal's identity:
+
+        - Worker bearer → ``created_by = principal.worker_id``.
+        - Admin bearer → ``created_by = "admin"`` (the §13.1 admin
+          principal name; carried through chapter 02 §3.1 / §5.1).
+
+        If the body supplied a different ``created_by`` value, the
+        binding rejects with `BadRequest`. When auth is disabled (test
+        / in-process posture, ``admin_token is None``), the body is
+        passed through unchanged so existing test fixtures keep
+        working.
+        """
+        if admin_token is None:
+            return body
+        principal = getattr(request.state, "principal", None)
+        if principal is None or not hasattr(principal, "is_worker"):
+            return body
+        if principal.is_worker():
+            assert principal.worker_id is not None
+            stamp = principal.worker_id
+        else:
+            stamp = "admin"
+        supplied = body.get(field)
+        if supplied is not None and supplied != stamp:
+            raise BadRequest(
+                f"{field}={supplied!r} disagrees with authenticated "
+                f"principal {stamp!r}; the binding overrides this "
+                f"field from the bearer's identity per chapter 02 §3.1"
+            )
+        return {**body, field: stamp}
+
     def _problem(status: int, type_: str, title: str, detail: str, instance: str) -> JSONResponse:
         return JSONResponse(
             status_code=status,
@@ -240,6 +279,7 @@ def make_app(
             f"/v0/experiments/{experiment_id}/tasks",
         )
         _enforce_worker(request)
+        body = _stamp_created_by(request, body)
         try:
             task = TaskAdapter.validate_python(body)
         except ValidationError as exc:
@@ -408,6 +448,7 @@ def make_app(
             experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/ideas"
         )
         _enforce_worker(request)
+        body = _stamp_created_by(request, body)
         try:
             idea = Idea.model_validate(body)
         except ValidationError as exc:

@@ -138,3 +138,57 @@ def test_target_check_precedes_registration_check_for_state(
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/illegal-transition"
+
+
+# ---------------------------------------------------------------------
+# Task.target wire round-trip (codex round-2 #3)
+# ---------------------------------------------------------------------
+
+
+def test_worker_target_round_trips_through_create_read(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/02-data-model.md §3.5 — Task.target survives create → read.
+
+    A worker-target task created via ``POST /tasks`` MUST be readable
+    via ``GET /tasks/{T}`` with the same ``target`` shape. Without
+    this round-trip the §3.5 eligibility ladder is observable at claim
+    time but the dispatcher / orchestrator can't read the routing
+    intent it wrote.
+    """
+    wid = _seed.fresh_worker_id("targeted")
+    _seed.register_worker(wire_client, wid)
+    tid = _seed.create_ideation_task(
+        wire_client, target={"kind": "worker", "id": wid}
+    )
+    task = _seed.read_task(wire_client, tid)
+    assert task.get("target") == {"kind": "worker", "id": wid}
+
+
+def test_group_target_round_trips_through_create_read(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/02-data-model.md §3.5 — Task.target with kind=group survives create → read."""
+    gid = _seed.fresh_group_id("g-roundtrip")
+    _seed.create_group(wire_client, gid, members=[])
+    tid = _seed.create_ideation_task(
+        wire_client, target={"kind": "group", "id": gid}
+    )
+    task = _seed.read_task(wire_client, tid)
+    assert task.get("target") == {"kind": "group", "id": gid}
+
+
+def test_target_round_trips_through_list_tasks(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/02-data-model.md §3.5 — Task.target survives the list-tasks projection."""
+    wid = _seed.fresh_worker_id("listed")
+    _seed.register_worker(wire_client, wid)
+    tid = _seed.create_ideation_task(
+        wire_client, target={"kind": "worker", "id": wid}
+    )
+    r = wire_client.get(wire_client.tasks_path(), params={"state": "pending"})
+    r.raise_for_status()
+    matches = [t for t in r.json() if t.get("task_id") == tid]
+    assert len(matches) == 1, r.json()
+    assert matches[0].get("target") == {"kind": "worker", "id": wid}

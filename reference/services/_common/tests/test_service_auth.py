@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 from eden_service_common.auth import (
+    WorkerCredential,
     bootstrap_worker_credential,
     credential_path,
 )
@@ -200,3 +201,58 @@ def test_resolve_credentials_dir_default_when_unset(
     assert resolve_credentials_dir(args) == Path("/var/lib/eden/credentials")
 
 
+
+
+def test_bootstrap_concurrent_calls_dont_invalidate_each_other(
+    base_url: str, tmp_path: Path
+) -> None:
+    """Codex round-2 #1 — concurrent bootstrap for the same worker_id is safe.
+
+    Two startup threads racing on the same ``worker_id`` MUST end up
+    with the same persisted credential, and BOTH return values MUST
+    authenticate successfully (no token-invalidation race through
+    the idempotent-register → reissue branch).
+
+    Without the per-worker_id bootstrap lock, the second arrival
+    would call ``reissue_credential`` and invalidate the first
+    arrival's freshly-issued credential.
+    """
+    import threading
+
+    credentials_dir = tmp_path / "creds"
+    results: list[WorkerCredential] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(2)
+
+    def _bootstrap() -> None:
+        try:
+            barrier.wait(timeout=5.0)
+            cred = bootstrap_worker_credential(
+                base_url=base_url,
+                experiment_id=EXPERIMENT_ID,
+                worker_id="eric",
+                credentials_dir=credentials_dir,
+                admin_token=ADMIN_TOKEN,
+            )
+            with lock:
+                results.append(cred)
+        except BaseException as exc:  # noqa: BLE001
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_bootstrap, daemon=True) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15.0)
+        assert not t.is_alive(), "bootstrap thread did not finish"
+
+    assert not errors, f"bootstrap raised under concurrency: {errors!r}"
+    assert len(results) == 2
+    # Both threads see the SAME final credential. Without the lock, the
+    # second thread's reissue would invalidate the first thread's token
+    # and the two returned credentials would diverge.
+    assert results[0].token == results[1].token
+    persisted = credential_path(credentials_dir, "eric").read_text()
+    assert persisted == results[0].token
