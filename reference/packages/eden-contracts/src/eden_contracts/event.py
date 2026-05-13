@@ -13,11 +13,25 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    StringConstraints,
+    TypeAdapter,
+    model_serializer,
+)
 
 from ._common import CommitSha, DateTimeStr
+from .config import DispatchModeValue
+from .task import TaskTarget
 
 EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
+
+# Reserved-id grammar from spec §6.1; used for the actor-id slot in
+# attribution-bearing event payloads (``reassigned_by`` / ``updated_by``).
+ACTOR_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 
 TaskKind = Literal["ideation", "execution", "evaluation"]
 FailReason = Literal["worker_error", "validation_error", "policy_limit"]
@@ -115,6 +129,63 @@ class TaskReclaimedEvent(_RegisteredEventBase):
 
     type: Literal["task.reclaimed"]
     data: _TaskReclaimedData
+
+
+class _TaskReassignedData(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    task_id: Annotated[str, Field(min_length=1)]
+    # `new_target` is exactly the post-reassign value of `task.target`:
+    # absent (any-worker) is encoded as JSON null, a worker / group
+    # target as the standard `TaskTarget` shape.
+    new_target: TaskTarget | None
+    reason: Annotated[str, Field(min_length=1)]
+    reassigned_by: Annotated[str, StringConstraints(pattern=ACTOR_ID_PATTERN)]
+
+    # The event schema lists ``new_target`` in the required-set with a
+    # nullable type. A bare ``model_dump(exclude_none=True)`` would
+    # silently drop a ``null`` value and produce schema-invalid JSON;
+    # the wrap-mode serializer below restores the key when the outer
+    # dump's ``exclude_none=True`` filtered it out.
+    @model_serializer(mode="wrap")
+    def _keep_new_target_key(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        result = handler(self)
+        if "new_target" not in result:
+            result["new_target"] = None
+        return result
+
+
+class TaskReassignedEvent(_RegisteredEventBase):
+    """``task.reassigned`` — operator-driven update of ``task.target``.
+
+    Composite-commit per ``05-event-protocol.md`` §2.2: against a
+    claimed task this event fires atomically with ``task.reclaimed``
+    (``cause=operator``); against a pending task only this event
+    fires.
+    """
+
+    type: Literal["task.reassigned"]
+    data: _TaskReassignedData
+
+
+class _ExperimentDispatchModeChangedData(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    # `dispatch_mode` is the post-update full state; `changed` is the
+    # subset of keys actually mutated this call (the "diff"). Two
+    # separate fields keep replay logic simple — consumers that only
+    # care about "what is it now" read `dispatch_mode`; consumers that
+    # need "what just flipped" read `changed`.
+    dispatch_mode: dict[str, DispatchModeValue]
+    changed: dict[str, DispatchModeValue]
+    updated_by: Annotated[str, StringConstraints(pattern=ACTOR_ID_PATTERN)]
+
+
+class ExperimentDispatchModeChangedEvent(_RegisteredEventBase):
+    """``experiment.dispatch_mode_changed`` — admin flipped one or more keys."""
+
+    type: Literal["experiment.dispatch_mode_changed"]
+    data: _ExperimentDispatchModeChangedData
 
 
 class _IdeaIdOnlyData(BaseModel):
@@ -221,6 +292,8 @@ RegisteredEvent = Annotated[
     | TaskCompletedEvent
     | TaskFailedEvent
     | TaskReclaimedEvent
+    | TaskReassignedEvent
+    | ExperimentDispatchModeChangedEvent
     | IdeaDraftedEvent
     | IdeaReadyEvent
     | IdeaDispatchedEvent
@@ -245,6 +318,8 @@ REGISTERED_EVENT_TYPES: frozenset[str] = frozenset(
         "task.completed",
         "task.failed",
         "task.reclaimed",
+        "task.reassigned",
+        "experiment.dispatch_mode_changed",
         "idea.drafted",
         "idea.ready",
         "idea.dispatched",
@@ -257,3 +332,33 @@ REGISTERED_EVENT_TYPES: frozenset[str] = frozenset(
     }
 )
 """The v0 normative event registry (spec §3.1–§3.3)."""
+
+
+__all__ = [
+    "ACTOR_ID_PATTERN",
+    "EVENT_TYPE_PATTERN",
+    "Event",
+    "ExperimentDispatchModeChangedEvent",
+    "FailReason",
+    "IdeaCompletedEvent",
+    "IdeaDispatchedEvent",
+    "IdeaDraftedEvent",
+    "IdeaReadyEvent",
+    "REGISTERED_EVENT_TYPES",
+    "ReclaimCause",
+    "RegisteredEvent",
+    "RegisteredEventAdapter",
+    "TaskClaimedEvent",
+    "TaskCompletedEvent",
+    "TaskCreatedEvent",
+    "TaskFailedEvent",
+    "TaskKind",
+    "TaskReassignedEvent",
+    "TaskReclaimedEvent",
+    "TaskSubmittedEvent",
+    "VariantErroredEvent",
+    "VariantEvaluationErroredEvent",
+    "VariantIntegratedEvent",
+    "VariantStartedEvent",
+    "VariantSucceededEvent",
+]

@@ -27,6 +27,7 @@ from typing import Any
 
 import httpx
 from eden_contracts import (
+    DispatchMode,
     EvaluationTask,
     Event,
     ExecutionTask,
@@ -38,6 +39,7 @@ from eden_contracts import (
     Task,
     TaskAdapter,
     TaskClaim,
+    TaskTarget,
     Variant,
     Worker,
 )
@@ -661,6 +663,49 @@ class StoreClient:
                 if member not in visited:
                     stack.append(member)
         return False
+
+    # ------------------------------------------------------------------
+    # Reassign / dispatch_mode (12a-2 wave 2 — wire endpoints land in wave 3)
+    # ------------------------------------------------------------------
+
+    def reassign_task(
+        self,
+        task_id: str,  # noqa: ARG002 — wave-3 plumbs through; signature is the Protocol contract
+        new_target: TaskTarget | None,  # noqa: ARG002
+        *,
+        reason: str,  # noqa: ARG002
+        reassigned_by: str,  # noqa: ARG002
+    ) -> Task:
+        """Wave-2 stub for protocol conformance — wire endpoint lands in wave 3.
+
+        Spec: [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
+        §2.7. The HTTP binding (``POST .../tasks/{T}/reassign``) plus
+        the read-back ladder for transport-indeterminate failures
+        ship in wave 3; this stub keeps ``StoreClient`` structurally
+        conformant with the Store Protocol so type-checking passes.
+        """
+        raise NotImplementedError(
+            "reassign_task is wave-3 (eden_wire wire endpoint binding); "
+            "wave-2 only adds the Store-side semantics. Use the in-process "
+            "Store directly until wave 3 lands."
+        )
+
+    def read_dispatch_mode(self) -> DispatchMode:
+        """Wave-2 stub; wire binding lands in wave 3 (chapter 07 §2.8)."""
+        raise NotImplementedError(
+            "read_dispatch_mode is wave-3; wave-2 only adds Store-side semantics."
+        )
+
+    def update_dispatch_mode(
+        self,
+        updates: DispatchMode | dict[str, str],  # noqa: ARG002
+        *,
+        updated_by: str,  # noqa: ARG002
+    ) -> DispatchMode:
+        """Wave-2 stub; wire binding lands in wave 3 (chapter 07 §2.8)."""
+        raise NotImplementedError(
+            "update_dispatch_mode is wave-3; wave-2 only adds Store-side semantics."
+        )
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:

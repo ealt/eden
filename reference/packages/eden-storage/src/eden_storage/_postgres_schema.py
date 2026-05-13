@@ -108,7 +108,23 @@ def _apply_v2(cur: Any) -> None:
         cur.execute(stmt)
 
 
-_MIGRATIONS: list[Callable[[Any], None]] = [_apply_v1, _apply_v2]
+# 12a-2: parallels the SQLite v3 migration. The column is stored as
+# ``text`` (not ``jsonb``) to keep round-trips byte-for-byte parallel
+# with ``SqliteStore``; ``08-storage.md`` §3 doesn't constrain on-disk
+# typing, only observable contracts.
+_V3_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN dispatch_mode text NOT NULL DEFAULT "
+    "'{\"ideation_creation\":\"auto\",\"execution_dispatch\":\"auto\","
+    "\"evaluation_dispatch\":\"auto\",\"integration\":\"auto\"}'",
+]
+
+
+def _apply_v3(cur: Any) -> None:
+    for stmt in _V3_STATEMENTS:
+        cur.execute(stmt)
+
+
+_MIGRATIONS: list[Callable[[Any], None]] = [_apply_v1, _apply_v2, _apply_v3]
 
 
 def current_version(cur: Any) -> int:

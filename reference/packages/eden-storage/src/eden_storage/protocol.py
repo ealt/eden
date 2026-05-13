@@ -44,6 +44,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from eden_contracts import (
+    DispatchMode,
     EvaluationTask,
     Event,
     ExecutionTask,
@@ -54,6 +55,7 @@ from eden_contracts import (
     ReclaimCause,
     Task,
     TaskClaim,
+    TaskTarget,
     Variant,
     Worker,
 )
@@ -247,6 +249,72 @@ class Store(Protocol):
 
     def reclaim(self, task_id: str, cause: ReclaimCause) -> None:
         """Move ``claimed`` (or operator-reclaimed ``submitted``) back to ``pending``."""
+        ...
+
+    def reassign_task(
+        self,
+        task_id: str,
+        new_target: TaskTarget | None,
+        *,
+        reason: str,
+        reassigned_by: str,
+    ) -> Task:
+        """Atomically update a task's ``target`` (12a-2).
+
+        Per [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §6:
+
+        - ``pending`` — just update the target; emit ``task.reassigned``.
+        - ``claimed`` — composite-commit (``05-event-protocol.md`` §2.2):
+          atomically clear the claim (``task.reclaimed`` with
+          ``cause="operator"``) AND update the target AND emit
+          ``task.reassigned``. The two events appear in the same
+          ``read_range`` slice; no intermediate state is observable.
+        - ``submitted`` / ``completed`` / ``failed`` — raise
+          ``InvalidPrecondition``; reassign is not permitted on a task
+          past the claimed phase.
+
+        Authority enforcement (caller in ``admins``) is the binding's
+        responsibility; the Store trusts ``reassigned_by`` as data.
+        Returns the post-update task. ``StoreClient`` ships this as a
+        wave-3 stub that raises ``NotImplementedError`` until the wire
+        endpoint lands.
+        """
+        ...
+
+    def read_dispatch_mode(self) -> DispatchMode:
+        """Return the experiment's current dispatch_mode (12a-2).
+
+        Every key defaults to ``"auto"`` on a freshly-initialized
+        experiment ([`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5). The four normative keys are
+        ``ideation_creation`` / ``execution_dispatch`` /
+        ``evaluation_dispatch`` / ``integration``.
+        """
+        ...
+
+    def update_dispatch_mode(
+        self,
+        updates: DispatchMode | dict[str, str],
+        *,
+        updated_by: str,
+    ) -> DispatchMode:
+        """Atomically merge ``updates`` into the experiment's dispatch_mode.
+
+        Partial-merge semantics: omitted keys are preserved at their
+        prior value. Emits exactly one
+        ``experiment.dispatch_mode_changed`` event carrying the new
+        full state plus the ``changed`` diff
+        ([`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §7, [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §3.4). When ``updates`` is empty OR every key already holds
+        the requested value, NO event fires — flips with no diff are
+        not observable, matching the spec's "the event records a
+        change" wording.
+
+        Authority enforcement is the binding's responsibility; the
+        Store trusts ``updated_by`` as data.
+        """
         ...
 
     def validate_acceptance(self, task_id: str) -> str | None:

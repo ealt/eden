@@ -126,7 +126,27 @@ def _apply_v2(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
-_MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_apply_v1, _apply_v2]
+# 12a-2: the experiment row gains a `dispatch_mode` column carrying
+# the JSON-serialized per-decision-type gate (`02-data-model.md` §2.5).
+# Default value is the all-`auto` JSON literal so existing experiment
+# rows pick up sensible behavior at the next migration.
+_V3_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN dispatch_mode text NOT NULL DEFAULT "
+    "'{\"ideation_creation\":\"auto\",\"execution_dispatch\":\"auto\","
+    "\"evaluation_dispatch\":\"auto\",\"integration\":\"auto\"}'",
+]
+
+
+def _apply_v3(conn: sqlite3.Connection) -> None:
+    for stmt in _V3_STATEMENTS:
+        conn.execute(stmt)
+
+
+_MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _apply_v1,
+    _apply_v2,
+    _apply_v3,
+]
 
 
 def current_version(conn: sqlite3.Connection) -> int:

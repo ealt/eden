@@ -22,7 +22,7 @@ from threading import RLock
 
 from eden_contracts import Event, Group, Idea, Task, Variant, Worker
 
-from ._base import _StoreBase, _Tx
+from ._base import _DEFAULT_DISPATCH_MODE, _StoreBase, _Tx
 from .submissions import Submission
 
 
@@ -47,6 +47,10 @@ class InMemoryStore(_StoreBase):
         self._workers: dict[str, Worker] = {}
         self._worker_credentials: dict[str, str] = {}
         self._groups: dict[str, Group] = {}
+        # 12a-2 dispatch_mode. Initialized to the all-`auto` default
+        # from `02-data-model.md` §2.5; mutated atomically via
+        # `update_dispatch_mode`.
+        self._dispatch_mode: dict[str, str] = dict(_DEFAULT_DISPATCH_MODE)
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -108,6 +112,9 @@ class InMemoryStore(_StoreBase):
     def _iter_groups(self) -> Iterable[Group]:
         return [self._groups[k] for k in sorted(self._groups)]
 
+    def _get_dispatch_mode(self) -> dict[str, str]:
+        return dict(self._dispatch_mode)
+
     def _apply_commit(self, tx: _Tx) -> None:
         for task_id, task in tx.tasks.items():
             self._tasks[task_id] = task
@@ -130,4 +137,6 @@ class InMemoryStore(_StoreBase):
             self._groups[group_id] = group
         for group_id in tx.group_deletes:
             self._groups.pop(group_id, None)
+        if tx.dispatch_mode is not None:
+            self._dispatch_mode = dict(tx.dispatch_mode)
         self._events.extend(tx.events)
