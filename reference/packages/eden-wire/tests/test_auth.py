@@ -449,17 +449,33 @@ def test_admin_bearer_rejected_on_worker_gated_mutations(
 def test_worker_bearer_admitted_through_auth_layer_on_mutations(
     store: InMemoryStore, method: str, path: str, body: dict | None
 ) -> None:
-    """§13.3 — worker bearer passes the auth-class gate on every mutation route.
+    """§13.3 + §3.7 — worker bearer in the right group passes the auth-class gate.
 
     The route handler may still reject for other reasons (404 not-found,
     409 illegal-transition, 400 bad-request) — what we're asserting here
     is that NONE of the rejections are 403 forbidden, i.e. the
     auth-class gate admitted the worker bearer. Anything that gets past
-    ``_enforce_worker`` is acceptable for this test.
+    the gate is acceptable for this test.
+
+    Post-12a-2 §3.7, several routes are group-gated (``POST /tasks``,
+    accept / reject, ``integrate_variant``); the worker MUST be a
+    member of ``admins`` AND ``orchestrators`` to pass every gate.
     """
     app = make_app(store, admin_token=ADMIN_TOKEN)
     client = TestClient(app)
     token = _register_worker(client, "eric")
+    admin_headers = {
+        "X-Eden-Experiment-Id": EXPERIMENT_ID,
+        "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+    }
+    # Bootstrap the §3.7 authority groups and put eric in both.
+    for group_id in ("admins", "orchestrators"):
+        reg = client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}/groups",
+            headers=admin_headers,
+            json={"group_id": group_id, "members": ["eric"]},
+        )
+        assert reg.status_code == 200, reg.text
     headers = {
         "X-Eden-Experiment-Id": EXPERIMENT_ID,
         "Authorization": f"Bearer eric:{token}",

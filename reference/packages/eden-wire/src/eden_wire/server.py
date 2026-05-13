@@ -54,8 +54,11 @@ from .errors import (
 from .models import (
     AddGroupMemberRequest,
     ClaimRequest,
+    DispatchModeResponse,
+    DispatchModeUpdateRequest,
     EventsResponse,
     IntegrateRequest,
+    ReassignRequest,
     ReclaimRequest,
     RegisterGroupRequest,
     RegisterWorkerRequest,
@@ -116,6 +119,42 @@ def make_app(
         if admin_token is None:
             return
         require_worker(request)
+
+    def _enforce_in_any_group(
+        request: Request, group_ids: tuple[str, ...]
+    ) -> str:
+        """Worker-gated route guard plus group-membership check (§3.7).
+
+        Requires the request to carry a worker bearer (admin bearers
+        are rejected — these endpoints exist for operator workflows
+        that the deployment surfaces through registered workers in
+        ``admins`` / ``orchestrators``; the literal ``admin``
+        principal is a bootstrap-only identity for registry mgmt per
+        12a-1 §D.5). Then checks the worker's transitive membership
+        in any of ``group_ids`` via ``Store.resolve_worker_in_group``;
+        membership in ANY listed group passes (OR semantics).
+
+        Returns the authenticated worker_id on success so the caller
+        can stamp attribution fields (``reassigned_by`` / ``updated_by``).
+        Returns the literal ``"anonymous"`` when auth is disabled (test
+        posture) — equivalent to the existing ``X-Eden-Worker-Id``
+        fallback in ``_worker_id_from_request``.
+
+        Raises :class:`Forbidden` (403 ``eden://error/forbidden``) on
+        membership miss.
+        """
+        if admin_token is None:
+            return request.headers.get("X-Eden-Worker-Id", "anonymous")
+        principal = require_worker(request)
+        assert principal.worker_id is not None
+        for gid in group_ids:
+            if store.resolve_worker_in_group(principal.worker_id, gid):
+                return principal.worker_id
+        groups_str = " or ".join(repr(g) for g in group_ids)
+        raise Forbidden(
+            f"endpoint requires membership in {groups_str}; worker "
+            f"{principal.worker_id!r} is not a transitive member"
+        )
 
     def _stamp_created_by(
         request: Request, body: dict[str, Any], field: str = "created_by"
@@ -278,7 +317,22 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks",
         )
-        _enforce_worker(request)
+        # §2.1 per-kind authority. Peek at `body["kind"]` BEFORE the
+        # full validate so the authority check fires on schema-valid
+        # AND schema-invalid bodies alike. If the kind is missing /
+        # unrecognized the downstream TaskAdapter.validate_python
+        # produces the canonical bad-request envelope; we fall through
+        # to that path without claiming authority either way.
+        kind = body.get("kind") if isinstance(body, dict) else None
+        if kind == "execution":
+            _enforce_in_any_group(request, ("orchestrators",))
+        elif kind in ("ideation", "evaluation"):
+            _enforce_in_any_group(request, ("admins", "orchestrators"))
+        else:
+            # Unrecognized kind — let the schema validator decide. We
+            # still require a worker bearer so an admin bearer never
+            # reaches the route handler.
+            _enforce_worker(request)
         body = _stamp_created_by(request, body)
         try:
             task = TaskAdapter.validate_python(body)
@@ -395,7 +449,8 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/accept",
         )
-        _enforce_worker(request)
+        # §2.5: accept is the orchestrator role's responsibility.
+        _enforce_in_any_group(request, ("orchestrators",))
         store.accept(task_id)
         return Response(status_code=204)
 
@@ -412,7 +467,8 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/reject",
         )
-        _enforce_worker(request)
+        # §2.5: reject is the orchestrator role's responsibility.
+        _enforce_in_any_group(request, ("orchestrators",))
         store.reject(task_id, body.reason)  # type: ignore[arg-type]
         return Response(status_code=204)
 
@@ -432,6 +488,34 @@ def make_app(
         _enforce_worker(request)
         store.reclaim(task_id, body.cause)  # type: ignore[arg-type]
         return Response(status_code=204)
+
+    @app.post(f"{base}/tasks/{{task_id}}/reassign")
+    async def _reassign_task(
+        request: Request,
+        experiment_id: str,
+        task_id: str,
+        body: ReassignRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        """§2.7: admin-group-gated reassignment of `task.target`.
+
+        Stamps `reassigned_by` from the authenticated principal; the
+        request body MUST NOT carry the field (the `ReassignRequest`
+        model forbids it via `extra="forbid"`).
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/tasks/{task_id}/reassign",
+        )
+        reassigned_by = _enforce_in_any_group(request, ("admins",))
+        updated = store.reassign_task(
+            task_id,
+            body.new_target,
+            reason=body.reason,
+            reassigned_by=reassigned_by,
+        )
+        return updated.model_dump(mode="json", exclude_none=True)
 
     # ------------------------------------------------------------------
     # Ideas
@@ -582,12 +666,71 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/variants/{variant_id}/integrate",
         )
-        _enforce_worker(request)
+        # §4 / §5: integration is the orchestrator role's job; the
+        # 12a-2 authority table pins the caller to `orchestrators`.
+        _enforce_in_any_group(request, ("orchestrators",))
         # §5: 200 + empty body on success and same-value idempotent
         # retries; 409 invalid-precondition on different-SHA divergence
         # (raised by Store.integrate_variant).
         store.integrate_variant(variant_id, body.variant_commit_sha)
         return Response(status_code=200)
+
+    # ------------------------------------------------------------------
+    # Dispatch mode (12a-2 §2.8)
+    # ------------------------------------------------------------------
+
+    @app.get(f"{base}/dispatch_mode")
+    async def _read_dispatch_mode(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        """§2.8 companion read endpoint (MAY-level per spec).
+
+        Wave-3 exposes the read because the StoreClient's read-back
+        ladder for PATCH transport-indeterminate failures needs it.
+        Either-auth (admin OR worker) — same posture as
+        ``GET /events`` and the other read endpoints.
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/dispatch_mode",
+        )
+        if admin_token is not None:
+            _ = request.state.principal  # ensure auth was run
+        mode = store.read_dispatch_mode()
+        return mode.model_dump(mode="json", exclude_none=True)
+
+    @app.patch(f"{base}/dispatch_mode")
+    async def _update_dispatch_mode(
+        request: Request,
+        experiment_id: str,
+        body: DispatchModeUpdateRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        """§2.8 admin-group-gated partial-merge update.
+
+        Stamps `updated_by` from the authenticated principal; the
+        request body MUST NOT carry the field (the model's
+        ``extra="allow"`` lets unknown dispatch_mode keys round-trip
+        per §2.5, but the server itself sources `updated_by` from
+        auth).
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/dispatch_mode",
+        )
+        updated_by = _enforce_in_any_group(request, ("admins",))
+        # Dump excludes None so the wave-2 `update_dispatch_mode`
+        # partial-merge semantics see only the keys the caller actually
+        # supplied. Unknown keys passed via `extra="allow"` are kept.
+        updates = body.model_dump(mode="json", exclude_none=True)
+        result = store.update_dispatch_mode(updates, updated_by=updated_by)
+        return DispatchModeResponse.model_validate(
+            result.model_dump(mode="json", exclude_none=True)
+        ).model_dump(mode="json", exclude_none=True)
 
     # ------------------------------------------------------------------
     # Events

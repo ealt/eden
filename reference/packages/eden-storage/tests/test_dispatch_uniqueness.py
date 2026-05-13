@@ -11,9 +11,11 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
+import pytest
 from eden_contracts import Idea, Variant
 from eden_storage import (
     AlreadyExists,
+    InvalidPrecondition,
     Store,
     VariantSubmission,
 )
@@ -77,25 +79,22 @@ def _advance_variant_to_starting_with_commit(
 def test_second_execution_create_for_same_idea_rejected(
     make_store: Callable[..., Store],
 ) -> None:
-    """The first create_execution_task succeeds; a concurrent second is rejected."""
+    """The first create_execution_task succeeds; a concurrent second is rejected.
+
+    The reference impl surfaces this as ``InvalidPrecondition`` via the
+    idea-state guard (the first create transitions the idea from
+    ``ready`` to ``dispatched``); the explicit ``_require_no_live_*``
+    check would surface ``AlreadyExists`` if a future store loosened
+    the idea-state rule. The §6.4 invariant requires SOME rejection of
+    the duplicate, not a specific exception class — both subclasses of
+    ``StorageError`` are acceptable signals.
+    """
     store = make_store()
     _ready_idea(store, "p1")
     store.create_execution_task("t-1", "p1")
 
-    # Plan §6.1: the second call MUST raise. The idea-state guard
-    # (idea now `dispatched`) catches it first in the reference impl,
-    # but the explicit at-most-one-live check exists for §6.4 clarity
-    # and would catch a future store that loosens the idea-state rule.
-    try:
+    with pytest.raises((InvalidPrecondition, AlreadyExists)):
         store.create_execution_task("t-2", "p1")
-    except (AlreadyExists, Exception) as exc:
-        # The reference impl surfaces this as InvalidPrecondition via
-        # the idea-state guard; the §6.4 invariant requires SOME
-        # rejection, not a specific exception class.
-        assert "p1" in str(exc) or "dispatch" in str(exc).lower()
-    else:
-        msg = "expected second create_execution_task to be rejected"
-        raise AssertionError(msg)
 
 
 def test_concurrent_evaluation_creates_collapse_to_one(
@@ -117,11 +116,13 @@ def test_concurrent_evaluation_creates_collapse_to_one(
             store.create_evaluation_task(task_id, "variant-1")
             with results_lock:
                 results.append("ok")
-        except (AlreadyExists, Exception) as exc:
+        except (AlreadyExists, InvalidPrecondition) as exc:
             with results_lock:
                 # Conflict outcome: either AlreadyExists from the
                 # at-most-one-live check, or InvalidPrecondition if
-                # the variant-state guard fired first.
+                # the variant-state guard fired first. Both are
+                # acceptable per §6.4; the load-bearing assertion is
+                # that exactly one live evaluation task survives.
                 results.append(f"conflict:{type(exc).__name__}")
 
     threads = [

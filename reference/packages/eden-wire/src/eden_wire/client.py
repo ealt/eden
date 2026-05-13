@@ -69,6 +69,28 @@ class IndeterminateIntegration(RuntimeError):
     """
 
 
+class IndeterminateReassign(RuntimeError):
+    """A ``reassign_task`` call's outcome cannot be determined.
+
+    Raised by :meth:`StoreClient.reassign_task` when a transport-
+    indeterminate failure cannot be resolved by a read-back of the
+    task (read-back itself fails, or shows a target that matches
+    neither the prior nor the requested state). Operator intervention
+    is required.
+    """
+
+
+class IndeterminateDispatchModeUpdate(RuntimeError):
+    """An ``update_dispatch_mode`` call's outcome cannot be determined.
+
+    Raised by :meth:`StoreClient.update_dispatch_mode` when a
+    transport-indeterminate failure cannot be resolved by a read-back
+    of the experiment's current ``dispatch_mode`` (read-back itself
+    fails, or the observed state matches neither "before" nor "after"
+    semantics). Operator intervention is required.
+    """
+
+
 class StoreClient:
     """HTTP client that satisfies the ``eden_storage.Store`` Protocol."""
 
@@ -665,47 +687,154 @@ class StoreClient:
         return False
 
     # ------------------------------------------------------------------
-    # Reassign / dispatch_mode (12a-2 wave 2 — wire endpoints land in wave 3)
+    # Reassign / dispatch_mode (12a-2 wave 3) — chapter 7 §§2.7-2.8
     # ------------------------------------------------------------------
 
     def reassign_task(
         self,
-        task_id: str,  # noqa: ARG002 — wave-3 plumbs through; signature is the Protocol contract
-        new_target: TaskTarget | None,  # noqa: ARG002
+        task_id: str,
+        new_target: TaskTarget | None,
         *,
-        reason: str,  # noqa: ARG002
-        reassigned_by: str,  # noqa: ARG002
+        reason: str,
+        reassigned_by: str,  # noqa: ARG002 — set server-side from principal
     ) -> Task:
-        """Wave-2 stub for protocol conformance — wire endpoint lands in wave 3.
+        """Reassign a task's `target` over the wire (§2.7).
 
-        Spec: [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
-        §2.7. The HTTP binding (``POST .../tasks/{T}/reassign``) plus
-        the read-back ladder for transport-indeterminate failures
-        ship in wave 3; this stub keeps ``StoreClient`` structurally
-        conformant with the Store Protocol so type-checking passes.
+        Authority is enforced server-side: the bearer's worker_id MUST
+        be a transitive member of the ``admins`` group; the server
+        stamps ``reassigned_by`` on the emitted event from that
+        authenticated identity, NOT from the ``reassigned_by``
+        parameter here. The parameter exists to satisfy the
+        ``Store`` Protocol signature; the in-process Store consumes
+        it and the wire client lets the bearer be authoritative.
+
+        On transport-indeterminate failure, runs a §2.7 / §6 read-back
+        ladder parallel to ``integrate_variant`` (§5):
+
+        - read-back shows ``task.target == new_target`` → success.
+        - read-back shows a definitively-different target →
+          :class:`IndeterminateReassign` (the operator must
+          investigate; we can't tell whether OUR request committed
+          and was subsequently overwritten, or never landed).
+        - read-back itself fails →
+          :class:`IndeterminateReassign`.
         """
-        raise NotImplementedError(
-            "reassign_task is wave-3 (eden_wire wire endpoint binding); "
-            "wave-2 only adds the Store-side semantics. Use the in-process "
-            "Store directly until wave 3 lands."
-        )
+        path = f"{self._base}/tasks/{task_id}/reassign"
+        body: dict[str, Any] = {
+            "new_target": (
+                None
+                if new_target is None
+                else new_target.model_dump(mode="json", exclude_none=True)
+            ),
+            "reason": reason,
+        }
+        try:
+            resp = self._request("POST", path, json=body)
+            return TaskAdapter.validate_python(resp.json())
+        except httpx.TransportError as exc:
+            original = exc
+
+        observed = self._try_read_task(task_id)
+        if observed is None:
+            raise IndeterminateReassign(
+                f"reassign_task({task_id!r}) transport failed "
+                f"({type(original).__name__}) and read-back could not be "
+                f"completed; server-side outcome unknown"
+            ) from original
+        if _task_targets_equal(observed.target, new_target):
+            return observed
+        raise IndeterminateReassign(
+            f"reassign_task({task_id!r}) transport failed "
+            f"({type(original).__name__}); read-back shows target "
+            f"{observed.target!r} which matches neither the requested "
+            f"{new_target!r} nor reflects our intended write — operator "
+            f"must investigate"
+        ) from original
 
     def read_dispatch_mode(self) -> DispatchMode:
-        """Wave-2 stub; wire binding lands in wave 3 (chapter 07 §2.8)."""
-        raise NotImplementedError(
-            "read_dispatch_mode is wave-3; wave-2 only adds Store-side semantics."
-        )
+        """Fetch the experiment's current dispatch_mode (§2.8 read).
+
+        Returns the full state — every normative key populated per
+        ``02-data-model.md`` §2.5 defaults. Unknown keys persisted by
+        older writes round-trip via ``DispatchMode``'s
+        ``extra="allow"``.
+        """
+        resp = self._request("GET", f"{self._base}/dispatch_mode")
+        return DispatchMode.model_validate(resp.json())
 
     def update_dispatch_mode(
         self,
-        updates: DispatchMode | dict[str, str],  # noqa: ARG002
+        updates: DispatchMode | dict[str, str],
         *,
-        updated_by: str,  # noqa: ARG002
+        updated_by: str,  # noqa: ARG002 — set server-side from principal
     ) -> DispatchMode:
-        """Wave-2 stub; wire binding lands in wave 3 (chapter 07 §2.8)."""
-        raise NotImplementedError(
-            "update_dispatch_mode is wave-3; wave-2 only adds Store-side semantics."
-        )
+        """Partial-merge update over the wire (§2.8).
+
+        Authority enforced server-side (caller MUST be in
+        ``admins``). The server stamps ``updated_by`` from the
+        authenticated principal.
+
+        On transport-indeterminate failure, runs a read-back ladder:
+        re-fetch the dispatch_mode and compare to the requested
+        ``updates``. If every requested key already holds the
+        requested value, treat as confirmed success. Otherwise raise
+        :class:`IndeterminateDispatchModeUpdate` — the server's
+        outcome can't be determined (it may have applied the update
+        and then someone else partially reverted, or our update never
+        landed).
+        """
+        if isinstance(updates, DispatchMode):
+            payload = updates.model_dump(mode="json", exclude_none=True)
+        else:
+            payload = dict(updates)
+        path = f"{self._base}/dispatch_mode"
+        try:
+            resp = self._request("PATCH", path, json=payload)
+            return DispatchMode.model_validate(resp.json())
+        except httpx.TransportError as exc:
+            original = exc
+
+        observed = self._try_read_dispatch_mode()
+        if observed is None:
+            raise IndeterminateDispatchModeUpdate(
+                f"update_dispatch_mode transport failed "
+                f"({type(original).__name__}) and read-back could not be "
+                f"completed; server-side outcome unknown"
+            ) from original
+        observed_dump = observed.model_dump(mode="json", exclude_none=True)
+        if all(observed_dump.get(k) == v for k, v in payload.items()):
+            return observed
+        raise IndeterminateDispatchModeUpdate(
+            f"update_dispatch_mode transport failed "
+            f"({type(original).__name__}); read-back disagrees with the "
+            f"requested update (observed={observed_dump!r}, requested="
+            f"{payload!r}) — operator must investigate"
+        ) from original
+
+    def _try_read_task(self, task_id: str) -> Task | None:
+        for _ in range(self._read_back_attempts):
+            try:
+                return self.read_task(task_id)
+            except Exception:
+                continue
+        return None
+
+    def _try_read_dispatch_mode(self) -> DispatchMode | None:
+        for _ in range(self._read_back_attempts):
+            try:
+                return self.read_dispatch_mode()
+            except Exception:
+                continue
+        return None
+
+
+def _task_targets_equal(a: TaskTarget | None, b: TaskTarget | None) -> bool:
+    """Compare two ``Task.target`` values structurally for the reassign read-back ladder."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return a.kind == b.kind and a.id == b.id
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:

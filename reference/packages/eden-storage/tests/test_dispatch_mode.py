@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 import pytest
 from eden_contracts import DispatchMode
-from eden_storage import InvalidPrecondition, Store
+from eden_storage import InvalidPrecondition, ReservedIdentifier, Store
 
 
 def _seed_admin(store: Store) -> None:
@@ -130,7 +130,7 @@ def test_dispatch_mode_rejects_invalid_value(
     _seed_admin(store)
     with pytest.raises(InvalidPrecondition):
         store.update_dispatch_mode(
-            {"ideation_creation": "paused"},  # type: ignore[dict-item]
+            {"ideation_creation": "paused"},
             updated_by="admin-eric",
         )
 
@@ -138,9 +138,15 @@ def test_dispatch_mode_rejects_invalid_value(
 def test_dispatch_mode_rejects_invalid_actor_id(
     make_store: Callable[..., Store],
 ) -> None:
+    """Actor id must satisfy the §6.1 grammar; reserved id ('admin') rejected."""
     store = make_store()
-    with pytest.raises(Exception):
+    with pytest.raises(ReservedIdentifier):
         store.update_dispatch_mode(
             {"integration": "manual"},
-            updated_by="Admin",
+            updated_by="admin",
+        )
+    with pytest.raises(InvalidPrecondition):
+        store.update_dispatch_mode(
+            {"integration": "manual"},
+            updated_by="Admin",  # uppercase violates grammar
         )

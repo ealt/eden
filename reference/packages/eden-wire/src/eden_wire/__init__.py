@@ -5,9 +5,11 @@ Exports:
 - ``make_app(store)``: FastAPI application factory wrapping a ``Store``.
 - ``StoreClient``: httpx-backed client that satisfies the ``Store``
   Protocol.
-- ``WireError`` and the ``IndeterminateIntegration`` error used when
-  an ``integrate_variant`` call's outcome cannot be determined after
-  a transport-indeterminate failure.
+- ``WireError`` and the ``Indeterminate*`` errors used when the wire
+  call's outcome cannot be determined after a transport-indeterminate
+  failure (``IndeterminateIntegration`` for ``integrate_variant``;
+  ``IndeterminateReassign`` for ``reassign_task``;
+  ``IndeterminateDispatchModeUpdate`` for ``update_dispatch_mode``).
 - ``Principal`` / ``parse_bearer`` / ``authenticate`` from the §13
   auth module.
 """
@@ -15,13 +17,20 @@ Exports:
 from __future__ import annotations
 
 from .auth import Principal, authenticate, parse_bearer
-from .client import IndeterminateIntegration, StoreClient
+from .client import (
+    IndeterminateDispatchModeUpdate,
+    IndeterminateIntegration,
+    IndeterminateReassign,
+    StoreClient,
+)
 from .errors import Forbidden, Unauthorized, WireError, WireReferenceError
 from .server import make_app
 
 __all__ = [
     "Forbidden",
+    "IndeterminateDispatchModeUpdate",
     "IndeterminateIntegration",
+    "IndeterminateReassign",
     "Principal",
     "StoreClient",
     "Unauthorized",

@@ -11,7 +11,12 @@ from collections.abc import Callable
 
 import pytest
 from eden_contracts import Idea, TaskTarget, Variant
-from eden_storage import InvalidPrecondition, Store, VariantSubmission
+from eden_storage import (
+    InvalidPrecondition,
+    ReservedIdentifier,
+    Store,
+    VariantSubmission,
+)
 
 
 def _ready_idea(store: Store, idea_id: str) -> None:
@@ -126,7 +131,8 @@ def test_claimed_task_reassign_composite_commits_reclaim_and_reassign(
     )
     assert updated.state == "pending"
     assert updated.claim is None
-    assert updated.target is not None and updated.target.id == "ideator-x"
+    assert updated.target is not None
+    assert updated.target.id == "ideator-x"
 
     new_events = store.events()[pre:]
     types = [e.type for e in new_events]
@@ -138,7 +144,7 @@ def test_claimed_task_reassign_composite_commits_reclaim_and_reassign(
 def test_claimed_execution_reassign_errors_starting_variant(
     make_store: Callable[..., Store],
 ) -> None:
-    """Reassigning a claimed execution task with a starting variant errors the variant atomically."""
+    """Claimed execution task reassign: composite-commits variant.errored too."""
     store = make_store()
     _seed_admin(store)
     _ready_idea(store, "p1")
@@ -247,10 +253,17 @@ def test_reassign_rejects_invalid_actor_id(
     """Actor id must satisfy the §6.1 grammar; reserved ids are rejected."""
     store = make_store()
     store.create_ideation_task("t-1")
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidPrecondition):
         store.reassign_task(
             "t-1",
             None,
             reason="bad actor",
             reassigned_by="Admin-Eric",  # uppercase violates grammar
+        )
+    with pytest.raises(ReservedIdentifier):
+        store.reassign_task(
+            "t-1",
+            None,
+            reason="reserved actor",
+            reassigned_by="admin",
         )
