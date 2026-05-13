@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import re
 
+from eden_dispatch import IdeationPolicy
 from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
     StopFlag,
@@ -13,6 +15,7 @@ from eden_service_common import (
     get_logger,
     install_stop_handlers,
     parse_log_level,
+    resolve_admin_token,
     resolve_worker_bearer,
     wait_for_task_store,
 )
@@ -108,12 +111,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--ideation-tasks",
-        required=True,
+        "--ideation-policy",
+        default="eden_dispatch.policies:default_policy",
         help=(
-            "Either an integer N (creates ideation-0001..ideation-N) or a "
-            "comma-separated list of explicit ideation task IDs."
+            "Importable ``module:callable`` whose call returns an "
+            "``IdeationPolicy`` (``Callable[[ExperimentStateView], int]``). "
+            "Invoked once per orchestrator iteration when "
+            "``dispatch_mode.ideation_creation == 'auto'``; the returned "
+            "count is the number of ideation tasks created this iteration. "
+            "Default: ``eden_dispatch.policies:default_policy`` "
+            "(``maintain_pending(target=3)``; mirrors the pre-12a-2 "
+            "static-seed shape under the new dispatch). The pre-12a-2 "
+            "``--ideation-tasks`` flag is retired; deployments that want "
+            "exact one-shot seeding can point this at "
+            "``eden_dispatch.policies:fixed_total`` via a thin local "
+            "wrapper (see plan §3.3)."
         ),
+    )
+    parser.add_argument(
+        "--ideation-task-prefix",
+        default="ideation-",
+        help="Prefix for policy-created ideation task IDs (default: 'ideation-').",
     )
     parser.add_argument(
         "--execution-task-prefix",
@@ -149,12 +167,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _expand_ideation_tasks(spec: str) -> list[str]:
-    """Parse --ideation-tasks into a concrete list of IDs."""
-    if spec.isdigit():
-        n = int(spec)
-        return [f"ideation-{i:04d}" for i in range(1, n + 1)]
-    return [s.strip() for s in spec.split(",") if s.strip()]
+def _resolve_ideation_policy(spec: str) -> IdeationPolicy:
+    """Import ``module:callable`` and call it to get an :data:`IdeationPolicy`.
+
+    The CLI flag accepts a ``module:callable`` string (e.g.
+    ``eden_dispatch.policies:default_policy``); this helper imports
+    the module, fetches the callable, calls it with no args, and
+    returns the resulting policy. The two-step shape — caller is a
+    *factory* that returns a policy — keeps configuration (target
+    counts, ceilings) on the factory side rather than the orchestrator
+    CLI, so policies can carry their own configuration without
+    expanding the CLI surface every time a new knob lands.
+
+    Deployments that want a configured policy (e.g.
+    ``maintain_pending(target=5, max_total=100)``) wrap the factory:
+    write a local ``my_policies.py`` exposing ``def my_policy():
+    return maintain_pending(target=5, max_total=100)`` and pass
+    ``--ideation-policy my_policies:my_policy``.
+    """
+    if ":" not in spec:
+        raise SystemExit(
+            f"--ideation-policy {spec!r}: expected 'module:callable' format"
+        )
+    module_name, callable_name = spec.split(":", 1)
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise SystemExit(
+            f"--ideation-policy: cannot import module {module_name!r}: {exc}"
+        ) from exc
+    try:
+        factory = getattr(module, callable_name)
+    except AttributeError as exc:
+        raise SystemExit(
+            f"--ideation-policy: module {module_name!r} has no attribute "
+            f"{callable_name!r}"
+        ) from exc
+    return factory()
 
 
 def _ensure_repo(
@@ -216,8 +265,14 @@ def main(argv: list[str] | None = None) -> int:
         args, worker_id=args.worker_id, labels={"role": "orchestrator"}
     )
 
-    ideation_task_ids = _expand_ideation_tasks(args.ideation_tasks)
-    log.info("starting", ideation_tasks=len(ideation_task_ids), repo=args.repo_path)
+    ideation_policy = _resolve_ideation_policy(args.ideation_policy)
+    admin_token = resolve_admin_token(args)
+    log.info(
+        "starting",
+        ideation_policy=args.ideation_policy,
+        repo=args.repo_path,
+        worker_id=args.worker_id,
+    )
 
     with StoreClient(
         args.task_store_url,
@@ -244,10 +299,32 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("reconciled_remote_orphans", count=len(deleted))
             except Exception:
                 log.exception("reconcile_remote_orphans_failed")
+        # §3.8 step 3: auto-orchestrator joins the `orchestrators`
+        # group at startup so its worker bearer satisfies the §3.7
+        # authority gates on accept / reject / integrate /
+        # create_task(kind=execution|evaluation|ideation).
+        # Admin-gated (12a-1 §D.2); skipped when the admin token is
+        # not available (test posture or post-bootstrap restart).
+        if admin_token is not None:
+            try:
+                _ensure_orchestrators_membership(
+                    log=log,
+                    base_url=args.task_store_url,
+                    experiment_id=args.experiment_id,
+                    admin_token=admin_token,
+                    worker_id=args.worker_id,
+                )
+            except Exception:
+                log.exception(
+                    "ensure_orchestrators_membership_failed; "
+                    "auto-orchestrator may be unable to drive "
+                    "§3.7-gated routes"
+                )
         run_orchestrator_loop(
             store=client,
             integrator=integrator,
-            ideation_task_ids=ideation_task_ids,
+            ideation_policy=ideation_policy,
+            ideation_task_prefix=args.ideation_task_prefix,
             execution_task_prefix=args.execution_task_prefix,
             evaluation_task_prefix=args.evaluation_task_prefix,
             poll_interval=args.poll_interval,
@@ -256,6 +333,60 @@ def main(argv: list[str] | None = None) -> int:
         )
     log.info("orchestrator exited")
     return 0
+
+
+def _ensure_orchestrators_membership(
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+    base_url: str,
+    experiment_id: str,
+    admin_token: str,
+    worker_id: str,
+) -> None:
+    """Join the ``orchestrators`` group, creating it if needed.
+
+    Per plan §3.8 step 3 + §5.7, the canonical bootstrap is for
+    ``setup-experiment.sh`` to ``register_group("orchestrators")``
+    before bringing the orchestrator up. Wave 7 lands that change. In
+    the meantime — and as defense-in-depth for fresh-experiment
+    restarts after the bootstrap script has been wiped — the
+    orchestrator also tries to register the group itself, treating an
+    ``AlreadyExists`` as success. ``add_to_group`` is admin-gated per
+    12a-1 §D.2 and idempotent on existing membership.
+
+    All wire calls run under the admin bearer because the §3.7 group-
+    registry ops are admin-gated; the orchestrator's own worker
+    bearer can't drive them.
+    """
+    from eden_storage.errors import AlreadyExists, NotFound
+
+    with StoreClient(
+        base_url, experiment_id, bearer=f"admin:{admin_token}"
+    ) as admin:
+        try:
+            admin.register_group("orchestrators")
+            log.info("registered_group", group_id="orchestrators")
+        except AlreadyExists:
+            # The group already exists (setup-experiment ran, or
+            # another orchestrator beat us here). Nothing to do.
+            pass
+        try:
+            admin.add_to_group("orchestrators", worker_id)
+            log.info(
+                "joined_group",
+                group_id="orchestrators",
+                worker_id=worker_id,
+            )
+        except NotFound:
+            # Race: the group disappeared between our register and our
+            # add. Re-register and retry once.
+            admin.register_group("orchestrators")
+            admin.add_to_group("orchestrators", worker_id)
+            log.info(
+                "joined_group_after_race",
+                group_id="orchestrators",
+                worker_id=worker_id,
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

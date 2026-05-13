@@ -41,13 +41,24 @@ FIXTURE_CONFIG = (
 )
 
 
-def _spawn(args: list[str], log_path: Path) -> subprocess.Popen:
+def _spawn(
+    args: list[str],
+    log_path: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen:
     # See eden#39: undrained subprocess.PIPE handles fill the 64 KiB
     # pipe buffer and wedge the writer's async event loop.
+    spawn_env: dict[str, str] | None = None
+    if env is not None:
+        import os as _os
+
+        spawn_env = {**_os.environ, **env}
     return subprocess.Popen(
         [sys.executable, "-m", *args],
         stdout=open(log_path, "wb"),  # noqa: SIM115 — handle owned by Popen
         stderr=subprocess.STDOUT,
+        env=spawn_env,
     )
 
 
@@ -380,9 +391,12 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         # sweep_expired_claims call will reclaim.
         time.sleep(2.0)
 
-        # Now spawn the orchestrator with NO ideation tasks; its loop runs
-        # sweep_expired_claims once per iteration, sees no other
-        # progress, and quiesces.
+        # Now spawn the orchestrator with NO ideation policy effect; its
+        # loop runs sweep_expired_claims once per iteration, sees no
+        # other progress, and quiesces. ``MAX_TOTAL=0`` plus the
+        # already-seeded ideation tasks means the default policy
+        # returns 0 every iteration — no new tasks created, no claim
+        # cycle restarted.
         orchestrator_log = logs_dir / "orchestrator.log"
         orchestrator = _spawn(
             [
@@ -393,14 +407,15 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 experiment_id,
                 "--repo-path",
                 str(bare_repo),
-                "--ideation-tasks",
-                "",
                 "--max-quiescent-iterations",
                 "2",
                 "--poll-interval",
                 "0.1",
             ],
             orchestrator_log,
+            env={
+                "EDEN_IDEATION_POLICY_MAX_TOTAL": "0",
+            },
         )
         procs_logs["orchestrator"] = (orchestrator, orchestrator_log)
         try:

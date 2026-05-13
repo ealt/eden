@@ -31,7 +31,12 @@ FIXTURE_DIR = (
 FIXTURE_CONFIG = FIXTURE_DIR / ".eden" / "config.yaml"
 
 
-def _spawn(args: list[str], log_path: Path) -> subprocess.Popen:
+def _spawn(
+    args: list[str],
+    log_path: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen:
     # Redirect stdout+stderr to a per-subprocess file. Workers + server
     # log every HTTP request to stdout (eden_service_common.logging
     # routes the root logger to sys.stdout); over a 30+ s test run that
@@ -40,10 +45,16 @@ def _spawn(args: list[str], log_path: Path) -> subprocess.Popen:
     # logger call. Tests previously used subprocess.PIPE without a
     # drainer and flaked on this; redirecting to a real file removes
     # the back-pressure entirely and preserves the log for diagnostics.
+    spawn_env: dict[str, str] | None = None
+    if env is not None:
+        import os as _os
+
+        spawn_env = {**_os.environ, **env}
     return subprocess.Popen(
         [sys.executable, "-m", *args],
         stdout=open(log_path, "wb"),  # noqa: SIM115 — handle owned by Popen
         stderr=subprocess.STDOUT,
+        env=spawn_env,
     )
 
 
@@ -235,6 +246,9 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
     # startup-to-first-claim latency; with the default 0.3s the
     # orchestrator declares quiescence before workers come online and
     # every ideation task stays pending.
+    # Wave-4: ``--ideation-tasks`` retired; policy + env-var
+    # ``EDEN_IDEATION_POLICY_MAX_TOTAL=3`` reproduces the pre-12a-2
+    # fixed-seed shape this test depends on.
     orchestrator = _spawn(
         [
             "eden_orchestrator",
@@ -244,14 +258,16 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             experiment_id,
             "--repo-path",
             str(bare_repo),
-            "--ideation-tasks",
-            "ideation-1,plan-2,plan-3",
             "--poll-interval",
             "0.5",
             "--max-quiescent-iterations",
             "20",
         ],
         orchestrator_log,
+        env={
+            "EDEN_IDEATION_POLICY_TARGET_PENDING": "3",
+            "EDEN_IDEATION_POLICY_MAX_TOTAL": "3",
+        },
     )
 
     procs_logs = {

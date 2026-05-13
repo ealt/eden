@@ -12,11 +12,15 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from eden_dispatch import run_orchestrator_iteration, sweep_expired_claims
+from eden_contracts import DispatchMode
+from eden_dispatch import (
+    IdeationPolicy,
+    run_orchestrator_iteration,
+    sweep_expired_claims,
+)
 from eden_git import Identity, Integrator
 from eden_service_common import StopFlag, get_logger
 from eden_storage import Store
-from eden_storage.errors import AlreadyExists
 
 log = get_logger(__name__)
 
@@ -33,31 +37,50 @@ def make_id_factory(prefix: str) -> Callable[[], str]:
     return _next
 
 
+def _read_dispatch_mode(store: Store) -> DispatchMode:
+    """Fetch the experiment's current dispatch_mode, defaulting to all-auto.
+
+    Any exception during the fetch (transport blip, mid-restart task-
+    store) falls back to the §2.5 all-``auto`` default. This is
+    intentional: the orchestrator's continued forward motion is more
+    important than honoring a possibly-stale ``manual`` flag for one
+    iteration, and the next iteration will re-read and pick up the
+    correct value. The fallback is logged so an operator investigating
+    a wedged dispatch can still see the underlying transport problem.
+    """
+    try:
+        return store.read_dispatch_mode()
+    except Exception:  # noqa: BLE001 — defensive at iteration boundary
+        log.exception("read_dispatch_mode_failed; using all-auto default")
+        return DispatchMode()
+
+
 def run_orchestrator_loop(
     *,
     store: Store,
     integrator: Integrator,
-    ideation_task_ids: list[str],
+    ideation_policy: IdeationPolicy,
+    ideation_task_prefix: str,
     execution_task_prefix: str,
     evaluation_task_prefix: str,
     poll_interval: float,
     max_quiescent_iterations: int,
     stop: StopFlag,
 ) -> None:
-    """Seed ideation tasks, then loop finalize + dispatch + integrate to quiescence.
+    """Loop finalize + dispatch + integrate to quiescence.
 
-    Returns when either ``stop`` is set or the orchestrator has observed
-    ``max_quiescent_iterations`` consecutive iterations with no progress.
+    Per plan §3.3 the pre-12a-2 static seed loop is replaced by the
+    per-iteration ``ideation_policy`` callable: each iteration reads
+    the experiment's dispatch_mode, the policy decides how many
+    ideation tasks to create (when ``ideation_creation == "auto"``),
+    and ``run_orchestrator_iteration`` drives the four §6.2 decisions
+    against the current dispatch_mode.
+
+    Returns when either ``stop`` is set or the orchestrator has
+    observed ``max_quiescent_iterations`` consecutive iterations with
+    no progress.
     """
-    for task_id in ideation_task_ids:
-        try:
-            store.create_ideation_task(task_id)
-        except AlreadyExists as exc:
-            # Restart-safe: a previous orchestrator already seeded this
-            # task. Anything else (transport, auth, illegal-transition)
-            # surfaces immediately.
-            log.info("ideation_task_seed_skip", task_id=task_id, reason=str(exc))
-
+    ideation_factory = make_id_factory(ideation_task_prefix)
     implement_factory = make_id_factory(execution_task_prefix)
     evaluate_factory = make_id_factory(evaluation_task_prefix)
 
@@ -66,12 +89,20 @@ def run_orchestrator_loop(
 
     quiescent = 0
     while not stop.is_set():
+        # Per plan §5.5 / §3.8: dispatch_mode is read at the start of
+        # each iteration so an admins-driven mode flip takes effect on
+        # the very next iteration. The cost is one extra wire roundtrip
+        # per iteration; acceptable at the reference scale.
+        dispatch_mode = _read_dispatch_mode(store)
         reclaimed = sweep_expired_claims(store, now=datetime.now(UTC))
         progress = run_orchestrator_iteration(
             store,
             execution_task_id_factory=implement_factory,
             evaluation_task_id_factory=evaluate_factory,
             integrate_variant=integrate,
+            dispatch_mode=dispatch_mode,
+            ideation_policy=ideation_policy,
+            ideation_task_id_factory=ideation_factory,
         )
         if reclaimed or progress:
             quiescent = 0
