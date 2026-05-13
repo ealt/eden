@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}EDEN — reassign task {{ task.task_id }}{% endblock %}
+{% block main %}
+<h1>reassign task <code>{{ task.task_id }}</code></h1>
+
+<p><a href="/admin/tasks/{{ task.task_id }}/">&laquo; back to task detail</a></p>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+<dl>
+    <dt>kind</dt><dd>{{ task.kind }}</dd>
+    <dt>state</dt><dd>{{ task.state }}</dd>
+    <dt>current target</dt>
+    <dd>
+        {% if current_target %}
+            <code>{{ current_target.kind }}:{{ current_target.id }}</code>
+        {% else %}
+            <em>(none — any registered worker)</em>
+        {% endif %}
+    </dd>
+</dl>
+
+{% if not can_reassign %}
+<div class="banner banner-warn">
+    Tasks in <code>{{ task.state }}</code> cannot be reassigned. Per
+    chapter 04 §6.1, reassignment is only permitted while the task is
+    still <code>pending</code> or <code>claimed</code>.
+</div>
+{% else %}
+<p>
+    <strong>Effect of reassign:</strong>
+    {% if task.state == "claimed" %}
+        composite commit — the claim is cleared
+        (<code>task.reclaimed</code> with <code>cause=operator</code>),
+        the target is updated, and the task returns to
+        <code>pending</code>. Both events land atomically.
+        {% if task.kind == "execution" %}
+        Any in-flight starting variant belonging to this task transitions
+        to <code>error</code> in the same commit.
+        {% endif %}
+    {% else %}
+        the target field is updated; the task remains <code>pending</code>.
+    {% endif %}
+</p>
+
+<form action="/admin/tasks/{{ task.task_id }}/reassign" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <fieldset>
+        <legend>new target</legend>
+        <label>
+            <input type="radio" name="target_kind" value="none" checked>
+            <em>none</em> (any registered worker)
+        </label>
+        <br>
+        <label>
+            <input type="radio" name="target_kind" value="worker">
+            worker:
+            <select name="target_id_worker" id="target_id_worker_select">
+                <option value=""></option>
+                {% for w in workers %}
+                <option value="{{ w }}">{{ w }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <br>
+        <label>
+            <input type="radio" name="target_kind" value="group">
+            group:
+            <select name="target_id_group" id="target_id_group_select">
+                <option value=""></option>
+                {% for g in groups %}
+                <option value="{{ g }}">{{ g }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <br>
+        <label>
+            target id (manual entry, advanced):
+            <input type="text" name="target_id" placeholder="optional override">
+        </label>
+    </fieldset>
+
+    <p>
+        <label>
+            reason:
+            <input type="text" name="reason" required maxlength="512" placeholder="e.g. operator, misrouted, failed_worker">
+        </label>
+    </p>
+
+    <p>
+        <button type="submit">reassign</button>
+    </p>
+</form>
+
+<p>
+    <small>
+        The <code>reason</code> string is recorded verbatim in the
+        <code>task.reassigned</code> event payload for audit
+        (chapter 05 §3.1). Suggested values: <code>operator</code>,
+        <code>failed_worker</code>, <code>misrouted</code>.
+    </small>
+</p>
+{% endif %}
+{% endblock %}

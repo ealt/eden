@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin dispatch_mode{% endblock %}
+{% block main %}
+<h1>dispatch_mode</h1>
+
+<p><a href="/admin/">&laquo; back to admin</a></p>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+<p>
+    The auto-orchestrator runs each decision type only when its
+    dispatch_mode key is <code>auto</code>. Switch a key to
+    <code>manual</code> to drive that decision yourself via the
+    admin UI (or via the wire endpoints).
+</p>
+
+<form action="/admin/dispatch-mode/" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <table>
+        <thead>
+            <tr><th>decision</th><th>auto</th><th>manual</th><th>description</th></tr>
+        </thead>
+        <tbody>
+        {% for key, label, description in keys %}
+            <tr>
+                <td><code>{{ key }}</code><br><small>{{ label }}</small></td>
+                {% for value in values %}
+                <td>
+                    <label>
+                        <input
+                            type="radio"
+                            name="{{ key }}"
+                            value="{{ value }}"
+                            {% if current.get(key, "auto") == value %}checked{% endif %}
+                        >
+                        {{ value }}
+                    </label>
+                </td>
+                {% endfor %}
+                <td>{{ description }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p>
+        <button type="submit">apply dispatch_mode</button>
+    </p>
+</form>
+{% endblock %}

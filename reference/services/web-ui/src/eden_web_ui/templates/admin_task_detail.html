@@ -25,6 +25,20 @@
     <pre>{{ payload_json | tojson(indent=2) }}</pre>
 </section>
 
+{% if task.state in ["pending", "claimed"] %}
+<section>
+    <h2>operator reassign</h2>
+    <p>
+        <a href="/admin/tasks/{{ task.task_id }}/reassign">reassign this task &raquo;</a>
+        &mdash; update <code>task.target</code>
+        {% if task.state == "claimed" %}
+        (composite-commits a <code>task.reclaimed</code>; the current
+        claimant is bumped)
+        {% endif %}
+    </p>
+</section>
+{% endif %}
+
 {% if can_reclaim %}
 <section>
     <h2>operator reclaim</h2>
