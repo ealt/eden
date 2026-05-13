@@ -729,3 +729,40 @@ def test_storeclient_resolve_in_group_skips_dangling_member(
             client=http,
         )
         assert client.resolve_worker_in_group("eric", "humans") is True
+
+
+def test_storeclient_verify_wrong_worker_id_response_raises(
+    store: InMemoryStore,
+) -> None:
+    """Codex round-7 R7-1 — 200-but-mismatched-worker_id raises, not False.
+
+    The §6.7 "registry rebuilt with same id, different identity"
+    recovery branch (or a proxy / server bug) surfaces as a 200 body
+    whose worker_id disagrees with the candidate. Conflating it with
+    confirmed-bad-credential would trigger an unwarranted reissue;
+    the caller must see the mismatch and surface to the operator.
+    """
+    # Build a mock transport that returns 200 OK from /whoami with a
+    # worker_id that disagrees with the candidate.
+    def _wrong_id_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/whoami"):
+            return httpx.Response(
+                200,
+                json={"worker_id": "someone-else"},
+                headers={"content-type": "application/json"},
+            )
+        return httpx.Response(404)
+
+    _ = store  # fixture only; no in-process store needed
+    with httpx.Client(
+        transport=httpx.MockTransport(_wrong_id_handler),
+        base_url="http://unused",
+    ) as http:
+        client = StoreClient(
+            "http://unused",
+            experiment_id=EXPERIMENT_ID,
+            bearer=f"admin:{ADMIN_TOKEN}",
+            client=http,
+        )
+        with pytest.raises(RuntimeError, match="returned worker_id="):
+            client.verify_worker_credential("eric", "any-token")

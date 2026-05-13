@@ -525,13 +525,19 @@ class StoreClient:
         on this single request.
 
         Returns ``True`` only when the returned worker_id equals
-        ``worker_id`` (defends against the §6.7 "wrong worker_id
+        ``worker_id`` (the chapter 02 §6.7 "wrong worker_id
         returned" recovery branch). Returns ``False`` ONLY for a
-        confirmed-bad-credential outcome (401). Transport failures
-        and malformed responses propagate as exceptions — they are
-        "we don't know" cases, not "credential is bad", and a
-        startup recovery flow that conflated the two would
-        unnecessarily reissue on a transient network blip.
+        confirmed-bad-credential outcome (HTTP 401). Every other
+        unexpected outcome — HTTP failure, malformed response body,
+        ``/whoami`` returning a different ``worker_id`` than the
+        candidate, transport blip — propagates as an exception. The
+        last case (``200`` but mismatched ``worker_id``) is a
+        deployment misconfiguration (proxy mix-up, server bug, or
+        the §6.7 recovery branch where the registry was rebuilt
+        with the same id but a different identity behind it); the
+        caller MUST treat it as "we don't know which worker this
+        bearer actually authenticates as" rather than silently
+        reissuing.
         """
         candidate_bearer = f"{worker_id}:{registration_token}"
         headers = {
@@ -545,7 +551,20 @@ class StoreClient:
             return False
         resp.raise_for_status()
         returned = resp.json().get("worker_id")
-        return returned == worker_id
+        if returned == worker_id:
+            return True
+        # 200 OK but the bearer authenticates as somebody else — or
+        # the body is malformed. Don't silently misclassify as
+        # "credential is bad"; the caller must surface this.
+        msg = (
+            f"verify_worker_credential: /whoami returned worker_id="
+            f"{returned!r} for bearer authenticating as {worker_id!r}; "
+            f"this is the §6.7 recovery branch (registry rebuilt with "
+            f"same id, different identity) or a proxy / server bug. "
+            f"Surface to the operator rather than treating as a bad "
+            f"credential."
+        )
+        raise RuntimeError(msg)
 
     def whoami(self) -> str:
         """Return the ``worker_id`` the bearer authenticates as (§6.4)."""
