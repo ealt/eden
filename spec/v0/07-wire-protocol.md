@@ -28,21 +28,39 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 
 | Operation | HTTP | Path | Auth |
 |---|---|---|---|
-| `create_task` | `POST` | `/v0/experiments/{E}/tasks` | worker |
+| `create_task` | `POST` | `/v0/experiments/{E}/tasks` | worker (group-gated, see §2.1) |
 | `list_tasks` | `GET`  | `/v0/experiments/{E}/tasks` | either |
 | `read_task` | `GET`  | `/v0/experiments/{E}/tasks/{T}` | either |
 | `read_submission` | `GET`  | `/v0/experiments/{E}/tasks/{T}/submission` | either |
 | `claim` | `POST` | `/v0/experiments/{E}/tasks/{T}/claim` | worker |
 | `submit` | `POST` | `/v0/experiments/{E}/tasks/{T}/submit` | worker |
-| `accept` | `POST` | `/v0/experiments/{E}/tasks/{T}/accept` | worker |
-| `reject` | `POST` | `/v0/experiments/{E}/tasks/{T}/reject` | worker |
+| `accept` | `POST` | `/v0/experiments/{E}/tasks/{T}/accept` | worker (group-gated: `orchestrators`) |
+| `reject` | `POST` | `/v0/experiments/{E}/tasks/{T}/reject` | worker (group-gated: `orchestrators`) |
 | `reclaim` | `POST` | `/v0/experiments/{E}/tasks/{T}/reclaim` | worker |
+| `reassign_task` | `POST` | `/v0/experiments/{E}/tasks/{T}/reassign` | worker (group-gated: `admins`) |
+| `update_dispatch_mode` | `PATCH` | `/v0/experiments/{E}/dispatch_mode` | worker (group-gated: `admins`) |
 
-The mutating task operations are worker-gated: the orchestrator is a registered worker (per the Phase 12a-2 orchestrator-as-role contract) and drives `accept` / `reject` / `reclaim` / `create_task` under its own worker bearer; ideators / executors / evaluators drive `claim` / `submit` / `mark-ready` / `create_variant` under theirs. Future phases MAY narrow specific endpoints to a named group (e.g., an `orchestrator` group), but the v0 binding requires only "any authenticated worker".
+The mutating task operations are worker-gated; some are additionally **group-gated** by the [`03-roles.md`](03-roles.md) §6 orchestrator-role contract and [`02-data-model.md`](02-data-model.md) §7.5 reserved groups:
+
+- `create_task`: caller MUST be in `admins` for `kind="ideation"` or `kind="evaluation"`; in `orchestrators` for `kind="execution"`. The §13.3 dispatcher rejects non-members with 403 `eden://error/forbidden`.
+- `accept` / `reject`: caller MUST be in the `orchestrators` group (the [`04-task-protocol.md`](04-task-protocol.md) §4.3 terminal-transition decision is the orchestrator role's job per [`03-roles.md`](03-roles.md) §6).
+- `reclaim`: caller MUST be a registered worker; the [`04-task-protocol.md`](04-task-protocol.md) §5.1 cause vocabulary distinguishes operator vs. policy reclamation but the binding does not gate on group membership beyond "any registered worker".
+- `reassign_task` / `update_dispatch_mode`: caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2).
+- `claim` / `submit`: caller MUST be a registered worker satisfying the task's `target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5, §4.1); no group gate beyond the target eligibility check.
+
+The `Auth` column's bare `worker` annotation means "any registered worker"; the group-gated entries above narrow that to a specific reserved-group membership check. Future phases MAY introduce additional group-gating without breaking the wire grammar — the dispatcher rejects on the group check identically to how it rejects on the principal class.
 
 ### 2.1 Create
 
 `POST /v0/experiments/{E}/tasks` accepts a JSON request body whose shape matches [`schemas/task.schema.json`](schemas/task.schema.json) with `state == "pending"` and no `claim`. On success the server returns 200 with the created task as the response body (same schema). The composite-commit rules in [`05-event-protocol.md`](05-event-protocol.md) §2.2 apply: creating an `execution` task transitions the referenced idea atomically with the task insert; the server MUST perform both effects in a single transaction.
+
+**Authority (per-kind):**
+
+- `kind == "ideation"`: caller MUST be in the `admins` or `orchestrators` group (operator-driven seed and continuous auto-orchestrator policy both create ideation tasks; the orchestrator-role contract is in [`03-roles.md`](03-roles.md) §6.2).
+- `kind == "execution"`: caller MUST be in the `orchestrators` group. v0 with 12a-2 applied does not define an operator path for `kind == "execution"` creation; deployments that want per-task routing control SHOULD `reassign_task` (§2.7) after the orchestrator creates the task. A future spec lineage that introduces an `intended_executor` hint on ideas will broaden this authority.
+- `kind == "evaluation"`: caller MUST be in the `admins` or `orchestrators` group. The `admins` path enables manual evaluation-dispatch per [`03-roles.md`](03-roles.md) §6.5 when `dispatch_mode.evaluation_dispatch == "manual"`.
+
+A caller outside the authorized group(s) receives 403 `eden://error/forbidden`.
 
 ### 2.2 List and read
 
@@ -64,9 +82,46 @@ Atomicity, idempotency, and content-equivalence rules from [`04-task-protocol.md
 - `POST /v0/experiments/{E}/tasks/{T}/accept` transitions `submitted → completed` per [`04-task-protocol.md`](04-task-protocol.md) §4.3. The request body is empty (the orchestrator has already persisted the submission; the server re-reads it to apply the composite-commit effects).
 - `POST /v0/experiments/{E}/tasks/{T}/reject` transitions `submitted → failed` per [`04-task-protocol.md`](04-task-protocol.md) §4.3. The request body carries a single field `reason` drawn from the closed v0 vocabulary ([`05-event-protocol.md`](05-event-protocol.md) §3.1): `"worker_error"`, `"validation_error"`, or `"policy_limit"`.
 
+**Authority:** caller MUST be in the `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5). The [`04-task-protocol.md`](04-task-protocol.md) §4.3 terminal-transition decision is the orchestrator role's responsibility per [`03-roles.md`](03-roles.md) §6; a caller outside the group receives 403 `eden://error/forbidden`.
+
 ### 2.6 Reclaim
 
 `POST /v0/experiments/{E}/tasks/{T}/reclaim` transitions a `claimed` or (operator-invoked) `submitted` task back to `pending` per [`04-task-protocol.md`](04-task-protocol.md) §5. The request body carries a single field `cause` drawn from the closed v0 vocabulary: `"expired"`, `"operator"`, or `"health_policy"`.
+
+### 2.7 Reassign
+
+`POST /v0/experiments/{E}/tasks/{T}/reassign` updates a task's `Task.target` per [`04-task-protocol.md`](04-task-protocol.md) §6. The request body shape is:
+
+```json
+{"new_target": null | {"kind": "worker"|"group", "id": "<id>"}, "reason": "<string>"}
+```
+
+- `new_target` is the [`02-data-model.md`](02-data-model.md) §3.5 target value to install: `null` for "any registered worker", or a tagged object for worker / group routing.
+- `reason` is a free-form audit string (typical: `"operator"`, `"failed_worker"`, `"misrouted"`); the protocol does not enumerate the set.
+
+On success the server returns 200 with the updated task body. Per [`04-task-protocol.md`](04-task-protocol.md) §6.1, the behavior depends on the task's current state:
+
+- `pending` task: atomic `task.target` update + `task.reassigned` event.
+- `claimed` task: composite atomic commit — clear claim, update target, return to `pending`. Both `task.reclaimed` (with `cause == "operator"`) and `task.reassigned` events fire in one commit ([`05-event-protocol.md`](05-event-protocol.md) §2.2).
+- `submitted` or terminal (`completed` / `failed`): 409 `eden://error/invalid-precondition`.
+
+**Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the `task.reassigned` event's `reassigned_by` field.
+
+### 2.8 Update dispatch mode
+
+`PATCH /v0/experiments/{E}/dispatch_mode` accepts a partial `dispatch_mode` object (any subset of the four keys from [`02-data-model.md`](02-data-model.md) §2.5) and atomically merges it into the experiment's stored `dispatch_mode` per [`04-task-protocol.md`](04-task-protocol.md) §7. The request body shape is the partial object directly (not wrapped):
+
+```json
+{"evaluation_dispatch": "manual"}
+```
+
+Each value MUST be either `"auto"` or `"manual"`. An unrecognized value, or an unrecognized top-level key whose presence the server cannot reasonably ignore, returns 400 `eden://error/bad-request`. Unspecified keys are unchanged.
+
+On success the server returns 200 with the full resulting `dispatch_mode` object as the response body. A successful update emits exactly one `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) whose payload carries the resulting state and the `changed` diff; a no-op patch (every supplied key already matched) MAY emit an event with empty `changed` or skip the event entirely.
+
+**Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §7.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the event's `updated_by` field.
+
+A companion `GET /v0/experiments/{E}/dispatch_mode` MAY be exposed by the binding for read access; v0 does not require it (the field is reachable as part of `read_experiment_config` once that op exists; for now, the event log carries the authoritative history).
 
 ## 3. Idea operations
 
@@ -87,9 +142,11 @@ Request and response bodies match [`schemas/idea.schema.json`](schemas/idea.sche
 | `list_variants` | `GET` | `/v0/experiments/{E}/variants` | either |
 | `read_variant` | `GET` | `/v0/experiments/{E}/variants/{T}` | either |
 | `declare_variant_evaluation_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-evaluation-error` | worker |
-| `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` | worker |
+| `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` | worker (group-gated: `orchestrators`) |
 
 `integrate_variant` binds [`06-integrator.md`](06-integrator.md) §3.4 and carries additional idempotency rules (§5 below); the other endpoints are transport-only bindings of their [`08-storage.md`](08-storage.md) §1.7 operations.
+
+**Authority on `integrate_variant`:** caller MUST be in the `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5). The integration decision is the orchestrator role's job per [`03-roles.md`](03-roles.md) §6.2 decision 4; a caller outside the group receives 403 `eden://error/forbidden`.
 
 ## 5. `integrate_variant` — same-value idempotency
 
@@ -285,19 +342,22 @@ The §6.1 worker-id grammar excludes `:` so that the bearer parser can safely sp
 
 ### 13.3 Authorization
 
-Every `/v0/` endpoint MUST be classified as **admin-gated**, **worker-gated**, or **either**. The classification appears in the `Auth` column of the per-section endpoint tables (§§2–4, §6, §7, §8). The wire dispatcher:
+Every `/v0/` endpoint MUST be classified as **admin-gated**, **worker-gated**, or **either**. Worker-gated endpoints MAY additionally be **group-gated** by membership in a [`02-data-model.md`](02-data-model.md) §7.5 reserved group. The classification (principal class + optional group-gate) appears in the `Auth` column of the per-section endpoint tables (§§2–4, §6, §7, §8) and in the per-endpoint authority paragraphs. The wire dispatcher:
 
 - Accepts the request only if the authenticated principal class matches the endpoint class. `either` admits both classes; `worker` rejects admin bearers; `admin` rejects worker bearers.
-- Returns `eden://error/forbidden` (HTTP 403) for principal-class mismatches.
+- For group-gated worker endpoints, additionally checks that the authenticated `worker_id` is a transitive member of the named group via `Store.resolve_worker_in_group` ([`02-data-model.md`](02-data-model.md) §7.2). The membership check is atomic with the rest of the request handler.
+- Returns `eden://error/forbidden` (HTTP 403) for principal-class mismatches and for group-membership failures.
 - Forwards the authenticated `worker_id` to the Store on `claim` / `submit` so that §3 / §4 enforcement runs against the verified identity, not against a request-body field.
 
 Summary of the v0 classifications:
 
 - **admin-gated** — registry mutations: `register_worker`, `reissue_credential`, `register_group`, `add_to_group` / `remove_from_group` / `delete_group`.
-- **worker-gated** — every wire mutation NOT in the registry, plus the `whoami` probe: `create_task`, `claim`, `submit`, `accept`, `reject`, `reclaim`, `create_idea`, `mark_idea_ready`, `create_variant`, `declare_variant_evaluation_error`, `integrate_variant`, `verify_worker_credential`. Per [`02-data-model.md`](02-data-model.md) §6, the orchestrator is itself a registered worker; the v0 binding does not narrow these endpoints to a specific worker or group (Phase 12a-2 may add a group-membership refinement).
+- **worker-gated, no group-gate** — `claim`, `submit`, `reclaim`, `create_idea`, `mark_idea_ready`, `create_variant`, `declare_variant_evaluation_error`, and the `whoami` probe (`verify_worker_credential`).
+- **worker-gated, `orchestrators` group required** — `accept`, `reject`, `integrate_variant`, and `create_task(kind="execution")` per [`03-roles.md`](03-roles.md) §6.
+- **worker-gated, `admins` group required** — `reassign_task`, `update_dispatch_mode`, `create_task(kind="ideation")`, `create_task(kind="evaluation")` ([`02-data-model.md`](02-data-model.md) §7.5; [`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2). Note that `create_task(kind="ideation")` and `create_task(kind="evaluation")` admit `orchestrators` in addition to `admins` per the per-kind authority in §2.1.
 - **either** — every read endpoint: `list_tasks` / `read_task` / `read_submission`, `list_ideas` / `read_idea`, `list_variants` / `read_variant`, `list_workers` / `read_worker`, `list_groups` / `read_group`, `read_range` / `subscribe`.
 
-The [`04-task-protocol.md`](04-task-protocol.md) §3.3 requirement that the binding verify the credential before invoking the Store is satisfied by this dispatcher.
+The [`04-task-protocol.md`](04-task-protocol.md) §3.3 requirement that the binding verify the credential before invoking the Store is satisfied by this dispatcher. The group-gate adds a [`03-roles.md`](03-roles.md) §6 + [`02-data-model.md`](02-data-model.md) §7.5 layer on top: a worker may be authenticated but still 403 on an `accept` if it is not a member of `orchestrators`.
 
 ### 13.4 Credential lifecycle
 

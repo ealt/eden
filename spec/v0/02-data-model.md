@@ -68,12 +68,33 @@ The expression language is implementation-defined but MUST treat metric field na
 |---|---|---|---|
 | `convergence_window` | integer ≥ 1 | (none) | Terminate if the objective has not improved in this many variants. |
 | `target_condition` | string | (none) | A condition over metrics; when satisfied, the experiment terminates early. |
+| `dispatch_mode` | object (§2.5) | every key `"auto"` | Per-decision-type gate on whether the orchestrator role ([`03-roles.md`](03-roles.md) §6) runs each decision automatically or leaves it for an external caller. |
 
 ### 2.4 Additional top-level fields
 
 Implementations MAY define additional top-level fields for role binding and implementation-specific tuning. The experiment-config schema does not restrict unknown top-level fields; a conforming orchestrator MUST NOT reject a config solely because it carries fields this chapter does not define. This forward-compatibility rule is intentional: it lets role-binding semantics land in [`03-roles.md`](03-roles.md) without breaking previously-valid configs.
 
 An implementation SHOULD document which additional top-level fields it consumes.
+
+### 2.5 Dispatch mode
+
+`dispatch_mode` is an object whose keys are the orchestrator decision types defined in [`03-roles.md`](03-roles.md) §6.2 and whose values are one of:
+
+- `"auto"` — the orchestrator role ([`03-roles.md`](03-roles.md) §6.1) MAY execute this decision automatically.
+- `"manual"` — the orchestrator role MUST NOT execute this decision; the decision is reserved for an external authorized caller (typically an operator via the wire ops) per [`03-roles.md`](03-roles.md) §6.5.
+
+The four keys are fixed in v0:
+
+| Key | Decision (per [`03-roles.md`](03-roles.md) §6.2) |
+|---|---|
+| `ideation_creation` | Create new `kind=="ideation"` tasks per a deployment policy. |
+| `execution_dispatch` | Create a `kind=="execution"` task for each `ready` idea with no live execution task. |
+| `evaluation_dispatch` | Create a `kind=="evaluation"` task for each `starting` variant with `commit_sha` set and no live evaluation task. |
+| `integration` | Invoke the integrator ([`06-integrator.md`](06-integrator.md)) for each `success` variant with `variant_commit_sha` unset. |
+
+Every key defaults to `"auto"`. A configuration that omits `dispatch_mode` is equivalent to one with all four keys set to `"auto"` (backward-compatible with pre-12a-2 configs). A configuration that supplies `dispatch_mode` with a subset of the keys is equivalent to one with the unspecified keys defaulted to `"auto"`. Additional decision-type keys MAY be introduced in later spec lineages; a conforming implementation MUST accept (and MAY ignore) keys it does not recognize.
+
+`dispatch_mode` is mutable during an experiment's lifetime: [`04-task-protocol.md`](04-task-protocol.md) §7 defines the `update_dispatch_mode` operation and the `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4).
 
 ## 3. Task
 
@@ -173,7 +194,7 @@ An idea is the ideator's output.
 | `priority` | yes | number | Ordering hint; higher dispatches earlier. |
 | `parent_commits` | yes | array of SHA | One or more commit SHAs the idea is based on. |
 | `artifacts_uri` | yes | string (URI) | Where the ideator's output documents live. |
-| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
+| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §9). |
 | `created_at` | yes | timestamp | When the idea was created. |
 | `created_by` | no | string (worker_id) | The ideator's `worker_id`. Written at idea-creation time by the ideator's host and preserved across the idea's terminal state. |
 
@@ -258,7 +279,18 @@ The set of group definitions in an experiment forms a directed graph whose edges
 
 ### 7.4 No default groups
 
-The protocol does not define any well-known group names (`humans`, `agents`, etc.). A deployment that wants such groups MUST register them explicitly. This keeps the protocol policy-free.
+The protocol does not define any default-membership groups (`humans`, `agents`, etc.). A deployment that wants such groups MUST register them explicitly. This keeps the protocol policy-free.
+
+### 7.5 Reserved group identifiers
+
+Some group names carry protocol-defined semantics that pin authority on specific operations ([`07-wire-protocol.md`](07-wire-protocol.md) §13.3, [`03-roles.md`](03-roles.md) §6). A conforming deployment MUST treat the following reserved names as the protocol contract specifies them; the names MUST NOT be repurposed for operator-defined groups with unrelated semantics:
+
+| Name | Protocol semantics |
+|---|---|
+| `admins` | Members hold authority over reassignment ([`04-task-protocol.md`](04-task-protocol.md) §6), dispatch-mode updates ([`04-task-protocol.md`](04-task-protocol.md) §7), and operator-driven task creation per [`03-roles.md`](03-roles.md) §6.5. A deployment SHOULD seed at least one worker into this group at experiment creation; an empty `admins` group makes the affected ops uncallable. |
+| `orchestrators` | Members are the auto-orchestrator instances participating in the role contract ([`03-roles.md`](03-roles.md) §6). The auto-orchestrator's own `worker_id` is in this group; a deployment running zero auto-orchestrators MAY leave it empty. |
+
+The protocol reserves the **names**, not the **membership**: a deployment registers each reserved group explicitly via `register_group` (the registry treats reserved names like any other group identifier — `add_to_group` / `remove_from_group` / `delete_group` all apply). The reservation prevents an operator from registering, say, a group named `admins` that means something different, then being surprised when authority enforcement uses the name as documented above. The §3.5 `Task.target` resolver and the §7.2 transitive-membership walk treat reserved-name groups exactly like any other group.
 
 ## 8. Evaluation schema
 

@@ -96,7 +96,7 @@ In addition to the §3.4 state precondition, a `claim(task_id, worker_id)` opera
    A claim that fails this step MUST be rejected with `WorkerNotEligible`.
 4. The atomic claim-write per §3.1.
 
-`WorkerNotRegistered` and `WorkerNotEligible` are typed errors at the Store layer ([§10](#10-worker-eligibility-errors)). The binding maps them to HTTP statuses per [`07-wire-protocol.md`](07-wire-protocol.md).
+`WorkerNotRegistered` and `WorkerNotEligible` are typed errors at the Store layer ([§12](#12-worker-eligibility-errors)). The binding maps them to HTTP statuses per [`07-wire-protocol.md`](07-wire-protocol.md).
 
 ## 4. Submit
 
@@ -185,21 +185,71 @@ When a reclaimed task had created role-owned objects during its prior execution,
 - **Ideation-task reclamation.** If the prior execution persisted ideas in `"drafting"` state, those ideas remain in `"drafting"` and are not dispatched. Implementations MAY expose them to operators for inspection or removal; the task protocol does not mandate automatic cleanup.
 - **Evaluation-task reclamation.** The variant the task referenced is unchanged by reclamation (it was produced by the executor, not the evaluator).
 
-## 6. Ordering and concurrency
+## 6. Reassignment
 
-### 6.1 Per-task serialization
+Reassignment is the orchestrator-/operator-driven counterpart to §5 reclamation: where reclamation invalidates a claim and returns the task to `pending` without changing its routing intent, reassignment **updates the task's `target`** ([`02-data-model.md`](02-data-model.md) §3.5) while ensuring no in-flight worker can finish a stale claim against the new routing.
+
+### 6.1 The `reassign_task` operation
+
+`reassign_task(task_id, new_target, *, reason)` accepts:
+
+- The `task_id`.
+- A new `Task.target` value (`null` for "any worker", a worker target, or a group target — same shape as create-time targeting per [`02-data-model.md`](02-data-model.md) §3.5).
+- A free-form `reason` string for audit (typical values: `"operator"`, `"failed_worker"`, `"misrouted"`; not enumerated by the protocol).
+
+The behavior depends on the task's current state:
+
+- **`pending`** — atomic update of `task.target`; the task remains `pending`. Exactly one `task.reassigned` event ([`05-event-protocol.md`](05-event-protocol.md) §3.1) fires with the new target and `reason` recorded.
+- **`claimed`** — composite commit equivalent to `reclaim(reason="operator") + target update`. The claim is cleared, the task returns to `pending`, the target is updated. Two events fire atomically: a `task.reclaimed` event with `cause == "operator"` ([`05-event-protocol.md`](05-event-protocol.md) §3.1) AND a `task.reassigned` event with the new target. Subscribers MUST observe both events together with the task's `pending` + new-target state; partial observability is forbidden by [`05-event-protocol.md`](05-event-protocol.md) §2.2.
+- **`submitted`, `completed`, `failed`** — rejected with `InvalidPrecondition` (wire mapping: 409 `eden://error/invalid-precondition`). A submitted task has produced an artifact whose attribution the orchestrator is in the middle of finalizing; reassignment would race that finalization. Terminal tasks are immutable per §4.4.
+
+The new target is validated like any other `Task.target`: it MUST satisfy the §3.5 schema (kind / id grammar); `register_worker` / `register_group` referenced by it MAY be absent at reassignment time (resolves to membership=false at the next claim attempt).
+
+### 6.2 Authority
+
+`reassign_task` is restricted to callers in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). The wire binding enforces this before invoking the Store; the Store assumes authority has been enforced upstream (§3.3 binding-layer-authentication discipline).
+
+The reassigning caller's identity is recorded in the `task.reassigned` event payload (`reassigned_by`) for audit. The protocol does not require the caller to be in the new target's worker / group; reassignment is an authority operation, not a self-target.
+
+### 6.3 Effect on stale claims
+
+The claimed-task case (`reclaim + target update`) means a worker holding the prior claim observes its claim cleared per §5.3. Any subsequent submit attempt by that worker fails the §4.1 step-1 `NotClaimed` precondition; the worker's partial result is discarded per §5.2. The post-reassignment task is freshly claimable by workers satisfying the new target.
+
+## 7. Dispatch mode
+
+The orchestrator role contract ([`03-roles.md`](03-roles.md) §6) is gated per-decision-type by the experiment's `dispatch_mode` field ([`02-data-model.md`](02-data-model.md) §2.5). This section defines the task-store operation that updates that field.
+
+### 7.1 The `update_dispatch_mode` operation
+
+`update_dispatch_mode(experiment_id, patch)` accepts a partial `dispatch_mode` object (any subset of the four keys defined in [`02-data-model.md`](02-data-model.md) §2.5) and atomically merges it into the experiment's stored `dispatch_mode`. Unspecified keys are unchanged. Each value in the patch MUST be either `"auto"` or `"manual"`; an unrecognized value MUST be rejected (`BadRequest`; wire mapping: 400 `eden://error/bad-request`).
+
+A successful update emits exactly one `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) whose payload records the **resulting** `dispatch_mode` object plus a `changed` object listing the keys whose values flipped. A no-op patch (every supplied key already matches the stored value) MUST still be accepted — it MAY emit an event whose `changed` is empty, or MAY skip the event entirely (implementation-defined; the §1.3 atomicity requirement applies only to state changes, and a no-op is not a state change).
+
+### 7.2 Authority
+
+`update_dispatch_mode` is restricted to callers in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). The wire binding enforces this; the Store assumes authority has been enforced upstream.
+
+### 7.3 Effect on in-flight orchestrator decisions
+
+Flipping a `dispatch_mode.<decision>` key from `"auto"` to `"manual"` does **not** abort decisions already in flight (e.g., a `kind=="execution"` task already created remains valid). Subsequent iterations of any orchestrator instance MUST observe the new value and refrain from running the gated decision per [`03-roles.md`](03-roles.md) §6.1. Flipping back from `"manual"` to `"auto"` resumes orchestrator activity at the next iteration.
+
+The `experiment.dispatch_mode_changed` event lets subscribers (UI, dashboards, audit) observe the change without polling. Multi-instance orchestrator deployments observe the event through their own event-log polling; the protocol does not require push-based reconfiguration.
+
+## 8. Ordering and concurrency
+
+### 8.1 Per-task serialization
 
 All transitions on a single task MUST be serialized: the observable history of a task is a total order. A conforming task store MUST NOT expose a state to readers that has not yet been accompanied by its event.
 
-### 6.2 Cross-task concurrency
+### 8.2 Cross-task concurrency
 
 Distinct tasks MAY progress concurrently. The protocol imposes no global ordering on transitions across tasks beyond the causal order preserved by the event log ([`02-data-model.md`](02-data-model.md) §4.3, [`05-event-protocol.md`](05-event-protocol.md)).
 
-### 6.3 Observability
+### 8.3 Observability
 
 A subscriber that reads the event log MUST be able to reconstruct every task's state-machine history exactly. Implementations MAY provide faster paths (direct task reads, push notifications) but MUST NOT let those paths expose states that the event log does not record.
 
-## 7. Idea and variant lifecycle interactions
+## 9. Idea and variant lifecycle interactions
 
 The task state machine is not the only lifecycle in the system. Ideas ([`02-data-model.md`](02-data-model.md) §5.1) and variants ([`02-data-model.md`](02-data-model.md) §9) have their own state fields. The task protocol interacts with these lifecycles at the following points:
 
@@ -207,7 +257,7 @@ The task state machine is not the only lifecycle in the system. Ideas ([`02-data
 - **Execution-task submission.** A successful execution-task submission requires a variant created and advanced by the executor ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition of the execution task (whether `submitted → completed` or `submitted → failed`), the orchestrator MUST transition the referenced idea's `state` from `"dispatched"` to `"completed"`, atomically with the task's terminal event. The idea's `"completed"` state therefore means *"the executor's attempt on this idea has finished"*, not *"the attempt succeeded"*; the variant's `status` field records the outcome. An idea in `"dispatched"` always names a non-terminal execution task; no idea remains in `"dispatched"` after its execution task has reached a terminal state.
 - **Evaluation-task submission.** A successful evaluation-task submission populates the variant's `evaluation`, `completed_at`, and (per worker-declared status) the variant's `status`. The integrator's subsequent integration of the variant into the canonical lineage is out of this chapter's scope ([`06-integrator.md`](06-integrator.md)).
 
-## 8. Implementation latitude
+## 10. Implementation latitude
 
 The protocol leaves to implementations:
 
@@ -217,20 +267,23 @@ The protocol leaves to implementations:
 - Whether retries are automatic (new task on reclamation) or operator-driven.
 - Whether `submitted → completed` is fully synchronous with submit or a subsequent orchestrator step, as long as the observable state machine above is preserved.
 - The credential scheme used by the binding to authenticate the calling actor (§3.3); the §3 / §4 contracts only require that the binding produce a verified `worker_id` for the Store call.
+- The ideation-creation policy callable (§6 of [`03-roles.md`](03-roles.md)) and the mechanism for invoking it.
 
 What the protocol does **not** leave to implementations:
 
 - The set of states and the permitted transitions among them (§1).
 - The atomicity of claim (§3.1) and the §3.5 target-eligibility check.
-- The atomic claim-match on submit (§4.1 step 2) and its error vocabulary (§10).
+- The atomic claim-match on submit (§4.1 step 2) and its error vocabulary (§12).
 - The idempotency rule for resubmission (§4.2).
-- The requirement that every state change be accompanied by an atomic event (§1.3) and that the event log is the normative observability channel (§6.3).
+- The orchestrator-role idempotency classes for the four decision types ([`03-roles.md`](03-roles.md) §6.4).
+- The atomicity of `reassign_task` on claimed tasks (§6.1) and the authority requirement (§6.2).
+- The requirement that every state change be accompanied by an atomic event (§1.3) and that the event log is the normative observability channel (§8.3).
 
-## 9. Worker registry preconditions
+## 11. Worker registry preconditions
 
 Before a worker can claim or submit, it MUST be registered in the experiment's worker registry ([`02-data-model.md`](02-data-model.md) §6). `Store.claim` enforces this at §3.5 step 2; `Store.submit` likewise rejects calls whose `worker_id` is not registered (the binding's authentication step typically catches this earlier, but the Store MUST defend against in-process callers that bypass the binding).
 
-## 10. Worker eligibility errors
+## 12. Worker eligibility errors
 
 The Store-layer typed errors raised on §3 / §4 enforcement form a closed vocabulary. Wire bindings map them to transport-specific status codes ([`07-wire-protocol.md`](07-wire-protocol.md) §7).
 
@@ -243,3 +296,4 @@ The Store-layer typed errors raised on §3 / §4 enforcement form a closed vocab
 | `ReservedIdentifier` | `register_worker`, `register_group` | The supplied id is one of the reserved values (`admin`, `system`, `internal`) per [`02-data-model.md`](02-data-model.md) §6.1's reservation list. Distinct from grammar-rejection: a syntactically invalid id surfaces as `InvalidPrecondition` (§6.1 grammar; chapter 07 §6.1 maps that to 400 `eden://error/bad-request`). |
 | `WorkerAlreadyRegistered` | `register_worker` | A different actor attempted to register a `worker_id` whose record already exists. (Idempotent re-registration by the same caller is a non-error per [`02-data-model.md`](02-data-model.md) §6.3.) |
 | `CycleDetected` | `register_group`, group-mutation ops | The mutation would introduce a cycle in the group DAG ([`02-data-model.md`](02-data-model.md) §7.3). |
+| `InvalidPrecondition` | `reassign_task` (§6), `update_dispatch_mode` (§7) | Reassignment of a `submitted` or terminal task is rejected; an unrecognized `dispatch_mode` value is rejected. |

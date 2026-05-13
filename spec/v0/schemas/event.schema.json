@@ -130,6 +130,57 @@
       }
     },
     {
+      "if": {"properties": {"type": {"const": "task.reassigned"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["task_id", "new_target", "reason", "reassigned_by"],
+            "properties": {
+              "task_id": {"$ref": "#/$defs/taskId"},
+              "new_target": {
+                "oneOf": [
+                  {"type": "null"},
+                  {
+                    "type": "object",
+                    "required": ["kind", "id"],
+                    "properties": {
+                      "kind": {"type": "string", "enum": ["worker", "group"]},
+                      "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+                    }
+                  }
+                ]
+              },
+              "reason": {"type": "string", "minLength": 1},
+              "reassigned_by": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "experiment.dispatch_mode_changed"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["dispatch_mode", "changed", "updated_by"],
+            "properties": {
+              "dispatch_mode": {
+                "type": "object",
+                "additionalProperties": {"type": "string", "enum": ["auto", "manual"]}
+              },
+              "changed": {
+                "type": "object",
+                "additionalProperties": {"type": "string", "enum": ["auto", "manual"]}
+              },
+              "updated_by": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+            }
+          }
+        }
+      }
+    },
+    {
       "if": {"properties": {"type": {"const": "idea.drafted"}}, "required": ["type"]},
       "then": {
         "properties": {

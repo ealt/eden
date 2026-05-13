@@ -47,7 +47,7 @@ Once a task is `completed` or `failed` ([`04-task-protocol.md`](04-task-protocol
 
 ### 1.6 Per-task serialization
 
-All mutating operations on a single task MUST be serialized: the observable history of a task is a total order ([`04-task-protocol.md`](04-task-protocol.md) §6.1). A conforming task store MUST NOT expose a state that has not yet been accompanied by its event ([§6](#6-transactional-guarantees)).
+All mutating operations on a single task MUST be serialized: the observable history of a task is a total order ([`04-task-protocol.md`](04-task-protocol.md) §8.1). A conforming task store MUST NOT expose a state that has not yet been accompanied by its event ([§6](#6-transactional-guarantees)).
 
 ### 1.7 Idea and variant persistence
 
