@@ -130,13 +130,18 @@ def test_list_groups_sorted(make_store: Callable[..., Store]) -> None:
 
 def test_resolve_direct_member(make_store: Callable[..., Store]) -> None:
     store = make_store(seed_workers=False)
+    store.register_worker("eric")
     store.register_group("humans", members=["eric"])
     assert store.resolve_worker_in_group("eric", "humans") is True
+    # alice is unregistered → §7.1 resolves to False.
     assert store.resolve_worker_in_group("alice", "humans") is False
 
 
 def test_resolve_transitive_member(make_store: Callable[..., Store]) -> None:
     store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    store.register_worker("alice")
+    store.register_worker("claude")
     store.register_group("team-a", members=["eric", "alice"])
     store.register_group("everyone", members=["team-a", "agents"])
     store.register_group("agents", members=["claude"])
@@ -144,6 +149,8 @@ def test_resolve_transitive_member(make_store: Callable[..., Store]) -> None:
     assert store.resolve_worker_in_group("eric", "everyone") is True
     # claude is in agents, which is in everyone.
     assert store.resolve_worker_in_group("claude", "everyone") is True
+    # ghost is unregistered → §7.1 False (even though "ghost"
+    # doesn't appear in any group's members either).
     assert store.resolve_worker_in_group("ghost", "everyone") is False
 
 
@@ -167,6 +174,7 @@ def test_diamond_membership_no_false_positive(
 ) -> None:
     """Diamond shape (two groups sharing a worker) MUST NOT trigger cycle detection."""
     store = make_store(seed_workers=False)
+    store.register_worker("eric")
     store.register_group("team-a", members=["eric"])
     store.register_group("team-b", members=["eric"])
     # Adding both to a parent group is a diamond, not a cycle.
@@ -242,3 +250,30 @@ def test_register_group_rejects_id_already_used_by_worker(
     store.register_worker("eric")
     with pytest.raises(AlreadyExists):
         store.register_group("eric", members=[])
+
+
+def test_resolve_unregistered_worker_returns_false(
+    make_store: Callable[..., Store],
+) -> None:
+    """Codex round-6 R6-B — chapter 02 §7.1 "non-existent worker resolves to false".
+
+    Even if the worker_id is literally in g.members, an unregistered
+    candidate MUST NOT be reported as a member: the §3.5 RBAC check
+    refuses unregistered claimants at claim time anyway, and §7.1's
+    "reference to a non-existent worker resolves to false" wording
+    pins the resolver's view to match.
+    """
+    store = make_store(seed_workers=False)
+    store.register_group("humans", members=["ghost"])
+    assert store.resolve_worker_in_group("ghost", "humans") is False
+
+
+def test_resolve_registered_worker_in_dangling_group_member_still_works(
+    make_store: Callable[..., Store],
+) -> None:
+    """§7.1 — a dangling group reference in members is skipped; direct hit still resolves."""
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    # ghost-group doesn't exist; eric is a direct member alongside it.
+    store.register_group("humans", members=["eric", "ghost-group"])
+    assert store.resolve_worker_in_group("eric", "humans") is True

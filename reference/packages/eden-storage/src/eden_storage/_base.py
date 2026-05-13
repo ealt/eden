@@ -1175,8 +1175,16 @@ class _StoreBase:
             )
         )
         if variant_for_error is not None:
+            # §9: executed_by records the worker whose execution-task
+            # submission produced the variant — and is preserved on
+            # the error path too. The accept and reject branches both
+            # stamp it from task.submitted_by (the canonical claimant
+            # identity set at §4.1 submit time).
             tx.variants[variant_for_error.variant_id] = _validated_update(
-                variant_for_error, status="error", completed_at=now
+                variant_for_error,
+                status="error",
+                completed_at=now,
+                executed_by=task.submitted_by,
             )
             tx.events.append(
                 self._event("variant.errored", {"variant_id": variant_for_error.variant_id})
@@ -1257,7 +1265,16 @@ class _StoreBase:
                 raise IllegalTransition(
                     f"cannot error variant {variant.variant_id!r} from status {variant.status!r}"
                 )
-            update_kwargs: dict[str, Any] = {"status": "error", "completed_at": now}
+            # §9: evaluated_by records the evaluator whose submission
+            # produced the result — and is preserved on the error
+            # path too. The accept and reject branches both stamp it
+            # from task.submitted_by (the canonical claimant identity
+            # set at §4.1 submit time).
+            update_kwargs: dict[str, Any] = {
+                "status": "error",
+                "completed_at": now,
+                "evaluated_by": task.submitted_by,
+            }
             if reason != "validation_error":
                 if submission.evaluation is not None:
                     self._validate_evaluation(submission.evaluation)
@@ -1753,10 +1770,19 @@ class _StoreBase:
         ``members``, or appears in any group that is itself a member
         (transitive closure). Cycles cannot exist (§7.3 forbids them at
         write time), so a topo-walk over the group DAG is safe.
-        Dangling references — a member id naming a non-existent
-        worker / group — resolve to ``False``.
+
+        Per §7.1 "a reference to a non-existent worker / group
+        resolves to membership=false", short-circuit when the
+        candidate ``worker_id`` is not itself a registered worker:
+        an unregistered name in some group's ``members`` does NOT
+        make that name a member, even though the literal §7.2 first
+        bullet would otherwise admit it. Dangling group references
+        in ``members`` are likewise skipped (the walk just doesn't
+        descend through them).
         """
         with self._atomic_operation():
+            if self._get_worker(worker_id) is None:
+                return False
             visited: set[str] = set()
             stack: list[str] = [group_id]
             while stack:

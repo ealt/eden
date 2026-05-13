@@ -609,13 +609,20 @@ class StoreClient:
         defensively so a server that violated §7.3 cannot wedge the
         client.
 
-        A non-existent group along the walk resolves to membership=false
-        per §7.1 (and is caught explicitly so the walk continues —
-        legitimate dangling references in a partially-populated
-        registry must not abort the search). Auth failures, transport
-        errors, and other unexpected exceptions propagate so callers
-        can distinguish "we don't know" from "confirmed not a member".
+        Per §7.1 "a reference to a non-existent worker / group
+        resolves to membership=false": short-circuit if the candidate
+        ``worker_id`` is not itself a registered worker. A
+        non-existent group along the walk is caught explicitly so
+        the walk continues (legitimate dangling references must not
+        abort the search). Auth failures, transport errors, and
+        other unexpected exceptions propagate so callers can
+        distinguish "we don't know" from "confirmed not a member".
         """
+        # §7.1: unregistered candidate cannot be a member.
+        try:
+            self.read_worker(worker_id)
+        except NotFound:
+            return False
         visited: set[str] = set()
         stack: list[str] = [group_id]
         while stack:

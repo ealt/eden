@@ -321,3 +321,67 @@ class TestPlanSubmissionNoCompositeIdeaEvent:
         # ideation-task terminal transitions aren't in the composite list;
         # the only event is task.completed.
         assert types[-1] == "task.completed"
+
+
+class TestExecuteRejectAttribution:
+    """Codex round-6 R6-A — executed_by survives the reject path.
+
+    Spec citation: chapter 02 §9. The accept path was already
+    stamping executed_by atomically with the variant's status
+    transition out of starting; the reject path (status=error)
+    landed pre-round-6 without it. Verified via the composite
+    commit on `_reject_execution`'s error branch.
+    """
+
+    def test_reject_with_error_variant_stamps_executed_by(
+        self, make_store: Callable[..., Store]
+    ) -> None:
+        store = make_store()
+        _ready_idea(store, "p1")
+        store.create_execution_task("t-exec", "p1")
+        claim = store.claim("t-exec", "executor-w")
+        _starting_variant(store, "variant-1", "p1")
+        store.submit(
+            "t-exec",
+            claim.worker_id,
+            VariantSubmission(status="error", variant_id="variant-1"),
+        )
+        store.reject("t-exec", "worker_error")
+        variant = store.read_variant("variant-1")
+        assert variant.status == "error"
+        assert variant.executed_by == "executor-w"
+
+
+class TestEvaluateRejectAttribution:
+    """Codex round-6 R6-A — evaluated_by survives the reject path."""
+
+    def _advance_to_variant_with_commit(self, store: Store) -> None:
+        _ready_idea(store, "p1")
+        store.create_execution_task("t-exec", "p1")
+        claim = store.claim("t-exec", "executor-w")
+        _starting_variant(store, "variant-1", "p1")
+        store.submit(
+            "t-exec",
+            claim.worker_id,
+            VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
+        )
+        store.accept("t-exec")
+
+    def test_reject_with_error_evaluation_stamps_evaluated_by(
+        self, make_store: Callable[..., Store]
+    ) -> None:
+        store = make_store()
+        self._advance_to_variant_with_commit(store)
+        store.create_evaluation_task("t-eval", "variant-1")
+        claim = store.claim("t-eval", "evaluator-w")
+        store.submit(
+            "t-eval",
+            claim.worker_id,
+            EvaluationSubmission(
+                status="error", variant_id="variant-1", evaluation={"score": 0.1}
+            ),
+        )
+        store.reject("t-eval", "worker_error")
+        variant = store.read_variant("variant-1")
+        assert variant.status == "error"
+        assert variant.evaluated_by == "evaluator-w"
