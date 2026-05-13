@@ -49,7 +49,7 @@ from eden_storage.submissions import (
     VariantSubmission,
 )
 
-from .errors import Unauthorized, raise_for_envelope
+from .errors import raise_for_envelope
 
 __all__ = ["IndeterminateIntegration", "StoreClient"]
 
@@ -517,27 +517,34 @@ class StoreClient:
         contract over the wire. The §13 verifier is exposed as
         ``GET /whoami``: an authenticated probe that returns the
         bearer's principal worker_id on success and 401
-        ``eden://error/unauthorized`` on a bad credential. This
-        method constructs a one-shot client with the candidate
-        bearer, issues the probe, and returns ``True`` only when
-        the returned worker_id equals ``worker_id`` (defends against
-        the §6.7 "wrong worker_id returned" recovery branch).
+        ``eden://error/unauthorized`` on a bad credential. The probe
+        is issued directly through this client's configured transport
+        (so an injected ``httpx.Client`` — mock transport, TLS
+        config, proxy, etc. — applies to the verify call too); only
+        the Authorization header is swapped for the candidate bearer
+        on this single request. Returns ``True`` only when the
+        returned worker_id equals ``worker_id`` (defends against the
+        §6.7 "wrong worker_id returned" recovery branch).
         """
         candidate_bearer = f"{worker_id}:{registration_token}"
-        probe = StoreClient(
-            base_url=self._base_url,
-            experiment_id=self._experiment_id,
-            bearer=candidate_bearer,
-            timeout=self._timeout,
-        )
+        headers = {
+            **self._headers,
+            "Authorization": f"Bearer {candidate_bearer}",
+        }
         try:
-            try:
-                returned = probe.whoami()
-            except Unauthorized:
-                return False
-            return returned == worker_id
-        finally:
-            probe.close()
+            resp = self._client.request(
+                "GET", f"{self._base}/whoami", headers=headers
+            )
+        except Exception:  # noqa: BLE001 — transport failure → not authenticated
+            return False
+        if resp.status_code == 401:
+            return False
+        try:
+            resp.raise_for_status()
+            returned = resp.json().get("worker_id")
+        except Exception:  # noqa: BLE001
+            return False
+        return returned == worker_id
 
     def whoami(self) -> str:
         """Return the ``worker_id`` the bearer authenticates as (§6.4)."""

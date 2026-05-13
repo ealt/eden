@@ -44,8 +44,8 @@ The v1 scenario groups, with their primary spec citations:
 | Group | Scope | Spec citations |
 |---|---|---|
 | Task lifecycle | Every legal/illegal transition. | [`04-task-protocol.md`](04-task-protocol.md) §1, §2, §3, §4, §5 |
-| Worker registration | Per-experiment registry; idempotent re-registration; grammar / reserved-identifier rejection. | [`02-data-model.md`](02-data-model.md) §6 |
-| Group resolution | Direct + transitive membership; cycle rejection; reserved-identifier rejection. | [`02-data-model.md`](02-data-model.md) §6.1, §7.2, §7.3 |
+| Worker registration | Per-experiment registry; idempotent re-registration; grammar / reserved-identifier rejection; disjoint worker/group namespaces. | [`02-data-model.md`](02-data-model.md) §6, §7.1 |
+| Group resolution | Direct + transitive membership; cycle rejection; reserved-identifier rejection; disjoint worker/group namespaces. | [`02-data-model.md`](02-data-model.md) §6.1, §7.1, §7.2, §7.3 |
 | Claim ownership | Identity-keyed claim record; no-reclaim-while-claimed; submit-claimant match; claim cleared on reclaim. | [`02-data-model.md`](02-data-model.md) §3.4; [`04-task-protocol.md`](04-task-protocol.md) §3, §4.1, §4.2, §5 |
 | Claim eligibility | Claim-time ladder — registration check + target eligibility (null / worker / group); `Task.target` round-trips through create / read / list. | [`02-data-model.md`](02-data-model.md) §3.5; [`04-task-protocol.md`](04-task-protocol.md) §3.5 |
 | Worker auth | Cross-application claim — same `worker_id` across distinct clients shares ownership; mismatched claimant rejected. Auth-enabled scenarios additionally cover the chapter-07 bearer middleware: missing/malformed bearer → 401; admin / worker bearer on the wrong endpoint class → 403; `/whoami` returns the authenticated worker_id; reissue invalidates the prior credential; the binding stamps `created_by` on `create_task` / `create_idea` from the authenticated principal. | [`02-data-model.md`](02-data-model.md) §3.1, §5.1; [`04-task-protocol.md`](04-task-protocol.md) §3.3, §4.1; [`07-wire-protocol.md`](07-wire-protocol.md) §6.4, §13, §13.3, §13.4 |

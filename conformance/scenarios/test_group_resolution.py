@@ -115,3 +115,22 @@ def test_register_group_rejects_reserved_identifier(wire_client: WireClient) -> 
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/reserved-identifier"
+
+
+def test_register_group_rejects_id_already_used_by_worker(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/02-data-model.md §7.1 — worker / group namespaces MUST be disjoint.
+
+    Symmetric to the worker-side test in
+    ``test_worker_registration.py``: a register_group(id) whose id
+    is already registered as a worker MUST be rejected.
+    """
+    wid = _seed.fresh_worker_id("disjoint")
+    _seed.register_worker(wire_client, wid)
+    r = wire_client.post(
+        f"{wire_client.base_path}/groups",
+        json={"group_id": wid, "members": []},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json().get("type") == "eden://error/already-exists"

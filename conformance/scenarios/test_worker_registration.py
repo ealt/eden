@@ -73,3 +73,22 @@ def test_register_worker_rejects_reserved_identifier(wire_client: WireClient) ->
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/reserved-identifier"
+
+
+def test_register_worker_rejects_id_already_used_by_group(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/02-data-model.md §7.1 — worker / group namespaces MUST be disjoint.
+
+    A register_worker(id) whose id is already registered as a group
+    MUST be rejected. The §7.1 MUST cites
+    eden://error/already-exists as the wire mapping.
+    """
+    gid = _seed.fresh_group_id("disjoint")
+    _seed.create_group(wire_client, gid, members=[])
+    r = wire_client.post(
+        f"{wire_client.base_path}/workers",
+        json={"worker_id": gid},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json().get("type") == "eden://error/already-exists"

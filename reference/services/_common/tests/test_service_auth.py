@@ -256,3 +256,40 @@ def test_bootstrap_concurrent_calls_dont_invalidate_each_other(
     assert results[0].token == results[1].token
     persisted = credential_path(credentials_dir, "eric").read_text()
     assert persisted == results[0].token
+
+
+def test_resolve_worker_bearer_uses_persisted_token_when_no_admin_token(
+    base_url: str, tmp_path: Path
+) -> None:
+    """Codex round-4 #A — restart with persisted credential but no admin token.
+
+    A worker host that comes back up with a valid persisted credential
+    MUST be able to authenticate without the operator re-exporting
+    EDEN_ADMIN_TOKEN. Without this, the restart-with-existing-credential
+    posture documented in §D.1 silently degrades to anonymous and the
+    host hits 401s against an auth-enabled task-store-server.
+    """
+    import argparse
+
+    from eden_service_common.auth import resolve_worker_bearer
+
+    credentials_dir = tmp_path / "creds"
+    # First, bootstrap normally with the admin token so a persisted
+    # credential file exists.
+    first = bootstrap_worker_credential(
+        base_url=base_url,
+        experiment_id=EXPERIMENT_ID,
+        worker_id="eric",
+        credentials_dir=credentials_dir,
+        admin_token=ADMIN_TOKEN,
+    )
+
+    # Now simulate a restart that doesn't carry the admin token.
+    args = argparse.Namespace(
+        admin_token=None,
+        task_store_url=base_url,
+        experiment_id=EXPERIMENT_ID,
+        credentials_dir=str(credentials_dir),
+    )
+    bearer = resolve_worker_bearer(args, worker_id="eric")
+    assert bearer == first.bearer

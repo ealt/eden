@@ -230,15 +230,28 @@ def resolve_worker_bearer(
 ) -> str | None:
     """Return the bearer the host should use, registering as needed.
 
-    Two postures:
+    Three postures (evaluated in order):
 
-    1. If ``args.admin_token`` (or ``$EDEN_ADMIN_TOKEN``) is set →
-       run :func:`bootstrap_worker_credential` and return the §13.1
+    1. ``args.admin_token`` (or ``$EDEN_ADMIN_TOKEN``) is set → run
+       :func:`bootstrap_worker_credential` and return the §13.1
        ``<worker_id>:<token>`` bearer. This is the production
-       deployment posture.
-    2. Else → return ``None`` (auth disabled at the wire). Suitable
-       for in-process / TestClient test postures where the
-       task-store-server runs without ``--admin-token``.
+       deployment posture; bootstrap covers fresh-register +
+       persisted-verify + admin-gated reissue.
+    2. No admin token, but a persisted credential exists at
+       ``<credentials_dir>/<worker_id>.token`` → run bootstrap
+       without an admin token. Bootstrap's first branch verifies the
+       persisted token via ``/whoami`` and returns the bearer
+       without needing admin access. This is the production
+       restart-with-existing-credential posture (operator removed
+       ``EDEN_ADMIN_TOKEN`` from the host's environment after
+       initial provisioning; bootstrap.§D.1's "no fall-through to
+       fresh register" rule remains intact because bootstrap raises
+       if the persisted token is stale and reissue would be needed).
+    3. Neither admin token nor persisted credential → return
+       ``None``. Suitable for in-process / TestClient test postures
+       where the task-store-server runs without ``--admin-token``;
+       the wire's worker_id falls back to the
+       :func:`_worker_id_from_request` shim's header read.
 
     The resolver does not validate ``worker_id`` against the §6.1
     grammar; ``StoreClient.register_worker`` (and the admin register
@@ -250,9 +263,13 @@ def resolve_worker_bearer(
     from .cli import resolve_admin_token, resolve_credentials_dir
 
     admin_token = resolve_admin_token(args)
-    if admin_token is None:
-        return None
     credentials_dir = resolve_credentials_dir(args)
+    persisted = _read_token(credential_path(credentials_dir, worker_id))
+
+    if admin_token is None and persisted is None:
+        # Neither secret is available — auth-disabled posture.
+        return None
+
     credential = bootstrap_worker_credential(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,

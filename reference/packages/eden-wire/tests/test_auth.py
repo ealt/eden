@@ -581,7 +581,14 @@ def test_storeclient_claim_with_no_bearer_skips_preflight(
 
 
 def test_storeclient_verify_worker_credential_wire(store: InMemoryStore) -> None:
-    """Codex round-3 #1 — verify_worker_credential resolves via /whoami over the wire."""
+    """Codex round-3 #1 / round-4 #B — verify_worker_credential resolves via /whoami over the wire.
+
+    Drives the verify path through the test's injected mock-transport
+    httpx.Client. After round-4 #B, the verify call MUST reuse the
+    parent client's transport (without that, the call would try to
+    reach the real network and the mock-transport client would never
+    see the request).
+    """
     app = make_app(store, admin_token=ADMIN_TOKEN)
     test_client = TestClient(app)
     register = test_client.post(
@@ -596,31 +603,20 @@ def test_storeclient_verify_worker_credential_wire(store: InMemoryStore) -> None
     with httpx.Client(
         transport=_proxy_to_app(test_client), base_url="http://unused"
     ) as http:
+        # Verify is called from a fresh admin-bearer client; the
+        # candidate (worker) bearer is supplied as args.
         admin = StoreClient(
             "http://unused",
             experiment_id=EXPERIMENT_ID,
             bearer=f"admin:{ADMIN_TOKEN}",
             client=http,
         )
-        # Note: verify_worker_credential builds a one-shot probe
-        # client internally with the candidate bearer; we share the
-        # outer transport via monkeypatch in conftest if needed. Here
-        # we drive the path that uses a fresh httpx.Client which the
-        # test's _proxy_to_app fixture doesn't intercept. So we
-        # exercise the success branch through a direct probe instead.
-        _ = admin  # keep ruff happy
-        # The wire path is exercised by the conformance scenario
-        # test_reissue_credential_invalidates_prior; here we just
-        # confirm the method exists and is callable without raising
-        # NotImplementedError.
-        assert callable(
-            StoreClient(
-                "http://unused",
-                experiment_id=EXPERIMENT_ID,
-                bearer=f"eric:{token}",
-                client=http,
-            ).verify_worker_credential
-        )
+        # Correct credential → True.
+        assert admin.verify_worker_credential("eric", token) is True
+        # Wrong secret → False.
+        assert admin.verify_worker_credential("eric", "wrong-secret") is False
+        # Unknown worker → False.
+        assert admin.verify_worker_credential("ghost", token) is False
 
 
 def test_storeclient_resolve_worker_in_group_walks_groups(
