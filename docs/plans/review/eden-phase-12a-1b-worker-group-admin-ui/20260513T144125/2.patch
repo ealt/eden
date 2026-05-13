@@ -1,0 +1,151 @@
+--- docs/plans/review/eden-phase-12a-1b-worker-group-admin-ui/20260513T144125/1.md	2026-05-13 14:49:57
++++ docs/plans/eden-phase-12a-1b-worker-group-admin-ui.md	2026-05-13 14:53:38
+@@ -213,8 +213,8 @@
+ | Posture | `app.state.store` (worker bearer) | `app.state.admin_store` | Admin-module read paths | Admin-module write paths |
+ |---|---|---|---|---|
+ | A. Admin token set | functional | functional (admin bearer) | available | available |
+-| B. No admin token, persisted worker credential | functional (worker bearer) | `None` | available | render `*_disabled.html` placeholder |
+-| C. No admin token, no persisted credential, task-store auth-disabled | functional (no auth header) | `None` | available | render `*_disabled.html` placeholder |
++| B. No admin token, persisted worker credential | functional (worker bearer) | `None` | available | controls rendered `disabled`; POSTs short-circuit with `?error=admin-disabled` |
++| C. No admin token, no persisted credential, task-store auth-disabled | functional (no auth header) | `None` | available | controls rendered `disabled`; POSTs short-circuit with `?error=admin-disabled` |
+ | D. No admin token, no persisted credential, task-store auth-enabled | unreachable — `resolve_worker_bearer` returns `None`, every wire call hits 401 | `None` | startup-time failure (see below) | n/a |
+ 
+ Posture A is the production deployment. Posture B is "operator
+@@ -237,16 +237,23 @@
+   worker credential at `<credentials_dir>/<worker_id>.token`")
+   and exit non-zero. This prevents Posture D from running as a
+   silently-broken service.
+-- For Postures B and C, both new admin modules render a
+-  placeholder page (`admin_workers_disabled.html` /
+-  `admin_groups_disabled.html`) when accessed via routes that
+-  would write; the disabled placeholder explains the operator
+-  must restart the web-ui with `--admin-token` or
+-  `$EDEN_ADMIN_TOKEN` set. GET reads still resolve via
+-  `app.state.store`. The disabled-state placeholder applies
+-  symmetrically — when `admin_store is None`, *all* write
+-  controls render disabled (no register form, no reissue
+-  button, no add-member input, no remove buttons).
++- For Postures B and C, the new admin modules render the
++  **normal** templates (`admin_workers.html` / `admin_groups.html`
++  / `admin_worker_detail.html` / `admin_group_detail.html`) —
++  reads work as usual. Inside those templates, every write
++  control (register form, reissue button, add-member input,
++  remove buttons, delete button) is rendered in a disabled state
++  via a Jinja conditional on the boolean flag
++  `admin_enabled` (passed through from the route handler reading
++  `app.state.admin_store is not None`), with an in-page banner
++  "admin token not configured; mutation unavailable — restart
++  the web-ui with `--admin-token` or `$EDEN_ADMIN_TOKEN` set."
++  Any POST that nevertheless arrives (e.g., a curl bypassing
++  the disabled HTML) is short-circuited at the route handler
++  with a 303 redirect to the page-with-banner via
++  `?error=admin-disabled`. **No separate `*_disabled.html`
++  templates**; the disabled shape is a render conditional on
++  the normal templates.
+ 
+ Process-shutdown teardown: `cli.py` runs `store.close()` in a
+ `finally` block already; we add a symmetric `admin_store.close()`
+@@ -557,13 +564,21 @@
+ New templates under
+ [`reference/services/web-ui/src/eden_web_ui/templates/`](../../reference/services/web-ui/src/eden_web_ui/templates/):
+ 
+-- `admin_workers.html` — list + register form.
+-- `admin_worker_detail.html` — detail + attribution + reissue button.
+-- `admin_worker_token.html` — one-shot token display (register OR reissue).
+-- `admin_workers_disabled.html` — placeholder when admin_store is None.
+-- `admin_groups.html` — list + register form.
+-- `admin_group_detail.html` — detail + direct members + transitive closure + add-member form + delete button.
+-- `admin_groups_disabled.html` — placeholder when admin_store is None.
++- `admin_workers.html` — list + register form (form disabled when
++  `admin_enabled=False` per §D.3).
++- `admin_worker_detail.html` — detail + attribution + reissue
++  button (button disabled when `admin_enabled=False`).
++- `admin_worker_token.html` — one-shot token display (register OR
++  reissue success path; render-200, never via redirect).
++- `admin_groups.html` — list + register form (form disabled when
++  `admin_enabled=False`).
++- `admin_group_detail.html` — detail + direct members + transitive
++  closure + add-member form + delete button (mutation controls
++  disabled when `admin_enabled=False`).
++
++There are no separate `*_disabled.html` templates — the
++disabled-controls rendering is conditional inside the normal
++templates (per §D.3).
+ 
+ Each extends `base.html`. Jinja autoescape is on globally (existing
+ default); all user-supplied strings (worker_id, group_id, labels,
+@@ -731,12 +746,22 @@
+    `worker-in-admins-group` enforcement at the wire layer.
+ 3. Add a `/admin/dispatch-mode/` page (12a-2 §7.8 reference).
+ 
+-12a-1b is forward-compatible with all three:
++12a-1b is forward-compatible with all three, in the sense that
++the 12a-1b surface does not block any of them. The migration
++shape is **not** a one-location bearer swap — see §D.10 Alt C
++and §8.1 for the corrected scope (per-session worker bearers +
++route-layer bearer-picking + client-side admins-group check).
++The forward-compat property per item:
+ 
+ 1. Existing routes don't care about the `admins` / `orchestrators`
+    groups beyond surfacing them in `list_groups()` results.
+-2. The `admin_store` construction in `cli.py` is one location;
+-   12a-2 swaps the bearer.
++2. All admin writes route through one named handle
++   (`app.state.admin_store`) and the bearer is constructed in one
++   place (`cli.py`). 12a-2 will replace the construction logic
++   AND introduce per-session bearer plumbing AND wire-layer
++   gating; the 12a-1b code is structured so the change is bounded
++   to those identified locations, but the change itself is a
++   meaningful sub-chunk per §D.10 Alt C.
+ 3. `/admin/dispatch-mode/` is a different URL prefix; no namespace
+    collision.
+ 
+@@ -805,13 +830,11 @@
+ | `src/eden_web_ui/routes/admin_workers.py`                  | NEW. Routes per §D.4.                                                                                                    |
+ | `src/eden_web_ui/routes/admin_groups.py`                   | NEW. Routes per §D.5.                                                                                                    |
+ | `src/eden_web_ui/routes/_helpers.py`                       | NEW helpers: `_classify_wire_error(exc, banner_table)`, `_walk_group_transitive(store, group_id, *, depth_cap, breadth_cap)`. Both shared between the two new route modules. |
+-| `src/eden_web_ui/templates/admin_workers.html`             | NEW.                                                                                                                     |
+-| `src/eden_web_ui/templates/admin_worker_detail.html`       | NEW.                                                                                                                     |
+-| `src/eden_web_ui/templates/admin_worker_token.html`        | NEW.                                                                                                                     |
+-| `src/eden_web_ui/templates/admin_workers_disabled.html`    | NEW.                                                                                                                     |
+-| `src/eden_web_ui/templates/admin_groups.html`              | NEW.                                                                                                                     |
+-| `src/eden_web_ui/templates/admin_group_detail.html`        | NEW.                                                                                                                     |
+-| `src/eden_web_ui/templates/admin_groups_disabled.html`     | NEW.                                                                                                                     |
++| `src/eden_web_ui/templates/admin_workers.html`             | NEW. List + register form (form `disabled` when `admin_enabled=False`).                                                   |
++| `src/eden_web_ui/templates/admin_worker_detail.html`       | NEW. Detail + attribution + reissue button (button `disabled` when `admin_enabled=False`).                                |
++| `src/eden_web_ui/templates/admin_worker_token.html`        | NEW. One-shot token display; render-200, no redirect.                                                                     |
++| `src/eden_web_ui/templates/admin_groups.html`              | NEW. List + register form (form `disabled` when `admin_enabled=False`).                                                   |
++| `src/eden_web_ui/templates/admin_group_detail.html`        | NEW. Detail + direct members + transitive closure + add-member form + delete button (mutation controls `disabled` when `admin_enabled=False`). |
+ | `src/eden_web_ui/templates/admin_index.html`               | New "workers and groups" section.                                                                                        |
+ | `src/eden_web_ui/templates/admin_tasks.html`               | Surface `worker` filter input + "clear filter" indicator.                                                                |
+ | `src/eden_web_ui/templates/admin_variants.html`            | Same.                                                                                                                    |
+@@ -1074,7 +1097,7 @@
+ session cookie does **not** carry a per-user credential today.
+ Inspect
+ [`reference/services/web-ui/src/eden_web_ui/sessions.py`](../../reference/services/web-ui/src/eden_web_ui/sessions.py)
+-— the cookie payload is `{worker_id, csrf, expires_at}` only; no
++— the cookie payload is `{worker_id, csrf}` only; no
+ bearer field, no admin flag. The sign-in route at
+ [`reference/services/web-ui/src/eden_web_ui/routes/auth.py`](../../reference/services/web-ui/src/eden_web_ui/routes/auth.py)
+ sets the cookie's `worker_id` to **the web-ui process's own
+@@ -1221,11 +1244,16 @@
+   protocol's threat model. We don't gate against this.
+ 
+ - **Forward-compat with 12a-2 group-based RBAC**: documented in
+-  §D.11 alternative C. Migration is a one-location bearer swap.
++  §D.10 Alt C, §D.11, and §8.1. The migration is a meaningful
++  sub-chunk (per-session worker bearers + route-layer bearer-
++  picking + client-side admins-group check), not a single-
++  location bearer swap. 12a-1b minimizes the migration's blast
++  radius by isolating the admin-bearer construction to `cli.py`
++  and routing all admin writes through `app.state.admin_store`,
++  but the migration's line count is closer to 200 than to 10.
+   Risk: 12a-2 design changes between landing 12a-1b and 12a-2,
+-  forcing a larger rebase. Mitigation: keep the admin-bearer
+-  construction isolated to `cli.py`; document the migration shape
+-  in 12a-2's plan.
++  forcing a larger rebase. Mitigation: track the 12a-2 plan;
++  surface deltas if its RBAC story shifts after 12a-1b lands.
+ 
+ - **Conformance impact**: zero new scenarios. The chunk-11 / chunk-
+   12 conformance suite (`conformance/scenarios/`) covers wire-

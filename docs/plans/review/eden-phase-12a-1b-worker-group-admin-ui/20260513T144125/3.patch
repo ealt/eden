@@ -1,0 +1,16 @@
+--- docs/plans/review/eden-phase-12a-1b-worker-group-admin-ui/20260513T144125/2.md	2026-05-13 14:53:54
++++ docs/plans/eden-phase-12a-1b-worker-group-admin-ui.md	2026-05-13 14:55:08
+@@ -695,10 +695,9 @@
+   (only admin-token-bearer). Building a UI-side check that the
+   wire ignores creates a false-confidence gap.
+ - The shipped 12a-1 web-ui has **no per-session worker bearer**
+-  (see §8.1). Today's session cookie is `{worker_id, csrf,
+-  expires_at}` only; the `worker_id` is the deployment's
+-  `--worker-id` flag, not a per-user worker registered through
+-  the cookie. The 12a-1 §D.5b "per-session-user worker"
++  (see §8.1). Today's session cookie is `{worker_id, csrf}` only;
++  the `worker_id` is the deployment's `--worker-id` flag, not a
++  per-user worker registered through the cookie. The 12a-1 §D.5b "per-session-user worker"
+   mechanism was deferred and is not shipped. So the pre-build
+   would also have to bring that deferred work forward — which
+   is itself a multi-decision chunk (per-sign-in `reissue_credential`
