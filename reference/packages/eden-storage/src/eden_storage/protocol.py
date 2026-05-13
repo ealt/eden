@@ -211,7 +211,14 @@ class Store(Protocol):
         *,
         expires_at: datetime | str | None = None,
     ) -> TaskClaim:
-        """Atomically transition ``pending → claimed``; issue a token."""
+        """Atomically transition ``pending → claimed``.
+
+        Records ``worker_id`` as the claim owner per chapter 04 §3.2;
+        the §3.5 ladder (state / registration / target eligibility)
+        runs atomically with the claim write. The pre-12a-1 per-claim
+        opaque token has been removed — claim ownership is
+        identity-keyed and authentication is the binding's job.
+        """
         ...
 
     def submit(

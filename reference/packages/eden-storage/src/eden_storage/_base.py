@@ -1674,7 +1674,18 @@ class _StoreBase:
         call most likely indicates a config mistake).
         """
         self._validate_registry_id(group_id, kind="group")
-        member_list = list(members) if members else []
+        # §7 "group is a recursively-resolved set": dedup the input
+        # members in stable order so the durable store's
+        # `(group_id, member_id)` uniqueness constraint never sees a
+        # duplicate (chapter 02 §7 + R9-1). Preserves first-occurrence
+        # order so the resolver's walk is deterministic.
+        member_list: list[str] = []
+        seen: set[str] = set()
+        for member in members or ():
+            if member in seen:
+                continue
+            seen.add(member)
+            member_list.append(member)
         for member in member_list:
             self._validate_registry_id(member, kind="member")
         with self._atomic_operation():

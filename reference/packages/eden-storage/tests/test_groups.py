@@ -277,3 +277,23 @@ def test_resolve_registered_worker_in_dangling_group_member_still_works(
     # ghost-group doesn't exist; eric is a direct member alongside it.
     store.register_group("humans", members=["eric", "ghost-group"])
     assert store.resolve_worker_in_group("eric", "humans") is True
+
+
+def test_register_group_dedupes_initial_members(
+    make_store: Callable[..., Store],
+) -> None:
+    """Codex round-9 R9-1 — group is a set; duplicate initial members are deduped.
+
+    Without dedup, the durable backends' (group_id, member_id)
+    uniqueness constraint would raise a backend-specific integrity
+    error on insert. The Store normalizes to set semantics before any
+    write so all backends behave identically.
+    """
+    store = make_store(seed_workers=False)
+    store.register_worker("eric")
+    group = store.register_group(
+        "humans", members=["eric", "eric", "eric"]
+    )
+    assert group.members == ["eric"]
+    # And the same group reads back with the deduped membership.
+    assert store.read_group("humans").members == ["eric"]
