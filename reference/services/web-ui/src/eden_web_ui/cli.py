@@ -23,6 +23,7 @@ from eden_service_common import (
     load_experiment_config,
     parse_log_level,
     resolve_worker_bearer,
+    wait_for_task_store,
 )
 from eden_service_common.logging import configure_logging
 from eden_wire import StoreClient
@@ -45,6 +46,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=30.0,
+        help=(
+            "Seconds to wait for the task-store-server's readiness "
+            "probe before giving up on startup (default: 30)."
+        ),
+    )
     parser.add_argument(
         "--session-secret",
         required=True,
@@ -167,6 +177,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = get_logger(__name__)
     config = load_experiment_config(args.experiment_config)
+    log.info("waiting_for_task_store", url=args.task_store_url)
+    # The readiness probe accepts 200/401/403 ("server is up") so the
+    # web-ui can run before it has its per-worker credential. The
+    # bootstrap below registers / verifies / reissues against the
+    # admin bearer. Without this preflight, a direct launch where
+    # the task-store is still binding would surface as a confusing
+    # connection failure from inside resolve_worker_bearer rather
+    # than a clean readiness timeout.
+    wait_for_task_store(
+        base_url=args.task_store_url,
+        experiment_id=args.experiment_id,
+        token=None,
+        deadline_seconds=args.startup_timeout,
+    )
     repo: GitRepo | None = None
     if args.repo_path is not None:
         # Phase 10d follow-up B: when --gitea-url is set, materialize
