@@ -253,7 +253,7 @@ def _persist_ideas(
     ideas: list[dict],
     artifacts_dir: Path,
 ) -> list[str]:
-    """Persist idea records and write rationale artifacts.
+    """Persist idea records and write content artifacts.
 
     Returns the list of idea IDs in submission order.
     """
@@ -264,22 +264,22 @@ def _persist_ideas(
         priority = record.get("priority")
         parents = record.get("parent_commits")
         artifacts_uri = record.get("artifacts_uri")
-        rationale = record.get("rationale")
+        content = record.get("content")
         if not isinstance(slug, str):
             raise ProtocolViolation(f"idea missing slug: {record!r}")
         if not isinstance(priority, (int, float)):
             raise ProtocolViolation(f"idea missing priority: {record!r}")
         if not isinstance(parents, list) or not parents:
             raise ProtocolViolation(f"idea missing parent_commits: {record!r}")
-        if isinstance(rationale, str) and rationale:
-            artifacts_uri = _write_rationale(
+        if isinstance(content, str) and content:
+            artifacts_uri = _write_content(
                 artifacts_dir=artifacts_dir,
                 idea_id=idea_id,
-                rationale=rationale,
+                content=content,
             )
         if not isinstance(artifacts_uri, str) or not artifacts_uri:
             raise ProtocolViolation(
-                f"idea {slug!r} has no artifacts_uri and no rationale"
+                f"idea {slug!r} has no artifacts_uri and no content"
             )
         idea = Idea(
             idea_id=idea_id,
@@ -297,14 +297,14 @@ def _persist_ideas(
     return ids
 
 
-def _write_rationale(
-    *, artifacts_dir: Path, idea_id: str, rationale: str
+def _write_content(
+    *, artifacts_dir: Path, idea_id: str, content: str
 ) -> str:
-    """Write rationale.md and return its file:// URI."""
+    """Write content.md and return its file:// URI."""
     target_dir = artifacts_dir / "ideas" / idea_id
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / "rationale.md"
-    target.write_text(rationale, encoding="utf-8")
+    target = target_dir / "content.md"
+    target.write_text(content, encoding="utf-8")
     return target.resolve().as_uri()
 
 

@@ -68,7 +68,7 @@ class TestBearerLeak:
         artifacts_dir: Path,
     ) -> None:
         eval_id, _, _ = seed_evaluate_task(
-            store, artifacts_dir=artifacts_dir, artifact_text="rationale text"
+            store, artifacts_dir=artifacts_dir, artifact_text="content text"
         )
         list_resp = signed_in_client.get("/evaluator/")
         csrf = get_csrf(signed_in_client)

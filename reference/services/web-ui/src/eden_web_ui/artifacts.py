@@ -1,7 +1,7 @@
 """Local-file idea-artifact writer.
 
 Each idea needs an ``artifacts_uri``. For Phase 9 chunk 1 we
-write the ideator's rationale markdown to ``<artifacts-dir>/<id>.md``
+write the ideator's content markdown to ``<artifacts-dir>/<id>.md``
 and emit a ``file://`` URI. Phase 10 swaps in real blob storage.
 
 Writes are atomic (write to ``<id>.md.tmp``, rename to ``<id>.md``)

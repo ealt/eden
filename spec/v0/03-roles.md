@@ -47,7 +47,7 @@ An ideator MAY additionally use any context the experiment config surfaces to it
 For each idea the ideator produces, it MUST:
 
 1. Persist an idea object (via the protocol's idea store — mechanism is binding-specific) that validates against [`schemas/idea.schema.json`](schemas/idea.schema.json), with `experiment_id == E` and `state == "drafting"`.
-2. Upload any artifacts (plan text, rationale, supporting files) to the artifact store and populate the idea's `artifacts_uri`.
+2. Upload any artifacts (idea content, supporting files) to the artifact store and populate the idea's `artifacts_uri`.
 3. Transition the idea's `state` to `"ready"` once the idea is dispatchable. The transition from `drafting` to `ready` signals that the idea's metadata is stable and that the executor MAY consume it.
 
 An ideator MAY create multiple ideas under a single `ideation` task. An ideator MAY also produce zero ideas if it has no viable change to suggest; the task still completes normally (see §2.4).

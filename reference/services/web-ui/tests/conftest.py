@@ -265,12 +265,12 @@ def seed_implement_task(
     base_sha: str,
     slug: str = "demo",
     artifacts_dir: Path | None = None,
-    artifact_text: str = "rationale",
+    artifact_text: str = "content",
 ) -> tuple[str, str]:
     """Seed a ready idea + pending execution task; return (task_id, idea_id).
 
     Builds a `file://` artifacts_uri inside ``artifacts_dir`` so the
-    rationale renders inline in tests that need it. Pass
+    content renders inline in tests that need it. Pass
     ``artifacts_dir=None`` to use a non-file URI.
     """
     from eden_contracts import Idea
@@ -305,7 +305,7 @@ def seed_evaluate_task(
     slug: str = "demo",
     variant_id: str = "variant-eval",
     artifacts_dir: Path | None = None,
-    artifact_text: str = "rationale",
+    artifact_text: str = "content",
     variant_artifact_path: Path | None = None,
     variant_description: str | None = None,
     commit_sha: str = "b" * 40,

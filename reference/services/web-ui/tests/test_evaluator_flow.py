@@ -57,7 +57,7 @@ class TestHappyPath:
         artifacts_dir: Path,
     ) -> None:
         eval_id, variant_id, _ = seed_evaluate_task(
-            store, artifacts_dir=artifacts_dir, artifact_text="rationale text"
+            store, artifacts_dir=artifacts_dir, artifact_text="content text"
         )
         csrf = get_csrf(signed_in_client)
         # Claim
@@ -70,7 +70,7 @@ class TestHappyPath:
         # Draft
         draft_resp = signed_in_client.get(f"/evaluator/{eval_id}/draft")
         assert draft_resp.status_code == 200
-        assert "rationale text" in draft_resp.text
+        assert "content text" in draft_resp.text
         assert variant_id in draft_resp.text
         # Submit
         submit_resp = _post_form(

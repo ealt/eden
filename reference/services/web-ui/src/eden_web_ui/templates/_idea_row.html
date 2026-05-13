@@ -1,5 +1,5 @@
 {# Single idea row, rendered standalone for HTMX swaps and inline by ideator_claim.html. #}
-{% set row = row_state if row_state is defined else {"slug":"","priority":"1.0","parent_commits":"","rationale":""} %}
+{% set row = row_state if row_state is defined else {"slug":"","priority":"1.0","parent_commits":"","content":""} %}
 {% set row_errs = row_errs if row_errs is defined else {} %}
 <div class="idea-row" data-row-index="{{ i }}">
     <h3>row {{ i + 1 }}</h3>
@@ -15,8 +15,8 @@
         <input type="text" name="parent_commits" value="{{ row.parent_commits }}">
         {% if row_errs.get("parent_commits") %}<span class="field-error">{{ row_errs["parent_commits"] }}</span>{% endif %}
     </label>
-    <label>rationale (markdown)
-        <textarea name="rationale" rows="6">{{ row.rationale }}</textarea>
-        {% if row_errs.get("rationale") %}<span class="field-error">{{ row_errs["rationale"] }}</span>{% endif %}
+    <label>content (markdown)
+        <textarea name="content" rows="6">{{ row.content }}</textarea>
+        {% if row_errs.get("content") %}<span class="field-error">{{ row_errs["content"] }}</span>{% endif %}
     </label>
 </div>

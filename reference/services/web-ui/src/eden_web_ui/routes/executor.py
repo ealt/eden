@@ -3,7 +3,7 @@
 Implements the spec-to-code map pinned in §C of the Phase 9c plan.
 The flow is: list pending execution tasks → claim with TTL +
 server-owned variant_id → render draft form (read-only idea
-context, optional inline rationale) → submit, which runs
+context, optional inline content) → submit, which runs
 
 1. validate the form (slug pattern, hex commit_sha when status=success)
 2. (status=success only) check the §3.3 reachability invariants
@@ -47,7 +47,7 @@ from ._helpers import (
     csrf_ok,
     get_session,
     is_htmx_request,
-    read_idea_rationale,
+    read_idea_content,
 )
 
 router = APIRouter(prefix="/executor")
@@ -540,7 +540,7 @@ def _render_draft(
     status_code: int,
 ) -> HTMLResponse:
     artifacts_dir = request.app.state.artifacts_dir
-    rationale = read_idea_rationale(idea, artifacts_dir)
+    content = read_idea_content(idea, artifacts_dir)
     branch = _branch_name(idea.slug, variant_id)
     repo_path = getattr(request.app.state.repo, "path", None)
     clone_url = getattr(request.app.state, "clone_url", None)
@@ -551,7 +551,7 @@ def _render_draft(
             "session": session,
             "task_id": task_id,
             "idea": idea,
-            "rationale": rationale,
+            "content": content,
             "branch": branch,
             "repo_path": repo_path,
             "clone_url": clone_url,

@@ -223,7 +223,7 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
                     ("slug", "e2e-feat"),
                     ("priority", "1.0"),
                     ("parent_commits", "a" * 40),
-                    ("rationale", "## why\n\nbecause."),
+                    ("content", "## why\n\nbecause."),
                 ]
             )
             resp = ui.post(

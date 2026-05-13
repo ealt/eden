@@ -183,7 +183,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             seed.register_worker("ui-eval")
             seed.register_worker("executor-w")
             artifact_path = artifacts_dir / "p-eval.md"
-            artifact_path.write_text("rationale")
+            artifact_path.write_text("content")
             idea = Idea(
                 idea_id="p-eval",
                 experiment_id=experiment_id,

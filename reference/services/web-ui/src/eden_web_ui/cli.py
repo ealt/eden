@@ -79,7 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--artifacts-dir",
         required=True,
         type=Path,
-        help="Local directory to write idea rationale markdown files into.",
+        help="Local directory to write idea content markdown files into.",
     )
     parser.add_argument(
         "--secure-cookies",

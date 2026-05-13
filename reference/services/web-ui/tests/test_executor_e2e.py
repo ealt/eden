@@ -228,7 +228,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
         try:
             seed.register_worker("ui-impl")
             artifact_path = artifacts_dir / "p-impl.md"
-            artifact_path.write_text("rationale")
+            artifact_path.write_text("content")
             idea = Idea(
                 idea_id="p-impl",
                 experiment_id=experiment_id,
@@ -266,7 +266,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
 
             resp = ui.get("/executor/t-exec-1/draft")
             assert resp.status_code == 200, resp.text
-            assert "rationale" in resp.text
+            assert "content" in resp.text
 
             body = urlencode(
                 [

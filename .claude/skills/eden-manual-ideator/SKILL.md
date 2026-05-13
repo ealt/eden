@@ -16,7 +16,7 @@ orchestrator / web-ui all healthy).
 ## What "ideator" means
 
 An ideator claims an `ideation` task, drafts one or more *ideas* (slug,
-priority, parent_commits, rationale), and submits them. Each ready idea
+priority, parent_commits, content), and submits them. Each ready idea
 becomes an `execution` task once the orchestrator dispatches it.
 
 Everything below runs from the terminal. Do not ask the user to open the
@@ -68,7 +68,7 @@ Ask the user — concisely, one prompt — for:
 
 - How many ideas to draft (default 1).
 - For each: slug, parent_commits (suggest from `list-commits`), priority
-  (default 1.0), and rationale.
+  (default 1.0), and content.
 
 If the user is vague, suggest a concrete idea yourself and confirm
 before proceeding.
@@ -85,7 +85,7 @@ drafted values:
       "slug": "...",
       "priority": 1.0,
       "parent_commits": ["..."],
-      "rationale": "..."
+      "content": "..."
     }
   ]
 }
@@ -123,5 +123,5 @@ cd /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose && \
 - **parent_commits is reachability-checked at executor-submit time** —
   always pick a value from `list-commits` so the executor doesn't fail
   on a nonsense SHA.
-- **Rationale is the spec** the executor reads. Prefer concrete language
+- **Content is the spec** the executor reads. Prefer concrete language
   over vague ("add a single line to README" beats "improve docs").

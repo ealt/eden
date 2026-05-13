@@ -35,11 +35,11 @@
             </tr>
         </tbody>
     </table>
-    {% if rationale %}
-    <h3>rationale</h3>
-    <pre class="rationale">{{ rationale }}</pre>
+    {% if content %}
+    <h3>content</h3>
+    <pre class="content">{{ content }}</pre>
     {% else %}
-    <p class="rationale-note">rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+    <p class="content-note">content not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
     {% endif %}
 </section>
 

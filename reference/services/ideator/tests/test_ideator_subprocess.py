@@ -96,7 +96,7 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
                               "slug": f"{task_id}-p{i}",
                               "priority": float(2 - i),
                               "parent_commits": ["a" * 40],
-                              "rationale": f"# rationale {i}\\n"}),
+                              "content": f"# content {i}\\n"}),
                   flush=True)
         print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,
@@ -221,7 +221,7 @@ def test_loop_respawns_on_subprocess_crash(tmp_path: Path) -> None:
         print(json.dumps({"event": "idea", "task_id": task_id,
                           "slug": "p0", "priority": 1.0,
                           "parent_commits": ["a" * 40],
-                          "rationale": "# r"}),
+                          "content": "# r"}),
               flush=True)
         print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,

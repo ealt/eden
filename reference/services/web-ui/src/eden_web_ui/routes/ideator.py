@@ -217,8 +217,8 @@ async def add_row(task_id: str, request: Request):
     slugs = [str(v) for v in form.getlist("slug")]
     priorities = [str(v) for v in form.getlist("priority")]
     parents = [str(v) for v in form.getlist("parent_commits")]
-    rationales = [str(v) for v in form.getlist("rationale")]
-    typed_state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+    contents = [str(v) for v in form.getlist("content")]
+    typed_state = _form_state_from_inputs(slugs, priorities, parents, contents)
     # Persist typed input so a navigation away + return to GET /draft
     # re-hydrates the form. Append the new empty row so the buffered
     # row count matches what was just rendered.
@@ -234,7 +234,7 @@ async def add_row(task_id: str, request: Request):
             len(form.getlist("slug")),
             len(form.getlist("priority")),
             len(form.getlist("parent_commits")),
-            len(form.getlist("rationale")),
+            len(form.getlist("content")),
         )
         return request.app.state.templates.TemplateResponse(
             request,
@@ -295,10 +295,10 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     slugs = [str(v) for v in form.getlist("slug")]
     priorities = [str(v) for v in form.getlist("priority")]
     parents = [str(v) for v in form.getlist("parent_commits")]
-    rationales = [str(v) for v in form.getlist("rationale")]
-    drafts, errors = parse_idea_rows(slugs, priorities, parents, rationales)
+    contents = [str(v) for v in form.getlist("content")]
+    drafts, errors = parse_idea_rows(slugs, priorities, parents, contents)
     if errors:
-        form_state = _form_state_from_inputs(slugs, priorities, parents, rationales)
+        form_state = _form_state_from_inputs(slugs, priorities, parents, contents)
         # Buffer typed state so a navigation away + return to GET
         # /draft re-hydrates the form (issue #2 in MANUAL_UI_ISSUES).
         _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
@@ -327,7 +327,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     for draft in drafts:
         idea_id = uuid.uuid4().hex
         artifacts_uri = write_idea_artifact(
-            artifacts_dir, idea_id, draft.rationale
+            artifacts_dir, idea_id, draft.content
         )
         idea = _make_idea(
             idea_id=idea_id,
@@ -553,13 +553,13 @@ def _iso(dt: Any) -> str:
 
 
 def _empty_row() -> dict[str, str]:
-    return {"slug": "", "priority": "1.0", "parent_commits": "", "rationale": ""}
+    return {"slug": "", "priority": "1.0", "parent_commits": "", "content": ""}
 
 
 def _form_state_from_inputs(
-    slugs: list[str], priorities: list[str], parents: list[str], rationales: list[str]
+    slugs: list[str], priorities: list[str], parents: list[str], contents: list[str]
 ) -> list[dict[str, str]]:
-    n = max(len(slugs), len(priorities), len(parents), len(rationales))
+    n = max(len(slugs), len(priorities), len(parents), len(contents))
     out: list[dict[str, str]] = []
     for i in range(n):
         out.append(
@@ -567,7 +567,7 @@ def _form_state_from_inputs(
                 "slug": slugs[i] if i < len(slugs) else "",
                 "priority": priorities[i] if i < len(priorities) else "1.0",
                 "parent_commits": parents[i] if i < len(parents) else "",
-                "rationale": rationales[i] if i < len(rationales) else "",
+                "content": contents[i] if i < len(contents) else "",
             }
         )
     return out

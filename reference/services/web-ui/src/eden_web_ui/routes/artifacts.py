@@ -3,7 +3,7 @@
 Browsers refuse to navigate to ``file://`` URIs from an ``http://``
 page (the security model that produces ``about:blank#blocked`` on
 right-click → open). The reference implementation stores artifact
-files (idea rationales, evaluator notes) under the configured
+files (idea contents, evaluator notes) under the configured
 ``--artifacts-dir`` and references them via ``file://`` URIs in the
 data model. To make those clickable from the UI, we expose a thin
 HTTP read endpoint that serves any file confined to the artifacts

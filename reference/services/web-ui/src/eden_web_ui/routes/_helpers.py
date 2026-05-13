@@ -11,7 +11,7 @@ from fastapi.responses import RedirectResponse
 
 from ..sessions import SESSION_COOKIE_NAME, Session, SessionCodec, verify_csrf
 
-_RATIONALE_MAX_BYTES = 1 << 20  # 1 MiB
+_CONTENT_MAX_BYTES = 1 << 20  # 1 MiB
 
 
 def is_htmx_request(request: Request) -> bool:
@@ -71,7 +71,7 @@ def _read_inline_artifact(
 ) -> str | None:
     """Return the artifact text iff ``uri`` resolves inside ``artifacts_dir``.
 
-    Trust-boundary helper used by both the idea rationale
+    Trust-boundary helper used by both the idea content
     rendering (chunk 9c §A.1) and the variant-side artifact rendering
     (chunk 9d §A.1):
 
@@ -105,7 +105,7 @@ def _read_inline_artifact(
         size = resolved.stat().st_size
     except OSError:
         return None
-    if size > _RATIONALE_MAX_BYTES:
+    if size > _CONTENT_MAX_BYTES:
         return None
     try:
         return resolved.read_text(encoding="utf-8")
@@ -113,10 +113,10 @@ def _read_inline_artifact(
         return None
 
 
-def read_idea_rationale(
+def read_idea_content(
     idea: Idea, artifacts_dir: Path
 ) -> str | None:
-    """Return the rationale text iff the artifact is safely confined."""
+    """Return the content text iff the artifact is safely confined."""
     return _read_inline_artifact(idea.artifacts_uri, artifacts_dir)
 
 
@@ -125,7 +125,7 @@ def read_variant_artifact(
 ) -> str | None:
     """Return the variant's inline artifact text iff safely confined.
 
-    Sibling to :func:`read_idea_rationale` for the
+    Sibling to :func:`read_idea_content` for the
     chunk-9d evaluator draft view; ``variant.artifacts_uri`` is
     optional and may be ``None``, which short-circuits to ``None``.
     """

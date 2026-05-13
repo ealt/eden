@@ -12,7 +12,7 @@ Design notes are not part of the normative contract. A conforming implementation
 
 Each design note pairs with one or more normative clauses. The normative clause MUST stand on its own — a conformance check reads only the chapter, not the design note. The design note documents the *interpretation* the drafters intended when more than one reading of the normative text was plausible, or the *tradeoff* the drafters took when more than one design was feasible.
 
-When a normative clause cross-references a design note, the reference is one-directional: the clause points out that rationale exists, but the clause itself remains the authoritative text.
+When a normative clause cross-references a design note, the reference is one-directional: the clause points out that content exists, but the clause itself remains the authoritative text.
 
 ## When to add one
 
