@@ -97,6 +97,9 @@ class WireClient:
     def post(self, path: str, **kwargs: Any) -> httpx.Response:
         return self.request("POST", path, **kwargs)
 
+    def patch(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.request("PATCH", path, **kwargs)
+
     # Path helpers --------------------------------------------------
 
     @property
@@ -108,6 +111,9 @@ class WireClient:
         if task_id is None:
             return base
         return f"{base}/{task_id}{suffix}"
+
+    def dispatch_mode_path(self) -> str:
+        return f"{self.base_path}/dispatch_mode"
 
     def ideas_path(self, idea_id: str | None = None, suffix: str = "") -> str:
         base = f"{self.base_path}/ideas"
