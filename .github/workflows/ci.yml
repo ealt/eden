@@ -218,6 +218,44 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-subprocess-docker.sh
 
+  # 12a-2 wave 7 — new smoke jobs (not required by branch protection in
+  # this PR; same posture chunks 10c / 10d / 10e took for newly-added
+  # jobs). Bump to required-status after staying clean on main for
+  # ~2 weeks.
+  compose-smoke-manual-mode:
+    name: compose-smoke-manual-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (manual-mode drill)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-manual-mode.sh
+
+  compose-smoke-multi-orchestrator:
+    name: compose-smoke-multi-orchestrator
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (multi-orchestrator drill)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-multi-orchestrator.sh
+
   compose-e2e:
     name: compose-e2e
     runs-on: ubuntu-latest
