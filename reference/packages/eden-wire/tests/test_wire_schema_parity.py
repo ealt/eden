@@ -23,13 +23,18 @@ import jsonschema
 import pytest
 from eden_wire.errors import ProblemJson
 from eden_wire.models import (
+    AddGroupMemberRequest,
     ClaimRequest,
     ClaimResponse,
     EventsResponse,
     IntegrateRequest,
     ReclaimRequest,
+    RegisterGroupRequest,
+    RegisterWorkerRequest,
     RejectRequest,
     SubmitRequest,
+    WhoamiResponse,
+    WorkerRegistration,
 )
 from pydantic import ValidationError
 
@@ -51,34 +56,30 @@ def _validate_against(schema_name: str, instance: dict[str, Any]) -> None:
 
 
 class TestClaimRequestParity:
-    def test_accept_minimum(self) -> None:
-        model = ClaimRequest(worker_id="worker-1")
+    def test_accept_empty(self) -> None:
+        model = ClaimRequest()
         dumped = model.model_dump(mode="json", exclude_none=True)
         _validate_against("claim-request.schema.json", dumped)
 
     def test_accept_with_expires_at(self) -> None:
-        model = ClaimRequest(worker_id="w", expires_at="2026-04-24T00:00:00Z")
+        model = ClaimRequest(expires_at="2026-04-24T00:00:00Z")
         _validate_against(
             "claim-request.schema.json", model.model_dump(mode="json", exclude_none=True)
         )
-
-    def test_reject_missing_worker(self) -> None:
-        with pytest.raises(ValidationError):
-            ClaimRequest.model_validate({})
 
 
 class TestClaimResponseParity:
     def test_accept_with_expires_at_absent(self) -> None:
         model = ClaimResponse(
-            token="tok", worker_id="w", claimed_at="2026-04-24T00:00:00Z"
+            worker_id="w", claimed_at="2026-04-24T00:00:00Z"
         )
         dumped = model.model_dump(mode="json", exclude_none=True)
         assert "expires_at" not in dumped
+        assert "token" not in dumped
         _validate_against("claim-response.schema.json", dumped)
 
     def test_accept_with_expires_at_present(self) -> None:
         model = ClaimResponse(
-            token="tok",
             worker_id="w",
             claimed_at="2026-04-24T00:00:00Z",
             expires_at="2026-04-24T01:00:00Z",
@@ -95,19 +96,119 @@ class TestClaimResponseParity:
             _validate_against(
                 "claim-response.schema.json",
                 {
-                    "token": "tok",
                     "worker_id": "w",
                     "claimed_at": "2026-04-24T00:00:00Z",
                     "expires_at": None,
                 },
             )
 
+    def test_schema_rejects_legacy_token(self) -> None:
+        """The pre-12a-1 ``token`` field is no longer permitted on the wire."""
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "claim-response.schema.json",
+                {
+                    "token": "tok",
+                    "worker_id": "w",
+                    "claimed_at": "2026-04-24T00:00:00Z",
+                },
+            )
+
 
 class TestSubmitRequestParity:
     def test_accept(self) -> None:
-        model = SubmitRequest(token="tok", payload={"kind": "ideation", "status": "success"})
+        model = SubmitRequest(payload={"kind": "ideation", "status": "success"})
         _validate_against(
             "submit-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_schema_rejects_legacy_token(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "submit-request.schema.json",
+                {
+                    "token": "tok",
+                    "payload": {"kind": "ideation", "status": "success"},
+                },
+            )
+
+
+class TestRegisterWorkerRequestParity:
+    def test_accept_minimum(self) -> None:
+        model = RegisterWorkerRequest(worker_id="eric")
+        _validate_against(
+            "register-worker-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_accept_with_labels(self) -> None:
+        model = RegisterWorkerRequest(worker_id="eric", labels={"role": "ideator"})
+        _validate_against(
+            "register-worker-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_reject_uppercase_id(self) -> None:
+        with pytest.raises(ValidationError):
+            RegisterWorkerRequest(worker_id="Eric")
+
+
+class TestWorkerRegistrationParity:
+    def test_accept_with_token(self) -> None:
+        model = WorkerRegistration(
+            worker_id="eric",
+            experiment_id="exp-1",
+            registered_at="2026-04-24T00:00:00Z",
+            registration_token="ab" * 32,
+        )
+        _validate_against(
+            "worker-registration.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_accept_idempotent_no_token(self) -> None:
+        """Idempotent re-register returns the record without a token."""
+        model = WorkerRegistration(
+            worker_id="eric",
+            experiment_id="exp-1",
+            registered_at="2026-04-24T00:00:00Z",
+        )
+        dumped = model.model_dump(mode="json", exclude_none=True)
+        assert "registration_token" not in dumped
+        _validate_against("worker-registration.schema.json", dumped)
+
+
+class TestWhoamiResponseParity:
+    def test_accept(self) -> None:
+        model = WhoamiResponse(worker_id="eric")
+        _validate_against(
+            "whoami-response.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+
+class TestRegisterGroupRequestParity:
+    def test_accept_no_members(self) -> None:
+        model = RegisterGroupRequest(group_id="humans")
+        _validate_against(
+            "register-group-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_accept_with_members(self) -> None:
+        model = RegisterGroupRequest(group_id="team-a", members=["eric", "alice"])
+        _validate_against(
+            "register-group-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+
+class TestAddGroupMemberRequestParity:
+    def test_accept(self) -> None:
+        model = AddGroupMemberRequest(member_id="eric")
+        _validate_against(
+            "add-group-member-request.schema.json",
             model.model_dump(mode="json", exclude_none=True),
         )
 

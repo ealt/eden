@@ -16,7 +16,7 @@ Sub-cases:
 - C   read_task itself fails — orphan transport.
 - D   read_submission returns None for a terminal task — orphan
       transport.
-- E   ``WrongToken`` short-circuits — orphan auto, no retries.
+- E   ``NotClaimed`` short-circuits — orphan auto, no retries.
 - F   ``ConflictingResubmission`` short-circuits — orphan conflict.
 - G   read_task finds task back in ``pending`` — orphan auto.
 - H   ``InvalidPrecondition`` short-circuits to a form re-render.
@@ -42,7 +42,7 @@ from eden_storage import (
     EvaluationSubmission,
     InMemoryStore,
     InvalidPrecondition,
-    WrongToken,
+    NotClaimed,
 )
 from eden_web_ui.routes import evaluator as evaluator_routes
 from fastapi.testclient import TestClient
@@ -137,7 +137,7 @@ class TestSubCaseAPrime:
                 # The "other" worker submits a different metric.
                 original_submit(
                     task_id,
-                    other.token,
+                    other.worker_id,
                     EvaluationSubmission(
                         status="success", variant_id=variant_id, evaluation={"score": 0.123}
                     ),
@@ -245,7 +245,6 @@ class TestSubCaseD:
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T12:00:00.000Z",
             claim=TaskClaim(
-                token="t" * 16,
                 worker_id="ui-w",
                 claimed_at="2026-04-24T11:30:00.000Z",
             ),
@@ -263,7 +262,7 @@ class TestSubCaseD:
 
 
 class TestSubCaseE:
-    """WrongToken short-circuits to orphan auto with no retries."""
+    """NotClaimed short-circuits to orphan auto with no retries."""
 
     def test_wrong_token_short_circuit(
         self,
@@ -276,7 +275,7 @@ class TestSubCaseE:
 
         def raise_wrong_token(*a, **k):
             calls["n"] += 1
-            raise WrongToken("token mismatch")
+            raise NotClaimed("token mismatch")
 
         monkeypatch.setattr(store, "submit", raise_wrong_token)
         resp = _post_form(
@@ -414,7 +413,7 @@ class TestSubCaseIb:
         )
         store.reclaim(eval_id, "operator")
         other = store.claim(eval_id, "evaluator-other")
-        store.submit(eval_id, other.token, equivalent)
+        store.submit(eval_id, other.worker_id, equivalent)
         store.accept(eval_id)
         # Task is now in completed; our subsequent submit will hit
         # IllegalTransition. Read-back finds equivalent → success.
@@ -439,7 +438,7 @@ class TestSubCaseIc:
         other = store.claim(eval_id, "evaluator-other")
         store.submit(
             eval_id,
-            other.token,
+            other.worker_id,
             EvaluationSubmission(
                 status="success", variant_id=variant_id, evaluation={"score": 0.111}
             ),

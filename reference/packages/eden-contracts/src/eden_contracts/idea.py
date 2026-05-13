@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from ._common import CommitSha, DateTimeStr, UriStr
+from ._common import CommitSha, DateTimeStr, NotNone, UriStr, WorkerId
 
 IdeaState = Literal["drafting", "ready", "dispatched", "completed"]
 """Idea lifecycle states; ``completed`` is terminal and covers both success and failure."""
@@ -32,3 +32,4 @@ class Idea(BaseModel):
     artifacts_uri: UriStr
     state: IdeaState
     created_at: DateTimeStr
+    created_by: Annotated[WorkerId | None, NotNone] = None

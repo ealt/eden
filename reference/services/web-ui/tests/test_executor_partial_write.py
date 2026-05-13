@@ -9,7 +9,7 @@ Pins each branch of §C-recovery from the Phase 9c plan:
   to ``failed``): success page via read-back.
 - Phase 3 transport-only sub-case B (never committed): orphan
   (``auto`` recovery).
-- Phase 3 ``WrongToken`` short-circuit: orphan (``auto``).
+- Phase 3 ``NotClaimed`` short-circuit: orphan (``auto``).
 - Phase 3 ``ConflictingResubmission`` short-circuit: orphan
   (``conflict``).
 - Pre-Phase-1 ref-collision guard: form re-render, no create_variant.
@@ -32,8 +32,8 @@ from eden_storage import (
     ConflictingResubmission,
     IllegalTransition,
     InMemoryStore,
+    NotClaimed,
     VariantSubmission,
-    WrongToken,
 )
 from eden_web_ui.routes import executor as executor_routes
 from fastapi.testclient import TestClient
@@ -251,7 +251,7 @@ class TestPhase3DefinitiveErrors:
 
         def fake_submit(task_id, token, submission):  # noqa: ARG001
             attempts["n"] += 1
-            raise WrongToken("expired")
+            raise NotClaimed("expired")
 
         monkeypatch.setattr(store, "submit", fake_submit)
         csrf = get_csrf(signed_in_impl_client)
@@ -497,7 +497,7 @@ class TestPhase3IllegalTransitionReadback:
     actual outcomes.
     """
 
-    def test_pending_after_illegal_transition_renders_auto_orphan(
+    def test_pending_after_not_claimed_renders_auto_orphan(
         self,
         signed_in_impl_client: TestClient,
         store: InMemoryStore,
@@ -508,8 +508,9 @@ class TestPhase3IllegalTransitionReadback:
             signed_in_impl_client, store, bare_repo, base_sha, slug="ita"
         )
         # Reclaim the task ourselves so its state is pending; the
-        # route's submit will then raise IllegalTransition. Read-back
-        # finds state==pending → orphan auto.
+        # route's submit will then raise NotClaimed (12a-1: claim
+        # cleared by reclaim). The orphan-auto branch fires directly
+        # from the NotClaimed short-circuit.
         store.reclaim(task_id, "operator")
         csrf = get_csrf(signed_in_impl_client)
         resp = _post_form(
@@ -523,9 +524,6 @@ class TestPhase3IllegalTransitionReadback:
         )
         assert resp.status_code == 502
         assert "auto-recovers" in resp.text
-        # Banner mentions reclaim, distinguishing this from "we won"
-        # (sub-case b below) which renders the success page.
-        assert "task reclaimed" in resp.text
 
     def test_completed_with_equivalent_prior_renders_success(
         self,

@@ -1,6 +1,6 @@
 """Pydantic bindings for the EDEN protocol wire formats (spec/v0)."""
 
-from ._common import CommitSha, DateTimeStr
+from ._common import CommitSha, DateTimeStr, WorkerId
 from .config import Direction, ExperimentConfig, ObjectiveSpec, WallTime
 from .evaluation import EvaluationSchema, MetricName, MetricType
 from .event import (
@@ -26,6 +26,7 @@ from .event import (
     VariantStartedEvent,
     VariantSucceededEvent,
 )
+from .group import Group, GroupMember
 from .idea import Idea, IdeaState, Slug
 from .task import (
     EvaluationPayload,
@@ -39,8 +40,11 @@ from .task import (
     TaskClaim,
     TaskKind,
     TaskState,
+    TaskTarget,
+    TaskTargetKind,
 )
 from .variant import Variant, VariantStatus, WorkBranch
+from .worker import Worker, WorkerLabels
 
 __all__ = [
     "REGISTERED_EVENT_TYPES",
@@ -54,6 +58,8 @@ __all__ = [
     "FailReason",
     "ExecutionPayload",
     "ExecutionTask",
+    "Group",
+    "GroupMember",
     "MetricName",
     "MetricType",
     "EvaluationSchema",
@@ -81,6 +87,8 @@ __all__ = [
     "TaskReclaimedEvent",
     "TaskState",
     "TaskSubmittedEvent",
+    "TaskTarget",
+    "TaskTargetKind",
     "Variant",
     "VariantErroredEvent",
     "VariantEvaluationErroredEvent",
@@ -90,4 +98,7 @@ __all__ = [
     "VariantSucceededEvent",
     "WallTime",
     "WorkBranch",
+    "Worker",
+    "WorkerId",
+    "WorkerLabels",
 ]

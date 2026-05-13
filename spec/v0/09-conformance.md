@@ -17,7 +17,7 @@ An IUT MUST:
 - Expose the chapter-7 HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md)) at a deployment-chosen base URL.
 - Accept an experiment configuration whose shape matches [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json).
 
-Anything else — language, deployment topology, persistence, auth scheme, scaling profile — is a deployment choice. Further latitude is enumerated in [`07-wire-protocol.md`](07-wire-protocol.md) §11.
+Anything else — language, deployment topology, persistence, scaling profile — is a deployment choice. The [`07-wire-protocol.md`](07-wire-protocol.md) §13 authentication scheme is normative as of 12a-1; further latitude is enumerated in [`07-wire-protocol.md`](07-wire-protocol.md) §14.
 
 ## 3. Assertion vocabulary
 
@@ -25,7 +25,7 @@ Every assertion in the v1 suite is keyed off a normative MUST in [`02-data-model
 
 When the spec evolves, the suite evolves with it. A change that removes a MUST or downgrades it to SHOULD MUST be accompanied by a matching scenario removal or rewrite.
 
-The suite intentionally does NOT certify two [`04-task-protocol.md`](04-task-protocol.md) §1.3, §3.2 invariants: the atomicity-of-state-change-and-event-emission invariant and the claim-token unforgeability property. Black-box testing cannot prove the absence of a sufficiently-narrow window or the absence of a sufficiently-weak random source. The v1 suite asserts the testable consequences of these invariants (event presence, uniqueness across observed claims) and labels the regression-style tests as such.
+The suite intentionally does NOT certify the [`04-task-protocol.md`](04-task-protocol.md) §1.3 atomicity-of-state-change-and-event-emission invariant: black-box testing cannot prove the absence of a sufficiently-narrow window. The v1 suite asserts the testable consequences (event presence, observable ordering) and labels the regression-style test as such.
 
 ## 4. Conformance levels
 
@@ -44,17 +44,22 @@ The v1 scenario groups, with their primary spec citations:
 | Group | Scope | Spec citations |
 |---|---|---|
 | Task lifecycle | Every legal/illegal transition. | [`04-task-protocol.md`](04-task-protocol.md) §1, §2, §3, §4, §5 |
-| Claim tokens | Freshness, authorization, no-reclaim-while-claimed. | [`02-data-model.md`](02-data-model.md) §3.4; [`04-task-protocol.md`](04-task-protocol.md) §3, §5 |
+| Worker registration | Per-experiment registry; idempotent re-registration; grammar / reserved-identifier rejection; disjoint worker/group namespaces; read / list endpoints don't leak credentials. | [`02-data-model.md`](02-data-model.md) §6, §7.1; [`07-wire-protocol.md`](07-wire-protocol.md) §6.1, §6.2 |
+| Group resolution | Direct + transitive membership; cycle rejection; reserved-identifier rejection; disjoint worker/group namespaces; read / list / mutate / delete wire endpoints. | [`02-data-model.md`](02-data-model.md) §6.1, §7.1, §7.2, §7.3; [`07-wire-protocol.md`](07-wire-protocol.md) §7.2, §7.3 |
+| Claim ownership | Identity-keyed claim record; no-reclaim-while-claimed; submit-claimant match; claim cleared on reclaim. | [`02-data-model.md`](02-data-model.md) §3.4; [`04-task-protocol.md`](04-task-protocol.md) §3, §4.1, §4.2, §5 |
+| Claim eligibility | Claim-time ladder — registration check + target eligibility (null / worker / group); `Task.target` round-trips through create / read / list. | [`02-data-model.md`](02-data-model.md) §3.5; [`04-task-protocol.md`](04-task-protocol.md) §3.5 |
+| Worker auth | Cross-application claim — same `worker_id` across distinct clients shares ownership; mismatched claimant rejected. Auth-enabled scenarios additionally cover the chapter-07 bearer middleware: missing/malformed bearer → 401; admin / worker bearer on the wrong endpoint class → 403; `/whoami` returns the authenticated worker_id; reissue invalidates the prior credential; the binding stamps `created_by` on `create_task` / `create_idea` from the authenticated principal. | [`02-data-model.md`](02-data-model.md) §3.1, §5.1; [`04-task-protocol.md`](04-task-protocol.md) §3.3, §4.1; [`07-wire-protocol.md`](07-wire-protocol.md) §6.4, §13, §13.3, §13.4 |
+| Attribution persistence | `submitted_by` / `executed_by` / `evaluated_by` survive terminal transitions. | [`02-data-model.md`](02-data-model.md) §3.1, §9 |
 | Submit idempotency | Content-equivalent / divergent / post-terminal. | [`04-task-protocol.md`](04-task-protocol.md) §4.2, §4.4 |
-| Reclamation | Case matrix; token invalidation; variant reconciliation. | [`04-task-protocol.md`](04-task-protocol.md) §5 |
+| Reclamation | Case matrix; claim clearing; variant reconciliation. | [`04-task-protocol.md`](04-task-protocol.md) §5 |
 | Atomicity (regression test) | State + event consistency around a transition. Best-effort, not a certification. | [`04-task-protocol.md`](04-task-protocol.md) §1.3 |
 | Event envelope | Envelope shape; uniqueness. | [`05-event-protocol.md`](05-event-protocol.md) §1, §1.1 |
 | Per-type event payloads | Each registered type's required fields. | [`05-event-protocol.md`](05-event-protocol.md) §3 |
 | Composite commits | Execution-task dispatch, execution-task terminal, evaluate-terminal cases, retry-exhausted `evaluation_error` terminalization, execution-task reclaim with in-flight variant. | [`04-task-protocol.md`](04-task-protocol.md) §4.3; [`05-event-protocol.md`](05-event-protocol.md) §2.2 |
-| Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §6.2 |
-| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §7 status mappings exercised through duplicate-create / bad-request paths, the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding, and the [`07-wire-protocol.md`](07-wire-protocol.md) §1.1 empty-body rule on 2xx responses without a payload. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §1.1, §2, §3, §4, §5, §6, §7 |
-| Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
-| Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §7 |
+| Event delivery | Total order, replay from cursor 0, at-least-once via subscribe-reconnect, long-poll subscribe. | [`05-event-protocol.md`](05-event-protocol.md) §4; [`07-wire-protocol.md`](07-wire-protocol.md) §8.2 |
+| Status codes | Each operation's spec-pinned status, including the [`07-wire-protocol.md`](07-wire-protocol.md) §9 status mappings exercised through duplicate-create / bad-request paths, the [`05-event-protocol.md`](05-event-protocol.md) §4.4 replay binding, and the [`07-wire-protocol.md`](07-wire-protocol.md) §1.1 empty-body rule on 2xx responses without a payload. | [`05-event-protocol.md`](05-event-protocol.md) §4.4; [`07-wire-protocol.md`](07-wire-protocol.md) §1.1, §2, §3, §4, §5, §8, §9 |
+| Problem+json envelope | Shape + content-type. | [`07-wire-protocol.md`](07-wire-protocol.md) §9 |
+| Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §9 |
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
 | Integrate idempotency | Same-value / different-value / preconditions. | [`07-wire-protocol.md`](07-wire-protocol.md) §5 |
 

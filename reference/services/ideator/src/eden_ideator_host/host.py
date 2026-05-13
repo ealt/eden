@@ -10,7 +10,7 @@ from pathlib import Path
 from eden_contracts import ExperimentConfig, IdeationTask
 from eden_dispatch import ScriptedIdeator
 from eden_service_common import StopFlag, get_logger, make_plan_fn
-from eden_storage import IllegalTransition, Store, WrongToken
+from eden_storage import IllegalTransition, NotClaimed, Store
 
 from .subprocess_mode import (
     IdeatorSubprocess,
@@ -136,7 +136,7 @@ def run_ideator_subprocess_loop(
                         evaluation_schema=evaluation_schema,
                         artifacts_dir=artifacts_dir,
                     )
-                except (WrongToken, IllegalTransition) as exc:
+                except (NotClaimed, IllegalTransition) as exc:
                     # Another worker won the claim race or the task
                     # is no longer pending. This is a normal
                     # operational condition; the subprocess stays.
@@ -186,6 +186,8 @@ def build_subprocess_config(
     task_deadline: float,
     shutdown_deadline: float,
     wrap_factory: object | None = None,
+    worker_id: str = "",
+    worker_credential: str | None = None,
 ) -> IdeatorSubprocessConfig:
     """Helper for the CLI layer to construct the subprocess config.
 
@@ -193,6 +195,12 @@ def build_subprocess_config(
     subprocess loop calls it once per spawn to build a fresh wrapped
     command + per-spawn cleanup callbacks. Used by the docker exec
     mode for per-spawn cidfile management.
+
+    ``worker_id`` + ``worker_credential`` are forwarded into the
+    spawned child's env (``EDEN_WORKER_ID`` /
+    ``EDEN_WORKER_CREDENTIAL``) per the §13 reference-binding doc;
+    the secret half of the host's bearer is what the child
+    re-assembles into its own bearer.
     """
     return IdeatorSubprocessConfig(
         command=command,
@@ -202,4 +210,6 @@ def build_subprocess_config(
         task_deadline=task_deadline,
         shutdown_deadline=shutdown_deadline,
         wrap_factory=wrap_factory,  # type: ignore[arg-type]
+        worker_id=worker_id,
+        worker_credential=worker_credential,
     )

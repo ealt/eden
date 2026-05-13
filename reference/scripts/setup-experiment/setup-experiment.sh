@@ -9,13 +9,13 @@ set -euo pipefail
 # so `docker compose up -d --wait` brings the stack online.
 #
 # Idempotent: re-running on an already-configured stack preserves
-# existing secrets (POSTGRES_PASSWORD, EDEN_SHARED_TOKEN,
+# existing secrets (POSTGRES_PASSWORD, EDEN_ADMIN_TOKEN,
 # EDEN_SESSION_SECRET, GITEA_*) and re-runs the seed step (which
 # itself short-circuits on a previously-seeded repo).
 #
 # Usage:
 #   setup-experiment.sh <config.yaml> [--experiment-id <id>]
-#                                     [--shared-token <T>]
+#                                     [--admin-token <T>]
 #                                     [--postgres-password <P>]
 #                                     [--env-file <path>]
 #                                     [--experiment-dir <path>]
@@ -26,7 +26,7 @@ usage() {
 Usage:
   setup-experiment.sh <config.yaml>
                       [--experiment-id <id>]
-                      [--shared-token <T>]
+                      [--admin-token <T>]
                       [--postgres-password <P>]
                       [--env-file <path>]
                       [--experiment-dir <path>]
@@ -63,7 +63,7 @@ docker compose version >/dev/null || {
 CONFIG_PATH=""
 ENV_FILE=""
 EXPERIMENT_ID=""
-ARG_SHARED_TOKEN=""
+ARG_ADMIN_TOKEN=""
 ARG_POSTGRES_PASSWORD=""
 ARG_EXPERIMENT_DIR=""
 ARG_IDEAS_PER_IDEATION=""
@@ -85,7 +85,7 @@ require_value() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --experiment-id)        require_value "$1" "$#"; EXPERIMENT_ID="$2";         shift 2 ;;
-        --shared-token)         require_value "$1" "$#"; ARG_SHARED_TOKEN="$2";      shift 2 ;;
+        --admin-token)          require_value "$1" "$#"; ARG_ADMIN_TOKEN="$2";       shift 2 ;;
         --postgres-password)    require_value "$1" "$#"; ARG_POSTGRES_PASSWORD="$2"; shift 2 ;;
         --env-file)             require_value "$1" "$#"; ENV_FILE="$2";              shift 2 ;;
         --experiment-dir)       require_value "$1" "$#"; ARG_EXPERIMENT_DIR="$2";    shift 2 ;;
@@ -161,8 +161,8 @@ read_env_key() {
 EXISTING_POSTGRES_PASSWORD="$(read_env_key POSTGRES_PASSWORD "$ENV_FILE")"
 POSTGRES_PASSWORD="${ARG_POSTGRES_PASSWORD:-${EXISTING_POSTGRES_PASSWORD:-$(gen_hex 32)}}"
 
-EXISTING_SHARED_TOKEN="$(read_env_key EDEN_SHARED_TOKEN "$ENV_FILE")"
-EDEN_SHARED_TOKEN="${ARG_SHARED_TOKEN:-${EXISTING_SHARED_TOKEN:-$(gen_hex 32)}}"
+EXISTING_ADMIN_TOKEN="$(read_env_key EDEN_ADMIN_TOKEN "$ENV_FILE")"
+EDEN_ADMIN_TOKEN="${ARG_ADMIN_TOKEN:-${EXISTING_ADMIN_TOKEN:-$(gen_hex 32)}}"
 
 EXISTING_SESSION_SECRET="$(read_env_key EDEN_SESSION_SECRET "$ENV_FILE")"
 EDEN_SESSION_SECRET="${EXISTING_SESSION_SECRET:-$(gen_hex 32)}"
@@ -310,7 +310,7 @@ GITEA_SSH_HOST_PORT=${GITEA_SSH_HOST_PORT}
 
 # --- 10b/c reference services ---
 EDEN_EXPERIMENT_ID=${EXPERIMENT_ID}
-EDEN_SHARED_TOKEN=${EDEN_SHARED_TOKEN}
+EDEN_ADMIN_TOKEN=${EDEN_ADMIN_TOKEN}
 EDEN_SESSION_SECRET=${EDEN_SESSION_SECRET}
 EDEN_STORE_URL=${EDEN_STORE_URL}
 EDEN_IDEATION_TASKS=${EDEN_IDEATION_TASKS}

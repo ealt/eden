@@ -100,6 +100,10 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
         experiment_id="exp-mp",
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
+    # 12a-1 wave 5: §3.5 step-2 registration check.
+    store.register_worker("ideator-1")
+    store.register_worker("executor-1")
+    store.register_worker("executor-mp")
     from eden_contracts import Idea
 
     store.create_ideation_task("ideation-1")
@@ -119,7 +123,7 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
     from eden_dispatch import IdeaSubmission
 
     store.submit(
-        "ideation-1", claim.token, IdeaSubmission(status="success", idea_ids=("p-mp",))
+        "ideation-1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p-mp",))
     )
     store.accept("ideation-1")
     store.create_execution_task("execution-1", "p-mp")

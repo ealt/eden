@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — worker registration response",
+  "description": "Response body for register_worker (07-wire-protocol.md §6.1) and reissue_credential (§6.3). On a fresh registration the `registration_token` is the plaintext credential, returned exactly once; on idempotent re-registration of an existing worker_id the field is omitted (the original token remains valid).",
+  "type": "object",
+  "required": ["worker_id", "experiment_id", "registered_at"],
+  "additionalProperties": false,
+  "properties": {
+    "worker_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registered_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "registered_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "registration_token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Plaintext credential, returned exactly once on fresh registration / reissue. Subsequent reads MUST NOT emit this field."
+    }
+  }
+}

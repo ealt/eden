@@ -122,7 +122,6 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
 
     db_path = tmp_path / "eden.sqlite"
     experiment_id = "exp-e2e"
-    token = "test-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -140,8 +139,6 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -149,6 +146,17 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
     )
     port = _read_port_announcement(server_log, server)
     base_url = f"http://127.0.0.1:{port}"
+
+    # 12a-1 wave 5: pre-register the worker_ids the subprocess hosts use;
+    # Store.claim's §3.5 step-2 registration check rejects unregistered ids.
+    from eden_wire import StoreClient
+
+    _seed = StoreClient(base_url=base_url, experiment_id=experiment_id)
+    try:
+        for _wid in ("ideator-1", "executor-1", "evaluator-1"):
+            _seed.register_worker(_wid)
+    finally:
+        _seed.close()
 
     ideator_log = logs_dir / "ideator.log"
     ideator = _spawn(
@@ -158,8 +166,6 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--worker-id",
             "ideator-1",
             "--base-commit-sha",
@@ -175,8 +181,6 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--worker-id",
             "executor-1",
             "--repo-path",
@@ -192,8 +196,6 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--worker-id",
             "evaluator-1",
             "--experiment-config",
@@ -209,8 +211,6 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--repo-path",
             str(bare_repo),
             "--ideation-tasks",

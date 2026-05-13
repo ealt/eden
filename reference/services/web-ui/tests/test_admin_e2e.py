@@ -107,7 +107,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     experiment_id = "exp-admin-e2e"
-    token = "admin-e2e-token"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -125,8 +124,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             "127.0.0.1",
             "--port",
             "0",
-            "--shared-token",
-            token,
             "--subscribe-timeout",
             "1.0",
         ],
@@ -143,8 +140,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             task_store_url,
             "--experiment-id",
             experiment_id,
-            "--shared-token",
-            token,
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--session-secret",
@@ -176,9 +171,16 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
+            # 12a-1 wave 5: Store.claim enforces the §3.5 step-2
+            # registration check, so every worker_id that issues a
+            # claim must exist in the registry. The web-ui process
+            # uses --worker-id ui-admin; pre-register it here (the
+            # task-store-server runs auth-disabled in this e2e, so
+            # the registration call goes through without an admin
+            # bearer).
+            seed.register_worker("ui-admin")
             seed.create_ideation_task("t-ideation-1")
         finally:
             seed.close()
@@ -221,7 +223,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
         verify = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            token=token,
         )
         try:
             task = verify.read_task("t-ideation-1")

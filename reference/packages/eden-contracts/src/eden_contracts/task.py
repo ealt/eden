@@ -15,23 +15,39 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from ._common import DateTimeStr, NotNone
+from ._common import DateTimeStr, NotNone, WorkerId
 
 TaskKind = Literal["ideation", "execution", "evaluation"]
 TaskState = Literal["pending", "claimed", "submitted", "completed", "failed"]
+TaskTargetKind = Literal["worker", "group"]
 
 _CLAIM_STATES: frozenset[str] = frozenset({"claimed", "submitted"})
 
 
 class TaskClaim(BaseModel):
-    """Claim token issued by the task store when a worker claims a task."""
+    """Claim record on a `claimed`/`submitted` task.
+
+    Per spec/v0/04-task-protocol.md §3 / §4, claim-ownership is
+    enforced by matching the authenticated ``worker_id`` to
+    ``claim.worker_id`` atomically with the submit transition. The
+    pre-12a-1 ``token`` field has been removed; the schema and the
+    Pydantic model are now in lockstep with the spec.
+    """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    token: Annotated[str, Field(min_length=1)]
-    worker_id: Annotated[str, Field(min_length=1)]
+    worker_id: WorkerId
     claimed_at: DateTimeStr
     expires_at: Annotated[DateTimeStr | None, NotNone] = None
+
+
+class TaskTarget(BaseModel):
+    """Constrains which workers may claim the task (spec/v0/02-data-model.md §3.5)."""
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: TaskTargetKind
+    id: WorkerId
 
 
 class IdeationPayload(BaseModel):
@@ -65,6 +81,9 @@ class _TaskBase(BaseModel):
 
     task_id: Annotated[str, Field(min_length=1)]
     state: TaskState
+    target: Annotated[TaskTarget | None, NotNone] = None
+    created_by: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    submitted_by: Annotated[WorkerId | None, NotNone] = None
     claim: Annotated[TaskClaim | None, NotNone] = None
     created_at: DateTimeStr
     updated_at: DateTimeStr

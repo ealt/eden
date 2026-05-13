@@ -50,7 +50,7 @@ The protocol defines only the **host-mechanism-independent core** of the config 
 | `parallel_variants` | integer ≥ 1 | Maximum number of variants that MAY be in flight simultaneously. |
 | `max_variants` | integer ≥ 1 | Hard ceiling on the number of variants attempted. |
 | `max_wall_time` | duration | Hard ceiling on elapsed wall time. Format: a positive integer followed by one of `s`, `m`, `h`, `d`. |
-| `evaluation_schema` | object | A evaluation schema (§6). MUST be non-empty. |
+| `evaluation_schema` | object | A evaluation schema (§8). MUST be non-empty. |
 | `objective` | object | An objective spec (§2.2). |
 
 ### 2.2 Objective spec
@@ -89,6 +89,9 @@ A task is a work item. It is persisted in the task store and advances through a 
 | `kind` | yes | string | One of `"ideation"`, `"execution"`, `"evaluation"`. |
 | `state` | yes | string | See §3.2. |
 | `payload` | yes | object | Kind-specific payload (§3.3). |
+| `target` | no | object | Constrains which workers may claim the task (§3.5). Absent (or absent + null is forbidden) means any registered worker matching `kind` may claim. |
+| `created_by` | no | string | Actor identifier of the caller that created the task (worker_id, the admin sentinel `admin`, or another deployment-defined actor). Preserved across the task's terminal transition. |
+| `submitted_by` | no | string (worker_id) | The claimant whose submission was committed. Written atomically with the `claimed → submitted` transition ([`04-task-protocol.md`](04-task-protocol.md) §4) and preserved across the terminal transitions that clear `claim`. |
 | `claim` | no | object | Present iff the task is currently claimed (§3.4). |
 | `created_at` | yes | timestamp | When the task was created. |
 | `updated_at` | yes | timestamp | Most recent state change. |
@@ -109,12 +112,24 @@ The `payload` object's shape depends on `kind`.
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `token` | yes | string | Opaque unforgeable claim token. |
-| `worker_id` | yes | string | Opaque identifier for the claiming worker. |
+| `worker_id` | yes | string (worker_id) | The claiming worker's registered identifier (§6). |
 | `claimed_at` | yes | timestamp | When the claim was issued. |
 | `expires_at` | no | timestamp | When the task store MAY reclaim. |
 
-The `claim` field MUST be present when `state ∈ {"claimed", "submitted"}` and MUST NOT be present for any other state. The claim is retained through `"submitted"` so that the task protocol can authorize resubmission by token ([`04-task-protocol.md`](04-task-protocol.md) §4.2); it is cleared on reclamation and on the terminal transition to `"completed"` or `"failed"`. The schema in [`schemas/task.schema.json`](schemas/task.schema.json) enforces this presence rule.
+The `claim` field MUST be present when `state ∈ {"claimed", "submitted"}` and MUST NOT be present for any other state. The claim is retained through `"submitted"` so that the task protocol can authorize resubmission by matching the authenticated worker's id against `claim.worker_id` ([`04-task-protocol.md`](04-task-protocol.md) §4.2); it is cleared on reclamation and on the terminal transition to `"completed"` or `"failed"`. The schema in [`schemas/task.schema.json`](schemas/task.schema.json) enforces this presence rule.
+
+A `claim` object MUST NOT carry an opaque per-claim token. The pre-12a-1 `token` field has been removed: claim ownership is now established by matching the authenticated worker's id (per the binding's authentication scheme) against `claim.worker_id` atomically with the submit transition, eliminating the prior token's authentication role and the application-scoped claim it produced.
+
+### 3.5 Target object
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `kind` | yes | string | Either `"worker"` or `"group"`. Tags the namespace `id` is drawn from so that worker- and group-id namespaces remain disambiguated even when they share the §6.1 grammar. |
+| `id` | yes | string (worker_id grammar; §6.1) | Names the specific worker (when `kind == "worker"`) or the group (when `kind == "group"`) the task is reserved for. |
+
+If `target` is absent on a task, the task is **open**: any registered worker (§6) of the matching `kind` may claim. If `target.kind == "worker"`, only the named worker MAY claim. If `target.kind == "group"`, only workers transitively in that group (§7.2) MAY claim. Claim-time enforcement is specified in [`04-task-protocol.md`](04-task-protocol.md) §3.5.
+
+`target` is set at task-creation time. The protocol does not define a reassign operation in v0; later spec lineages may add one.
 
 ## 4. Event
 
@@ -160,18 +175,98 @@ An idea is the ideator's output.
 | `artifacts_uri` | yes | string (URI) | Where the ideator's output documents live. |
 | `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §7). |
 | `created_at` | yes | timestamp | When the idea was created. |
+| `created_by` | no | string (worker_id) | The ideator's `worker_id`. Written at idea-creation time by the ideator's host and preserved across the idea's terminal state. |
 
 ### 5.2 Parent commits
 
 `parent_commits` MUST contain at least one SHA. Each SHA MUST name a commit reachable from the experiment's starting commit on `main` or from an already-completed variant on the canonical variant lineage.
 
-## 6. Evaluation schema
+## 6. Worker registry
+
+Schema: [`schemas/worker.schema.json`](schemas/worker.schema.json).
+
+A **worker** is a registered identity that participates in the task protocol. The registry is **per-experiment**: each experiment owns a separate set of workers, and the same `worker_id` string in two experiments names two distinct registry entries. Cross-experiment worker identity is out of scope for v0.
+
+### 6.1 Identifier grammar
+
+A `worker_id` MUST match the regular expression `^[a-z0-9][a-z0-9_-]{0,63}$`: at most 64 characters, lowercase alphanumeric plus `-` and `_`, with the first character drawn from `[a-z0-9]` (no leading hyphen, no leading underscore). Group identifiers (§7) follow the same grammar — the namespaces are independent (§3.5) but their string shapes are identical so the same parser can be reused.
+
+The grammar deliberately excludes characters that conflict with deployment-binding concerns: `:` is reserved for the bearer-credential separator in the reference HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md) §13.2); whitespace and URI-unsafe characters are excluded so that `worker_id` round-trips through HTTP request bodies, log fields, and ref names without escaping.
+
+The following identifiers are **reserved** and MUST be rejected by the registry's write operations even though the grammar admits them:
+
+- `admin` — reserved for the admin authentication principal in the reference binding.
+- `system`, `internal` — reserved for future protocol use.
+
+A leading `_` (underscore) is excluded by the grammar above; the reservation rule is documentational. The reservations apply to both worker and group registrations.
+
+### 6.2 Fields
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `worker_id` | yes | string (§6.1) | Operator-supplied identifier; unique within the experiment. |
+| `experiment_id` | yes | string | Names the experiment whose registry holds this worker. |
+| `registered_at` | yes | timestamp | When the worker's record was first created. |
+| `registered_by` | no | string | Actor identifier of the credential that performed the registration (typically the admin sentinel `admin`). |
+| `labels` | no | object | Free-form `string → string` map for deployment-defined metadata (e.g. `{"role": "executor", "model": "claude-opus-4-7"}`). The protocol does not interpret labels. |
+
+The wire-visible Worker shape MUST NOT carry the worker's authentication credential or any hash of it. Implementations that issue per-worker credentials store them in storage-private fields outside the schema; binding-layer specifications (e.g. [`07-wire-protocol.md`](07-wire-protocol.md) §13) define the credential format and exchange.
+
+### 6.3 Registration discipline
+
+- `register_worker(worker_id, labels?)` is **idempotent on the existing record**: a second registration of an already-registered `worker_id` MUST return the existing record and MUST NOT issue or rotate any credential. This keeps service-restart-after-crash cheap.
+- A separate explicit operation (`reissue_credential` in the reference binding) rotates a worker's credential; conflating it with re-registration leaves credential-recovery flows ambiguous. The exact name and shape of the rotation operation is binding-defined.
+- A registration that violates §6.1 MUST be rejected. The two §6.1 violation modes raise distinct typed errors so a conforming binding can map them to different wire statuses: a grammar violation raises `InvalidPrecondition` ([`07-wire-protocol.md`](07-wire-protocol.md) §6.1 binds this to 400 `eden://error/bad-request`); a use of one of the reserved identifiers (`admin`, `system`, `internal`) raises `ReservedIdentifier` (chapter 07 §7 binds this to 409 `eden://error/reserved-identifier`).
+
+## 7. Groups
+
+Schema: [`schemas/group.schema.json`](schemas/group.schema.json).
+
+A **group** is a named, recursively-resolved set of workers and other groups within a single experiment. Groups exist so that `Task.target` (§3.5) can name a routing intent broader than a single worker without requiring the protocol to introduce label-selector machinery.
+
+### 7.1 Fields
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `group_id` | yes | string (§6.1 grammar) | Operator-supplied identifier; unique within the experiment. |
+| `experiment_id` | yes | string | Names the experiment whose registry holds this group. |
+| `members` | yes | array of string (§6.1 grammar) | Each member is either a registered `worker_id` or another `group_id` in the same experiment. The empty-list case is permitted; it produces a group that no worker satisfies. |
+| `created_at` | yes | timestamp | When the group was created. |
+| `created_by` | no | string | Actor identifier of the caller that created the group (typically `admin`). |
+
+A group member named in `members` need not exist at write time; the resolver in §7.2 simply walks names. A reference to a non-existent worker / group resolves to membership=false.
+
+**Worker / group namespaces MUST be disjoint within an experiment.** Because group `members` are untagged strings, the resolver in §7.2 would otherwise have to guess whether a name resolves through the worker registry (terminal leaf) or the group registry (recursive descent). To eliminate that ambiguity, a conforming registry MUST reject:
+
+- a `register_worker(id)` when `id` already names a registered group, and
+- a `register_group(id, …)` when `id` already names a registered worker.
+
+The rejection MUST surface as `eden://error/already-exists` (the existing wire mapping for duplicate-registration at the cross-namespace level). Implementations MAY use any equivalent typed error at the Store layer.
+
+### 7.2 Membership resolution
+
+A worker `w` is a **member** of group `g` if any of the following holds:
+
+- `w ∈ g.members`, OR
+- there exists a `group_id` `h` such that `h ∈ g.members` and `w` is a member of `h` (transitive closure).
+
+Resolution is a topo-walk over the group DAG; it MUST terminate. The protocol does not prescribe a specific algorithm.
+
+### 7.3 No cycles
+
+The set of group definitions in an experiment forms a directed graph whose edges go from a group to each of its members. A conforming registry MUST reject any `register_group` (or equivalent mutation) that would introduce a cycle in this graph. Detection is performed at write time; resolution at read time is therefore safe by construction.
+
+### 7.4 No default groups
+
+The protocol does not define any well-known group names (`humans`, `agents`, etc.). A deployment that wants such groups MUST register them explicitly. This keeps the protocol policy-free.
+
+## 8. Evaluation schema
 
 Schema: [`schemas/evaluation-schema.schema.json`](schemas/evaluation-schema.schema.json).
 
 A evaluation schema is a mapping from metric name to storage type. It appears as the `evaluation_schema` field of an experiment config and is used to validate every evaluation payload the evaluator produces.
 
-### 6.1 Shape
+### 8.1 Shape
 
 The evaluation schema is a JSON object whose keys are metric names and whose values are type strings.
 
@@ -179,17 +274,17 @@ The evaluation schema is a JSON object whose keys are metric names and whose val
 - A type value MUST be one of `"integer"`, `"real"`, `"text"`.
 - A evaluation schema MUST have at least one entry.
 
-### 6.2 Reserved names
+### 8.2 Reserved names
 
 The names `variant_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the variant object and MUST NOT appear in a evaluation schema.
 
-## 7. Variant
+## 9. Variant
 
 Schema: [`schemas/variant.schema.json`](schemas/variant.schema.json).
 
 A variant is one completed attempt.
 
-### 7.1 Fields
+### 9.1 Fields
 
 | Field | Required | Type | Description |
 |---|---|---|---|
@@ -206,21 +301,23 @@ A variant is one completed attempt.
 | `metrics` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
 | `started_at` | yes | timestamp | When the executor began. |
 | `completed_at` | no | timestamp | Set when the variant reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"evaluation_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
+| `executed_by` | no | string (worker_id) | The executor's `worker_id`; written at execution-task submit time (atomically with the variant's status transition out of `"starting"`). |
+| `evaluated_by` | no | string (worker_id) | The evaluator's `worker_id` whose metrics were committed; written at evaluation-task submit time. |
 
-### 7.2 Evaluation payload
+### 9.2 Evaluation payload
 
 If present, `metrics` MUST be an object whose keys are a subset of the declared evaluation-schema keys and whose values match the declared types (§1.3) or are `null`. Because the evaluation-schema is per-experiment, [`schemas/variant.schema.json`](schemas/variant.schema.json) cannot express this constraint generically and leaves `metrics` as an open object; the per-metric type check is a runtime responsibility of the orchestrator. A conforming orchestrator MUST reject a evaluation payload that violates the experiment's evaluation-schema, and MUST NOT record the variant as `"success"` in that case.
 
-### 7.3 Status transitions
+### 9.3 Status transitions
 
 Variant status transitions are behavioral and are defined alongside the task and event protocols in [`04-task-protocol.md`](04-task-protocol.md). The data model constrains only that the status be one of the listed strings.
 
-## 8. Invariants across entities
+## 10. Invariants across entities
 
 This section collects structural invariants that span multiple entities. Behavioral invariants (claim semantics, transactional event writes) live in the corresponding behavior chapters.
 
 1. **Identifier scope.** `task_id`, `idea_id`, `variant_id`, and `event_id` MUST each be unique within a single experiment. Uniqueness across experiments is not required by the protocol but is RECOMMENDED when an implementation shares a store across experiments.
 2. **Reference integrity.** Every `idea_id` referenced by a task payload or variant MUST name an idea persisted in the store before the reference is written. Every `variant_id` referenced by an `evaluation` task MUST exist with `status == "starting"` at dispatch time.
-3. **Evaluation/schema conformance.** Every evaluation payload persisted on a variant MUST validate against the experiment's `evaluation_schema` (§6).
+3. **Evaluation/schema conformance.** Every evaluation payload persisted on a variant MUST validate against the experiment's `evaluation_schema` (§8).
 4. **Canonical-lineage single-writer.** Only the integrator MAY write to `variant_commit_sha` on a variant. Workers MUST NOT set or modify this field directly.
 5. **Claim uniqueness.** A task MAY have at most one active `claim` object at any time.

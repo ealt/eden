@@ -31,7 +31,7 @@ def test_submit_with_mismatched_variant_id_rejected(wire_client: WireClient) -> 
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id="some-other-variant",
         evaluation={"score": 1.0},
     )
@@ -56,7 +56,7 @@ def test_success_evaluation_outside_schema_must_not_complete_variant(
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         evaluation={"score": 1.0, "undeclared_key": 99},
     )
@@ -98,7 +98,7 @@ def test_success_metric_wrong_type_must_not_complete_variant(
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         # retries is declared `integer`; 1.5 is not a JSON-legal integer.
         evaluation={"score": 1.0, "retries": 1.5},
@@ -144,7 +144,7 @@ def test_success_writes_variant_fields_post_accept(
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         evaluation=evaluation,
         artifacts_uri=artifacts_uri,
@@ -185,7 +185,7 @@ def test_status_error_writes_variant_evaluation_and_artifacts(
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         status="error",
         evaluation=evaluation,
@@ -217,7 +217,7 @@ def test_eval_error_keeps_variant_starting_and_does_not_graft_evaluation(
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         status="evaluation_error",
         evaluation={"score": 0.5, "retries": 1},
@@ -246,7 +246,7 @@ def test_retry_exhausted_eval_error_does_not_graft_prior_evaluation(
     r = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         status="evaluation_error",
         evaluation={"score": 0.25, "retries": 7},
@@ -283,7 +283,7 @@ def test_resubmit_idempotent_under_role_rules(
     r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         evaluation=evaluation,
         artifacts_uri=artifacts_uri,
@@ -292,7 +292,7 @@ def test_resubmit_idempotent_under_role_rules(
     r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         evaluation=dict(evaluation),
         artifacts_uri=artifacts_uri,
@@ -327,7 +327,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
     r1 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         evaluation=evaluation,
         artifacts_uri=first_uri,
@@ -336,7 +336,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
     r2 = _seed.submit_evaluation(
         wire_client,
         eval_tid,
-        token=c["token"],
+        worker_id=c["worker_id"],
         variant_id=variant_id,
         evaluation=dict(evaluation),
         artifacts_uri=second_uri,

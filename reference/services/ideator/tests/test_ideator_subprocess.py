@@ -31,6 +31,10 @@ def _seed_store_and_repo(tmp_path: Path) -> tuple[InMemoryStore, str]:
         experiment_id=EXPERIMENT_ID,
         evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
     )
+    # 12a-1 wave 5: Store.claim's §3.5 step-2 registration check
+    # rejects unregistered worker_ids. Pre-register the ideator-1
+    # worker the subprocess loop uses.
+    store.register_worker("ideator-1")
     return store, seed_sha
 
 

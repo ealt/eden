@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from ._common import CommitSha, DateTimeStr, NotNone, UriStr
+from ._common import CommitSha, DateTimeStr, NotNone, UriStr, WorkerId
 
 VariantStatus = Literal["starting", "success", "error", "evaluation_error"]
 """Variant lifecycle statuses; ``success``, ``error``, ``evaluation_error`` are terminal."""
@@ -38,3 +38,5 @@ class Variant(BaseModel):
     evaluation: Annotated[dict[str, Any] | None, NotNone] = None
     started_at: DateTimeStr
     completed_at: Annotated[DateTimeStr | None, NotNone] = None
+    executed_by: Annotated[WorkerId | None, NotNone] = None
+    evaluated_by: Annotated[WorkerId | None, NotNone] = None

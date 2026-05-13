@@ -16,10 +16,12 @@ from eden_contracts import (
     EvaluationSchema,
     Event,
     ExperimentConfig,
+    Group,
     Idea,
     RegisteredEventAdapter,
     TaskAdapter,
     Variant,
+    Worker,
 )
 
 from .cases import ALL_CASES
@@ -52,6 +54,8 @@ _MODEL_DUMPERS = {
     "evaluation-schema": lambda d: EvaluationSchema.model_validate(d).model_dump(
         mode="json", exclude_none=True
     ),
+    "worker": lambda d: Worker.model_validate(d).model_dump(mode="json", exclude_none=True),
+    "group": lambda d: Group.model_validate(d).model_dump(mode="json", exclude_none=True),
 }
 
 

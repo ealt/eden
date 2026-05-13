@@ -84,7 +84,49 @@ def _apply_v1(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
-_MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_apply_v1]
+_V2_STATEMENTS: list[str] = [
+    # Worker registry (12a-1 wave 2).
+    # `data` is the canonical wire-visible Worker JSON (no credential
+    # hash); `credential_hash` is stored separately so reads against
+    # `data` never need to redact the secret. Together they round-trip
+    # the §6.2 fields plus the §6.3 credential.
+    """
+    CREATE TABLE worker (
+        worker_id TEXT NOT NULL PRIMARY KEY,
+        data TEXT NOT NULL,
+        credential_hash TEXT NOT NULL
+    )
+    """,
+    # Group registry. `data` carries the canonical Group JSON.
+    # Membership is denormalized into `group_membership` only as an
+    # implementation aid for future indexed queries; the JSON in
+    # `data` remains the source of truth, exactly mirroring the
+    # task / idea / variant pattern.
+    """
+    CREATE TABLE worker_group (
+        group_id TEXT NOT NULL PRIMARY KEY,
+        data TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE group_membership (
+        group_id TEXT NOT NULL,
+        member_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (group_id, member_id),
+        FOREIGN KEY (group_id) REFERENCES worker_group(group_id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX group_membership_by_member ON group_membership(member_id)",
+]
+
+
+def _apply_v2(conn: sqlite3.Connection) -> None:
+    for stmt in _V2_STATEMENTS:
+        conn.execute(stmt)
+
+
+_MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_apply_v1, _apply_v2]
 
 
 def current_version(conn: sqlite3.Connection) -> int:

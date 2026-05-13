@@ -20,6 +20,7 @@ from eden_service_common import (
     reap_orphaned_containers,
     require_command,
     resolve_exec_args,
+    resolve_worker_bearer,
     wait_for_task_store,
 )
 from eden_wire import StoreClient
@@ -102,6 +103,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _credential_secret(bearer: str | None) -> str | None:
+    """Extract the secret half of a §13.1 ``<principal>:<secret>`` bearer."""
+    if bearer is None or ":" not in bearer:
+        return None
+    return bearer.split(":", 1)[1]
+
+
 def _ensure_repo_clone(
     *,
     log,  # noqa: ANN001 — _CtxAdapter, not exposed
@@ -147,8 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     wait_for_task_store(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        token=args.shared_token,
+        token=None,
         deadline_seconds=args.startup_timeout,
+    )
+    bearer = resolve_worker_bearer(
+        args, worker_id=args.worker_id, labels={"role": "executor"}
     )
     log.info("starting", worker_id=args.worker_id, repo=args.repo_path, mode=args.mode)
     _ensure_repo_clone(
@@ -160,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
-        token=args.shared_token,
+        bearer=bearer,
     ) as client:
         if args.mode == "scripted":
             run_executor_loop(
@@ -198,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
                 exec_binds=tuple(exec_args.binds),
                 cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
                 host_id=host_id,
+                worker_credential=_credential_secret(bearer),
             )
             run_executor_subprocess_loop(
                 store=client,

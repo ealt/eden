@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from eden_contracts import Event
-from eden_contracts._common import CommitSha, DateTimeStr, NotNone
+from eden_contracts._common import CommitSha, DateTimeStr, NotNone, WorkerId
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -26,25 +26,38 @@ OptionalDateTime = Annotated[DateTimeStr | None, NotNone]
 
 
 class ClaimRequest(_WireBase):
-    """Body for ``POST /v0/experiments/{E}/tasks/{T}/claim``."""
+    """Body for ``POST /v0/experiments/{E}/tasks/{T}/claim``.
 
-    worker_id: str = Field(min_length=1)
+    The claimant ``worker_id`` is taken from the authenticated bearer
+    (``07-wire-protocol.md`` §2.3 + §13). The body contains only the
+    optional ``expires_at`` timestamp. (12a-1 dropped the body's
+    ``worker_id`` field; the bearer is now authoritative.)
+    """
+
     expires_at: OptionalDateTime = None
 
 
 class ClaimResponse(_WireBase):
-    """Body for a successful claim response."""
+    """Body for a successful claim response.
 
-    token: str = Field(min_length=1)
-    worker_id: str = Field(min_length=1)
+    Mirrors ``schemas/task.schema.json`` §3.4 — no ``token`` field
+    since 12a-1 (claim ownership is now identity-keyed).
+    """
+
+    worker_id: WorkerId
     claimed_at: DateTimeStr
     expires_at: OptionalDateTime = None
 
 
 class SubmitRequest(_WireBase):
-    """Body for ``POST /v0/experiments/{E}/tasks/{T}/submit``."""
+    """Body for ``POST /v0/experiments/{E}/tasks/{T}/submit``.
 
-    token: str = Field(min_length=1)
+    The submitting ``worker_id`` is taken from the authenticated bearer
+    (``07-wire-protocol.md`` §2.4 + §13). The body contains only the
+    role-specific ``payload``. The Store performs the §4.1 atomic
+    claim-match (``WrongClaimant`` / ``NotClaimed``).
+    """
+
     payload: dict[str, Any]
 
 
@@ -86,14 +99,71 @@ class ValidateEvaluationRequest(_WireBase):
     evaluation: dict[str, Any]
 
 
+# ---------------------------------------------------------------------
+# Worker registry (12a-1)
+# ---------------------------------------------------------------------
+
+
+class RegisterWorkerRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/workers`` (§6.1)."""
+
+    worker_id: WorkerId
+    labels: dict[str, str] | None = None
+
+
+class WorkerRegistration(_WireBase):
+    """Response from ``register_worker`` / ``reissue_credential``.
+
+    ``registration_token`` is the freshly-minted plaintext credential
+    (returned exactly once); on idempotent re-registration of an
+    existing ``worker_id`` it is omitted entirely.
+    """
+
+    worker_id: WorkerId
+    experiment_id: str = Field(min_length=1)
+    registered_at: DateTimeStr
+    registered_by: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    labels: dict[str, str] | None = None
+    registration_token: Annotated[str | None, NotNone, Field(min_length=1)] = None
+
+
+class WhoamiResponse(_WireBase):
+    """Body for ``GET /v0/experiments/{E}/whoami`` (§6.4)."""
+
+    worker_id: WorkerId
+
+
+# ---------------------------------------------------------------------
+# Group registry (12a-1)
+# ---------------------------------------------------------------------
+
+
+class RegisterGroupRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/groups`` (§7.1)."""
+
+    group_id: WorkerId  # group ids share the §6.1 grammar
+    members: list[WorkerId] | None = None
+
+
+class AddGroupMemberRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/groups/{G}/members`` (§7.2)."""
+
+    member_id: WorkerId
+
+
 __all__ = [
+    "AddGroupMemberRequest",
     "ClaimRequest",
     "ClaimResponse",
     "EventsResponse",
     "IntegrateRequest",
     "ReclaimRequest",
+    "RegisterGroupRequest",
+    "RegisterWorkerRequest",
     "RejectRequest",
     "SubmitRequest",
     "ValidateEvaluationRequest",
     "ValidateTerminalResponse",
+    "WhoamiResponse",
+    "WorkerRegistration",
 ]

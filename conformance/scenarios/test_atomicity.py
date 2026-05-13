@@ -57,6 +57,7 @@ def test_task_state_change_visible_only_after_event_appended(
     # Give subscribe a moment to land on the wire before transitioning.
     time.sleep(0.1)
 
+    _seed.register_worker(wire_client, "atomic-w")
     _seed.claim(wire_client, tid, worker_id="atomic-w")
     poll_done.wait(timeout=10.0)
     assert poll_done.is_set(), "long-poll did not return after transition"

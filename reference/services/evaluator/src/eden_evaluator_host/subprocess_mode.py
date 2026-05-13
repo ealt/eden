@@ -36,8 +36,8 @@ from eden_storage import (
     EvaluationSubmission,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     Store,
-    WrongToken,
 )
 from eden_storage.submissions import submissions_equivalent
 
@@ -63,6 +63,11 @@ class EvaluatorSubprocessConfig:
     exec_binds: tuple = ()
     cidfile_dir: Path | None = None
     host_id: str = ""
+    worker_credential: str | None = None
+    """The worker's per-worker bearer secret (the half after ``:`` in
+    the §13.1 bearer string), forwarded to spawned children as
+    ``EDEN_WORKER_CREDENTIAL`` so user code can authenticate as the
+    host. ``None`` when auth is disabled (test posture)."""
 
 
 def _fetch_variant_branch(*, repo_path: Path, branch: str) -> None:
@@ -168,7 +173,7 @@ def _handle_one(
             _submit_with_readback(
                 store=store,
                 task_id=task.task_id,
-                token=claim.token,
+                token=claim.worker_id,
                 submission=EvaluationSubmission(
                     status="evaluation_error",
                     variant_id=variant_id,
@@ -193,7 +198,7 @@ def _handle_one(
         _submit_with_readback(
             store=store,
             task_id=task.task_id,
-            token=claim.token,
+            token=claim.worker_id,
             submission=EvaluationSubmission(
                 status="evaluation_error",
                 variant_id=variant_id,
@@ -211,6 +216,7 @@ def _handle_one(
             evaluation_schema=evaluation_schema,
             objective=objective,
             config=config,
+            worker_id=worker_id,
         )
     except Exception:  # noqa: BLE001
         log.exception(
@@ -238,7 +244,7 @@ def _handle_one(
     _submit_with_readback(
         store=store,
         task_id=task.task_id,
-        token=claim.token,
+        token=claim.worker_id,
         submission=submission,
     )
 
@@ -302,6 +308,7 @@ def _run_subprocess(
     evaluation_schema: dict,
     objective: dict,
     config: EvaluatorSubprocessConfig,
+    worker_id: str,
 ) -> dict[str, Any]:
     eden_dir = wt_path / ".eden"
     eden_dir.mkdir(parents=True, exist_ok=True)
@@ -323,6 +330,12 @@ def _run_subprocess(
     env["EDEN_OUTPUT"] = ".eden/eval-outcome.json"
     env["EDEN_WORKTREE"] = str(wt_path)
     env["EDEN_EXPERIMENT_DIR"] = str(config.experiment_dir.resolve())
+    # Forward the host's worker identity + per-worker credential into
+    # the spawned child's env so user code can issue its own wire calls
+    # under the same identity (12a-1 §D.5; reference-binding doc).
+    env["EDEN_WORKER_ID"] = worker_id
+    if config.worker_credential is not None:
+        env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
 
     command = config.command
     post_kill = None
@@ -421,7 +434,7 @@ def _submit_with_readback(
         try:
             store.submit(task_id, token, submission)
             return
-        except (WrongToken, ConflictingResubmission, InvalidPrecondition):
+        except (NotClaimed, ConflictingResubmission, InvalidPrecondition):
             return
         except IllegalTransition:
             last_exc = None

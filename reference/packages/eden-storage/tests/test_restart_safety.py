@@ -17,7 +17,6 @@ the same semantics hold *across* a process boundary.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -36,18 +35,35 @@ from eden_storage import (
     VariantSubmission,
 )
 
+# Worker-ids the in-line tests use against directly-constructed stores.
+# We register them at the top of each test rather than threading the
+# `make_store` fixture's default-seeding because these tests construct
+# stores directly to exercise the cross-restart path.
+_RESTART_WORKERS = (
+    "ideator-1",
+    "ideator-w",
+    "execution-1",
+    "executor-w",
+    "evaluation-1",
+    "eval-1",
+    "evaluator-w",
+    "impl-worker",
+    "test-worker",
+    "worker-a",
+)
 
-def _token_seq() -> Callable[[], str]:
-    counter = iter(range(1, 10_000))
-    return lambda: f"tok-{next(counter):06d}"
 
+def _register_restart_workers(store) -> None:
+    for wid in _RESTART_WORKERS:
+        store.register_worker(wid)
 
 class TestStateSurvivesReopen:
     """Every acknowledged write (§3.1) MUST be visible after reopen."""
 
     def test_tasks_ideas_variants_and_events_survive(self, tmp_path: Path) -> None:
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
+        _register_restart_workers(first)
         first.create_idea(
             Idea(
                 idea_id="p1",
@@ -76,7 +92,7 @@ class TestStateSurvivesReopen:
         )
         first.submit(
             "t-exec",
-            claim.token,
+            claim.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         first.accept("t-exec")
@@ -84,6 +100,7 @@ class TestStateSurvivesReopen:
         first.close()
 
         second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         assert [e.type for e in second.events()] == [e.type for e in first_events]
         assert second.read_task("t-exec").state == "completed"
         assert second.read_idea("p1").state == "completed"
@@ -96,31 +113,35 @@ class TestStateSurvivesReopen:
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
+        _register_restart_workers(first)
         first.create_ideation_task("t-ideation")
         claim = first.claim("t-ideation", "ideator-w")
         first.close()
 
         second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         task = second.read_task("t-ideation")
         assert task.state == "claimed"
         assert task.claim is not None
-        assert task.claim.token == claim.token
+        assert task.claim.worker_id == claim.worker_id
         # The persisted token authorizes a fresh submit on the reopened store.
-        second.submit("t-ideation", claim.token, IdeaSubmission(status="success"))
+        second.submit("t-ideation", claim.worker_id, IdeaSubmission(status="success"))
         assert second.read_task("t-ideation").state == "submitted"
         second.close()
 
     def test_event_order_total_and_preserved(self, tmp_path: Path) -> None:
         """§2.2 single total order; §4.4 full replay from first event."""
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
+        _register_restart_workers(first)
         first.create_ideation_task("t1")
         first.create_ideation_task("t2")
         before = [e.event_id for e in first.events()]
         first.close()
 
         second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         second.create_ideation_task("t3")
         after = [e.event_id for e in second.events()]
         assert after[: len(before)] == before
@@ -216,6 +237,7 @@ class TestExperimentIdentityIsEnforced:
         # Reopen with the default factory; subsequent event must not
         # collide with the synthetic one.
         second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         second.create_ideation_task("t-new")
         # The newly-appended event must come after the synthetic one.
         events = second.events()
@@ -237,11 +259,11 @@ class TestExperimentIdentityIsEnforced:
             "exp-a",
             path,
             evaluation_schema=EvaluationSchema({"score": "integer"}),
-            token_factory=_token_seq(),
         )
         first.close()
 
-        second = SqliteStore("exp-a", path, token_factory=_token_seq())
+        second = SqliteStore("exp-a", path)
+        _register_restart_workers(second)
         # Drive a full variant to the point of an evaluation-task submission and
         # assert the inherited schema rejects a wrong-type metric.
         second.create_idea(
@@ -272,7 +294,7 @@ class TestExperimentIdentityIsEnforced:
         )
         second.submit(
             "t-exec",
-            c.token,
+            c.worker_id,
             VariantSubmission(status="success", variant_id="variant-1", commit_sha="b" * 40),
         )
         second.accept("t-exec")
@@ -280,7 +302,7 @@ class TestExperimentIdentityIsEnforced:
         ec = second.claim("t-eval", "evaluator-w")
         second.submit(
             "t-eval",
-            ec.token,
+            ec.worker_id,
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -308,7 +330,8 @@ class TestCrashRecoveryRollsBackPartialWrites:
         pre-operation checkpoint.
         """
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
+        _register_restart_workers(first)
         first.create_idea(
             Idea(
                 idea_id="p1",
@@ -342,6 +365,7 @@ class TestCrashRecoveryRollsBackPartialWrites:
         # Reopen and verify: no task row, idea still 'ready', event
         # log unchanged from the checkpoint.
         second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         assert second.list_tasks() == []
         assert second.read_idea("p1").state == "ready"
         assert [e.event_id for e in second.events()] == checkpoint_events
@@ -355,7 +379,6 @@ class TestRunExperimentAcrossRestarts:
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / "eden.db"
-        token_factory = _token_seq()
 
         idea_ids = iter([f"idea-{i:02d}" for i in range(1, 10)])
         variant_ids = iter([f"variant-{i:02d}" for i in range(1, 10)])
@@ -393,7 +416,8 @@ class TestRunExperimentAcrossRestarts:
             "execution-1", exec_fn, variant_id_factory=lambda: next(variant_ids), now=now
         )
 
-        first = SqliteStore("exp-r", path, token_factory=token_factory)
+        first = SqliteStore("exp-r", path)
+        _register_restart_workers(first)
         # Run ideator + executor only; leave variant awaiting evaluation.
         first.create_ideation_task("t-ideation-01")
         ideator.run_pending(first)
@@ -411,7 +435,8 @@ class TestRunExperimentAcrossRestarts:
 
         # Reopen; finish the experiment with a fresh evaluator.
         evaluator = ScriptedEvaluator("eval-1", eval_fn)
-        second = SqliteStore("exp-r", path, token_factory=token_factory)
+        second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         second.create_evaluation_task(next(eval_task_ids), "variant-01")
         evaluator.run_pending(second)
         decision, _ = second.validate_terminal("t-eval-01")
@@ -442,12 +467,14 @@ class TestEventLogRetention:
 
     def test_close_reopen_preserves_every_event(self, tmp_path: Path) -> None:
         path = tmp_path / "eden.db"
-        first = SqliteStore("exp-r", path, token_factory=_token_seq())
+        first = SqliteStore("exp-r", path)
+        _register_restart_workers(first)
         for i in range(5):
             first.create_ideation_task(f"t-{i:02d}")
         seen = [(e.event_id, e.type) for e in first.events()]
         first.close()
 
         second = SqliteStore("exp-r", path)
+        _register_restart_workers(second)
         assert [(e.event_id, e.type) for e in second.events()] == seen
         second.close()

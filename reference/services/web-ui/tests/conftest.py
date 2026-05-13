@@ -43,7 +43,32 @@ def _now() -> datetime:
 @pytest.fixture
 def store() -> InMemoryStore:
     cfg = _config()
-    return InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema=cfg.evaluation_schema)
+    store = InMemoryStore(
+        experiment_id=EXPERIMENT_ID, evaluation_schema=cfg.evaluation_schema
+    )
+    # 12a-1 wave 5: Store.claim enforces the §3.5 step-2 registration
+    # check, so every worker_id the web-ui tests hand to `claim` must
+    # exist in the registry. Register the conventional ids here so
+    # each test starts with a fresh-but-seeded store.
+    for wid in (
+        WORKER_ID,  # "ui-w"
+        "ui-w-other",
+        "another-worker",
+        "evaluator-other",
+        "evaluator-w",
+        "executor-other",
+        "executor-other-1",
+        "executor-w",
+        "ideator-1",
+        "ideator-w",
+        "impl-worker",
+        "other-w",
+        "other-worker",
+        "w-1",
+        "worker-other",
+    ):
+        store.register_worker(wid)
+    return store
 
 
 @pytest.fixture
@@ -342,7 +367,7 @@ def seed_evaluate_task(
 
     store.submit(
         exec_task_id,
-        exec_claim.token,
+        exec_claim.worker_id,
         VariantSubmission(status="success", variant_id=variant_id, commit_sha=commit_sha),
     )
     store.accept(exec_task_id)

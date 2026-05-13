@@ -1,18 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN wire — claim response",
-  "description": "Response body for a successful POST /v0/experiments/{E}/tasks/{T}/claim. See 07-wire-protocol.md §2.3; the `claim` object matches task.schema.json §3.4.",
+  "description": "Response body for a successful POST /v0/experiments/{E}/tasks/{T}/claim. See 07-wire-protocol.md §2.3; the `claim` object matches task.schema.json §3.4. The pre-12a-1 `token` field has been removed (claim ownership is now identity-keyed via worker_id).",
   "type": "object",
-  "required": ["token", "worker_id", "claimed_at"],
+  "required": ["worker_id", "claimed_at"],
   "additionalProperties": false,
   "properties": {
-    "token": {
-      "type": "string",
-      "minLength": 1
-    },
     "worker_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
     },
     "claimed_at": {
       "type": "string",

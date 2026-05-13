@@ -71,7 +71,7 @@ class TestTaskReclaimFailures:
 
         task_id = _seed_ideation_task(store, "ideation-A")
         claim = store.claim(task_id, "w-1")
-        store.submit(task_id, claim.token, IdeaSubmission(status="success", idea_ids=()))
+        store.submit(task_id, claim.worker_id, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(

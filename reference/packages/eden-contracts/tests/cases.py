@@ -176,7 +176,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
 
 
 _VALID_CLAIM = {
-    "token": "claim-1",
     "worker_id": "worker-a",
     "claimed_at": _DT,
 }
@@ -360,7 +359,7 @@ TASK_CASES: list[Case] = [
             "kind": "ideation",
             "state": "claimed",
             "payload": {"experiment_id": "exp-1"},
-            "claim": {"token": "c", "worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
+            "claim": {"worker_id": "w", "claimed_at": "2026-04-23 12:00:00"},
             "created_at": _DT,
             "updated_at": _DT,
         },
@@ -386,6 +385,124 @@ TASK_CASES: list[Case] = [
             "state": "pending",
             "payload": {"experiment_id": "exp-1"},
             "claim": None,
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "target_worker_ok",
+        {
+            "task_id": "t-18",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": {"experiment_id": "exp-1"},
+            "target": {"kind": "worker", "id": "eric"},
+            "created_by": "admin",
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "target_group_ok",
+        {
+            "task_id": "t-19",
+            "kind": "execution",
+            "state": "pending",
+            "payload": {"idea_id": "idea-1"},
+            "target": {"kind": "group", "id": "humans"},
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "submitted_by_persists_after_terminal",
+        {
+            "task_id": "t-20",
+            "kind": "evaluation",
+            "state": "completed",
+            "payload": {"variant_id": "variant-1"},
+            "submitted_by": "evaluator-a",
+            "created_at": _DT,
+            "updated_at": _DT2,
+        },
+        True,
+    ),
+    Case(
+        "target_invalid_kind",
+        {
+            "task_id": "t-21",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": {"experiment_id": "exp-1"},
+            "target": {"kind": "anyone", "id": "eric"},
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "target_id_uppercase",
+        {
+            "task_id": "t-22",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": {"experiment_id": "exp-1"},
+            "target": {"kind": "worker", "id": "Eric"},
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "target_id_leading_hyphen",
+        {
+            "task_id": "t-23",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": {"experiment_id": "exp-1"},
+            "target": {"kind": "worker", "id": "-eric"},
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "target_missing_id",
+        {
+            "task_id": "t-24",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": {"experiment_id": "exp-1"},
+            "target": {"kind": "worker"},
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "submitted_by_uppercase",
+        {
+            "task_id": "t-25",
+            "kind": "ideation",
+            "state": "completed",
+            "payload": {"experiment_id": "exp-1"},
+            "submitted_by": "Worker-A",
+            "created_at": _DT,
+            "updated_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "target_null_on_pending",
+        {
+            "task_id": "t-26",
+            "kind": "ideation",
+            "state": "pending",
+            "payload": {"experiment_id": "exp-1"},
+            "target": None,
             "created_at": _DT,
             "updated_at": _DT,
         },
@@ -917,6 +1034,51 @@ IDEA_CASES: list[Case] = [
         },
         False,
     ),
+    Case(
+        "created_by_ok",
+        {
+            "idea_id": "idea-15",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "created_by": "ideator-a",
+        },
+        True,
+    ),
+    Case(
+        "created_by_uppercase",
+        {
+            "idea_id": "idea-16",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "created_by": "Ideator-A",
+        },
+        False,
+    ),
+    Case(
+        "created_by_null",
+        {
+            "idea_id": "idea-17",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "created_by": None,
+        },
+        False,
+    ),
 ]
 
 
@@ -1066,6 +1228,219 @@ VARIANT_CASES: list[Case] = [
         },
         False,
     ),
+    Case(
+        "executed_and_evaluated_by_ok",
+        {
+            "variant_id": "variant-12",
+            "experiment_id": "exp-1",
+            "idea_id": "idea-1",
+            "status": "success",
+            "parent_commits": [_SHA1],
+            "branch": "work/v-12",
+            "commit_sha": "b" * 40,
+            "evaluation": {"accuracy": 0.9},
+            "executed_by": "exec-a",
+            "evaluated_by": "eval-b",
+            "started_at": _DT,
+            "completed_at": _DT2,
+        },
+        True,
+    ),
+    Case(
+        "executed_by_uppercase",
+        {
+            "variant_id": "variant-13",
+            "experiment_id": "exp-1",
+            "idea_id": "idea-1",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "started_at": _DT,
+            "executed_by": "Exec-A",
+        },
+        False,
+    ),
+    Case(
+        "evaluated_by_null",
+        {
+            "variant_id": "variant-14",
+            "experiment_id": "exp-1",
+            "idea_id": "idea-1",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "started_at": _DT,
+            "evaluated_by": None,
+        },
+        False,
+    ),
+]
+
+
+WORKER_CASES: list[Case] = [
+    Case(
+        "minimal",
+        {
+            "worker_id": "eric",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "full",
+        {
+            "worker_id": "exec-a",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+            "registered_by": "admin",
+            "labels": {"role": "executor", "model": "claude-opus-4-7"},
+        },
+        True,
+    ),
+    Case(
+        "id_max_length",
+        {
+            "worker_id": "a" + "b" * 63,
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "id_underscore_in_middle",
+        {
+            "worker_id": "exec_a",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "id_uppercase",
+        {
+            "worker_id": "Eric",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "id_leading_hyphen",
+        {
+            "worker_id": "-eric",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "id_leading_underscore",
+        {
+            "worker_id": "_internal",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "id_too_long",
+        {
+            "worker_id": "a" + "b" * 64,
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "id_with_colon",
+        {
+            "worker_id": "eric:secret",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "labels_non_string_value",
+        {
+            "worker_id": "eric",
+            "experiment_id": "exp-1",
+            "registered_at": _DT,
+            "labels": {"count": 3},
+        },
+        False,
+    ),
+    Case(
+        "missing_registered_at",
+        {
+            "worker_id": "eric",
+            "experiment_id": "exp-1",
+        },
+        False,
+    ),
+]
+
+
+GROUP_CASES: list[Case] = [
+    Case(
+        "minimal_empty_members",
+        {
+            "group_id": "humans",
+            "experiment_id": "exp-1",
+            "members": [],
+            "created_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "with_members",
+        {
+            "group_id": "team-a",
+            "experiment_id": "exp-1",
+            "members": ["eric", "alice", "agents"],
+            "created_at": _DT,
+            "created_by": "admin",
+        },
+        True,
+    ),
+    Case(
+        "id_uppercase",
+        {
+            "group_id": "Humans",
+            "experiment_id": "exp-1",
+            "members": [],
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "member_uppercase",
+        {
+            "group_id": "team-b",
+            "experiment_id": "exp-1",
+            "members": ["Eric"],
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "member_leading_hyphen",
+        {
+            "group_id": "team-c",
+            "experiment_id": "exp-1",
+            "members": ["-eric"],
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "missing_members",
+        {
+            "group_id": "humans",
+            "experiment_id": "exp-1",
+            "created_at": _DT,
+        },
+        False,
+    ),
 ]
 
 
@@ -1089,4 +1464,6 @@ ALL_CASES: dict[str, list[Case]] = {
     "idea": IDEA_CASES,
     "variant": VARIANT_CASES,
     "evaluation-schema": EVALUATION_SCHEMA_CASES,
+    "worker": WORKER_CASES,
+    "group": GROUP_CASES,
 }

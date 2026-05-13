@@ -11,10 +11,10 @@ The behavioral state machine that all worker roles participate in — claim, exe
 The ideator, executor, and evaluator are **worker roles**: they participate in the task protocol as consumers. Each worker role progresses through the same outer lifecycle for every task it handles:
 
 1. **Discover.** The worker becomes aware of a pending task whose `kind` matches its role. Mechanisms include polling the task store, subscribing to an event stream, or receiving a dispatch call — all are permitted; none are mandated.
-2. **Claim.** The worker atomically moves the task from `pending` to `claimed` and receives a claim token. Semantics are in [`04-task-protocol.md`](04-task-protocol.md) §3.
+2. **Claim.** The worker atomically moves the task from `pending` to `claimed`; the task store records the worker's `worker_id` as the claim owner. Semantics are in [`04-task-protocol.md`](04-task-protocol.md) §3.
 3. **Execute.** The worker performs its role-specific work using the task payload and any context the protocol grants it (§2–§4 below). The worker MAY report progress. It MUST NOT mutate any protocol-owned object other than (a) the task it holds a claim on and (b) the outputs its role is specified to produce (§2.2, §3.2, §4.2). The restrictions in §1.2 apply to every worker role in addition to the per-role rules below.
-4. **Submit.** The worker atomically moves the task from `claimed` to `submitted`, presenting its claim token and a result (§2–§4 below). A submitted task then advances to `completed` or `failed` per the rules in [`04-task-protocol.md`](04-task-protocol.md) §4.
-5. **Release on reclaim.** If the task store reclaims the task before submit (task store policy per [`04-task-protocol.md`](04-task-protocol.md) §5), the worker's token is invalidated. A worker that discovers its token has been invalidated MUST NOT subsequently attempt to submit against that task; it MUST discard any partial result.
+4. **Submit.** The worker atomically moves the task from `claimed` to `submitted` by authenticating as the recorded claimant; the task store performs the atomic claim-match per [`04-task-protocol.md`](04-task-protocol.md) §4.1. A submitted task then advances to `completed` or `failed` per the rules in [`04-task-protocol.md`](04-task-protocol.md) §4.
+5. **Release on reclaim.** If the task store reclaims the task before submit (task store policy per [`04-task-protocol.md`](04-task-protocol.md) §5), the claim is cleared. A worker that discovers its claim has been cleared MUST NOT subsequently attempt to submit against that task; it MUST discard any partial result.
 
 Integrator behavior does **not** follow this worker-role lifecycle. The integrator is event-driven and is defined separately in §5 below and in [`06-integrator.md`](06-integrator.md).
 
@@ -84,7 +84,7 @@ An executor receives:
 
 ### 3.2 Outputs
 
-The executor produces a **variant** object ([`02-data-model.md`](02-data-model.md) §7). It MUST:
+The executor produces a **variant** object ([`02-data-model.md`](02-data-model.md) §9). It MUST:
 
 1. Persist a variant with `status == "starting"`, `experiment_id == P.experiment_id`, `idea_id == P`, and `parent_commits == P.parent_commits`, before making any repository write observable to other roles.
 2. Write the implementation on a branch under `work/*` ([`01-concepts.md`](01-concepts.md) §9) whose parent(s) are the idea's `parent_commits`. Set the variant's `branch` field to this branch name.
@@ -127,7 +127,7 @@ An evaluator receives:
 
 The evaluator MUST:
 
-1. Produce a `metrics` object whose keys are a subset of the declared `evaluation_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §7.2).
+1. Produce a `metrics` object whose keys are a subset of the declared `evaluation_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §9.2).
 2. Optionally upload supporting artifacts (logs, captured outputs, diagnostic files).
 
 The evaluator MUST NOT modify the worker branch or any protocol-owned mutable state other than the variant fields the submission writes (§4.4) and the task it holds a claim on. In particular, the evaluator MUST NOT write to the variant's `completed_at`, `metrics`, `artifacts_uri`, `description`, or `status` directly; those writes are performed by the orchestrator when the submitted task reaches its terminal state (§4.4, [`04-task-protocol.md`](04-task-protocol.md) §4.3).

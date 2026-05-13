@@ -28,7 +28,7 @@ def test_create_task_returns_200(wire_client: WireClient) -> None:
 def test_create_duplicate_task_returns_409_already_exists(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/07-wire-protocol.md §7 — duplicate create returns 409 already-exists.
+    """spec/v0/07-wire-protocol.md §9 — duplicate create returns 409 already-exists.
 
     Without this scenario the §7 vocabulary-closure test would have no
     producer for `eden://error/already-exists`.
@@ -58,19 +58,29 @@ def test_read_unknown_task_returns_404(wire_client: WireClient) -> None:
 def test_claim_non_pending_returns_409(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §2.3 — claim of non-pending returns 409 illegal-transition."""
     tid = _seed.create_ideation_task(wire_client)
-    _seed.claim(wire_client, tid, worker_id="w1")
-    r = wire_client.post(wire_client.tasks_path(tid, "/claim"), json={"worker_id": "w2"})
+    _seed.claim(wire_client, tid, worker_id="worker-a")
+    r = wire_client.post(
+        wire_client.tasks_path(tid, "/claim"),
+        json={},
+        headers={"X-Eden-Worker-Id": "worker-b"},
+    )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
 
 
-def test_submit_wrong_token_returns_403(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §2.4 — wrong token returns 403 wrong-token."""
+def test_submit_wrong_claimant_returns_403(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §2.4 — submit by non-claimant returns 403 wrong-claimant.
+
+    Chapter 07 §2.4 binds chapter 04 §4.1's ``WrongClaimant`` to
+    HTTP 403 ``eden://error/wrong-claimant``: a submit whose
+    authenticated worker_id does not match the recorded claim raises
+    the typed error.
+    """
     tid = _seed.create_ideation_task(wire_client)
-    _seed.claim(wire_client, tid)
-    r = _seed.submit_idea(wire_client, tid, token="wrong")
+    _seed.claim(wire_client, tid, worker_id="worker-a")
+    r = _seed.submit_idea(wire_client, tid, worker_id="worker-b")
     assert r.status_code == 403
-    assert r.json().get("type") == "eden://error/wrong-token"
+    assert r.json().get("type") == "eden://error/wrong-claimant"
 
 
 def test_submit_divergent_returns_409(wire_client: WireClient) -> None:
@@ -81,8 +91,8 @@ def test_submit_divergent_returns_409(wire_client: WireClient) -> None:
     _seed.mark_idea_ready(wire_client, pid_b)
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_a])
-    r = _seed.submit_idea(wire_client, tid, token=c["token"], idea_ids=[pid_b])
+    _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"], idea_ids=[pid_a])
+    r = _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"], idea_ids=[pid_b])
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/conflicting-resubmission"
 
@@ -98,7 +108,7 @@ def test_integrate_different_sha_returns_409(wire_client: WireClient) -> None:
 
 
 def test_bad_request_body_returns_400(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §7 — malformed body returns 400 bad-request."""
+    """spec/v0/07-wire-protocol.md §9 — malformed body returns 400 bad-request."""
     r = wire_client.post(
         wire_client.tasks_path(), json={"this": "is not a valid task body"}
     )

@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .auth import DEFAULT_CREDENTIALS_DIR
 from .container_exec import (
     BindMount,
     VolumeMount,
@@ -31,7 +32,7 @@ _LOG_LEVELS = {
 def add_common_arguments(
     parser: argparse.ArgumentParser, *, require_task_store_url: bool = True
 ) -> None:
-    """Register ``--task-store-url``, ``--experiment-id``, ``--shared-token``, ``--log-level``."""
+    """Register ``--task-store-url``, ``--experiment-id``, ``--admin-token``, ``--log-level``."""
     parser.add_argument(
         "--task-store-url",
         required=require_task_store_url,
@@ -43,12 +44,23 @@ def add_common_arguments(
         help="Experiment identifier — must match the task-store's configured experiment.",
     )
     parser.add_argument(
-        "--shared-token",
+        "--admin-token",
         default=None,
         help=(
-            "Reference-only shared bearer token. If set, passed as "
-            "'Authorization: Bearer <token>' on every request (see "
-            "07-wire-protocol.md §12)."
+            "Deployment admin token (also read from $EDEN_ADMIN_TOKEN). "
+            "Used at startup to register this worker with the task-store "
+            "if no persisted credential exists, or to reissue a stale "
+            "credential. Worker-host requests run under the per-worker "
+            "credential, NOT the admin token."
+        ),
+    )
+    parser.add_argument(
+        "--credentials-dir",
+        default=None,
+        help=(
+            "Directory where the worker's per-worker credential is "
+            "persisted (default: $EDEN_WORKER_CREDENTIALS_DIR or "
+            f"{DEFAULT_CREDENTIALS_DIR}). One token file per worker_id."
         ),
     )
     parser.add_argument(
@@ -57,6 +69,30 @@ def add_common_arguments(
         choices=list(_LOG_LEVELS),
         help="Log level (default: info).",
     )
+
+
+def resolve_admin_token(args: argparse.Namespace) -> str | None:
+    """Resolve the admin token from ``--admin-token`` or ``$EDEN_ADMIN_TOKEN``.
+
+    Returns ``None`` when neither source supplies a value; the caller
+    decides whether that's fatal (it is for first-time worker
+    registration; not for restart-with-persisted-credential).
+    """
+    explicit = getattr(args, "admin_token", None)
+    if explicit:
+        return explicit
+    return os.environ.get("EDEN_ADMIN_TOKEN")
+
+
+def resolve_credentials_dir(args: argparse.Namespace) -> Path:
+    """Resolve the credentials directory from CLI arg, env, or default."""
+    explicit = getattr(args, "credentials_dir", None)
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("EDEN_WORKER_CREDENTIALS_DIR")
+    if env:
+        return Path(env)
+    return DEFAULT_CREDENTIALS_DIR
 
 
 def parse_log_level(value: str) -> int:

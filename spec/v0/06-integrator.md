@@ -26,7 +26,7 @@ A conforming EDEN deployment operates on a single git repository per experiment.
 ### 1.3 `work/*`
 
 - Holds per-variant worker branches written by executors ([`03-roles.md`](03-roles.md) §3.3).
-- Each `work/*` branch MUST be unique to a single variant. A variant's `branch` field ([`02-data-model.md`](02-data-model.md) §7.1) records the exact branch name.
+- Each `work/*` branch MUST be unique to a single variant. A variant's `branch` field ([`02-data-model.md`](02-data-model.md) §9.1) records the exact branch name.
 - Worker branches are **inputs** to the integrator, not normative outputs. A conforming deployment MAY retain them for audit and debugging after integration, MAY garbage-collect them after a retention window, and MAY delete them eagerly once a variant is integrated — the retention policy is a deployment concern. No protocol-owned reader MAY depend on a worker branch after the variant's integration.
 - The evaluator reads a worker branch at the variant's `commit_sha` during evaluation ([`03-roles.md`](03-roles.md) §4.1); the executor's read-your-writes guarantee applies only until integration, after which the worker branch's reachability is no longer a protocol-owned concern.
 
@@ -38,7 +38,7 @@ Every commit on a `work/*` branch MUST descend from the idea's declared `parent_
 
 The integrator integrates a variant iff:
 
-- The variant's `status` is `success` ([`02-data-model.md`](02-data-model.md) §7.1).
+- The variant's `status` is `success` ([`02-data-model.md`](02-data-model.md) §9.1).
 - The variant's `commit_sha` is set and resolves to a commit on the variant's `branch` in the experiment repository.
 - The variant has not yet been integrated (`variant_commit_sha` is absent).
 
@@ -46,7 +46,7 @@ The mechanism by which the integrator observes the trigger — subscribing to `v
 
 A conforming integrator MUST NOT integrate variants in any other status. In particular, `error`, `evaluation_error`, and `starting` variants MUST NOT receive a `variant/*` commit.
 
-The integrator MUST NOT integrate a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §7.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
+The integrator MUST NOT integrate a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §9.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
 
 ## 3. Integration output
 
@@ -58,7 +58,7 @@ The integrator creates a branch under `variant/` named:
 variant/<variant_id>-<slug>
 ```
 
-where `<variant_id>` is the variant's `variant_id` ([`02-data-model.md`](02-data-model.md) §7.1) and `<slug>` is the `slug` of the variant's parent idea ([`02-data-model.md`](02-data-model.md) §5.1). The slug is already constrained to `^[a-z0-9][a-z0-9-]*$`, and `variant_id` is opaque; the resulting branch name MUST be valid under git's ref-format rules ([git check-ref-format]). If an implementation's `variant_id` choice could violate ref-format rules, the implementation MUST choose a different `variant_id` representation — it MUST NOT mutate the stored `variant_id` in the variant object to accommodate its branch-naming scheme.
+where `<variant_id>` is the variant's `variant_id` ([`02-data-model.md`](02-data-model.md) §9.1) and `<slug>` is the `slug` of the variant's parent idea ([`02-data-model.md`](02-data-model.md) §5.1). The slug is already constrained to `^[a-z0-9][a-z0-9-]*$`, and `variant_id` is opaque; the resulting branch name MUST be valid under git's ref-format rules ([git check-ref-format]). If an implementation's `variant_id` choice could violate ref-format rules, the implementation MUST choose a different `variant_id` representation — it MUST NOT mutate the stored `variant_id` in the variant object to accommodate its branch-naming scheme.
 
 [git check-ref-format]: https://git-scm.com/docs/git-check-ref-format
 
@@ -69,7 +69,7 @@ The variant's worker branch MAY contain multiple commits (executor step-by-step 
 Concretely: the integrator MUST produce a commit `T` with:
 
 - `tree(T)` equal to `tree(commit_sha)` with exactly one path added: the evaluation-manifest file at the path given in §4.1. The added file's bytes MUST be the manifest defined by §4.2. `commit_sha` is the variant's recorded worker-branch tip. No other path — not a file, not a directory entry — MAY be added, removed, or modified in the squash.
-- `parents(T) == <parent_commits>` of the variant, in the order recorded on the variant ([`02-data-model.md`](02-data-model.md) §7.1 inherits from the idea, §5.1).
+- `parents(T) == <parent_commits>` of the variant, in the order recorded on the variant ([`02-data-model.md`](02-data-model.md) §9.1 inherits from the idea, §5.1).
 - A commit message whose first line (subject) records the variant identity in a machine-parseable form. §3.3 pins the format.
 
 The executor is not required to carry the evaluation manifest in its worker branch; the manifest is exclusively the integrator's write. If a worker branch incidentally contains a file at the evaluation-manifest path (e.g. an executor mistake), the integrator MUST reject the variant rather than silently overwrite the file. Rejection produces no `variant/*` commit and no `variant.integrated` event; the orchestrator MAY transition the variant via normal channels.
@@ -92,7 +92,7 @@ The subject MUST carry both the `variant_id` and the parent idea's `slug`, separ
 
 The integration MUST be atomic with two other state changes:
 
-1. Writing the `variant_commit_sha` field on the variant to the SHA of the new `variant/*` commit ([`02-data-model.md`](02-data-model.md) §7.1).
+1. Writing the `variant_commit_sha` field on the variant to the SHA of the new `variant/*` commit ([`02-data-model.md`](02-data-model.md) §9.1).
 2. Appending a `variant.integrated` event to the event log ([`05-event-protocol.md`](05-event-protocol.md) §3.3).
 
 If any of the three steps fails — git ref write, variant-object field write, event append — the integrator MUST roll back any already-performed step. In particular, a dangling `variant/*` ref with no `variant_commit_sha` field and no `variant.integrated` event is a protocol violation. Implementations MAY use store-level transactions, outbox patterns, compensating deletes, or any other mechanism; the observable invariant is that a reader of any one of the three artifacts (ref, field, event) MUST observe the other two.
@@ -121,12 +121,12 @@ The manifest is a JSON object with the following required fields. Each required 
 
 | Field | Type | Source |
 |---|---|---|
-| `variant_id` | string | The variant's `variant_id` ([`02-data-model.md`](02-data-model.md) §7.1). |
-| `idea_id` | string | The variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §7.1). |
-| `commit_sha` | string | The worker-branch tip the evaluator measured ([`02-data-model.md`](02-data-model.md) §7.1). |
-| `parent_commits` | array of string | The variant's `parent_commits`, in order ([`02-data-model.md`](02-data-model.md) §7.1). |
+| `variant_id` | string | The variant's `variant_id` ([`02-data-model.md`](02-data-model.md) §9.1). |
+| `idea_id` | string | The variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §9.1). |
+| `commit_sha` | string | The worker-branch tip the evaluator measured ([`02-data-model.md`](02-data-model.md) §9.1). |
+| `parent_commits` | array of string | The variant's `parent_commits`, in order ([`02-data-model.md`](02-data-model.md) §9.1). |
 | `metrics` | object | The evaluator's evaluation payload ([`03-roles.md`](03-roles.md) §4.4), conforming to the experiment's `evaluation_schema`. |
-| `completed_at` | timestamp | The variant's `completed_at` ([`02-data-model.md`](02-data-model.md) §7.1). UTC, RFC 3339 profile as elsewhere in the data model. |
+| `completed_at` | timestamp | The variant's `completed_at` ([`02-data-model.md`](02-data-model.md) §9.1). UTC, RFC 3339 profile as elsewhere in the data model. |
 
 Optional fields:
 

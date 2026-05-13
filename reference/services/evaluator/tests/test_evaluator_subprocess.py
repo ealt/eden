@@ -32,6 +32,10 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     seed_sha = seed_bare_repo(str(repo_path))
     schema = EvaluationSchema.model_validate({"score": "real"})
     store = InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema=schema)
+    # 12a-1 wave 5: pre-register the worker_ids the evaluator-subprocess
+    # tests drive through Store.claim (§3.5 step-2 registration check).
+    for wid in ("execution-1", "evaluator-1", "eval-1"):
+        store.register_worker(wid)
     idea = Idea(
         idea_id="idea-x1",
         experiment_id=EXPERIMENT_ID,
@@ -60,7 +64,7 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
 
     store.submit(
         "execution-1",
-        claim.token,
+        claim.worker_id,
         VariantSubmission(status="success", variant_id="variant-t1", commit_sha=seed_sha),
     )
     # Drive accept so the variant picks up commit_sha and we can dispatch evaluate.

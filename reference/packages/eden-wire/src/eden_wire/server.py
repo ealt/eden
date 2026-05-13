@@ -22,7 +22,6 @@ serializes the result.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import time
 from typing import Any
 
@@ -40,18 +39,26 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
+from .auth import (
+    install_auth_middleware,
+    require_admin,
+    require_worker,
+)
 from .errors import (
     BadRequest,
     ExperimentIdMismatch,
+    Forbidden,
     Unauthorized,
     envelope_for_error,
-    envelope_for_reference_error,
 )
 from .models import (
+    AddGroupMemberRequest,
     ClaimRequest,
     EventsResponse,
     IntegrateRequest,
     ReclaimRequest,
+    RegisterGroupRequest,
+    RegisterWorkerRequest,
     RejectRequest,
     SubmitRequest,
     ValidateEvaluationRequest,
@@ -66,7 +73,7 @@ def make_app(
     *,
     subscribe_timeout: float = 30.0,
     subscribe_poll_interval: float = 0.1,
-    shared_token: str | None = None,
+    admin_token: str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
 
@@ -75,24 +82,79 @@ def make_app(
     their own ``Store`` instance.
 
     ``subscribe_timeout`` is the long-poll window per
-    ``07-wire-protocol.md`` §6.2 (default 30s). Tests typically pass
+    ``07-wire-protocol.md`` §8.2 (default 30s). Tests typically pass
     a short value. ``subscribe_poll_interval`` is how often the
     server re-checks the event log for new entries; finer values
     reduce latency at the cost of CPU.
 
-    ``shared_token``, when non-``None``, installs the reference-only
-    bearer-token middleware from ``07-wire-protocol.md`` §12. Requests
-    missing or carrying a wrong ``Authorization: Bearer <token>``
-    header are rejected with ``eden://reference-error/unauthorized``
-    (HTTP 401). ``None`` (default) disables auth.
+    ``admin_token``, when non-``None``, installs the §13 normative
+    authentication middleware: every ``/v0/`` request MUST carry a
+    valid ``Authorization: Bearer <principal>:<secret>`` header
+    where the principal is either ``admin`` (matched against
+    ``admin_token`` constant-time) or a registered ``worker_id``
+    (verified against the Store's ``verify_worker_credential``).
+    ``None`` (test / in-process default) disables auth — convenient
+    for unit tests but NOT spec-conformant for a deployed server.
     """
     app = FastAPI(
         title=f"EDEN task store — {store.experiment_id}",
         version="0",
     )
 
-    if shared_token is not None:
-        _install_shared_token_middleware(app, shared_token)
+    if admin_token is not None:
+        install_auth_middleware(app, admin_token=admin_token, store=store)
+
+    def _enforce_worker(request: Request) -> None:
+        """Worker-gated route guard (§13.3).
+
+        When auth is disabled (``admin_token is None``), the middleware
+        hasn't installed a principal and no enforcement runs — that's
+        the in-process / TestClient posture. When auth is enabled, any
+        admin bearer hitting a worker-gated route MUST 403 per the
+        chapter-7 §13.3 dispatcher contract.
+        """
+        if admin_token is None:
+            return
+        require_worker(request)
+
+    def _stamp_created_by(
+        request: Request, body: dict[str, Any], field: str = "created_by"
+    ) -> dict[str, Any]:
+        """Stamp ``created_by`` on a create-* request body from the auth principal.
+
+        Per chapter 02 §3.1 / §5.1, ``created_by`` records the actor
+        identifier of the caller that produced the artifact. To prevent
+        a client from spoofing the attribution, the binding overrides
+        the field with the authenticated principal's identity:
+
+        - Worker bearer → ``created_by = principal.worker_id``.
+        - Admin bearer → ``created_by = "admin"`` (the §13.1 admin
+          principal name; carried through chapter 02 §3.1 / §5.1).
+
+        If the body supplied a different ``created_by`` value, the
+        binding rejects with `BadRequest`. When auth is disabled (test
+        / in-process posture, ``admin_token is None``), the body is
+        passed through unchanged so existing test fixtures keep
+        working.
+        """
+        if admin_token is None:
+            return body
+        principal = getattr(request.state, "principal", None)
+        if principal is None or not hasattr(principal, "is_worker"):
+            return body
+        if principal.is_worker():
+            assert principal.worker_id is not None
+            stamp = principal.worker_id
+        else:
+            stamp = "admin"
+        supplied = body.get(field)
+        if supplied is not None and supplied != stamp:
+            raise BadRequest(
+                f"{field}={supplied!r} disagrees with authenticated "
+                f"principal {stamp!r}; the binding overrides this "
+                f"field from the bearer's identity per chapter 02 §3.1"
+            )
+        return {**body, field: stamp}
 
     def _problem(status: int, type_: str, title: str, detail: str, instance: str) -> JSONResponse:
         return JSONResponse(
@@ -152,6 +214,28 @@ def make_app(
             content=envelope.to_dict(),
         )
 
+    @app.exception_handler(Unauthorized)
+    async def _unauthorized_handler(
+        request: Request, exc: Unauthorized
+    ) -> JSONResponse:
+        envelope = envelope_for_error(exc, instance=str(request.url))
+        return JSONResponse(
+            status_code=envelope.status,
+            media_type=PROBLEM_JSON,
+            content=envelope.to_dict(),
+        )
+
+    @app.exception_handler(Forbidden)
+    async def _forbidden_handler(
+        request: Request, exc: Forbidden
+    ) -> JSONResponse:
+        envelope = envelope_for_error(exc, instance=str(request.url))
+        return JSONResponse(
+            status_code=envelope.status,
+            media_type=PROBLEM_JSON,
+            content=envelope.to_dict(),
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _request_validation_handler(
         request: Request, exc: RequestValidationError
@@ -184,6 +268,7 @@ def make_app(
 
     @app.post(f"{base}/tasks")
     async def _create_task(
+        request: Request,
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
@@ -193,6 +278,8 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks",
         )
+        _enforce_worker(request)
+        body = _stamp_created_by(request, body)
         try:
             task = TaskAdapter.validate_python(body)
         except ValidationError as exc:
@@ -245,6 +332,7 @@ def make_app(
 
     @app.post(f"{base}/tasks/{{task_id}}/claim")
     async def _claim(
+        request: Request,
         experiment_id: str,
         task_id: str,
         body: ClaimRequest,
@@ -255,9 +343,14 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/claim",
         )
-        claim = store.claim(task_id, body.worker_id, expires_at=body.expires_at)
+        _enforce_worker(request)
+        # §2.3 + §13: claimant worker_id comes from the authenticated
+        # bearer, not the request body. _worker_id_from_request reads
+        # request.state.principal when auth is enabled and falls back
+        # to a sentinel only when auth was not installed (test-only).
+        worker_id = _worker_id_from_request(request)
+        claim = store.claim(task_id, worker_id, expires_at=body.expires_at)
         resp: dict[str, Any] = {
-            "token": claim.token,
             "worker_id": claim.worker_id,
             "claimed_at": claim.claimed_at,
         }
@@ -267,6 +360,7 @@ def make_app(
 
     @app.post(f"{base}/tasks/{{task_id}}/submit")
     async def _submit(
+        request: Request,
         experiment_id: str,
         task_id: str,
         body: SubmitRequest,
@@ -277,13 +371,21 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/submit",
         )
+        _enforce_worker(request)
+        # §2.4 + §13: forward the authenticated worker_id to
+        # Store.submit; the Store performs the §4.1 atomic claim-match
+        # (WrongClaimant / NotClaimed). No pre-flight `read_task →
+        # compare` here — that would introduce a TOCTOU window
+        # against reclaim.
+        worker_id = _worker_id_from_request(request)
         task = store.read_task(task_id)
         submission = _submission_from_wire(task.kind, body.payload)
-        store.submit(task_id, body.token, submission)
+        store.submit(task_id, worker_id, submission)
         return {}
 
     @app.post(f"{base}/tasks/{{task_id}}/accept")
     async def _accept(
+        request: Request,
         experiment_id: str,
         task_id: str,
         x_eden_experiment_id: str | None = Header(None),
@@ -293,11 +395,13 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/accept",
         )
+        _enforce_worker(request)
         store.accept(task_id)
         return Response(status_code=204)
 
     @app.post(f"{base}/tasks/{{task_id}}/reject")
     async def _reject(
+        request: Request,
         experiment_id: str,
         task_id: str,
         body: RejectRequest,
@@ -308,11 +412,13 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/reject",
         )
+        _enforce_worker(request)
         store.reject(task_id, body.reason)  # type: ignore[arg-type]
         return Response(status_code=204)
 
     @app.post(f"{base}/tasks/{{task_id}}/reclaim")
     async def _reclaim(
+        request: Request,
         experiment_id: str,
         task_id: str,
         body: ReclaimRequest,
@@ -323,6 +429,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/tasks/{task_id}/reclaim",
         )
+        _enforce_worker(request)
         store.reclaim(task_id, body.cause)  # type: ignore[arg-type]
         return Response(status_code=204)
 
@@ -332,6 +439,7 @@ def make_app(
 
     @app.post(f"{base}/ideas")
     async def _create_idea(
+        request: Request,
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
@@ -339,6 +447,8 @@ def make_app(
         _check_experiment(
             experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/ideas"
         )
+        _enforce_worker(request)
+        body = _stamp_created_by(request, body)
         try:
             idea = Idea.model_validate(body)
         except ValidationError as exc:
@@ -377,6 +487,7 @@ def make_app(
 
     @app.post(f"{base}/ideas/{{idea_id}}/mark-ready")
     async def _mark_idea_ready(
+        request: Request,
         experiment_id: str,
         idea_id: str,
         x_eden_experiment_id: str | None = Header(None),
@@ -386,6 +497,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/ideas/{idea_id}/mark-ready",
         )
+        _enforce_worker(request)
         store.mark_idea_ready(idea_id)
         return Response(status_code=204)
 
@@ -395,6 +507,7 @@ def make_app(
 
     @app.post(f"{base}/variants")
     async def _create_variant(
+        request: Request,
         experiment_id: str,
         body: dict[str, Any] = Body(...),
         x_eden_experiment_id: str | None = Header(None),
@@ -402,6 +515,7 @@ def make_app(
         _check_experiment(
             experiment_id, x_eden_experiment_id, f"/v0/experiments/{experiment_id}/variants"
         )
+        _enforce_worker(request)
         try:
             variant = Variant.model_validate(body)
         except ValidationError as exc:
@@ -441,6 +555,7 @@ def make_app(
 
     @app.post(f"{base}/variants/{{variant_id}}/declare-evaluation-error")
     async def _declare_variant_eval_error(
+        request: Request,
         experiment_id: str,
         variant_id: str,
         x_eden_experiment_id: str | None = Header(None),
@@ -450,11 +565,13 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/variants/{variant_id}/declare-evaluation-error",
         )
+        _enforce_worker(request)
         store.declare_variant_evaluation_error(variant_id)
         return Response(status_code=204)
 
     @app.post(f"{base}/variants/{{variant_id}}/integrate")
     async def _integrate_variant(
+        request: Request,
         experiment_id: str,
         variant_id: str,
         body: IntegrateRequest,
@@ -465,6 +582,7 @@ def make_app(
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}/variants/{variant_id}/integrate",
         )
+        _enforce_worker(request)
         # §5: 200 + empty body on success and same-value idempotent
         # retries; 409 invalid-precondition on different-SHA divergence
         # (raised by Store.integrate_variant).
@@ -515,6 +633,218 @@ def make_app(
             events = store.read_range(cursor=cursor if cursor > 0 else None)
         resp = EventsResponse(events=events, cursor=cursor + len(events))
         return resp.model_dump(mode="json", exclude_none=True)
+
+    # ------------------------------------------------------------------
+    # Worker registry (chapter 7 §6)
+    # ------------------------------------------------------------------
+
+    @app.post(f"{base}/workers")
+    async def _register_worker(
+        request: Request,
+        experiment_id: str,
+        body: RegisterWorkerRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/workers",
+        )
+        # Admin-gated. require_admin raises Forbidden (with the
+        # "endpoint requires authentication" path) when auth is off,
+        # so test harnesses can still drive the route by passing the
+        # admin bearer.
+        principal = require_admin(request) if admin_token is not None else None
+        worker, registration_token = store.register_worker(
+            body.worker_id,
+            labels=body.labels,
+            registered_by=principal.kind if principal is not None else None,
+        )
+        resp = worker.model_dump(mode="json", exclude_none=True)
+        if registration_token is not None:
+            resp["registration_token"] = registration_token
+        return resp
+
+    @app.get(f"{base}/workers")
+    async def _list_workers(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/workers",
+        )
+        # Either-gated (admin OR worker). Auth was already verified by
+        # the middleware; we don't classify further.
+        if admin_token is not None:
+            _ = request.state.principal  # auth was run; principal is set
+        workers = store.list_workers()
+        return {
+            "workers": [w.model_dump(mode="json", exclude_none=True) for w in workers]
+        }
+
+    @app.get(f"{base}/workers/{{worker_id}}")
+    async def _read_worker(
+        experiment_id: str,
+        worker_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/workers/{worker_id}",
+        )
+        worker = store.read_worker(worker_id)
+        return worker.model_dump(mode="json", exclude_none=True)
+
+    @app.post(f"{base}/workers/{{worker_id}}/reissue-credential")
+    async def _reissue_credential(
+        request: Request,
+        experiment_id: str,
+        worker_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/workers/{worker_id}/reissue-credential",
+        )
+        if admin_token is not None:
+            require_admin(request)
+        token = store.reissue_credential(worker_id)
+        worker = store.read_worker(worker_id)
+        resp = worker.model_dump(mode="json", exclude_none=True)
+        resp["registration_token"] = token
+        return resp
+
+    @app.get(f"{base}/whoami")
+    async def _whoami(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, str]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/whoami",
+        )
+        # Worker-gated per §6.4: the endpoint exists to confirm the
+        # caller's worker_id; an admin bearer cannot speak as a
+        # worker, so this MUST 403 for admins.
+        if admin_token is not None:
+            principal = require_worker(request)
+            assert principal.worker_id is not None
+            return {"worker_id": principal.worker_id}
+        # Auth disabled: return a sentinel so tests still get a 200.
+        return {"worker_id": "anonymous"}
+
+    # ------------------------------------------------------------------
+    # Group registry (chapter 7 §7)
+    # ------------------------------------------------------------------
+
+    @app.post(f"{base}/groups")
+    async def _register_group(
+        request: Request,
+        experiment_id: str,
+        body: RegisterGroupRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/groups",
+        )
+        principal = require_admin(request) if admin_token is not None else None
+        group = store.register_group(
+            body.group_id,
+            members=body.members,
+            created_by=principal.kind if principal is not None else None,
+        )
+        return group.model_dump(mode="json", exclude_none=True)
+
+    @app.get(f"{base}/groups")
+    async def _list_groups(
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/groups",
+        )
+        groups = store.list_groups()
+        return {
+            "groups": [g.model_dump(mode="json", exclude_none=True) for g in groups]
+        }
+
+    @app.get(f"{base}/groups/{{group_id}}")
+    async def _read_group(
+        experiment_id: str,
+        group_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/groups/{group_id}",
+        )
+        group = store.read_group(group_id)
+        return group.model_dump(mode="json", exclude_none=True)
+
+    @app.post(f"{base}/groups/{{group_id}}/members")
+    async def _add_to_group(
+        request: Request,
+        experiment_id: str,
+        group_id: str,
+        body: AddGroupMemberRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/groups/{group_id}/members",
+        )
+        if admin_token is not None:
+            require_admin(request)
+        group = store.add_to_group(group_id, body.member_id)
+        return group.model_dump(mode="json", exclude_none=True)
+
+    @app.delete(f"{base}/groups/{{group_id}}/members/{{member_id}}")
+    async def _remove_from_group(
+        request: Request,
+        experiment_id: str,
+        group_id: str,
+        member_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/groups/{group_id}/members/{member_id}",
+        )
+        if admin_token is not None:
+            require_admin(request)
+        group = store.remove_from_group(group_id, member_id)
+        return group.model_dump(mode="json", exclude_none=True)
+
+    @app.delete(f"{base}/groups/{{group_id}}")
+    async def _delete_group(
+        request: Request,
+        experiment_id: str,
+        group_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> Response:
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/groups/{group_id}",
+        )
+        if admin_token is not None:
+            require_admin(request)
+        store.delete_group(group_id)
+        return Response(status_code=204)
 
     # ------------------------------------------------------------------
     # Reference-only helpers (non-normative)
@@ -607,32 +937,37 @@ def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
     raise HTTPException(status_code=400, detail=f"unknown task kind {kind!r}")
 
 
-def _install_shared_token_middleware(app: FastAPI, expected: str) -> None:
-    """Install the reference-only shared-token auth middleware.
+def _worker_id_from_request(request: Request) -> str:
+    """Extract the authenticated ``worker_id`` from a request.
 
-    Checks ``Authorization: Bearer <token>`` on every request against
-    ``expected`` with a constant-time compare. Mismatches emit a
-    problem+json body under the reference-only
-    ``eden://reference-error/unauthorized`` type (HTTP 401).
+    When auth is enabled (``admin_token`` was passed to :func:`make_app`),
+    the §13 middleware sets ``request.state.principal``; this helper
+    returns the principal's ``worker_id`` and rejects admin bearers
+    on worker-gated routes (§13.3) with :class:`Forbidden`.
+
+    When auth is disabled (test / in-process default), there is no
+    principal on ``request.state``; this helper returns the
+    ``X-Eden-Worker-Id`` header value if present, otherwise the
+    sentinel ``"anonymous"``. The sentinel exists so tests that don't
+    care about identity can still drive claim / submit, while tests
+    that DO care can opt in by setting the header explicitly.
     """
-    expected_bytes = expected.encode("utf-8")
-
-    @app.middleware("http")
-    async def _shared_token_middleware(request: Request, call_next: Any) -> Any:
-        header = request.headers.get("authorization")
-        presented: str | None = None
-        if header is not None:
-            parts = header.split(" ", 1)
-            if len(parts) == 2 and parts[0].lower() == "bearer":
-                presented = parts[1]
-        if presented is None or not hmac.compare_digest(
-            presented.encode("utf-8"), expected_bytes
-        ):
-            exc = Unauthorized("missing or invalid Authorization header")
-            envelope = envelope_for_reference_error(exc, instance=str(request.url))
-            return JSONResponse(
-                status_code=envelope.status,
-                media_type=PROBLEM_JSON,
-                content=envelope.to_dict(),
+    principal = getattr(request.state, "principal", None)
+    if principal is not None:
+        if not principal.is_worker():
+            raise Forbidden(
+                "endpoint is worker-gated; admin bearers MUST NOT access it (§13.3)"
             )
-        return await call_next(request)
+        assert principal.worker_id is not None
+        return principal.worker_id
+    # Auth disabled — read the test-only override header, otherwise sentinel.
+    return request.headers.get("X-Eden-Worker-Id", "anonymous")
+
+
+# The pre-12a-1 reference shared-token middleware has been removed in
+# favor of the normative §13 per-worker + admin auth implemented in
+# :mod:`eden_wire.auth` (`install_auth_middleware`). Callers that
+# previously passed ``shared_token=...`` to :func:`make_app` now pass
+# ``admin_token=...``; the bearer format and error vocabulary have
+# moved to the normative ``eden://error/unauthorized`` /
+# ``eden://error/forbidden`` types.

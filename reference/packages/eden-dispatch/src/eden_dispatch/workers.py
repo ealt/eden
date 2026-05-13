@@ -140,7 +140,7 @@ class ScriptedIdeator:
             idea_ids.append(idea_id)
         store.submit(
             task.task_id,
-            claim.token,
+            claim.worker_id,
             IdeaSubmission(status="success", idea_ids=tuple(idea_ids)),
         )
 
@@ -218,7 +218,7 @@ class ScriptedExecutor:
         store.create_variant(variant)
         store.submit(
             task.task_id,
-            claim.token,
+            claim.worker_id,
             VariantSubmission(
                 status=outcome.status,
                 variant_id=variant_id,
@@ -279,7 +279,7 @@ class ScriptedEvaluator:
         outcome = self._evaluation_fn(task, variant)
         store.submit(
             task.task_id,
-            claim.token,
+            claim.worker_id,
             EvaluationSubmission(
                 status=outcome.status,
                 variant_id=variant.variant_id,

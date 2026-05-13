@@ -10,7 +10,7 @@ This is the first lineage of the EDEN protocol specification. Chapters 00–08 a
 | `01-concepts.md` | Experiment, variant, idea, role, artifact, metric, worker. | Phase 1 |
 | `02-data-model.md` | Canonical object shapes; narrative linking to JSON Schemas. | Phase 1 |
 | `03-roles.md` | Ideator, executor, evaluator: contracts and outputs. | Phase 2 |
-| `04-task-protocol.md` | Task state machine, claim tokens, submit idempotency, wire format. | Phase 2 |
+| `04-task-protocol.md` | Task state machine, identity-keyed claim ownership, submit idempotency, wire format. | Phase 2 |
 | `05-event-protocol.md` | Event log shape, transactional invariant, delivery guarantees. | Phase 4 |
 | `06-integrator.md` | Git topology: `work/*` / `variant/*` / `main` invariants; squash rule; evaluation manifest. | Phase 4 |
 | `07-wire-protocol.md` | HTTP binding for chapters 4, 5, 6, and 8 (the storage-side operations the binding exposes). | Phase 8a |

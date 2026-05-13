@@ -20,7 +20,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from threading import RLock
 
-from eden_contracts import Event, Idea, Task, Variant
+from eden_contracts import Event, Group, Idea, Task, Variant, Worker
 
 from ._base import _StoreBase, _Tx
 from .submissions import Submission
@@ -40,6 +40,13 @@ class InMemoryStore(_StoreBase):
         self._variants: dict[str, Variant] = {}
         self._submissions: dict[str, Submission] = {}
         self._events: list[Event] = []
+        # Worker registry (12a-1 wave 2). The wire-visible Worker shape
+        # lives in `_workers`; the credential hash lives in
+        # `_worker_credentials` keyed by the same `worker_id` so reads
+        # of `_workers` never leak the credential.
+        self._workers: dict[str, Worker] = {}
+        self._worker_credentials: dict[str, str] = {}
+        self._groups: dict[str, Group] = {}
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -86,6 +93,21 @@ class InMemoryStore(_StoreBase):
     def _iter_events(self) -> Iterable[Event]:
         return list(self._events)
 
+    def _get_worker(self, worker_id: str) -> Worker | None:
+        return self._workers.get(worker_id)
+
+    def _get_worker_credential_hash(self, worker_id: str) -> str | None:
+        return self._worker_credentials.get(worker_id)
+
+    def _iter_workers(self) -> Iterable[Worker]:
+        return [self._workers[k] for k in sorted(self._workers)]
+
+    def _get_group(self, group_id: str) -> Group | None:
+        return self._groups.get(group_id)
+
+    def _iter_groups(self) -> Iterable[Group]:
+        return [self._groups[k] for k in sorted(self._groups)]
+
     def _apply_commit(self, tx: _Tx) -> None:
         for task_id, task in tx.tasks.items():
             self._tasks[task_id] = task
@@ -97,4 +119,15 @@ class InMemoryStore(_StoreBase):
             self._submissions[task_id] = submission
         for task_id in tx.task_deletes_submission:
             self._submissions.pop(task_id, None)
+        for worker_id, worker in tx.workers.items():
+            self._workers[worker_id] = worker
+        for worker_id, credential_hash in tx.worker_credentials.items():
+            self._worker_credentials[worker_id] = credential_hash
+        for worker_id in tx.worker_deletes:
+            self._workers.pop(worker_id, None)
+            self._worker_credentials.pop(worker_id, None)
+        for group_id, group in tx.groups.items():
+            self._groups[group_id] = group
+        for group_id in tx.group_deletes:
+            self._groups.pop(group_id, None)
         self._events.extend(tx.events)

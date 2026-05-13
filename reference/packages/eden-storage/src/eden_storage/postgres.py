@@ -35,10 +35,12 @@ import psycopg
 from eden_contracts import (
     EvaluationSchema,
     Event,
+    Group,
     Idea,
     Task,
     TaskAdapter,
     Variant,
+    Worker,
 )
 
 from . import _postgres_schema
@@ -133,14 +135,12 @@ class PostgresStore(_StoreBase):
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
-        token_factory: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(
             experiment_id,
             evaluation_schema=evaluation_schema,
             now=now,
             event_id_factory=event_id_factory,
-            token_factory=token_factory,
         )
         self._dsn = dsn
         # autocommit=True + explicit BEGIN/COMMIT per op mirrors
@@ -363,6 +363,49 @@ class PostgresStore(_StoreBase):
             rows = cur.fetchall()
         return [Event.model_validate_json(row[0]) for row in rows]
 
+    def _get_worker(self, worker_id: str) -> Worker | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT data FROM worker WHERE worker_id = %s", (worker_id,)
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return Worker.model_validate_json(row[0])
+
+    def _get_worker_credential_hash(self, worker_id: str) -> str | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT credential_hash FROM worker WHERE worker_id = %s",
+                (worker_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return row[0]
+
+    def _iter_workers(self) -> Iterable[Worker]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT data FROM worker ORDER BY worker_id")
+            rows = cur.fetchall()
+        return [Worker.model_validate_json(row[0]) for row in rows]
+
+    def _get_group(self, group_id: str) -> Group | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT data FROM worker_group WHERE group_id = %s", (group_id,)
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return Group.model_validate_json(row[0])
+
+    def _iter_groups(self) -> Iterable[Group]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT data FROM worker_group ORDER BY group_id")
+            rows = cur.fetchall()
+        return [Group.model_validate_json(row[0]) for row in rows]
+
     # ------------------------------------------------------------------
     # Commit
     # ------------------------------------------------------------------
@@ -381,6 +424,26 @@ class PostgresStore(_StoreBase):
             with self._conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM submission WHERE task_id = %s", (task_id,)
+                )
+        for worker_id, worker in tx.workers.items():
+            self._upsert_worker(
+                worker_id, worker, tx.worker_credentials.get(worker_id)
+            )
+        for worker_id, credential_hash in tx.worker_credentials.items():
+            if worker_id in tx.workers:
+                continue
+            self._update_worker_credential(worker_id, credential_hash)
+        for worker_id in tx.worker_deletes:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM worker WHERE worker_id = %s", (worker_id,)
+                )
+        for group_id, group in tx.groups.items():
+            self._upsert_group(group_id, group)
+        for group_id in tx.group_deletes:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM worker_group WHERE group_id = %s", (group_id,)
                 )
         for event in tx.events:
             self._insert_event(event)
@@ -450,3 +513,56 @@ class PostgresStore(_StoreBase):
                     _serialize_model(event),
                 ),
             )
+
+    def _upsert_worker(
+        self, worker_id: str, worker: Worker, credential_hash: str | None
+    ) -> None:
+        if credential_hash is None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT credential_hash FROM worker WHERE worker_id = %s",
+                    (worker_id,),
+                )
+                row = cur.fetchone()
+            credential_hash = row[0] if row is not None else ""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO worker(worker_id, data, credential_hash)
+                VALUES(%s, %s, %s)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    data = EXCLUDED.data,
+                    credential_hash = EXCLUDED.credential_hash
+                """,
+                (worker_id, _serialize_model(worker), credential_hash),
+            )
+
+    def _update_worker_credential(
+        self, worker_id: str, credential_hash: str
+    ) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE worker SET credential_hash = %s WHERE worker_id = %s",
+                (credential_hash, worker_id),
+            )
+
+    def _upsert_group(self, group_id: str, group: Group) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO worker_group(group_id, data) VALUES(%s, %s)
+                ON CONFLICT(group_id) DO UPDATE SET data = EXCLUDED.data
+                """,
+                (group_id, _serialize_model(group)),
+            )
+            cur.execute(
+                "DELETE FROM group_membership WHERE group_id = %s", (group_id,)
+            )
+            for position, member in enumerate(group.members):
+                cur.execute(
+                    """
+                    INSERT INTO group_membership(group_id, member_id, position)
+                    VALUES(%s, %s, %s)
+                    """,
+                    (group_id, member, position),
+                )

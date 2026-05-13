@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN group",
+  "description": "A named set of workers and/or other groups within an experiment. Membership resolves transitively; cycles MUST be rejected at write time per spec/v0/02-data-model.md §7.",
+  "type": "object",
+  "required": ["group_id", "experiment_id", "members", "created_at"],
+  "properties": {
+    "group_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "description": "Operator-supplied identifier; same grammar as `worker_id` (spec/v0/02-data-model.md §6.1). Reserved values (`admin`, `system`, `internal`) MUST be rejected by `register_group`."
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "description": "Member id — either a registered `worker_id` or another `group_id` in the same experiment."
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "created_by": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

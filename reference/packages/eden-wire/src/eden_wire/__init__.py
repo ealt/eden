@@ -8,19 +8,26 @@ Exports:
 - ``WireError`` and the ``IndeterminateIntegration`` error used when
   an ``integrate_variant`` call's outcome cannot be determined after
   a transport-indeterminate failure.
+- ``Principal`` / ``parse_bearer`` / ``authenticate`` from the §13
+  auth module.
 """
 
 from __future__ import annotations
 
+from .auth import Principal, authenticate, parse_bearer
 from .client import IndeterminateIntegration, StoreClient
-from .errors import Unauthorized, WireError, WireReferenceError
+from .errors import Forbidden, Unauthorized, WireError, WireReferenceError
 from .server import make_app
 
 __all__ = [
+    "Forbidden",
     "IndeterminateIntegration",
-    "WireReferenceError",
+    "Principal",
     "StoreClient",
     "Unauthorized",
     "WireError",
+    "WireReferenceError",
+    "authenticate",
     "make_app",
+    "parse_bearer",
 ]

@@ -23,10 +23,12 @@ from eden_contracts import (
     EvaluationSchema,
     Event,
     ExperimentConfig,
+    Group,
     Idea,
     RegisteredEventAdapter,
     TaskAdapter,
     Variant,
+    Worker,
 )
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
@@ -46,6 +48,8 @@ MODEL_NAMES: tuple[str, ...] = (
     "idea",
     "variant",
     "evaluation-schema",
+    "worker",
+    "group",
 )
 
 
@@ -130,6 +134,8 @@ _MODEL_VALIDATORS: dict[str, Callable[[Any], object]] = {
     "idea": Idea.model_validate,
     "variant": Variant.model_validate,
     "evaluation-schema": EvaluationSchema.model_validate,
+    "worker": Worker.model_validate,
+    "group": Group.model_validate,
 }
 
 

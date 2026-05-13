@@ -34,6 +34,7 @@ def test_task_claimed_carries_worker_id(
 ) -> None:
     """spec/v0/05-event-protocol.md §3.1 — task.claimed data has task_id, worker_id."""
     tid = _seed.create_ideation_task(wire_client)
+    _seed.register_worker(wire_client, "alpha")
     _seed.claim(wire_client, tid, worker_id="alpha")
     [event] = _by_type_for(event_log.replay_all(), "task.claimed", task_id=tid)
     assert event["data"]["task_id"] == tid
@@ -46,7 +47,7 @@ def test_task_submitted_carries_task_id(
     """spec/v0/05-event-protocol.md §3.1 — task.submitted data has task_id."""
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_idea(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"])
     [event] = _by_type_for(event_log.replay_all(), "task.submitted", task_id=tid)
     assert event["data"]["task_id"] == tid
 
@@ -57,7 +58,7 @@ def test_task_completed_carries_task_id(
     """spec/v0/05-event-protocol.md §3.1 — task.completed data has task_id."""
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_idea(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"])
     _seed.accept(wire_client, tid)
     [event] = _by_type_for(event_log.replay_all(), "task.completed", task_id=tid)
     assert event["data"]["task_id"] == tid
@@ -69,7 +70,7 @@ def test_task_failed_carries_reason(
     """spec/v0/05-event-protocol.md §3.1 — task.failed data has task_id, reason."""
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    _seed.submit_idea(wire_client, tid, token=c["token"])
+    _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"])
     _seed.reject(wire_client, tid, reason="validation_error")
     [event] = _by_type_for(event_log.replay_all(), "task.failed", task_id=tid)
     assert event["data"]["task_id"] == tid
@@ -189,7 +190,7 @@ def test_variant_eval_errored_carries_variant_id(
     _seed.submit_variant(
         wire_client,
         exec_tid,
-        token=exec_claim["token"],
+        worker_id=exec_claim["worker_id"],
         variant_id=variant_id,
         commit_sha="b" * 40,
     )

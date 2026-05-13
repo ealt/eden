@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN wire error (RFC 7807 profile)",
-  "description": "Error envelope returned on every non-2xx response by a conforming EDEN HTTP server. The `type` URI is the authoritative machine-readable error code; HTTP status alone is not sufficient to distinguish conflict classes. See 07-wire-protocol.md §7.",
+  "description": "Error envelope returned on every non-2xx response by a conforming EDEN HTTP server. The `type` URI is the authoritative machine-readable error code; HTTP status alone is not sufficient to distinguish conflict classes. See 07-wire-protocol.md §9.",
   "type": "object",
   "required": ["type", "title", "status"],
   "additionalProperties": true,
@@ -11,12 +11,19 @@
       "enum": [
         "eden://error/bad-request",
         "eden://error/experiment-id-mismatch",
-        "eden://error/wrong-token",
+        "eden://error/unauthorized",
+        "eden://error/forbidden",
+        "eden://error/worker-not-registered",
+        "eden://error/worker-not-eligible",
+        "eden://error/wrong-claimant",
         "eden://error/not-found",
         "eden://error/already-exists",
         "eden://error/illegal-transition",
+        "eden://error/not-claimed",
         "eden://error/conflicting-resubmission",
-        "eden://error/invalid-precondition"
+        "eden://error/invalid-precondition",
+        "eden://error/reserved-identifier",
+        "eden://error/cycle-detected"
       ],
       "description": "Closed v0 vocabulary of error types."
     },

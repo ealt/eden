@@ -129,3 +129,20 @@ def wire_client(
 @pytest.fixture
 def event_log(wire_client: WireClient) -> EventLog:
     return EventLog(wire_client)
+
+
+@pytest.fixture(autouse=True)
+def default_workers(wire_client: WireClient) -> None:
+    """Pre-register the conventional worker_ids for every conformance scenario.
+
+    12a-1 wave 5: ``Store.claim`` rejects unregistered worker_ids
+    with ``WorkerNotRegistered`` per spec §3.5 step 2. Scenarios that
+    drive a happy-path claim/submit cycle inherit this fixture so
+    they don't have to re-register the conventional ids
+    (``test-worker``, ``impl-worker``, ``eval-worker``, ``worker-a``,
+    ``worker-b``). Scenarios that explicitly probe the
+    unregistered-worker path register additional ids inline.
+    """
+    from ._seed import register_default_workers
+
+    register_default_workers(wire_client)

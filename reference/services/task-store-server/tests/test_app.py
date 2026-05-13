@@ -58,7 +58,7 @@ def test_build_store_sqlite_backend_url_scheme(tmp_path: Path) -> None:
     store.close()
 
 
-def test_build_app_no_shared_token_admits_anonymous() -> None:
+def test_build_app_no_admin_token_admits_anonymous() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
     store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
     app = build_app(store=store)
@@ -70,29 +70,29 @@ def test_build_app_no_shared_token_admits_anonymous() -> None:
     assert resp.status_code == 200
 
 
-def test_build_app_with_shared_token_rejects_unauthenticated() -> None:
+def test_build_app_with_admin_token_rejects_unauthenticated() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
     store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
-    app = build_app(store=store, shared_token="secret")
+    app = build_app(store=store, admin_token="secret")
     client = TestClient(app)
     resp = client.get(
         "/v0/experiments/exp-1/events",
         headers={"X-Eden-Experiment-Id": "exp-1"},
     )
     assert resp.status_code == 401
-    assert resp.json()["type"] == "eden://reference-error/unauthorized"
+    assert resp.json()["type"] == "eden://error/unauthorized"
 
 
-def test_build_app_with_shared_token_admits_authenticated() -> None:
+def test_build_app_with_admin_token_admits_admin_bearer() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
     store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
-    app = build_app(store=store, shared_token="secret")
+    app = build_app(store=store, admin_token="secret")
     client = TestClient(app)
     resp = client.get(
         "/v0/experiments/exp-1/events",
         headers={
             "X-Eden-Experiment-Id": "exp-1",
-            "Authorization": "Bearer secret",
+            "Authorization": "Bearer admin:secret",
         },
     )
     assert resp.status_code == 200

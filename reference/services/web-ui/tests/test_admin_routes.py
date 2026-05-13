@@ -31,7 +31,7 @@ def _claim_ideation_task(
     store: InMemoryStore, task_id: str, *, worker_id: str = "ui-w"
 ) -> str:
     claim = store.claim(task_id, worker_id)
-    return claim.token
+    return claim.worker_id
 
 
 class TestAdminAuthGate:

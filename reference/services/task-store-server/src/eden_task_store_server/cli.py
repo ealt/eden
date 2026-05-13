@@ -65,11 +65,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="TCP port to bind (0 = ephemeral; printed on startup).",
     )
     parser.add_argument(
-        "--shared-token",
+        "--admin-token",
         default=None,
         help=(
-            "Optional bearer token for the reference-only auth middleware "
-            "(07-wire-protocol.md §12)."
+            "Deployment admin token for the §13 normative auth middleware. "
+            "When set, every /v0/ request MUST carry "
+            "Authorization: Bearer <principal>:<secret>; admin: matches this "
+            "token, worker: bearers verify against the Store. Pre-12a-1 the "
+            "flag was --shared-token (reference-only); that scheme has been "
+            "removed."
         ),
     )
     parser.add_argument(
@@ -154,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         app = build_app(
             store=store,
-            shared_token=args.shared_token,
+            admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
         )
         uv_config = uvicorn.Config(

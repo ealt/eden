@@ -95,13 +95,32 @@ test "$(docker inspect --format '{{.State.ExitCode}}' eden-orchestrator)" = "0" 
 }
 
 echo "--- asserting final task-store state (subprocess mode) ---"
-EDEN_SHARED_TOKEN="$(grep -E '^EDEN_SHARED_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
+EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
+# 12a-1 wave 6: each worker host auto-registers at startup. Verify
+# the registry is non-empty before reading the event stream so that
+# any wiring break surfaces as "no registered workers" rather than
+# "no progress".
+WORKERS_JSON="$(
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T task-store-server \
+        curl -fsS \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+            -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
+            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/workers"
+)"
+REGISTERED_WORKERS="$(echo "$WORKERS_JSON" | jq '[.workers[] | .worker_id] | length')"
+test "$REGISTERED_WORKERS" -ge 4 || {
+    echo "expected >= 4 registered workers; got $REGISTERED_WORKERS" >&2
+    echo "workers response: $WORKERS_JSON" >&2
+    exit 1
+}
 EVENTS_JSON="$(
     docker compose -f compose.yaml -f compose.subprocess.yaml \
         --env-file "$ENV_FILE" \
         exec -T task-store-server \
         curl -fsS \
-            -H "Authorization: Bearer ${EDEN_SHARED_TOKEN}" \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
 )"

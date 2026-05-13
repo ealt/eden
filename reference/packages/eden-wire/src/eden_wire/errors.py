@@ -19,20 +19,26 @@ from typing import Any
 from eden_storage.errors import (
     AlreadyExists,
     ConflictingResubmission,
+    CycleDetected,
     IllegalTransition,
     InvalidPrecondition,
+    NotClaimed,
     NotFound,
+    ReservedIdentifier,
     StorageError,
-    WrongToken,
+    WorkerNotEligible,
+    WorkerNotRegistered,
+    WrongClaimant,
 )
 
 __all__ = [
     "BadRequest",
     "ExperimentIdMismatch",
+    "Forbidden",
     "ProblemJson",
-    "WireReferenceError",
     "Unauthorized",
     "WireError",
+    "WireReferenceError",
     "envelope_for_error",
     "envelope_for_reference_error",
     "raise_for_envelope",
@@ -51,18 +57,36 @@ class ExperimentIdMismatch(WireError):
     """Header ``X-Eden-Experiment-Id`` disagreed with the URL segment."""
 
 
+class Unauthorized(WireError):
+    """Authentication failed.
+
+    Per [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
+    §13, every ``/v0/`` request MUST carry a valid ``Authorization:
+    Bearer <principal>:<secret>`` header; servers reject requests
+    without one (or with a malformed one) using ``eden://error/unauthorized``
+    (HTTP 401). 12a-1 made this error normative — pre-12a-1 it lived
+    under the informative ``eden://reference-error/...`` namespace.
+    """
+
+
+class Forbidden(WireError):
+    """Authentication succeeded but the principal is not authorized for this endpoint.
+
+    Used for principal-class mismatches per
+    [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
+    §13.3 (e.g. a worker bearer hitting an admin-gated route, or
+    vice versa). Returns HTTP 403.
+    """
+
+
 class WireReferenceError(Exception):
     """Base class for reference-only errors outside the normative vocabulary.
 
     Errors under this hierarchy live under ``eden://reference-error/…``
-    and are not part of the ``07-wire-protocol.md`` §7 closed vocabulary
-    (§12 "Reference-only extensions"). A conforming server is free to
-    use a different auth scheme or none at all.
+    and are not part of the ``07-wire-protocol.md`` §9 closed vocabulary.
+    A conforming server is free to use a different transport-level
+    extension scheme.
     """
-
-
-class Unauthorized(WireReferenceError):
-    """Reference shared-token middleware rejected the request."""
 
 
 @dataclass(frozen=True)
@@ -97,7 +121,8 @@ _TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
         409,
         "Illegal Transition",
     ),
-    WrongToken: ("eden://error/wrong-token", 403, "Wrong Token"),
+    NotClaimed: ("eden://error/not-claimed", 409, "Not Claimed"),
+    WrongClaimant: ("eden://error/wrong-claimant", 403, "Wrong Claimant"),
     ConflictingResubmission: (
         "eden://error/conflicting-resubmission",
         409,
@@ -108,12 +133,30 @@ _TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
         409,
         "Invalid Precondition",
     ),
+    WorkerNotRegistered: (
+        "eden://error/worker-not-registered",
+        403,
+        "Worker Not Registered",
+    ),
+    WorkerNotEligible: (
+        "eden://error/worker-not-eligible",
+        403,
+        "Worker Not Eligible",
+    ),
+    ReservedIdentifier: (
+        "eden://error/reserved-identifier",
+        409,
+        "Reserved Identifier",
+    ),
+    CycleDetected: ("eden://error/cycle-detected", 409, "Cycle Detected"),
     BadRequest: ("eden://error/bad-request", 400, "Bad Request"),
     ExperimentIdMismatch: (
         "eden://error/experiment-id-mismatch",
         400,
         "Experiment ID Mismatch",
     ),
+    Unauthorized: ("eden://error/unauthorized", 401, "Unauthorized"),
+    Forbidden: ("eden://error/forbidden", 403, "Forbidden"),
 }
 
 _EXC_BY_TYPE: dict[str, type[Exception]] = {
@@ -141,17 +184,19 @@ def envelope_for_error(exc: Exception, *, instance: str | None = None) -> Proble
     )
 
 
-_REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
-    Unauthorized: (
-        "eden://reference-error/unauthorized",
-        401,
-        "Unauthorized",
-    ),
-}
+_REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {}
+"""Reference-only error vocabulary, intentionally empty post-12a-1.
 
-_REF_EXC_BY_TYPE: dict[str, type[Exception]] = {
-    wire_type: exc for exc, (wire_type, _, _) in _REF_TYPE_BY_EXC.items()
-}
+Pre-12a-1 the reference impl shipped an informative shared-token
+auth scheme that emitted ``eden://reference-error/unauthorized``;
+that scheme has been replaced by the normative §13 per-worker /
+admin auth, with errors emitted under the closed ``eden://error/…``
+vocabulary. The table is retained as the extension point for future
+reference-only errors so downstream packages don't need to rebuild
+the reference-vs-normative split.
+"""
+
+_REF_EXC_BY_TYPE: dict[str, type[Exception]] = {}
 
 
 def envelope_for_reference_error(
@@ -161,7 +206,8 @@ def envelope_for_reference_error(
 
     Kept separate from :func:`envelope_for_error` so no refactor can
     accidentally leak a reference-only type into the normative
-    ``_TYPE_BY_EXC`` vocabulary.
+    ``_TYPE_BY_EXC`` vocabulary. The reference table is currently
+    empty (see :data:`_REF_TYPE_BY_EXC`).
     """
     entry = _REF_TYPE_BY_EXC.get(type(exc))
     if entry is None:

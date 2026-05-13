@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from .auth import (
+    DEFAULT_CREDENTIALS_DIR,
+    WorkerCredential,
+    bootstrap_worker_credential,
+    credential_path,
+    resolve_worker_bearer,
+)
 from .cli import (
     add_common_arguments,
     add_exec_arguments,
     parse_log_level,
+    resolve_admin_token,
+    resolve_credentials_dir,
     resolve_exec_args,
 )
 from .container_exec import (
@@ -43,6 +52,7 @@ from .worktrees import TaskWorktree, sweep_host_worktrees
 
 __all__ = [
     "BindMount",
+    "DEFAULT_CREDENTIALS_DIR",
     "ScriptedEvaluateFn",
     "ScriptedImplementFn",
     "ScriptedPlanFn",
@@ -50,9 +60,12 @@ __all__ = [
     "Subprocess",
     "TaskWorktree",
     "VolumeMount",
+    "WorkerCredential",
     "add_common_arguments",
     "add_exec_arguments",
+    "bootstrap_worker_credential",
     "cleanup_cidfile",
+    "credential_path",
     "configure_logging",
     "get_logger",
     "install_stop_handlers",
@@ -70,7 +83,10 @@ __all__ = [
     "parse_volume_spec",
     "reap_orphaned_containers",
     "require_command",
+    "resolve_admin_token",
+    "resolve_credentials_dir",
     "resolve_exec_args",
+    "resolve_worker_bearer",
     "seed_bare_repo",
     "spawn",
     "sweep_host_worktrees",

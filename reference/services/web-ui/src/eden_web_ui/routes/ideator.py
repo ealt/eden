@@ -26,7 +26,8 @@ from eden_storage import (
     IdeaSubmission,
     IllegalTransition,
     InvalidPrecondition,
-    WrongToken,
+    NotClaimed,
+    WrongClaimant,
 )
 from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
@@ -145,7 +146,7 @@ async def claim(
     except (IllegalTransition, InvalidPrecondition) as exc:
         banner = _wire_error_banner(exc)
         return RedirectResponse(url=f"/ideator/?banner={banner}", status_code=303)
-    _CLAIMS[_claim_key(session.csrf, task_id)] = result.token
+    _CLAIMS[_claim_key(session.csrf, task_id)] = result.worker_id
     return RedirectResponse(url=f"/ideator/{task_id}/draft", status_code=303)
 
 
@@ -388,7 +389,7 @@ def _retry_submit(
     Exception classification (per
     ``feedback_retry_readback_test_mocks.md`` rule 1):
 
-    - ``WrongToken``, ``ConflictingResubmission``, and
+    - ``NotClaimed``, ``ConflictingResubmission``, and
       ``InvalidPrecondition`` are definitive short-circuits;
       retrying them cannot change the outcome.
     - ``IllegalTransition`` is **not** definitive: it falls
@@ -415,7 +416,12 @@ def _retry_submit(
         try:
             store.submit(task_id, token, submission)
             return True, None
-        except (WrongToken, ConflictingResubmission, InvalidPrecondition) as exc:
+        except (
+            NotClaimed,
+            WrongClaimant,
+            ConflictingResubmission,
+            InvalidPrecondition,
+        ) as exc:
             return False, _wire_error_banner(exc)
         except IllegalTransition as exc:
             last_exc = exc
@@ -467,7 +473,7 @@ def _readback(
     - ``claimed`` with our token still on the task → transport
       banner naming the underlying exception class.
     - ``claimed`` with our token gone (someone else holds the
-      claim now) → ``eden://error/wrong-token``.
+      claim now) → ``eden://error/not-claimed``.
     - ``pending`` (sweeper / operator already reclaimed) →
       transport banner mentioning the reclaim, distinct from the
       claim-still-ours case.
@@ -508,9 +514,9 @@ def _readback(
             return True, None
         return False, "eden://error/conflicting-resubmission"
     if task.state == "claimed":
-        if task.claim is not None and task.claim.token == token:
+        if task.claim is not None and task.claim.worker_id == token:
             return False, f"transport failure after retries: {last_name}"
-        return False, "eden://error/wrong-token"
+        return False, "eden://error/not-claimed"
     # state == "pending"
     return (
         False,
@@ -637,7 +643,7 @@ def _bad_request(message: str) -> HTMLResponse:
 
 
 _ERROR_NAMES: dict[type, str] = {
-    WrongToken: "eden://error/wrong-token",
+    NotClaimed: "eden://error/not-claimed",
     IllegalTransition: "eden://error/illegal-transition",
     ConflictingResubmission: "eden://error/conflicting-resubmission",
     InvalidPrecondition: "eden://error/invalid-precondition",

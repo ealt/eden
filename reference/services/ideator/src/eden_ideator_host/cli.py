@@ -21,6 +21,7 @@ from eden_service_common import (
     reap_orphaned_containers,
     require_command,
     resolve_exec_args,
+    resolve_worker_bearer,
     wait_for_task_store,
     wrap_command,
 )
@@ -98,6 +99,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _credential_secret(bearer: str | None) -> str | None:
+    """Extract the secret half of a §13.1 ``<principal>:<secret>`` bearer."""
+    if bearer is None or ":" not in bearer:
+        return None
+    return bearer.split(":", 1)[1]
+
+
 def _validate_sha(value: str) -> None:
     if len(value) not in (40, 64) or any(c not in "0123456789abcdef" for c in value):
         raise SystemExit(
@@ -117,17 +125,24 @@ def main(argv: list[str] | None = None) -> int:
     stop = StopFlag()
     install_stop_handlers(stop)
     log.info("waiting_for_task_store")
+    # The readiness probe accepts 200/401/403 ("server is up") so the
+    # host can run before it has its per-worker credential. The
+    # bootstrap below registers and persists the credential against
+    # the admin bearer.
     wait_for_task_store(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        token=args.shared_token,
+        token=None,
         deadline_seconds=args.startup_timeout,
+    )
+    bearer = resolve_worker_bearer(
+        args, worker_id=args.worker_id, labels={"role": "ideator"}
     )
     log.info("starting", worker_id=args.worker_id, mode=args.mode)
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
-        token=args.shared_token,
+        bearer=bearer,
     ) as client:
         if args.mode == "scripted":
             run_ideator_loop(
@@ -209,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
                 task_deadline=args.ideation_task_deadline,
                 shutdown_deadline=args.ideation_shutdown_deadline,
                 wrap_factory=wrap_factory,
+                worker_id=args.worker_id,
+                worker_credential=_credential_secret(bearer),
             )
             run_ideator_subprocess_loop(
                 store=client,
