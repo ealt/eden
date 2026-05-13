@@ -641,3 +641,91 @@ def test_storeclient_resolve_worker_in_group_walks_groups(
         assert client.resolve_worker_in_group("eric", "humans") is True
         assert client.resolve_worker_in_group("alice", "humans") is False
         assert client.resolve_worker_in_group("eric", "non-existent") is False
+
+
+def test_storeclient_verify_propagates_transport_failures(
+    store: InMemoryStore,
+) -> None:
+    """Codex round-5 R5-A — transport failures MUST NOT collapse to False.
+
+    A bootstrap flow conflating "transport hiccup" with "credential is
+    bad" would reissue on a transient network blip; verify_worker_credential
+    only returns False on a confirmed-bad-credential outcome (401).
+    """
+    app = make_app(store, admin_token=ADMIN_TOKEN)
+    test_client = TestClient(app)
+    register = test_client.post(
+        _workers_url(),
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+        json={"worker_id": "eric"},
+    )
+    token = register.json()["registration_token"]
+
+    def _exploding_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated transport failure")
+
+    with httpx.Client(
+        transport=httpx.MockTransport(_exploding_handler),
+        base_url="http://unused",
+    ) as http:
+        client = StoreClient(
+            "http://unused",
+            experiment_id=EXPERIMENT_ID,
+            bearer=f"admin:{ADMIN_TOKEN}",
+            client=http,
+        )
+        with pytest.raises(httpx.ConnectError):
+            client.verify_worker_credential("eric", token)
+
+
+def test_storeclient_resolve_in_group_only_swallows_not_found(
+    store: InMemoryStore,
+) -> None:
+    """Codex round-5 R5-B — only NotFound on a member is swallowed.
+
+    Auth failures, transport errors, etc. propagate so callers can
+    distinguish "we don't know" from "confirmed not a member".
+    """
+    _ = store  # fixture only ensures InMemoryStore is constructable
+
+    def _exploding_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("simulated read timeout")
+
+    with httpx.Client(
+        transport=httpx.MockTransport(_exploding_handler),
+        base_url="http://unused",
+    ) as http:
+        client = StoreClient(
+            "http://unused",
+            experiment_id=EXPERIMENT_ID,
+            bearer=f"admin:{ADMIN_TOKEN}",
+            client=http,
+        )
+        with pytest.raises(httpx.ReadTimeout):
+            client.resolve_worker_in_group("eric", "humans")
+
+
+def test_storeclient_resolve_in_group_skips_dangling_member(
+    store: InMemoryStore,
+) -> None:
+    """§7.1 — a dangling group reference is a NotFound that the walk skips."""
+    # Seed eric directly in humans; humans references a non-existent
+    # group "ghost" as another member. The walk MUST skip "ghost"
+    # and still find eric via the direct membership.
+    store.register_worker("eric")
+    store.register_group("humans", members=["eric", "ghost"])
+    app = make_app(store, admin_token=ADMIN_TOKEN)
+    test_client = TestClient(app)
+    with httpx.Client(
+        transport=_proxy_to_app(test_client), base_url="http://unused"
+    ) as http:
+        client = StoreClient(
+            "http://unused",
+            experiment_id=EXPERIMENT_ID,
+            bearer=f"admin:{ADMIN_TOKEN}",
+            client=http,
+        )
+        assert client.resolve_worker_in_group("eric", "humans") is True

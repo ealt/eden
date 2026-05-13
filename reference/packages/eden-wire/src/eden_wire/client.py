@@ -41,7 +41,7 @@ from eden_contracts import (
     Variant,
     Worker,
 )
-from eden_storage.errors import InvalidPrecondition
+from eden_storage.errors import InvalidPrecondition, NotFound
 from eden_storage.submissions import (
     EvaluationSubmission,
     IdeaSubmission,
@@ -522,28 +522,29 @@ class StoreClient:
         (so an injected ``httpx.Client`` — mock transport, TLS
         config, proxy, etc. — applies to the verify call too); only
         the Authorization header is swapped for the candidate bearer
-        on this single request. Returns ``True`` only when the
-        returned worker_id equals ``worker_id`` (defends against the
-        §6.7 "wrong worker_id returned" recovery branch).
+        on this single request.
+
+        Returns ``True`` only when the returned worker_id equals
+        ``worker_id`` (defends against the §6.7 "wrong worker_id
+        returned" recovery branch). Returns ``False`` ONLY for a
+        confirmed-bad-credential outcome (401). Transport failures
+        and malformed responses propagate as exceptions — they are
+        "we don't know" cases, not "credential is bad", and a
+        startup recovery flow that conflated the two would
+        unnecessarily reissue on a transient network blip.
         """
         candidate_bearer = f"{worker_id}:{registration_token}"
         headers = {
             **self._headers,
             "Authorization": f"Bearer {candidate_bearer}",
         }
-        try:
-            resp = self._client.request(
-                "GET", f"{self._base}/whoami", headers=headers
-            )
-        except Exception:  # noqa: BLE001 — transport failure → not authenticated
-            return False
+        resp = self._client.request(
+            "GET", f"{self._base}/whoami", headers=headers
+        )
         if resp.status_code == 401:
             return False
-        try:
-            resp.raise_for_status()
-            returned = resp.json().get("worker_id")
-        except Exception:  # noqa: BLE001
-            return False
+        resp.raise_for_status()
+        returned = resp.json().get("worker_id")
         return returned == worker_id
 
     def whoami(self) -> str:
@@ -608,7 +609,12 @@ class StoreClient:
         defensively so a server that violated §7.3 cannot wedge the
         client.
 
-        Non-existent groups resolve to membership=false per §7.1.
+        A non-existent group along the walk resolves to membership=false
+        per §7.1 (and is caught explicitly so the walk continues —
+        legitimate dangling references in a partially-populated
+        registry must not abort the search). Auth failures, transport
+        errors, and other unexpected exceptions propagate so callers
+        can distinguish "we don't know" from "confirmed not a member".
         """
         visited: set[str] = set()
         stack: list[str] = [group_id]
@@ -619,7 +625,9 @@ class StoreClient:
             visited.add(current)
             try:
                 group = self.read_group(current)
-            except Exception:  # noqa: BLE001 — NotFound or transport hiccup → not a member
+            except NotFound:
+                # Dangling reference: §7.1 says a member name need not
+                # exist at write time. Skip this node and keep walking.
                 continue
             for member in group.members:
                 if member == worker_id:
