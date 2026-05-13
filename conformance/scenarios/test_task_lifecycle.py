@@ -86,12 +86,10 @@ def _terminalize_failed(client: WireClient) -> str:
 
 # Submit on a task with no live claim — pending or terminal — surfaces
 # as the §4 "current state is claimed" precondition: NotClaimed
-# (chapter 04 §4.1 step 1). Other write attempts surface as
+# (chapter 04 §4.1 step 1; chapter 07 §2.4 binds the wire mapping
+# to ``eden://error/not-claimed`` explicitly). Other write attempts
+# (claim, accept, reject, reclaim against terminal) surface as
 # illegal-transition.
-_NO_CLAIM_TYPES = {
-    "eden://error/illegal-transition",
-    "eden://error/not-claimed",
-}
 
 
 def test_terminal_completed_rejects_writes(wire_client: WireClient) -> None:
@@ -108,7 +106,7 @@ def test_terminal_completed_rejects_writes(wire_client: WireClient) -> None:
     # Re-submit (terminal task — claim cleared)
     r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 409
-    assert r.json().get("type") in _NO_CLAIM_TYPES
+    assert r.json().get("type") == "eden://error/not-claimed"
     # Re-accept / re-reject
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409
@@ -138,7 +136,7 @@ def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
     # Re-submit (terminal task — claim cleared)
     r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 409
-    assert r.json().get("type") in _NO_CLAIM_TYPES
+    assert r.json().get("type") == "eden://error/not-claimed"
     # Accept / reject
     r = _seed.accept(wire_client, tid)
     assert r.status_code == 409
@@ -159,7 +157,7 @@ def test_pending_rejects_submit(wire_client: WireClient) -> None:
     tid = _seed.create_ideation_task(wire_client)
     r = _seed.submit_idea(wire_client, tid)
     assert r.status_code == 409
-    assert r.json().get("type") in _NO_CLAIM_TYPES
+    assert r.json().get("type") == "eden://error/not-claimed"
 
 
 def test_pending_rejects_accept(wire_client: WireClient) -> None:

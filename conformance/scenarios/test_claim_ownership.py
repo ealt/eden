@@ -93,13 +93,11 @@ def test_claim_cleared_after_reclaim(wire_client: WireClient) -> None:
 
     # Submit attempt against a cleared-claim task fails with §4.1's
     # ``NotClaimed`` precondition regardless of which worker_id is
-    # presented.
+    # presented. Chapter 07 §2.4 binds the wire mapping to
+    # ``eden://error/not-claimed`` explicitly.
     r = _seed.submit_idea(wire_client, tid, worker_id="worker-a")
     assert r.status_code == 409, r.text
-    assert r.json().get("type") in (
-        "eden://error/not-claimed",
-        "eden://error/illegal-transition",
-    )
+    assert r.json().get("type") == "eden://error/not-claimed"
 
 
 def test_resubmit_by_other_worker_after_reclaim_chain_rejected(

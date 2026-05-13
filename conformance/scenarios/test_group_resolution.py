@@ -134,3 +134,68 @@ def test_register_group_rejects_id_already_used_by_worker(
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/already-exists"
+
+
+def test_read_group_returns_record(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §7.3 — GET /groups/{G} returns the registered record."""
+    wid = _seed.fresh_worker_id("read")
+    _seed.register_worker(wire_client, wid)
+    gid = _seed.fresh_group_id("read-g")
+    _seed.create_group(wire_client, gid, members=[wid])
+    resp = wire_client.get(f"{wire_client.base_path}/groups/{gid}")
+    assert resp.status_code == 200, resp.text
+    record = resp.json()
+    assert record["group_id"] == gid
+    assert record["experiment_id"] == wire_client.experiment_id
+    assert wid in record["members"]
+
+
+def test_read_unknown_group_returns_404(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §7.3 — GET /groups/{G} on unknown id returns 404 not-found."""
+    resp = wire_client.get(f"{wire_client.base_path}/groups/no-such-group")
+    assert resp.status_code == 404, resp.text
+    assert resp.json().get("type") == "eden://error/not-found"
+
+
+def test_list_groups_returns_registered_records(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §7.3 — GET /groups returns ``{groups: [...]}``."""
+    g1 = _seed.fresh_group_id("lg1")
+    g2 = _seed.fresh_group_id("lg2")
+    _seed.create_group(wire_client, g1, members=[])
+    _seed.create_group(wire_client, g2, members=[])
+    resp = wire_client.get(f"{wire_client.base_path}/groups")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body.get("groups"), list)
+    ids = {g["group_id"] for g in body["groups"]}
+    assert {g1, g2}.issubset(ids)
+
+
+def test_remove_from_group_drops_membership(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §7.2 — DELETE /groups/{G}/members/{M} removes the edge."""
+    wid = _seed.fresh_worker_id("rm")
+    _seed.register_worker(wire_client, wid)
+    gid = _seed.fresh_group_id("rm-g")
+    _seed.create_group(wire_client, gid, members=[wid])
+    # Sanity: starts as member.
+    assert wid in wire_client.get(f"{wire_client.base_path}/groups/{gid}").json()["members"]
+    # Remove and re-read.
+    resp = wire_client.request(
+        "DELETE",
+        f"{wire_client.base_path}/groups/{gid}/members/{wid}",
+    )
+    assert 200 <= resp.status_code < 300, resp.text
+    after = wire_client.get(f"{wire_client.base_path}/groups/{gid}").json()
+    assert wid not in after["members"]
+
+
+def test_delete_group_removes_record(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §7.3 — DELETE /groups/{G} removes the registered group."""
+    gid = _seed.fresh_group_id("del-g")
+    _seed.create_group(wire_client, gid, members=[])
+    resp = wire_client.request("DELETE", f"{wire_client.base_path}/groups/{gid}")
+    assert 200 <= resp.status_code < 300, resp.text
+    # Subsequent GET returns 404.
+    follow = wire_client.get(f"{wire_client.base_path}/groups/{gid}")
+    assert follow.status_code == 404
+    assert follow.json().get("type") == "eden://error/not-found"

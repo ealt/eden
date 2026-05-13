@@ -43,12 +43,29 @@ def test_register_worker_returns_record(wire_client: WireClient) -> None:
 
 
 def test_register_worker_is_idempotent(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §6.3 — re-registration returns the existing record."""
+    """spec/v0/02-data-model.md §6.3 — re-registration returns the existing record.
+
+    Three MUSTs from chapter 02 §6.3 + chapter 07 §6.1:
+
+    1. The second registration returns the existing record (same
+       fields).
+    2. The second registration MUST NOT issue or rotate a credential
+       — the response body MUST NOT include ``registration_token``.
+    3. The wire-visible record fields are preserved across the two
+       calls (registered_at is the first-registration timestamp).
+    """
     wid = _seed.fresh_worker_id("idem")
     first = _seed.register_worker(wire_client, wid)
+    # First registration MUST include the plaintext token.
+    assert isinstance(first.get("registration_token"), str)
+    assert first["registration_token"]
     second = _seed.register_worker(wire_client, wid)
-    # The record identity is preserved across the two calls; the
-    # wire-visible fields agree.
+    # Second registration MUST omit registration_token.
+    assert "registration_token" not in second, (
+        "§6.3 violated: idempotent re-registration leaked a fresh "
+        f"registration_token: {second!r}"
+    )
+    # And MUST preserve the record fields unchanged.
     assert second["worker_id"] == first["worker_id"]
     assert second["experiment_id"] == first["experiment_id"]
     assert second["registered_at"] == first["registered_at"]
@@ -92,3 +109,53 @@ def test_register_worker_rejects_id_already_used_by_group(
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/already-exists"
+
+
+def test_read_worker_returns_record_without_credentials(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/07-wire-protocol.md §6.2 — GET /workers/{W} returns the wire-visible record.
+
+    Chapter 02 §6.2 MUST: the wire-visible Worker shape MUST NOT
+    carry the credential or any hash. An IUT that leaks
+    ``registration_token`` or a credential hash on the read endpoint
+    is broken even if registration looks correct.
+    """
+    wid = _seed.fresh_worker_id("readable")
+    _seed.register_worker(wire_client, wid)
+    resp = wire_client.get(f"{wire_client.base_path}/workers/{wid}")
+    assert resp.status_code == 200, resp.text
+    record = resp.json()
+    assert record["worker_id"] == wid
+    assert record["experiment_id"] == wire_client.experiment_id
+    assert "registration_token" not in record
+    assert "credential_hash" not in record
+    assert "password" not in record
+
+
+def test_read_unknown_worker_returns_404(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §6.2 — GET /workers/{W} on unknown id returns 404 not-found."""
+    resp = wire_client.get(f"{wire_client.base_path}/workers/no-such-worker")
+    assert resp.status_code == 404, resp.text
+    assert resp.json().get("type") == "eden://error/not-found"
+
+
+def test_list_workers_returns_registered_records(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §6.2 — GET /workers returns the registry as ``{workers: [...]}``.
+
+    The wire-visible Worker shapes in the list MUST NOT include
+    credential material (mirrors the per-worker GET).
+    """
+    a = _seed.fresh_worker_id("la")
+    b = _seed.fresh_worker_id("lb")
+    _seed.register_worker(wire_client, a)
+    _seed.register_worker(wire_client, b)
+    resp = wire_client.get(f"{wire_client.base_path}/workers")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body.get("workers"), list)
+    ids = {w["worker_id"] for w in body["workers"]}
+    assert {a, b}.issubset(ids)
+    for w in body["workers"]:
+        assert "registration_token" not in w
+        assert "credential_hash" not in w

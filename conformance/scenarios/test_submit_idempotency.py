@@ -91,9 +91,9 @@ def test_resubmit_after_terminal_rejected(wire_client: WireClient) -> None:
 
     Per §4.4 a resubmission against a terminal task MUST be rejected
     regardless of content equivalence; the accept-step cleared the
-    claim atomically with the terminal transition so the failure mode
-    is ``NotClaimed`` (§4.1 step 1) or ``IllegalTransition`` depending
-    on which precondition the IUT checks first.
+    claim atomically with the terminal transition. Chapter 07 §2.4
+    binds the cleared-claim wire mapping to
+    ``eden://error/not-claimed`` explicitly.
     """
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
@@ -101,7 +101,4 @@ def test_resubmit_after_terminal_rejected(wire_client: WireClient) -> None:
     _seed.accept(wire_client, tid)
     r = _seed.submit_idea(wire_client, tid, worker_id=c["worker_id"])
     assert r.status_code == 409
-    assert r.json().get("type") in (
-        "eden://error/not-claimed",
-        "eden://error/illegal-transition",
-    )
+    assert r.json().get("type") == "eden://error/not-claimed"
