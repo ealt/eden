@@ -25,6 +25,7 @@ from eden_service_common import (
     resolve_exec_args,
     resolve_substrate_args,
     resolve_worker_bearer,
+    strip_reserved_substrate_keys,
     substrate_args_for_exec_mode,
     wait_for_task_store,
     wrap_command,
@@ -241,7 +242,14 @@ def main(argv: list[str] | None = None) -> int:
             # the protocol surface (§D.0 contract).
             env: dict[str, str] = {}
             if args.ideation_env_file:
-                env.update(parse_env_file(args.ideation_env_file))
+                user_env = parse_env_file(args.ideation_env_file)
+                # Codex round-3: strip reserved substrate keys from
+                # the user env BEFORE merging, so a user file can
+                # NEVER reintroduce keys the host suppressed (e.g.
+                # under --exec-mode docker) or selectively
+                # configured. The host's authoritative substrate
+                # overlay is applied below.
+                env.update(strip_reserved_substrate_keys(dict(user_env)))
             # When --exec-mode=docker, EDEN_EXPERIMENT_DIR inside the
             # spawned child container resolves to the bind-mount
             # target supplied via --exec-bind, NOT the host-side path.

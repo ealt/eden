@@ -1392,9 +1392,15 @@ def make_app(
             # would bypass the wire-binding error vocabulary).
             raise NotFound("artifact not found") from exc
         except OSError as exc:
-            # EACCES / ENOTDIR / ENAMETOOLONG / etc. — collapse to
-            # 404 to avoid leaking filesystem layout to the caller.
-            raise NotFound("artifact not found") from exc
+            # Codex round-3: only ENOENT / ENOTDIR / ENAMETOOLONG
+            # are legitimate "path doesn't resolve to a file"
+            # cases and collapse to 404. Other OSErrors (EIO,
+            # EACCES, EMFILE, ENOSPC, etc.) are operational
+            # server faults — propagate so they surface as 5xx
+            # rather than masquerading as a missing artifact.
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG):
+                raise NotFound("artifact not found") from exc
+            raise
 
         try:
             st = os.fstat(fd)

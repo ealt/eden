@@ -337,6 +337,103 @@ def test_legacy_over_grant_is_revoked(store_dsn: tuple[str, str]) -> None:
         cur.execute(f"SELECT credential_hash FROM {schema}.worker LIMIT 1")
 
 
+def test_hardening_clears_elevated_role_attrs_and_memberships(
+    store_dsn: tuple[str, str],
+) -> None:
+    """Codex round-3: positive assertion that round-2's hardening
+    actually took effect.
+
+    Pre-creates ``eden_readonly`` with SUPERUSER + CREATEROLE +
+    BYPASSRLS + a synthetic group membership; runs
+    ``ensure_readonly_role``; asserts the post-condition that the
+    role has ONLY ``LOGIN`` enabled (the explicit safe-attr set),
+    no elevated capabilities, and no group memberships.
+    """
+    schema, _ = store_dsn
+    pwd_legacy = secrets.token_hex(16)
+    pwd_new = secrets.token_hex(16)
+    synthetic_group = f"eden_test_grp_{secrets.token_hex(4)}"
+    try:
+        with (
+            psycopg.connect(DSN, autocommit=True) as conn,
+            conn.cursor() as cur,
+        ):
+            # Pre-create eden_readonly with elevated attributes.
+            cur.execute(
+                sql.SQL(
+                    "CREATE ROLE eden_readonly WITH LOGIN SUPERUSER "
+                    "CREATEROLE CREATEDB BYPASSRLS PASSWORD {}"
+                ).format(sql.Literal(pwd_legacy))
+            )
+            # Pre-create a synthetic parent role + GRANT membership.
+            cur.execute(
+                sql.SQL("CREATE ROLE {} NOLOGIN").format(
+                    sql.Identifier(synthetic_group)
+                )
+            )
+            cur.execute(
+                sql.SQL("GRANT {} TO eden_readonly").format(
+                    sql.Identifier(synthetic_group)
+                )
+            )
+
+        # Run the provisioner; it MUST strip the elevated attrs
+        # and revoke the membership.
+        _provision(store_dsn, pwd_new)
+
+        with (
+            psycopg.connect(DSN, autocommit=True) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                "SELECT rolsuper, rolcreaterole, rolcreatedb, "
+                "rolbypassrls, rolreplication, rolinherit, rolcanlogin "
+                "FROM pg_roles WHERE rolname = 'eden_readonly'"
+            )
+            row = cur.fetchone()
+            assert row is not None
+            (
+                rolsuper,
+                rolcreaterole,
+                rolcreatedb,
+                rolbypassrls,
+                rolreplication,
+                rolinherit,
+                rolcanlogin,
+            ) = row
+            # Hardening assertions: every elevated attr is OFF.
+            assert rolsuper is False, "SUPERUSER not stripped"
+            assert rolcreaterole is False, "CREATEROLE not stripped"
+            assert rolcreatedb is False, "CREATEDB not stripped"
+            assert rolbypassrls is False, "BYPASSRLS not stripped"
+            assert rolreplication is False, "REPLICATION not stripped"
+            assert rolinherit is False, "NOINHERIT not set"
+            assert rolcanlogin is True, "LOGIN missing"
+            # Membership scrub: no remaining group memberships.
+            cur.execute(
+                "SELECT roleid::regrole::text FROM pg_auth_members "
+                "WHERE member = ("
+                "  SELECT oid FROM pg_roles WHERE rolname = 'eden_readonly'"
+                ")"
+            )
+            remaining = cur.fetchall()
+            assert remaining == [], (
+                f"eden_readonly still has memberships: {remaining!r}"
+            )
+    finally:
+        # Tear down the synthetic group; the schema_dsn fixture's
+        # teardown handles eden_readonly.
+        with (
+            psycopg.connect(DSN, autocommit=True) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                sql.SQL("DROP ROLE IF EXISTS {}").format(
+                    sql.Identifier(synthetic_group)
+                )
+            )
+
+
 def test_legacy_non_select_default_privilege_is_revoked(
     store_dsn: tuple[str, str],
 ) -> None:

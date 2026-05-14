@@ -88,7 +88,18 @@ def test_cli_artifacts_dir_default_is_none() -> None:
     assert args.artifacts_dir is None
 
 
-@pytest.mark.parametrize("path", ["", "../etc/passwd"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",  # empty trailing → 400 invalid-path
+        # URL-encoded `..` so httpx doesn't normalize the URL
+        # before send (otherwise the handler never sees the
+        # traversal attempt). Codex round-3 finding on this
+        # shallow wiring test using a raw `../etc/passwd` that
+        # httpx normalizes away.
+        "%2E%2E/etc/passwd",
+    ],
+)
 def test_artifacts_route_security_properties_preserved_via_build_app(
     tmp_path: Path, path: str
 ) -> None:

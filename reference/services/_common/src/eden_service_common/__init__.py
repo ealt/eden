@@ -10,6 +10,7 @@ from .auth import (
     resolve_worker_bearer,
 )
 from .cli import (
+    RESERVED_SUBSTRATE_ENV_KEYS,
     SubstrateArgs,
     add_common_arguments,
     add_exec_arguments,
@@ -19,6 +20,7 @@ from .cli import (
     resolve_credentials_dir,
     resolve_exec_args,
     resolve_substrate_args,
+    strip_reserved_substrate_keys,
     substrate_args_for_exec_mode,
 )
 from .container_exec import (
@@ -57,6 +59,7 @@ from .worktrees import TaskWorktree, sweep_host_worktrees
 __all__ = [
     "BindMount",
     "DEFAULT_CREDENTIALS_DIR",
+    "RESERVED_SUBSTRATE_ENV_KEYS",
     "ScriptedEvaluateFn",
     "ScriptedImplementFn",
     "ScriptedPlanFn",
@@ -96,6 +99,7 @@ __all__ = [
     "resolve_worker_bearer",
     "seed_bare_repo",
     "spawn",
+    "strip_reserved_substrate_keys",
     "substrate_args_for_exec_mode",
     "sweep_host_worktrees",
     "wait_for_task_store",

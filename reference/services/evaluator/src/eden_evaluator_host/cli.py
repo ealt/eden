@@ -23,6 +23,7 @@ from eden_service_common import (
     resolve_exec_args,
     resolve_substrate_args,
     resolve_worker_bearer,
+    strip_reserved_substrate_keys,
     substrate_args_for_exec_mode,
     wait_for_task_store,
 )
@@ -197,9 +198,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             command = require_command(config, "evaluation_command")
-            env = {}
+            env: dict[str, str] = {}
             if args.evaluation_env_file:
-                env.update(parse_env_file(args.evaluation_env_file))
+                user_env = parse_env_file(args.evaluation_env_file)
+                # Codex round-3: strip reserved substrate keys from
+                # the user env BEFORE merging so a user file can't
+                # reintroduce keys the host suppressed or selectively
+                # configured.
+                env.update(strip_reserved_substrate_keys(dict(user_env)))
             try:
                 exec_args = resolve_exec_args(args)
             except ValueError as exc:

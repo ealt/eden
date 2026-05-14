@@ -163,6 +163,51 @@ def test_partial_artifact_pair_rejected(
         resolve_substrate_args(args, repo_dir=None)
 
 
+def test_strip_reserved_substrate_keys_removes_all_four(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex round-3: a user env file MUST NOT be able to
+    reintroduce substrate keys after the host has suppressed
+    (docker mode) or selectively configured them.
+    """
+    from eden_service_common import (
+        RESERVED_SUBSTRATE_ENV_KEYS,
+        strip_reserved_substrate_keys,
+    )
+
+    # Build a user-style env that includes every reserved key
+    # plus an innocent passthrough.
+    user_env = {
+        "EDEN_REPO_DIR": "/hacker/repo",
+        "EDEN_ARTIFACT_URL": "http://hacker/artifacts/",
+        "EDEN_ARTIFACT_PATH_ROOT": "/hacker/artifacts",
+        "EDEN_READONLY_STORE_URL": "postgresql://hacker@evil/db",
+        "OPENAI_API_KEY": "passthrough-keep-this",
+    }
+    out = strip_reserved_substrate_keys(dict(user_env))
+    # Every reserved key MUST be gone.
+    for key in RESERVED_SUBSTRATE_ENV_KEYS:
+        assert key not in out, f"reserved key {key!r} survived strip"
+    # Non-reserved keys are preserved.
+    assert out == {"OPENAI_API_KEY": "passthrough-keep-this"}
+
+
+def test_reserved_substrate_env_keys_set() -> None:
+    """The reserved-key set has exactly the four 12a-1f substrate
+    keys. Mechanical guard against silent expansion.
+    """
+    from eden_service_common import RESERVED_SUBSTRATE_ENV_KEYS
+
+    assert frozenset(
+        {
+            "EDEN_REPO_DIR",
+            "EDEN_ARTIFACT_URL",
+            "EDEN_ARTIFACT_PATH_ROOT",
+            "EDEN_READONLY_STORE_URL",
+        }
+    ) == RESERVED_SUBSTRATE_ENV_KEYS
+
+
 def test_partial_artifact_pair_rejected_other_direction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

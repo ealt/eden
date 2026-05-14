@@ -196,6 +196,42 @@ def resolve_exec_args(args: argparse.Namespace) -> ExecArgs:
     )
 
 
+RESERVED_SUBSTRATE_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "EDEN_REPO_DIR",
+        "EDEN_ARTIFACT_URL",
+        "EDEN_ARTIFACT_PATH_ROOT",
+        "EDEN_READONLY_STORE_URL",
+    }
+)
+"""Substrate-access env keys the host CLI OWNS — user env files
+MUST NOT redirect them.
+
+A user-supplied ``--ideation-env-file`` (etc.) could otherwise
+reintroduce these keys after the host's docker-mode suppression
+or partial-pair validation has run. The ideator + evaluator CLI
+call :func:`strip_reserved_substrate_keys` on the parsed user
+env before overlaying the host-resolved
+:func:`SubstrateArgs.to_env` so the host's view is authoritative
+in every mode.
+"""
+
+
+def strip_reserved_substrate_keys(env: dict[str, str]) -> dict[str, str]:
+    """Remove every :data:`RESERVED_SUBSTRATE_ENV_KEYS` entry from ``env``.
+
+    Mutates AND returns ``env`` for ergonomic chaining. Used by
+    the ideator + evaluator host CLI to defang user env files that
+    would otherwise re-inject substrate keys the host explicitly
+    suppressed (docker mode) or selectively configured (partial
+    opt-in). Codex round-3 finding on user-env override of the
+    host's substrate posture.
+    """
+    for key in RESERVED_SUBSTRATE_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
+
 @dataclass(frozen=True)
 class SubstrateArgs:
     """Resolved 12a-1f substrate-access env values.

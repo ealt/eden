@@ -261,6 +261,61 @@ def test_regular_file_as_intermediate_404_not_403(
     assert resp.json()["type"] == "eden://error/not-found"
 
 
+def test_operational_oserror_propagates_to_5xx(
+    store: InMemoryStore, artifacts: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex round-3: an operational OSError (EIO, EMFILE, ENOSPC,
+    etc.) MUST propagate as a 5xx server fault — NOT silently
+    masquerade as a 404 ``eden://error/not-found`` (which would
+    mask infrastructure failures from operators).
+
+    Monkeypatches the descriptor-walk's terminal-open to raise
+    ``OSError(EIO)`` and asserts the response is 5xx without the
+    not-found envelope. The TestClient is configured with
+    ``raise_server_exceptions=False`` so we observe Starlette's
+    ServerErrorMiddleware-emitted 500 (matching uvicorn's
+    production behavior on an uncaught exception) rather than
+    having the exception propagate out of the test.
+    """
+    import errno as _errno
+
+    from eden_wire import server as srv
+
+    original_open = srv.os.open
+
+    def _open_with_eio(*args, **kwargs):
+        # Only fail on the terminal `O_RDONLY` open so the walk
+        # gets far enough for our error to be the one that
+        # propagates. Intermediate `O_PATH|O_DIRECTORY` opens
+        # succeed.
+        flags = args[1] if len(args) > 1 else kwargs.get("flags")
+        if flags == srv._FILE_FLAGS:
+            raise OSError(_errno.EIO, "simulated infrastructure failure")
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(srv.os, "open", _open_with_eio)
+
+    app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=artifacts)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get(
+        _route_url("hello.md"),
+        headers={"Authorization": f"Bearer admin:{ADMIN_TOKEN}"},
+    )
+    assert resp.status_code >= 500, (
+        f"EIO must surface as 5xx, got {resp.status_code}: "
+        f"{resp.content[:200]!r}"
+    )
+    # MUST NOT be the not-found envelope (the round-3 fix narrowed
+    # OSError → 404 to ENOENT/ENOTDIR/ENAMETOOLONG only).
+    ct = resp.headers.get("content-type", "")
+    if ct.startswith("application/"):
+        try:
+            body = resp.json()
+            assert body.get("type") != "eden://error/not-found"
+        except ValueError:
+            pass  # non-JSON 500 body is fine, just not a 404 envelope
+
+
 def test_directory_request_404(
     store: InMemoryStore, artifacts: Path
 ) -> None:
