@@ -22,11 +22,13 @@ from eden_service_common import (
     get_logger,
     load_experiment_config,
     parse_log_level,
+    resolve_admin_token,
     resolve_worker_bearer,
     wait_for_task_store,
 )
 from eden_service_common.logging import configure_logging
 from eden_wire import StoreClient
+from eden_wire.errors import Unauthorized
 
 from .app import make_app
 
@@ -218,8 +220,37 @@ def main(argv: list[str] | None = None) -> int:
         experiment_id=args.experiment_id,
         bearer=bearer,
     )
+    # Posture-D guard (plan §D.3): if the task-store is auth-enabled
+    # and the worker bearer doesn't authenticate, fail fast at
+    # startup rather than running a silently-broken service whose
+    # every wire call will 401. We probe /whoami because it's the
+    # authenticated ping op that requires a worker bearer.
+    # Auth-disabled task-stores return "anonymous" — also fine.
+    try:
+        store.whoami()
+    except Unauthorized:
+        log.error(
+            "worker bearer rejected by task-store /whoami; "
+            "set --admin-token (or $EDEN_ADMIN_TOKEN) for first boot, "
+            "or persist a worker credential via the admin module's "
+            "reissue-credential endpoint"
+        )
+        with contextlib.suppress(Exception):
+            store.close()
+        return 1
+
+    admin_token = resolve_admin_token(args)
+    admin_store: StoreClient | None = None
+    if admin_token is not None:
+        admin_store = StoreClient(
+            base_url=args.task_store_url,
+            experiment_id=args.experiment_id,
+            bearer=f"admin:{admin_token}",
+        )
+
     app = make_app(
         store=store,
+        admin_store=admin_store,
         experiment_id=args.experiment_id,
         experiment_config=config,
         worker_id=args.worker_id,
@@ -256,4 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         with contextlib.suppress(Exception):
             store.close()
+        if admin_store is not None:
+            with contextlib.suppress(Exception):
+                admin_store.close()
     return 0

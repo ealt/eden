@@ -20,8 +20,20 @@
             {% endfor %}
         </select>
     </label>
+    <label>worker
+        <input type="text" name="worker" value="{{ selected_worker }}" maxlength="64"
+               placeholder="worker_id">
+    </label>
     <button type="submit">filter</button>
+    {% if selected_worker %}
+    <a href="/admin/tasks/{% if selected_kind != '*' %}?kind={{ selected_kind }}{% if selected_state != '*' %}&amp;state={{ selected_state }}{% endif %}{% elif selected_state != '*' %}?state={{ selected_state }}{% endif %}">clear worker filter</a>
+    {% endif %}
 </form>
+
+{% if selected_worker %}
+<p>filtered by worker <code>{{ selected_worker }}</code>
+   (claimant, submitter, or creator).</p>
+{% endif %}
 
 {% if rows %}
 <table>

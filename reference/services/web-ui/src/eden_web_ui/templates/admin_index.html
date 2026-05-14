@@ -60,6 +60,20 @@
 </section>
 
 <section>
+    <h2>workers and groups</h2>
+    <p>
+        <a href="/admin/workers/">workers ({{ worker_count }})</a>
+        &middot;
+        <a href="/admin/groups/">groups ({{ group_count }})</a>
+    </p>
+    {% if admin_disabled %}
+    <p class="banner banner-warn">
+        admin token not configured; registration / mutation disabled.
+    </p>
+    {% endif %}
+</section>
+
+<section>
     <h2>events</h2>
     <p>total events: {{ event_total }} <a href="/admin/events/">(view recent &raquo;)</a></p>
 </section>

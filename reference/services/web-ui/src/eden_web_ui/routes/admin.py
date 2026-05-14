@@ -24,6 +24,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ._helpers import csrf_ok, get_session, read_variant_artifact
+from .admin_workers import WORKER_FILTER_INVALID, coerce_worker_filter
 
 router = APIRouter(prefix="/admin")
 
@@ -143,6 +144,8 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
         tasks = store.list_tasks()
         variants = store.list_variants()
         events_full = store.replay()
+        workers_list = store.list_workers()
+        groups_list = store.list_groups()
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load dashboard data")
 
@@ -176,6 +179,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
 
     recent = list(reversed(events_full))[:10]
 
+    admin_store = request.app.state.admin_store
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_index.html",
@@ -192,6 +196,9 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
             "repo_enabled": repo is not None,
             "expired_count": expired_count,
             "recent_events": recent,
+            "worker_count": len(workers_list),
+            "group_count": len(groups_list),
+            "admin_disabled": admin_store is None,
         },
     )
 
@@ -211,9 +218,14 @@ async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     kind = _coerce_filter(request.query_params.get("kind"), _KIND_VALUES)
     state = _coerce_filter(request.query_params.get("state"), _STATE_VALUES)
+    worker = coerce_worker_filter(request.query_params.get("worker"))
 
-    if kind == _INVALID_FILTER or state == _INVALID_FILTER:
-        tasks = []
+    if (
+        kind == _INVALID_FILTER
+        or state == _INVALID_FILTER
+        or worker == WORKER_FILTER_INVALID
+    ):
+        tasks: list[Task] = []
         kind_for_select = (
             request.query_params.get("kind", "*")
             if kind == _INVALID_FILTER
@@ -224,13 +236,29 @@ async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
             if state == _INVALID_FILTER
             else (state or "*")
         )
+        worker_for_select = (
+            request.query_params.get("worker", "")
+            if worker == WORKER_FILTER_INVALID
+            else (worker or "")
+        )
     else:
         try:
             tasks = store.list_tasks(kind=kind, state=state)
         except Exception:  # noqa: BLE001 — transport/store-domain
             return _read_failure_response(request, "could not load tasks")
+        if worker is not None:
+            # Client-side post-filter; plan §D.8 accepts this for
+            # reference-stack scale.
+            tasks = [
+                t
+                for t in tasks
+                if (t.claim and t.claim.worker_id == worker)
+                or t.submitted_by == worker
+                or t.created_by == worker
+            ]
         kind_for_select = kind or "*"
         state_for_select = state or "*"
+        worker_for_select = worker or ""
 
     rows: list[dict[str, Any]] = []
     for t in tasks:
@@ -255,6 +283,7 @@ async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
             "rows": rows,
             "selected_kind": kind_for_select,
             "selected_state": state_for_select,
+            "selected_worker": worker_for_select,
             "kinds": _KIND_VALUES,
             "states": _STATE_VALUES,
         },
@@ -347,14 +376,24 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
     store = request.app.state.store
 
     status = _coerce_filter(request.query_params.get("status"), _VARIANT_STATUS_VALUES)
-    if status == _INVALID_FILTER:
+    worker = coerce_worker_filter(request.query_params.get("worker"))
+    if status == _INVALID_FILTER or worker == WORKER_FILTER_INVALID:
         return request.app.state.templates.TemplateResponse(
             request,
             "admin_variants.html",
             {
                 "session": session,
                 "rows": [],
-                "selected_status": request.query_params.get("status", "*"),
+                "selected_status": (
+                    request.query_params.get("status", "*")
+                    if status == _INVALID_FILTER
+                    else (status or "*")
+                ),
+                "selected_worker": (
+                    request.query_params.get("worker", "")
+                    if worker == WORKER_FILTER_INVALID
+                    else (worker or "")
+                ),
                 "variant_statuses": _VARIANT_STATUS_VALUES,
             },
         )
@@ -368,6 +407,12 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
         t.payload.idea_id: (t.state in {"completed", "failed"})
         for t in exec_tasks
     }
+    if worker is not None:
+        variants = [
+            v
+            for v in variants
+            if v.executed_by == worker or v.evaluated_by == worker
+        ]
 
     rows: list[dict[str, Any]] = []
     for tr in variants:
@@ -396,6 +441,7 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
             "session": session,
             "rows": rows,
             "selected_status": status or "*",
+            "selected_worker": worker or "",
             "variant_statuses": _VARIANT_STATUS_VALUES,
         },
     )

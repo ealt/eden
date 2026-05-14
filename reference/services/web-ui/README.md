@@ -67,6 +67,45 @@ port without scraping logs.
 - The shared bearer never reaches the browser, the rendered HTML,
   any session cookie, or any structured log line.
 
+### Admin module (12a-1b)
+
+The `/admin/workers/*` and `/admin/groups/*` modules drive
+admin-gated wire endpoints (`register_worker`, `reissue_credential`,
+`register_group`, `add_to_group`, `remove_from_group`,
+`delete_group`). Those endpoints require the deployment admin bearer
+per chapter 07 §13. The web-ui passes the admin token through
+`--admin-token` (or `$EDEN_ADMIN_TOKEN`) and constructs a separate
+`admin_store` `StoreClient` bearing `admin:<token>` alongside the
+existing worker-bearer client. Both clients have process-level
+lifetimes; admin_store is `None` when no admin token is configured.
+
+Admin-disabled posture (no `--admin-token` set): the admin pages
+render with all write controls disabled (Jinja `disabled` flag on
+inputs and buttons) and an in-page banner explaining the missing
+admin token. POSTs that nevertheless arrive (e.g., from a script
+bypassing the disabled HTML) short-circuit with a 303 redirect to
+`?error=admin-disabled`. Read paths continue to work via the
+worker-bearer client. See plan §D.3 for the four-posture matrix.
+
+Posture-D guard: if the task-store is auth-enabled and the web-ui's
+worker bearer doesn't authenticate, `cli.py` calls
+`store.whoami()` at startup and exits non-zero on 401 — preventing
+the service from running as a silently-broken endpoint. The error
+message points operators at `--admin-token` for first boot or a
+persisted worker credential.
+
+### Token display
+
+Registering or reissuing a worker credential mints a token that the
+wire returns **exactly once**. The token-display page is a plain
+200 HTML render (not a redirect-with-querystring) and carries
+`Cache-Control: no-store` so browsers don't aggressively cache it.
+The token appears in the response body inside a `<code class="token">`
+block; it is never in a link, querystring, or subsequent GET.
+Refreshing the page reposts the form: re-register on an existing
+worker is idempotent (banner says "no new token was issued");
+reissue mints a fresh token (the prior one is invalidated).
+
 ## Healthcheck
 
 `GET /healthz` returns `{"status": "ok"}` and is **unauthenticated

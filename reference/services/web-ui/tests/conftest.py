@@ -80,8 +80,13 @@ def artifacts_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def app(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
+    # Default app fixture enables admin-store using the same
+    # InMemoryStore — sufficient because InMemoryStore is in-process
+    # and does no wire-layer auth. Admin-disabled posture tests use
+    # the dedicated ``app_no_admin`` / ``client_no_admin`` fixtures.
     return make_app(
         store=store,
+        admin_store=store,
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -97,6 +102,36 @@ def app(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def app_no_admin(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
+    """An app constructed without ``admin_store`` (postures B/C from plan §D.3)."""
+    return make_app(
+        store=store,
+        admin_store=None,
+        experiment_id=EXPERIMENT_ID,
+        experiment_config=_config(),
+        worker_id=WORKER_ID,
+        session_secret=SESSION_SECRET,
+        claim_ttl_seconds=3600,
+        artifacts_dir=artifacts_dir,
+        secure_cookies=False,
+        now=_now,
+    )
+
+
+@pytest.fixture
+def client_no_admin(app_no_admin: FastAPI) -> Iterator[TestClient]:
+    with TestClient(app_no_admin) as c:
+        yield c
+
+
+@pytest.fixture
+def signed_in_client_no_admin(client_no_admin: TestClient) -> TestClient:
+    resp = client_no_admin.post("/signin", follow_redirects=False)
+    assert resp.status_code == 303
+    return client_no_admin
 
 
 BASE_SHA_FIXTURE = "a" * 40

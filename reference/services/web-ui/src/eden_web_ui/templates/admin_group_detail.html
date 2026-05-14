@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin group {{ group.group_id }}{% endblock %}
+{% block main %}
+<h1>group <code>{{ group.group_id }}</code></h1>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+{% if not admin_enabled %}
+<div class="banner banner-warn">
+    admin token not configured; mutation controls below are disabled.
+    Restart the web-ui with <code>--admin-token</code> or
+    <code>$EDEN_ADMIN_TOKEN</code> set to enable.
+</div>
+{% endif %}
+
+<dl>
+    <dt>experiment_id</dt><dd><code>{{ group.experiment_id }}</code></dd>
+    <dt>created_at</dt><dd>{{ group.created_at }}</dd>
+    <dt>created_by</dt><dd>{% if group.created_by %}<code>{{ group.created_by }}</code>{% else %}—{% endif %}</dd>
+    <dt>direct member count</dt><dd>{{ group.members | length }}</dd>
+</dl>
+
+<section>
+    <h2>direct members</h2>
+    {% if group.members %}
+    <table>
+        <thead><tr><th>member_id</th><th>actions</th></tr></thead>
+        <tbody>
+        {% for m in group.members %}
+            <tr>
+                <td><code>{{ m }}</code></td>
+                <td>
+                    <form method="post" action="/admin/groups/{{ group.group_id }}/members/{{ m }}/remove">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" {% if not admin_enabled %}disabled{% endif %}>
+                            remove
+                        </button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no direct members.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>add member</h2>
+    <form method="post" action="/admin/groups/{{ group.group_id }}/members">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p>
+            <label>member_id (worker_id or group_id)
+                <input type="text" name="member_id" required maxlength="64"
+                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
+                       {% if not admin_enabled %}disabled{% endif %}>
+            </label>
+            <button type="submit" {% if not admin_enabled %}disabled{% endif %}>
+                add
+            </button>
+        </p>
+    </form>
+</section>
+
+<section>
+    <h2>transitive worker closure ({{ transitive.workers | length }})</h2>
+    <p class="muted">
+        Workers (not nested groups) reachable through this group's
+        membership DAG. These are the workers that could claim a task
+        targeted at <code>{{ group.group_id }}</code>.
+    </p>
+    {% if transitive.truncated_breadth or transitive.truncated_depth %}
+    <div class="banner banner-warn">
+        membership closure truncated
+        {% if transitive.truncated_breadth %}(breadth cap reached){% endif %}
+        {% if transitive.truncated_depth %}(depth cap reached){% endif %}.
+    </div>
+    {% endif %}
+    {% if transitive.workers %}
+    <table>
+        <thead><tr><th>worker_id</th><th>path</th></tr></thead>
+        <tbody>
+        {% for w in transitive.workers %}
+            <tr>
+                <td><a href="/admin/workers/{{ w.worker_id }}/"><code>{{ w.worker_id }}</code></a></td>
+                <td>
+                    {% if w.via | length > 3 %}
+                        <code>{{ w.via[0] }}</code> → … → <code>{{ w.via[-1] }}</code>
+                    {% else %}
+                        {% for g in w.via %}<code>{{ g }}</code>{% if not loop.last %} → {% endif %}{% endfor %}
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no workers reachable.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>delete this group</h2>
+    <p class="warn">
+        If any other group lists <code>{{ group.group_id }}</code> as a
+        member, those entries will remain after deletion — they become
+        <em>dangling references</em>. Per spec §7.1 a dangling reference
+        resolves to membership=false; it doesn't error.
+    </p>
+    <form method="post" action="/admin/groups/{{ group.group_id }}/delete">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" {% if not admin_enabled %}disabled{% endif %}>
+            delete group
+        </button>
+    </form>
+</section>
+{% endblock %}

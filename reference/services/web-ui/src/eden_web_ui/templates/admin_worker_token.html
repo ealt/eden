@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}EDEN — worker {{ worker.worker_id }} credential{% endblock %}
+{% block main %}
+<h1>worker <code>{{ worker.worker_id }}</code></h1>
+
+{% if action == "register" and token %}
+<div class="banner banner-ok">
+    worker registered. <strong>The token below is shown only once —
+    save it now.</strong>
+</div>
+{% elif action == "register" and not token %}
+<div class="banner banner-warn">
+    a worker with this id already existed; no new token was issued.
+    Use "reissue credential" on the detail page if you actually need
+    a fresh credential.
+</div>
+{% elif action == "reissue" %}
+<div class="banner banner-ok">
+    credential reissued. <strong>The previous credential is now invalid;
+    the new token below is shown only once — save it now.</strong>
+</div>
+{% endif %}
+
+<dl>
+    <dt>worker_id</dt><dd><code>{{ worker.worker_id }}</code></dd>
+    <dt>experiment_id</dt><dd><code>{{ worker.experiment_id }}</code></dd>
+    <dt>registered_at</dt><dd>{{ worker.registered_at }}</dd>
+    <dt>registered_by</dt><dd>{% if worker.registered_by %}<code>{{ worker.registered_by }}</code>{% else %}—{% endif %}</dd>
+    <dt>labels</dt><dd>{% if labels_preview %}{{ labels_preview }}{% else %}—{% endif %}</dd>
+</dl>
+
+{% if token %}
+<section>
+    <h2>registration token</h2>
+    <p class="warn">
+        <strong>This is the only time you will see this credential.</strong>
+        Workers authenticate by sending the bearer
+        <code>{{ worker.worker_id }}:&lt;token&gt;</code>. Persist it on
+        the worker's host (typically
+        <code>&lt;credentials_dir&gt;/{{ worker.worker_id }}.token</code>)
+        before navigating away.
+    </p>
+    <pre><code class="token">{{ token }}</code></pre>
+</section>
+{% endif %}
+
+<p>
+    <a href="/admin/workers/{{ worker.worker_id }}/">view detail &raquo;</a>
+    &middot;
+    <a href="/admin/workers/">back to workers</a>
+</p>
+{% endblock %}
