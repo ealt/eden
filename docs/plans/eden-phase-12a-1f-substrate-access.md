@@ -167,7 +167,7 @@ codex-review and future readers don't re-litigate them.
    when there's a concrete agentic-executor design.
 3. **Artifact server: tiny route on `task-store-server`, NOT a
    separate service.** Adds the route to the existing FastAPI
-   app under `/_reference/artifacts/<path>` (the chapter-7 §11
+   app under `/_reference/experiments/{experiment_id}/artifacts/{path:path}` (the chapter-7 §11
    reference-only namespace). Minimum deployment-shape change;
    the route is ~50-100 LOC and explicitly expected to be
    thrown away by Phase 13d's `Backend` abstraction.
@@ -200,7 +200,7 @@ Operationally:
 |---|---|---|
 | Git (Gitea HTTP + local bare clone) | All refs (`refs/heads/variant/*`, `refs/heads/work/*`), commit tree, evaluation manifest | Any subprocess that calls `git log` / `git show` against `$EDEN_REPO_DIR` |
 | Artifact server (HTTP route) | Files under `<artifacts-dir>` (idea content, evaluator-supplied bytes) | Any subprocess that GETs `${EDEN_ARTIFACT_URL}<relative-path>` with the §13.1 bearer |
-| Postgres readonly role | SELECT on every table in the eden schema (task, idea, variant, event, worker, worker_group, group_membership) | Any subprocess that connects to `$EDEN_READONLY_STORE_URL` |
+| Postgres readonly role | SELECT on the eden schema's tables (`experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`) plus column-projection on `worker(worker_id, data)` | Any subprocess that connects to `$EDEN_READONLY_STORE_URL` |
 
 There are **no cross-substrate joins**; the agent does the
 join on its side. That's intentional — each substrate is a
@@ -612,36 +612,45 @@ surface narrow (pure path component, no `file://` parsing).
 
 The deployment's Postgres instance gets a second role,
 `eden_readonly`, with SELECT access to the public schema —
-**explicitly EXCLUDING the worker credential-hash column**:
+**explicitly EXCLUDING the `worker.credential_hash`
+column**.
+
+The real schema (per
+[`reference/packages/eden-storage/src/eden_storage/_postgres_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_postgres_schema.py))
+uses the `data text NOT NULL` pattern across all
+artifact-bearing tables (each row's payload is a JSON
+document stored as text); the only structured columns are
+primary keys, foreign keys, indexed sort keys, and the
+`worker.credential_hash` argon2id hash. So the
+column-level exclusion is targeted at exactly one column,
+not a whole-table view layer:
 
 ```sql
 CREATE ROLE eden_readonly WITH LOGIN PASSWORD '<random-32-byte-hex>';
 GRANT CONNECT ON DATABASE eden TO eden_readonly;
 GRANT USAGE ON SCHEMA public TO eden_readonly;
 
--- Tables that contain NO credential material: full-table SELECT.
-GRANT SELECT ON task, idea, variant, event,
-                 worker_group, group_membership,
-                 schema_version
+-- Tables with no credential material: full-table SELECT.
+GRANT SELECT ON
+    experiment, task, submission, idea, variant, event,
+    worker_group, group_membership, schema_version
     TO eden_readonly;
 
--- The `worker` table carries `auth_credential_hash` (argon2id).
--- Column-level SELECT excludes that column. The readonly role
--- gets every other column needed for attribution / labels /
--- registration timestamps.
-GRANT SELECT (
-    worker_id, experiment_id, registered_at,
-    registered_by, labels
-) ON worker TO eden_readonly;
+-- The `worker` table is (worker_id text, data text,
+-- credential_hash text). Column-level SELECT exposes
+-- worker_id + data (the JSON payload with labels,
+-- registered_at, registered_by, etc.) but NOT
+-- credential_hash.
+GRANT SELECT (worker_id, data) ON worker TO eden_readonly;
 ```
 
-**Why exclude `auth_credential_hash`?** Codex round 1
-finding on credential surface: argon2id hashes are
-meaningfully sensitive (weak credentials can be brute-forced
-offline). The agent's legitimate need is exploratory
-reads — attribution worker_ids, labels, the
-`registered_at` timestamp. Hashes are never part of that
-read shape.
+**Why exclude `credential_hash`?** Codex round 1 finding
+on credential surface: argon2id hashes are meaningfully
+sensitive (weak credentials can be brute-forced offline).
+The agent's legitimate need is exploratory reads — the
+worker's `data` JSON column carries labels, registration
+timestamps, and the public attribution fields. The hash
+column is never part of that read shape.
 
 **The column-level GRANT does NOT silently elide the
 excluded column from broad query forms — it makes those
@@ -654,7 +663,7 @@ table reads. The operator-visible posture is:
 
 - `SELECT worker_id, labels FROM worker` — works.
 - `SELECT * FROM worker` — fails ("permission denied for
-  column auth_credential_hash").
+  column credential_hash").
 - `COPY worker TO STDOUT` — fails (same reason).
 - `pg_dump --table=worker` — fails.
 
@@ -663,7 +672,7 @@ columns explicitly. The operator doc
 (`docs/operations/agent-readonly-db.md`) documents this
 posture with worked examples. Tests in §6.5 lock the
 behavior on both the `SELECT *` and the
-`SELECT auth_credential_hash` paths.
+`SELECT credential_hash` paths.
 
 **Default privileges (`ALTER DEFAULT PRIVILEGES`) is
 intentionally OMITTED.** A blanket
@@ -721,7 +730,7 @@ with `GRANT SELECT ON ALL TABLES` from an earlier draft):
 
 4. GRANT exactly the safe-set defined in §D.3.a
    (table-level on the non-worker tables; column-level on
-   `worker` excluding `auth_credential_hash`). The
+   `worker` excluding `credential_hash`). The
    per-column GRANT is the authoritative artifact —
    `ALTER DEFAULT PRIVILEGES` is **NOT used** because it
    would re-expose any future credential-bearing column
@@ -846,7 +855,7 @@ In:
 - `eden_ideator_host` gains `--repo-path`, `--gitea-url`,
   `--credential-helper` CLI flags + clone-on-startup logic
   mirroring executor/evaluator.
-- `eden-wire` gains the `/_reference/artifacts/<path>`
+- `eden-wire` gains the `/_reference/experiments/{experiment_id}/artifacts/{path:path}`
   route + its own auth dispatch + path containment.
 - `eden-task-store-server` gains `--artifacts-dir` +
   `--readonly-password` CLI flags.
@@ -893,7 +902,7 @@ Out:
 | `spec/v0/reference-bindings/worker-host-subprocess.md` | Extend §1.1 env table; add §9 substrate-access section. |
 | `docs/glossary.md` | (Audit) — if "substrate" needs an entry, add it under "Operational concepts". Likely no change. |
 | `docs/operations/agent-substrate-access.md` | **NEW**: operator how-to for writing an agentic ideator/evaluator that uses the three substrates. Cross-machine setup section. |
-| `docs/operations/agent-readonly-db.md` | **NEW**: schema reference for the readonly Postgres role — key tables (`task`, `idea`, `variant`, `event`, `worker`, `worker_group`, `group_membership`), JSON column shapes (`data` column is `text` of JSON), example queries. |
+| `docs/operations/agent-readonly-db.md` | **NEW**: schema reference for the readonly Postgres role — full granted-table list (`experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`) plus the column-projection on `worker(worker_id, data)`; JSON column shapes (each table's `data` column is `text` of JSON); worked example queries including the explicit-projection requirement for the `worker` table (`SELECT *` fails — see §D.3.a). |
 | `AGENTS.md` | New "Phase 12a chunk 1f complete" paragraph; new entry to "Commands" if applicable. |
 | `docs/roadmap.md` | Mark 12a-1f shipped (one-line delta). |
 
@@ -901,7 +910,7 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/packages/eden-wire/src/eden_wire/server.py` | `make_app` gains an `artifacts_dir: Path \| None = None` parameter. When set, mounts `GET /_reference/artifacts/{path:path}` with route-level auth + containment. |
+| `reference/packages/eden-wire/src/eden_wire/server.py` | `make_app` gains an `artifacts_dir: Path \| None = None` parameter. **Always mounts** `GET /_reference/experiments/{experiment_id}/artifacts/{path:path}` with route-level auth + descriptor-relative component walk + safe-delivery headers (§D.2.a/c). When `artifacts_dir is None` the route returns 503 `eden://reference-error/artifact-serving-disabled`. |
 | `reference/packages/eden-wire/tests/test_artifact_route.py` | **NEW**: unit tests for the route — auth-required, admin OR worker accepted, traversal, missing, streaming. |
 
 ### 5.3 `eden-task-store-server`
@@ -917,7 +926,7 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/packages/eden-storage/src/eden_storage/postgres.py` | New module-level `ensure_readonly_role(conn, *, username, password)` function. Idempotent: creates or rotates the role; **REVOKEs all prior privileges** (including any prior `ALTER DEFAULT PRIVILEGES`-installed grants); then re-GRANTs the exact safe-set per §D.3.a (table-level on six tables + column-level on `worker` excluding `auth_credential_hash`). No `ALTER DEFAULT PRIVILEGES` is installed — future schema bumps that add a new table must extend the GRANT list explicitly. |
+| `reference/packages/eden-storage/src/eden_storage/postgres.py` | New module-level `ensure_readonly_role(conn, *, username, password)` function. Idempotent: creates or rotates the role; **REVOKEs all prior privileges** (including any prior `ALTER DEFAULT PRIVILEGES`-installed grants); then re-GRANTs the exact safe-set per §D.3.a (table-level on `experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`; column-level on `worker` exposing `worker_id` + `data` but excluding `credential_hash`). No `ALTER DEFAULT PRIVILEGES` is installed — future schema bumps that add a new table must extend the GRANT list explicitly. |
 | `reference/packages/eden-storage/tests/test_postgres_readonly.py` | **NEW**: requires `EDEN_TEST_POSTGRES_DSN`; provisions the role; asserts SELECT works, INSERT/UPDATE/DELETE fail; default-privileges applied to a freshly-created table. |
 
 ### 5.5 `eden-ideator-host`
@@ -971,18 +980,35 @@ file bytes from a path the network can supply. The
 trust-boundary tests are the gate:
 
 1. **Auth-first.** Request without `Authorization` header
-   → 401 BEFORE any path resolution. Verified by
-   monkey-patching `Path.resolve` to raise and asserting
-   the patched method is never called on the unauthed
-   request. (Without this, a subtle implementation bug
-   could leak existence-of-files via timing differences.)
+   → 401 BEFORE any filesystem call. Verified by
+   monkey-patching the actual filesystem entry points the
+   §D.2.c handler uses (`_open_artifact_fd`, `os.open`,
+   `os.fstat`) to raise, AND asserting NONE of the patches
+   are ever invoked on an unauthenticated request. The
+   post-round-2 component-walk implementation no longer
+   calls `Path.resolve`, so a `Path.resolve`-only sentinel
+   would silently pass even if the handler regressed to a
+   pre-auth `os.open`; sentineling the actual entry points
+   closes that gap.
 2. **Admin OR worker accepted.** `Bearer admin:<token>`
    succeeds; `Bearer <worker_id>:<credential>` succeeds.
 3. **Bad bearer.** Malformed scheme, missing colon, wrong
    secret, unknown worker → 401.
-4. **Traversal.** Path `..%2Fetc%2Fpasswd` → 403; path
-   `/etc/passwd` (absolute via URL encoding) → 403;
-   symlink-under-root pointing outside → 403.
+4. **Traversal taxonomy.** Two distinct shapes:
+   - **Malformed-path** (rejected by the component-walk's
+     `_REJECT_COMPONENTS` guard BEFORE any filesystem
+     call): path containing `..` (`..%2Ffoo`), path with
+     empty leading component (URL-encoded leading slash —
+     `%2Fetc%2Fpasswd`), path with empty trailing
+     component, NUL byte. ALL → 400
+     `eden://reference-error/invalid-path`.
+   - **Symlink-out-of-root**: a real symlink in the root
+     pointing at `/etc` → 403 `eden://error/forbidden`
+     (ELOOP from `os.open(... O_NOFOLLOW)`).
+   Codex round-3 finding: the two shapes use DIFFERENT
+   status codes; the round-2 plan conflated them. The
+   handler is consistent — malformed path components are
+   pre-FS-call 400s, symlink hits are post-open 403s.
 5. **Missing.** Path under root that doesn't exist → 404.
 6. **Non-file.** Path is a directory, FIFO, socket → 404
    (not 403; the inode shape isn't a security concern, it's
@@ -1015,10 +1041,15 @@ trust-boundary tests are the gate:
     Codex round-1 (§D.2.c try/except on `ValueError`).
 13. **Symlink loop.** Create symlinks inside `artifacts_dir`
     that form a loop (`a → b`, `b → a`). Request the path
-    `a` → 400 `eden://reference-error/invalid-path` (ELOOP
-    from `resolve` / `os.open`); same shape if the
-    `O_NOFOLLOW` open hits the loop at the terminal
-    component → 403 (symlink not allowed).
+    `a` → 403 `eden://error/forbidden` (the
+    `O_NOFOLLOW` on `os.open(a, ...)` returns ELOOP
+    because `a` IS a symlink — same code path as any
+    other symlink hit, regardless of whether following
+    the link would cycle or just escape). Codex round-3
+    finding: all `O_NOFOLLOW`-blocked cases collapse into
+    one status (403); the round-2 plan's "400 from
+    resolve / 403 from O_NOFOLLOW" branching was a
+    leftover from the pre-component-walk design.
 14. **Permission-denied intermediate.** Create a subdir
     under the root with mode `0` (no traverse permission)
     plus a file inside it. Request the file's path → 404
@@ -1132,14 +1163,15 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
   updates; new password authenticates; old password fails
   401.
 - **No write privilege.** INSERT / UPDATE / DELETE on every
-  granted table (task, idea, variant, event, worker,
-  worker_group, group_membership) MUST fail with permission
-  denied.
+  granted table (`experiment`, `task`, `submission`, `idea`,
+  `variant`, `event`, `worker`, `worker_group`,
+  `group_membership`, `schema_version`) MUST fail with
+  permission denied.
 - **No schema-DDL privilege.** CREATE TABLE / DROP TABLE /
   ALTER TABLE MUST fail.
 - **Column exclusion (load-bearing).** Three explicit
   query-shape tests against the `worker` table:
-  - `SELECT auth_credential_hash FROM worker LIMIT 1` —
+  - `SELECT credential_hash FROM worker LIMIT 1` —
     MUST fail (permission denied for column).
   - `SELECT * FROM worker LIMIT 1` — MUST fail (parser
     expands `*` to every column including the excluded
@@ -1153,7 +1185,7 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
   `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT
   ON TABLES TO eden_readonly` (a hypothetical legacy
   installation's posture). Then run `ensure_readonly_role`.
-  Post-condition: `SELECT auth_credential_hash FROM
+  Post-condition: `SELECT credential_hash FROM
   worker` MUST fail (the prior table-wide grant has been
   REVOKEd before the column-level GRANT was applied).
   Codex round-2 finding: this is the migration test that
@@ -1202,7 +1234,7 @@ The compose smoke scripts gain three additions:
        # MUST fail with permission denied
    docker compose --env-file "$ENV_FILE" exec -T postgres \
        psql "$EDEN_READONLY_STORE_URL" \
-       -c 'SELECT auth_credential_hash FROM worker LIMIT 1' \
+       -c 'SELECT credential_hash FROM worker LIMIT 1' \
        # MUST fail (column-level grant excludes it)
    ```
 
