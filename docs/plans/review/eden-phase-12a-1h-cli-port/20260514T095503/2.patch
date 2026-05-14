@@ -1,0 +1,287 @@
+--- docs/plans/review/eden-phase-12a-1h-cli-port/20260514T095503/1.md	2026-05-14 10:01:35
++++ docs/plans/eden-phase-12a-1h-cli-port.md	2026-05-14 10:04:58
+@@ -109,45 +109,58 @@
+    into "admin-context" and "worker-context" entry points — would be
+    a larger refactor and gain nothing the per-call kwarg doesn't.
+ 
+-5. **`_worker_bearer(env, worker_id)` helper adopts the canonical
+-   `bootstrap_worker_credential` flow.** The reference services
+-   already solve this problem: every worker host calls
++5. **`_worker_bearer(env, worker_id)` helper adopts a
++   register-first-then-reissue ladder.** The reference services'
+    [`bootstrap_worker_credential`](../../reference/services/_common/src/eden_service_common/auth.py)
+-   at startup, which implements spec chapter 07 §8.2's
+-   verify-and-reissue ladder. The manual CLI mirrors that shape
+-   (inline, not by importing the function — the CLI is intentionally
+-   a single-file standalone script with no in-repo dependencies):
++   forbids fall-through-to-register on the stale branch per spec
++   §8.2 (the registry row is authoritative for a long-running
++   service worker that owns its identity). The manual CLI's
++   posture is different: it registers `eden-manual` **lazily** on
++   first use, and the operator's normal demo workflow includes
++   `setup-experiment.sh` reruns that **rebuild the worker
++   registry**. After a registry rebuild, the stored worker row
++   doesn't exist anymore, so `reissue_credential` would fail with
++   `UnknownWorker` (per
++   [`test_workers.py::test_reissue_credential_unknown_worker`](../../reference/packages/eden-storage/tests/test_workers.py)).
+ 
++   The manual CLI's ladder, accordingly:
++
+    1. **Persisted token + verify via `/whoami`.** If
+       `.credentials.json` has an entry for `worker_id` and the
+       bearer authenticates back as the expected `worker_id` via
+-      `GET /v0/experiments/{E}/whoami`, use it. **Cost:** one extra
+-      wire call per CLI invocation — acceptable for a manual
++      `GET /v0/experiments/{E}/whoami`, use it. **Cost:** one
++      extra wire call per CLI invocation — acceptable for a manual
+       operator script. **Skipped** only if no entry exists
+-      (cold-start path).
+-   2. **Persisted but stale (401 or different worker_id) → reissue.**
+-      POST `/v0/experiments/{E}/workers/{worker_id}/reissue-credential`
+-      under the admin bearer. Persist the new token. Spec §8.2
+-      forbids fall-through to fresh-register.
+-   3. **No persisted token → register.** POST `/v0/experiments/{E}/workers`
+-      with `{worker_id}` under the admin bearer. If the response
+-      carries `registration_token`, persist it. If the response
+-      lacks `registration_token` (idempotent re-register hit an
+-      existing row whose token we no longer have — `/tmp/eden-manual`
+-      was wiped or the operator manually deleted
+-      `.credentials.json`), fall through to `reissue_credential`
+-      and persist that.
++      (cold-start path falls directly to step 3).
++   2. **Persisted but stale (401 or different worker_id) → register-then-reissue.**
++      The CLI doesn't know whether the row still exists. Try
++      `register_worker` first under the admin bearer. If the
++      response carries `registration_token`, the row didn't exist
++      (registry was rebuilt) — persist the new token. If the
++      response lacks `registration_token` (idempotent re-register
++      hit an existing row whose token we don't have), fall through
++      to `reissue_credential` and persist that.
++   3. **No persisted token → register-then-reissue.** Same shape as
++      step 2's recovery — register, fall through to reissue on
++      idempotent-no-token.
+ 
+-   This kills the per-experiment staleness footgun codex flagged:
+-   reruns of `setup-experiment.sh` rebuild the worker registry, and
+-   the next CLI invocation's `/whoami` returns 401, which routes to
+-   reissue. No operator-side cleanup is required.
++   Steps 2 and 3 thus collapse to the same recovery helper. This
++   handles the codex-flagged "rerun setup-experiment.sh →
++   registry rebuilt → 401" case correctly: the whoami in step 1
++   fails, step 2 registers fresh, the new token gets persisted, and
++   the operator's first worker-gated call goes through.
+ 
+-   We do NOT namespace credentials by `EDEN_EXPERIMENT_ID` —
+-   verify-and-reissue handles the staleness uniformly and matches
+-   the canonical pattern. The credentials file stays at
+-   `WORK_ROOT/.credentials.json`.
++   The deviation from the service-host §8.2 ladder is intentional
++   and load-bearing: long-running services don't experience their
++   own registry getting wiped under them, but a manual CLI run
++   against a freshly-rebuilt stack does. The CLI follows the
++   register-first posture for both no-persisted-token and stale
++   branches to handle this uniformly.
+ 
++   We do NOT namespace credentials by `EDEN_EXPERIMENT_ID` — the
++   ladder handles cross-experiment staleness automatically and the
++   credentials file stays at `WORK_ROOT/.credentials.json`.
++
+ 6. **No backwards-compat shim for `EDEN_SHARED_TOKEN`.** Per the
+    project-lifecycle rule ("No backwards-compatibility shims in
+    greenfield / pre-external-user projects"), the env-var rename is
+@@ -316,39 +329,49 @@
+ 
+ 
+ def _worker_bearer(env: dict[str, str], worker_id: str) -> str:
+-    """Return `<worker_id>:<credential>` per spec ch07 §8.2 ladder.
++    """Return `<worker_id>:<credential>` for the manual CLI ladder.
+ 
+-    Mirrors `eden_service_common.auth.bootstrap_worker_credential`.
++    Differs from `eden_service_common.auth.bootstrap_worker_credential`
++    on the stale-credential branch: where the service-host helper
++    forbids fall-through to fresh-register per spec §8.2 (the
++    long-running service owns its registry row), the manual CLI
++    accepts that the row may have been wiped by a
++    `setup-experiment.sh` rerun and uses the
++    register-then-reissue recovery for both stale and cold-start.
+     """
+     creds = _read_credentials()
+     persisted = creds.get(worker_id)
+ 
+     if persisted is not None:
+-        # Verify via /whoami. On 401 (raised by _wire as a wire error
+-        # with code 401) or worker_id-mismatch, escalate to reissue.
++        # Step 1: verify via /whoami.
+         bearer = f"{worker_id}:{persisted}"
+         verified_id = _try_whoami(env, bearer=bearer)
+         if verified_id == worker_id:
+             return bearer
+-        # Stale — reissue under admin (no fall-through to register).
+-        new_token = _reissue_worker(env, worker_id)
+-        creds[worker_id] = new_token
+-        _save_credentials(creds)
+-        return f"{worker_id}:{new_token}"
++        # Step 2: stale — fall through to register-then-reissue.
+ 
+-    # No persisted credential — register under admin.
++    # Step 3 (and stale-fall-through from step 2): register, with
++    # fall-through to reissue if the row already exists.
++    new_token = _register_or_reissue(env, worker_id)
++    creds[worker_id] = new_token
++    _save_credentials(creds)
++    return f"{worker_id}:{new_token}"
++
++
++def _register_or_reissue(env: dict[str, str], worker_id: str) -> str:
++    """Register a worker; reissue if the row already exists."""
+     resp = _wire(
+         env, f"/v0/experiments/{_exp(env)}/workers",
+         method="POST", body={"worker_id": worker_id},
+     )
+     new_token = resp.get("registration_token")
+     if new_token is None:
+-        # Idempotent re-register hit an existing row whose token we
+-        # don't have locally. Only recovery per §8.2 is reissue.
++        # Idempotent re-register hit an existing row whose token
++        # we don't have locally (either we never had it, or the
++        # row pre-existed our local state). Reissue to mint a
++        # fresh one.
+         new_token = _reissue_worker(env, worker_id)
+-    creds[worker_id] = new_token
+-    _save_credentials(creds)
+-    return f"{worker_id}:{new_token}"
++    return new_token
+ ```
+ 
+ Two helpers wrap the new wire calls:
+@@ -602,24 +625,26 @@
+ 
+ ### 4.D Recovery posture
+ 
+-With Decision 5's verify-and-reissue ladder, the CLI handles every
+-common credential-staleness mode automatically: rerun of
+-`setup-experiment.sh` (worker registry rebuilt), an admin running
+-`reissue_credential` out-of-band, or a `/tmp/eden-manual/.credentials.json`
+-that's been hand-edited or wiped all route to the reissue branch
+-on the next CLI invocation. No operator cleanup is required.
++With Decision 5's register-first-then-reissue ladder, the CLI
++handles every common credential-staleness mode automatically:
++rerun of `setup-experiment.sh` (worker registry rebuilt; step 2
++falls through to register-new), an admin running
++`reissue_credential` out-of-band (step 1's whoami fails, step 2
++hits the existing-row idempotent path and reissues), or a
++`/tmp/eden-manual/.credentials.json` that's been hand-edited or
++wiped (step 3 register-or-reissue). No operator cleanup is
++required.
+ 
+ The one remaining mode that DOES require operator intervention:
+-`EDEN_ADMIN_TOKEN` itself rotates (the admin secret in `.env`
+-changed) AND the operator's persisted worker credential is also
+-stale. The verify call fails with 401, the reissue call then fails
+-with 401 (admin bearer is wrong), and the CLI exits with the wire
+-error. Recovery: re-read `EDEN_ADMIN_TOKEN` from the live `.env`
+-(the CLI's `_load_env` already does this) — usually the operator
+-just needs to ensure they're running from the same checkout the
+-stack was brought up against. This corner case is documented in
+-the impl PR body and the skill docs as a one-line "if you see
+-401-on-admin in the wire-error, your .env is stale" note.
++the operator's `.env` has diverged from the running stack's actual
++`EDEN_ADMIN_TOKEN`. The CLI reads its admin token from `.env`; if
++the running stack was brought up against an older `.env` value
++(or vice versa), every admin-gated call surfaces a 401 wire error.
++Recovery: ensure the CLI is run from the same checkout the stack
++was brought up against, or bounce the stack against the current
++`.env`. This corner case is documented in the impl PR body and as
++a one-line "if you see 401-on-admin in the wire-error, your .env
++is stale" note in the affected skill docs.
+ 
+ ## 5. Test design
+ 
+@@ -676,32 +701,27 @@
+    Standard claim + `evaluation-submit --field score=0.5`. Expected:
+    variant terminalizes as `success` with metrics recorded.
+ 
+-6. **Cred recovery — wiped local cred:**
++6. **Cred recovery — wiped local cred (registry intact):**
+    `rm /tmp/eden-manual/.credentials.json` between two CLI sessions.
+-   Next `claim` call POSTs to `/workers`, the server returns no
+-   token (idempotent re-register), the CLI then POSTs to
+-   `/workers/eden-manual/reissue-credential` and persists the new
+-   token. Verify the file is recreated with mode 0600.
++   Next `claim` call goes to step 3 of the ladder: posts
++   `/workers` (register), the server returns no token (idempotent
++   re-register hit the existing row), the CLI falls through to
++   `reissue_credential`, persists the new token. Verify the file
++   is recreated with mode 0600.
+ 
+ 7. **Cred recovery — registry rebuilt (codex-flagged case):**
+    Run a full claim+submit, persisting a valid credential. Then
+    tear down the stack (`docker compose down -v`), re-run
+-   `setup-experiment.sh` for a fresh experiment (which rebuilds the
+-   worker registry), bring the stack up. With the stale
+-   `.credentials.json` still on disk, run a fresh `claim`. Expected:
+-   `_worker_bearer` calls `/whoami` with the stale bearer, gets 401,
+-   falls through to reissue under the new admin token, persists the
+-   new credential, and the claim proceeds normally.
+-
+-8. **Cred recovery — admin token rotated (corner case):**
+-   Hand-edit `.env` to swap `EDEN_ADMIN_TOKEN`. With a stale local
+-   credential, run `claim`. Expected: `/whoami` returns 401,
+-   `_worker_bearer` calls `reissue_credential` which ALSO returns
+-   401 (the new admin token is now in `.env`; the CLI reads it
+-   correctly). The reissue actually succeeds because both /whoami's
+-   401 and the reissue use the freshly-loaded admin token. (If the
+-   operator's `.env` is stale relative to the running stack, this
+-   surfaces as wire-error-401-on-admin per §4.D.)
++   `setup-experiment.sh` for a fresh experiment (which rebuilds
++   the worker registry), bring the stack up. With the stale
++   `.credentials.json` still on disk, run a fresh `claim`.
++   Expected: `_worker_bearer` calls `/whoami` with the stale
++   bearer, gets 401 (or a different `worker_id` if the registry's
++   idempotent-replay edge case fires; either way the verify
++   fails), falls through to `_register_or_reissue`, which posts
++   `/workers` and receives a fresh `registration_token` because
++   the row doesn't exist in the rebuilt registry. The new
++   credential gets persisted and the claim proceeds normally.
+ 
+ ### 5.B Automated checks (existing pipeline)
+ 
+@@ -742,22 +762,24 @@
+ 
+ ## 7. Tricky areas
+ 
+-### 7.A Verify-and-reissue runs on every CLI invocation
++### 7.A Verify-and-recover runs on every CLI invocation
+ 
+-Decision 5's ladder makes `_worker_bearer` issue a `/whoami` probe
+-on every CLI invocation (per worker_id, once). For the single-
+-operator manual-demo workflow this is a sub-second overhead. The
+-benefit is that the codex-flagged "rerun setup-experiment.sh →
+-401 on next call" failure mode is now handled automatically: the
+-whoami returns a 401 (or a different worker_id in the rebuilt
+-registry's idempotent-replay edge case), the CLI falls through to
+-reissue, the new token gets persisted, and the operator's first
+-worker-gated call goes through.
++Decision 5's ladder makes `_worker_bearer` issue a `/whoami`
++probe on every CLI invocation (per worker_id, once) when a
++persisted credential exists. For the single-operator manual-demo
++workflow this is a sub-second overhead. The benefit is that the
++codex-flagged "rerun setup-experiment.sh → registry rebuilt →
++401 on next call" failure mode is handled automatically: the
++whoami returns 401, the CLI falls through to register-new (since
++the row no longer exists), the new token gets persisted, and the
++operator's first worker-gated call goes through.
+ 
+-The ladder mirrors `eden_service_common.auth.bootstrap_worker_credential`
+-which is the canonical post-12a-1 pattern for every reference
+-worker host; the manual CLI inherits that posture so its behavior
+-matches the reference workers'.
++The CLI's ladder intentionally diverges from
++`eden_service_common.auth.bootstrap_worker_credential` on the
++stale-credential branch (it allows fall-through to register
++where the service-host helper does not), because the manual CLI's
++lazy-registration model means the worker row may legitimately not
++exist anymore. See Decision 5 for the full reasoning.
+ 
+ ### 7.B `_wire`'s default-arg evaluation
+ 

@@ -1,0 +1,1 @@
+Converged. The wording fixes landed cleanly, I don’t see any remaining blocking issues in the plan, and it looks ready for implementation. Residual risk is unchanged: the auth-recovery paths are still validated manually rather than by automated tests, but that was already an explicit plan choice.
