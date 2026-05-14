@@ -356,9 +356,76 @@ makes the route's auth posture self-contained.
 ```python
 import os
 import errno
+import stat
 
 ARTIFACT_ROOT = artifacts_dir.resolve() if artifacts_dir else None
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024  # 1 MiB (mirrors _read_inline_artifact)
+
+# Path components that are NEVER valid in an artifact path —
+# rejected before any filesystem call so the component-walk
+# below sees only well-formed segments.
+_REJECT_COMPONENTS = {"", ".", ".."}
+
+
+def _open_artifact_fd(root: Path, rel_path: str) -> int:
+    """Open `rel_path` BENEATH `root` and return the fd.
+
+    Walks each path component descriptor-relative from the
+    opened root dirfd. Every intermediate component opens
+    `O_PATH | O_DIRECTORY | O_NOFOLLOW`; the terminal opens
+    `O_RDONLY | O_NOFOLLOW`. A symlink at ANY component
+    raises `OSError(errno=ELOOP)` (mapped to 403 by the
+    caller). This is the descriptor-relative equivalent of
+    Linux 5.6+ ``openat2(RESOLVE_BENEATH)`` and is the only
+    pattern that closes the intermediate-component TOCTOU
+    window noted by Codex round 2: a concurrent renamer
+    cannot swap an intermediate dir to a symlink while we
+    walk because each step is anchored by the prior step's
+    fd, not by a path string.
+
+    Raises:
+      OSError on FileNotFoundError / ELOOP / EACCES / etc.
+      ValueError on malformed components (NUL byte, `..`,
+        empty segment after split).
+    """
+    parts = rel_path.split("/")
+    if any(p in _REJECT_COMPONENTS for p in parts):
+        raise ValueError(f"invalid path component in {rel_path!r}")
+    if any("\0" in p for p in parts):
+        raise ValueError(f"NUL byte in path {rel_path!r}")
+
+    root_fd = os.open(
+        root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        # Walk intermediate dirs.
+        current_fd = root_fd
+        for intermediate in parts[:-1]:
+            try:
+                next_fd = os.open(
+                    intermediate,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=current_fd,
+                )
+            finally:
+                if current_fd != root_fd:
+                    os.close(current_fd)
+            current_fd = next_fd
+        # Open terminal as regular file (O_NOFOLLOW rejects
+        # a symlink at the terminal).
+        try:
+            terminal_fd = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current_fd,
+            )
+        finally:
+            if current_fd != root_fd:
+                os.close(current_fd)
+        return terminal_fd
+    finally:
+        os.close(root_fd)
+
 
 @app.get(
     "/_reference/experiments/{experiment_id}/artifacts/{path:path}",
@@ -368,12 +435,11 @@ async def serve_artifact(
 ) -> Response:
     # 1. Auth-first (NEVER touch the filesystem before auth):
     if admin_token is not None:
-        principal = authenticate(
+        authenticate(
             request.headers.get("authorization"),
             admin_token=admin_token,
             store=store,
         )
-    # else: auth disabled (in-process test posture); proceed.
 
     # 2. Experiment-id-mismatch guard (chapter-7 §1.3 parity):
     if experiment_id != store.experiment_id:
@@ -388,80 +454,45 @@ async def serve_artifact(
             "task-store-server started without --artifacts-dir",
         )
 
-    # 4. Resolve + path-containment check. `Path.resolve()` may
-    #    raise ValueError on NUL bytes and OSError on symlink
-    #    loops, missing intermediates, ENAMETOOLONG, etc.
+    # 4. Descriptor-relative walk beneath the root. The
+    #    component-walk closes the intermediate-component
+    #    TOCTOU gap (an attacker swapping an intermediate
+    #    dir to a symlink can't sneak the walk out of the
+    #    root because each step is anchored by the prior
+    #    step's fd, not by a re-resolved path string).
     try:
-        candidate = (ARTIFACT_ROOT / path).resolve()
-    except (ValueError, OSError) as exc:
-        # Treat malformed paths as 400, NOT 404, so an
-        # operator's access log distinguishes "client sent
-        # garbage" from "client asked for a missing artifact".
+        fd = _open_artifact_fd(ARTIFACT_ROOT, path)
+    except ValueError as exc:
+        # NUL byte, empty component, `..`, etc.
         raise BadRequest(
-            "invalid-path",
-            f"path resolution failed: {exc!r}",
+            "invalid-path", f"invalid path: {exc!r}",
         ) from exc
-
-    try:
-        candidate.relative_to(ARTIFACT_ROOT)
-    except ValueError:
-        # Traversal — `..` / absolute / symlink-out-of-root.
-        # 403, NOT 404, so the traversal signal is distinct in
-        # the access log.
-        raise Forbidden("path escapes artifacts root")
-
-    # 5. Open ONCE under O_NOFOLLOW (no following terminal-
-    #    component symlinks) — closes the TOCTOU window
-    #    between containment check and serving. After this
-    #    open(), we work exclusively with the opened fd:
-    #    a concurrent rename / unlink / replace at `candidate`
-    #    cannot affect what bytes go to the client.
-    try:
-        fd = os.open(
-            candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        )
     except FileNotFoundError:
         raise NotFound("artifact not found")
     except OSError as exc:
-        # ELOOP (symlink), EACCES (permission), ENOTDIR
-        # (intermediate is a file), etc. ELOOP via NOFOLLOW
-        # → 403 (symlink-escape posture); other OSErrors →
-        # 404 (don't leak filesystem layout).
         if exc.errno == errno.ELOOP:
+            # Symlink at ANY path component (intermediate or
+            # terminal). NEVER follow.
             raise Forbidden("symlink not allowed")
+        # EACCES / ENOTDIR / ENAMETOOLONG / etc. — collapse
+        # to 404 to avoid leaking filesystem layout.
         raise NotFound("artifact not found") from exc
 
     try:
         st = os.fstat(fd)
 
-        # 6. File-shape check on the OPEN fd (not on
-        #    `candidate.is_file()` — which would re-stat the
-        #    path and re-open the TOCTOU window).
+        # 5. Regular-file check ON THE OPEN FD:
         if not stat.S_ISREG(st.st_mode):
             raise NotFound("artifact not found")
 
-        # 7. Size cap on the open fd:
+        # 6. Size cap on the open fd:
         if st.st_size > MAX_ARTIFACT_BYTES:
             raise PayloadTooLarge(
                 "artifact-too-large",
                 f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap",
             )
 
-        # 8. Open-fd-belongs-to-the-root re-check (defense in
-        #    depth — even with O_NOFOLLOW, an intermediate
-        #    path component could in principle be a symlink
-        #    that was swapped between resolve() and open()):
-        try:
-            os.fstat(fd)  # already done above; reuse st
-            # The fd's inode is in the open-time root if the
-            # device + inode are still under the root. Cheap
-            # check: re-resolve and compare.
-            re_resolved = candidate.resolve()
-            re_resolved.relative_to(ARTIFACT_ROOT)
-        except (ValueError, OSError):
-            raise Forbidden("path escapes artifacts root")
-
-        # 9. Read and return. 1 MiB cap means we read it all.
+        # 7. Read all bytes (1 MiB cap means in-memory is fine).
         bytes_ = os.read(fd, MAX_ARTIFACT_BYTES + 1)
         if len(bytes_) > MAX_ARTIFACT_BYTES:
             # Race: file grew between fstat and read.
@@ -470,12 +501,14 @@ async def serve_artifact(
                 "artifact size grew during read",
             )
 
+        # 8. Return with safe-delivery headers (§D.2.a).
+        filename = path.rsplit("/", 1)[-1] or "artifact"
         return Response(
             content=bytes_,
             media_type="application/octet-stream",
             headers={
                 "Content-Disposition": (
-                    f'attachment; filename="{candidate.name}"'
+                    f'attachment; filename="{filename}"'
                 ),
                 "X-Content-Type-Options": "nosniff",
             },
@@ -484,24 +517,29 @@ async def serve_artifact(
         os.close(fd)
 ```
 
-**Why open-once-and-stat-the-fd?** Codex round 1 finding
-on TOCTOU: a `Path.is_file()` / `Path.stat()` after the
-`relative_to()` check would re-resolve the path each time,
-opening a window for a concurrent rename / replace to swap
-the on-disk inode between the check and the serve. The
-`os.open(...O_NOFOLLOW...)` returns an fd that's
-**locked to one inode** until close; subsequent `fstat`
-and `read` operate on that locked inode regardless of what
-happens at the path. The re-resolve at step 8 is
-belt-and-suspenders for an intermediate-component swap.
+**Why a descriptor-relative component walk (not
+`Path.resolve()` + a single `os.open`)?** Codex round 2
+finding: a `resolve()`-then-`open()` pattern only protects
+the terminal component from being a symlink. An attacker
+who can swap an intermediate directory to a symlink
+between `resolve()` and `open()` can sneak the walk out
+of the root and back before any post-open re-check sees
+the malicious state. The component walk anchors every
+step by the prior step's fd, so once a real-directory
+inode is locked, no rename at its path can affect what
+the next `os.open(..., dir_fd=current_fd)` resolves to.
+This is the same property Linux 5.6+ exposes as
+`openat2(RESOLVE_BENEATH)`; Python's stdlib doesn't bind
+that syscall but the manual walk gives the same
+guarantees.
 
 **Why `Response(content=…)` instead of `FileResponse`?**
-`FileResponse` re-opens the path from scratch at write
-time — re-opening the TOCTOU window the open-once scheme
-just closed. For the 1 MiB cap a fixed-bytes `Response` is
-the right shape; for >1 MiB Phase 13d's `Backend`
-abstraction owns streaming via cloud SDKs that don't go
-through the filesystem.
+`FileResponse` re-opens the path from scratch at body-
+write time — re-opening the TOCTOU window the component
+walk just closed. For the 1 MiB cap a fixed-bytes
+`Response` is the right shape; for >1 MiB Phase 13d's
+`Backend` abstraction owns streaming via cloud SDKs that
+don't go through the filesystem.
 
 Three small but load-bearing posture choices:
 
@@ -540,8 +578,9 @@ docker-exec wrap). Today only `web-ui` mounts it; 12a-1f
 adds a `:ro` mount on `task-store-server`.
 
 The task-store-server CLI gains a `--artifacts-dir` flag
-(default `None`; when set, the route is mounted). Compose
-passes `--artifacts-dir /var/lib/eden/artifacts`.
+(default `None`). The route is **always mounted** regardless;
+when `--artifacts-dir` is `None` it returns 503 (§D.2.a).
+Compose passes `--artifacts-dir /var/lib/eden/artifacts`.
 
 #### D.2.e Subprocess env vars
 
@@ -602,12 +641,29 @@ meaningfully sensitive (weak credentials can be brute-forced
 offline). The agent's legitimate need is exploratory
 reads — attribution worker_ids, labels, the
 `registered_at` timestamp. Hashes are never part of that
-read shape. Column-level GRANT is the cleanest tool: it
-doesn't require a view layer, doesn't break the
-`SELECT * FROM worker` shape an operator might use ad-hoc
-in `psql` (the excluded column simply doesn't return), and
-the GRANT survives schema bumps as long as the column
-name stays `auth_credential_hash`.
+read shape.
+
+**The column-level GRANT does NOT silently elide the
+excluded column from broad query forms — it makes those
+forms fail.** Codex round 2 finding: PostgreSQL's
+permission check on `SELECT *` is against the full set of
+columns the parser expanded into; if any one column lacks
+`SELECT`, the whole statement fails with permission
+denied. Same for `COPY <table> TO …` and `pg_dump`-shape
+table reads. The operator-visible posture is:
+
+- `SELECT worker_id, labels FROM worker` — works.
+- `SELECT * FROM worker` — fails ("permission denied for
+  column auth_credential_hash").
+- `COPY worker TO STDOUT` — fails (same reason).
+- `pg_dump --table=worker` — fails.
+
+Operators querying the readonly substrate MUST project
+columns explicitly. The operator doc
+(`docs/operations/agent-readonly-db.md`) documents this
+posture with worked examples. Tests in §6.5 lock the
+behavior on both the `SELECT *` and the
+`SELECT auth_credential_hash` paths.
 
 **Default privileges (`ALTER DEFAULT PRIVILEGES`) is
 intentionally OMITTED.** A blanket
@@ -639,14 +695,41 @@ if isinstance(store, PostgresStore) and readonly_password is not None:
     )
 ```
 
-The `ensure_readonly_role` helper:
+The `ensure_readonly_role` helper runs an explicit
+**REVOKE-then-GRANT** sequence — it MUST NOT trust any
+pre-existing grants on the role (e.g. a legacy deployment
+with `GRANT SELECT ON ALL TABLES` from an earlier draft):
 
 1. `CREATE ROLE eden_readonly WITH LOGIN PASSWORD '…'` if absent.
 2. `ALTER ROLE eden_readonly WITH PASSWORD '…'` if present
    (handles password rotation across re-runs of
    setup-experiment with a fresh `EDEN_READONLY_PASSWORD`).
-3. `GRANT CONNECT … USAGE … SELECT …` (idempotent).
-4. `ALTER DEFAULT PRIVILEGES …` (idempotent).
+3. **REVOKE ALL** privileges from the role on every table,
+   schema, and database — bulk-revoke first so leftover
+   over-grants from a prior schema cannot persist:
+
+   ```sql
+   REVOKE ALL ON ALL TABLES IN SCHEMA public FROM eden_readonly;
+   REVOKE ALL ON SCHEMA public FROM eden_readonly;
+   REVOKE ALL ON DATABASE eden FROM eden_readonly;
+   -- Also revoke any default privileges previously installed
+   -- by an earlier provisioning that may have used
+   -- ALTER DEFAULT PRIVILEGES:
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+       REVOKE SELECT ON TABLES FROM eden_readonly;
+   ```
+
+4. GRANT exactly the safe-set defined in §D.3.a
+   (table-level on the non-worker tables; column-level on
+   `worker` excluding `auth_credential_hash`). The
+   per-column GRANT is the authoritative artifact —
+   `ALTER DEFAULT PRIVILEGES` is **NOT used** because it
+   would re-expose any future credential-bearing column
+   added to a new table by a schema bump.
+
+In-memory / SQLite backends: the flag is a no-op with a
+warning (the readonly substrate is Postgres-specific). The
+operator's docs note the limitation.
 
 In-memory / SQLite backends: the flag is a no-op with a
 warning (the readonly substrate is Postgres-specific). The
@@ -834,7 +917,7 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/packages/eden-storage/src/eden_storage/postgres.py` | New module-level `ensure_readonly_role(conn, *, username, password)` function. Idempotent: creates or rotates the role + applies the GRANTs + `ALTER DEFAULT PRIVILEGES`. |
+| `reference/packages/eden-storage/src/eden_storage/postgres.py` | New module-level `ensure_readonly_role(conn, *, username, password)` function. Idempotent: creates or rotates the role; **REVOKEs all prior privileges** (including any prior `ALTER DEFAULT PRIVILEGES`-installed grants); then re-GRANTs the exact safe-set per §D.3.a (table-level on six tables + column-level on `worker` excluding `auth_credential_hash`). No `ALTER DEFAULT PRIVILEGES` is installed — future schema bumps that add a new table must extend the GRANT list explicitly. |
 | `reference/packages/eden-storage/tests/test_postgres_readonly.py` | **NEW**: requires `EDEN_TEST_POSTGRES_DSN`; provisions the role; asserts SELECT works, INSERT/UPDATE/DELETE fail; default-privileges applied to a freshly-created table. |
 
 ### 5.5 `eden-ideator-host`
@@ -908,7 +991,7 @@ trust-boundary tests are the gate:
    of exactly 1 MiB → 200; assert the response is
    delivered as a single contiguous body and bytes match.
 8. **1 MiB cap.** File of 1 MiB + 1 byte → 413
-   `eden://error/artifact-too-large`; assert NO response
+   `eden://reference-error/artifact-too-large`; assert NO response
    bytes from the file are written (the cap check runs
    before the `FileResponse`). Verified by inspecting the
    response content-length / body.
@@ -921,7 +1004,7 @@ trust-boundary tests are the gate:
 10. **Route returns 503 when `--artifacts-dir` not set.**
     The route is always mounted; without `--artifacts-dir`
     every request returns 503
-    `eden://error/artifact-serving-disabled`. Verifies the
+    `eden://reference-error/artifact-serving-disabled`. Verifies the
     deployment-opt-in story.
 11. **Experiment-id mismatch.** URL `experiment_id` ≠
     `store.experiment_id` → 400
@@ -942,17 +1025,20 @@ trust-boundary tests are the gate:
     (the user-agent can't distinguish "permission denied
     intermediate" from "not found"; we collapse both to
     avoid leaking filesystem layout).
-15. **TOCTOU swap-after-resolve.** Pre-create the target
-    file (in-root, 100 bytes). Inside a forked thread,
+15. **TOCTOU terminal-component swap.** Pre-create the
+    target file (in-root, 100 bytes). In a forked thread,
     keep `rename()`-ing the file in-place to a same-path
-    decoy of size 2 MiB; in the main thread, fire 50
+    decoy of size 2 MiB. In the main thread, fire 50
     concurrent GETs. Each response MUST EITHER be
-    200-with-100-bytes (the inode the open() locked) OR
-    one of {404, 413} (the rename made the path resolve
-    differently before open). It MUST NEVER be 200-with-
-    2-MiB-bytes — the open-once-and-fstat-the-fd posture
+    200-with-100-bytes-and-safe-headers (the inode the
+    component walk locked) OR one of {404, 413} (the
+    rename made the terminal component miss / become an
+    oversized file). It MUST NEVER be a 200 carrying
+    2-MiB-bytes — the open-fd-and-fstat-the-fd posture
     prevents the size cap from being bypassed by a
-    swap-after-check race.
+    swap-after-check race. The response MUST NEVER be 403
+    on a benign rename; 403 is reserved for the symlink
+    case alone.
 16. **Symlink-out-of-root rejected by `O_NOFOLLOW`.**
     Create a symlink inside `artifacts_dir` pointing at
     `/etc/passwd`. Request that path. `os.open` with
@@ -960,6 +1046,27 @@ trust-boundary tests are the gate:
     trailing component IS a symlink. Handler maps ELOOP →
     403 `eden://error/forbidden`. The response body MUST
     NOT include any bytes from `/etc/passwd`.
+17. **Intermediate-component symlink swap (TOCTOU).**
+    Pre-create `<root>/dir1/file.md`. In a forked thread,
+    keep swapping `<root>/dir1` between a real directory
+    containing `file.md` and a symlink to `/etc`; in the
+    main thread, fire 50 concurrent GETs to `dir1/file.md`.
+    Each response MUST EITHER be 200-with-`file.md`-bytes
+    OR a 4xx (404 / 403 / 400). It MUST NEVER serve any
+    bytes from outside `<root>`. The component-walk-with-
+    dir_fd posture in §D.2.c rejects the symlink form via
+    `O_NOFOLLOW` on every intermediate component.
+18. **Safe-delivery headers on 200.** For each of (a) a
+    typical artifact (~10 KB markdown), (b) the cap-
+    boundary file (exactly 1 MiB), (c) an artifact with a
+    `.html` extension, (d) an artifact with a `.svg`
+    extension: assert the 200 response carries
+    `Content-Type: application/octet-stream`,
+    `Content-Disposition: attachment; filename="<basename>"`,
+    and `X-Content-Type-Options: nosniff`. Codex round-2
+    finding: the safe-delivery headers are the load-bearing
+    stored-XSS defense; they MUST be locked by test on
+    every 200 path.
 
 ### 6.2 Path-resolution edge cases
 
@@ -1016,18 +1123,49 @@ For each of ideator + evaluator subprocess mode:
 
 Gated on `EDEN_TEST_POSTGRES_DSN`:
 
-- First-run: role doesn't exist → `ensure_readonly_role`
-  creates it + GRANTs. `eden_readonly` can connect and
-  SELECT.
-- Re-run with same password: idempotent, no error.
-- Re-run with different password: ALTER ROLE updates;
-  new password works, old fails.
-- After role exists, create a fresh table in the public
-  schema (e.g. `CREATE TABLE test_drift (id int)` as the
-  `eden` superuser). The readonly role MUST automatically
-  have SELECT on it (default privileges).
-- INSERT / UPDATE / DELETE / CREATE TABLE / DROP TABLE as
-  `eden_readonly` MUST fail with permission errors.
+- **First-run.** Role doesn't exist → `ensure_readonly_role`
+  creates it + REVOKEs + GRANTs the safe-set.
+  `eden_readonly` can connect and SELECT projected columns
+  from `worker`.
+- **Idempotent re-run.** Same password → no-op (no error).
+- **Password rotation.** Different password → ALTER ROLE
+  updates; new password authenticates; old password fails
+  401.
+- **No write privilege.** INSERT / UPDATE / DELETE on every
+  granted table (task, idea, variant, event, worker,
+  worker_group, group_membership) MUST fail with permission
+  denied.
+- **No schema-DDL privilege.** CREATE TABLE / DROP TABLE /
+  ALTER TABLE MUST fail.
+- **Column exclusion (load-bearing).** Three explicit
+  query-shape tests against the `worker` table:
+  - `SELECT auth_credential_hash FROM worker LIMIT 1` —
+    MUST fail (permission denied for column).
+  - `SELECT * FROM worker LIMIT 1` — MUST fail (parser
+    expands `*` to every column including the excluded
+    one). Codex round-2 finding: this is the realistic
+    operator-error shape; the test pins the failure.
+  - `SELECT worker_id, labels FROM worker LIMIT 1` —
+    MUST succeed (explicit column projection).
+- **Hardening against legacy over-grant.** Start a fresh
+  Postgres database; manually pre-create `eden_readonly`
+  with `GRANT SELECT ON ALL TABLES IN SCHEMA public` +
+  `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT
+  ON TABLES TO eden_readonly` (a hypothetical legacy
+  installation's posture). Then run `ensure_readonly_role`.
+  Post-condition: `SELECT auth_credential_hash FROM
+  worker` MUST fail (the prior table-wide grant has been
+  REVOKEd before the column-level GRANT was applied).
+  Codex round-2 finding: this is the migration test that
+  proves the REVOKE-then-GRANT order works.
+- **Default-privileges removal.** As `eden` superuser,
+  create a new table in `public`. `eden_readonly` MUST NOT
+  automatically have SELECT on it (no `ALTER DEFAULT
+  PRIVILEGES` is installed). The test asserts the
+  permission-denied response on `SELECT * FROM
+  test_new_table` from `eden_readonly`. Codex round-2
+  finding: this is the dual of the legacy-over-grant test;
+  both must pass for the safety posture to hold.
 
 ### 6.6 End-to-end smoke
 
