@@ -79,6 +79,11 @@ _GROUP_OUTCOMES: dict[str, tuple[str, str]] = {
         "one of the initial members failed validation",
     ),
     "already-exists": ("error", "a group with this id already exists"),
+    "id-collides-with-worker": (
+        "error",
+        "a worker already has this identifier; worker_ids and "
+        "group_ids share a namespace per spec §7.4",
+    ),
     "admin-disabled": (
         "error",
         "admin token not configured; mutation unavailable",
@@ -186,9 +191,11 @@ def walk_transitive_workers(
     malformed.
     """
     workers: dict[str, list[str]] = {}
+    dangling: set[str] = set()
     visited_groups: set[str] = set()
     truncated_depth = False
     truncated_breadth = False
+    transport_errors = 0
 
     # Stack entries: (group_id, path_so_far)
     stack: list[tuple[str, list[str]]] = [(group_id, [])]
@@ -209,23 +216,44 @@ def walk_transitive_workers(
             # Dangling reference per spec §7.1 — resolves to
             # membership=false. Skip silently.
             continue
+        except Exception:  # noqa: BLE001 — transport-shaped
+            transport_errors += 1
+            continue
         new_path = [*path, gid]
         for member in group.members:
             # Member may be a worker_id OR a group_id. Try the
-            # group route first; if it 404s, treat as a worker.
+            # group route first; if it 404s, probe the worker
+            # registry to distinguish "registered worker" from
+            # "dangling identifier" (per spec §7.1 a dangling
+            # member resolves to membership=false; rendering it as
+            # a member of the closure would mislead operators about
+            # who can actually claim a group-targeted task).
             try:
                 store.read_group(member)
             except StorageNotFound:
-                # Worker (or dangling worker_id). Record first
-                # discovery path; don't overwrite if already seen.
+                # Not a group; check worker registry.
+                try:
+                    store.read_worker(member)
+                except StorageNotFound:
+                    # Dangling identifier — neither worker nor
+                    # group. Record separately so the template can
+                    # surface it as a "may want to clean up"
+                    # advisory without claiming the identifier is
+                    # actually a claimant.
+                    dangling.add(member)
+                    continue
+                except Exception:  # noqa: BLE001 — transport-shaped
+                    transport_errors += 1
+                    continue
+                # Registered worker: record first discovery path.
                 if member not in workers:
                     if len(workers) >= breadth_cap:
                         truncated_breadth = True
                         break
                     workers[member] = new_path
                 continue
-            except Exception:  # noqa: BLE001
-                # Transport blip — skip this member but keep walking.
+            except Exception:  # noqa: BLE001 — transport-shaped
+                transport_errors += 1
                 continue
             # It's a group; recurse.
             stack.append((member, new_path))
@@ -235,8 +263,10 @@ def walk_transitive_workers(
             {"worker_id": wid, "via": via}
             for wid, via in sorted(workers.items())
         ],
+        "dangling": sorted(dangling),
         "truncated_depth": truncated_depth,
         "truncated_breadth": truncated_breadth,
+        "transport_errors": transport_errors,
         "visited_groups": len(visited_groups),
     }
 
@@ -263,15 +293,29 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
         return _read_failure_response(request, "could not load groups")
 
     rows: list[dict[str, Any]] = []
+    total_transport_errors = 0
+    any_truncated = False
     for g in groups:
         if q and q not in g.group_id.lower():
             continue
+        walk = walk_transitive_workers(store, g.group_id)
+        total_transport_errors += walk["transport_errors"]
+        if walk["truncated_breadth"] or walk["truncated_depth"]:
+            any_truncated = True
+        transitive_worker_count = len(walk["workers"])
+        transitive_label = (
+            f"≥{transitive_worker_count}"
+            if (walk["truncated_breadth"] or walk["truncated_depth"])
+            else str(transitive_worker_count)
+        )
         rows.append(
             {
                 "group_id": g.group_id,
                 "created_at": g.created_at,
                 "created_by": g.created_by,
                 "member_count": len(g.members),
+                "transitive_worker_count": transitive_worker_count,
+                "transitive_worker_label": transitive_label,
                 "members_preview": list(g.members[:3]),
                 "members_more": max(0, len(g.members) - 3),
             }
@@ -286,6 +330,8 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
             "rows": rows,
             "q": q_raw,
             "admin_enabled": admin_store is not None,
+            "membership_transport_errors": total_transport_errors,
+            "any_truncated": any_truncated,
             "outcome": _outcome(request, _GROUP_OUTCOMES),
         },
     )
@@ -321,6 +367,21 @@ async def groups_register(
             url="/admin/groups/?error=invalid-members", status_code=303
         )
 
+    # Pre-flight worker-collision check so the AlreadyExists banner
+    # below distinguishes "group with this id exists" from the
+    # cross-registry collision per spec §7.4. We check the worker
+    # registry first; the store also enforces both (defense in
+    # depth), and a wire-side StorageNotFound here is fine.
+    worker_collision = False
+    try:
+        admin_store.read_worker(group_id)
+        worker_collision = True
+    except StorageNotFound:
+        pass
+    except Exception:  # noqa: BLE001 — transport-shaped
+        # If the preflight read fails, let the wire's own collision
+        # check be authoritative and fall through.
+        pass
     try:
         admin_store.register_group(
             group_id, members=initial_members or None
@@ -334,6 +395,16 @@ async def groups_register(
             url="/admin/groups/?error=cycle-detected", status_code=303
         )
     except AlreadyExists:
+        # Distinguish "a group with this id exists" from the
+        # cross-registry collision (worker_ids / group_ids share a
+        # namespace per spec §7.4). The store raises the same
+        # `AlreadyExists` for both cases; we use the preflight
+        # `worker_collision` flag to surface a clearer banner.
+        if worker_collision:
+            return RedirectResponse(
+                url="/admin/groups/?error=id-collides-with-worker",
+                status_code=303,
+            )
         return RedirectResponse(
             url="/admin/groups/?error=already-exists", status_code=303
         )

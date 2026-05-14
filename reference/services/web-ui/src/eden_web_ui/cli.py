@@ -247,6 +247,25 @@ def main(argv: list[str] | None = None) -> int:
             experiment_id=args.experiment_id,
             bearer=f"admin:{admin_token}",
         )
+        # Validate the admin bearer at startup; a stale or wrong
+        # token would otherwise surface only when the operator
+        # tried to register a worker, as an opaque "transport"
+        # banner (plan §8.1 risk note). list_workers is either-
+        # gated, so the call succeeds with the admin bearer when
+        # the bearer parses cleanly and 401s otherwise.
+        try:
+            admin_store.list_workers()
+        except Unauthorized:
+            log.error(
+                "admin token rejected by task-store; check "
+                "--admin-token / $EDEN_ADMIN_TOKEN matches the "
+                "task-store-server's --admin-token"
+            )
+            with contextlib.suppress(Exception):
+                store.close()
+            with contextlib.suppress(Exception):
+                admin_store.close()
+            return 1
 
     app = make_app(
         store=store,

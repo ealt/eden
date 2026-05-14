@@ -7,6 +7,14 @@
 <div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
 {% endif %}
 
+{% if membership_transport_errors %}
+<div class="banner banner-warn">
+    {{ membership_transport_errors }} group-membership lookup(s) failed
+    during this render; the "groups" list below may be incomplete.
+    Refresh to retry.
+</div>
+{% endif %}
+
 <dl>
     <dt>experiment_id</dt><dd><code>{{ worker.experiment_id }}</code></dd>
     <dt>registered_at</dt><dd>{{ worker.registered_at }}</dd>

@@ -54,6 +54,21 @@
         {% endif %}
     </form>
 
+    {% if membership_transport_errors %}
+    <div class="banner banner-warn">
+        {{ membership_transport_errors }} membership lookup(s) failed
+        during this render; the "transitive workers" column may be
+        incomplete. Refresh to retry.
+    </div>
+    {% endif %}
+    {% if any_truncated %}
+    <div class="banner banner-warn">
+        at least one group's transitive-membership walk hit a
+        depth/breadth cap; counts shown as "≥N" reflect the cap, not
+        the true membership. See the group's detail page.
+    </div>
+    {% endif %}
+
     {% if rows %}
     <table>
         <thead>
@@ -62,6 +77,7 @@
                 <th>created_at</th>
                 <th>created_by</th>
                 <th>direct members</th>
+                <th>transitive workers</th>
                 <th>preview</th>
             </tr>
         </thead>
@@ -72,6 +88,7 @@
                 <td>{{ r.created_at }}</td>
                 <td>{% if r.created_by %}<code>{{ r.created_by }}</code>{% else %}—{% endif %}</td>
                 <td>{{ r.member_count }}</td>
+                <td>{{ r.transitive_worker_label }}</td>
                 <td>
                     {% for m in r.members_preview %}<code>{{ m }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
                     {% if r.members_more %}<span class="muted">+{{ r.members_more }}</span>{% endif %}

@@ -79,6 +79,12 @@
         {% if transitive.truncated_depth %}(depth cap reached){% endif %}.
     </div>
     {% endif %}
+    {% if transitive.transport_errors %}
+    <div class="banner banner-warn">
+        {{ transitive.transport_errors }} membership lookup(s) failed during
+        the walk; this view is incomplete. Refresh to retry.
+    </div>
+    {% endif %}
     {% if transitive.workers %}
     <table>
         <thead><tr><th>worker_id</th><th>path</th></tr></thead>
@@ -99,6 +105,22 @@
     </table>
     {% else %}
     <p>no workers reachable.</p>
+    {% endif %}
+
+    {% if transitive.dangling %}
+    <h3>dangling member references ({{ transitive.dangling | length }})</h3>
+    <p class="muted">
+        These member IDs appear in the membership tree but are neither
+        registered workers nor groups. Per spec §7.1 they resolve to
+        membership=false (i.e., they do <em>not</em> grant claim
+        authority); they're surfaced here so an operator can decide
+        whether to register them, remove them, or leave them as-is.
+    </p>
+    <ul>
+        {% for d in transitive.dangling %}
+        <li><code>{{ d }}</code></li>
+        {% endfor %}
+    </ul>
     {% endif %}
 </section>
 

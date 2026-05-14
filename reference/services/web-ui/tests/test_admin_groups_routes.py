@@ -581,6 +581,67 @@ class TestAdminGroupsPartialWrite:
 # ---------------------------------------------------------------------
 
 
+class TestAdminGroupsTransitiveWalk:
+    """Round-1 review finding: transitive worker closure must filter
+    dangling identifiers (unregistered ids that resolve to
+    membership=false per spec §7.1)."""
+
+    def test_unregistered_member_classified_as_dangling(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        store.register_group("team-w-ghost", members=["ghost-worker", "ui-w"])
+        resp = signed_in_client.get("/admin/groups/team-w-ghost/")
+        assert resp.status_code == 200
+        assert "ui-w" in resp.text
+        assert "ghost-worker" in resp.text
+        assert "dangling member references" in resp.text
+
+    def test_pure_registered_membership_has_no_dangling_section(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        store.register_group("team-clean", members=["ui-w"])
+        resp = signed_in_client.get("/admin/groups/team-clean/")
+        assert resp.status_code == 200
+        assert "dangling member references" not in resp.text
+
+
+class TestAdminGroupsCrossRegistryCollision:
+    """Round-1 review finding: cross-registry namespace collisions."""
+
+    def test_register_group_collides_with_existing_worker(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        store.register_worker("g-collision-id")
+        csrf = get_csrf(signed_in_client)
+        resp = signed_in_client.post(
+            "/admin/groups/",
+            data={"csrf_token": csrf, "group_id": "g-collision-id"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=id-collides-with-worker" in resp.headers["location"]
+
+
+class TestAdminGroupsListShowsTransitiveCount:
+    """Round-1 review finding: list view shows transitive worker count."""
+
+    def test_transitive_count_rendered(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        store.register_group("team-count", members=["ui-w", "ui-w-other"])
+        resp = signed_in_client.get("/admin/groups/")
+        assert resp.status_code == 200
+        assert "transitive workers" in resp.text
+
+
 class TestAdminGroupsSecurity:
     def test_xss_in_filter_param_is_escaped(
         self,

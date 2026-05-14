@@ -10,12 +10,16 @@ module and the work-ref GC sub-page of `/admin/*` are gated on the
 optional `--repo-path` flag; if omitted, the UI runs as a
 ideator + evaluator + (read-only) admin deployment.
 
-The UI service is a **backend-for-frontend (BFF)**: it holds the
-`--shared-token` (the chapter 07 §12 reference bearer the
-orchestrator and worker hosts already use), runs `eden_wire.StoreClient`
-in-process to talk to the task-store-server, and exposes only
-server-rendered HTML to the browser. The browser never sees the
-shared token; it gets a signed session cookie.
+The UI service is a **backend-for-frontend (BFF)**: it holds a
+per-worker bearer (registered at startup via the 12a-1 admin-token
+bootstrap; see `eden_service_common.bootstrap_worker_credential`),
+runs `eden_wire.StoreClient` in-process to talk to the
+task-store-server, and exposes only server-rendered HTML to the
+browser. The browser never sees any bearer; it gets a signed
+session cookie. When the deployment admin token is also passed
+(`--admin-token` / `$EDEN_ADMIN_TOKEN`), the service additionally
+constructs a second `StoreClient` bearing `admin:<token>` for the
+12a-1b admin module's worker / group registry writes.
 
 Rendering uses Jinja2 templates with [HTMX](https://htmx.org/) as a
 progressive-enhancement layer. Every mutating route works without
@@ -31,12 +35,16 @@ so the UI works offline and in CI without external network.
 ## Run locally
 
 ```bash
+export EDEN_ADMIN_TOKEN="$(openssl rand -hex 32)"
+export EDEN_CREDENTIALS_DIR="/tmp/eden-credentials"
+mkdir -p "$EDEN_CREDENTIALS_DIR"
+
 python3 -m eden_task_store_server \
     --store-url /tmp/eden.sqlite \
     --experiment-id exp-1 \
     --experiment-config tests/fixtures/experiment/.eden/config.yaml \
     --port 0 \
-    --shared-token devtoken \
+    --admin-token "$EDEN_ADMIN_TOKEN" \
     &
 
 # (Read EDEN_TASK_STORE_LISTENING from stdout to learn the port.)
@@ -45,11 +53,18 @@ python3 -m eden_web_ui \
     --task-store-url http://127.0.0.1:<port> \
     --experiment-id exp-1 \
     --experiment-config tests/fixtures/experiment/.eden/config.yaml \
-    --shared-token devtoken \
+    --admin-token "$EDEN_ADMIN_TOKEN" \
+    --credentials-dir "$EDEN_CREDENTIALS_DIR" \
     --session-secret "$(openssl rand -hex 32)" \
     --artifacts-dir /tmp/eden-artifacts \
     --port 0
 ```
+
+The web-ui bootstraps its own worker credential against the admin
+token at first boot, persists it under `$EDEN_CREDENTIALS_DIR`, and
+uses it as the per-worker bearer for all subsequent reads. The
+admin token is also retained at the process level to drive the
+12a-1b admin module's writes; see "Admin module" below.
 
 The web-ui announces `EDEN_WEB_UI_LISTENING host=... port=...` on stdout
 on bind so harnesses (and the test suite) can discover the ephemeral
@@ -64,8 +79,9 @@ port without scraping logs.
 - Every mutating route validates a `csrf_token` form field in
   constant time. The cookie's `SameSite=Lax` is **not** treated as
   sufficient on its own.
-- The shared bearer never reaches the browser, the rendered HTML,
-  any session cookie, or any structured log line.
+- The per-worker bearer and the admin token never reach the
+  browser, the rendered HTML, any session cookie, or any structured
+  log line.
 
 ### Admin module (12a-1b)
 

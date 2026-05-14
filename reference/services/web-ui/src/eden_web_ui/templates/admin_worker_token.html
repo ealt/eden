@@ -40,7 +40,37 @@
         <code>&lt;credentials_dir&gt;/{{ worker.worker_id }}.token</code>)
         before navigating away.
     </p>
-    <pre><code class="token">{{ token }}</code></pre>
+    <pre id="worker-token-wrap"><code class="token">{{ token }}</code></pre>
+    {# Page-local JS — no network, no eval, no template interpolation
+       past the element ID. The fallback is plain text selection,
+       which works without JS. #}
+    <button type="button" id="copy-token">copy to clipboard</button>
+    <span id="copy-status" class="muted"></span>
+    <script>
+    (function () {
+        var btn = document.getElementById('copy-token');
+        var wrap = document.getElementById('worker-token-wrap');
+        var tok = wrap ? wrap.querySelector('code.token') : null;
+        var status = document.getElementById('copy-status');
+        if (!btn || !tok) { return; }
+        btn.addEventListener('click', function () {
+            var value = tok.textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(value).then(function () {
+                    status.textContent = 'copied.';
+                }, function () {
+                    status.textContent = 'copy failed; select manually.';
+                });
+            } else {
+                var range = document.createRange();
+                range.selectNodeContents(tok);
+                var sel = window.getSelection();
+                if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+                status.textContent = 'selected. press cmd/ctrl-C to copy.';
+            }
+        });
+    })();
+    </script>
 </section>
 {% endif %}
 

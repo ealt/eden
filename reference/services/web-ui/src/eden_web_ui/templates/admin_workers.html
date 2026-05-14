@@ -15,6 +15,14 @@
 </div>
 {% endif %}
 
+{% if membership_transport_errors %}
+<div class="banner banner-warn">
+    {{ membership_transport_errors }} group-membership lookup(s) failed
+    during this render; the "groups" column below may be incomplete.
+    Refresh to retry.
+</div>
+{% endif %}
+
 <section>
     <h2>register a new worker</h2>
     <form method="post" action="/admin/workers/">

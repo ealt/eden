@@ -24,6 +24,7 @@ from typing import Any
 
 from eden_contracts import Event, Idea, Task, Variant, Worker
 from eden_storage.errors import (
+    AlreadyExists,
     InvalidPrecondition,
     ReservedIdentifier,
 )
@@ -56,6 +57,11 @@ _WORKER_OUTCOMES: dict[str, tuple[str, str]] = {
     "idempotent": ("warn", "worker already existed; no new token issued"),
     "reissued": ("ok", "credential reissued — token shown below (only time)"),
     "reserved-identifier": ("error", "this identifier is reserved"),
+    "id-collides-with-group": (
+        "error",
+        "a group already has this identifier; worker_ids and "
+        "group_ids share a namespace per spec §7.4",
+    ),
     "invalid-worker-id": (
         "error",
         "worker_id must match [a-z0-9][a-z0-9_-]{0,63}",
@@ -63,6 +69,10 @@ _WORKER_OUTCOMES: dict[str, tuple[str, str]] = {
     "invalid-labels": (
         "error",
         "label parse error — one `key=value` per line",
+    ),
+    "invalid-labels-line": (
+        "error",
+        "label parse error on a numbered line (see ?line=N)",
     ),
     "admin-disabled": (
         "error",
@@ -93,8 +103,23 @@ def _outcome(
         if pair is None:
             return None
         level, message = pair
+        # `invalid-labels-line` carries a 1-indexed line number in
+        # ?line=N so the banner names the offending line. We parse
+        # defensively (cap at 5 digits) so a malicious / mangled
+        # querystring can't blow up the render.
+        if key == "invalid-labels-line":
+            raw_line = request.query_params.get("line", "")
+            if raw_line.isdigit() and len(raw_line) <= 5:
+                message = f"label parse error on line {raw_line}"
         return {"level": level, "message": message}
     return None
+
+
+class _LabelParseError(Exception):
+    def __init__(self, line: int, reason: str) -> None:
+        super().__init__(f"line {line}: {reason}")
+        self.line = line
+        self.reason = reason
 
 
 def _parse_labels(raw: str) -> dict[str, str]:
@@ -102,8 +127,9 @@ def _parse_labels(raw: str) -> dict[str, str]:
 
     Blank lines and ``#``-prefixed lines are skipped. Each remaining
     line MUST contain ``=``; key non-empty; key ≤64 chars; value
-    ≤256 chars. Raises ``ValueError`` with a 1-indexed line number
-    on bad input.
+    ≤256 chars. Raises ``_LabelParseError`` with a 1-indexed line
+    number on bad input so the route can surface the offending line
+    in the rendered banner.
     """
     labels: dict[str, str] = {}
     for n, line in enumerate(raw.splitlines(), start=1):
@@ -111,20 +137,16 @@ def _parse_labels(raw: str) -> dict[str, str]:
         if not stripped or stripped.startswith("#"):
             continue
         if "=" not in stripped:
-            msg = f"line {n}: missing `=`"
-            raise ValueError(msg)
+            raise _LabelParseError(n, "missing `=`")
         key, _, value = stripped.partition("=")
         key = key.strip()
         value = value.strip()
         if not key:
-            msg = f"line {n}: empty key"
-            raise ValueError(msg)
+            raise _LabelParseError(n, "empty key")
         if len(key) > 64:
-            msg = f"line {n}: key longer than 64 chars"
-            raise ValueError(msg)
+            raise _LabelParseError(n, "key longer than 64 chars")
         if len(value) > 256:
-            msg = f"line {n}: value longer than 256 chars"
-            raise ValueError(msg)
+            raise _LabelParseError(n, "value longer than 256 chars")
         labels[key] = value
     return labels
 
@@ -188,27 +210,29 @@ def _filter_workers(
 
 def _groups_containing(
     store: Any, worker_id: str, *, all_groups: Iterable[Any] | None = None
-) -> list[str]:
-    """Return ``group_id``s whose transitive membership includes ``worker_id``.
+) -> tuple[list[str], int]:
+    """Return ``(group_ids, transport_errors)`` for ``worker_id``'s memberships.
 
     The transitive walk happens server-side over the wire via
     ``resolve_worker_in_group`` (one call per group). Bounded by the
     number of groups in the experiment; per plan §3.5 reference
-    deployments stay under ≤10 groups so this is fine.
+    deployments stay under ≤10 groups so this is fine. The
+    transport-error count is surfaced into the template so the
+    operator sees a banner when the rendered list is incomplete.
     """
     groups_iter = (
         store.list_groups() if all_groups is None else all_groups
     )
     out: list[str] = []
+    transport_errors = 0
     for g in groups_iter:
         try:
             if store.resolve_worker_in_group(worker_id, g.group_id):
                 out.append(g.group_id)
         except Exception:  # noqa: BLE001 — transport-shaped
-            # Skip on transport blip rather than 500ing the page;
-            # the operator can refresh.
+            transport_errors += 1
             continue
-    return out
+    return out, transport_errors
 
 
 # ---------------------------------------------------------------------
@@ -258,8 +282,12 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     filtered = _filter_workers(workers, q)
     rows: list[dict[str, Any]] = []
+    total_transport_errors = 0
     for w in filtered:
-        groups = _groups_containing(store, w.worker_id, all_groups=all_groups)
+        groups, te = _groups_containing(
+            store, w.worker_id, all_groups=all_groups
+        )
+        total_transport_errors += te
         rows.append(
             {
                 "worker_id": w.worker_id,
@@ -280,6 +308,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
             "rows": rows,
             "q": q_raw,
             "admin_enabled": admin_store is not None,
+            "membership_transport_errors": total_transport_errors,
             "outcome": _outcome(request, _WORKER_OUTCOMES),
         },
     )
@@ -311,9 +340,13 @@ async def workers_register(
 
     try:
         parsed_labels = _parse_labels(labels)
-    except ValueError:
+    except _LabelParseError as exc:
+        # Surface the 1-indexed line number alongside the banner so
+        # the operator knows which line to fix without re-parsing
+        # the textarea by eye.
         return RedirectResponse(
-            url="/admin/workers/?error=invalid-labels", status_code=303
+            url=f"/admin/workers/?error=invalid-labels-line&line={exc.line}",
+            status_code=303,
         )
 
     try:
@@ -323,6 +356,15 @@ async def workers_register(
     except ReservedIdentifier:
         return RedirectResponse(
             url="/admin/workers/?error=reserved-identifier", status_code=303
+        )
+    except AlreadyExists:
+        # Per spec §7.4 worker_id / group_id share a namespace; the
+        # store raises AlreadyExists when ``worker_id`` is already
+        # registered as a group. (Register on an existing worker is
+        # idempotent — it does NOT raise AlreadyExists per spec §6.3.)
+        return RedirectResponse(
+            url="/admin/workers/?error=id-collides-with-group",
+            status_code=303,
         )
     except (BadRequest, InvalidPrecondition):
         return RedirectResponse(
@@ -369,7 +411,7 @@ async def worker_detail(
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load worker")
 
-    groups_of_worker = _groups_containing(
+    groups_of_worker, membership_transport_errors = _groups_containing(
         store, worker_id, all_groups=all_groups
     )
 
@@ -392,6 +434,7 @@ async def worker_detail(
             "variants": attributed_variants,
             "events": related_events,
             "admin_enabled": admin_store is not None,
+            "membership_transport_errors": membership_transport_errors,
             "outcome": _outcome(request, _WORKER_OUTCOMES),
         },
     )

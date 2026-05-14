@@ -467,6 +467,74 @@ class TestAdminWorkersPartialWrite:
 # ---------------------------------------------------------------------
 
 
+class TestAdminWorkersCrossRegistryCollision:
+    """Round-1 review finding: cross-registry namespace collisions.
+
+    Per spec §7.4 worker_ids / group_ids share a namespace.
+    Registering a worker whose id is already a group must surface a
+    distinct banner (not the generic transport error).
+    """
+
+    def test_register_worker_collides_with_existing_group(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        store.register_group("collision-id")
+        csrf = get_csrf(signed_in_client)
+        resp = signed_in_client.post(
+            "/admin/workers/",
+            data={"csrf_token": csrf, "worker_id": "collision-id"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=id-collides-with-group" in resp.headers["location"]
+
+
+class TestAdminWorkersLabelLineNumber:
+    """Round-1 review finding: invalid-labels banner names the line."""
+
+    def test_invalid_label_line_carries_line_number(
+        self, signed_in_client: TestClient
+    ) -> None:
+        csrf = get_csrf(signed_in_client)
+        resp = signed_in_client.post(
+            "/admin/workers/",
+            data={
+                "csrf_token": csrf,
+                "worker_id": "label-line-test",
+                "labels": "valid=value\nno-equals-sign\nalso=valid",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "error=invalid-labels-line" in resp.headers["location"]
+        assert "line=2" in resp.headers["location"]
+
+    def test_banner_renders_the_line_number(
+        self, signed_in_client: TestClient
+    ) -> None:
+        resp = signed_in_client.get(
+            "/admin/workers/?error=invalid-labels-line&line=7"
+        )
+        assert resp.status_code == 200
+        assert "line 7" in resp.text
+
+
+class TestAdminWorkersTokenCopyAffordance:
+    """Round-1 review finding: token page has a copy-to-clipboard button."""
+
+    def test_copy_button_present(self, signed_in_client: TestClient) -> None:
+        csrf = get_csrf(signed_in_client)
+        resp = signed_in_client.post(
+            "/admin/workers/",
+            data={"csrf_token": csrf, "worker_id": "copy-btn"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert 'id="copy-token"' in resp.text
+
+
 class TestAdminWorkersSecurity:
     def test_token_not_in_subsequent_get(
         self,
