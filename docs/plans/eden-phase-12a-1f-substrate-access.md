@@ -46,9 +46,15 @@ replace the tactical pieces this chunk lands as they mature.
   `EDEN_READONLY_STORE_URL`) follow the existing
   [`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md)
   §1.1 `EDEN_*` convention.
-- New HTTP path (`/_reference/artifacts/<path>`) uses the
-  reference-only prefix per chapter-7 §11 (`/_reference/` is
-  the documented namespace for non-normative helper routes).
+- New HTTP path
+  (`/_reference/experiments/{experiment_id}/artifacts/{path:path}`)
+  uses the existing reference-helper convention
+  ([`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py)
+  line ~853 — `ref_base = "/_reference/experiments/{experiment_id}"`).
+  Scoping by `experiment_id` matches the rest of the
+  `/_reference/` surface and gives the route's handler an
+  experiment-id-mismatch guard parallel to the chapter-7
+  §1.3 invariant on the normative endpoints.
 - Pre-submit `scripts/check-rename-discipline.py` clean.
 
 ## 1. Context
@@ -258,13 +264,14 @@ history walks), a follow-on chunk wires it.
 #### D.2.a Route shape
 
 ```text
-GET /_reference/artifacts/<path>
+GET /_reference/experiments/{experiment_id}/artifacts/{path:path}
 Authorization: Bearer <principal>:<secret>
 ```
 
 | Param | Source | Constraint |
 |---|---|---|
-| `path` | URL path component | URL-decoded; non-empty |
+| `experiment_id` | URL path component | MUST equal `store.experiment_id` — mismatch → 400 (parallel to chapter-7 §1.3 on the normative endpoints) |
+| `path` | URL path component | URL-decoded; non-empty; relative |
 | principal | Bearer header | `admin` OR registered worker_id |
 | secret | Bearer header | constant-time-compared per [§13.1](../../spec/v0/07-wire-protocol.md) |
 
@@ -272,25 +279,46 @@ Response shape:
 
 | HTTP | Body | When |
 |---|---|---|
-| `200 OK` | file bytes | `Path(artifacts_dir, path).resolve()` is a regular file under `artifacts_dir` |
+| `200 OK` | file bytes (≤ 1 MiB) | `Path(artifacts_dir, path).resolve()` is a regular file under `artifacts_dir`, file size ≤ 1 MiB |
+| `400 Bad Request` | RFC 7807 `eden://error/experiment-id-mismatch` | The URL's `experiment_id` does not equal `store.experiment_id` |
 | `401 Unauthorized` | RFC 7807 `eden://error/unauthorized` | Missing / malformed bearer; bad token |
 | `403 Forbidden` | RFC 7807 `eden://error/forbidden` | Resolved path is OUTSIDE `artifacts_dir` (traversal) |
 | `404 Not Found` | RFC 7807 `eden://error/not-found` | Resolved path is inside `artifacts_dir` but doesn't exist or is not a regular file |
-| `503 Service Unavailable` | RFC 7807 | task-store-server was started without `--artifacts-dir`; the deployment opted out of artifact serving |
+| `413 Payload Too Large` | RFC 7807 `eden://error/artifact-too-large` | File is a regular file under root but its size exceeds 1 MiB |
+| `503 Service Unavailable` | RFC 7807 `eden://error/artifact-serving-disabled` | task-store-server was started without `--artifacts-dir`; the deployment opted out of artifact serving |
 
-The route lives at `/_reference/artifacts/<path>` (NOT
-`/v0/...`) because chapter 7 §11 already documents
+**Always-mounted, conditionally-enabled.** The route is
+mounted on every task-store-server (regardless of
+`--artifacts-dir`); when `--artifacts-dir` is `None` it
+returns 503 with a closed-vocabulary error. Conditional
+mounting would force operators to read the OpenAPI surface
+to discover the route's existence; the 503 signal is more
+discoverable.
+
+**1 MiB cap.** Mirrors the existing
+[`_read_inline_artifact`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
+helper's cap. Files larger than 1 MiB return 413 without
+serving any bytes (no partial response). Phase 13d's
+`Backend` abstraction handles streaming + range requests
+properly.
+
+The route lives under `/_reference/experiments/{experiment_id}/`
+(NOT `/v0/...`) because chapter 7 §11 already documents
 `/_reference/` as the **reference-only**, non-normative
-namespace. The chapter-7-normative URL space is preserved.
+namespace and the existing reference helpers in
+[`server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py)
+already use the `experiment_id`-scoped form. The
+chapter-7-normative URL space is preserved.
 
 #### D.2.b Mount location
 
 The route lives in
 [`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py)
-alongside the existing `/v0/...` routes. The
-existing auth middleware skips `/_reference/` paths by
-default (auth.py line ~160), so this route does its own
-auth check by calling
+alongside the existing reference helpers (which already use
+the same `ref_base = "/_reference/experiments/{experiment_id}"`
+template). The existing auth middleware skips `/_reference/`
+paths by default (auth.py line ~160), so this route does its
+own auth check by calling
 [`eden_wire.auth.authenticate(request.headers.get("authorization"), admin_token=admin_token, store=store)`](../../reference/packages/eden-wire/src/eden_wire/auth.py)
 inside the handler. This keeps the middleware oblivious and
 makes the route's auth posture self-contained.
@@ -298,10 +326,15 @@ makes the route's auth posture self-contained.
 #### D.2.c Path resolution + containment
 
 ```python
-ARTIFACT_ROOT = artifacts_dir.resolve()  # cached at startup
+ARTIFACT_ROOT = artifacts_dir.resolve() if artifacts_dir else None
+MAX_ARTIFACT_BYTES = 1 * 1024 * 1024  # 1 MiB (mirrors _read_inline_artifact)
 
-@app.get("/_reference/artifacts/{path:path}")
-async def serve_artifact(path: str, request: Request) -> FileResponse:
+@app.get(
+    "/_reference/experiments/{experiment_id}/artifacts/{path:path}",
+)
+async def serve_artifact(
+    experiment_id: str, path: str, request: Request
+) -> FileResponse:
     # 1. Auth-first (NEVER resolve the path before auth):
     if admin_token is not None:
         principal = authenticate(
@@ -311,7 +344,20 @@ async def serve_artifact(path: str, request: Request) -> FileResponse:
         )
     # else: auth disabled (in-process test posture); proceed.
 
-    # 2. Resolve + containment check:
+    # 2. Experiment-id-mismatch guard (chapter-7 §1.3 parity):
+    if experiment_id != store.experiment_id:
+        raise ExperimentIdMismatch(
+            url=experiment_id, header=store.experiment_id,
+        )
+
+    # 3. Disabled-deployment guard:
+    if ARTIFACT_ROOT is None:
+        raise ServiceUnavailable(
+            "artifact-serving-disabled",
+            "task-store-server started without --artifacts-dir",
+        )
+
+    # 4. Resolve + containment check:
     candidate = (ARTIFACT_ROOT / path).resolve()
     try:
         candidate.relative_to(ARTIFACT_ROOT)
@@ -322,11 +368,18 @@ async def serve_artifact(path: str, request: Request) -> FileResponse:
         # distinctly from a legitimate-but-missing fetch.
         raise Forbidden("path escapes artifacts root")
 
-    # 3. File-shape check:
+    # 5. File-shape check:
     if not candidate.is_file():
         raise NotFound("artifact not found")
 
-    # 4. Serve:
+    # 6. Size cap (1 MiB):
+    if candidate.stat().st_size > MAX_ARTIFACT_BYTES:
+        raise PayloadTooLarge(
+            "artifact-too-large",
+            f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap",
+        )
+
+    # 7. Serve:
     return FileResponse(candidate)
 ```
 
@@ -377,7 +430,7 @@ every spawned `*_command`:
 
 | Variable | Value (in-network compose) | Meaning |
 |---|---|---|
-| `EDEN_ARTIFACT_URL` | `http://task-store-server:8080/_reference/artifacts/` | HTTP base URL ending in `/`. Concatenate `<relative-path>` to GET. |
+| `EDEN_ARTIFACT_URL` | `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/` | HTTP base URL ending in `/`, with the deployment's `experiment_id` already interpolated. Concatenate `<relative-path>` to GET. |
 | `EDEN_ARTIFACT_PATH_ROOT` | `/var/lib/eden/artifacts` | Host-side filesystem root the URL is rooted at. Used by the subprocess to translate a `file:///var/lib/eden/artifacts/foo.md` URI from the wire into a relative path `foo.md` → URL `${EDEN_ARTIFACT_URL}foo.md`. |
 
 The bearer the subprocess uses is the existing 12a-1
@@ -655,8 +708,8 @@ Out:
 | `reference/compose/compose.subprocess.yaml` | Mirror the ideator + evaluator additions for the subprocess overlay; the env vars + repo mount are needed only when running the agent-shaped subprocess workers, but the overlay layered on top is the right home. |
 | `reference/compose/compose.docker-exec.yaml` | If forwarding `EDEN_REPO_DIR` to spawned children through `--exec-volume`, declare the new repo-volume forward for ideator + evaluator. Audit needed. |
 | `reference/scripts/setup-experiment/setup-experiment.sh` | (a) Generate + preserve `EDEN_READONLY_PASSWORD`. (b) Compute + write `EDEN_READONLY_STORE_URL` to `.env`. (c) Write `EDEN_ARTIFACT_URL` (in-network compose default) + `EDEN_ARTIFACT_PATH_ROOT` to `.env`. |
-| `reference/compose/healthcheck/smoke.sh` | Add an authenticated GET against `/_reference/artifacts/<seed-known-path>` after the orchestrator quiesces — validates the route is wired end-to-end. |
-| `reference/compose/healthcheck/smoke-subprocess.sh` | Same `/_reference/artifacts/` smoke. Optionally: a `psql` smoke against `EDEN_READONLY_STORE_URL` confirming SELECT works + INSERT fails. |
+| `reference/compose/healthcheck/smoke.sh` | **Unchanged** — see §6.6: the scripted ideator the base smoke runs doesn't write real artifacts, so the route-smoke would have nothing to fetch. |
+| `reference/compose/healthcheck/smoke-subprocess.sh` | Add three assertions per §6.6: authenticated GET against `/_reference/experiments/<id>/artifacts/<path>` after quiescence; `psql` smoke against `EDEN_READONLY_STORE_URL` confirming SELECT works + INSERT fails; `docker compose exec eden-ideator-host git -C /var/lib/eden/repo log` non-empty. |
 
 ### 5.9 Conformance suite
 
@@ -689,17 +742,29 @@ trust-boundary tests are the gate:
 6. **Non-file.** Path is a directory, FIFO, socket → 404
    (not 403; the inode shape isn't a security concern, it's
    a "this isn't what you asked for" concern).
-7. **Streaming.** File of size 1 MiB; assert the response
-   is delivered as a single contiguous body and content
-   matches.
-8. **Auth-disabled posture.** When task-store-server is
+7. **Body delivery for files at the cap boundary.** File
+   of exactly 1 MiB → 200; assert the response is
+   delivered as a single contiguous body and bytes match.
+8. **1 MiB cap.** File of 1 MiB + 1 byte → 413
+   `eden://error/artifact-too-large`; assert NO response
+   bytes from the file are written (the cap check runs
+   before the `FileResponse`). Verified by inspecting the
+   response content-length / body.
+9. **Auth-disabled posture.** When task-store-server is
    started without `--admin-token` (test/in-process
    posture), the route serves without auth. Same posture
    the rest of the wire takes (auth-disabled mode is a
    test convenience; spec-conformant deployments enable
    auth).
-9. **Route returns 503 when `--artifacts-dir` not set.**
-   Verifies the deployment-opt-in story.
+10. **Route returns 503 when `--artifacts-dir` not set.**
+    The route is always mounted; without `--artifacts-dir`
+    every request returns 503
+    `eden://error/artifact-serving-disabled`. Verifies the
+    deployment-opt-in story.
+11. **Experiment-id mismatch.** URL `experiment_id` ≠
+    `store.experiment_id` → 400
+    `eden://error/experiment-id-mismatch`. Parallel to the
+    chapter-7 §1.3 invariant on the normative endpoints.
 
 ### 6.2 Path-resolution edge cases
 
@@ -740,9 +805,17 @@ For each of ideator + evaluator subprocess mode:
   var set to an empty string — which would be different
   from "unset" for some Python `os.environ.get` callers).
 - DooD mode (chunk-10d-followup-A `--exec-mode docker`):
-  the env-keys list passed to `wrap_command` includes the
-  four new keys, so they're forwarded into the spawned
-  container.
+  **deferred — see §8.10**. The DooD wrap forwards env
+  KEYS only (the values come from the worker host's env at
+  spawn time), but a sibling container started by the host
+  docker daemon is NOT attached to the compose project
+  network by default, so the in-network hostnames
+  (`task-store-server:8080`, `postgres:5432`) do not
+  resolve. The substrate env vars are wired for **host-mode
+  subprocess only** in this chunk; DooD-mode forwarding
+  needs `--network` plumbing through `wrap_command`, which
+  is its own design + test surface and is explicitly
+  out-of-scope here.
 
 ### 6.5 Readonly role provisioning (Postgres-only)
 
@@ -763,23 +836,38 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
 
 ### 6.6 End-to-end smoke
 
-The compose smoke scripts gain three small additions:
+The compose smoke scripts gain three additions:
 
-1. **Artifact-route smoke** (smoke.sh + smoke-subprocess.sh):
-   after orchestrator quiescence, fetch a known
-   ideator-written idea content file via the route + assert
-   HTTP 200 + matching bytes.
-2. **Readonly-DSN smoke** (smoke-subprocess.sh): `psql
+1. **Artifact-route smoke** (`smoke-subprocess.sh` ONLY).
+   The base `smoke.sh` runs the **scripted** ideator,
+   which emits fake `file:///tmp/...` URIs and never
+   writes anything to the artifacts volume — the route
+   would have no real artifact to return. The
+   subprocess-mode ideator fixture at
+   [`tests/fixtures/experiment/ideation.py`](../../tests/fixtures/experiment/ideation.py)
+   writes real content to the artifacts dir, so the smoke
+   assertion belongs there. After orchestrator
+   quiescence: list `<artifacts-dir>/ideas/` from inside
+   the task-store-server container to pick one known
+   path, then `curl
+   http://task-store-server:8080/_reference/experiments/<id>/artifacts/<path>`
+   with the admin bearer + assert 200 + non-empty body.
+2. **Readonly-DSN smoke** (`smoke-subprocess.sh`): `psql
    $EDEN_READONLY_STORE_URL -c 'SELECT COUNT(*) FROM
-   event'` returns ≥ N (some lower bound after quiescence);
-   `psql $EDEN_READONLY_STORE_URL -c "INSERT INTO event
-   VALUES (...)"` returns permission denied.
-3. **Ideator git-substrate smoke**: post-quiescence, exec
-   into `eden-ideator-host` and run `git -C
-   /var/lib/eden/repo log --oneline | wc -l` — assert ≥ N.
+   event'` returns ≥ N (some lower bound after
+   quiescence); `psql $EDEN_READONLY_STORE_URL -c "INSERT
+   INTO event VALUES (...)"` returns permission denied.
+3. **Ideator git-substrate smoke** (`smoke-subprocess.sh`):
+   post-quiescence, exec into `eden-ideator-host` and run
+   `git -C /var/lib/eden/repo log --oneline | wc -l` —
+   assert ≥ N. (Subprocess-only because the agentic
+   ideator that uses the substrate is the subprocess
+   fixture; the scripted ideator never reads git.)
 
 Each addition is one extra `curl` / `docker compose exec`
-call; minimal smoke-time increase.
+call; minimal smoke-time increase. The base `smoke.sh`
+covers only the existing post-quiescence event-log /
+variant-count invariants.
 
 ### 6.7 Binding-doc test
 
@@ -832,23 +920,26 @@ rejected: it pushes the auth posture out of the route's
 own module, making future maintainers more likely to miss
 the requirement.
 
-### 8.2 FileResponse vs StreamingResponse
+### 8.2 FileResponse vs StreamingResponse — why the 1 MiB cap
 
-`FileResponse` does not stream by default in FastAPI; it
-loads the full file into memory and returns it as a single
-body. For artifacts up to 1 MiB this is fine. The trust
-boundary helper at
-[`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
-already caps inline rendering at 1 MiB; the new route
-should match that cap.
+The 1 MiB cap (§D.2.a) mirrors the existing
+[`_read_inline_artifact`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
+helper. The cap is **mandatory in this chunk** because:
 
-For larger files (deferred consideration; today's idea
-content markdown is at most a few KB), the route could be
-lifted
-to `StreamingResponse` with a chunked file read. **For
-12a-1f the cap stays at 1 MiB**, with a 413 response above
-that. Phase 13d's `Backend` abstraction will handle
-streaming properly via cloud-storage SDKs.
+- `FileResponse` does not stream by default in FastAPI; it
+  loads the full file into memory.
+- Today's idea content markdown is at most a few KB; no
+  legitimate artifact is anywhere near 1 MiB. The cap is a
+  conservative safety bound, not a performance limit.
+- Adding `StreamingResponse` + chunked-read here would
+  bloat the ~50-100 LOC budget and duplicate logic Phase
+  13d's `Backend` abstraction is going to ship anyway.
+
+If an operator's artifact production legitimately generates
+files larger than 1 MiB, the route returns 413 (§D.2.a) and
+the answer is to wait for 13d (or stand up the operator's
+own static file server alongside; the agent's
+`EDEN_ARTIFACT_URL` can point anywhere).
 
 ### 8.3 `EDEN_ARTIFACT_PATH_ROOT` divergence between worker host and task-store-server
 
@@ -953,7 +1044,46 @@ When starting impl: `git fetch origin && git rebase
 origin/main` first; identify any newly-landed PRs and
 adapt.
 
-### 8.9 Cross-machine agent connecting via the gitea remote URL
+### 8.9 DooD-mode substrate env-var forwarding is deferred
+
+The chunk-10d-followup-A DooD path
+([`reference/services/_common/src/eden_service_common/container_exec.py`](../../reference/services/_common/src/eden_service_common/container_exec.py))
+spawns each `*_command` inside a sibling docker container
+that the host docker daemon starts. That sibling container
+is **not attached to the compose project network by
+default**, so the substrate URLs the host bakes into env
+(`http://task-store-server:8080/...`,
+`postgresql://...@postgres:5432/eden`) do not resolve from
+inside the sibling.
+
+This chunk **deliberately scopes** DooD-mode substrate
+access **out**:
+
+- Host-mode subprocess (the default for the subprocess
+  overlay) gets all four new env vars wired through.
+- `--exec-mode docker` keeps the existing env-key
+  forwarding (the keys list is unchanged), but a sibling
+  container won't be able to reach the substrate URLs
+  without additional `--network` plumbing in
+  `wrap_command`.
+
+The right shape for the DooD networking design is a
+separate sub-chunk (call it 12a-1f-followup-A) that:
+
+- Adds a `--network` parameter to `wrap_command` (or
+  reads `EDEN_COMPOSE_NETWORK` from setup-experiment),
+- Defaults it to the compose project network name
+  (`eden-reference_default` in the reference deployment),
+- Adds an integration test that spawns a sibling
+  container and confirms `task-store-server:8080`
+  resolves.
+
+For 12a-1f, the AGENTS.md "Current phase" entry and the
+binding doc explicitly note the host-mode-only scope.
+Operators who need DooD-mode substrate access wait for
+the follow-up.
+
+### 8.10 Cross-machine agent connecting via the gitea remote URL
 
 The on-host agent uses `EDEN_REPO_DIR` (local bare clone).
 The off-host agent connects to Gitea over HTTP via the
@@ -1034,6 +1164,9 @@ around step 2 and come back green around step 8.
 
 - **Executor-agent substrate access.** Operator decision;
   separate chunk if needed.
+- **DooD-mode substrate env-var forwarding.** §8.9.
+  Sub-chunk after 12a-1f lands (the wrap needs
+  `--network` plumbing and its own integration test).
 - **Per-worker Gitea tokens with branch ACLs.** Phase 13e.
 - **Managed Postgres + readonly role through chart Secret.**
   Phase 13c.
