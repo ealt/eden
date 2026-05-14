@@ -184,11 +184,18 @@ codex-review and future readers don't re-litigate them.
    for the agent. Phase 13d sorts out URI schemes properly.
 6. **Path-traversal protection: descriptor-relative
    component walk** (Linux `openat2(RESOLVE_BENEATH)`
-   equivalent in stdlib). Each path component opens
-   `O_PATH | O_DIRECTORY | O_NOFOLLOW` via `dir_fd=`
-   the prior step's fd; symlinks at ANY component → 403
-   via ELOOP. Malformed components (`..`, leading slash,
-   NUL byte) are pre-FS-call rejected → 400. Stronger
+   equivalent in stdlib). Each REQUEST-PATH component
+   opens `O_PATH | O_DIRECTORY | O_NOFOLLOW` via
+   `dir_fd=` the prior step's fd; symlinks at ANY request
+   component → 403 via ELOOP. Malformed components (`..`,
+   leading slash, NUL byte) are pre-FS-call rejected →
+   400. **The operator-configured root**
+   (`--artifacts-dir`) is treated as TRUSTED: ancestor
+   directories of the root may legitimately be symlinks
+   (e.g. an operator who deploys with `/var/lib/eden →
+   /mnt/eden-state`). Only the root's trailing basename
+   participates in the `O_NOFOLLOW` guarantee at the
+   initial `os.open(root, …)` step. Stronger
    than the pre-12a-1f `_read_inline_artifact` helper at
    [`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
    (which uses `Path.resolve()` and is vulnerable to
@@ -228,8 +235,14 @@ Today (post-10d-followup-B):
 | **ideator** | **no** | **no** | **no** | **none** |
 
 12a-1f adds the same three flags + a new per-host volume
-`eden-ideator-repo` to the ideator host. The startup logic
-mirrors the executor/evaluator pattern:
+`eden-ideator-repo` to the ideator host. **Subprocess-mode
+only**: scripted-mode ideator does NOT read git, so the
+flags and the volume mount are wired ONLY in
+`compose.subprocess.yaml`, never in the base
+`compose.yaml`. The CLI flags remain optional when running
+in scripted mode (no clone-on-startup runs unless all
+three are passed). The startup logic mirrors the
+executor/evaluator pattern:
 
 1. If `--repo-path` is not yet a git repo, `clone --bare`
    from `--gitea-url` using `--credential-helper`.
@@ -415,11 +428,20 @@ def _open_artifact_fd(root: Path, rel_path: str) -> int:
     if any("\0" in p for p in parts):
         raise ValueError(f"NUL byte in path {rel_path!r}")
 
-    # Open the configured root WITHOUT resolving any
-    # symlinks in its name — if the operator configured a
-    # symlink as artifacts_dir, _DIR_FLAGS' O_NOFOLLOW makes
-    # this raise ELOOP and the request returns 403 (a
-    # deliberate mis-configuration signal).
+    # Open the configured root. _DIR_FLAGS' O_NOFOLLOW
+    # blocks the TRAILING component of `root` being a
+    # symlink — if the operator configured
+    # `/var/lib/eden/artifacts` as a symlink, this raises
+    # ELOOP and the request returns 403. ANCESTOR
+    # components of `root` (`/var/lib/eden/`) are treated
+    # as TRUSTED operator configuration and may legitimately
+    # be symlinks; the kernel follows them per normal
+    # path-resolution rules during this initial open.
+    # Codex round-6 narrowing: the "symlinks at ANY
+    # component → ELOOP" invariant applies to the REQUEST
+    # path (`path` argument to `_open_artifact_fd`) plus
+    # the root's own trailing basename — NOT to ancestor
+    # components of the operator-configured root.
     root_fd = os.open(root, _DIR_FLAGS)
     try:
         current_fd = root_fd
@@ -642,15 +664,33 @@ primary keys, foreign keys, indexed sort keys, and the
 column-level exclusion is targeted at exactly one column,
 not a whole-table view layer:
 
+**Database + schema scope: connection-derived, NOT hard-coded.**
+Codex round-6 finding: the real Postgres backend is
+connection-scoped — CI uses `EDEN_TEST_POSTGRES_DSN=
+postgresql://postgres:postgres@localhost:5432/postgres`
+(database `postgres`, not `eden`), and the parametrized
+backend tests create per-test non-`public` schemas via
+`search_path`. So `ensure_readonly_role` MUST derive the
+database from `SELECT current_database()` and the schema
+from `SELECT current_schema()` against the live
+connection, NOT hard-code `eden`/`public`. The example
+SQL below uses `:dbname` / `:schema` placeholders the
+helper formats via psycopg's identifier-quoting (NOT
+string substitution — table/schema/db names go through
+`psycopg.sql.Identifier` to keep the SQL injection-safe
+even when the dbname is operator-supplied):
+
 ```sql
 CREATE ROLE eden_readonly WITH LOGIN PASSWORD '<random-32-byte-hex>';
-GRANT CONNECT ON DATABASE eden TO eden_readonly;
-GRANT USAGE ON SCHEMA public TO eden_readonly;
+GRANT CONNECT ON DATABASE {dbname} TO eden_readonly;
+GRANT USAGE ON SCHEMA {schema} TO eden_readonly;
 
 -- Tables with no credential material: full-table SELECT.
 GRANT SELECT ON
-    experiment, task, submission, idea, variant, event,
-    worker_group, group_membership, schema_version
+    {schema}.experiment, {schema}.task, {schema}.submission,
+    {schema}.idea, {schema}.variant, {schema}.event,
+    {schema}.worker_group, {schema}.group_membership,
+    {schema}.schema_version
     TO eden_readonly;
 
 -- The `worker` table is (worker_id text, data text,
@@ -658,8 +698,13 @@ GRANT SELECT ON
 -- worker_id + data (the JSON payload with labels,
 -- registered_at, registered_by, etc.) but NOT
 -- credential_hash.
-GRANT SELECT (worker_id, data) ON worker TO eden_readonly;
+GRANT SELECT (worker_id, data) ON {schema}.worker
+    TO eden_readonly;
 ```
+
+Where `{dbname}` ← `current_database()` and `{schema}` ←
+the active schema from `current_schema()` / connection
+search_path.
 
 **Why exclude `credential_hash`?** Codex round 1 finding
 on credential surface: argon2id hashes are meaningfully
@@ -731,17 +776,19 @@ with `GRANT SELECT ON ALL TABLES` from an earlier draft):
    (handles password rotation across re-runs of
    setup-experiment with a fresh `EDEN_READONLY_PASSWORD`).
 3. **REVOKE ALL** privileges from the role on every table,
-   schema, and database — bulk-revoke first so leftover
-   over-grants from a prior schema cannot persist:
+   schema, and database. Same `current_database()` /
+   `current_schema()` derivation as the GRANTs in §D.3.a;
+   bulk-revoke first so leftover over-grants from a prior
+   schema cannot persist:
 
    ```sql
-   REVOKE ALL ON ALL TABLES IN SCHEMA public FROM eden_readonly;
-   REVOKE ALL ON SCHEMA public FROM eden_readonly;
-   REVOKE ALL ON DATABASE eden FROM eden_readonly;
+   REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM eden_readonly;
+   REVOKE ALL ON SCHEMA {schema} FROM eden_readonly;
+   REVOKE ALL ON DATABASE {dbname} FROM eden_readonly;
    -- Also revoke any default privileges previously installed
    -- by an earlier provisioning that may have used
    -- ALTER DEFAULT PRIVILEGES:
-   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+   ALTER DEFAULT PRIVILEGES IN SCHEMA {schema}
        REVOKE SELECT ON TABLES FROM eden_readonly;
    ```
 
@@ -752,10 +799,6 @@ with `GRANT SELECT ON ALL TABLES` from an earlier draft):
    `ALTER DEFAULT PRIVILEGES` is **NOT used** because it
    would re-expose any future credential-bearing column
    added to a new table by a schema bump.
-
-In-memory / SQLite backends: the flag is a no-op with a
-warning (the readonly substrate is Postgres-specific). The
-operator's docs note the limitation.
 
 In-memory / SQLite backends: the flag is a no-op with a
 warning (the readonly substrate is Postgres-specific). The
@@ -829,7 +872,7 @@ cross-host integration is operator policy.
 [`spec/v0/reference-bindings/worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md)
 binding doc. Three changes to that doc:
 
-1. §1.1 environment table gains three new rows:
+1. §1.1 environment table gains four new rows:
    `EDEN_REPO_DIR`, `EDEN_ARTIFACT_URL`,
    `EDEN_ARTIFACT_PATH_ROOT`, `EDEN_READONLY_STORE_URL`.
 2. A new §9 "Substrate read-access for agent role
@@ -929,6 +972,7 @@ Out:
 | File | Change |
 |---|---|
 | `reference/packages/eden-wire/src/eden_wire/server.py` | `make_app` gains an `artifacts_dir: Path \| None = None` parameter. **Always mounts** `GET /_reference/experiments/{experiment_id}/artifacts/{path:path}` with route-level auth + descriptor-relative component walk + safe-delivery headers (§D.2.a/c). When `artifacts_dir is None` the route returns 503 `eden://reference-error/artifact-serving-disabled`. |
+| `reference/packages/eden-wire/src/eden_wire/errors.py` | Add three new exception classes + `eden://reference-error/...` URI mappings: `InvalidPath` (400 `eden://reference-error/invalid-path`), `ArtifactTooLarge` (413 `eden://reference-error/artifact-too-large`), `ArtifactServingDisabled` (503 `eden://reference-error/artifact-serving-disabled`). All three follow the existing `eden://reference-error/unauthorized` shape (envelope_for_error mapping; problem+json body). |
 | `reference/packages/eden-wire/tests/test_artifact_route.py` | **NEW**: unit tests for the route per §6.1 — auth-first sentinel, admin-or-worker, malformed-path 400, symlink-out-of-root 403, missing 404, 1 MiB cap 413, safe-delivery headers on every 200, TOCTOU swap-after-resolve, intermediate-component swap race, 503-when-disabled, experiment-id-mismatch 400. |
 
 ### 5.3 `eden-task-store-server`
@@ -976,8 +1020,8 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/compose/compose.yaml` | (a) Add `EDEN_READONLY_PASSWORD` env var to task-store-server. (b) Mount `eden-artifacts-data:/var/lib/eden/artifacts:ro` on task-store-server. (c) Add `--artifacts-dir /var/lib/eden/artifacts` + `--readonly-password ${EDEN_READONLY_PASSWORD}` to task-store-server CLI. (d) Add `--repo-path /var/lib/eden/repo --gitea-url ${GITEA_REMOTE_URL} --credential-helper /etc/eden/credential-helper.sh` + new repo / credentials / credential-helper volume mounts to ideator-host (mirrors the executor / evaluator block in the same file). (e) Declare new `eden-ideator-repo` volume. **NOTE**: the substrate-access env vars (`EDEN_REPO_DIR`, `EDEN_ARTIFACT_URL`, `EDEN_ARTIFACT_PATH_ROOT`, `EDEN_READONLY_STORE_URL`) are NOT set on the base ideator / evaluator services — they're only meaningful when running in subprocess mode (the scripted-mode ideator and evaluator do NOT spawn agentic `*_command` children). See `compose.subprocess.yaml` below. |
-| `reference/compose/compose.subprocess.yaml` | **Sole home** for the substrate-access env vars on ideator + evaluator services: set `EDEN_REPO_DIR=/var/lib/eden/repo`, `EDEN_ARTIFACT_URL=http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID}/artifacts/`, `EDEN_ARTIFACT_PATH_ROOT=/var/lib/eden/artifacts`, `EDEN_READONLY_STORE_URL=${EDEN_READONLY_STORE_URL}`. Add the `eden-ideator-repo` volume mount to the ideator service block here (subprocess-mode ideator clones into it; host-mode doesn't need it). |
+| `reference/compose/compose.yaml` | (a) Add `EDEN_READONLY_PASSWORD` env var to task-store-server. (b) Mount `eden-artifacts-data:/var/lib/eden/artifacts:ro` on task-store-server. (c) Add `--artifacts-dir /var/lib/eden/artifacts` + `--readonly-password ${EDEN_READONLY_PASSWORD}` to task-store-server CLI. (d) Declare new `eden-ideator-repo` named volume (subprocess.yaml mounts it; base never does). **NO changes to ideator-host's CLI / volume mounts here** — the substrate access (repo, artifacts, readonly DSN) is subprocess-mode-only per §D.1. |
+| `reference/compose/compose.subprocess.yaml` | **Sole home** for substrate access on ideator + evaluator services. Ideator block: add `--repo-path /var/lib/eden/repo`, `--gitea-url ${GITEA_REMOTE_URL}`, `--credential-helper /etc/eden/credential-helper.sh`; mount `eden-ideator-repo:/var/lib/eden/repo` + `${EDEN_GITEA_CREDS_DIR_HOST}/credential-helper.sh:/etc/eden/credential-helper.sh:ro`. Both ideator + evaluator blocks: set `EDEN_REPO_DIR=/var/lib/eden/repo`, `EDEN_ARTIFACT_URL=http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID}/artifacts/`, `EDEN_ARTIFACT_PATH_ROOT=/var/lib/eden/artifacts`, `EDEN_READONLY_STORE_URL=${EDEN_READONLY_STORE_URL}`. |
 | `reference/compose/compose.docker-exec.yaml` | **No changes.** DooD-mode substrate forwarding is out-of-scope per §8.9; sibling containers can't resolve the compose-internal hostnames without separate `--network` plumbing. |
 | `reference/scripts/setup-experiment/setup-experiment.sh` | (a) Generate + preserve `EDEN_READONLY_PASSWORD`. (b) Compute + write `EDEN_READONLY_STORE_URL` to `.env`. (c) Write `EDEN_ARTIFACT_URL` (in-network compose default) + `EDEN_ARTIFACT_PATH_ROOT` to `.env`. |
 | `reference/compose/healthcheck/smoke.sh` | **Unchanged** — see §6.6: the scripted ideator the base smoke runs doesn't write real artifacts, so the route-smoke would have nothing to fetch. |
@@ -1172,17 +1216,24 @@ For each of ideator + evaluator subprocess mode:
   var set to an empty string — which would be different
   from "unset" for some Python `os.environ.get` callers).
 - DooD mode (chunk-10d-followup-A `--exec-mode docker`):
-  **deferred — see §8.10**. The DooD wrap forwards env
-  KEYS only (the values come from the worker host's env at
-  spawn time), but a sibling container started by the host
-  docker daemon is NOT attached to the compose project
-  network by default, so the in-network hostnames
+  **substrate env vars are SUPPRESSED — see §8.9**.
+  Sibling containers started by the host docker daemon
+  are NOT attached to the compose project network by
+  default, so the in-network hostnames
   (`task-store-server:8080`, `postgres:5432`) do not
-  resolve. The substrate env vars are wired for **host-mode
-  subprocess only** in this chunk; DooD-mode forwarding
-  needs `--network` plumbing through `wrap_command`, which
-  is its own design + test surface and is explicitly
-  out-of-scope here.
+  resolve. Rather than ship a broken half-enabled
+  surface, the ideator + evaluator host CLI MUST detect
+  `exec_mode == "docker"` (resolved from
+  `resolve_exec_args(args)`) and **drop** the four
+  substrate env keys (`EDEN_REPO_DIR`,
+  `EDEN_ARTIFACT_URL`, `EDEN_ARTIFACT_PATH_ROOT`,
+  `EDEN_READONLY_STORE_URL`) from the env dict before
+  passing to `build_subprocess_config`. The host logs a
+  WARN line ("substrate access disabled in --exec-mode
+  docker; see §8.9") at startup so operators have
+  visibility. The `test_ideator_subprocess_env.py` +
+  `test_evaluator_subprocess_env.py` tests cover this
+  branch.
 
 ### 6.5 Readonly role provisioning (Postgres-only)
 
@@ -1220,7 +1271,7 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
 - **Hardening against legacy over-grant.** Start a fresh
   Postgres database; manually pre-create `eden_readonly`
   with `GRANT SELECT ON ALL TABLES IN SCHEMA public` +
-  `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT
+  `ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} GRANT SELECT
   ON TABLES TO eden_readonly` (a hypothetical legacy
   installation's posture). Then run `ensure_readonly_role`.
   Post-condition: `SELECT credential_hash FROM
@@ -1266,20 +1317,34 @@ The compose smoke scripts gain three additions:
        psql "$EDEN_READONLY_STORE_URL" \
        -c 'SELECT COUNT(*) FROM event' \
        # ≥ N after quiescence
+   # INSERT must use a syntactically valid statement that
+   # would succeed if the role had INSERT privilege —
+   # otherwise the smoke could false-pass on a schema
+   # error (e.g. NOT NULL violation) and miss a privilege
+   # over-grant. Codex round 6: wrap in BEGIN/ROLLBACK so
+   # the smoke is hermetic on the unlikely case privileges
+   # WERE over-granted.
    docker compose --env-file "$ENV_FILE" exec -T postgres \
        psql "$EDEN_READONLY_STORE_URL" \
-       -c "INSERT INTO event(data) VALUES ('{}')" \
-       # MUST fail with permission denied
+       -c "BEGIN; INSERT INTO idea (idea_id, state, data) \
+           VALUES ('rosmoke-test', 'drafting', '{}'); \
+           ROLLBACK;" \
+       # MUST fail with "permission denied for table idea"
    docker compose --env-file "$ENV_FILE" exec -T postgres \
        psql "$EDEN_READONLY_STORE_URL" \
        -c 'SELECT credential_hash FROM worker LIMIT 1' \
        # MUST fail (column-level grant excludes it)
+   docker compose --env-file "$ENV_FILE" exec -T postgres \
+       psql "$EDEN_READONLY_STORE_URL" \
+       -c 'SELECT * FROM worker LIMIT 1' \
+       # MUST fail (SELECT * expands to include credential_hash)
    ```
 
-   Third assertion is load-bearing: it verifies the
-   column-level GRANT (§D.3.a) is actually in effect, not
-   just declared. The DSN is read from the host-side
-   `.env` and passed in; `psql` resolves the in-network
+   Third + fourth assertions are load-bearing: they verify
+   the column-level GRANT (§D.3.a) is actually in effect,
+   both via direct column reference and via `SELECT *`
+   expansion. The DSN is read from the host-side `.env`
+   and passed in; `psql` resolves the in-network
    `postgres:5432` from inside the postgres container the
    same way the other services do.
 3. **Ideator git-substrate smoke** (`smoke-subprocess.sh`):
@@ -1588,8 +1653,10 @@ Single PR. Internal ordering:
 3. **`eden-storage` `ensure_readonly_role` + tests.**
    Idempotency + GRANT correctness; Postgres-only.
 4. **`eden-task-store-server` CLI wiring.** New flags
-   thread through; route mounts conditionally; readonly
-   provisioning runs conditionally.
+   thread through; route mounts **unconditionally**
+   (returns 503 when `--artifacts-dir is None`); readonly
+   provisioning runs only when `--readonly-password` is
+   set AND the backend is Postgres.
 5. **`eden-ideator-host` git substrate.** Clone-on-startup
    wiring; mirror executor/evaluator.
 6. **`eden-service-common` shared substrate flags.**
@@ -1602,7 +1669,9 @@ Single PR. Internal ordering:
 8. **Compose + setup-experiment.** Volume mounts, env-var
    plumbing, secret generation, helper script paths.
 9. **Smokes.** Add the three substrate assertions to
-   smoke.sh / smoke-subprocess.sh.
+   `smoke-subprocess.sh` ONLY (the base `smoke.sh`
+   scripted ideator path doesn't produce real artifacts;
+   see §6.6 + §5.8).
 10. **Operator docs.** `agent-substrate-access.md` +
     `agent-readonly-db.md`. AGENTS.md "Current phase".
 
