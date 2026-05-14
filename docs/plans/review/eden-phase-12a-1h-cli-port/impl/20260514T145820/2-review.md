@@ -1,0 +1,3 @@
+Converged. I don’t have any further substantive findings on the updated implementation.
+
+The comment now matches the code at [reference/scripts/manual-ui/eden-manual](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/reference/scripts/manual-ui/eden-manual:163), and the remaining concurrent-session limitation is clearly documented as an intentional single-operator assumption rather than an accidental gap.

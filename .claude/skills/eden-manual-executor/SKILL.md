@@ -55,8 +55,11 @@ Present a digest:
 $EDEN claim <task-id> --worker-id eden-manual
 ```
 
-Token + variant_id are persisted to `/tmp/eden-manual/.claims.json`.
-The variant_id is stable for the life of this claim.
+The variant_id is persisted to `/tmp/eden-manual/.claims.json`
+(post-12a-1, claim ownership is identity-keyed — no per-claim
+opaque token; the CLI's worker bearer is cached at
+`/tmp/eden-manual/.credentials.json`). The variant_id is stable
+for the life of this claim.
 
 ### Phase 4: Clone at the parent commit (automatic)
 
@@ -108,10 +111,14 @@ This:
 
 1. Fetches origin in the workdir.
 2. Verifies commit exists + descends from declared parent_commits.
-3. Creates a `Variant(starting, branch=work/<slug>-<variant_id>,
-   commit_sha=<sha>)` in the store.
-4. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to gitea.
-5. Submits the execution task with status=success.
+3. Refuses no-op variants (tree-identical to `parent_commits[0]`).
+4. Creates a `Variant(starting, branch=work/<slug>-<variant_id>)`
+   in the store. NOTE: `commit_sha` is NOT set at create_variant
+   time — it's written atomically when the orchestrator accepts
+   the submit (per spec ch03 §3.2 step 1).
+5. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to gitea.
+6. Submits the execution task with `status=success` and the
+   `commit_sha` in the payload.
 
 ### Phase 7: Verify (automatic)
 
@@ -140,3 +147,12 @@ task_id — the user can play evaluator next via `/eden-manual-evaluator`.
 - **If reachability check fails** (`commit X not reachable in workdir`):
   the user almost certainly forgot to push. Run `git -C <workdir> push
   origin <branch>` and retry execution-submit.
+- **No-op variant guard**: if `execution-submit` exits with
+  `variant tree is identical to parent_commits[0] tree`, the
+  proposed variant doesn't actually change the parent's tree. Either
+  produce a real change or — if the intent is to declare "I tried
+  and failed" — use `--status error` instead.
+- **`wire error 401` on `/workers...`?** The running stack's
+  `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
+  reading. Bounce the stack against the current `.env`, or re-checkout
+  the worktree the stack was brought up against.

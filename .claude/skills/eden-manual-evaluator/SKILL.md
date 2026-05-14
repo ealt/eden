@@ -113,7 +113,7 @@ Should be `completed`. Within ~1 second, the integrator integrates the
 variant — confirm:
 
 ```bash
-curl -fsS -H "Authorization: Bearer $(grep '^EDEN_SHARED_TOKEN=' \
+curl -fsS -H "Authorization: Bearer admin:$(grep '^EDEN_ADMIN_TOKEN=' \
     /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose/.env | \
     cut -d= -f2)" \
   -H "X-Eden-Experiment-Id: $(grep '^EDEN_EXPERIMENT_ID=' \
@@ -136,3 +136,7 @@ of integration.
 - **Use the variant's own `parent_commits`** as the diff base, not the
   experiment's seed — the variant's parent might be an integrated prior
   variant (chained evolution).
+- **`wire error 401` on `/workers...`?** The running stack's
+  `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
+  reading. Bounce the stack against the current `.env`, or re-checkout
+  the worktree the stack was brought up against.
