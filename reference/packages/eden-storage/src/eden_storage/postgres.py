@@ -160,10 +160,28 @@ def ensure_readonly_role(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 ("eden_readonly_role:12a-1f",),
             )
-            # 1. Create or rotate password. Postgres' SQL injection
-            #    safety doesn't extend to role passwords — they go
-            #    inline as a Literal. Identifiers go through
-            #    sql.Identifier for quoting.
+            # 1. Create or rotate password + normalize role
+            #    attributes. Both CREATE and ALTER paths set the
+            #    explicit safe-set (NOSUPERUSER NOCREATEDB
+            #    NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS)
+            #    so a manually-pre-created eden_readonly with
+            #    elevated privileges (SUPERUSER, CREATEROLE,
+            #    BYPASSRLS, etc.) gets stripped back to the
+            #    intended posture. Postgres' SQL injection safety
+            #    doesn't extend to role passwords — they go inline
+            #    as a Literal. Codex round-2 BLOCKING on
+            #    role-attribute normalization.
+            #
+            #    NOINHERIT is load-bearing: even if a manual
+            #    `GRANT pg_read_all_data TO eden_readonly` was
+            #    issued out-of-band, the role won't actually
+            #    inherit those privileges. Combined with the
+            #    explicit membership scrub below, this defangs
+            #    any group-membership-based elevation.
+            attrs_sql = (
+                "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+                "NOREPLICATION NOBYPASSRLS PASSWORD {pwd}"
+            )
             exists = cur.execute(
                 "SELECT 1 FROM pg_roles WHERE rolname = %s", (username,)
             ).fetchone()
@@ -176,7 +194,7 @@ def ensure_readonly_role(
                 try:
                     cur.execute(
                         sql.SQL(
-                            "CREATE ROLE {role} WITH LOGIN PASSWORD {pwd}"
+                            "CREATE ROLE {role} WITH " + attrs_sql
                         ).format(
                             role=role_ident,
                             pwd=sql.Literal(password),
@@ -185,7 +203,7 @@ def ensure_readonly_role(
                 except psycopg.errors.DuplicateObject:
                     cur.execute(
                         sql.SQL(
-                            "ALTER ROLE {role} WITH LOGIN PASSWORD {pwd}"
+                            "ALTER ROLE {role} WITH " + attrs_sql
                         ).format(
                             role=role_ident,
                             pwd=sql.Literal(password),
@@ -194,10 +212,33 @@ def ensure_readonly_role(
             else:
                 cur.execute(
                     sql.SQL(
-                        "ALTER ROLE {role} WITH LOGIN PASSWORD {pwd}"
+                        "ALTER ROLE {role} WITH " + attrs_sql
                     ).format(
                         role=role_ident,
                         pwd=sql.Literal(password),
+                    )
+                )
+
+            # 1b. Membership scrub. Even with NOINHERIT, having a
+            #    pre-existing membership in a powerful group like
+            #    `pg_read_all_data` is operationally concerning
+            #    (an admin could `SET ROLE pg_read_all_data` as
+            #    eden_readonly to bypass the column-level grant).
+            #    Revoke every membership the role currently holds.
+            #    Codex round-2 BLOCKING (the "detect and revoke"
+            #    half of the finding).
+            cur.execute(
+                "SELECT roleid::regrole::text "
+                "FROM pg_auth_members "
+                "WHERE member = (SELECT oid FROM pg_roles WHERE rolname = %s)",
+                (username,),
+            )
+            memberships: list[tuple[str]] = cur.fetchall() or []
+            for (group_name,) in memberships:
+                cur.execute(
+                    sql.SQL("REVOKE {grp} FROM {role}").format(
+                        grp=sql.Identifier(group_name),
+                        role=role_ident,
                     )
                 )
 

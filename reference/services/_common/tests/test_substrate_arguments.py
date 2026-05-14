@@ -146,6 +146,37 @@ def test_empty_string_is_treated_as_unset(
     assert "EDEN_ARTIFACT_URL" not in sub.to_env()
 
 
+def test_partial_artifact_pair_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex round-2: the artifact-URL / path-root pair is
+    both-or-neither per the binding doc §1.1. Setting only one
+    raises ValueError at resolve time so a half-configured
+    deployment fails fast instead of shipping inconsistent
+    artifact-URI translation to subprocesses.
+    """
+    monkeypatch.delenv("EDEN_ARTIFACT_PATH_ROOT", raising=False)
+    args = _make_parser().parse_args(
+        ["--artifact-url", "http://server/artifacts/"]
+    )
+    with pytest.raises(ValueError, match="--artifact-path-root"):
+        resolve_substrate_args(args, repo_dir=None)
+
+
+def test_partial_artifact_pair_rejected_other_direction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Symmetric pair-enforcement: --artifact-path-root without
+    --artifact-url also raises (Codex round-2).
+    """
+    monkeypatch.delenv("EDEN_ARTIFACT_URL", raising=False)
+    args = _make_parser().parse_args(
+        ["--artifact-path-root", "/var/artifacts"]
+    )
+    with pytest.raises(ValueError, match="--artifact-url"):
+        resolve_substrate_args(args, repo_dir=None)
+
+
 # ----------------------------------------------------------------------
 # substrate_args_for_exec_mode — DooD suppression (§8.9)
 # ----------------------------------------------------------------------

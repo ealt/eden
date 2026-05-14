@@ -294,11 +294,33 @@ def resolve_substrate_args(
     repo dir (typically ``args.repo_path``); ``None`` means the host
     is not configured with a local clone (e.g. ideator in
     scripted-mode, or subprocess-mode without ``--repo-path``).
+
+    Raises :class:`ValueError` when only ONE of ``--artifact-url`` /
+    ``--artifact-path-root`` is set (binding doc §1.1 requires the
+    pair both-or-neither so the subprocess's
+    ``file://URI``-to-URL translation is well-defined). Codex
+    round-2 finding on the pair-enforcement gap.
     """
+    artifact_url = getattr(args, "artifact_url", None) or None
+    artifact_path_root = getattr(args, "artifact_path_root", None) or None
+    if (artifact_url is None) != (artifact_path_root is None):
+        which_set = (
+            "--artifact-url" if artifact_url is not None else "--artifact-path-root"
+        )
+        which_missing = (
+            "--artifact-path-root" if artifact_url is not None else "--artifact-url"
+        )
+        raise ValueError(
+            f"{which_set} is set but {which_missing} is not — the "
+            "artifact-URL / path-root pair is both-or-neither per the "
+            "binding doc (spec/v0/reference-bindings/"
+            "worker-host-subprocess.md §1.1); the subprocess's "
+            "file://URI → URL translation requires both."
+        )
     return SubstrateArgs(
         repo_dir=str(repo_dir) if repo_dir is not None else None,
-        artifact_url=getattr(args, "artifact_url", None) or None,
-        artifact_path_root=getattr(args, "artifact_path_root", None) or None,
+        artifact_url=artifact_url,
+        artifact_path_root=artifact_path_root,
         readonly_store_url=getattr(args, "readonly_store_url", None) or None,
     )
 

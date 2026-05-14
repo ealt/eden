@@ -252,6 +252,48 @@ def _check_not_symlink(component: str, *, dir_fd: int) -> None:
         )
 
 
+def _build_content_disposition(raw_name: str) -> str:
+    """Build an RFC-6266 ``Content-Disposition: attachment`` header.
+
+    Emits both a sanitized quoted-string ``filename="..."`` (legacy
+    user-agents) and a percent-encoded ``filename*=UTF-8''...``
+    (modern user-agents per RFC 6266 §4.1 / RFC 5987). Strips
+    control characters (including CR/LF — header-injection
+    defense) and escapes the few characters that have meaning in
+    HTTP quoted-strings.
+    """
+    from urllib.parse import quote
+
+    # Strip control chars + path separators so the basename can't
+    # carry CR/LF or sneak `..` past the user-agent's UI. Empty →
+    # generic default.
+    safe_ascii_chars: list[str] = []
+    for ch in raw_name:
+        if ord(ch) < 32 or ord(ch) == 0x7F:  # control chars + DEL
+            continue
+        if ch in ('"', "\\"):
+            safe_ascii_chars.append("\\" + ch)  # RFC 7230 quoted-pair
+        elif ch == "/" or ch == "\x00":
+            continue
+        elif ord(ch) > 127:
+            # Non-ASCII: keep only in the filename*= form; substitute
+            # `_` in the legacy quoted-string so the header stays
+            # ASCII-clean per the original RFC 2616 grammar.
+            safe_ascii_chars.append("_")
+        else:
+            safe_ascii_chars.append(ch)
+    safe_ascii = "".join(safe_ascii_chars) or "artifact"
+
+    # Percent-encode for filename*= (RFC 5987 percent-encoded UTF-8
+    # value). `safe=""` so even ASCII reserved-for-attr-char chars
+    # like `;`, `*`, `=` get encoded.
+    encoded = quote(raw_name.replace("\x00", ""), safe="")
+    return (
+        f'attachment; filename="{safe_ascii}"; '
+        f"filename*=UTF-8''{encoded}"
+    )
+
+
 def _is_symlink(component: str, *, dir_fd: int) -> bool:
     """Return True iff ``component`` is a symbolic link in ``dir_fd``.
 
@@ -1385,12 +1427,26 @@ def make_app(
         #    MIME sniffing; Content-Type: application/octet-stream
         #    is generic — the agent decodes via the artifacts_uri
         #    domain knowledge it already has.
-        filename = path.rsplit("/", 1)[-1] or "artifact"
+        #
+        #    Codex round-2: build the filename portion of
+        #    Content-Disposition safely so attacker-controlled
+        #    artifact names with quotes, backslashes, or CR/LF
+        #    can't break header syntax or inject headers. We
+        #    EMIT BOTH `filename="<ascii-safe>"` (quoted-string,
+        #    quotes/backslashes escaped, control chars stripped)
+        #    and `filename*=UTF-8''<percent-encoded>` per RFC 6266
+        #    §4.1 (the latter is the unambiguous one; the former
+        #    is the legacy fallback). CR/LF in the raw component
+        #    is impossible here (URL path can't contain them
+        #    after FastAPI's path-decode), but we belt-and-
+        #    suspenders strip them just in case.
+        raw_name = path.rsplit("/", 1)[-1] or "artifact"
+        cd_value = _build_content_disposition(raw_name)
         return Response(
             content=data,
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": cd_value,
                 "X-Content-Type-Options": "nosniff",
             },
         )

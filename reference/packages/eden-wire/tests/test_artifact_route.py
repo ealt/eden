@@ -455,11 +455,56 @@ def test_safe_delivery_headers_on_200(
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/octet-stream"
-    assert (
-        resp.headers["content-disposition"]
-        == f'attachment; filename="{filename}"'
-    )
+    # Codex round-2: the route emits an RFC-6266 header with BOTH
+    # legacy `filename="..."` and modern `filename*=UTF-8''...`.
+    # For ASCII-safe filenames the legacy form mirrors the raw
+    # basename; both forms reference it.
+    cd = resp.headers["content-disposition"]
+    assert cd.startswith("attachment; ")
+    assert f'filename="{filename}"' in cd
+    assert f"filename*=UTF-8''{filename}" in cd
     assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+def test_hostile_filename_does_not_inject_header(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """Codex round-2: an attacker-controlled filename containing
+    quotes / backslashes / control chars (or CR/LF) MUST NOT break
+    Content-Disposition syntax or inject extra headers. The route
+    sanitizes the ASCII-form to a quoted-pair-escaped value AND
+    emits the unambiguous percent-encoded filename*= form.
+    """
+    root = tmp_path / "art"
+    root.mkdir()
+    # Use a filename that exercises the escape paths: embedded
+    # quote, backslash, and a NUL byte (which the path-walk would
+    # reject earlier, but a control char like a tab is enough).
+    hostile = 'evil";nasty=1\t.html'
+    target = root / hostile
+    target.write_bytes(b"<script>x</script>")
+    # URL-quote since httpx wouldn't transmit special chars literally.
+    from urllib.parse import quote as urlquote
+
+    app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=root)
+    client = TestClient(app)
+    resp = client.get(
+        _route_url(urlquote(hostile)),
+        headers={"Authorization": f"Bearer admin:{ADMIN_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    cd = resp.headers["content-disposition"]
+    # Header MUST be syntactically well-formed and MUST NOT
+    # contain the bare attacker payload.
+    assert cd.startswith("attachment; ")
+    assert 'filename="evil\\";nasty=1.html"' in cd  # quote escaped
+    # Tab (control char) is stripped from the ASCII form.
+    assert "\t" not in cd
+    # No CR/LF — would be a header-injection vector.
+    assert "\r" not in cd
+    assert "\n" not in cd
+    # The filename*= form percent-encodes the original.
+    assert "filename*=UTF-8''" in cd
 
 
 def test_safe_delivery_headers_at_cap_boundary(
@@ -476,7 +521,10 @@ def test_safe_delivery_headers_at_cap_boundary(
         headers={"Authorization": f"Bearer admin:{ADMIN_TOKEN}"},
     )
     assert resp.status_code == 200
-    assert resp.headers["content-disposition"] == 'attachment; filename="big.bin"'
+    cd = resp.headers["content-disposition"]
+    assert cd.startswith("attachment; ")
+    assert 'filename="big.bin"' in cd
+    assert "filename*=UTF-8''big.bin" in cd
     assert resp.headers["x-content-type-options"] == "nosniff"
     assert resp.headers["content-type"] == "application/octet-stream"
 
@@ -504,23 +552,30 @@ def test_toctou_swap_never_serves_oversized_file(
     stop = threading.Event()
 
     def swap_loop() -> None:
-        small_a = root / ".tmp-small-a.bin"
-        small_b = root / ".tmp-small-b.bin"
-        small_a.write_bytes(b"x" * 100)
-        big = root / ".tmp-big.bin"
-        big.write_bytes(b"D" * (2 * 1024 * 1024))
-        # Repeatedly rename target between small and big.
+        # Pre-populate BOTH staging files (the prior diff only
+        # wrote `small_a` and referenced `small_b`, which would
+        # FileNotFoundError on the first swap and never alternate
+        # — Codex round-2 finding). Each iteration: replace target
+        # in-place, then re-stage the just-consumed source so the
+        # next swap has fresh bytes to move.
+        small_src = root / ".tmp-small.bin"
+        big_src = root / ".tmp-big.bin"
+        small_src.write_bytes(b"x" * 100)
+        big_src.write_bytes(b"D" * (2 * 1024 * 1024))
         flag = False
         while not stop.is_set():
             try:
                 if flag:
-                    os.replace(small_b, target)
-                    small_a.write_bytes(b"x" * 100)
+                    os.replace(small_src, target)
+                    small_src.write_bytes(b"x" * 100)
                 else:
-                    os.replace(big, target)
-                    big = root / ".tmp-big.bin"
-                    big.write_bytes(b"D" * (2 * 1024 * 1024))
+                    os.replace(big_src, target)
+                    big_src.write_bytes(b"D" * (2 * 1024 * 1024))
             except FileNotFoundError:
+                # Inode disappeared mid-swap; recreate both staging
+                # files and continue.
+                small_src.write_bytes(b"x" * 100)
+                big_src.write_bytes(b"D" * (2 * 1024 * 1024))
                 continue
             flag = not flag
 
@@ -559,6 +614,83 @@ def test_toctou_swap_never_serves_oversized_file(
             # 403 is reserved for symlinks; benign renames must not
             # produce one.
             assert resp.status_code != 403
+    finally:
+        stop.set()
+        swapper.join(timeout=1.0)
+
+
+def test_toctou_intermediate_swap_to_symlink_race(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """Codex round-2: a concurrent rename swapping an intermediate
+    component between a real directory and a symlink-to-/etc MUST
+    NOT serve bytes from outside the artifacts root. The
+    descriptor-walk locks each step by the prior fd, so even a
+    perfectly-timed swap between our pre-open `lstat` and the
+    `os.open` call hits ELOOP on the open (or harmlessly fails
+    later).
+    """
+    root = tmp_path / "art"
+    root.mkdir()
+    realdir = root / "dir"
+    realdir.mkdir()
+    (realdir / "file.md").write_bytes(b"safe contents\n")
+
+    # Staging: a symlink to /etc and a backup of the real dir name.
+    decoy = root / ".tmp-symlink"
+    decoy.symlink_to("/etc")
+
+    stop = threading.Event()
+
+    def swap_loop() -> None:
+        # Alternate `<root>/dir` between the real dir and a symlink
+        # to /etc. We rename the existing `dir` away, drop the
+        # symlink in its place, then swap back. The descriptor
+        # walk MUST never resolve a request beneath the symlinked
+        # form.
+        renamed = root / ".tmp-dir-stash"
+        flag = False
+        while not stop.is_set():
+            try:
+                if flag:
+                    # Restore real dir.
+                    if not (root / "dir").exists():
+                        os.replace(renamed, root / "dir")
+                else:
+                    # Move real dir aside, drop symlink in place.
+                    if (root / "dir").is_dir() and not (root / "dir").is_symlink():
+                        os.rename(root / "dir", renamed)
+                        # Symlinks can't be overwritten by os.replace,
+                        # so create the new symlink directly.
+                        (root / "dir").symlink_to("/etc")
+                    elif (root / "dir").is_symlink():
+                        # Remove the symlink and restore.
+                        (root / "dir").unlink()
+                        os.replace(renamed, root / "dir")
+            except (FileNotFoundError, FileExistsError, OSError):
+                continue
+            flag = not flag
+
+    swapper = threading.Thread(target=swap_loop, daemon=True)
+    app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=root)
+    client = TestClient(app)
+    swapper.start()
+    try:
+        for _ in range(40):
+            resp = client.get(
+                _route_url("dir/file.md"),
+                headers={"Authorization": f"Bearer admin:{ADMIN_TOKEN}"},
+            )
+            # Allowed: 200-with-safe-contents (real dir wins), 403
+            # (symlink hit), 404 (race during swap).
+            assert resp.status_code in (200, 403, 404), (
+                f"unexpected {resp.status_code}; body[:80]={resp.content[:80]!r}"
+            )
+            if resp.status_code == 200:
+                # MUST be the safe content, never bytes from /etc.
+                assert resp.content == b"safe contents\n", (
+                    f"served unexpected bytes: {resp.content[:80]!r}"
+                )
     finally:
         stop.set()
         swapper.join(timeout=1.0)
