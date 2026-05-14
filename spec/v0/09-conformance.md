@@ -62,6 +62,7 @@ The v1 scenario groups, with their primary spec citations:
 | Error vocabulary closure | Closed `eden://error/<name>` set; observed exhaustively. | [`07-wire-protocol.md`](07-wire-protocol.md) §9 |
 | Experiment-id header disagreement | 400 experiment-id-mismatch. | [`07-wire-protocol.md`](07-wire-protocol.md) §1.3 |
 | Integrate idempotency | Same-value / different-value / preconditions. | [`07-wire-protocol.md`](07-wire-protocol.md) §5 |
+| Experiment durability | Aggregate-over-substrates durability of protocol-owned state across process / host / substrate restart. **Scenario authoring deferred to a follow-up chunk** (a "stop-stack / kill-volume-mount / start-stack / replay" harness driving any conforming IUT). The placeholder row anchors the citation so future scenarios slot in here. | [`01-concepts.md`](01-concepts.md) §13 |
 
 The **v1+roles** level adds the role-contract groups below. The **v1+roles+integrator** level adds the integrator groups further below.
 

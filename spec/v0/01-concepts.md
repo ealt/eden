@@ -99,7 +99,7 @@ Three durable stores support an experiment:
 - **Event log** — appends events in causal order. Provides subscribe and replay.
 - **Artifact store** — holds per-variant files (plans, code diffs, evaluator outputs, logs). Addressed by URI.
 
-The protocol defines what each store's operations guarantee; it does not define how they are implemented. Chapter [`08-storage.md`](08-storage.md) gives the durability and consistency requirements each store must meet.
+The protocol defines what each store's operations guarantee; it does not define how they are implemented. Chapter [`08-storage.md`](08-storage.md) gives the per-store durability and consistency requirements each store must meet; §13 below states the aggregate experiment-durability invariant those per-store rules compose to.
 
 ## 11. Orchestrator
 
@@ -113,7 +113,19 @@ A task's optional `target` field constrains which workers may claim it: a specif
 
 Authentication of workers and the admin principal is normative as of v0+12a-1 in the chapter-7 HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md) §13).
 
-## 13. Relationships
+## 13. Experiment durability
+
+An experiment is **durable** for its entire operational lifetime. The protocol's per-store durability rules ([`08-storage.md`](08-storage.md) §3) cover individual writes; this section states the aggregate invariant they compose to.
+
+**Lifetime.** An experiment's lifetime is bounded by the lifecycle defined in §1 and the relationships in §14: it begins when the experiment is registered (its evaluation schema and other configuration persisted, [`08-storage.md`](08-storage.md) §4.1) and continues until the experiment reaches a terminal state per its configured termination conditions (§1) or is otherwise discarded by an authorized operator. This section does NOT introduce a new termination model; it constrains what must survive across substrate restarts during the lifetime §1 already defines.
+
+**Aggregate invariant.** Throughout an experiment's lifetime, the union of its protocol-owned state — tasks, ideas, variants, events, the per-experiment worker / group registry, artifacts referenced from protocol-owned objects, and the git-side artifacts the integrator publishes — MUST collectively survive process restart, host restart, and individual substrate-component restart. A conforming deployment MUST NOT cause this state to be lost as a side-effect of routine substrate maintenance (process restart, host reboot, container engine restart, individual substrate replacement, …).
+
+**Implementation latitude.** The protocol is agnostic about HOW a deployment achieves the aggregate invariant. Per-store durability ([`08-storage.md`](08-storage.md) §3.1) constrains each substrate individually; the aggregate invariant constrains the *deployment*. A conforming deployment chooses substrate bindings (host filesystem mounts, Kubernetes PersistentVolumes, managed cloud storage with explicit SLA, …) consistent with its operational constraints. Different deployments MAY satisfy this invariant differently; all conforming deployments MUST satisfy it.
+
+**Non-protocol-owned losses.** Disk failure, accidental `rm -rf`, and explicit storage-substrate deletion are outside the protocol's control. A conforming deployment SHOULD document what operator actions destroy experiment state and SHOULD design its substrate bindings so that routine maintenance (updates, restarts, reconfiguration) does not.
+
+## 14. Relationships
 
 The concepts above fit together as follows. A full specification chapter exists for each of the behavioral contracts implied here.
 
@@ -122,3 +134,4 @@ The concepts above fit together as follows. A full specification chapter exists 
 - A worker of role X claims a task, performs its role-specific work, and submits; the submission produces a result object (idea, variant, evaluation payload) persisted to the appropriate store, and an **event** is appended to the event log.
 - The **integrator** consumes completed evaluations and advances the **canonical variant lineage**.
 - The experiment terminates per its configured conditions; its outcome is the sequence of variants on the canonical lineage.
+- The experiment's protocol-owned state is durable for its operational lifetime (§13).

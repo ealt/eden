@@ -30,6 +30,7 @@ Usage:
                       [--postgres-password <P>]
                       [--env-file <path>]
                       [--experiment-dir <path>]
+                      [--data-root <path>]
                       [--ideas-per-ideation <N>]
                       [--exec-mode {host,docker}]
                       [--seed-from <host-dir>]
@@ -38,6 +39,17 @@ Generates `reference/compose/.env` and copies <config.yaml> to
 `reference/compose/experiment-config.yaml`, then seeds the bare
 repo via a one-shot `compose run --rm --no-deps eden-repo-init`
 call. Operator's next step is `docker compose up -d --wait`.
+
+--data-root specifies the host-side parent directory under which
+every durable substrate (postgres data, gitea data, artifacts,
+per-host bare clones, per-host worker credentials) is bind-mounted
+(Phase 12a-1g, chapter 01 §13). Default:
+`$HOME/.eden/experiments/<experiment-id>`. The substrate tree
+under the data root survives `docker compose down`, Docker
+Desktop VM rebuilds, host reboot, and individual substrate
+container restart; it does NOT survive `docker compose down -v`,
+explicit `rm -rf`, or disk failure. See
+`docs/operations/experiment-data-durability.md`.
 
 When --exec-mode docker is used (subprocess overlay only), the
 script also: probes the in-VM gid of /var/run/docker.sock, builds
@@ -69,6 +81,7 @@ ARG_EXPERIMENT_DIR=""
 ARG_IDEAS_PER_IDEATION=""
 ARG_EXEC_MODE="host"
 ARG_SEED_FROM=""
+ARG_DATA_ROOT=""
 
 require_value() {
     # Validate that a flag's value is present, since `set -u` would
@@ -92,6 +105,7 @@ while [[ $# -gt 0 ]]; do
         --ideas-per-ideation)   require_value "$1" "$#"; ARG_IDEAS_PER_IDEATION="$2"; shift 2 ;;
         --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
         --seed-from)            require_value "$1" "$#"; ARG_SEED_FROM="$2";         shift 2 ;;
+        --data-root)            require_value "$1" "$#"; ARG_DATA_ROOT="$2";         shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         --*)                    echo "unknown flag: $1" >&2; usage; exit 2 ;;
         *)
@@ -212,6 +226,91 @@ fi
 EXISTING_IDEAS_PER_IDEATION="$(read_env_key EDEN_IDEAS_PER_IDEATION "$ENV_FILE")"
 EDEN_IDEAS_PER_IDEATION="${ARG_IDEAS_PER_IDEATION:-${EXISTING_IDEAS_PER_IDEATION:-1}}"
 
+# --- Phase 12a-1g: substrate data root resolution ---
+# The data root is the parent directory under which every durable
+# substrate (postgres, gitea, artifacts, per-host bare clones,
+# per-host worker credentials) is bind-mounted. See chapter 01 §13
+# + docs/operations/experiment-data-durability.md.
+#
+# Precedence:
+#   1. --data-root flag (operator override).
+#   2. EDEN_EXPERIMENT_DATA_ROOT in an existing .env (idempotent re-run).
+#   3. Default: $HOME/.eden/experiments/<experiment-id>.
+EXISTING_DATA_ROOT="$(read_env_key EDEN_EXPERIMENT_DATA_ROOT "$ENV_FILE")"
+if [[ -n "$ARG_DATA_ROOT" ]]; then
+    DATA_ROOT_INPUT="$ARG_DATA_ROOT"
+elif [[ -n "$EXISTING_DATA_ROOT" ]]; then
+    DATA_ROOT_INPUT="$EXISTING_DATA_ROOT"
+else
+    DATA_ROOT_INPUT="${HOME}/.eden/experiments/${EXPERIMENT_ID}"
+fi
+
+# Reject paths containing characters that break compose's volume-
+# mount syntax. The most consequential one is `:` (compose's
+# source/target delimiter); a colon in the source half would silently
+# mis-split the mount declaration. See plan §8.4.
+if [[ "$DATA_ROOT_INPUT" == *:* ]]; then
+    echo "--data-root MUST NOT contain ':' (breaks compose volume-mount syntax): $DATA_ROOT_INPUT" >&2
+    exit 2
+fi
+
+# Resolve to an absolute path. `cd "$path" && pwd` normalizes
+# symlinks, relative components, and `~`-prefixed paths (after the
+# shell has expanded them). The mkdir is idempotent.
+mkdir -p "$DATA_ROOT_INPUT"
+EDEN_EXPERIMENT_DATA_ROOT="$(cd "$DATA_ROOT_INPUT" && pwd)"
+
+# Guard against silent relocation: if an existing .env points at a
+# different data root AND that prior root has substrate data, abort.
+# Operator must either re-run with the same root, or migrate manually
+# per docs/operations/experiment-data-durability.md.
+if [[ -n "$EXISTING_DATA_ROOT" && "$EXISTING_DATA_ROOT" != "$EDEN_EXPERIMENT_DATA_ROOT" ]]; then
+    if [[ -d "$EXISTING_DATA_ROOT/postgres" || -d "$EXISTING_DATA_ROOT/gitea" ]]; then
+        echo "refusing to silently relocate the data root:" >&2
+        echo "  existing: $EXISTING_DATA_ROOT (has substrate data)" >&2
+        echo "  new:      $EDEN_EXPERIMENT_DATA_ROOT" >&2
+        echo "" >&2
+        echo "Migrate manually (see docs/operations/experiment-data-durability.md)" >&2
+        echo "or re-run setup-experiment without --data-root to keep the existing root." >&2
+        exit 2
+    fi
+fi
+
+# Create the substrate subdirectory tree. chmod 0777 matches the
+# cidfile-dir precedent above: the four substrate containers run as
+# different uids (postgres=70, gitea-rootless=1000, eden=1000) and
+# Docker Desktop's uid mapping layer makes a single chown choice
+# fragile. World-writable is acceptable for local-dev; production
+# durability lives in Phase 13's managed substrates.
+mkdir -p \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/gitea" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui"
+chmod 0777 \
+    "${EDEN_EXPERIMENT_DATA_ROOT}" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/gitea" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" 2>/dev/null || true
+
 # --- Phase 10d follow-up A: --exec-mode docker resolution ---
 # All four are written to .env unconditionally; the compose overlay's
 # defaults make EDEN_EXEC_MODE=host a no-op (existing scripted /
@@ -315,6 +414,14 @@ EDEN_SESSION_SECRET=${EDEN_SESSION_SECRET}
 EDEN_STORE_URL=${EDEN_STORE_URL}
 EDEN_IDEATION_TASKS=${EDEN_IDEATION_TASKS}
 WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
+
+# --- 12a-1g substrate data root ---
+# Host-side parent dir under which every durable substrate
+# (postgres, gitea, artifacts, *-repo, credentials/*) is
+# bind-mounted. See chapter 01 §13 + docs/operations/
+# experiment-data-durability.md. Override via setup-experiment.sh
+# --data-root <path>.
+EDEN_EXPERIMENT_DATA_ROOT=${EDEN_EXPERIMENT_DATA_ROOT}
 
 # --- 10d subprocess overlay (only used by compose.subprocess.yaml) ---
 EDEN_EXPERIMENT_DIR_HOST=${EDEN_EXPERIMENT_DIR_HOST}
@@ -485,6 +592,7 @@ setup-experiment complete.
   store URL:        ${EDEN_STORE_URL}
   base commit SHA:  ${SEED_SHA}
   env file:         ${ENV_FILE}
+  data root:        ${EDEN_EXPERIMENT_DATA_ROOT}
 
 Next steps:
 

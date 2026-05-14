@@ -31,6 +31,9 @@ EXPERIMENT_DIR="${REPO_ROOT}/tests/fixtures/experiment"
 cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
+# Phase 12a-1g: per-smoke ephemeral data root, cleaned up on every
+# exit path.
+SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-sub-docker-XXXXXX)"
 EXPERIMENT_ID="smoke-exp-sub-docker"
 
 cleanup() {
@@ -41,6 +44,7 @@ cleanup() {
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
     # Remove the host-side cidfile dir setup-experiment created.
     rm -rf "${COMPOSE_DIR}/.cidfiles-${EXPERIMENT_ID}"
+    rm -rf "$SMOKE_DATA_ROOT"
     exit "$rc"
 }
 trap cleanup EXIT
@@ -51,6 +55,7 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --experiment-id "$EXPERIMENT_ID" \
     --experiment-dir "$EXPERIMENT_DIR" \
     --env-file "$ENV_FILE" \
+    --data-root "$SMOKE_DATA_ROOT" \
     --exec-mode docker
 
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"

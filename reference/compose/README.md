@@ -18,8 +18,7 @@ test (10e) are still ahead.
 | Service     | Image                                | Purpose                                             |
 | ----------- | ------------------------------------ | --------------------------------------------------- |
 | `postgres`  | `postgres:16.6-alpine`               | Durable backend for the EDEN task store (`PostgresStore`) |
-| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `variant/*` branches (idle this chunk; see "Gitea is idle" below) |
-| `blob-init` | `busybox:1.36.1`                     | One-shot — ensures the blob volume exists           |
+| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `variant/*` branches |
 
 ### EDEN reference services (10b)
 
@@ -38,15 +37,34 @@ test (10e) are still ahead.
 | ---------------- | -------------------- | ------------------------------------------------------ |
 | `eden-repo-init` | `eden-reference:dev` | Profile `setup`. Idempotent bare-repo seed; invoked by setup-experiment |
 
-### Volumes
+### Storage layout (Phase 12a-1g)
 
-| Volume                | Mounted by                                                | Purpose                                          |
-| --------------------- | --------------------------------------------------------- | ------------------------------------------------ |
-| `eden-postgres-data`  | `postgres`                                                | task-store-server's `PostgresStore` backend      |
-| `eden-gitea-data`     | `gitea`                                                   | git host data (idle this chunk)                  |
-| `eden-blob-data`      | `blob-init`                                               | executor-host artifact storage (10d)          |
-| `eden-bare-repo`      | `orchestrator`, `executor-host`, `web-ui`, `eden-repo-init` | Shared bare git repo                            |
-| `eden-artifacts-data` | `web-ui`                                                  | Web UI's `--artifacts-dir` for idea markdown |
+Every durable substrate is a host bind-mount under
+`${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>` (default
+`$HOME/.eden/experiments/$EDEN_EXPERIMENT_ID/<subdir>`). See
+[`docs/operations/experiment-data-durability.md`](../../docs/operations/experiment-data-durability.md)
+and [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md) §13.
+
+| Substrate subdirectory                          | Mounted by                | Substrate role                                       |
+| ----------------------------------------------- | ------------------------- | ---------------------------------------------------- |
+| `<DATA_ROOT>/postgres/`                         | `postgres`                | task-store-server's `PostgresStore` backend          |
+| `<DATA_ROOT>/gitea/`                            | `gitea`                   | git remote for `work/*` and `variant/*` refs         |
+| `<DATA_ROOT>/orchestrator-repo/`                | `orchestrator`            | per-host bare clone of the Gitea repo                |
+| `<DATA_ROOT>/executor-repo/`                    | `executor-host`           | per-host bare clone of the Gitea repo                |
+| `<DATA_ROOT>/evaluator-repo/`                   | `evaluator-host` (subprocess overlay) | per-host bare clone for subprocess evaluator |
+| `<DATA_ROOT>/web-ui-repo/`                      | `web-ui`                  | per-host bare clone for the web-ui executor module   |
+| `<DATA_ROOT>/artifacts/`                        | `web-ui`, `ideator-host`, `executor-host` (ro) | Artifact store / idea markdown   |
+| `<DATA_ROOT>/credentials/{orchestrator,ideator,executor,evaluator,web-ui}/` | per-host services | Persisted per-worker registration tokens             |
+
+The two remaining named volumes are intentionally **ephemeral** —
+they hold per-task scratch or bootstrap-staging state that is
+recreated on each setup or restart, and they are NOT covered by
+the chapter-01 §13 durability invariant:
+
+| Named volume             | Mounted by                          | Why ephemeral                                                  |
+| ------------------------ | ----------------------------------- | -------------------------------------------------------------- |
+| `eden-repo-init-staging` | `eden-repo-init`                    | bootstrap-only; setup-experiment `docker volume rm`s on reseed |
+| `eden-worktrees`         | `executor-host`/`evaluator-host` (subprocess overlay) | per-task scratch worktrees; per-host startup `git worktree remove --force` already assumes they don't survive restart |
 
 **Postgres backs the EDEN task store, not Gitea.** Gitea uses its
 own embedded SQLite. Pointing Gitea at our Postgres would couple the
@@ -88,9 +106,9 @@ docker compose --env-file .env up -d --wait
 docker compose ps
 ```
 
-Expected output: every service `Up (healthy)` (or `Exited (0)` for
-`blob-init`). The orchestrator runs the experiment to quiescence
-(~10–30s for the fixture experiment) and then exits 0.
+Expected output: every service `Up (healthy)`. The orchestrator
+runs the experiment to quiescence (~10–30s for the fixture
+experiment) and then exits 0.
 
 **Re-running setup-experiment is safe.** Existing secrets
 (`POSTGRES_PASSWORD`, `EDEN_ADMIN_TOKEN`, `EDEN_SESSION_SECRET`,
@@ -108,8 +126,6 @@ pick up changes to `command:`, env files, or `configs:`.
 | Gitea HTTP | `http://localhost:3001/`       | no admin user (idle this chunk; provisioning lands in a follow-up) |
 | Gitea SSH  | `ssh://git@localhost:2222`     | (idem)                                         |
 | Web UI     | `http://localhost:8090/`       | sign in with any worker_id                     |
-| Blob volume | `eden-reference_eden-blob-data` (Docker named volume) | mounted at `/var/lib/eden/blobs` by future consumers |
-| Bare repo  | `eden-bare-repo` (Docker named volume; `name:` pinned in compose.yaml) | mounted at `/var/lib/eden/repo` by orchestrator/executor/web-ui |
 
 Defaults intentionally avoid the well-known ports (5432, 3000, 22)
 to sidestep collisions with locally-running Postgres or Gitea
@@ -126,8 +142,14 @@ instances. Override via `.env`.
 | **Wipe all data**  | `docker compose down -v`                |
 | Smoke test         | `bash healthcheck/smoke.sh`             |
 
-`down -v` is destructive — it deletes all three named volumes.
-Use `down` (no `-v`) to stop containers but keep data.
+`down -v` removes the ephemeral named volumes (`eden-repo-init-staging`,
+`eden-worktrees`) — these are scratch state and safe to lose.
+The durable substrates (Postgres data, Gitea data, artifacts, per-host
+clones, per-host credentials) live as host bind-mounts under
+`${EDEN_EXPERIMENT_DATA_ROOT}` and are **not** affected by `down -v`.
+To wipe the experiment entirely, `rm -rf "$EDEN_EXPERIMENT_DATA_ROOT"`
+after the stack is down. See
+[`docs/operations/experiment-data-durability.md`](../../docs/operations/experiment-data-durability.md).
 
 ## Troubleshooting
 

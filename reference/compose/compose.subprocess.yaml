@@ -57,7 +57,11 @@ services:
         source: ${EDEN_EXPERIMENT_DIR_HOST:?EDEN_EXPERIMENT_DIR_HOST must be set (run setup-experiment with --experiment-dir)}
         target: /etc/eden/experiment-dir
         read_only: true
-      - eden-artifacts-data:/var/lib/eden/artifacts
+      # Phase 12a-1g: artifacts substrate is a bind-mount under the
+      # data root (was `eden-artifacts-data` named volume). The
+      # ideator writes idea content here; the executor reads it back
+      # via task.json.content_path.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
 
   executor-host:
     command:
@@ -96,18 +100,19 @@ services:
       - source: eden-execute-env
         target: /etc/eden/execute.env
     volumes:
-      # Phase 10d follow-up B: per-service clone (was eden-bare-repo).
-      # The host clones from gitea on first run via --gitea-url.
-      - eden-executor-repo:/var/lib/eden/repo
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      # Phase 12a-1g: the per-host bare clone, gitea credentials,
+      # and credentials volume are already declared in compose.yaml's
+      # executor-host service (now as bind-mounts under the data
+      # root). Compose merges service-level `volumes:` additively —
+      # NOT key-replace — so the overlay does NOT re-declare them.
+      # Re-declaring eden-executor-repo:/var/lib/eden/repo here
+      # would mount BOTH a bind and a fresh empty named volume at
+      # the same target, with whichever ordered last winning.
       - eden-worktrees:/var/lib/eden/worktrees
       # Read-only mount of the ideator-written content tree so the
       # executor can resolve `idea.artifacts_uri` →
       # `task.json.content_path` per plan §D.3.
-      - type: volume
-        source: eden-artifacts-data
-        target: /var/lib/eden/artifacts
-        read_only: true
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts:ro
       - type: bind
         source: ${EDEN_EXPERIMENT_DIR_HOST:?}
         target: /etc/eden/experiment-dir
@@ -150,9 +155,12 @@ services:
       - source: eden-evaluation-env
         target: /etc/eden/evaluation.env
     volumes:
-      # Phase 10d follow-up B: per-service clone (was eden-bare-repo).
-      # The host clones from gitea on first run via --gitea-url.
-      - eden-evaluator-repo:/var/lib/eden/repo
+      # Phase 12a-1g: the base evaluator-host service does NOT mount
+      # /var/lib/eden/repo (scripted-mode evaluator doesn't need
+      # workspace access). Subprocess mode needs it for creating
+      # per-task worktrees, so the overlay declares it here as a
+      # bind-mount under the data root.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/evaluator-repo:/var/lib/eden/repo
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
       - type: bind
