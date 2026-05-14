@@ -106,14 +106,14 @@ MUST carry the same `task_id` as the dispatch.
 {"event": "idea", "task_id": "ideation-…",
  "slug": "p0", "priority": 1.0,
  "parent_commits": ["abc…"],
- "rationale": "free-form markdown text"}
+ "content": "free-form markdown text"}
 {"event": "ideation-done", "task_id": "ideation-…"}
 ```
 
-If `rationale` is present, the host writes it to
-`<artifacts_dir>/ideas/<idea_id>/rationale.md` and uses the
+If `content` is present, the host writes it to
+`<artifacts_dir>/ideas/<idea_id>/content.md` and uses the
 resulting `file://` URI as the idea's `artifacts_uri`. If
-`rationale` is absent, the subprocess MUST set `artifacts_uri`
+`content` is absent, the subprocess MUST set `artifacts_uri`
 explicitly.
 
 An `ideation-error` terminator submits a chapter-3 `IdeaSubmission`
@@ -152,7 +152,7 @@ repository write becomes observable. The reference flow is:
      "idea_slug": "p0",
      "parent_commits": ["abc…", …],
      "branch": "work/p0-variant-…",
-     "rationale_path": "/abs/path/to/rationale.md",
+     "content_path": "/abs/path/to/content.md",
      "output_path": ".eden/outcome.json"
    }
    ```

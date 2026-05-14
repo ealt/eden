@@ -129,7 +129,7 @@ class TestDraftForm:
         assert resp.status_code == 200
         # The rendered branch name is server-derived from slug + variant_id.
         assert "work/alpha-variant-" in resp.text
-        # The rationale is rendered inline because the artifact lives in
+        # The content is rendered inline because the artifact lives in
         # artifacts_dir.
         assert "why-alpha" in resp.text
         # No form input named variant_id is present (the server keeps it

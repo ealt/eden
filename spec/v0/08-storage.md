@@ -121,7 +121,7 @@ At experiment registration time, a conforming deployment MUST persist the experi
 
 A evaluation schema MUST NOT be mutated for the lifetime of the experiment. An operator who wishes to change the metrics set MUST register a new experiment (Phase 12 defines the control-plane operations that govern this, but the invariant applies from v0 onward). A conforming deployment MUST reject any in-flight mutation of an existing experiment's evaluation schema.
 
-The rationale is canonicality: comparing variants across an experiment only has meaning if the metric definitions they are compared on did not move during the experiment.
+The content is canonicality: comparing variants across an experiment only has meaning if the metric definitions they are compared on did not move during the experiment.
 
 ### 4.3 Per-metric type checks
 

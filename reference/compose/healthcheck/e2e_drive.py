@@ -117,7 +117,7 @@ def _ideator_walkthrough(
         ("slug", "e2e-feat"),
         ("priority", "1.0"),
         ("parent_commits", base_commit_sha),
-        ("rationale", "## why\n\nphase 10e end-to-end drill.\n"),
+        ("content", "## why\n\nphase 10e end-to-end drill.\n"),
     ]
     resp = _form_post(ui, f"/ideator/{task_id}/submit", fields)
     if resp.status_code != 200:

@@ -55,7 +55,7 @@ def _claim_and_form(
         "slug": "feat-x",
         "priority": "1.0",
         "parent_commits": "a" * 40,
-        "rationale": "rationale",
+        "content": "content",
     }
 
 
@@ -92,7 +92,7 @@ class TestPhase2Failure:
             "mark_idea_ready",
             _wrap_with_failure(store.mark_idea_ready, fail_after=0),
         )
-        # Two rows = two slugs/priorities/parents/rationales
+        # Two rows = two slugs/priorities/parents/contents
         resp = _post_form(
             signed_in_client,
             "/ideator/t-1/submit",
@@ -102,11 +102,11 @@ class TestPhase2Failure:
                 ("slug", "feat-a"),
                 ("priority", "1.0"),
                 ("parent_commits", "a" * 40),
-                ("rationale", "first"),
+                ("content", "first"),
                 ("slug", "feat-b"),
                 ("priority", "1.0"),
                 ("parent_commits", "a" * 40),
-                ("rationale", "second"),
+                ("content", "second"),
             ],
         )
         assert resp.status_code == 502

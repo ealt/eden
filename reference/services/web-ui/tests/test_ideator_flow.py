@@ -27,7 +27,7 @@ def _draft_form(slug: str) -> dict[str, str]:
         "slug": slug,
         "priority": "1.5",
         "parent_commits": "a" * 40,
-        "rationale": "## why\n\nBecause it's a sound plan.",
+        "content": "## why\n\nBecause it's a sound plan.",
     }
 
 
@@ -89,7 +89,7 @@ class TestValidationRecovery:
             data={"csrf_token": token},
             follow_redirects=False,
         )
-        # priority is not a number; rationale empty; parent_commits invalid.
+        # priority is not a number; content empty; parent_commits invalid.
         resp = signed_in_client.post(
             "/ideator/t-bad/submit",
             data={
@@ -98,7 +98,7 @@ class TestValidationRecovery:
                 "slug": "good-slug",
                 "priority": "not-a-number",
                 "parent_commits": "not-a-sha",
-                "rationale": "",
+                "content": "",
             },
         )
         assert resp.status_code == 400
@@ -108,7 +108,7 @@ class TestValidationRecovery:
         assert "not-a-sha" in resp.text
         # Field errors surfaced.
         assert "priority must be a number" in resp.text
-        assert "rationale markdown is required" in resp.text
+        assert "content markdown is required" in resp.text
         # No store mutation.
         assert store.list_ideas() == []
         assert store.read_task("t-bad").state == "claimed"
@@ -133,15 +133,15 @@ class TestMultiRow:
                 "slug": "feat-1",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "first idea rationale",
+                "content": "first idea content",
             },
         )
         assert resp.status_code == 200
         # First row's input is preserved.
         assert "feat-1" in resp.text
-        assert "first idea rationale" in resp.text
+        assert "first idea content" in resp.text
         # The form now has 2 rows — count textareas as a per-row marker.
-        assert resp.text.count('name="rationale"') == 2
+        assert resp.text.count('name="content"') == 2
         # Full page: includes the base layout (topbar nav).
         assert "<header" in resp.text
 
@@ -242,7 +242,7 @@ class TestMultiRow:
                 "slug": "feat-1",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "first",
+                "content": "first",
             },
             headers={"hx-request": "true"},
         )
@@ -250,8 +250,8 @@ class TestMultiRow:
         # Just the new (empty) row partial — no <header>, no <html>.
         assert "<header" not in resp.text
         assert "<html" not in resp.text
-        # Contains exactly one textarea (the new row's rationale field).
-        assert resp.text.count('name="rationale"') == 1
+        # Contains exactly one textarea (the new row's content field).
+        assert resp.text.count('name="content"') == 1
         # The new row's index is 1 (zero-based; row 1 is the second row,
         # since the user already had 1 row before adding).
         assert 'data-row-index="1"' in resp.text
@@ -278,11 +278,11 @@ class TestMultiRow:
                 ("slug", "feat-only"),
                 ("priority", "1.0"),
                 ("parent_commits", "a" * 40),
-                ("rationale", "real idea"),
+                ("content", "real idea"),
                 ("slug", ""),
                 ("priority", "1.0"),
                 ("parent_commits", ""),
-                ("rationale", ""),
+                ("content", ""),
             ]
         )
         resp = signed_in_client.post(
@@ -316,7 +316,7 @@ class TestMultiRow:
                 "slug": "",
                 "priority": "1.0",
                 "parent_commits": "",
-                "rationale": "",
+                "content": "",
             },
         )
         assert resp.status_code == 400
@@ -391,7 +391,7 @@ class TestDefinitiveSubmitErrors:
                 "slug": "feat-x",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "rationale",
+                "content": "content",
             },
         )
 
@@ -514,7 +514,7 @@ class TestIllegalTransitionReadback:
                 "slug": "feat-rb",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "rationale",
+                "content": "content",
             },
         )
 
@@ -694,7 +694,7 @@ class TestRetryBeforeOrphan:
                 "slug": "feat-trans",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "rationale",
+                "content": "content",
             },
         )
         assert resp.status_code == 502
@@ -785,7 +785,7 @@ class TestDraftBufferReHydration:
                 "slug": "feat-keep-me",
                 "priority": "not-a-number",
                 "parent_commits": "not-a-sha",
-                "rationale": "## why\n\nrationale text",
+                "content": "## why\n\ncontent text",
             },
         )
         assert bad.status_code == 400
@@ -799,7 +799,7 @@ class TestDraftBufferReHydration:
         assert "feat-keep-me" in resp.text
         assert "not-a-number" in resp.text
         assert "not-a-sha" in resp.text
-        assert "rationale text" in resp.text
+        assert "content text" in resp.text
 
     def test_add_row_buffers_typed_state_for_subsequent_get(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -819,7 +819,7 @@ class TestDraftBufferReHydration:
                 "slug": "first-feature",
                 "priority": "2.0",
                 "parent_commits": "a" * 40,
-                "rationale": "first idea rationale",
+                "content": "first idea content",
             },
         )
         assert resp.status_code == 200
@@ -827,7 +827,7 @@ class TestDraftBufferReHydration:
         get_resp = signed_in_client.get("/ideator/t-add-buf/draft")
         assert get_resp.status_code == 200
         assert "first-feature" in get_resp.text
-        assert "first idea rationale" in get_resp.text
+        assert "first idea content" in get_resp.text
 
     def test_buffer_cleared_after_successful_submit(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -847,7 +847,7 @@ class TestDraftBufferReHydration:
                 "slug": "before-success",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "before success",
+                "content": "before success",
             },
         )
         # Successful submit clears the buffer. The simplest probe: a
@@ -861,7 +861,7 @@ class TestDraftBufferReHydration:
                 "slug": "before-success",
                 "priority": "1.0",
                 "parent_commits": "a" * 40,
-                "rationale": "before success",
+                "content": "before success",
             },
         )
         assert ok.status_code == 200

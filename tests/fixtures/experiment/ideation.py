@@ -58,8 +58,8 @@ def main() -> int:
                 "slug": f"{task_id}-p{i}",
                 "priority": float(ideas_per_ideation - i),
                 "parent_commits": [base_commit_sha],
-                "rationale": (
-                    f"Auto-generated rationale for {task_id} idea {i}.\n"
+                "content": (
+                    f"Auto-generated content for {task_id} idea {i}.\n"
                 ),
             }
             sys.stdout.write(json.dumps(idea, sort_keys=True) + "\n")

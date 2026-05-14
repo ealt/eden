@@ -42,11 +42,11 @@ ideator first.
 $EDEN show <task-id>
 ```
 
-This returns task + idea + (if reachable) inline rationale text.
+This returns task + idea + (if reachable) inline content text.
 Present a digest:
 
 - idea slug, priority, parent_commits
-- the **rationale text in full** — the user needs to see the spec
+- the **content text in full** — the user needs to see the spec
 - the experiment's objective from `experiment-config.yaml`
 
 ### Phase 3: Claim (automatic)

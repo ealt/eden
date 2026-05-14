@@ -196,10 +196,10 @@ def cmd_show(env: dict[str, str], args: argparse.Namespace) -> None:
         idea_id = task["payload"]["idea_id"]
         idea = _wire(env, f"/v0/experiments/{_exp(env)}/ideas/{idea_id}")
         out["idea"] = idea
-        # Inline rationale if it's a file:// URI we can read.
-        rationale_text = _try_read_rationale(idea.get("artifacts_uri"))
-        if rationale_text is not None:
-            out["rationale_text"] = rationale_text
+        # Inline content if it's a file:// URI we can read.
+        content_text = _try_read_content(idea.get("artifacts_uri"))
+        if content_text is not None:
+            out["content_text"] = content_text
     elif task["kind"] == "evaluation":
         variant_id = task["payload"]["variant_id"]
         out["variant"] = _wire(env, f"/v0/experiments/{_exp(env)}/variants/{variant_id}")
@@ -207,7 +207,7 @@ def cmd_show(env: dict[str, str], args: argparse.Namespace) -> None:
     sys.stdout.write("\n")
 
 
-def _try_read_rationale(uri: str | None) -> str | None:
+def _try_read_content(uri: str | None) -> str | None:
     if not uri or not uri.startswith("file://"):
         return None
     p = Path(urllib.parse.urlparse(uri).path)
@@ -369,9 +369,9 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     # Phase 1: create_idea as drafting for each.
     for raw in raw_ideas:
         idea_id = uuid.uuid4().hex
-        rationale = raw.get("rationale", "")
+        content = raw.get("content", "")
         artifact_path = ARTIFACTS_DIR / f"{idea_id}.md"
-        artifact_path.write_text(rationale)
+        artifact_path.write_text(content)
         idea = {
             "idea_id": idea_id,
             "experiment_id": _exp(env),

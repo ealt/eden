@@ -32,7 +32,7 @@ class IdeaDraft:
     slug: str
     priority: float
     parent_commits: tuple[str, ...]
-    rationale: str
+    content: str
 
 
 @dataclass
@@ -58,7 +58,7 @@ def parse_idea_rows(
     slugs: list[str],
     priorities: list[str],
     parent_commits_csv: list[str],
-    rationales: list[str],
+    contents: list[str],
 ) -> tuple[list[IdeaDraft], FormErrors]:
     """Parse parallel-list form input into validated drafts + accumulated errors.
 
@@ -66,7 +66,7 @@ def parse_idea_rows(
     bad row 1 still yields an error report covering rows 2..N.
     """
     errors = FormErrors()
-    n = max(len(slugs), len(priorities), len(parent_commits_csv), len(rationales))
+    n = max(len(slugs), len(priorities), len(parent_commits_csv), len(contents))
     if n == 0:
         errors.add_overall("at least one idea row is required")
         return [], errors
@@ -79,13 +79,13 @@ def parse_idea_rows(
         parents_raw = (
             parent_commits_csv[i] if i < len(parent_commits_csv) else ""
         ).strip()
-        rationale = (rationales[i] if i < len(rationales) else "").strip()
+        content = (contents[i] if i < len(contents) else "").strip()
 
         # Skip fully-empty rows (priority defaults to "1.0" so a true
-        # empty row has slug+parents+rationale all blank). The "add
+        # empty row has slug+parents+content all blank). The "add
         # another row" path adds blank trailing rows; the user
         # shouldn't be forced to fill every one before submitting.
-        if not slug and not parents_raw and not rationale:
+        if not slug and not parents_raw and not content:
             continue
 
         if not slug:
@@ -108,8 +108,8 @@ def parse_idea_rows(
                     errors.add(i, "parent_commits", f"invalid SHA: {parent!r}")
                     break
 
-        if not rationale:
-            errors.add(i, "rationale", "rationale markdown is required")
+        if not content:
+            errors.add(i, "content", "content markdown is required")
 
         parsed_count += 1
         if not errors.by_row.get(i):
@@ -118,7 +118,7 @@ def parse_idea_rows(
                     slug=slug,
                     priority=priority,
                     parent_commits=parents,
-                    rationale=rationale,
+                    content=content,
                 )
             )
 

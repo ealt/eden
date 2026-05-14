@@ -382,8 +382,8 @@ drift: the fixture promises something the code doesn't deliver.
      (diffs, evaluator metrics) the ideator consults while drafting.
    - **Scratch / persistent notes.** Cross-session ideator notes
      preserved across ideate tasks.
-   - **Rationale authoring.** A directory the ideator writes
-     ``rationale.md`` etc. into, which the host bundles into the
+   - **Content authoring.** A directory the ideator writes
+     ``content.md`` etc. into, which the host bundles into the
      idea artifact at submission time.
 
 3. **Leave the schema permissive but document the keys as

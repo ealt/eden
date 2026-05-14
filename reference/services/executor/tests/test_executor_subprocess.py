@@ -34,7 +34,7 @@ def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
     idea_id = "idea-x1"
     artifacts_dir = tmp_path / "artifacts" / "ideas" / idea_id
     artifacts_dir.mkdir(parents=True)
-    (artifacts_dir / "rationale.md").write_text("# r", encoding="utf-8")
+    (artifacts_dir / "content.md").write_text("# r", encoding="utf-8")
     idea = Idea(
         idea_id=idea_id,
         experiment_id=EXPERIMENT_ID,

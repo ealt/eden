@@ -3,7 +3,7 @@
 Implements the spec-to-code map pinned in §C of the Phase 9d plan.
 The flow is: list pending evaluation tasks → claim with TTL +
 server-pinned ``variant_id`` from ``task.payload.variant_id`` → render
-draft form (read-only variant context, optional inline rationale +
+draft form (read-only variant context, optional inline content +
 variant-side artifact, per-metric inputs generated from the
 experiment's ``evaluation_schema``) → submit, which runs
 
@@ -51,7 +51,7 @@ from ._helpers import (
     csrf_ok,
     get_session,
     is_htmx_request,
-    read_idea_rationale,
+    read_idea_content,
     read_variant_artifact,
 )
 
@@ -448,7 +448,7 @@ def _render_draft(
     status_code: int,
 ) -> HTMLResponse:
     artifacts_dir = request.app.state.artifacts_dir
-    idea_rationale = read_idea_rationale(idea, artifacts_dir)
+    idea_content = read_idea_content(idea, artifacts_dir)
     variant_artifact_inline = read_variant_artifact(variant.artifacts_uri, artifacts_dir)
     config = request.app.state.experiment_config
     metric_schema_items = list(config.evaluation_schema.root.items())
@@ -460,7 +460,7 @@ def _render_draft(
             "task_id": task_id,
             "variant": variant,
             "idea": idea,
-            "idea_rationale": idea_rationale,
+            "idea_content": idea_content,
             "variant_artifact_inline": variant_artifact_inline,
             "metric_schema_items": metric_schema_items,
             "form_state": form_state,

@@ -388,7 +388,7 @@ def _run_subprocess(
     eden_dir.mkdir(parents=True, exist_ok=True)
     task_json = eden_dir / "task.json"
     output_json = eden_dir / "outcome.json"
-    rationale_path = _rationale_path_from_uri(idea.artifacts_uri)
+    content_path = _content_path_from_uri(idea.artifacts_uri)
     brief = {
         "task_id": task.task_id,
         "variant_id": variant_id,
@@ -396,7 +396,7 @@ def _run_subprocess(
         "idea_slug": idea.slug,
         "parent_commits": list(idea.parent_commits),
         "branch": branch,
-        "rationale_path": rationale_path,
+        "content_path": content_path,
         "output_path": ".eden/outcome.json",
     }
     task_json.write_text(json.dumps(brief, sort_keys=True), encoding="utf-8")
@@ -502,13 +502,13 @@ def _run_subprocess(
         sub.run_cleanups()
 
 
-def _rationale_path_from_uri(uri: str | None) -> str | None:
+def _content_path_from_uri(uri: str | None) -> str | None:
     if not isinstance(uri, str) or not uri.startswith("file://"):
         return None
     path = uri.removeprefix("file://")
-    rationale = Path(path) / "rationale.md"
-    if rationale.is_file():
-        return str(rationale)
+    content = Path(path) / "content.md"
+    if content.is_file():
+        return str(content)
     if path.endswith(".md") and Path(path).is_file():
         return path
     return None

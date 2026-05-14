@@ -32,7 +32,7 @@ from eden_git import GitRepo
 from eden_storage import InMemoryStore
 from eden_web_ui import make_app
 from eden_web_ui.routes import executor as executor_routes
-from eden_web_ui.routes._helpers import read_idea_rationale
+from eden_web_ui.routes._helpers import read_idea_content
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -67,7 +67,7 @@ class TestBearerLeak:
             store,
             base_sha=base_sha,
             artifacts_dir=artifacts_dir,
-            artifact_text="rationale text",
+            artifact_text="content text",
         )
         list_resp = signed_in_impl_client.get("/executor/")
         csrf = get_csrf(signed_in_impl_client)
@@ -171,7 +171,7 @@ class TestArtifactTrustBoundary:
         target = artifacts_dir / "ok.md"
         target.write_text("hello")
         idea = self._make_idea(f"file://{target.resolve()}")
-        assert read_idea_rationale(idea, artifacts_dir) == "hello"
+        assert read_idea_content(idea, artifacts_dir) == "hello"
 
     def test_absolute_path_outside_returns_none(
         self, artifacts_dir: Path, tmp_path: Path
@@ -179,7 +179,7 @@ class TestArtifactTrustBoundary:
         outside = tmp_path / "outside.md"
         outside.write_text("secret")
         idea = self._make_idea(f"file://{outside.resolve()}")
-        assert read_idea_rationale(idea, artifacts_dir) is None
+        assert read_idea_content(idea, artifacts_dir) is None
 
     def test_path_traversal_returns_none(
         self, artifacts_dir: Path, tmp_path: Path
@@ -190,23 +190,23 @@ class TestArtifactTrustBoundary:
         target.write_text("secret")
         traversal = artifacts_dir / ".." / "escape.md"
         idea = self._make_idea(f"file://{traversal}")
-        assert read_idea_rationale(idea, artifacts_dir) is None
+        assert read_idea_content(idea, artifacts_dir) is None
 
     def test_https_uri_returns_none(self, artifacts_dir: Path) -> None:
         idea = self._make_idea("https://example.invalid/x.md")
-        assert read_idea_rationale(idea, artifacts_dir) is None
+        assert read_idea_content(idea, artifacts_dir) is None
 
     def test_file_too_large_returns_none(self, artifacts_dir: Path) -> None:
         target = artifacts_dir / "big.md"
         target.write_bytes(b"x" * ((1 << 20) + 1))
         idea = self._make_idea(f"file://{target.resolve()}")
-        assert read_idea_rationale(idea, artifacts_dir) is None
+        assert read_idea_content(idea, artifacts_dir) is None
 
     def test_directory_returns_none(self, artifacts_dir: Path) -> None:
         sub = artifacts_dir / "sub"
         sub.mkdir()
         idea = self._make_idea(f"file://{sub.resolve()}")
-        assert read_idea_rationale(idea, artifacts_dir) is None
+        assert read_idea_content(idea, artifacts_dir) is None
 
 
 class TestArtifactUriRendering:

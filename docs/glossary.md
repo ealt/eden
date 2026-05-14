@@ -87,7 +87,7 @@ workers may claim the same kind of task.
 | **slug** | An idea's short kebab-case label; matches `^[a-z0-9][a-z0-9-]*$`. Used in branch naming. |
 | **priority** | Per-idea ordering hint (number; "higher dispatches earlier" — currently SHOULD-level, not enforced). |
 | **parent_commits** | One or more commit SHAs an idea/variant is based on. |
-| **artifacts_uri** | URI pointing at idea-rationale or evaluator artifacts (typically `file://` in the reference impl). |
+| **artifacts_uri** | URI pointing at idea-content or evaluator artifacts (typically `file://` in the reference impl). |
 | **kind** | A task's role-routing label (`ideation` / `execution` / `evaluation`). |
 | **payload** | A task's role-specific inner content. |
 | **commit_sha** | The worker's tip commit on its `work/*` branch (set on the variant when the executor submits). |
@@ -166,7 +166,7 @@ error.
 |---|---|---|
 | **task store** | Durable store of tasks, ideas, variants, submissions; provides atomic claim and idempotent submit | [`08-storage.md`](../spec/v0/08-storage.md) |
 | **event log** | Append-only ordered log of events; provides replay and subscribe | [`05-event-protocol.md`](../spec/v0/05-event-protocol.md) |
-| **artifact store** | Holds rationale documents, evaluator artifacts, etc., addressed by URI | [`08-storage.md`](../spec/v0/08-storage.md) §5 (deferred) |
+| **artifact store** | Holds content documents, evaluator artifacts, etc., addressed by URI | [`08-storage.md`](../spec/v0/08-storage.md) §5 (deferred) |
 
 In the reference impl, all three are backed by Postgres + the
 deployment filesystem; the protocol abstracts over the choice.

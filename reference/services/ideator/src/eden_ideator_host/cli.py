@@ -76,7 +76,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         default=None,
-        help="Where to write rationale artifacts (required in --mode subprocess).",
+        help="Where to write content artifacts (required in --mode subprocess).",
     )
     parser.add_argument("--ideation-startup-deadline", type=float, default=30.0)
     parser.add_argument("--ideation-task-deadline", type=float, default=120.0)

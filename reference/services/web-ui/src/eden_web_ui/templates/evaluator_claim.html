@@ -25,7 +25,7 @@
     </table>
     {% if variant.description %}
     <h3>variant description (set by executor)</h3>
-    <pre class="rationale">{{ variant.description }}</pre>
+    <pre class="content">{{ variant.description }}</pre>
     {% endif %}
     {% if variant.artifacts_uri %}
     <h3>variant artifact</h3>
@@ -41,7 +41,7 @@
         {% endif %}
     </p>
     {% if variant_artifact_inline %}
-    <pre class="rationale">{{ variant_artifact_inline }}</pre>
+    <pre class="content">{{ variant_artifact_inline }}</pre>
     {% endif %}
     {% endif %}
 </section>
@@ -69,11 +69,11 @@
             </tr>
         </tbody>
     </table>
-    {% if idea_rationale %}
-    <h3>idea rationale</h3>
-    <pre class="rationale">{{ idea_rationale }}</pre>
+    {% if idea_content %}
+    <h3>idea content</h3>
+    <pre class="content">{{ idea_content }}</pre>
     {% else %}
-    <p class="rationale-note">idea rationale not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
+    <p class="content-note">idea content not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
     {% endif %}
 </section>
 

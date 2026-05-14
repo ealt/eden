@@ -93,7 +93,7 @@ def _make_idea_body(idea_id: str) -> dict[str, Any]:
         "state": "drafting",
         "slug": idea_id,
         "parent_commits": ["a" * 40],
-        "rationale": "test",
+        "content": "test",
         "priority": 1.0,
         "artifacts_uri": "file:///tmp/artifacts",
         "created_at": "2026-04-24T00:00:00Z",

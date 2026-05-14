@@ -86,7 +86,7 @@ operator action required.
 
 The ideator module pins three phases:
 
-1. **Phase 1 — drafting.** For every idea: write rationale
+1. **Phase 1 — drafting.** For every idea: write content
    markdown to `<artifacts-dir>/<idea_id>.md` (atomically, via
    tmp-and-rename), build a `file://` URI, then call
    `store.create_idea(state="drafting")`. Drafting ideas
@@ -178,7 +178,7 @@ story.
   operator triage.
 
 **Artifact-rendering trust boundary.** The draft form may inline a
-idea's rationale markdown if (a) `idea.artifacts_uri`
+idea's content markdown if (a) `idea.artifacts_uri`
 starts with `file://`, (b) the resolved path is contained within
 the UI service's `--artifacts-dir`, (c) the file is not larger
 than 1 MiB. Any other shape renders as a link only. This guards
@@ -206,8 +206,8 @@ The draft page surfaces:
   step 3**: `variant.description` (rendered as a read-only `<pre>`
   block, escaped via Jinja2 autoescape) and `variant.artifacts_uri`
   (rendered with the chunk-9c scheme allowlist + the same trust-
-  boundary helper as the idea rationale).
-- **Idea context** (slug, priority, artifacts_uri, rationale).
+  boundary helper as the idea content).
+- **Idea context** (slug, priority, artifacts_uri, content).
 - **Evaluation form**: one input per metric in
   `experiment_config.evaluation_schema`, typed by the declared
   `MetricType` (`<input type="number" step="1">` for `integer`,
@@ -265,7 +265,7 @@ commands.
 **Trust-boundary helper.** Chunk 9d generalizes the chunk-9c
 helper into `_read_inline_artifact(uri, artifacts_dir)` in
 [`routes/_helpers.py`](src/eden_web_ui/routes/_helpers.py).
-`read_idea_rationale` is now a thin wrapper, and a sibling
+`read_idea_content` is now a thin wrapper, and a sibling
 `read_variant_artifact` covers the variant-side `artifacts_uri`
 surface. The envelope is identical: `file://` only, contained in
 `--artifacts-dir`, ≤ 1 MiB.

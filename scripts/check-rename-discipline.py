@@ -222,6 +222,28 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # surviving "promote" usage is legacy and should be renamed.
     ("promot*",          re.compile(r"\bpromot(?:e|es|ed|ing|ion|ions)\b", re.IGNORECASE)),
 
+    # Phase 12a-1d (May 2026): the idea's markdown body was renamed
+    # from `rationale` to `content` (`rationale` only conveys WHY; the
+    # actual document covers WHAT-to-attempt + WHY). Bare English
+    # "rationale" / "Rationale" (meaning "reasoning") is still
+    # legitimate, so the patterns here are identifier-context only:
+    # filenames, snake_case compounds, SHOUTING_CASE constants, kebab
+    # CSS classes, and the subprocess-protocol JSON key.
+    ("rationale.md",     re.compile(r"\brationale\.md\b")),
+    ("rationale_<X>",    re.compile(
+        r"\brationale_(?:path|text|markdown|note|max_bytes|completed|errored|from_uri)\b"
+    )),
+    ("_RATIONALE_<X>",   re.compile(r"\b_RATIONALE_(?:MAX_BYTES|PATH|TEXT)\b")),
+    ("<X>_rationale",    re.compile(
+        r"\b(?:idea|read_idea|_write|_try_read|_read|_)_rationale\b"
+    )),
+    ("idea-rationale",   re.compile(r"\bidea-rationale\b")),
+    ("rationale-<X>",    re.compile(
+        r"\brationale-(?:markdown|note|not-[a-z-]+)\b"
+    )),
+    ("eden-rationale-",  re.compile(r"\beden-rationale-")),
+    ('"rationale" key',  re.compile(r'["\']rationale["\']')),
+
     # ---------------------------------------------------------------
     # Pattern classes added by the comprehensive audit (May 2026):
     # the prior pattern set enumerated full-word forms only and missed

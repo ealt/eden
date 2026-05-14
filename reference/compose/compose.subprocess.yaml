@@ -101,9 +101,9 @@ services:
       - eden-executor-repo:/var/lib/eden/repo
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
-      # Read-only mount of the ideator-written rationale tree so the
+      # Read-only mount of the ideator-written content tree so the
       # executor can resolve `idea.artifacts_uri` →
-      # `task.json.rationale_path` per plan §D.3.
+      # `task.json.content_path` per plan §D.3.
       - type: volume
         source: eden-artifacts-data
         target: /var/lib/eden/artifacts
