@@ -1,0 +1,158 @@
+--- docs/plans/review/eden-phase-12a-1g-experiment-durability/20260514T093959/0.md	2026-05-14 09:39:59
++++ docs/plans/eden-phase-12a-1g-experiment-durability.md	2026-05-14 09:45:13
+@@ -50,15 +50,17 @@
+ 
+ Add a new normative section to [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md). Slot: between the current §12 (Workers and groups) and §13 (Relationships), pushing the current §13 to §14.
+ 
++**Lifetime model — anchor to existing termination semantics, do NOT replace.** Chapter 01 §1 already enumerates termination conditions ("variant-count, wall-clock, convergence window, target condition") and §13 (Relationships) names "the experiment terminates per its configured conditions" as the closing event of an experiment's lifecycle. The durability invariant introduced here MUST NOT contradict that model. The new section anchors to it, says nothing new about WHEN an experiment terminates, and only adds a normative property about WHAT must survive across substrate restarts during the lifetime §1 defines. (The operator's articulated requirement, "until the owner decides to shut it down," is consistent with this: in the current v0 spec the only termination paths are the configured conditions in §1; future Phase 12 control-plane chapters may add an explicit operator-termination operation. The durability invariant constrains both.)
++
+ Proposed prose for the new §13:
+ 
+ > ## 13. Experiment durability
+ >
+ > An experiment is **durable** for its entire operational lifetime. The protocol's per-store durability rules ([`08-storage.md`](08-storage.md) §3) cover individual writes; this section states the aggregate invariant they compose to.
+ >
+-> **Lifetime.** An experiment's lifetime begins when its configuration is registered ([`08-storage.md`](08-storage.md) §4.1) and continues until an authorized operator explicitly terminates it. The control-plane operation that performs explicit termination is deferred to a future chapter; until then, the protocol does not define any automatic-termination mechanism — every experiment registered against a conforming deployment continues to exist as protocol-owned state.
++> **Lifetime.** An experiment's lifetime is bounded by the lifecycle defined in §1 and the relationships in §14: it begins when the experiment is registered (its evaluation schema and other configuration persisted, [`08-storage.md`](08-storage.md) §4.1) and continues until the experiment reaches a terminal state per its configured termination conditions (§1) or is otherwise discarded by an authorized operator. This section does NOT introduce a new termination model; it constrains what must survive across substrate restarts during the lifetime §1 already defines.
+ >
+-> **Aggregate invariant.** Throughout an experiment's lifetime, the union of its protocol-owned state — tasks, ideas, variants, events, the per-experiment worker / group registry, artifacts referenced from protocol-owned objects, and the git-side artifacts the integrator publishes — MUST collectively survive process restart, host restart, and individual substrate-component restart short of explicit operator-initiated termination.
++> **Aggregate invariant.** Throughout an experiment's lifetime, the union of its protocol-owned state — tasks, ideas, variants, events, the per-experiment worker / group registry, artifacts referenced from protocol-owned objects, and the git-side artifacts the integrator publishes — MUST collectively survive process restart, host restart, and individual substrate-component restart. A conforming deployment MUST NOT cause this state to be lost as a side-effect of routine substrate maintenance (process restart, host reboot, container engine restart, individual substrate replacement, …).
+ >
+ > **Implementation latitude.** The protocol is agnostic about HOW a deployment achieves the aggregate invariant. Per-store durability ([`08-storage.md`](08-storage.md) §3.1) constrains each substrate individually; the aggregate invariant constrains the *deployment*. A conforming deployment chooses substrate bindings (host filesystem mounts, Kubernetes PersistentVolumes, managed cloud storage with explicit SLA, …) consistent with its operational constraints. Different deployments MAY satisfy this invariant differently; all conforming deployments MUST satisfy it.
+ >
+@@ -68,7 +70,7 @@
+ 
+ - Chapter 01 §10 (Storage components): one-line addition pointing at the new §13.
+ - Chapter 08 §3 (Durability): one-line cross-reference noting that §3's per-store rules compose to chapter 01 §13's aggregate invariant.
+-- Chapter 09 §5 (Scenario index): a new "Experiment durability" group row with status "(deferred — scenario authoring planned for a follow-up chunk)" and primary citation `[01-concepts.md] §13`. The check_citations harness gates on cited sections having `\bMUST\b`; §13 has at least two MUSTs (lifetime continuation; aggregate-invariant survival).
++- Chapter 09 §5 (Scenario index): a new "Experiment durability" group row with status "(deferred — scenario authoring planned for a follow-up chunk)" and primary citation `[01-concepts.md] §13`. The check_citations harness gates on cited sections having `\bMUST\b`; §13 has multiple MUSTs (aggregate-invariant survival; no-loss-as-side-effect-of-maintenance).
+ 
+ ### D.2 Why chapter 01 (not chapter 08)
+ 
+@@ -80,33 +82,51 @@
+ 
+ ### D.3 Compose binding: host bind-mounts under a per-experiment data root
+ 
+-The reference Compose deployment switches every substrate-data volume from a Docker named volume to a host bind-mount under `${EDEN_EXPERIMENT_DATA_ROOT}/`. The set of volumes to convert, with their substrate-data character:
++The reference Compose deployment switches every **durable substrate-data** volume from a Docker named volume to a host bind-mount under `${EDEN_EXPERIMENT_DATA_ROOT}/`. Volumes that hold ephemeral / scratch / bootstrap-only state stay as named volumes — explicitly classified so the durability boundary is auditable.
+ 
+-| Volume name (today) | New bind-mount target | Substrate |
++**Durable (converted to bind-mount):**
++
++| Volume name (today) | New bind-mount target | Substrate | Declared in |
++|---|---|---|---|
++| `eden-postgres-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/postgres/` | task-store | `compose.yaml` |
++| `eden-gitea-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/gitea/` | git remote (workers' canonical git surface) | `compose.yaml` |
++| `eden-artifacts-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` | artifact store (web-ui's `--artifacts-dir`) | `compose.yaml` |
++| `eden-orchestrator-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo/` | per-host bare clone (orchestrator) | `compose.yaml` |
++| `eden-executor-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo/` | per-host bare clone (executor) | `compose.yaml` |
++| `eden-evaluator-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo/` | per-host bare clone (evaluator) | `compose.yaml` |
++| `eden-web-ui-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo/` | per-host bare clone (web-ui) | `compose.yaml` |
++| `eden-orchestrator-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator/` | persisted worker registration token | `compose.yaml` |
++| `eden-ideator-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator/` | persisted worker registration token | `compose.yaml` |
++| `eden-executor-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor/` | persisted worker registration token | `compose.yaml` |
++| `eden-evaluator-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator/` | persisted worker registration token | `compose.yaml` |
++| `eden-web-ui-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui/` | persisted worker registration token | `compose.yaml` |
++
++**Ephemeral / scratch (stays a named volume; explicitly classified):**
++
++| Volume name (today) | Disposition | Why ephemeral |
+ |---|---|---|
+-| `eden-postgres-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/postgres/` | task-store |
+-| `eden-gitea-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/gitea/` | git remote (workers' canonical git surface) |
+-| `eden-artifacts-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` | artifact store (web-ui's `--artifacts-dir`) |
+-| `eden-orchestrator-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo/` | per-host bare clone (orchestrator) |
+-| `eden-executor-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo/` | per-host bare clone (executor) |
+-| `eden-evaluator-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo/` | per-host bare clone (evaluator) |
+-| `eden-web-ui-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo/` | per-host bare clone (web-ui) |
+-| `eden-orchestrator-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator/` | persisted worker registration token |
+-| `eden-ideator-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator/` | persisted worker registration token |
+-| `eden-executor-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor/` | persisted worker registration token |
+-| `eden-evaluator-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator/` | persisted worker registration token |
+-| `eden-web-ui-credentials` | `${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui/` | persisted worker registration token |
+-| `eden-blob-data` | (deleted; superseded by `artifacts/`) | legacy from 10a — only `blob-init` mounts it; unused by any reference service today |
+-| `eden-repo-init-staging` | **unchanged — stays as named volume** | ephemeral per-bootstrap state; intentionally NOT durable |
++| `eden-repo-init-staging` | unchanged — stays a named volume | bootstrap-only; setup-experiment intentionally `docker volume rm`s it on re-seed |
++| `eden-worktrees` (overlay-only, `compose.subprocess.yaml`) | unchanged — stays a named volume | per-task scratch worktrees; shared between executor and evaluator hosts but holds no protocol-owned state. A crash mid-task drops the worktree and the task is reclaimed per the chapter-04 §5 sweep — the per-host startup `git worktree remove --force` already assumes worktrees don't survive restart |
++| `eden-blob-data` | **deleted entirely if confirmed unused** (see §8.3) | legacy from 10a; only `blob-init` mounts it, and no reference service reads `/var/lib/eden/blobs` |
+ 
++**Overlay propagation.** The base [`compose.yaml`](../../reference/compose/compose.yaml) conversion is necessary but not sufficient. The two overlay files reference the same volumes:
++
++- [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml) — adds `eden-worktrees` (ephemeral, stays named volume — no change needed) and re-declares the executor/evaluator container's `eden-executor-repo` / `eden-evaluator-repo` / `eden-artifacts-data` mounts as short-form `name:target` strings (L101-110, L155-157). These short-form lines need to migrate to the new bind-mount shape so `compose -f compose.yaml -f compose.subprocess.yaml up` resolves the executor/evaluator paths to the bind-mount sources from the base file. **NB:** Compose overlay merge for `volumes:` is *additive at the list level*, NOT a string-substitution — declaring a volume in the base AND the overlay results in *both* being mounted. The overlay's volume entries therefore need to either be removed (if the base entry already covers them) or rewritten as bind-mount sources matching the base. Audit each overlay-volume line during impl.
++- [`compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml) — the worker host CLI gains `--exec-volume <name>:<target>` and `--exec-bind <host-path>:<target>` flags forwarded to spawned children as `docker run --mount source=<...>` (see [`reference/services/_common/src/eden_service_common/container_exec.py`](../../reference/services/_common/src/eden_service_common/container_exec.py) and the docker-exec wrap design at chunk-10d follow-up A). Today's overlay forwards three durable volumes by name (L110-115, L168-171):
++  - `--exec-volume eden-executor-repo:/var/lib/eden/repo` (executor-host)
++  - `--exec-volume eden-artifacts-data:/var/lib/eden/artifacts:ro` (executor-host)
++  - `--exec-volume eden-evaluator-repo:/var/lib/eden/repo` (evaluator-host)
++
++  Once those volumes become bind-mounts, the `--mount source=<name>` resolution silently creates a *fresh empty named volume* on the host daemon (the exact trap documented in AGENTS.md's "name: discipline" pitfall for DooD wraps). The fix is to switch each of these from `--exec-volume <name>:<target>` to `--exec-bind ${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>:<target>` so the spawned child's mount source is the same host filesystem path the worker host sees. The fourth forwarded mount, `--exec-volume eden-worktrees:/var/lib/eden/worktrees`, stays unchanged (eden-worktrees remains a named volume per the ephemeral table above).
++
++The `${EDEN_EXPERIMENT_DATA_ROOT}` env var is populated by setup-experiment.sh (resolved to absolute path before being written to `.env`) so all three compose files do straight `${VAR}` interpolation without needing shell expansion of `$HOME` (which compose does not perform).
++
+ Two reservations:
+ 
+ - **`eden-blob-data` is dead.** [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) at L78-84 declares a `blob-init` busybox service that mounts it; no other service in the file references it. The blob-init service exists as a `compose up --wait` ergonomics fix (forces postgres/gitea to wait on a `service_completed_successfully` dependency, so `--wait` doesn't fail on infrastructure that exits early). The volume itself holds no protocol-owned state — confirm via a one-grep `grep -rn 'eden-blob-data\|/var/lib/eden/blobs' reference/` before deleting. If the grep returns only the blob-init service, the volume can be removed entirely. If a real consumer surfaces, convert it to a bind-mount and keep `blob-init` for the `--wait` ergonomics.
+ 
+-- **`eden-repo-init-staging` stays a named volume.** It holds the bootstrap bare repo *between* `eden-repo-init` running and its first `git push` to Gitea, after which Gitea is the canonical surface for that repo state. Re-running setup-experiment intentionally discards this volume (per the existing `docker volume rm eden-repo-init-staging` in setup-experiment.sh L445). Making it durable would conflict with that discard semantics; leaving it ephemeral is the right shape. Document the distinction in a compose.yaml comment.
++- **`eden-repo-init-staging` and `eden-worktrees` stay named volumes by design.** Both hold scratch state (bootstrap-staging and per-task worktrees, respectively) and existing code already assumes they don't survive — setup-experiment.sh L445 `docker volume rm`s the staging volume on re-seed; worker hosts run `git worktree remove --force` at startup. Declaring them as durable bind-mounts would conflict with those discard semantics. Document the classification in a comment block at the top of the compose.yaml `volumes:` section so the durable-vs-ephemeral boundary is auditable.
+ 
+-The `${EDEN_EXPERIMENT_DATA_ROOT}` env var is populated by setup-experiment.sh (resolved to absolute path before being written to `.env`) so compose.yaml does straight `${VAR}` interpolation without needing shell expansion of `$HOME` (which compose does not perform).
+-
+ ### D.4 Setup-experiment changes
+ 
+ Two additions to [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh):
+@@ -184,7 +204,7 @@
+ - Managed-substrate work (Phase 13c/d/e).
+ - The portable-checkpoints concern (Phase 12b).
+ - Any change to per-store durability (chapter 08 §3 stays as-is).
+-- Updates to the docker-exec / subprocess overlays (`compose.docker-exec.yaml`, `compose.subprocess.yaml`) — they layer on top of the base compose.yaml and inherit the new bind-mount shape transparently; no changes needed in the overlays themselves.
++- (The docker-exec / subprocess overlays DO change in this chunk — see §D.3 "Overlay propagation". The earlier draft incorrectly marked these as out-of-scope; the codex round-0 review caught the gap. Overlay changes are bounded: rewrite the durable `--exec-volume <name>:<target>` references to `--exec-bind ${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>:<target>` plus audit the subprocess overlay's per-service `volumes:` lists for short-form duplicates of base-file durable mounts.)
+ 
+ ## 5. Files to touch
+ 
+@@ -194,12 +214,18 @@
+ - [`spec/v0/08-storage.md`](../../spec/v0/08-storage.md) — add one-line cross-reference at the top of §3 ("Per-store rules below compose to the aggregate experiment-durability invariant in chapter 01 §13").
+ - [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md) — add "Experiment durability" row to §5 v1 scenario index with deferred-scenarios annotation.
+ 
+-**Compose + setup (3 files):**
++**Compose + setup (5 files):**
+ 
+-- [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) — convert 12 named volumes to bind-mounts under `${EDEN_EXPERIMENT_DATA_ROOT}`; remove `eden-blob-data` if confirmed unused (with the dead-blob grep check); retain `eden-repo-init-staging` as named volume with explanatory comment.
++- [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) — convert 12 durable named volumes to bind-mounts under `${EDEN_EXPERIMENT_DATA_ROOT}`; retain `eden-repo-init-staging` as a named volume with explanatory comment; remove `eden-blob-data` if confirmed unused (with the dead-blob grep check per §8.3).
++- [`reference/compose/compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml) — audit per-service `volumes:` lists (L101-L114, L155-L161) and rewrite any short-form named-volume mount whose name resolves to a durable substrate (executor-repo, evaluator-repo, artifacts-data) to either be removed (if the base file already covers it after the bind-mount conversion) or rewritten as a bind-mount line consistent with the base file. `eden-worktrees` lines stay (overlay-declared ephemeral named volume).
++- [`reference/compose/compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml) — rewrite the three `--exec-volume <durable-name>:<target>` CLI flags forwarded to spawned children (executor-host: `eden-executor-repo`, `eden-artifacts-data`; evaluator-host: `eden-evaluator-repo`) to `--exec-bind ${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>:<target>[:<ro|rw>]` so the spawned-child mount source resolves to the same host-side bind-mount path the worker host sees. `--exec-volume eden-worktrees:/var/lib/eden/worktrees` stays (ephemeral named volume).
+ - [`reference/compose/.env.example`](../../reference/compose/.env.example) — add `EDEN_EXPERIMENT_DATA_ROOT=` entry with explanatory comment under a new "Substrate data root" section.
+ - [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) — parse `--data-root`; resolve absolute path; create substrate subdirectory tree with `chmod 0777`; write `EDEN_EXPERIMENT_DATA_ROOT=<abs>` to `.env`; preserve across re-runs; abort-on-incompatible-relocation guard.
+ 
++**Smoke scripts (1 file, possibly more if blob-data is removed):**
++
++- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh) — drop `eden-blob-data` from the volume-cleanup loops (L21, L42, L55, L69, L98 per the `grep -n blob-data` audit) if the volume is deleted from compose.yaml. Smoke runs are also re-pointed at a clean ephemeral data root (e.g., `setup-experiment.sh --data-root "$(mktemp -d)/eden-smoke"`) so they don't pollute the operator's `~/.eden/experiments/` tree. Same posture in smoke-subprocess.sh / smoke-subprocess-docker.sh / e2e.sh if they reference blob-data directly. (No durability assertions added to smokes in this chunk; that's deferred per operator decision §2.4.)
++
+ **Docs (3 files):**
+ 
+ - `docs/operations/experiment-data-durability.md` (new) — operator-facing durability documentation per §D.5.
+@@ -207,7 +233,7 @@
+ - [`docs/roadmap.md`](../../docs/roadmap.md) — one-line entry under Phase 12.
+ - [`AGENTS.md`](../../AGENTS.md) — Current phase paragraph.
+ 
+-Approximate diff size: ~150 lines spec, ~80 lines compose.yaml (rewrite of volumes block), ~70 lines setup-experiment.sh, ~200 lines new operator doc, ~20 lines roadmap/AGENTS/.env.example. Total ~520 lines added, ~30 lines removed.
++Approximate diff size: ~150 lines spec, ~80 lines compose.yaml (rewrite of volumes block), ~40 lines compose.subprocess.yaml + compose.docker-exec.yaml (volume-flag rewrites), ~70 lines setup-experiment.sh, ~200 lines new operator doc, ~30 lines smoke-script audit, ~20 lines roadmap/AGENTS/.env.example. Total ~590 lines added, ~40 lines removed.
+ 
+ ## 6. Test design
+ 
+@@ -326,6 +352,16 @@
+ 
+ Wave 1 of 12a-1 added §12 "Workers and groups" with the same insert-and-renumber pattern. That precedent went smoothly; the same audit shape applies here. The renumber affects only the trailing "Relationships" section, which has no §-subsections, so the audit set is small.
+ 
++### 8.8 Compose overlay-merge semantics on `volumes:`
++
++Compose's overlay merge for service-level `volumes:` is list-concatenation, not key-replacement. A `volumes:` entry in `compose.subprocess.yaml` does NOT supersede the same-target entry in `compose.yaml`; both lines are passed to docker daemon, and the second mount silently shadows the first at the same container path. (This is documented behavior; see Compose's [spec on multiple-files merging](https://docs.docker.com/compose/multiple-compose-files/extends/) — service-level `volumes` are appended, not replaced.) That matters here because the subprocess overlay declares `eden-executor-repo:/var/lib/eden/repo` and `eden-evaluator-repo:/var/lib/eden/repo` even though the base file already declares the same mount. After the bind-mount conversion in the base, leaving the overlay's named-volume line in place means each `compose -f base -f subprocess up` mounts BOTH a bind-mount and a fresh empty named-volume at `/var/lib/eden/repo`, with the second-listed entry winning. The fix is to remove the redundant lines from the overlay (the base file already covers them after conversion).
++
++A docker-compose-v2 `config` rendering (`docker compose --env-file .env -f compose.yaml -f compose.subprocess.yaml config | grep -A2 volumes:`) makes this auditable. Run during impl to confirm each service's resolved `volumes:` list matches expectation.
++
++### 8.9 `eden-worktrees` is shared between executor-host and evaluator-host
++
++The compose.subprocess.yaml mounts `eden-worktrees:/var/lib/eden/worktrees` on both executor-host and evaluator-host services so the evaluator can read the worktree the executor wrote. That sharing constraint is what justifies a named volume (or any other shared filesystem); the worktrees stay ephemeral (per-task scratch) but must be visible to both hosts. Switching to per-host bind-mounts would break the shared-read pattern. Keep `eden-worktrees` as a named volume with shared mount.
++
+ ## 9. Risks / things to watch
+ 
+ - **`chmod 0777` security pushback.** Codex-review may flag the world-writable substrate directories. The cidfile-dir precedent already accepted this posture for local-dev (setup-experiment.sh L240-243). The plan documents the tradeoff explicitly and points Phase 13 at the production-grade alternative. If review pushes back hard, the fallback is `chown` to a documented per-platform uid list — more correct but less portable. Hold the line on `chmod 0777` unless review surfaces a deployment scenario where it breaks (e.g., a corporate-managed macOS that disallows world-writable directories).

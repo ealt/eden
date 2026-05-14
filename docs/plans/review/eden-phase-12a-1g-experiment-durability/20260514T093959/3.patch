@@ -1,0 +1,56 @@
+--- docs/plans/review/eden-phase-12a-1g-experiment-durability/20260514T093959/2.md	2026-05-14 09:47:43
++++ docs/plans/eden-phase-12a-1g-experiment-durability.md	2026-05-14 09:54:39
+@@ -235,10 +235,17 @@
+ - [`reference/compose/.env.example`](../../reference/compose/.env.example) — add `EDEN_EXPERIMENT_DATA_ROOT=` entry with explanatory comment under a new "Substrate data root" section.
+ - [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) — parse `--data-root`; resolve absolute path; create substrate subdirectory tree with `chmod 0777`; write `EDEN_EXPERIMENT_DATA_ROOT=<abs>` to `.env`; preserve across re-runs; abort-on-incompatible-relocation guard.
+ 
+-**Smoke scripts (1 file, possibly more if blob-data is removed):**
++**Smoke scripts (4 files):**
+ 
+-- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh) — drop `eden-blob-data` from the volume-cleanup loops (L21, L42, L55, L69, L98 per the `grep -n blob-data` audit) if the volume is deleted from compose.yaml. Each smoke run is re-pointed at a clean ephemeral data root via `SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-XXXXXX)"` then `setup-experiment.sh --data-root "$SMOKE_DATA_ROOT"`, with a `trap 'rm -rf "$SMOKE_DATA_ROOT"' EXIT` at the top of the script so the bind-mount tree is cleaned up on every exit path (success, failure, signal). The existing `docker volume rm` cleanup loop at smoke.sh:21 becomes `rm -rf` on the bind-mount paths (plus the surviving named volumes `eden-repo-init-staging` and `eden-worktrees`). Same posture in smoke-subprocess.sh / smoke-subprocess-docker.sh / e2e.sh — each script declares its own per-script tempdir + trap. (No durability assertions added to smokes in this chunk; that's deferred per operator decision §2.4.)
++Each script gets the same shape: a per-script `SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-XXXXXX)"`, a `trap 'rm -rf "$SMOKE_DATA_ROOT"' EXIT` at the top so the bind-mount tree is cleaned up on every exit path (success, failure, signal), and an invocation `setup-experiment.sh --data-root "$SMOKE_DATA_ROOT"` so smoke runs don't pollute `~/.eden/experiments/`. The existing `docker volume rm` cleanup loops become `rm -rf` on the bind-mount paths (plus the named volumes `eden-repo-init-staging` and `eden-worktrees` that survive the conversion).
+ 
++- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh) — scripted-mode smoke. Drop `eden-blob-data` from the volume-cleanup loops (L21, L42, L55, L69, L98 per the `grep -n blob-data` audit) if the volume is deleted from compose.yaml.
++- [`reference/compose/healthcheck/smoke-subprocess.sh`](../../reference/compose/healthcheck/smoke-subprocess.sh) — subprocess-mode smoke; exercises the `compose.subprocess.yaml` overlay; same `mktemp -d` + `trap` + blob-data-drop posture.
++- [`reference/compose/healthcheck/smoke-subprocess-docker.sh`](../../reference/compose/healthcheck/smoke-subprocess-docker.sh) — **first-class validation surface for this chunk's `compose.docker-exec.yaml` rewrites.** Exercises the DooD wrap's `--exec-volume` / `--exec-bind` forwarding paths end-to-end. Must be in the §7 validation gate set since this chunk edits the docker-exec overlay.
++- [`reference/compose/healthcheck/e2e.sh`](../../reference/compose/healthcheck/e2e.sh) — Web UI ideator + admin-reclaim + termination drills; same posture.
++
++(No durability assertions added to smokes in this chunk; that's deferred per operator decision §2.4.)
++
+ **Docs (3 files):**
+ 
+ - `docs/operations/experiment-data-durability.md` (new) — operator-facing durability documentation per §D.5.
+@@ -263,8 +270,9 @@
+ 
+ **Compose smokes (must pass before push):**
+ 
+-- `bash reference/compose/healthcheck/smoke.sh` — scripted-mode end-to-end. Must pass with the new bind-mount shape and prove the new directory tree is created correctly. Run after `setup-experiment.sh --data-root /tmp/eden-smoke-test` to use a clean ephemeral data root rather than `~/.eden/experiments/<id>` (so smoke runs are isolated from operator's real experiments).
+-- `bash reference/compose/healthcheck/smoke-subprocess.sh` — subprocess-mode (compose.subprocess.yaml overlay). Same data-root pattern.
++- `bash reference/compose/healthcheck/smoke.sh` — scripted-mode end-to-end. Must pass with the new bind-mount shape and prove the new directory tree is created correctly. Smoke uses its own `mktemp -d` data root via the §5 pattern (so smoke runs are isolated from operator's real experiments).
++- `bash reference/compose/healthcheck/smoke-subprocess.sh` — subprocess-mode (`compose.subprocess.yaml` overlay). Same data-root pattern; covers the subprocess overlay's `volumes:` short-form audit.
++- `bash reference/compose/healthcheck/smoke-subprocess-docker.sh` — docker-exec mode (`compose.docker-exec.yaml` overlay). **Load-bearing for this chunk** because it's the only validation surface that exercises the `--exec-volume` → `--exec-bind` rewrites end-to-end (each `*_command` spawn in a sibling DooD container; if the bind-forwarding regresses to a fresh empty volume, the spawned child sees a missing repo / artifacts dir).
+ - `bash reference/compose/healthcheck/e2e.sh` — full UI + admin reclaim drill. Same data-root pattern.
+ 
+ The plan does NOT add a new CI job in this chunk. The existing `compose-smoke*` jobs cover the bind-mount path transparently — they `setup-experiment.sh` then `compose up`; whether the substrate is a named volume or a bind-mount is invisible to them.
+@@ -303,9 +311,12 @@
+ python3 scripts/check-rename-discipline.py
+ bash reference/compose/healthcheck/smoke.sh
+ bash reference/compose/healthcheck/smoke-subprocess.sh
++bash reference/compose/healthcheck/smoke-subprocess-docker.sh
+ bash reference/compose/healthcheck/e2e.sh
+ ```
+ 
++The `smoke-subprocess-docker.sh` run is load-bearing for this chunk because it's the only validation surface that exercises the `compose.docker-exec.yaml` `--exec-volume` → `--exec-bind` rewrites end-to-end. Skipping it would leave the durable-mount-forwarding code path uncovered, exactly the trap AGENTS.md's "Three load-bearing wiring traps" pitfall warns about.
++
+ If any smoke fails, do NOT push. Diagnose locally first. Per the AGENTS.md "Commands" section is the literal validation gate — narrowed subsets are not.
+ 
+ ## 8. Tricky areas
+@@ -385,7 +396,7 @@
+ - **Smoke regression from the bind-mount switch.** Postgres / gitea / eden services have different uid postures, and a bind-mount that "works on my Mac" may break on the CI Linux runner. The plan's smoke gate (run all three smoke scripts before push) is the catch.
+ - **`$HOME` expansion in compose.yaml.** Compose does NOT shell-expand `$HOME`; the env var must be pre-resolved by setup-experiment.sh into an absolute path. If an operator hand-edits `.env` to put `$HOME` literally, compose interpolation will write a substrate to a directory literally named `$HOME`. Setup-experiment writes the resolved abs path, so the default path works; the operator-hand-edited case is operator error and gets a one-line note in the operator doc.
+ - **Migration friction for in-flight experiments.** EDEN is pre-user-deployment-base, so the operator's articulated requirement is to ship the new durability shape now and document migration as a one-shot recipe. If a real user-deployment had emerged in the meantime, this calculus would change. Verify with operator at codex-review time that no production experiment depends on the named-volume shape.
+-- **Spec invariant interpreted as a control-plane mandate.** The new §13 mentions "until an authorized operator explicitly terminates it." Codex-review may surface this as begging the control-plane termination operation that Phase 12 hasn't shipped. The spec text already explicitly defers ("deferred to a future chapter"), but if review wants stronger separation, the alternative is to phrase the invariant as "until any external action causes the experiment to be discarded" without naming a control-plane operation. Either is defensible; pick whichever review prefers.
++- **Spec invariant interpreted as a control-plane mandate.** The earlier draft of §13 spoke of "until an authorized operator explicitly terminates it"; that framing was retired in favor of anchoring lifetime to chapter 01 §1's existing termination conditions (codex round 0 / round 1). The current §13 reads "until the experiment reaches a terminal state per its configured termination conditions (§1) or is otherwise discarded by an authorized operator" — the operator-discard clause is informational (handles non-spec deletion paths like operator-decided shutdown) and does NOT name a control-plane operation, so it doesn't beg a future Phase 12 chapter to be co-shipped.
+ - **PR #80 absorbs setup-experiment in ways that conflict with `--data-root` parsing.** Reviewing PR #80's setup-experiment.sh diff (already merged for the 12a-2 surface) before impl-start is required. The plan's flag-parsing additions are at the existing arg-parser, easy to absorb mechanically.
+ 
+ ## 10. Sequence within the chunk

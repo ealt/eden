@@ -1,0 +1,45 @@
+--- docs/plans/review/eden-phase-12a-1g-experiment-durability/20260514T093959/1.md	2026-05-14 09:45:28
++++ docs/plans/eden-phase-12a-1g-experiment-durability.md	2026-05-14 09:47:30
+@@ -109,6 +109,19 @@
+ | `eden-worktrees` (overlay-only, `compose.subprocess.yaml`) | unchanged — stays a named volume | per-task scratch worktrees; shared between executor and evaluator hosts but holds no protocol-owned state. A crash mid-task drops the worktree and the task is reclaimed per the chapter-04 §5 sweep — the per-host startup `git worktree remove --force` already assumes worktrees don't survive restart |
+ | `eden-blob-data` | **deleted entirely if confirmed unused** (see §8.3) | legacy from 10a; only `blob-init` mounts it, and no reference service reads `/var/lib/eden/blobs` |
+ 
++**Per-experiment bootstrap directories (NOT under `${EDEN_EXPERIMENT_DATA_ROOT}` — classified explicitly):**
++
++setup-experiment.sh creates two per-experiment directories that sit in the source tree (`reference/compose/.gitea-creds-${EXPERIMENT_ID}/`, `reference/compose/.cidfiles-${EXPERIMENT_ID}/`) and bind-mounts them into the worker hosts. They hold:
++
++- `gitea-creds-<id>/credential-helper.sh` — the per-experiment Gitea HTTP-Basic password embedded as a shell `case` block.
++- `.cidfiles-<id>/` — per-spawn container-id files for the docker-exec wrap's SIGKILL-escalation path.
++
++Neither is protocol-owned state. Both are regenerated deterministically by setup-experiment: the gitea password is preserved across re-runs via `read_env_key` from `.env`; the cidfiles dir is per-spawn ephemeral and recreated empty. Losing either is recoverable by re-running setup-experiment.
++
++**Classification: these stay under `reference/compose/` and are NOT migrated under `${EDEN_EXPERIMENT_DATA_ROOT}`.** Two reasons: (1) the cidfile dir is load-bearing for the DooD wrap design, which requires the host-side AND container-side paths to be identical (so `docker run --cidfile <path>` resolves on the daemon side to a path that exists on the worker host's filesystem — see AGENTS.md's "Three load-bearing wiring traps" pitfall). Moving the cidfile path requires touching every place that path is computed and propagated. (2) The gitea-creds dir contains only regenerable bootstrap config; it doesn't satisfy "protocol-owned state that must survive substrate restart." A re-run of setup-experiment regenerates it.
++
++Document both in the operator doc as bootstrap-only directories not part of the durable substrate. If the source-tree-pollution becomes operationally unpleasant, a future chunk can relocate them under `${EDEN_EXPERIMENT_DATA_ROOT}/bootstrap/` — out of scope here; not load-bearing for durability.
++
+ **Overlay propagation.** The base [`compose.yaml`](../../reference/compose/compose.yaml) conversion is necessary but not sufficient. The two overlay files reference the same volumes:
+ 
+ - [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml) — adds `eden-worktrees` (ephemeral, stays named volume — no change needed) and re-declares the executor/evaluator container's `eden-executor-repo` / `eden-evaluator-repo` / `eden-artifacts-data` mounts as short-form `name:target` strings (L101-110, L155-157). These short-form lines need to migrate to the new bind-mount shape so `compose -f compose.yaml -f compose.subprocess.yaml up` resolves the executor/evaluator paths to the bind-mount sources from the base file. **NB:** Compose overlay merge for `volumes:` is *additive at the list level*, NOT a string-substitution — declaring a volume in the base AND the overlay results in *both* being mounted. The overlay's volume entries therefore need to either be removed (if the base entry already covers them) or rewritten as bind-mount sources matching the base. Audit each overlay-volume line during impl.
+@@ -224,7 +237,7 @@
+ 
+ **Smoke scripts (1 file, possibly more if blob-data is removed):**
+ 
+-- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh) — drop `eden-blob-data` from the volume-cleanup loops (L21, L42, L55, L69, L98 per the `grep -n blob-data` audit) if the volume is deleted from compose.yaml. Smoke runs are also re-pointed at a clean ephemeral data root (e.g., `setup-experiment.sh --data-root "$(mktemp -d)/eden-smoke"`) so they don't pollute the operator's `~/.eden/experiments/` tree. Same posture in smoke-subprocess.sh / smoke-subprocess-docker.sh / e2e.sh if they reference blob-data directly. (No durability assertions added to smokes in this chunk; that's deferred per operator decision §2.4.)
++- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh) — drop `eden-blob-data` from the volume-cleanup loops (L21, L42, L55, L69, L98 per the `grep -n blob-data` audit) if the volume is deleted from compose.yaml. Each smoke run is re-pointed at a clean ephemeral data root via `SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-XXXXXX)"` then `setup-experiment.sh --data-root "$SMOKE_DATA_ROOT"`, with a `trap 'rm -rf "$SMOKE_DATA_ROOT"' EXIT` at the top of the script so the bind-mount tree is cleaned up on every exit path (success, failure, signal). The existing `docker volume rm` cleanup loop at smoke.sh:21 becomes `rm -rf` on the bind-mount paths (plus the surviving named volumes `eden-repo-init-staging` and `eden-worktrees`). Same posture in smoke-subprocess.sh / smoke-subprocess-docker.sh / e2e.sh — each script declares its own per-script tempdir + trap. (No durability assertions added to smokes in this chunk; that's deferred per operator decision §2.4.)
+ 
+ **Docs (3 files):**
+ 
+@@ -328,8 +341,12 @@
+ 
+ ### 8.4 Path-with-spaces / shell-special-character risk in `EDEN_EXPERIMENT_DATA_ROOT`
+ 
+-The default `$HOME/.eden/experiments/$EDEN_EXPERIMENT_ID` is shell-safe on every supported platform. But an operator passing `--data-root "/Users/alice/Documents/My Experiments/foo"` introduces a space. Compose's `${VAR}` interpolation handles this correctly if the env file's value is unquoted (compose treats the whole line after `=` as the value, no shell parsing). The `cd "$path" && pwd` resolution in setup-experiment handles spaces correctly because of the quoting. The volume-mount-target syntax `${EDEN_EXPERIMENT_DATA_ROOT}/postgres:/var/lib/postgresql/data` in compose.yaml is the one place spaces could theoretically break — compose tolerates them when the source path contains no `:` characters. Run a quick local check with a space-containing path during impl validation; document any constraint surfaced.
++The default `$HOME/.eden/experiments/$EDEN_EXPERIMENT_ID` is shell-safe on every supported platform. But operator-supplied paths can introduce trouble.
+ 
++- **Spaces.** `--data-root "/Users/alice/Documents/My Experiments/foo"` works on the bash side (`cd "$path" && pwd`), works in `.env` (compose treats the whole line after `=` as the value, no shell parsing), and works as the volume source in `${VAR}/postgres:/var/lib/postgresql/data` — compose tolerates spaces in the source path. Run a quick local check during impl validation.
++- **Colons.** `--data-root /opt/foo:bar/eden` breaks compose's volume-mount syntax — compose uses `:` as the source/target delimiter, and a colon inside the source half mis-splits the mount declaration. setup-experiment.sh MUST reject paths containing `:` with a clear error message at flag-parse time, rather than letting the bad value reach compose. The same rule applies to relative-path components like `./..` or symlinks that resolve outside their parent — setup-experiment's `cd "$path" && pwd` normalization handles those, but a `:`-rejecting check is the cheap explicit guard.
++- **Long paths.** macOS / Linux both accept ≥256-char paths; the practical risk is the postgres data directory's per-file path length blowing past `PATH_MAX` when the data root is already deep. Not a problem for the default `~/.eden/experiments/<id>/postgres/` but document in the operator doc that the data root should be a short prefix (< 100 chars is plenty of headroom).
++
+ ### 8.5 Rebase against PR #80 + PR #82
+ 
+ PR #80 (Phase 12a-2 orchestrator-as-role) touches compose.yaml + setup-experiment.sh + .env.example heavily — adds `EDEN_ORCHESTRATOR_WORKER_ID`, `EDEN_IDEATION_POLICY_*`, `EDEN_ADMINS_INITIAL_MEMBER`, new `compose.multi-orchestrator.yaml` overlay, new smokes. It also introduces `docs/operations/` with a README and several operator playbooks.

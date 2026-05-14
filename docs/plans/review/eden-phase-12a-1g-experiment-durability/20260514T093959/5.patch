@@ -1,0 +1,38 @@
+--- docs/plans/review/eden-phase-12a-1g-experiment-durability/20260514T093959/4.md	2026-05-14 09:56:58
++++ docs/plans/eden-phase-12a-1g-experiment-durability.md	2026-05-14 09:58:28
+@@ -294,10 +294,15 @@
+     --data-root "$ROOT" \
+     --env-file "$ENV_FILE"
+ 
+-# 2. Run to quiescence.
++# 2. Run to quiescence. Poll for the orchestrator's clean exit so the
++#    pre-restart state is deterministic (all seeded ideation tasks
++#    integrated to variants). Without this wait, step 6 would be
++#    validating restart persistence of bootstrap-only state, not the
++#    full post-quiescence experiment.
+ docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
+-# (optional: poll the orchestrator's exit; once the smoke logic confirms quiescence,
+-# the experiment is in steady state.)
++until [[ "$(docker inspect -f '{{.State.Status}}' eden-orchestrator 2>/dev/null)" == "exited" ]]; do
++    sleep 2
++done
+ 
+ # 3. Stop without -v so bind-mounts survive.
+ docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml down   # NO -v
+@@ -308,12 +313,14 @@
+ # 5. Bring the stack back up against the same data root + env file.
+ docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
+ 
+-# 6. Confirm worker registry survived (≥4 entries: orchestrator + ideator + executor + evaluator + web-ui).
++# 6. Confirm worker registry survived. With the default compose stack
++#    there are five worker hosts: orchestrator + ideator + executor +
++#    evaluator + web-ui. Each self-registers at startup.
+ TOKEN="$(sed -n 's/^EDEN_ADMIN_TOKEN=//p' "$ENV_FILE")"
+ curl -sS -H "Authorization: Bearer admin:$TOKEN" \
+     -H "X-Eden-Experiment-Id: $EID" \
+     "http://localhost:${TASK_STORE_HOST_PORT:-8080}/v0/experiments/$EID/workers" \
+-  | jq '.items | length'   # expect ≥4
++  | jq '.items | length'   # expect ≥5
+ ```
+ 
+ The trap cleans up at exit; for a longer-lived investigation, the operator skips the trap and `rm -rf "$ROOT"` manually when done. Document this in `docs/operations/experiment-data-durability.md` and run it once locally as part of impl validation. Codification as a CI job is the natural Phase-12a-1g-followup if it proves useful; not in scope here per operator decision §2.4.
