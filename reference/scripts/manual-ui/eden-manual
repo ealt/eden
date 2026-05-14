@@ -4,7 +4,14 @@
 Drives the ideator / executor / evaluator roles end-to-end against
 the EDEN reference Compose stack via the task-store-server wire (no
 web-UI session cookies required). Reads ``reference/compose/.env`` for
-the bearer token, experiment id, gitea creds, and host ports.
+the admin token, experiment id, gitea creds, and host ports.
+
+Post-12a-1 auth: admin operations use ``admin:$EDEN_ADMIN_TOKEN``;
+worker-gated operations (claim / submit / create_idea /
+mark_idea_ready / create_variant) use a per-worker bearer
+``<worker_id>:<credential>`` persisted at
+``/tmp/eden-manual/.credentials.json`` (mode 0600). Workers are
+registered lazily on first use.
 
 Subcommands:
 
@@ -14,8 +21,8 @@ Subcommands:
     creds                             — gitea URL with creds embedded
 
     claim <task-id> [--worker-id W] [--ttl-seconds N]
-                                      — claim a task; persists token
-                                        in /tmp/eden-manual/.claims.json
+                                      — claim a task; persists the
+                                        worker_id in /tmp/eden-manual/.claims.json
     checkout <task-id> [--dest D]     — clone gitea + check out the
                                         right ref
     push <workdir> [--branch B] [--message M]
@@ -48,6 +55,7 @@ COMPOSE_DIR = REPO_ROOT / "reference" / "compose"
 ENV_FILE = COMPOSE_DIR / ".env"
 WORK_ROOT = Path(os.environ.get("EDEN_MANUAL_WORK_ROOT", "/tmp/eden-manual"))
 CLAIMS_FILE = WORK_ROOT / ".claims.json"
+CREDENTIALS_FILE = WORK_ROOT / ".credentials.json"
 ARTIFACTS_DIR = WORK_ROOT / "artifacts"
 
 
@@ -65,7 +73,7 @@ def _load_env() -> dict[str, str]:
         env[k.strip()] = v.strip()
     required = (
         "EDEN_EXPERIMENT_ID",
-        "EDEN_SHARED_TOKEN",
+        "EDEN_ADMIN_TOKEN",
         "GITEA_HOST_PORT",
         "GITEA_REMOTE_PASSWORD",
     )
@@ -81,12 +89,29 @@ def _wire(
     *,
     method: str = "GET",
     body: object = None,
+    bearer: str | None = None,
+    swallow_401: bool = False,
 ):
+    """Call the task-store wire API.
+
+    The bearer defaults to ``admin:<EDEN_ADMIN_TOKEN>`` (spec chapter
+    07 §13). Worker-gated endpoints (claim / submit / create_idea /
+    mark_idea_ready / create_variant) MUST use a worker bearer —
+    pass ``bearer="<worker_id>:<credential>"``.
+
+    ``swallow_401``: when True, return None on HTTP 401 instead of
+    sys.exit. Used by the ``/whoami`` verify path in
+    ``_worker_bearer`` to fall through to the register-or-reissue
+    recovery branch. All other non-2xx responses still trigger
+    sys.exit.
+    """
     port = env.get("TASK_STORE_HOST_PORT", "8080")
     url = f"http://localhost:{port}{path}"
     data = None
+    if bearer is None:
+        bearer = f"admin:{env['EDEN_ADMIN_TOKEN']}"
     headers = {
-        "Authorization": f"Bearer {env['EDEN_SHARED_TOKEN']}",
+        "Authorization": f"Bearer {bearer}",
         "X-Eden-Experiment-Id": env["EDEN_EXPERIMENT_ID"],
     }
     if body is not None:
@@ -97,6 +122,8 @@ def _wire(
         with urllib.request.urlopen(req) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
+        if swallow_401 and e.code == 401:
+            return None
         sys.exit(f"wire error {e.code} on {method} {path}: {e.read().decode()[:400]}")
     if not raw:
         return None
@@ -105,6 +132,83 @@ def _wire(
 
 def _exp(env: dict[str, str]) -> str:
     return env["EDEN_EXPERIMENT_ID"]
+
+
+# ------------------------------------------------------- worker credentials
+
+def _read_credentials() -> dict[str, str]:
+    if not CREDENTIALS_FILE.is_file():
+        return {}
+    return json.loads(CREDENTIALS_FILE.read_text())
+
+
+def _save_credentials(creds: dict[str, str]) -> None:
+    CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2) + "\n")
+    CREDENTIALS_FILE.chmod(0o600)
+
+
+def _try_whoami(env: dict[str, str], *, bearer: str) -> str | None:
+    """Return the authenticated worker_id, or None on 401."""
+    resp = _wire(
+        env, f"/v0/experiments/{_exp(env)}/whoami",
+        bearer=bearer, swallow_401=True,
+    )
+    if resp is None:
+        return None
+    return resp.get("worker_id")
+
+
+def _reissue_worker(env: dict[str, str], worker_id: str) -> str:
+    resp = _wire(
+        env,
+        f"/v0/experiments/{_exp(env)}/workers/{worker_id}/reissue-credential",
+        method="POST", body={},
+    )
+    return resp["registration_token"]
+
+
+def _register_or_reissue(env: dict[str, str], worker_id: str) -> str:
+    """Register a worker; reissue if the row already exists."""
+    resp = _wire(
+        env, f"/v0/experiments/{_exp(env)}/workers",
+        method="POST", body={"worker_id": worker_id},
+    )
+    new_token = resp.get("registration_token")
+    if new_token is None:
+        # Idempotent re-register hit an existing row whose token we
+        # don't have locally. Reissue to mint a fresh one.
+        new_token = _reissue_worker(env, worker_id)
+    return new_token
+
+
+def _worker_bearer(env: dict[str, str], worker_id: str) -> str:
+    """Return ``<worker_id>:<credential>`` for the manual CLI ladder.
+
+    Differs from ``eden_service_common.auth.bootstrap_worker_credential``
+    on the stale-credential branch: where the service-host helper
+    forbids fall-through to fresh-register per spec §8.2 (the
+    long-running service owns its registry row), the manual CLI
+    accepts that the row may have been wiped by a
+    ``setup-experiment.sh`` rerun and uses register-then-reissue
+    recovery for both stale and cold-start paths.
+    """
+    creds = _read_credentials()
+    persisted = creds.get(worker_id)
+
+    if persisted is not None:
+        # Step 1: verify via /whoami.
+        bearer = f"{worker_id}:{persisted}"
+        verified_id = _try_whoami(env, bearer=bearer)
+        if verified_id == worker_id:
+            return bearer
+        # Step 2: stale — fall through to register-then-reissue.
+
+    # Step 3 (also stale-fall-through from step 2).
+    new_token = _register_or_reissue(env, worker_id)
+    creds[worker_id] = new_token
+    _save_credentials(creds)
+    return f"{worker_id}:{new_token}"
 
 
 def _now_iso() -> str:
@@ -149,9 +253,12 @@ def _write_claims(claims: dict[str, dict[str, str]]) -> None:
     CLAIMS_FILE.write_text(json.dumps(claims, indent=2) + "\n")
 
 
-def _record_claim(task_id: str, *, token: str, worker_id: str, variant_id: str | None = None) -> None:
+def _record_claim(task_id: str, *, worker_id: str, variant_id: str | None = None) -> None:
+    # Post-12a-1: claim ownership is identity-keyed (no per-claim
+    # opaque token). We only remember which worker_id holds the
+    # claim so submit can pick the right bearer.
     claims = _read_claims()
-    entry: dict[str, str] = {"token": token, "worker_id": worker_id}
+    entry: dict[str, str] = {"worker_id": worker_id}
     if variant_id is not None:
         entry["variant_id"] = variant_id
     claims[task_id] = entry
@@ -252,24 +359,29 @@ def cmd_claim(env: dict[str, str], args: argparse.Namespace) -> None:
     task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
     if task["state"] != "pending":
         sys.exit(f"error: task {args.task_id!r} is in state {task['state']!r}, not pending")
-    body: dict[str, object] = {"worker_id": args.worker_id}
+    # Post-12a-1: the claim body carries only an optional expires_at;
+    # the claimant worker_id is taken from the authenticated bearer's
+    # principal. Bootstrap a credential for --worker-id (registers
+    # it on first use, persists at /tmp/eden-manual/.credentials.json).
+    bearer = _worker_bearer(env, args.worker_id)
+    body: dict[str, object] = {}
     expires_at = None
     if args.ttl_seconds:
         expires_at = (datetime.now(UTC) + timedelta(seconds=args.ttl_seconds)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
         body["expires_at"] = expires_at
-    resp = _wire(
+    _wire(
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/claim",
-        method="POST", body=body,
+        method="POST", body=body, bearer=bearer,
     )
     variant_id = None
     if task["kind"] == "execution":
         # Pre-allocate a variant_id at claim time so the canonical work-branch
         # name is stable across the execution flow (matches web-ui posture).
         variant_id = uuid.uuid4().hex
-    _record_claim(args.task_id, token=resp["token"], worker_id=args.worker_id, variant_id=variant_id)
-    out = {"task_id": args.task_id, "token": resp["token"], "worker_id": args.worker_id}
+    _record_claim(args.task_id, worker_id=args.worker_id, variant_id=variant_id)
+    out: dict[str, object] = {"task_id": args.task_id, "worker_id": args.worker_id}
     if variant_id:
         out["variant_id"] = variant_id
     if expires_at:
@@ -321,21 +433,25 @@ def cmd_push(env: dict[str, str], args: argparse.Namespace) -> None:
     if not (workdir / ".git").is_dir():
         sys.exit(f"error: {workdir} is not a git checkout")
     branch = args.branch or "manual-work"
-    msg = args.message or "manual executor change"
     _git("checkout", "-B", branch, cwd=workdir)
     _git("add", "-A", cwd=workdir)
-    diff = _git("diff", "--cached", "--quiet", cwd=workdir, check=False)
-    if diff.returncode == 0:
-        sys.exit("error: no staged changes to commit")
-    # Pin identity + disable signing so the commit doesn't depend on
-    # ambient global git config (gpgsign with 1Password etc. fails in
-    # noninteractive subprocess).
-    _git(
-        "-c", "commit.gpgsign=false",
-        "-c", "user.name=eden-manual",
-        "-c", "user.email=manual@eden.invalid",
-        "commit", "-m", msg, cwd=workdir,
-    )
+    has_staged = _git("diff", "--cached", "--quiet", cwd=workdir, check=False).returncode != 0
+    if has_staged:
+        # Pin identity + disable signing so the commit doesn't depend on
+        # ambient global git config (gpgsign with 1Password etc. fails in
+        # noninteractive subprocess).
+        msg = args.message or "manual executor change"
+        _git(
+            "-c", "commit.gpgsign=false",
+            "-c", "user.name=eden-manual",
+            "-c", "user.email=manual@eden.invalid",
+            "commit", "-m", msg, cwd=workdir,
+        )
+    elif args.message:
+        print(
+            "warning: --message provided but working tree is clean; pushing existing HEAD",
+            file=sys.stderr,
+        )
     _git("push", "origin", branch, "--force-with-lease", cwd=workdir)
     sha = _git("rev-parse", "HEAD", cwd=workdir, capture=True).stdout.strip()
     print(json.dumps({"sha": sha, "branch": branch, "workdir": str(workdir)}, indent=2))
@@ -345,12 +461,12 @@ def cmd_push(env: dict[str, str], args: argparse.Namespace) -> None:
 
 def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     claim = _get_claim(args.task_id)
-    token = claim["token"]
+    bearer = _worker_bearer(env, claim["worker_id"])
     if args.status == "error":
         _wire(
             env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
             method="POST",
-            body={"token": token, "payload": {"status": "error"}},
+            body={"payload": {"status": "error"}}, bearer=bearer,
         )
         _drop_claim(args.task_id)
         print(json.dumps({"task_id": args.task_id, "status": "error"}, indent=2))
@@ -382,24 +498,22 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
             "state": "drafting",
             "created_at": _now_iso(),
         }
-        _wire(env, f"/v0/experiments/{_exp(env)}/ideas", method="POST", body=idea)
+        _wire(env, f"/v0/experiments/{_exp(env)}/ideas", method="POST", body=idea, bearer=bearer)
         idea_ids.append(idea_id)
 
     # Phase 2: mark_ready for each.
     for iid in idea_ids:
         _wire(
             env, f"/v0/experiments/{_exp(env)}/ideas/{iid}/mark-ready",
-            method="POST",
+            method="POST", bearer=bearer,
         )
 
     # Phase 3: submit the ideation task.
     _wire(
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
         method="POST",
-        body={
-            "token": token,
-            "payload": {"status": "success", "idea_ids": idea_ids},
-        },
+        body={"payload": {"status": "success", "idea_ids": idea_ids}},
+        bearer=bearer,
     )
     _drop_claim(args.task_id)
     print(json.dumps({
@@ -417,7 +531,7 @@ def _branch_name(slug: str, variant_id: str) -> str:
 
 def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     claim = _get_claim(args.task_id)
-    token = claim["token"]
+    bearer = _worker_bearer(env, claim["worker_id"])
     variant_id = claim.get("variant_id")
     if not variant_id:
         sys.exit("error: execution claim record is missing variant_id; reclaim the task")
@@ -433,7 +547,8 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         _wire(
             env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
             method="POST",
-            body={"token": token, "payload": {"status": "error", "variant_id": variant_id}},
+            body={"payload": {"status": "error", "variant_id": variant_id}},
+            bearer=bearer,
         )
         _drop_claim(args.task_id)
         print(json.dumps({"task_id": args.task_id, "status": "error"}, indent=2))
@@ -467,6 +582,26 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
                 f"error: commit {sha!r} does not descend from declared parent {parent!r}"
             )
 
+    # No-op guard: refuse to submit a variant whose tree is identical
+    # to parent_commits[0]'s tree. Catches both `sha == parent[0]`
+    # (literal no-op) and empty commits on top of parent (same tree,
+    # new SHA). The CLI does this defensively; spec-level enforcement
+    # is RFC'd at docs/design/executor-no-op-variant-rejection.md.
+    if idea["parent_commits"]:
+        head_tree = _git(
+            "rev-parse", f"{sha}^{{tree}}",
+            cwd=workdir, capture=True,
+        ).stdout.strip()
+        parent_tree = _git(
+            "rev-parse", f"{idea['parent_commits'][0]}^{{tree}}",
+            cwd=workdir, capture=True,
+        ).stdout.strip()
+        if head_tree == parent_tree:
+            sys.exit(
+                f"error: variant tree is identical to parent_commits[0] tree "
+                f"({head_tree[:12]}) — refusing to submit a no-op variant"
+            )
+
     branch = _branch_name(idea["slug"], variant_id)
 
     # Phase 1: create_variant in starting state. ``branch`` is REQUIRED
@@ -482,7 +617,7 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     }
     if args.description:
         variant["description"] = args.description
-    _wire(env, f"/v0/experiments/{_exp(env)}/variants", method="POST", body=variant)
+    _wire(env, f"/v0/experiments/{_exp(env)}/variants", method="POST", body=variant, bearer=bearer)
 
     # Phase 2: push the canonical work branch directly to gitea.
     # `<sha>:refs/heads/<branch>` creates the named ref on origin.
@@ -494,13 +629,13 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
         method="POST",
         body={
-            "token": token,
             "payload": {
                 "status": "success",
                 "variant_id": variant_id,
                 "commit_sha": sha,
             },
         },
+        bearer=bearer,
     )
     _drop_claim(args.task_id)
     print(json.dumps({
@@ -533,7 +668,7 @@ def _parse_field(raw: str) -> tuple[str, object]:
 
 def cmd_evaluation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     claim = _get_claim(args.task_id)
-    token = claim["token"]
+    bearer = _worker_bearer(env, claim["worker_id"])
 
     task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
     variant_id = task["payload"]["variant_id"]
@@ -550,7 +685,7 @@ def cmd_evaluation_submit(env: dict[str, str], args: argparse.Namespace) -> None
     _wire(
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
         method="POST",
-        body={"token": token, "payload": payload},
+        body={"payload": payload}, bearer=bearer,
     )
     _drop_claim(args.task_id)
     print(json.dumps({"task_id": args.task_id, "status": args.status, "variant_id": variant_id}, indent=2))

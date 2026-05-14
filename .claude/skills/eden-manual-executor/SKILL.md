@@ -55,8 +55,11 @@ Present a digest:
 $EDEN claim <task-id> --worker-id eden-manual
 ```
 
-Token + variant_id are persisted to `/tmp/eden-manual/.claims.json`.
-The variant_id is stable for the life of this claim.
+The variant_id is persisted to `/tmp/eden-manual/.claims.json`
+(post-12a-1, claim ownership is identity-keyed — no per-claim
+opaque token; the CLI's worker bearer is cached at
+`/tmp/eden-manual/.credentials.json`). The variant_id is stable
+for the life of this claim.
 
 ### Phase 4: Clone at the parent commit (automatic)
 
@@ -140,3 +143,12 @@ task_id — the user can play evaluator next via `/eden-manual-evaluator`.
 - **If reachability check fails** (`commit X not reachable in workdir`):
   the user almost certainly forgot to push. Run `git -C <workdir> push
   origin <branch>` and retry execution-submit.
+- **No-op variant guard**: if `execution-submit` exits with
+  `variant tree is identical to parent_commits[0] tree`, the
+  proposed variant doesn't actually change the parent's tree. Either
+  produce a real change or — if the intent is to declare "I tried
+  and failed" — use `--status error` instead.
+- **`wire error 401` on `/workers...`?** The running stack's
+  `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
+  reading. Bounce the stack against the current `.env`, or re-checkout
+  the worktree the stack was brought up against.

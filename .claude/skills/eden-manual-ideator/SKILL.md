@@ -60,7 +60,7 @@ mention the others. Don't ask unless the user has expressed a preference.
 $EDEN claim <task-id> --worker-id eden-manual
 ```
 
-The token is persisted in `/tmp/eden-manual/.claims.json` automatically.
+Post-12a-1: claim ownership is identity-keyed (no per-claim opaque token). The CLI persists `{worker_id}` per task in `/tmp/eden-manual/.claims.json` so the submit step picks the matching worker bearer (cached at `/tmp/eden-manual/.credentials.json`).
 
 ### Phase 3: Elicit ideas from the user (judgment)
 
@@ -125,3 +125,7 @@ cd /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose && \
   on a nonsense SHA.
 - **Content is the spec** the executor reads. Prefer concrete language
   over vague ("add a single line to README" beats "improve docs").
+- **`wire error 401` on `/workers...`?** The running stack's
+  `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
+  reading. Bounce the stack against the current `.env`, or re-checkout
+  the worktree the stack was brought up against.
