@@ -1,0 +1,12 @@
+**1. Missing Context**
+
+Assessment: much better. The earlier scope-inventory and endpoint-taxonomy gaps are mostly resolved, and I don’t see a major missing-context blocker now.
+
+**2. Feasibility**
+
+Assessment: still one significant feasibility issue, and it affects the plan’s main auth-recovery story.
+
+- The new recovery ladder in [docs/plans/eden-phase-12a-1h-cli-port.md](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/docs/plans/eden-phase-12a-1h-cli-port.md:112), [same](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/docs/plans/eden-phase-12a-1h-cli-port.md:141), and the manual test at [same](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/docs/plans/eden-phase-12a-1h-cli-port.md:686) assumes a stale persisted credential can recover through `/whoami` 401 -> `reissue_credential`. That works for the long-running worker hosts, but not for `eden-manual` after a fresh experiment/registry rebuild, because `eden-manual` is registered lazily. `reissue_credential` on an unknown worker fails; that is explicit in [test_workers.py](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/reference/packages/eden-storage/tests/test_workers.py:156), and the wire route is a straight pass-through in [server.py](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/reference/packages/eden-wire/src/eden_wire/server.py:702). For this CLI, the stale-credential branch likely needs to try `register_worker` first, then fall through to `reissue_credential` only if register returns the existing row without `registration_token`.
+- The admin-token-rotation check in [docs/plans/eden-phase-12a-1h-cli-port.md](/Users/ericalt/Documents/eden-worktrees/phase-12a-1h-cli-port/docs/plans/eden-phase-12a-1h-cli-port.md:696) is internally inconsistent. It says `reissue_credential` “ALSO returns 401” and then immediately says “The reissue actually succeeds.” That needs to be made concrete before implementation, because right now the recovery story for that case is not mechanically clear.
+
+I’d stop here before alternatives/completeness/edge cases. The plan is materially better, but it is not ready yet because its core “automatic stale-credential recovery” path is still modeled after the always-registered service workers, while `eden-manual` is an on-demand worker and needs a different stale-token branch.

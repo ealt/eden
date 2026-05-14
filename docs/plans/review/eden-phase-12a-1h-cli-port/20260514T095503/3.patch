@@ -1,0 +1,64 @@
+--- docs/plans/review/eden-phase-12a-1h-cli-port/20260514T095503/2.md	2026-05-14 10:05:19
++++ docs/plans/eden-phase-12a-1h-cli-port.md	2026-05-14 10:06:50
+@@ -573,7 +573,24 @@
+ 
+ Line 58 replacement: "Token + variant_id are persisted to `/tmp/eden-manual/.claims.json`."
+ → "The variant_id is persisted to `/tmp/eden-manual/.claims.json` (post-12a-1, claim ownership is identity-keyed — no per-claim opaque token; the CLI's worker bearer is picked up from `/tmp/eden-manual/.credentials.json`)."
++
++#### `.env`-divergence troubleshooting note (all three role skills)
++
++Each of the three skills above gains a one-line troubleshooting
++addition at the bottom of its "Verify" / "Best practices" section
++(whichever is the existing tail of operator-facing notes), worded
++roughly:
++
++> If `eden-manual` exits with `wire error 401 on ... /workers...`,
++> the running stack's `EDEN_ADMIN_TOKEN` has diverged from the
++> `.env` file the CLI is reading. Bounce the stack against the
++> current `.env`, or re-checkout the worktree the stack was
++> brought up against.
+ 
++The exact placement is implementation discretion; the goal is one
++copy-pastable hint per role skill so an operator hitting the §4.D
++corner case sees it without leaving their current skill.
++
+ No other touches. Specifically:
+ 
+ - DO NOT touch any `rationale → content` reference; main is already
+@@ -592,9 +609,14 @@
+ - Add `docs/design/executor-no-op-variant-rejection.md` (with the
+   issue-#83 reference inserted).
+ - Edit `.claude/skills/eden-manual-evaluator/SKILL.md` (1-line auth
+-  curl fix).
++  curl fix; plus a one-line `.env`-divergence troubleshooting note
++  per §4.D).
+ - Edit `.claude/skills/eden-manual-ideator/SKILL.md` (1-line claim
+-  semantics note).
++  semantics note; plus the same one-line `.env`-divergence
++  troubleshooting note).
++- Edit `.claude/skills/eden-manual-executor/SKILL.md` (1-line
++  `Token + variant_id are persisted` fix; plus the same one-line
++  `.env`-divergence troubleshooting note).
+ 
+ ### 4.B Out of scope
+ 
+@@ -893,14 +915,16 @@
+   conformance scenario. Will land in its own chunk; on landing, the
+   CLI guard becomes belt-and-suspenders (keep it; it costs nothing
+   and surfaces the error one round-trip earlier).
+-- **Operator-facing troubleshooting docs** for the 401-on-stale-cred
+-  case (Decision 5 + §7.A). A small skill-doc addition; bundled
+-  into a future "skill docs polish" chunk.
+ - **CLI `--help`-style invocation hint** when `_load_env` fails to
+   find `EDEN_ADMIN_TOKEN`: include a "did you re-run
+   setup-experiment.sh after the 12a-1 stack update?" hint. Polish;
+   not required for this chunk.
+ 
++(The 401-on-stale-cred case is no longer deferred — the
++register-first-then-reissue ladder handles it automatically; the
++remaining `.env`-divergence corner case ships as a one-line note
++in §D.10.)
++
+ ## 11. Estimated effort
+ 
+ Plan stage: ~30 min to draft, ~2-3 codex-review rounds.

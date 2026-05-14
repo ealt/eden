@@ -1,0 +1,27 @@
+--- docs/plans/review/eden-phase-12a-1h-cli-port/20260514T095503/3.md	2026-05-14 10:07:07
++++ docs/plans/eden-phase-12a-1h-cli-port.md	2026-05-14 10:08:10
+@@ -271,8 +271,9 @@
+ 
+     `swallow_401`: when True, return None on HTTP 401 instead of
+     sys.exit. Used by the `/whoami` verify path in
+-    `_worker_bearer` to fall through to reissue. All other
+-    non-2xx responses still trigger sys.exit.
++    `_worker_bearer` to fall through to the register-or-reissue
++    recovery branch. All other non-2xx responses still trigger
++    sys.exit.
+     """
+     port = env.get("TASK_STORE_HOST_PORT", "8080")
+     url = f"http://localhost:{port}{path}"
+@@ -637,9 +638,9 @@
+ | `reference/scripts/manual-ui/eden-manual` | Auth port + no-op guard + push-tolerance |
+ | `docs/design/executor-no-op-variant-rejection.md` | New file (with issue #83 ref) |
+ | `docs/plans/eden-phase-12a-1h-cli-port.md` | This plan |
+-| `.claude/skills/eden-manual-evaluator/SKILL.md` | 1-line `EDEN_SHARED_TOKEN` → admin curl fix |
+-| `.claude/skills/eden-manual-ideator/SKILL.md` | 1-line claim-token semantics update |
+-| `.claude/skills/eden-manual-executor/SKILL.md` | 1-line `Token + variant_id are persisted` fix |
++| `.claude/skills/eden-manual-evaluator/SKILL.md` | `EDEN_SHARED_TOKEN` → admin curl fix + 1-line `.env`-divergence troubleshooting note |
++| `.claude/skills/eden-manual-ideator/SKILL.md` | claim-token semantics update + 1-line `.env`-divergence troubleshooting note |
++| `.claude/skills/eden-manual-executor/SKILL.md` | `Token + variant_id are persisted` fix + 1-line `.env`-divergence troubleshooting note |
+ 
+ No new tests. The CLI is not under pytest (it's an operator-facing
+ script driven against a live Compose stack); operator manual
