@@ -137,15 +137,44 @@ def _exp(env: dict[str, str]) -> str:
 # ------------------------------------------------------- worker credentials
 
 def _read_credentials() -> dict[str, str]:
+    # Corrupt-state recovery: parse / shape failures (truncated file,
+    # invalid JSON, non-object value) are treated as cold-start so
+    # the register-or-reissue ladder can rebuild the entry.
     if not CREDENTIALS_FILE.is_file():
         return {}
-    return json.loads(CREDENTIALS_FILE.read_text())
+    try:
+        raw = json.loads(CREDENTIALS_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        print(
+            f"warning: {CREDENTIALS_FILE} is unreadable ({e}); ignoring and recovering",
+            file=sys.stderr,
+        )
+        return {}
+    if not isinstance(raw, dict):
+        print(
+            f"warning: {CREDENTIALS_FILE} is not a JSON object; ignoring and recovering",
+            file=sys.stderr,
+        )
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(v, str)}
 
 
 def _save_credentials(creds: dict[str, str]) -> None:
+    # Atomic, 0o600-from-creation write: open with O_CREAT|O_EXCL into a
+    # sibling temp file with mode 0o600, then os.replace() into place.
+    # Avoids the brief wrong-permissions window of write_text-then-chmod.
+    # No advisory lock around read/write — the manual CLI assumes a
+    # single operator; concurrent sessions are out of scope.
     CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2) + "\n")
-    CREDENTIALS_FILE.chmod(0o600)
+    tmp_path = CREDENTIALS_FILE.with_suffix(
+        CREDENTIALS_FILE.suffix + f".{os.getpid()}.tmp"
+    )
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, (json.dumps(creds, indent=2) + "\n").encode())
+    finally:
+        os.close(fd)
+    os.replace(str(tmp_path), str(CREDENTIALS_FILE))
 
 
 def _try_whoami(env: dict[str, str], *, bearer: str) -> str | None:

@@ -111,10 +111,14 @@ This:
 
 1. Fetches origin in the workdir.
 2. Verifies commit exists + descends from declared parent_commits.
-3. Creates a `Variant(starting, branch=work/<slug>-<variant_id>,
-   commit_sha=<sha>)` in the store.
-4. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to gitea.
-5. Submits the execution task with status=success.
+3. Refuses no-op variants (tree-identical to `parent_commits[0]`).
+4. Creates a `Variant(starting, branch=work/<slug>-<variant_id>)`
+   in the store. NOTE: `commit_sha` is NOT set at create_variant
+   time — it's written atomically when the orchestrator accepts
+   the submit (per spec ch03 §3.2 step 1).
+5. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to gitea.
+6. Submits the execution task with `status=success` and the
+   `commit_sha` in the payload.
 
 ### Phase 7: Verify (automatic)
 
