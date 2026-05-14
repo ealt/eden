@@ -160,11 +160,14 @@ def _read_credentials() -> dict[str, str]:
 
 
 def _save_credentials(creds: dict[str, str]) -> None:
-    # Atomic, 0o600-from-creation write: open with O_CREAT|O_EXCL into a
-    # sibling temp file with mode 0o600, then os.replace() into place.
-    # Avoids the brief wrong-permissions window of write_text-then-chmod.
-    # No advisory lock around read/write — the manual CLI assumes a
-    # single operator; concurrent sessions are out of scope.
+    # Atomic, 0o600-from-creation write: open the per-PID-named temp
+    # file with O_CREAT|O_TRUNC and mode 0o600, then os.replace() into
+    # place. Avoids the brief wrong-permissions window of
+    # write_text-then-chmod. We don't use O_EXCL because the temp name
+    # encodes our PID, so a leftover from a prior crash by this process
+    # ID is correctly clobbered. No advisory lock around read/write —
+    # the manual CLI assumes a single operator; concurrent sessions
+    # are out of scope.
     CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = CREDENTIALS_FILE.with_suffix(
         CREDENTIALS_FILE.suffix + f".{os.getpid()}.tmp"
