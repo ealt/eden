@@ -106,6 +106,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # 12a-1f: --readonly-password reads EDEN_READONLY_PASSWORD; we
+    # also pass --artifacts-dir so the /_reference/artifacts route
+    # serves real bytes via a read-only bind-mount of the artifacts
+    # substrate (see the `volumes:` block below; 12a-1g converted
+    # the artifacts store from a named volume to a host bind-mount
+    # under the experiment data root). In the base scripted-mode
+    # stack the artifacts dir is mounted ro here too, but the
+    # scripted ideator emits fake URIs so the route returns 404;
+    # that's fine — see plan §6.6.
+    environment:
+      EDEN_READONLY_PASSWORD: ${EDEN_READONLY_PASSWORD:?EDEN_READONLY_PASSWORD must be set (run setup-experiment)}
     command:
       - python
       - -m
@@ -118,6 +129,8 @@ services:
       - /etc/eden/experiment-config.yaml
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?EDEN_ADMIN_TOKEN must be set (run setup-experiment)}
+      - --artifacts-dir
+      - /var/lib/eden/artifacts
       - --host
       - 0.0.0.0
       - --port
@@ -127,6 +140,14 @@ services:
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
+    volumes:
+      # 12a-1f: read-only bind-mount of the artifacts dir so the
+      # /_reference/experiments/<id>/artifacts/<path> route can
+      # serve idea content + evaluator-supplied artifacts. The
+      # web-ui already bind-mounts this same dir rw (per 12a-1g
+      # durability migration); the task-store-server gets ro
+      # because it only reads.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts:ro
     ports:
       # Exposed on the host for manual-UI tooling (scripts under
       # reference/scripts/manual-ui/ and the eden-manual-* skills).

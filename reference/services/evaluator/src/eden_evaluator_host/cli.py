@@ -11,6 +11,7 @@ from eden_service_common import (
     StopFlag,
     add_common_arguments,
     add_exec_arguments,
+    add_substrate_arguments,
     configure_logging,
     get_logger,
     install_stop_handlers,
@@ -20,7 +21,9 @@ from eden_service_common import (
     reap_orphaned_containers,
     require_command,
     resolve_exec_args,
+    resolve_substrate_args,
     resolve_worker_bearer,
+    substrate_args_for_exec_mode,
     wait_for_task_store,
 )
 from eden_wire import StoreClient
@@ -97,6 +100,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     add_exec_arguments(parser)
+    # 12a-1f substrate-access env flags. See §5.6 of the plan.
+    add_substrate_arguments(parser)
     args = parser.parse_args(argv)
     if args.mode == "subprocess":
         for attr in ("experiment_dir", "repo_path"):
@@ -202,6 +207,33 @@ def main(argv: list[str] | None = None) -> int:
             host_id = socket.gethostname()
             if exec_args.mode == "docker":
                 reap_orphaned_containers(role="evaluator", host=host_id)
+            # 12a-1f substrate access: thread the four substrate env
+            # vars (EDEN_REPO_DIR / EDEN_ARTIFACT_URL /
+            # EDEN_ARTIFACT_PATH_ROOT / EDEN_READONLY_STORE_URL) into
+            # the spawned child. Suppressed under --exec-mode docker
+            # per §6.4 / §8.9 (sibling containers can't resolve
+            # compose-internal hostnames).
+            substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
+            substrate = substrate_args_for_exec_mode(
+                substrate, exec_mode=exec_args.mode
+            )
+            if exec_args.mode == "docker" and (
+                args.repo_path is not None
+                or args.artifact_url is not None
+                or args.readonly_store_url is not None
+            ):
+                log.warning(
+                    "substrate_access_disabled_in_exec_mode_docker",
+                    extra={
+                        "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+                    },
+                )
+            env.update(substrate.to_env())
+            # parse_args validates these are set in subprocess mode;
+            # asserts narrow types for pyright + surface a clear
+            # internal-bug message if the invariant ever breaks.
+            assert args.experiment_dir is not None
+            assert args.repo_path is not None
             sub_config = EvaluatorSubprocessConfig(
                 command=command,
                 experiment_dir=Path(args.experiment_dir).resolve(),

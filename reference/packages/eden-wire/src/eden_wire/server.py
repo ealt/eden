@@ -22,7 +22,11 @@ serializes the result.
 from __future__ import annotations
 
 import asyncio
+import errno
+import os
+import stat
 import time
+from pathlib import Path
 from typing import Any
 
 from eden_contracts import Idea, TaskAdapter, Variant
@@ -40,16 +44,22 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from .auth import (
+    authenticate,
     install_auth_middleware,
     require_admin,
     require_worker,
 )
 from .errors import (
+    ArtifactServingDisabled,
+    ArtifactTooLarge,
     BadRequest,
     ExperimentIdMismatch,
     Forbidden,
+    InvalidPath,
     Unauthorized,
+    WireReferenceError,
     envelope_for_error,
+    envelope_for_reference_error,
 )
 from .models import (
     AddGroupMemberRequest,
@@ -70,6 +80,161 @@ from .models import (
 
 PROBLEM_JSON = "application/problem+json"
 
+MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
+"""1 MiB cap on the artifact-serving route (12a-1f §D.2.a).
+
+Mirrors the existing ``_read_inline_artifact`` helper in the
+web-ui. Larger files return 413 with no partial body. Pairs with
+the fixed-bytes ``Response(content=…)`` delivery model in
+``_serve_artifact`` (see §8.2 of the plan): ``FileResponse`` would
+re-open the path at body-write time and break the descriptor-walk
+TOCTOU closure.
+"""
+
+_REJECT_PATH_COMPONENTS = frozenset({"", ".", ".."})
+"""Path components that are NEVER valid in an artifact request.
+
+Caught by the pre-FS-call guard in ``_open_artifact_fd`` so the
+descriptor-walk below sees only well-formed segments. ``""`` covers
+leading / trailing / doubled slashes; ``.`` and ``..`` cover
+traversal attempts. NUL bytes are checked separately.
+"""
+
+# Per 12a-1f Decision 6: each path-walking step opens
+# ``O_PATH | O_DIRECTORY | O_NOFOLLOW``. Root + all intermediates
+# use this; only the terminal switches to ``O_RDONLY`` because we
+# want to read its bytes. Deliberately do NOT ``Path.resolve()``
+# the configured root — a symlinked ``artifacts_dir`` would be
+# dereferenced before the walk and break the
+# "symlinks at ANY request component → ELOOP" invariant.
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+"""Directory-walk flags for the artifact route's component walk.
+
+Python's stdlib does not expose ``O_PATH``; ``O_RDONLY |
+O_DIRECTORY | O_NOFOLLOW`` is functionally equivalent for the
+descriptor-relative walk (we only use the fd as ``dir_fd=`` for
+the next ``os.open`` call; we never read from it). The
+``O_CLOEXEC`` flag prevents the dirfd from leaking to a forked
+child if the server later spawns subprocesses (defensive — the
+wire server does not fork today).
+"""
+
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+"""Terminal-file open flags for the artifact route."""
+
+
+class _SymlinkRejected(OSError):
+    """The walk hit a symlink at some component.
+
+    Raised in place of the OS-specific errno (Linux: ELOOP; macOS
+    can return ENOTDIR for a symlink-to-dir opened with
+    ``O_DIRECTORY|O_NOFOLLOW``). The route handler catches this
+    distinct exception and maps to 403; treating it as a normal
+    ``OSError`` would conflate the symlink case with "intermediate
+    is a regular file" (ENOTDIR).
+    """
+
+
+def _open_artifact_fd(root: Path, rel_path: str) -> int:
+    """Open ``rel_path`` beneath ``root`` and return the fd.
+
+    Descriptor-relative walk: every component (root, intermediates,
+    terminal) is opened with ``O_NOFOLLOW``, anchored by the prior
+    step's fd via ``dir_fd=``. To make symlink rejection OS-portable
+    (macOS returns ENOTDIR rather than ELOOP for a symlink-to-dir
+    opened with ``O_DIRECTORY|O_NOFOLLOW``), each step first calls
+    ``os.lstat(component, dir_fd=parent_fd)`` and rejects symlinks
+    via :class:`_SymlinkRejected`. ``O_NOFOLLOW`` on the subsequent
+    ``os.open`` is the TOCTOU backstop — if an attacker swaps the
+    real inode for a symlink between the lstat and the open, the
+    open fails with ELOOP and we still get the rejection. Malformed
+    components (``..``, empty segment, NUL byte) raise
+    ``ValueError`` BEFORE any filesystem call (caller maps to 400).
+
+    This is the descriptor-relative equivalent of Linux 5.6+
+    ``openat2(RESOLVE_BENEATH)`` and closes the
+    intermediate-component TOCTOU window: a concurrent renamer
+    cannot swap an intermediate dir to a symlink while we walk
+    because each step is anchored by the prior step's fd, not by
+    a re-resolved path string.
+
+    The operator-configured root is treated as TRUSTED: only the
+    root's trailing basename participates in the ``O_NOFOLLOW``
+    guarantee at the initial ``os.open(root, …)`` step. Ancestor
+    components of the root may legitimately be symlinks (e.g.
+    ``/var/lib/eden → /mnt/eden-state``).
+    """
+    parts = rel_path.split("/")
+    if any(p in _REJECT_PATH_COMPONENTS for p in parts):
+        raise ValueError(f"invalid path component in {rel_path!r}")
+    if any("\0" in p for p in parts):
+        raise ValueError(f"NUL byte in path {rel_path!r}")
+
+    root_fd = os.open(root, _DIR_FLAGS)
+    try:
+        current_fd = root_fd
+        for intermediate in parts[:-1]:
+            _check_not_symlink(intermediate, dir_fd=current_fd)
+            try:
+                next_fd = os.open(intermediate, _DIR_FLAGS, dir_fd=current_fd)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    # Race: an attacker may have swapped the
+                    # inode between our lstat and this open.
+                    # ELOOP on Linux, ENOTDIR on macOS when the
+                    # swapped-in inode is a symlink to a non-dir.
+                    raise _SymlinkRejected(
+                        exc.errno,
+                        f"symlink hit at intermediate component "
+                        f"{intermediate!r} during open",
+                    ) from exc
+                raise
+            finally:
+                if current_fd != root_fd:
+                    os.close(current_fd)
+            current_fd = next_fd
+        terminal = parts[-1]
+        _check_not_symlink(terminal, dir_fd=current_fd)
+        try:
+            terminal_fd = os.open(terminal, _FILE_FLAGS, dir_fd=current_fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise _SymlinkRejected(
+                    exc.errno,
+                    f"symlink hit at terminal component {terminal!r} during open",
+                ) from exc
+            raise
+        finally:
+            if current_fd != root_fd:
+                os.close(current_fd)
+        return terminal_fd
+    finally:
+        os.close(root_fd)
+
+
+def _check_not_symlink(component: str, *, dir_fd: int) -> None:
+    """Pre-open lstat check rejecting symlink components.
+
+    Raises :class:`_SymlinkRejected` if ``component`` is a symbolic
+    link in ``dir_fd``'s directory. Does NOT raise on non-existent
+    paths — the subsequent ``os.open`` handles those uniformly.
+    """
+    try:
+        st = os.lstat(component, dir_fd=dir_fd)
+    except FileNotFoundError:
+        # The component doesn't exist; let the open call raise the
+        # canonical FileNotFoundError so the handler maps to 404.
+        return
+    except OSError:
+        # Other lstat errors (EACCES, etc.) — let the subsequent
+        # open surface them uniformly.
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise _SymlinkRejected(
+            errno.ELOOP,
+            f"symlink not allowed at component {component!r}",
+        )
+
 
 def make_app(
     store: Store,
@@ -77,6 +242,7 @@ def make_app(
     subscribe_timeout: float = 30.0,
     subscribe_poll_interval: float = 0.1,
     admin_token: str | None = None,
+    artifacts_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
 
@@ -98,10 +264,23 @@ def make_app(
     (verified against the Store's ``verify_worker_credential``).
     ``None`` (test / in-process default) disables auth — convenient
     for unit tests but NOT spec-conformant for a deployed server.
+
+    ``artifacts_dir``, when non-``None``, enables the 12a-1f
+    reference-only artifact-serving route at
+    ``/_reference/experiments/{experiment_id}/artifacts/{path:path}``.
+    The route is ALWAYS mounted regardless; when ``artifacts_dir``
+    is ``None`` every request to it returns 503
+    ``eden://reference-error/artifact-serving-disabled``. See
+    ``spec/v0/reference-bindings/worker-host-subprocess.md`` §9 for
+    the substrate-access posture this route supports.
     """
     app = FastAPI(
         title=f"EDEN task store — {store.experiment_id}",
         version="0",
+    )
+
+    artifact_root: Path | None = (
+        Path(artifacts_dir) if artifacts_dir is not None else None
     )
 
     if admin_token is not None:
@@ -269,6 +448,25 @@ def make_app(
         request: Request, exc: Forbidden
     ) -> JSONResponse:
         envelope = envelope_for_error(exc, instance=str(request.url))
+        return JSONResponse(
+            status_code=envelope.status,
+            media_type=PROBLEM_JSON,
+            content=envelope.to_dict(),
+        )
+
+    @app.exception_handler(WireReferenceError)
+    async def _wire_reference_error_handler(
+        request: Request, exc: WireReferenceError
+    ) -> JSONResponse:
+        # 12a-1f: the existing exception_handlers above cover only
+        # normative chapter-7 errors. The new artifact route raises
+        # reference-only WireReferenceError subclasses
+        # (InvalidPath / ArtifactTooLarge / ArtifactServingDisabled);
+        # without this handler they'd fall through to FastAPI's
+        # default 500. The handler delegates to the existing
+        # envelope_for_reference_error helper which already knows
+        # the eden://reference-error/... URI mappings.
+        envelope = envelope_for_reference_error(exc, instance=str(request.url))
         return JSONResponse(
             status_code=envelope.status,
             media_type=PROBLEM_JSON,
@@ -1053,6 +1251,118 @@ def make_app(
         )
         store.validate_evaluation(body.evaluation)
         return Response(status_code=204)
+
+    # ------------------------------------------------------------------
+    # Reference-only artifact-serving route (12a-1f)
+    # ------------------------------------------------------------------
+    #
+    # See spec/v0/reference-bindings/worker-host-subprocess.md §9 for
+    # the substrate-access posture this route supports. The route is
+    # mounted unconditionally; when artifacts_dir is None it returns
+    # 503 with a closed-vocabulary reference-error type. The auth
+    # middleware skips /_reference/ paths by default (auth.py
+    # short-circuits before the route handler), so the handler does
+    # its own bearer-auth check.
+
+    @app.get(f"{ref_base}/artifacts/{{path:path}}")
+    async def _serve_artifact(
+        experiment_id: str,
+        path: str,
+        request: Request,
+    ) -> Response:
+        # 1. Auth-first. NEVER touch the filesystem before auth so
+        #    timing / response-code differences on unauth requests
+        #    can't leak existence-of-files. When admin_token is
+        #    None (test / in-process posture), auth is disabled —
+        #    same posture the rest of the wire takes.
+        if admin_token is not None:
+            authenticate(
+                request.headers.get("authorization"),
+                admin_token=admin_token,
+                store=store,
+            )
+
+        # 2. Experiment-id mismatch guard (chapter-7 §1.3 parity).
+        if experiment_id != store.experiment_id:
+            raise ExperimentIdMismatch(
+                f"URL segment {experiment_id!r} does not match server's "
+                f"experiment {store.experiment_id!r}"
+            )
+
+        # 3. Disabled-deployment guard.
+        if artifact_root is None:
+            raise ArtifactServingDisabled(
+                "task-store-server started without --artifacts-dir"
+            )
+
+        # 4. Descriptor-relative component walk beneath the root.
+        #    Closes the intermediate-component TOCTOU window
+        #    (an attacker who can swap an intermediate dir to a
+        #    symlink between path resolution and open cannot
+        #    sneak the walk out of the root, because each step
+        #    is anchored by the prior step's fd, not a path).
+        try:
+            fd = _open_artifact_fd(artifact_root, path)
+        except ValueError as exc:
+            raise InvalidPath(f"invalid path: {exc}") from exc
+        except _SymlinkRejected as exc:
+            # Symlink hit (terminal or intermediate). Pre-open lstat
+            # check + post-open ELOOP raised this; either way we
+            # never follow the link.
+            raise Forbidden("symlink not allowed") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="artifact not found"
+            ) from exc
+        except OSError as exc:
+            # EACCES / ENOTDIR / ENAMETOOLONG / etc. — collapse to
+            # 404 to avoid leaking filesystem layout to the caller.
+            raise HTTPException(
+                status_code=404, detail="artifact not found"
+            ) from exc
+
+        try:
+            st = os.fstat(fd)
+
+            # 5. Regular-file check on the OPEN fd (not on the path —
+            #    re-stating the path would re-open the TOCTOU window).
+            if not stat.S_ISREG(st.st_mode):
+                raise HTTPException(
+                    status_code=404, detail="artifact not found"
+                )
+
+            # 6. Size cap on the open fd.
+            if st.st_size > MAX_ARTIFACT_BYTES:
+                raise ArtifactTooLarge(
+                    f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap "
+                    f"(size={st.st_size})"
+                )
+
+            # 7. Read all bytes from the open fd. The 1 MiB cap
+            #    bounds per-request memory.
+            data = os.read(fd, MAX_ARTIFACT_BYTES + 1)
+            if len(data) > MAX_ARTIFACT_BYTES:
+                # Race: file grew between fstat and read.
+                raise ArtifactTooLarge("artifact size grew during read")
+        finally:
+            os.close(fd)
+
+        # 8. Return with safe-delivery headers. Content-Disposition:
+        #    attachment forces the user-agent to treat the response
+        #    as a download (defeats stored-XSS via .html / .svg
+        #    artifacts); X-Content-Type-Options: nosniff prevents
+        #    MIME sniffing; Content-Type: application/octet-stream
+        #    is generic — the agent decodes via the artifacts_uri
+        #    domain knowledge it already has.
+        filename = path.rsplit("/", 1)[-1] or "artifact"
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     return app
 

@@ -175,4 +175,118 @@ test "$IDEATION_COMPLETED" -ge 3 || {
     exit 1
 }
 
+# ----------------------------------------------------------------------
+# 12a-1f substrate-access smoke (§6.6 of the plan)
+# ----------------------------------------------------------------------
+
+echo "--- asserting 12a-1f substrate-access (ideator git repo) ---"
+# Subprocess-mode ideator should have a populated bare clone at
+# /var/lib/eden/repo. The integrator's variant/* refs land there
+# after quiescence; we assert at least one commit is reachable.
+IDEATOR_LOG_LINES="$(
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T ideator-host \
+        git -C /var/lib/eden/repo log --oneline --all 2>/dev/null \
+        | wc -l | tr -d ' '
+)"
+test "${IDEATOR_LOG_LINES:-0}" -ge 1 || {
+    echo "expected >= 1 commit reachable from ideator-host's bare clone; got $IDEATOR_LOG_LINES" >&2
+    exit 1
+}
+
+echo "--- asserting 12a-1f substrate-access (artifact route) ---"
+# The ideator subprocess fixture writes content.md under
+# /var/lib/eden/artifacts/ideas/<idea_id>/. Pick one and fetch via
+# the task-store-server route.
+# List artifacts; the volume should contain the ideator-produced
+# content files.
+ARTIFACT_PATH="$(
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T task-store-server \
+        sh -c 'find /var/lib/eden/artifacts/ideas -maxdepth 3 -name content.md -print -quit 2>/dev/null'
+)"
+ARTIFACT_PATH="$(echo "$ARTIFACT_PATH" | tr -d '\r')"
+test -n "$ARTIFACT_PATH" || {
+    echo "no artifact files found under /var/lib/eden/artifacts/ideas" >&2
+    exit 1
+}
+# Strip the /var/lib/eden/artifacts/ prefix to get the URL-suffix
+# path the route expects.
+ARTIFACT_REL="${ARTIFACT_PATH#/var/lib/eden/artifacts/}"
+ART_RESPONSE_CODE="$(
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T task-store-server \
+        curl -fsS -o /tmp/art-body -w '%{http_code}' \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+            "http://localhost:8080/_reference/experiments/${EXPERIMENT_ID}/artifacts/${ARTIFACT_REL}"
+)"
+test "$ART_RESPONSE_CODE" = "200" || {
+    echo "artifact route returned $ART_RESPONSE_CODE for $ARTIFACT_REL" >&2
+    exit 1
+}
+ART_BODY_LEN="$(
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T task-store-server \
+        wc -c < /tmp/art-body | tr -d ' '
+)"
+test "$ART_BODY_LEN" -gt 0 || {
+    echo "artifact route returned empty body for $ARTIFACT_REL" >&2
+    exit 1
+}
+
+echo "--- asserting 12a-1f substrate-access (readonly Postgres) ---"
+# psql is NOT installed in eden-reference:dev (only git / curl / ca);
+# run psql from inside the postgres container which has it natively.
+EDEN_READONLY_STORE_URL="$(grep -E '^EDEN_READONLY_STORE_URL=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$EDEN_READONLY_STORE_URL" || {
+    echo "setup-experiment did not write EDEN_READONLY_STORE_URL" >&2
+    exit 1
+}
+# 1. SELECT projected columns succeeds.
+docker compose -f compose.yaml -f compose.subprocess.yaml \
+    --env-file "$ENV_FILE" \
+    exec -T postgres \
+    psql "$EDEN_READONLY_STORE_URL" \
+    -tAc "SELECT COUNT(*) FROM event" >/dev/null || {
+    echo "readonly SELECT on event failed" >&2
+    exit 1
+}
+# 2. INSERT (in a transaction we'll rollback) must fail with
+# permission denied — using a syntactically valid statement so the
+# failure mode is the privilege check, not NOT NULL violation.
+if docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T postgres \
+        psql "$EDEN_READONLY_STORE_URL" -v ON_ERROR_STOP=1 \
+        -c "BEGIN; INSERT INTO idea (idea_id, state, data) VALUES ('rosmoke', 'drafting', '{}'); ROLLBACK;" \
+        2>/dev/null; then
+    echo "readonly role accepted INSERT — privilege check is broken" >&2
+    exit 1
+fi
+# 3. Direct credential_hash reference must fail.
+if docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T postgres \
+        psql "$EDEN_READONLY_STORE_URL" -v ON_ERROR_STOP=1 \
+        -c "SELECT credential_hash FROM worker LIMIT 1" \
+        2>/dev/null; then
+    echo "readonly role can SELECT credential_hash — column grant broken" >&2
+    exit 1
+fi
+# 4. SELECT * on worker must fail (parser expands * to include
+# credential_hash).
+if docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T postgres \
+        psql "$EDEN_READONLY_STORE_URL" -v ON_ERROR_STOP=1 \
+        -c "SELECT * FROM worker LIMIT 1" \
+        2>/dev/null; then
+    echo "readonly role can SELECT * FROM worker — column grant broken" >&2
+    exit 1
+fi
+
 echo "PASS (subprocess mode)"

@@ -7,16 +7,18 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import signal
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 from eden_service_common import configure_logging, get_logger, parse_log_level
 from eden_storage import PostgresStore, SqliteStore
 
-from .app import build_app, build_store, load_experiment_config
+from .app import build_app, build_store, load_experiment_config, provision_readonly
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -81,6 +83,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=30.0,
         help="Long-poll window for GET /events/subscribe (default: 30s).",
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        default=None,
+        help=(
+            "Directory containing artifact files (e.g. idea content). "
+            "When set, the reference-only artifact-serving route at "
+            "/_reference/experiments/<id>/artifacts/<path> serves "
+            "files under this directory (≤ 1 MiB) with safe-delivery "
+            "headers. When unset, the route returns 503. See 12a-1f §D.2."
+        ),
+    )
+    parser.add_argument(
+        "--readonly-password",
+        default=None,
+        help=(
+            "Password for the eden_readonly Postgres role (also read "
+            "from $EDEN_READONLY_PASSWORD). When set AND the backend "
+            "is Postgres, the server provisions the role at startup "
+            "via REVOKE-then-GRANT (idempotent; rotates the password "
+            "on re-run). Non-Postgres backends warn and continue. See "
+            "12a-1f §D.3."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -156,10 +181,21 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
     )
     try:
+        # 12a-1f: provision the eden_readonly Postgres role if a
+        # password was supplied. Runs before build_app so the
+        # provisioning is part of the startup-time atomic unit; a
+        # failure here surfaces before uvicorn binds.
+        readonly_password = args.readonly_password or os.environ.get(
+            "EDEN_READONLY_PASSWORD"
+        )
+        if readonly_password:
+            provision_readonly(store, password=readonly_password)
+        artifacts_dir = Path(args.artifacts_dir) if args.artifacts_dir else None
         app = build_app(
             store=store,
             admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
+            artifacts_dir=artifacts_dir,
         )
         uv_config = uvicorn.Config(
             app,

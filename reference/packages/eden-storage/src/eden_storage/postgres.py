@@ -58,6 +58,193 @@ def _serialize_model(model: Any) -> str:
     return json.dumps(model.model_dump(mode="json", exclude_none=True))
 
 
+_READONLY_GRANT_TABLES: tuple[str, ...] = (
+    "experiment",
+    "task",
+    "submission",
+    "idea",
+    "variant",
+    "event",
+    "worker_group",
+    "group_membership",
+    "schema_version",
+)
+"""Tables the 12a-1f readonly role gets full-table SELECT on.
+
+Excludes ``worker``, which carries the ``credential_hash`` column;
+the worker table gets a column-level GRANT that exposes only
+``worker_id`` + ``data`` (the JSON payload with labels and
+attribution metadata) — see :func:`ensure_readonly_role`.
+
+When a future schema bump adds a new table, this list MUST be
+extended explicitly (the route deliberately does NOT use
+``ALTER DEFAULT PRIVILEGES`` because that would silently expose
+any future credential-bearing column added to a new table).
+"""
+
+
+def ensure_readonly_role(
+    conn: Any,
+    *,
+    username: str = "eden_readonly",
+    password: str,
+) -> None:
+    """Idempotently provision the 12a-1f readonly Postgres role.
+
+    Creates or rotates the role's password, then runs an explicit
+    REVOKE-then-GRANT sequence against the LIVE connection's
+    database + schema (resolved via ``current_database()`` /
+    ``current_schema()`` — NOT a hard-coded ``eden``/``public``):
+
+    1. ``CREATE ROLE`` if absent, else ``ALTER ROLE`` to rotate the
+       password.
+    2. REVOKE every prior privilege on tables, schema, and
+       database (including any prior ``ALTER DEFAULT PRIVILEGES``).
+    3. GRANT exactly the safe-set per
+       ``docs/plans/eden-phase-12a-1f-substrate-access.md`` §D.3.a:
+       table-level SELECT on the non-worker tables;
+       column-level SELECT on ``worker(worker_id, data)``
+       excluding ``credential_hash``.
+
+    Deliberately does NOT install ``ALTER DEFAULT PRIVILEGES`` —
+    a blanket grant for any future table would re-expose
+    credential-bearing columns if a schema bump adds one. Every
+    schema bump that adds a new table must extend
+    :data:`_READONLY_GRANT_TABLES` and add a test asserting the
+    new table is reachable from the readonly role.
+
+    Args:
+        conn: A psycopg ``Connection`` with sufficient privilege
+            (``CREATEROLE`` plus owner-or-superuser on the tables
+            being granted) — typically the same connection the
+            task-store-server uses, since the deployment's
+            ``eden`` user owns everything.
+        username: The role name (default ``eden_readonly``).
+        password: The plaintext password. Re-running with a
+            different password rotates the role's password
+            via ``ALTER ROLE``.
+    """
+    from psycopg import sql
+
+    db_name = _scalar(conn, "SELECT current_database()")
+    schema_name = _scalar(conn, "SELECT current_schema()")
+    if schema_name is None:
+        raise RuntimeError(
+            "ensure_readonly_role: current_schema() returned NULL; "
+            "no schema on search_path?"
+        )
+
+    role_ident = sql.Identifier(username)
+    schema_ident = sql.Identifier(schema_name)
+    db_ident = sql.Identifier(db_name)
+
+    with conn.cursor() as cur:
+        # 1. Create or rotate password. Postgres' SQL injection
+        #    safety doesn't extend to role passwords — they go
+        #    inline as a Literal. Identifiers go through
+        #    sql.Identifier for quoting.
+        exists = cur.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (username,)
+        ).fetchone()
+        if exists is None:
+            cur.execute(
+                sql.SQL("CREATE ROLE {role} WITH LOGIN PASSWORD {pwd}").format(
+                    role=role_ident,
+                    pwd=sql.Literal(password),
+                )
+            )
+        else:
+            cur.execute(
+                sql.SQL("ALTER ROLE {role} WITH LOGIN PASSWORD {pwd}").format(
+                    role=role_ident,
+                    pwd=sql.Literal(password),
+                )
+            )
+
+        # 2. Bulk-revoke any prior privileges so legacy over-grants
+        #    from earlier provisioning attempts cannot persist.
+        cur.execute(
+            sql.SQL(
+                "REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {role}"
+            ).format(schema=schema_ident, role=role_ident)
+        )
+        cur.execute(
+            sql.SQL("REVOKE ALL ON SCHEMA {schema} FROM {role}").format(
+                schema=schema_ident, role=role_ident
+            )
+        )
+        cur.execute(
+            sql.SQL("REVOKE ALL ON DATABASE {db} FROM {role}").format(
+                db=db_ident, role=role_ident
+            )
+        )
+        cur.execute(
+            sql.SQL(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                "REVOKE SELECT ON TABLES FROM {role}"
+            ).format(schema=schema_ident, role=role_ident)
+        )
+
+        # 3. GRANT the safe-set.
+        cur.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {db} TO {role}").format(
+                db=db_ident, role=role_ident
+            )
+        )
+        cur.execute(
+            sql.SQL("GRANT USAGE ON SCHEMA {schema} TO {role}").format(
+                schema=schema_ident, role=role_ident
+            )
+        )
+        # Grant on each existing table individually so a missing
+        # table (e.g. a schema bump that didn't reach this DB)
+        # doesn't no-op the rest silently. `SELECT to_regclass`
+        # short-circuits when the table isn't present.
+        for table in _READONLY_GRANT_TABLES:
+            qualified = f"{schema_name}.{table}"
+            exists = cur.execute(
+                "SELECT to_regclass(%s) IS NOT NULL", (qualified,)
+            ).fetchone()
+            if not exists or not exists[0]:
+                # Schema migration hasn't reached this database;
+                # skip the table. ensure_schema() runs first in
+                # PostgresStore.__init__ for the normal path.
+                continue
+            cur.execute(
+                sql.SQL(
+                    "GRANT SELECT ON {schema}.{table} TO {role}"
+                ).format(
+                    schema=schema_ident,
+                    table=sql.Identifier(table),
+                    role=role_ident,
+                )
+            )
+
+        # Column-level SELECT on `worker` excluding credential_hash.
+        # `SELECT * FROM worker` will fail under this role because
+        # the parser expands `*` to all columns and credential_hash
+        # lacks SELECT — see plan §D.3.a.
+        worker_exists = cur.execute(
+            "SELECT to_regclass(%s) IS NOT NULL",
+            (f"{schema_name}.worker",),
+        ).fetchone()
+        if worker_exists and worker_exists[0]:
+            cur.execute(
+                sql.SQL(
+                    "GRANT SELECT (worker_id, data) ON {schema}.worker "
+                    "TO {role}"
+                ).format(schema=schema_ident, role=role_ident)
+            )
+
+
+def _scalar(conn: Any, query: str) -> Any:
+    """Run ``query`` and return the first column of the first row."""
+    with conn.cursor() as cur:
+        cur.execute(query)
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def _submission_to_row(submission: Submission) -> tuple[str, str]:
     """Return ``(kind, json_data)`` for a submission. Mirrors sqlite.py."""
     if isinstance(submission, IdeaSubmission):

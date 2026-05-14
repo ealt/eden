@@ -43,6 +43,10 @@ host-supplied environment.
 | `EDEN_WORKTREE` | (executor / evaluator only) Absolute path to the per-task git worktree (also equals cwd, redundant for convenience). |
 | `EDEN_WORKER_ID` | The host's registered `worker_id` ([chapter 2 §6](../02-data-model.md)). User code that issues wire calls of its own assembles its bearer as `f"{EDEN_WORKER_ID}:{EDEN_WORKER_CREDENTIAL}"` per [chapter 7 §13.1](../07-wire-protocol.md). Always set when the host has a registered identity; absent only when auth is disabled (in-process / test posture). |
 | `EDEN_WORKER_CREDENTIAL` | The **secret half** of the host's §13.1 bearer (the part after `:`). Forwarded as a separate env var so user code can re-assemble the bearer with `EDEN_WORKER_ID` and so the variable's role is single-purpose. Set iff the host has a credential (§13 auth enabled); absent in test posture. Treat as sensitive: do not log; do not pass through to nested processes that don't need it. |
+| `EDEN_REPO_DIR` | (ideator / evaluator only, optional) Absolute host-side path to a bare git clone of the experiment's central repo (e.g. `/var/lib/eden/repo`). Set when the host is configured with `--repo-path` (subprocess mode). Lets user code `git log` / `git show` against the full ref space (`refs/heads/work/*`, `refs/heads/variant/*`) without making one-off wire calls. See §9 for the substrate-access posture. |
+| `EDEN_ARTIFACT_URL` | (ideator / evaluator only, optional) HTTP base URL ending in `/`, e.g. `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/`, with the deployment's `experiment_id` already interpolated. User code appends a relative path and GETs the bytes under the §13.1 bearer reconstructed from `EDEN_WORKER_ID` + `EDEN_WORKER_CREDENTIAL`. Reference-only route per §9. |
+| `EDEN_ARTIFACT_PATH_ROOT` | (ideator / evaluator only, optional) Absolute host-side filesystem root the `EDEN_ARTIFACT_URL` is rooted at (e.g. `/var/lib/eden/artifacts`). User code translates a `file:///var/lib/eden/artifacts/foo.md` URI from the wire into the relative path `foo.md` by stripping this prefix, then concatenates onto `EDEN_ARTIFACT_URL`. Pair with `EDEN_ARTIFACT_URL`; both or neither. |
+| `EDEN_READONLY_STORE_URL` | (ideator / evaluator only, optional) Postgres DSN with read-only privileges, e.g. `postgresql://eden_readonly:<pwd>@postgres:5432/eden`. User code connects via any Postgres client (e.g. psycopg) and runs `SELECT` against the eden schema. Excludes credential material — see §9 for the column-grant posture. |
 
 User-supplied env from a `--*-env-file` flag is also injected
 (intended for LLM API keys etc.).
@@ -472,3 +476,112 @@ Two layers, in priority order:
 2. **Default runtime image.** Otherwise the worker hosts use
    `eden-runtime:dev` — a small image with python3 + git +
    bash + ca-certificates + the eden:1000 user.
+
+## 9. Substrate read-access for agent role implementations
+
+Phase 12a-1f opens three read-side substrates to the ideator
+and evaluator subprocesses so a user-supplied agentic role
+implementation (typically driven by an LLM) can explore
+experiment state without rounding through the wire one read
+at a time:
+
+| Substrate | Env var(s) | Read shape |
+|---|---|---|
+| Git (local bare clone) | `EDEN_REPO_DIR` | `git log` / `git show` / tree walk against the worker host's bare clone of the central repo (Phase 10d follow-up B Gitea-as-remote). Sees `refs/heads/work/*` and `refs/heads/variant/*` plus the evaluation manifest at the variant tip. |
+| Artifact server (HTTP) | `EDEN_ARTIFACT_URL` + `EDEN_ARTIFACT_PATH_ROOT` | `GET ${EDEN_ARTIFACT_URL}<relative-path>` with the §13.1 bearer (`${EDEN_WORKER_ID}:${EDEN_WORKER_CREDENTIAL}`) against the task-store-server's reference-only `/_reference/experiments/<id>/artifacts/<path>` route. Returns bytes ≤ 1 MiB; larger files 413. |
+| Postgres event log | `EDEN_READONLY_STORE_URL` | Direct Postgres connection as the `eden_readonly` role. SELECT on `experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`; column-projection SELECT on `worker(worker_id, data)` (the JSON `data` payload carries `labels`, `registered_at`, `registered_by`, etc.). `SELECT * FROM worker` fails because the `credential_hash` column is intentionally excluded. |
+
+### 9.1 The three substrates are independent
+
+Opening one without the others is a valid deployment. Each
+env var is optional and only set when the host has been
+configured with the corresponding flag. Cross-substrate
+joins are the agent's responsibility; the protocol does not
+mediate them.
+
+### 9.2 On-host vs off-host
+
+The compose-internal defaults
+(`task-store-server:8080`, `postgres:5432`,
+`/var/lib/eden/repo`) only resolve inside the worker-host
+container. An agent running off-host (e.g. on a developer
+laptop driving an LLM against a server-hosted compose stack)
+substitutes its own values:
+
+- `EDEN_REPO_DIR` is replaced by an operator-controlled
+  clone of the Gitea repo (today's shared `eden` HTTP-Basic
+  password; Phase 13e moves to per-worker tokens with branch
+  ACLs).
+- `EDEN_ARTIFACT_URL` is substituted with the operator's
+  reverse-proxy hostname for the task-store-server (the
+  bearer is still the same per-worker `<worker_id>:<token>`
+  from `EDEN_WORKER_*`).
+- `EDEN_READONLY_STORE_URL` is substituted with the
+  operator's externally-reachable Postgres hostname (the
+  `eden_readonly` role and password are unchanged).
+
+The binding's `EDEN_ARTIFACT_PATH_ROOT` MUST equal the
+task-store-server's `--artifacts-dir` so the agent's URI
+translation is correct. In compose, both default to
+`/var/lib/eden/artifacts`. Off-host operators are
+responsible for choosing consistent paths.
+
+### 9.3 Trust-boundary caveats
+
+- **The readonly Postgres role can see worker_ids
+  (attribution).** The granted tables include `event`,
+  `task`, `idea`, and `variant`, whose `data` JSON
+  payloads carry `submitted_by` / `executed_by` /
+  `evaluated_by` / `created_by` per chapter 02 §3.1 / §5.1
+  / §9. An agent with the readonly DSN can enumerate all
+  workers in the experiment by SELECTing `worker_id` from
+  the worker table or by aggregating attribution fields
+  across the artifact tables. This is by design —
+  exploratory reads need attribution — but operators who
+  don't want this surface should NOT enable
+  `EDEN_READONLY_STORE_URL`.
+- **The readonly role's password is separate from the §13
+  per-worker bearer.** Rotating one does not invalidate
+  the other. The 12a-1f reference deployment generates
+  `EDEN_READONLY_PASSWORD` once in setup-experiment.sh
+  and preserves it across re-runs; rotation requires
+  deleting the line from `.env` and re-running.
+- **The artifact server enforces a 1 MiB cap.** Files
+  larger than 1 MiB return 413 with no partial body.
+  Operators with legitimately-larger artifacts should
+  wait for Phase 13d's `Backend` abstraction (the cap
+  pairs with a fixed-bytes response model that's a TOCTOU
+  countermeasure — `StreamingResponse` re-opens the path
+  at body-write time and breaks the descriptor-walk
+  guarantee).
+- **`--exec-mode docker` (DooD) suppresses the substrate
+  env vars.** Sibling containers started by the host
+  docker daemon are not attached to the compose project
+  network, so `task-store-server:8080` /
+  `postgres:5432` would not resolve. The ideator +
+  evaluator host CLI detect `exec_mode == "docker"` and
+  drop the four substrate keys from the spawned child's
+  env (the host logs a WARN line at startup). DooD-mode
+  re-enablement is deferred to a follow-on sub-chunk that
+  adds `--network` plumbing to `wrap_command`.
+
+### 9.4 The substrates are reference-impl details
+
+Chapter 8 §5 (artifact store, deferred) defers the
+normative shape of the artifact substrate; chapter 2 §1.5
+defers the URI scheme. The 12a-1f substrate route is a
+**reference-only** extension under chapter 7 §11's
+`/_reference/` namespace, NOT an implementation of the
+deferred §5 contract. Conforming alternative
+implementations may serve artifacts through a different
+mechanism (cloud-storage SDKs, an HTTP file server, etc.)
+or omit the route entirely; the env vars above are part of
+this informative binding only.
+
+The Postgres readonly substrate is similarly informative —
+chapter 8 §3 specifies the durability and event-log
+contracts but does not mandate Postgres. Alternative
+implementations may expose a different read substrate
+(e.g. a SQLite database file, a gRPC stream) or none at
+all. The env var contract is what user code targets; the
+backing technology is operator-chosen.
