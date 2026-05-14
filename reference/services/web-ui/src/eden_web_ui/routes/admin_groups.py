@@ -82,7 +82,7 @@ _GROUP_OUTCOMES: dict[str, tuple[str, str]] = {
     "id-collides-with-worker": (
         "error",
         "a worker already has this identifier; worker_ids and "
-        "group_ids share a namespace per spec §7.4",
+        "group_ids share a namespace per spec ch02 §7.1",
     ),
     "admin-disabled": (
         "error",
@@ -369,7 +369,7 @@ async def groups_register(
 
     # Pre-flight worker-collision check so the AlreadyExists banner
     # below distinguishes "group with this id exists" from the
-    # cross-registry collision per spec §7.4. We check the worker
+    # cross-registry collision per spec ch02 §7.1. We check the worker
     # registry first; the store also enforces both (defense in
     # depth), and a wire-side StorageNotFound here is fine.
     worker_collision = False
@@ -397,7 +397,7 @@ async def groups_register(
     except AlreadyExists:
         # Distinguish "a group with this id exists" from the
         # cross-registry collision (worker_ids / group_ids share a
-        # namespace per spec §7.4). The store raises the same
+        # namespace per spec ch02 §7.1). The store raises the same
         # `AlreadyExists` for both cases; we use the preflight
         # `worker_collision` flag to surface a clearer banner.
         if worker_collision:

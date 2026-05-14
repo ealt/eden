@@ -60,7 +60,7 @@ _WORKER_OUTCOMES: dict[str, tuple[str, str]] = {
     "id-collides-with-group": (
         "error",
         "a group already has this identifier; worker_ids and "
-        "group_ids share a namespace per spec §7.4",
+        "group_ids share a namespace per spec ch02 §7.1",
     ),
     "invalid-worker-id": (
         "error",
@@ -358,7 +358,7 @@ async def workers_register(
             url="/admin/workers/?error=reserved-identifier", status_code=303
         )
     except AlreadyExists:
-        # Per spec §7.4 worker_id / group_id share a namespace; the
+        # Per spec ch02 §7.1 worker_id / group_id share a namespace; the
         # store raises AlreadyExists when ``worker_id`` is already
         # registered as a group. (Register on an existing worker is
         # idempotent — it does NOT raise AlreadyExists per spec §6.3.)
