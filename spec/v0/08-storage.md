@@ -91,7 +91,7 @@ For the lifetime of an experiment — from registration until the experiment rea
 
 ## 3. Durability
 
-The following applies uniformly to the task store and the event log.
+The following applies uniformly to the task store and the event log. The per-store rules in this section compose to the aggregate experiment-durability invariant in [`01-concepts.md`](01-concepts.md) §13.
 
 ### 3.1 Write durability
 

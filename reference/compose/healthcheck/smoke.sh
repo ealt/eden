@@ -29,6 +29,10 @@ REPO_ROOT="$(cd "${COMPOSE_DIR}/../.." && pwd)"
 cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
+# Phase 12a-1g: per-smoke ephemeral data root so the bind-mount
+# substrate tree is isolated from the operator's real experiments
+# under ~/.eden/. The trap cleans up on every exit path.
+SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-XXXXXX)"
 EXPERIMENT_ID="smoke-exp"
 
 cleanup() {
@@ -36,6 +40,7 @@ cleanup() {
     docker compose -f compose.yaml --env-file "$ENV_FILE" down -v >/dev/null 2>&1 || true
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
+    rm -rf "$SMOKE_DATA_ROOT"
     exit "$rc"
 }
 trap cleanup EXIT
@@ -44,7 +49,8 @@ echo "--- running setup-experiment ---"
 bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     "${REPO_ROOT}/tests/fixtures/experiment/.eden/config.yaml" \
     --experiment-id "$EXPERIMENT_ID" \
-    --env-file "$ENV_FILE"
+    --env-file "$ENV_FILE" \
+    --data-root "$SMOKE_DATA_ROOT"
 
 # Resolve the project name from compose config and assert it
 # matches the value pinned in compose.yaml. Same pattern as 10a.
@@ -90,28 +96,25 @@ docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait --wait-timeou
 echo "--- compose ps ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" ps -a
 
-echo "--- asserting expected named volumes exist ---"
-# Phase 10d follow-up B: per-service repo volumes (no shared
-# eden-bare-repo anymore). eden-artifacts-data has explicit
-# `name:` for the docker-exec wrap; other compose-prefixed volumes
-# keep the default `<project>_<volume>` shape.
-for vol in eden-postgres-data eden-gitea-data eden-blob-data \
-           eden-orchestrator-repo eden-web-ui-repo; do
-    docker volume inspect "${PROJECT}_${vol}" >/dev/null
+echo "--- asserting expected substrate bind-mounts exist ---"
+# Phase 12a-1g: durable substrates live as host directories under
+# $SMOKE_DATA_ROOT (chapter 01 §13). setup-experiment creates every
+# substrate subdir unconditionally (regardless of which overlay is
+# layered on later), so the existence assertion covers ALL of them
+# even though scripted-mode skips evaluator-repo at runtime.
+for sub in postgres gitea orchestrator-repo web-ui-repo executor-repo \
+           evaluator-repo artifacts \
+           credentials/orchestrator credentials/ideator \
+           credentials/executor credentials/evaluator credentials/web-ui; do
+    test -d "${SMOKE_DATA_ROOT}/${sub}" || {
+        echo "missing substrate directory: ${SMOKE_DATA_ROOT}/${sub}" >&2
+        exit 1
+    }
 done
-# eden-executor-repo and eden-evaluator-repo have explicit
-# `name:` for docker-exec wrap parity (resolved by literal name,
-# not auto-prefixed).
-docker volume inspect eden-executor-repo >/dev/null
-# eden-evaluator-repo is declared in compose.yaml but only mounted
-# in subprocess-mode (compose.subprocess.yaml's evaluator-host) —
-# scripted-mode evaluator-host (compose.yaml) doesn't need git, so
-# the volume isn't materialized. Subprocess-mode smokes assert it
-# separately.
-docker volume inspect eden-artifacts-data >/dev/null
-
-echo "--- asserting blob-init exited 0 ---"
-test "$(docker inspect --format '{{.State.ExitCode}}' eden-blob-init)" = "0"
+# eden-repo-init-staging stays a named volume (intentionally
+# ephemeral); eden-worktrees similarly (only present under the
+# subprocess overlay, so not asserted by the scripted smoke).
+docker volume inspect eden-repo-init-staging >/dev/null
 
 echo "--- asserting Postgres accepts connections ---"
 PG_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"

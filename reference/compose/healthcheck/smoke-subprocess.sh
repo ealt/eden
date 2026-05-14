@@ -26,6 +26,9 @@ EXPERIMENT_DIR="${REPO_ROOT}/tests/fixtures/experiment"
 cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
+# Phase 12a-1g: per-smoke ephemeral data root, cleaned up on every
+# exit path. See smoke.sh for rationale.
+SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-sub-XXXXXX)"
 EXPERIMENT_ID="smoke-exp-sub"
 
 cleanup() {
@@ -34,6 +37,7 @@ cleanup() {
         --env-file "$ENV_FILE" down -v >/dev/null 2>&1 || true
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
+    rm -rf "$SMOKE_DATA_ROOT"
     exit "$rc"
 }
 trap cleanup EXIT
@@ -43,7 +47,8 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     "${EXPERIMENT_DIR}/.eden/config.yaml" \
     --experiment-id "$EXPERIMENT_ID" \
     --experiment-dir "$EXPERIMENT_DIR" \
-    --env-file "$ENV_FILE"
+    --env-file "$ENV_FILE" \
+    --data-root "$SMOKE_DATA_ROOT"
 
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_BASE_COMMIT_SHA"

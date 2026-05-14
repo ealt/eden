@@ -5,15 +5,6 @@ services:
     image: postgres:16.6-alpine
     container_name: eden-postgres
     restart: unless-stopped
-    # Depending on blob-init lets `compose up --wait` interpret
-    # blob-init's exit-0 as success rather than failure. Without
-    # this dependency, `--wait` returns non-zero for any service
-    # that exits during the wait window. Postgres does not actually
-    # consume the blob volume; the dependency is a stack-level
-    # invariant ("all infra is ready") rather than a data-flow one.
-    depends_on:
-      blob-init:
-        condition: service_completed_successfully
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-eden}
       POSTGRES_USER: ${POSTGRES_USER:-eden}
@@ -21,7 +12,11 @@ services:
     ports:
       - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
-      - eden-postgres-data:/var/lib/postgresql/data
+      # Durable substrate (Phase 12a-1g): host bind-mount under the
+      # per-experiment data root so the substrate survives Docker
+      # Desktop VM rebuilds, factory resets, and any other event that
+      # destroys named-volume backing storage. See chapter 01 §13.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eden} -d ${POSTGRES_DB:-eden}"]
       interval: 5s
@@ -33,11 +28,6 @@ services:
     image: gitea/gitea:1.22.6-rootless
     container_name: eden-gitea
     restart: unless-stopped
-    # See postgres above — depending on blob-init's successful
-    # completion makes `compose up --wait` happy.
-    depends_on:
-      blob-init:
-        condition: service_completed_successfully
     environment:
       GITEA__server__DOMAIN: localhost
       GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
@@ -61,7 +51,8 @@ services:
       - "${GITEA_HOST_PORT:-3001}:3000"
       - "${GITEA_SSH_HOST_PORT:-2222}:2222"
     volumes:
-      - eden-gitea-data:/var/lib/gitea
+      # Durable substrate (Phase 12a-1g) — see postgres above.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/gitea:/var/lib/gitea
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
       interval: 5s
@@ -69,23 +60,18 @@ services:
       retries: 20
       start_period: 30s
 
-  blob-init:
-    # One-shot service whose only job is to ensure eden-blob-data
-    # exists at compose-up time. Compose does NOT create an unmounted
-    # top-level volume — verified empirically — so without this service
-    # the volume would not exist until 10b/10d's first real mounter
-    # ran. 10a's contract is "volume exists" only; ownership and
-    # permissions are 10d's responsibility.
-    image: busybox:1.36.1
-    container_name: eden-blob-init
-    restart: "no"
-    command: ["sh", "-c", "mkdir -p /var/lib/eden/blobs && echo blob-volume ready"]
-    volumes:
-      - eden-blob-data:/var/lib/eden/blobs
-
   # ---------------------------------------------------------------
   # 10b/10c: EDEN reference services
   # ---------------------------------------------------------------
+  #
+  # Note: a one-shot `blob-init` busybox service was removed in
+  # Phase 12a-1g alongside the `eden-blob-data` named volume. Its
+  # original purpose was to materialize the unmounted top-level
+  # volume at compose-up time and to give postgres/gitea a
+  # `service_completed_successfully` dependency for --wait. With
+  # bind-mounts (substrate dirs created by setup-experiment) the
+  # first need is gone; postgres/gitea no longer need that
+  # dependency either.
 
   eden-repo-init:
     # Setup-time tool, NOT in any other service's depends_on. Invoked
@@ -213,8 +199,14 @@ services:
       - --log-level
       - info
     volumes:
-      - eden-orchestrator-repo:/var/lib/eden/repo
-      - eden-orchestrator-credentials:/var/lib/eden/credentials
+      # Durable substrates (Phase 12a-1g) under the per-experiment
+      # data root. The per-host bare clone survives restart so the
+      # orchestrator does not re-clone from Gitea on every boot, and
+      # the per-host credentials survive so the worker's per-worker
+      # bearer is reused instead of re-bootstrapped via the admin
+      # token. See chapter 01 §13.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/orchestrator-repo:/var/lib/eden/repo
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/orchestrator:/var/lib/eden/credentials
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   ideator-host:
@@ -244,7 +236,8 @@ services:
       - --log-level
       - info
     volumes:
-      - eden-ideator-credentials:/var/lib/eden/credentials
+      # Durable substrate (Phase 12a-1g).
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/ideator:/var/lib/eden/credentials
 
   executor-host:
     image: eden-reference:dev
@@ -277,8 +270,9 @@ services:
       - --log-level
       - info
     volumes:
-      - eden-executor-repo:/var/lib/eden/repo
-      - eden-executor-credentials:/var/lib/eden/credentials
+      # Durable substrates (Phase 12a-1g).
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/executor-repo:/var/lib/eden/repo
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/executor:/var/lib/eden/credentials
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   evaluator-host:
@@ -311,7 +305,8 @@ services:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
     volumes:
-      - eden-evaluator-credentials:/var/lib/eden/credentials
+      # Durable substrate (Phase 12a-1g).
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/evaluator:/var/lib/eden/credentials
 
   web-ui:
     image: eden-reference:dev
@@ -361,9 +356,10 @@ services:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
     volumes:
-      - eden-web-ui-repo:/var/lib/eden/repo
-      - eden-artifacts-data:/var/lib/eden/artifacts
-      - eden-web-ui-credentials:/var/lib/eden/credentials
+      # Durable substrates (Phase 12a-1g).
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-repo:/var/lib/eden/repo
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/web-ui:/var/lib/eden/credentials
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
     ports:
       - "${WEB_UI_HOST_PORT:-8090}:8090"
@@ -387,48 +383,28 @@ configs:
     file: ./experiment-config.yaml
 
 volumes:
-  eden-postgres-data:
-  eden-gitea-data:
-  eden-blob-data:
-  # Per-service git clones (Phase 10d follow-up B). Each worker
-  # owns a private bare clone of the Gitea-hosted repo;
-  # eden-repo-init's seed-and-push uses its own ephemeral copy
-  # under eden-repo-init-staging.
+  # =================================================================
+  # Durable vs ephemeral classification (Phase 12a-1g, chapter 01 §13)
   #
-  # The eden-executor-repo and eden-evaluator-repo volumes get
-  # explicit `name:` so the docker-exec wrap's
-  # `--mount source=eden-executor-repo` resolves to the SAME
-  # volume the worker host is reading from. (Same trap that bit
-  # eden-bare-repo / eden-worktrees in sub-chunk A — compose's
-  # default `<project>_<volume>` prefix doesn't match the wrap's
-  # literal-name reference, leading docker daemon to silently
-  # create a fresh empty volume.)
-  eden-orchestrator-repo:
-  eden-executor-repo:
-    name: eden-executor-repo
-  eden-evaluator-repo:
-    name: eden-evaluator-repo
-  eden-web-ui-repo:
+  # Every volume that holds protocol-owned state — the task store,
+  # the git remote, the artifact store, per-host bare clones, and
+  # per-host persisted worker credentials — is now a host bind-mount
+  # under ${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>, declared inline on
+  # each service's `volumes:` list above. That removes them from
+  # this `volumes:` section entirely.
+  #
+  # The volumes remaining below are intentionally EPHEMERAL: they
+  # hold per-task scratch (`eden-worktrees`, declared by the
+  # subprocess overlay) or bootstrap-staging (`eden-repo-init-
+  # staging`, discarded on every re-seed). They MUST NOT carry any
+  # protocol-owned state that would violate chapter 01 §13.
+  # =================================================================
+
   # Staging volume gets an explicit `name:` so setup-experiment.sh can
   # `docker volume rm eden-repo-init-staging` cleanly when --seed-from
-  # is passed (otherwise compose's `<project>_<volume>` prefix makes the
-  # name operator-deployment-dependent and re-seeds silently no-op
-  # because repo-init short-circuits with EDEN_REPO_ALREADY_SEEDED).
-  # See MANUAL_UI_ISSUES.md §8.
+  # is passed (otherwise compose's `<project>_<volume>` prefix makes
+  # the name operator-deployment-dependent and re-seeds silently
+  # no-op because repo-init short-circuits with
+  # EDEN_REPO_ALREADY_SEEDED). See MANUAL_UI_ISSUES.md §8.
   eden-repo-init-staging:
     name: eden-repo-init-staging
-  # Per-host credentials volumes (12a-1 wave 6). Each worker host
-  # persists its bootstrapped per-worker credential at
-  # ``/var/lib/eden/credentials/<worker_id>.token`` so restart-with-
-  # persisted-credential skips the admin-gated re-registration path
-  # (chapter 02 §6.3, plan §D.1).
-  eden-orchestrator-credentials:
-  eden-ideator-credentials:
-  eden-executor-credentials:
-  eden-evaluator-credentials:
-  eden-web-ui-credentials:
-  # Artifacts volume kept with explicit `name:` for the chunk-10d
-  # follow-up A docker-exec wrap that forwards it to spawned
-  # children.
-  eden-artifacts-data:
-    name: eden-artifacts-data

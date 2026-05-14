@@ -107,12 +107,19 @@ services:
       - docker
       - --exec-image
       - ${EDEN_EXEC_IMAGE:?}
-      - --exec-volume
-      - eden-executor-repo:/var/lib/eden/repo
+      # Phase 12a-1g: the executor-repo and artifacts substrates are
+      # now host bind-mounts under EDEN_EXPERIMENT_DATA_ROOT (chapter
+      # 01 §13). The DooD wrap MUST forward them as --exec-bind
+      # (host-path → container-path) rather than --exec-volume
+      # (named-volume → container-path); otherwise the spawned child
+      # mounts a fresh empty named volume on the daemon and never
+      # sees the bind-mounted repo / artifacts the worker host wrote.
+      - --exec-bind
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/executor-repo:/var/lib/eden/repo
       - --exec-volume
       - eden-worktrees:/var/lib/eden/worktrees
-      - --exec-volume
-      - eden-artifacts-data:/var/lib/eden/artifacts:ro
+      - --exec-bind
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts:ro
       - --exec-bind
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
@@ -165,8 +172,11 @@ services:
       - docker
       - --exec-image
       - ${EDEN_EXEC_IMAGE:?}
-      - --exec-volume
-      - eden-evaluator-repo:/var/lib/eden/repo
+      # Phase 12a-1g: evaluator-repo is a host bind-mount under
+      # EDEN_EXPERIMENT_DATA_ROOT (see executor-host above for the
+      # full rationale). Worktrees stay an ephemeral named volume.
+      - --exec-bind
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/evaluator-repo:/var/lib/eden/repo
       - --exec-volume
       - eden-worktrees:/var/lib/eden/worktrees
       - --exec-bind

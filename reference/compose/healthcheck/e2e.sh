@@ -37,14 +37,18 @@ REPO_ROOT="$(cd "${COMPOSE_DIR}/../.." && pwd)"
 cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
+# Phase 12a-1g: per-smoke ephemeral data root, cleaned up on every
+# exit path.
+SMOKE_DATA_ROOT="$(mktemp -d -t eden-e2e-XXXXXX)"
 EXPERIMENT_ID="e2e-exp"
 
 # Stage 1's wait-list — deliberately omits gitea (deferred 10d
 # follow-up, not consumed by this drill) and ideator-host (the whole
 # point of staging is to keep ideator-host away from the tasks the
-# UI claims).
+# UI claims). The legacy `blob-init` service was removed in
+# Phase 12a-1g alongside the eden-blob-data volume.
 STAGE1_SERVICES=(
-    postgres blob-init
+    postgres
     task-store-server orchestrator
     executor-host evaluator-host web-ui
 )
@@ -62,6 +66,7 @@ cleanup() {
         down -v >/dev/null 2>&1 || true
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
+    rm -rf "$SMOKE_DATA_ROOT"
     exit "$rc"
 }
 trap cleanup EXIT
@@ -70,7 +75,8 @@ echo "--- running setup-experiment ---"
 bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     "${REPO_ROOT}/tests/fixtures/experiment/.eden/config.yaml" \
     --experiment-id "$EXPERIMENT_ID" \
-    --env-file "$ENV_FILE"
+    --env-file "$ENV_FILE" \
+    --data-root "$SMOKE_DATA_ROOT"
 
 # Override EDEN_IDEATION_TASKS to 4 (default is 3). The four deterministic
 # IDs ideation-0001..ideation-0004 are seeded; the drill claims ideation-0001 and
@@ -188,7 +194,7 @@ docker compose -f compose.yaml --env-file "$ENV_FILE" stop --timeout 10
 
 # Iterate every container compose still knows about. With
 # eden-repo-init removed by `compose run --rm`, this naturally covers
-# postgres, blob-init, task-store-server, orchestrator, ideator-host,
+# postgres, task-store-server, orchestrator, ideator-host,
 # executor-host, evaluator-host, and web-ui. (Gitea was never
 # brought up so it does not appear here — codex round-1 fix.)
 #
