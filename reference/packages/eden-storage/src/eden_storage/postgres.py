@@ -138,134 +138,184 @@ def ensure_readonly_role(
     schema_ident = sql.Identifier(schema_name)
     db_ident = sql.Identifier(db_name)
 
-    with conn.cursor() as cur:
-        # 1. Create or rotate password. Postgres' SQL injection
-        #    safety doesn't extend to role passwords — they go
-        #    inline as a Literal. Identifiers go through
-        #    sql.Identifier for quoting.
-        exists = cur.execute(
-            "SELECT 1 FROM pg_roles WHERE rolname = %s", (username,)
-        ).fetchone()
-        if exists is None:
+    # Wrap the entire provision in a single transaction so a
+    # mid-sequence failure (e.g. a GRANT against a table the role
+    # doesn't yet own) rolls back password rotation + earlier
+    # revokes cleanly. Codex round-1 finding on atomicity. Acquire
+    # a transaction-scoped advisory lock so concurrent provisioners
+    # against the same database serialize (Codex round-1 finding
+    # on the CREATE ROLE race); the lock-key is derived from a
+    # stable hashtext of the helper's role name + an arbitrary
+    # 12a-1f-specific magic so it can't collide with other
+    # advisory-lock users in the same database.
+    with conn.cursor() as cur0:
+        cur0.execute("BEGIN")
+    try:
+        with conn.cursor() as cur:
+            # Advisory lock keyed by `hashtext('eden_readonly_role')`
+            # — bigint per Postgres' pg_advisory_xact_lock contract.
+            # A concurrent provisioner waits here until our COMMIT
+            # / ROLLBACK releases the lock.
             cur.execute(
-                sql.SQL("CREATE ROLE {role} WITH LOGIN PASSWORD {pwd}").format(
-                    role=role_ident,
-                    pwd=sql.Literal(password),
-                )
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("eden_readonly_role:12a-1f",),
             )
-        else:
-            cur.execute(
-                sql.SQL("ALTER ROLE {role} WITH LOGIN PASSWORD {pwd}").format(
-                    role=role_ident,
-                    pwd=sql.Literal(password),
-                )
-            )
-
-        # 2. Bulk-revoke any prior privileges so legacy over-grants
-        #    from earlier provisioning attempts cannot persist.
-        cur.execute(
-            sql.SQL(
-                "REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {role}"
-            ).format(schema=schema_ident, role=role_ident)
-        )
-        cur.execute(
-            sql.SQL(
-                "REVOKE ALL ON ALL SEQUENCES IN SCHEMA {schema} "
-                "FROM {role}"
-            ).format(schema=schema_ident, role=role_ident)
-        )
-        cur.execute(
-            sql.SQL(
-                "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA {schema} "
-                "FROM {role}"
-            ).format(schema=schema_ident, role=role_ident)
-        )
-        cur.execute(
-            sql.SQL("REVOKE ALL ON SCHEMA {schema} FROM {role}").format(
-                schema=schema_ident, role=role_ident
-            )
-        )
-        cur.execute(
-            sql.SQL("REVOKE ALL ON DATABASE {db} FROM {role}").format(
-                db=db_ident, role=role_ident
-            )
-        )
-        # Bulk-revoke ALL default privileges (not just SELECT, not
-        # just TABLES) — both schema-scoped AND global default
-        # privileges. Codex round-0 finding on hardening: a prior
-        # provisioning could have installed
-        # `ALTER DEFAULT PRIVILEGES GRANT INSERT ON TABLES` or
-        # similar non-SELECT grants, or a global (non-IN-SCHEMA)
-        # default-privileges entry whose new-table grants would
-        # silently bypass our column-level constraint. Sweep all
-        # of them.
-        for object_kind in ("TABLES", "SEQUENCES", "FUNCTIONS", "TYPES"):
-            cur.execute(
-                sql.SQL(
-                    "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                    "REVOKE ALL ON " + object_kind + " FROM {role}"
-                ).format(schema=schema_ident, role=role_ident)
-            )
-            # Global default privileges (no IN SCHEMA clause) cover
-            # tables created in any schema by the current role.
-            cur.execute(
-                sql.SQL(
-                    "ALTER DEFAULT PRIVILEGES REVOKE ALL ON "
-                    + object_kind
-                    + " FROM {role}"
-                ).format(role=role_ident)
-            )
-
-        # 3. GRANT the safe-set.
-        cur.execute(
-            sql.SQL("GRANT CONNECT ON DATABASE {db} TO {role}").format(
-                db=db_ident, role=role_ident
-            )
-        )
-        cur.execute(
-            sql.SQL("GRANT USAGE ON SCHEMA {schema} TO {role}").format(
-                schema=schema_ident, role=role_ident
-            )
-        )
-        # Grant on each existing table individually so a missing
-        # table (e.g. a schema bump that didn't reach this DB)
-        # doesn't no-op the rest silently. `SELECT to_regclass`
-        # short-circuits when the table isn't present.
-        for table in _READONLY_GRANT_TABLES:
-            qualified = f"{schema_name}.{table}"
+            # 1. Create or rotate password. Postgres' SQL injection
+            #    safety doesn't extend to role passwords — they go
+            #    inline as a Literal. Identifiers go through
+            #    sql.Identifier for quoting.
             exists = cur.execute(
-                "SELECT to_regclass(%s) IS NOT NULL", (qualified,)
+                "SELECT 1 FROM pg_roles WHERE rolname = %s", (username,)
             ).fetchone()
-            if not exists or not exists[0]:
-                # Schema migration hasn't reached this database;
-                # skip the table. ensure_schema() runs first in
-                # PostgresStore.__init__ for the normal path.
-                continue
-            cur.execute(
-                sql.SQL(
-                    "GRANT SELECT ON {schema}.{table} TO {role}"
-                ).format(
-                    schema=schema_ident,
-                    table=sql.Identifier(table),
-                    role=role_ident,
+            if exists is None:
+                # CREATE ROLE could still race against a
+                # concurrent admin DDL outside our advisory lock
+                # (e.g. a manual `CREATE ROLE` from psql); fall
+                # through to ALTER on duplicate_object so the
+                # post-condition still holds.
+                try:
+                    cur.execute(
+                        sql.SQL(
+                            "CREATE ROLE {role} WITH LOGIN PASSWORD {pwd}"
+                        ).format(
+                            role=role_ident,
+                            pwd=sql.Literal(password),
+                        )
+                    )
+                except psycopg.errors.DuplicateObject:
+                    cur.execute(
+                        sql.SQL(
+                            "ALTER ROLE {role} WITH LOGIN PASSWORD {pwd}"
+                        ).format(
+                            role=role_ident,
+                            pwd=sql.Literal(password),
+                        )
+                    )
+            else:
+                cur.execute(
+                    sql.SQL(
+                        "ALTER ROLE {role} WITH LOGIN PASSWORD {pwd}"
+                    ).format(
+                        role=role_ident,
+                        pwd=sql.Literal(password),
+                    )
                 )
-            )
 
-        # Column-level SELECT on `worker` excluding credential_hash.
-        # `SELECT * FROM worker` will fail under this role because
-        # the parser expands `*` to all columns and credential_hash
-        # lacks SELECT — see plan §D.3.a.
-        worker_exists = cur.execute(
-            "SELECT to_regclass(%s) IS NOT NULL",
-            (f"{schema_name}.worker",),
-        ).fetchone()
-        if worker_exists and worker_exists[0]:
+            # 2. Bulk-revoke any prior privileges so legacy over-grants
+            #    from earlier provisioning attempts cannot persist.
             cur.execute(
                 sql.SQL(
-                    "GRANT SELECT (worker_id, data) ON {schema}.worker "
-                    "TO {role}"
+                    "REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {role}"
                 ).format(schema=schema_ident, role=role_ident)
             )
+            cur.execute(
+                sql.SQL(
+                    "REVOKE ALL ON ALL SEQUENCES IN SCHEMA {schema} "
+                    "FROM {role}"
+                ).format(schema=schema_ident, role=role_ident)
+            )
+            cur.execute(
+                sql.SQL(
+                    "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA {schema} "
+                    "FROM {role}"
+                ).format(schema=schema_ident, role=role_ident)
+            )
+            cur.execute(
+                sql.SQL("REVOKE ALL ON SCHEMA {schema} FROM {role}").format(
+                    schema=schema_ident, role=role_ident
+                )
+            )
+            cur.execute(
+                sql.SQL("REVOKE ALL ON DATABASE {db} FROM {role}").format(
+                    db=db_ident, role=role_ident
+                )
+            )
+            # Bulk-revoke ALL default privileges (not just SELECT,
+            # not just TABLES) — both schema-scoped AND global
+            # default privileges. Codex round-0 finding on
+            # hardening: a prior provisioning could have installed
+            # `ALTER DEFAULT PRIVILEGES GRANT INSERT ON TABLES` or
+            # a global (non-IN-SCHEMA) default-privileges entry
+            # whose new-table grants would silently bypass our
+            # column-level constraint. Sweep all of them.
+            for object_kind in ("TABLES", "SEQUENCES", "FUNCTIONS", "TYPES"):
+                cur.execute(
+                    sql.SQL(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                        "REVOKE ALL ON " + object_kind + " FROM {role}"
+                    ).format(schema=schema_ident, role=role_ident)
+                )
+                # Global default privileges (no IN SCHEMA clause).
+                cur.execute(
+                    sql.SQL(
+                        "ALTER DEFAULT PRIVILEGES REVOKE ALL ON "
+                        + object_kind
+                        + " FROM {role}"
+                    ).format(role=role_ident)
+                )
+
+            # 3. GRANT the safe-set.
+            cur.execute(
+                sql.SQL("GRANT CONNECT ON DATABASE {db} TO {role}").format(
+                    db=db_ident, role=role_ident
+                )
+            )
+            cur.execute(
+                sql.SQL("GRANT USAGE ON SCHEMA {schema} TO {role}").format(
+                    schema=schema_ident, role=role_ident
+                )
+            )
+            # Grant on each existing table individually so a missing
+            # table (e.g. a schema bump that didn't reach this DB)
+            # doesn't no-op the rest silently. `SELECT to_regclass`
+            # short-circuits when the table isn't present.
+            for table in _READONLY_GRANT_TABLES:
+                qualified = f"{schema_name}.{table}"
+                table_exists = cur.execute(
+                    "SELECT to_regclass(%s) IS NOT NULL", (qualified,)
+                ).fetchone()
+                if not table_exists or not table_exists[0]:
+                    # Schema migration hasn't reached this database;
+                    # skip the table. ensure_schema() runs first in
+                    # PostgresStore.__init__ for the normal path.
+                    continue
+                cur.execute(
+                    sql.SQL(
+                        "GRANT SELECT ON {schema}.{table} TO {role}"
+                    ).format(
+                        schema=schema_ident,
+                        table=sql.Identifier(table),
+                        role=role_ident,
+                    )
+                )
+
+            # Column-level SELECT on `worker` excluding credential_hash.
+            # `SELECT * FROM worker` fails under this role because
+            # the parser expands `*` to all columns and credential_hash
+            # lacks SELECT — see plan §D.3.a.
+            worker_exists = cur.execute(
+                "SELECT to_regclass(%s) IS NOT NULL",
+                (f"{schema_name}.worker",),
+            ).fetchone()
+            if worker_exists and worker_exists[0]:
+                cur.execute(
+                    sql.SQL(
+                        "GRANT SELECT (worker_id, data) ON {schema}.worker "
+                        "TO {role}"
+                    ).format(schema=schema_ident, role=role_ident)
+                )
+    except BaseException:
+        # Roll back the entire provision sequence so a mid-flow
+        # failure (failed GRANT against a still-being-migrated
+        # table, etc.) leaves the database in the pre-call state.
+        # Codex round-1 finding on atomicity. Open a fresh cursor;
+        # the one above is dead after the exception.
+        with conn.cursor() as cur2:
+            cur2.execute("ROLLBACK")
+        raise
+    else:
+        with conn.cursor() as cur2:
+            cur2.execute("COMMIT")
 
 
 def _scalar(conn: Any, query: str) -> Any:
