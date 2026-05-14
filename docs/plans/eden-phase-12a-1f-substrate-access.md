@@ -180,13 +180,21 @@ codex-review and future readers don't re-litigate them.
    event payloads.** The wire shape is unchanged. The new
    route provides the host-side translation:
    `file:///var/lib/eden/artifacts/foo.md` →
-   `http://task-store-server:8080/_reference/artifacts/foo.md`
+   `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/foo.md`
    for the agent. Phase 13d sorts out URI schemes properly.
-6. **Path-traversal protection: standard `Path.resolve()` +
-   containment check.** Reject `..` / absolute paths /
-   symlinks escaping the artifacts root. Mirrors the existing
-   `_read_inline_artifact` helper at
-   [`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py).
+6. **Path-traversal protection: descriptor-relative
+   component walk** (Linux `openat2(RESOLVE_BENEATH)`
+   equivalent in stdlib). Each path component opens
+   `O_PATH | O_DIRECTORY | O_NOFOLLOW` via `dir_fd=`
+   the prior step's fd; symlinks at ANY component → 403
+   via ELOOP. Malformed components (`..`, leading slash,
+   NUL byte) are pre-FS-call rejected → 400. Stronger
+   than the pre-12a-1f `_read_inline_artifact` helper at
+   [`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
+   (which uses `Path.resolve()` and is vulnerable to
+   intermediate-component swap TOCTOU; that helper
+   serves the human-facing browser route and the
+   trust-boundary calculation there is different).
 
 ## 3. Design
 
@@ -279,9 +287,9 @@ Response shape:
 
 | HTTP | Body | When |
 |---|---|---|
-| `200 OK` | file bytes (≤ 1 MiB) + safe-delivery headers (see below) | Path resolves to a regular file under `artifacts_dir`, file size ≤ 1 MiB |
+| `200 OK` | file bytes (≤ 1 MiB) + safe-delivery headers (see below) | Component walk succeeds; opened inode is a regular file under `artifacts_dir`; file size ≤ 1 MiB |
 | `400 Bad Request` | RFC 7807 `eden://error/experiment-id-mismatch` | The URL's `experiment_id` does not equal `store.experiment_id` |
-| `400 Bad Request` | RFC 7807 `eden://reference-error/invalid-path` | Path contains a NUL byte, exceeds OS path limits, or otherwise fails to resolve (`ValueError` from `Path.resolve` / `OSError` from `stat`). Includes symlink-loop `ELOOP`. |
+| `400 Bad Request` | RFC 7807 `eden://reference-error/invalid-path` | Path contains malformed components (`..`, empty segment from leading/trailing/double slash, NUL byte) — pre-FS-call rejected by `_REJECT_COMPONENTS` |
 | `401 Unauthorized` | RFC 7807 `eden://error/unauthorized` | Missing / malformed bearer; bad token |
 | `403 Forbidden` | RFC 7807 `eden://error/forbidden` | Resolved path is OUTSIDE `artifacts_dir` (traversal); OR an open-time check confirms the opened inode is OUTSIDE the root (TOCTOU mitigation) |
 | `404 Not Found` | RFC 7807 `eden://error/not-found` | Resolved path is inside `artifacts_dir` but doesn't exist or is not a regular file |
@@ -661,7 +669,7 @@ columns the parser expanded into; if any one column lacks
 denied. Same for `COPY <table> TO …` and `pg_dump`-shape
 table reads. The operator-visible posture is:
 
-- `SELECT worker_id, labels FROM worker` — works.
+- `SELECT worker_id, data FROM worker` — works.
 - `SELECT * FROM worker` — fails ("permission denied for
   column credential_hash").
 - `COPY worker TO STDOUT` — fails (same reason).
@@ -797,7 +805,7 @@ substrates' off-host stories:
 | Substrate | On-host (compose-internal) | Off-host (cross-machine) |
 |---|---|---|
 | Git | bind-mount path `/var/lib/eden/repo`, no auth | `git clone http://gitea:3000/eden/<id>.git` with shared `eden` Basic auth (today; Phase 13e adds per-worker tokens). Operator-supplied gitea URL + creds. |
-| Artifact server | `http://task-store-server:8080/_reference/artifacts/` with `EDEN_WORKER_CREDENTIAL` bearer | Same URL (if operator exposes the port externally) or operator's chosen reverse-proxy hostname; same bearer. |
+| Artifact server | `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/` with `EDEN_WORKER_CREDENTIAL` bearer | Same URL (if operator exposes the port externally) or operator's chosen reverse-proxy hostname; same bearer. |
 | Postgres readonly | `postgresql://eden_readonly:…@postgres:5432/eden` | Same DSN but operator-substituted hostname; same readonly role + password. |
 
 The binding doc explicitly notes: **the env vars are
@@ -927,15 +935,15 @@ Out:
 | File | Change |
 |---|---|
 | `reference/packages/eden-storage/src/eden_storage/postgres.py` | New module-level `ensure_readonly_role(conn, *, username, password)` function. Idempotent: creates or rotates the role; **REVOKEs all prior privileges** (including any prior `ALTER DEFAULT PRIVILEGES`-installed grants); then re-GRANTs the exact safe-set per §D.3.a (table-level on `experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`; column-level on `worker` exposing `worker_id` + `data` but excluding `credential_hash`). No `ALTER DEFAULT PRIVILEGES` is installed — future schema bumps that add a new table must extend the GRANT list explicitly. |
-| `reference/packages/eden-storage/tests/test_postgres_readonly.py` | **NEW**: requires `EDEN_TEST_POSTGRES_DSN`; provisions the role; asserts SELECT works, INSERT/UPDATE/DELETE fail; default-privileges applied to a freshly-created table. |
+| `reference/packages/eden-storage/tests/test_postgres_readonly.py` | **NEW**: requires `EDEN_TEST_POSTGRES_DSN`; provisions the role; asserts projected `SELECT` works, INSERT/UPDATE/DELETE fail, `SELECT *` on `worker` fails, and a freshly-created table is **NOT** auto-readable by `eden_readonly` (verifies `ALTER DEFAULT PRIVILEGES` is intentionally absent per §D.3.a). |
 
 ### 5.5 `eden-ideator-host`
 
 | File | Change |
 |---|---|
-| `reference/services/ideator/src/eden_ideator_host/cli.py` | New `--repo-path`, `--gitea-url`, `--credential-helper` flags. When all three are set: clone-on-startup + fetch-on-restart wiring (mirror executor/evaluator). |
-| `reference/services/ideator/src/eden_ideator_host/host.py` | Pass `repo_dir` into `build_subprocess_config`. |
-| `reference/services/ideator/src/eden_ideator_host/subprocess_mode.py` | Subprocess env-var threading for the four new vars (`EDEN_REPO_DIR`, `EDEN_ARTIFACT_URL`, `EDEN_ARTIFACT_PATH_ROOT`, `EDEN_READONLY_STORE_URL`). |
+| `reference/services/ideator/src/eden_ideator_host/cli.py` | New `--repo-path`, `--gitea-url`, `--credential-helper` flags (clone-on-startup + fetch-on-restart wiring, mirror executor/evaluator). Calls `add_substrate_arguments(parser)` (§5.7) to register `--artifact-url`, `--artifact-path-root`, `--readonly-store-url`. In `main()`, resolves the four substrate values (from flags or `EDEN_*` env fallbacks) and builds the `env` dict that gets passed to `build_subprocess_config(..., env=...)`. The resolved values land in the spawned `*_command`'s environment via the existing env-threading mechanism the chunk-10d ideator already uses for `EDEN_WORKER_ID` / `EDEN_WORKER_CREDENTIAL`. |
+| `reference/services/ideator/src/eden_ideator_host/host.py` | Pass `repo_dir` into `build_subprocess_config` (so `EDEN_REPO_DIR` is one of the env keys forwarded to the child). |
+| `reference/services/ideator/src/eden_ideator_host/subprocess_mode.py` | Subprocess env-var threading: `env["EDEN_REPO_DIR"] = ...` / `env["EDEN_ARTIFACT_URL"] = ...` / `env["EDEN_ARTIFACT_PATH_ROOT"] = ...` / `env["EDEN_READONLY_STORE_URL"] = ...` — same overlay pattern the existing chunk-10d threading uses (host-owned reserved keys overlay on top of `--ideation-env-file` so a user file can't redirect the protocol surface). |
 | `reference/services/ideator/tests/test_ideator_repo_init.py` | **NEW**: clone-on-startup + fetch-on-restart, mirroring evaluator's test if one exists. |
 | `reference/services/ideator/tests/test_ideator_subprocess_env.py` | **NEW**: subprocess gets the four env vars when CLI flags are set; absent when flags omitted. |
 
@@ -1099,18 +1107,32 @@ trust-boundary tests are the gate:
     stored-XSS defense; they MUST be locked by test on
     every 200 path.
 
-### 6.2 Path-resolution edge cases
+### 6.2 Path edge cases (descriptor-walk semantics)
 
-- Empty path component (`GET /_reference/artifacts/`) → 404
-  (not a file).
-- URL-encoded slashes (`%2F`) — FastAPI's `{path:path}`
-  treats these as literal slashes; the `.resolve()` collapses
-  them; containment check catches escapes.
-- Trailing slash (`foo.md/`) → 404.
-- Multiple consecutive slashes (`foo//bar`) — collapsed by
-  `.resolve()`; if the resolved path is under root and a
-  file, served.
-- Symlink to a directory inside the root → 404 (not a file).
+- **Empty trailing component.** `GET
+  /_reference/experiments/<id>/artifacts/` →
+  `path = ""`; `path.split("/")` yields `[""]` whose
+  single component is in `_REJECT_COMPONENTS` → 400
+  `eden://reference-error/invalid-path`.
+- **URL-encoded slash mid-path.** `%2F` decoded into the
+  `path` parameter is a literal `/`, so
+  `foo%2Fbar` → `path = "foo/bar"` → walk via dir_fd
+  through `foo/` then open `bar`. Works exactly like
+  `foo/bar`.
+- **Trailing slash on a file path.** `foo.md/` →
+  `path.split("/") == ["foo.md", ""]` → empty trailing
+  component → 400 `eden://reference-error/invalid-path`.
+- **Multiple consecutive slashes.** `foo//bar` →
+  `path.split("/") == ["foo", "", "bar"]` → empty middle
+  component → 400. The walk rejects malformed components
+  pre-FS rather than collapsing them.
+- **Symlink at any path component** (intermediate dir
+  link or terminal file link) — `O_NOFOLLOW` returns
+  ELOOP → 403 `eden://error/forbidden`.
+- **Symlink to a directory at the terminal position** —
+  `O_NOFOLLOW` returns ELOOP on the open → 403 (the
+  symlink is rejected; the dir-ness of its target is
+  irrelevant).
 
 ### 6.3 Ideator clone-on-startup
 
@@ -1160,8 +1182,12 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
   from `worker`.
 - **Idempotent re-run.** Same password → no-op (no error).
 - **Password rotation.** Different password → ALTER ROLE
-  updates; new password authenticates; old password fails
-  401.
+  updates; a fresh psycopg connection with the new
+  password succeeds; a fresh psycopg connection with the
+  old password raises `psycopg.OperationalError` /
+  `OperationalError: password authentication failed`
+  (Postgres-level auth failure, NOT HTTP 401 — the
+  readonly substrate is a direct Postgres connection).
 - **No write privilege.** INSERT / UPDATE / DELETE on every
   granted table (`experiment`, `task`, `submission`, `idea`,
   `variant`, `event`, `worker`, `worker_group`,
@@ -1177,7 +1203,7 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
     expands `*` to every column including the excluded
     one). Codex round-2 finding: this is the realistic
     operator-error shape; the test pins the failure.
-  - `SELECT worker_id, labels FROM worker LIMIT 1` —
+  - `SELECT worker_id, data FROM worker LIMIT 1` —
     MUST succeed (explicit column projection).
 - **Hardening against legacy over-grant.** Start a fresh
   Postgres database; manually pre-create `eden_readonly`
@@ -1422,7 +1448,7 @@ during impl.
   chunk is plan-only).
 - **PR #80 (12a-2 orchestrator-as-role impl).** Touches
   orchestrator + admin-UI surfaces; may touch the auth
-  middleware. 12a-1f's `/_reference/artifacts/` route
+  middleware. 12a-1f's `/_reference/experiments/<experiment-id>/artifacts/` route
   lives in `eden_wire.server` and uses route-level auth
   (not the middleware); merge conflict surface is small.
   Rebase before push.
@@ -1489,15 +1515,22 @@ at 13e for the hardened path.
   The route MUST run auth FIRST. Verified by the §6.1
   test #1.
 - **Path traversal via URL encoding.** FastAPI's
-  `{path:path}` handles URL-decoded paths correctly, and
-  `Path.resolve()` normalizes `..`. The containment check
-  via `relative_to` (raising `ValueError` on escape) is
-  the canonical Python idiom. The §6.1 test #4 covers all
-  three escape shapes.
-- **Symlink escapes.** A symlink inside the artifacts root
-  pointing OUTSIDE the root → `.resolve()` follows it → the
-  resolved path is outside the root → containment check
-  rejects. The §6.1 test #4 covers this.
+  `{path:path}` URL-decodes path components, so `%2F` is a
+  literal slash and `%00` is a NUL byte. The
+  `_REJECT_COMPONENTS` guard catches both as malformed
+  components pre-FS-call (`..`, empty segment, NUL) → 400.
+  Codex round-3 / round-4: this is BEFORE any
+  filesystem call; `Path.resolve()` is NOT used.
+- **Symlink escapes (terminal AND intermediate).** Every
+  step of the descriptor-relative walk opens with
+  `O_NOFOLLOW`; ANY symlink (terminal OR intermediate
+  directory) → ELOOP → 403. Intermediate-component swap
+  attacks (where an attacker swaps a real dir for a
+  symlink between path resolution and open) are
+  closed-by-construction because each step is anchored
+  by the prior step's fd, not a re-resolved path string.
+  Tests §6.1 #16 (terminal symlink) + #17
+  (intermediate-component swap race) cover both.
 - **Race between readonly-role rotation and live
   subprocesses.** §8.5 above; operational, not a bug.
 - **Off-host operator misconfigures `EDEN_ARTIFACT_PATH_ROOT`.**
