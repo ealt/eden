@@ -1,0 +1,66 @@
+--- docs/plans/review/eden-phase-12a-1g-experiment-durability/20260514T093959/3.md	2026-05-14 09:54:47
++++ docs/plans/eden-phase-12a-1g-experiment-durability.md	2026-05-14 09:56:48
+@@ -279,20 +279,44 @@
+ 
+ **Manual smoke (durability-relevant, not automated):**
+ 
+-A "kill-and-restart" check the operator runs once locally to verify the durability claim:
++A "kill-and-restart" check the operator runs once locally to verify the durability claim. This recipe deliberately does NOT call `smoke.sh` — that script tears down the stack on `EXIT` and runs against a per-invocation `mktemp` env file, neither of which compose with an inter-restart durability inspection. Instead the recipe drives `setup-experiment.sh` + `compose up/down` directly with a stable data root and env file:
+ 
+ ```bash
+-bash reference/compose/healthcheck/smoke.sh   # bring up + drive to quiescence
+-docker compose --env-file .env down   # NOTE: no -v
+-ls ~/.eden/experiments/$EDEN_EXPERIMENT_ID/postgres   # verify still populated
+-docker compose --env-file .env up -d --wait
+-curl -sS -H "Authorization: Bearer admin:$EDEN_ADMIN_TOKEN" \
+-    -H "X-Eden-Experiment-Id: $EDEN_EXPERIMENT_ID" \
+-    http://localhost:8080/v0/experiments/$EDEN_EXPERIMENT_ID/workers | jq '.items | length'
+-# Should be ≥4 (orchestrator + 3 worker hosts persisted across restart)
++ROOT="$(mktemp -d -t eden-durability-XXXXXX)"
++ENV_FILE="$ROOT/.env"
++EID="eden-durability-check"
++trap 'docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml down -v >/dev/null 2>&1 || true; rm -rf "$ROOT"' EXIT
++
++# 1. Bootstrap with stable data root + env file.
++bash reference/scripts/setup-experiment/setup-experiment.sh \
++    tests/fixtures/experiment/.eden/config.yaml \
++    --experiment-id "$EID" \
++    --data-root "$ROOT" \
++    --env-file "$ENV_FILE"
++
++# 2. Run to quiescence.
++docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
++# (optional: poll the orchestrator's exit; once the smoke logic confirms quiescence,
++# the experiment is in steady state.)
++
++# 3. Stop without -v so bind-mounts survive.
++docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml down   # NO -v
++
++# 4. Verify the substrate tree is still populated on the host filesystem.
++ls "$ROOT/postgres" "$ROOT/gitea" "$ROOT/artifacts"
++
++# 5. Bring the stack back up against the same data root + env file.
++docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
++
++# 6. Confirm worker registry survived (≥4 entries: orchestrator + ideator + executor + evaluator + web-ui).
++TOKEN="$(sed -n 's/^EDEN_ADMIN_TOKEN=//p' "$ENV_FILE")"
++curl -sS -H "Authorization: Bearer admin:$TOKEN" \
++    -H "X-Eden-Experiment-Id: $EID" \
++    "http://localhost:${TASK_STORE_HOST_PORT:-8080}/v0/experiments/$EID/workers" \
++  | jq '.items | length'   # expect ≥4
+ ```
+ 
+-Document this in `docs/operations/experiment-data-durability.md` and run it once locally as part of impl validation. Codification as a CI job is the natural Phase-12a-1g-followup if it proves useful; not in scope here per operator decision.
++The trap cleans up at exit; for a longer-lived investigation, the operator skips the trap and `rm -rf "$ROOT"` manually when done. Document this in `docs/operations/experiment-data-durability.md` and run it once locally as part of impl validation. Codification as a CI job is the natural Phase-12a-1g-followup if it proves useful; not in scope here per operator decision §2.4.
+ 
+ ## 7. Verification gates
+ 
+@@ -393,7 +417,7 @@
+ ## 9. Risks / things to watch
+ 
+ - **`chmod 0777` security pushback.** Codex-review may flag the world-writable substrate directories. The cidfile-dir precedent already accepted this posture for local-dev (setup-experiment.sh L240-243). The plan documents the tradeoff explicitly and points Phase 13 at the production-grade alternative. If review pushes back hard, the fallback is `chown` to a documented per-platform uid list — more correct but less portable. Hold the line on `chmod 0777` unless review surfaces a deployment scenario where it breaks (e.g., a corporate-managed macOS that disallows world-writable directories).
+-- **Smoke regression from the bind-mount switch.** Postgres / gitea / eden services have different uid postures, and a bind-mount that "works on my Mac" may break on the CI Linux runner. The plan's smoke gate (run all three smoke scripts before push) is the catch.
++- **Smoke regression from the bind-mount switch.** Postgres / gitea / eden services have different uid postures, and a bind-mount that "works on my Mac" may break on the CI Linux runner. The plan's smoke gate (run all four smoke scripts before push — `smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `e2e.sh`) is the catch.
+ - **`$HOME` expansion in compose.yaml.** Compose does NOT shell-expand `$HOME`; the env var must be pre-resolved by setup-experiment.sh into an absolute path. If an operator hand-edits `.env` to put `$HOME` literally, compose interpolation will write a substrate to a directory literally named `$HOME`. Setup-experiment writes the resolved abs path, so the default path works; the operator-hand-edited case is operator error and gets a one-line note in the operator doc.
+ - **Migration friction for in-flight experiments.** EDEN is pre-user-deployment-base, so the operator's articulated requirement is to ship the new durability shape now and document migration as a one-shot recipe. If a real user-deployment had emerged in the meantime, this calculus would change. Verify with operator at codex-review time that no production experiment depends on the named-volume shape.
+ - **Spec invariant interpreted as a control-plane mandate.** The earlier draft of §13 spoke of "until an authorized operator explicitly terminates it"; that framing was retired in favor of anchoring lifetime to chapter 01 §1's existing termination conditions (codex round 0 / round 1). The current §13 reads "until the experiment reaches a terminal state per its configured termination conditions (§1) or is otherwise discarded by an authorized operator" — the operator-discard clause is informational (handles non-spec deletion paths like operator-decided shutdown) and does NOT name a control-plane operation, so it doesn't beg a future Phase 12 chapter to be co-shipped.
