@@ -90,6 +90,13 @@ setup-experiment.sh creates the substrate subdirectories with `chmod 0777`. This
 
 Operators with a Compose experiment already running on Docker named volumes (`eden-postgres-data`, `eden-gitea-data`, etc., backed by the Docker storage area) migrate as follows. The recipe runs once; after it completes the operator is on the bind-mount layout and future restarts are durable.
 
+**Volume-naming discipline (read this first).** Compose auto-prefixes top-level named volumes with the project name (default `eden-reference`, configurable via `name:` at the top of `compose.yaml` OR via `COMPOSE_PROJECT_NAME`). So the legacy stack had two shapes of volume name:
+
+- **Project-prefixed:** `eden-reference_eden-postgres-data`, `eden-reference_eden-gitea-data`, `eden-reference_eden-orchestrator-repo`, `eden-reference_eden-web-ui-repo`, and every `eden-reference_eden-*-credentials`.
+- **Literal-`name:` pinned** (the chunk-10d-followup-A wrap needed exact names for DooD volume forwarding): `eden-artifacts-data`, `eden-executor-repo`, `eden-evaluator-repo`.
+
+If your stack ran with a non-default `COMPOSE_PROJECT_NAME`, replace `eden-reference` below with your project name everywhere it appears. Confirm the actual names via `docker volume ls | grep eden` before starting the copy.
+
 ```bash
 # Pick the new data root.
 EID="my-existing-experiment"
@@ -149,16 +156,33 @@ docker volume rm \
 
 ### Moving an experiment to a new data root
 
-Same shape as the migration recipe above, except both source and destination are bind-mount directories:
+The relocation guard in setup-experiment.sh refuses to silently abandon a populated `/OLD/ROOT` (it checks for `postgres/PG_VERSION` and `gitea/conf` sentinels). To migrate cleanly:
 
 ```bash
+# Stop the stack first so nothing is writing to /OLD/ROOT while we copy.
 docker compose --env-file .env stop
+
+# Copy substrate state to the new location.
 rsync -a --delete /OLD/ROOT/ /NEW/ROOT/
-bash setup-experiment.sh <config.yaml> --experiment-id <id> --data-root /NEW/ROOT
+
+# Move the old root aside (or `rm -rf /OLD/ROOT` if you trust the copy).
+# This is what unblocks setup-experiment's relocation guard — the
+# guard only refuses when the OLD root still has substantive
+# substrate data.
+mv /OLD/ROOT /OLD/ROOT.migrated
+
+# Now setup-experiment will accept --data-root /NEW/ROOT.
+bash reference/scripts/setup-experiment/setup-experiment.sh \
+    <config.yaml> --experiment-id <id> --data-root /NEW/ROOT
+
+# Bring the stack back up; .env now points at the new location.
 docker compose --env-file .env up -d --wait
+
+# Once verified, delete the migrated old root.
+rm -rf /OLD/ROOT.migrated
 ```
 
-`setup-experiment.sh` writes the new path into `.env`; the next `compose up` mounts from the new location.
+If you'd rather not move the old root (e.g. you want to keep it as a checkpoint), edit `.env` by hand to update `EDEN_EXPERIMENT_DATA_ROOT=/NEW/ROOT` BEFORE re-running setup-experiment. setup-experiment then reads /NEW/ROOT as the "existing" root, never inspects /OLD/ROOT, and the guard doesn't engage.
 
 ## Manual kill-and-restart check
 

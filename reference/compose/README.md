@@ -1,15 +1,16 @@
 # EDEN reference Compose stack
 
 A Docker Compose stack that runs the EDEN reference implementation
-end-to-end locally: third-party infrastructure (Postgres, Gitea, blob
-volume) plus the six EDEN services (`task-store-server`,
-`orchestrator`, `ideator-host`, `executor-host`,
-`evaluator-host`, `web-ui`), plus a one-shot `eden-repo-init` setup
-service.
+end-to-end locally: third-party infrastructure (Postgres, Gitea) plus
+the six EDEN services (`task-store-server`, `orchestrator`,
+`ideator-host`, `executor-host`, `evaluator-host`, `web-ui`), plus a
+one-shot `eden-repo-init` setup service.
 
-**Phase 10 chunks 10a + 10b + 10c are complete.** LLM-driven worker
-hosts (10d) and the comprehensive end-to-end Compose integration
-test (10e) are still ahead.
+Durable substrate state (postgres data, gitea data, artifacts,
+per-host bare clones, per-host worker credentials) lives as host
+bind-mounts under `${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>/` (default
+`$HOME/.eden/experiments/$EDEN_EXPERIMENT_ID/`) per Phase 12a-1g.
+See [`../../docs/operations/experiment-data-durability.md`](../../docs/operations/experiment-data-durability.md).
 
 ## What this stack provides
 
@@ -71,13 +72,13 @@ own embedded SQLite. Pointing Gitea at our Postgres would couple the
 git host's recovery story to the task store schema; production
 deployments must be free to swap either component independently.
 
-**Gitea is idle this chunk.** The roadmap reserves Gitea-as-the-
-workers'-actual-git-remote for a follow-up sub-chunk after 10d:
-workers currently use the local bare repo via `eden_git.GitRepo`
-(subprocess `git`), and refactoring to HTTPS push/pull against
-Gitea is a meaningful body of work. Gitea is in the stack so 10c's
-setup-experiment can adopt it incrementally; for now it sits
-healthy but unconsumed.
+**Gitea is the workers' canonical git remote.** Each worker keeps a
+per-host bare clone under `${EDEN_EXPERIMENT_DATA_ROOT}/<service>-repo/`
+and fetches from / pushes to Gitea over plain HTTP using a generated
+credential helper (see `setup-experiment.sh` — the Gitea password is
+preserved in `.env` across re-runs). The integrator publishes
+`variant/*` refs back to Gitea per chapter 6 §3.4 (Phase 10d
+follow-up B landed this).
 
 **The web-ui executor module overlaps with `executor-host`.**
 Passing `--repo-path` to web-ui activates the full executor
@@ -123,8 +124,8 @@ pick up changes to `command:`, env files, or `configs:`.
 | Service    | Host endpoint                  | Default credentials                            |
 | ---------- | ------------------------------ | ---------------------------------------------- |
 | Postgres   | `localhost:5433`               | user `eden` / db `eden` / password from `.env` |
-| Gitea HTTP | `http://localhost:3001/`       | no admin user (idle this chunk; provisioning lands in a follow-up) |
-| Gitea SSH  | `ssh://git@localhost:2222`     | (idem)                                         |
+| Gitea HTTP | `http://localhost:3001/`       | user `eden` / password from `.env` (`GITEA_REMOTE_PASSWORD`) — provisioned by setup-experiment |
+| Gitea SSH  | `ssh://git@localhost:2222`     | (same gitea credential; HTTP-Basic is the default workers use) |
 | Web UI     | `http://localhost:8090/`       | sign in with any worker_id                     |
 
 Defaults intentionally avoid the well-known ports (5432, 3000, 22)
@@ -139,7 +140,8 @@ instances. Override via `.env`.
 | Get a `psql` shell | `docker compose exec postgres psql -U eden -d eden` |
 | Stop the stack     | `docker compose stop`                   |
 | Stop and clean     | `docker compose down`                   |
-| **Wipe all data**  | `docker compose down -v`                |
+| Remove containers + ephemeral volumes | `docker compose down -v` |
+| **Wipe all data**  | `docker compose down -v && rm -rf "$EDEN_EXPERIMENT_DATA_ROOT"` |
 | Smoke test         | `bash healthcheck/smoke.sh`             |
 
 `down -v` removes the ephemeral named volumes (`eden-repo-init-staging`,

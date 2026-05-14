@@ -98,11 +98,13 @@ docker compose -f compose.yaml --env-file "$ENV_FILE" ps -a
 
 echo "--- asserting expected substrate bind-mounts exist ---"
 # Phase 12a-1g: durable substrates live as host directories under
-# $SMOKE_DATA_ROOT (chapter 01 §13). setup-experiment created the
-# tree; assert each substrate dir is present + non-empty after the
-# stack has come up.
+# $SMOKE_DATA_ROOT (chapter 01 §13). setup-experiment creates every
+# substrate subdir unconditionally (regardless of which overlay is
+# layered on later), so the existence assertion covers ALL of them
+# even though scripted-mode skips evaluator-repo at runtime.
 for sub in postgres gitea orchestrator-repo web-ui-repo executor-repo \
-           artifacts credentials/orchestrator credentials/ideator \
+           evaluator-repo artifacts \
+           credentials/orchestrator credentials/ideator \
            credentials/executor credentials/evaluator credentials/web-ui; do
     test -d "${SMOKE_DATA_ROOT}/${sub}" || {
         echo "missing substrate directory: ${SMOKE_DATA_ROOT}/${sub}" >&2

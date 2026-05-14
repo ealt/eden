@@ -45,10 +45,11 @@ every durable substrate (postgres data, gitea data, artifacts,
 per-host bare clones, per-host worker credentials) is bind-mounted
 (Phase 12a-1g, chapter 01 §13). Default:
 `$HOME/.eden/experiments/<experiment-id>`. The substrate tree
-under the data root survives `docker compose down`, Docker
-Desktop VM rebuilds, host reboot, and individual substrate
-container restart; it does NOT survive `docker compose down -v`,
-explicit `rm -rf`, or disk failure. See
+under the data root survives `docker compose down`, `docker
+compose down -v`, Docker Desktop VM rebuilds, host reboot, and
+individual substrate container restart. The only operator action
+that destroys it is explicit `rm -rf` of the data root; disk
+failure is the only non-operator way to lose it. See
 `docs/operations/experiment-data-durability.md`.
 
 When --exec-mode docker is used (subprocess overlay only), the
@@ -261,11 +262,16 @@ mkdir -p "$DATA_ROOT_INPUT"
 EDEN_EXPERIMENT_DATA_ROOT="$(cd "$DATA_ROOT_INPUT" && pwd)"
 
 # Guard against silent relocation: if an existing .env points at a
-# different data root AND that prior root has substrate data, abort.
-# Operator must either re-run with the same root, or migrate manually
-# per docs/operations/experiment-data-durability.md.
+# different data root AND that prior root has substantive substrate
+# data (not just empty subdirs setup-experiment created), abort. The
+# probe checks postgres' `PG_VERSION` sentinel (always present after
+# postgres initdb) and gitea's `conf/` directory (created when the
+# gitea container first boots). Either is sufficient evidence the
+# operator has actually run the stack, not just bootstrapped the
+# tree. Empty subdirs from an aborted setup don't trip this.
 if [[ -n "$EXISTING_DATA_ROOT" && "$EXISTING_DATA_ROOT" != "$EDEN_EXPERIMENT_DATA_ROOT" ]]; then
-    if [[ -d "$EXISTING_DATA_ROOT/postgres" || -d "$EXISTING_DATA_ROOT/gitea" ]]; then
+    if [[ -f "$EXISTING_DATA_ROOT/postgres/PG_VERSION" \
+        || -d "$EXISTING_DATA_ROOT/gitea/conf" ]]; then
         echo "refusing to silently relocate the data root:" >&2
         echo "  existing: $EXISTING_DATA_ROOT (has substrate data)" >&2
         echo "  new:      $EDEN_EXPERIMENT_DATA_ROOT" >&2
@@ -295,7 +301,7 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui"
-chmod 0777 \
+if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/gitea" \
@@ -309,7 +315,18 @@ chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" 2>/dev/null || true
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" 2>/dev/null
+then
+    # Best-effort: the script continues. But warn the operator so a
+    # follow-up "compose up postgres-permission-denied" failure
+    # surfaces a recognizable root cause instead of a generic error.
+    echo "warning: chmod 0777 on substrate dirs under" >&2
+    echo "         $EDEN_EXPERIMENT_DATA_ROOT" >&2
+    echo "         partially failed. Containers running as non-root" >&2
+    echo "         uids (postgres=70, gitea=1000, eden=1000) may fail" >&2
+    echo "         to write. Adjust permissions manually or use a" >&2
+    echo "         --data-root on a more permissive filesystem." >&2
+fi
 
 # --- Phase 10d follow-up A: --exec-mode docker resolution ---
 # All four are written to .env unconditionally; the compose overlay's

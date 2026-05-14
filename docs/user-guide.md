@@ -97,7 +97,7 @@ Seed-from semantics (see [`repo_init.py`](../reference/services/_common/src/eden
 - **No history is preserved** — the result is a single seed commit on `main` with a fixed identity/date.
 - Submodules are NOT recursively snapshotted (skipped).
 
-`--seed-from` requires a fresh seed. Re-running setup with a different `--seed-from` against an already-seeded stack: setup-experiment drops the staging volume so the new content takes effect, but the existing repo on Gitea + bare-repo volumes still hold the prior seed. If you've already run `compose up` once, do a full wipe (see [§11](#11-gotchas--resets)) before re-seeding.
+`--seed-from` requires a fresh seed. Re-running setup with a different `--seed-from` against an already-seeded stack: setup-experiment drops the staging volume so the new content takes effect, but the existing repo on Gitea + the per-host bare-clone directories under `${EDEN_EXPERIMENT_DATA_ROOT}` still hold the prior seed. If you've already run `compose up` once, do a full wipe (see [§11](#11-gotchas--resets)) before re-seeding.
 
 ### Running setup-experiment
 
@@ -114,6 +114,7 @@ Flags (all optional except the positional config):
 | `--postgres-password <P>` | preserved or generated | Postgres credential. Percent-encoded into the DSN. |
 | `--env-file <path>` | `reference/compose/.env` | Where to write the generated `.env`. |
 | `--experiment-dir <path>` | `<config>/..` | Host-side bind-mount source for subprocess mode. |
+| `--data-root <path>` | `$HOME/.eden/experiments/<id>` | Host-side parent dir for every durable substrate bind-mount (Phase 12a-1g, chapter 01 §13). See [`docs/operations/experiment-data-durability.md`](operations/experiment-data-durability.md). |
 | `--ideas-per-ideation <N>` | `1` | How many ideas each subprocess-mode ideation task asks for. |
 | `--exec-mode host\|docker` | `host` | `docker` wraps each subprocess-mode `*_command` in a sibling container via DooD (host docker socket). |
 | `--seed-from <host-dir>` | empty seed | See above. |
@@ -125,7 +126,8 @@ Produces:
 - `reference/compose/.env` — generated. Gitignored (covered by the `reference/compose/.env.*` rule).
 - `reference/compose/experiment-config.yaml` — copy of the input config, mounted into services.
 - `.gitea-creds-<experiment-id>/credential-helper.sh` — git credential helper for workers pushing to Gitea.
-- A seeded gitea repo at `eden/<experiment-id>` and a seeded `eden-bare-repo` volume.
+- `${EDEN_EXPERIMENT_DATA_ROOT}/` — host-side substrate tree (postgres / gitea / artifacts / per-host repo + credentials subdirs). See [`docs/operations/experiment-data-durability.md`](operations/experiment-data-durability.md).
+- A seeded gitea repo at `eden/<experiment-id>` and per-host bare-clone directories under `${EDEN_EXPERIMENT_DATA_ROOT}/`.
 - The `EDEN_BASE_COMMIT_SHA` line in `.env` replaced with the real seed SHA.
 
 ### Bringing the stack up
@@ -185,16 +187,25 @@ You should see (default) 3 ideation tasks pending and nothing else.
 ### Tearing down
 
 ```bash
-# Preserve volumes (resume later by `compose up` again):
+# Preserve substrate state — resume later with `compose up`:
 docker compose --env-file .env stop
+# Or:
+docker compose --env-file .env down       # NOTE: no -v
 
-# Full wipe — everything goes:
+# Full wipe — destroys everything including the bind-mounted
+# substrate tree under $EDEN_EXPERIMENT_DATA_ROOT.
+# (Assumed cwd: reference/compose/ — the surrounding `compose` calls
+# pass `--env-file .env`, so `.env` resolves to reference/compose/.env.)
 docker compose --env-file .env down -v
 docker rm -f $(docker ps -aq --filter 'name=eden-' 2>/dev/null) 2>/dev/null
 docker volume ls -q | grep eden | xargs -I{} docker volume rm {} 2>&1 | head
+DATA_ROOT="$(sed -n 's/^EDEN_EXPERIMENT_DATA_ROOT=//p' .env)"
+rm -rf "$DATA_ROOT"   # this is the destructive step — see chapter 01 §13
 ```
 
-The full wipe is required before re-seeding with `--seed-from` (see above) and before changing the postgres password (an old data volume + a fresh `.env` password = unhealthy task-store-server).
+Note: as of Phase 12a-1g (chapter 01 §13), durable substrate state is on the host filesystem under `${EDEN_EXPERIMENT_DATA_ROOT}/`, NOT inside Docker named volumes. So `docker compose down -v` removes the remaining named volumes (`eden-repo-init-staging`, `eden-worktrees`) but DOES NOT touch the substrate tree. To force a full reset you must additionally `rm -rf` the data root. See [`docs/operations/experiment-data-durability.md`](operations/experiment-data-durability.md).
+
+The full wipe (including the `rm -rf` of the data root) is required before re-seeding with `--seed-from` (see above) and before changing the postgres password (an old data dir + a fresh `.env` password = unhealthy task-store-server).
 
 ## 3. Worker host modes
 
