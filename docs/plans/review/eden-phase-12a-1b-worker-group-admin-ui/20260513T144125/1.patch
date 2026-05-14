@@ -1,0 +1,433 @@
+--- docs/plans/review/eden-phase-12a-1b-worker-group-admin-ui/20260513T144125/0.md	2026-05-13 14:41:25
++++ docs/plans/eden-phase-12a-1b-worker-group-admin-ui.md	2026-05-13 14:49:36
+@@ -207,21 +207,46 @@
+ 
+ `make_app(...)` gains a new keyword-only parameter
+ `admin_store: StoreClient | None = None`; it's set on
+-`app.state.admin_store`. When the deployment ships **without** an
+-admin token (e.g., a test posture, or the auth-disabled
+-posture documented in
+-[`reference/services/_common/src/eden_service_common/auth.py`](../../reference/services/_common/src/eden_service_common/auth.py)
+-lines 233–254 case 3), `app.state.admin_store` is `None`. The new
+-admin modules check for this and render a placeholder page
+-(`admin_workers_disabled.html` / `admin_groups_disabled.html`)
+-explaining the operator must restart the web-ui with `--admin-token`
+-or `$EDEN_ADMIN_TOKEN` set. Read views still work via
+-`app.state.store` (the existing worker-bearer client), but writes
+-are unavailable. **Important**: the disabled-state placeholder
+-applies symmetrically — when `admin_store is None`, *all* write
+-forms render disabled (no register form, no reissue button, no
+-add-member input, no remove buttons). GET reads remain available
+-when the worker-bearer client succeeds.
++`app.state.admin_store`. The "no admin token" case has **three
++distinct postures**, each mapped to admin-module behavior:
++
++| Posture | `app.state.store` (worker bearer) | `app.state.admin_store` | Admin-module read paths | Admin-module write paths |
++|---|---|---|---|---|
++| A. Admin token set | functional | functional (admin bearer) | available | available |
++| B. No admin token, persisted worker credential | functional (worker bearer) | `None` | available | render `*_disabled.html` placeholder |
++| C. No admin token, no persisted credential, task-store auth-disabled | functional (no auth header) | `None` | available | render `*_disabled.html` placeholder |
++| D. No admin token, no persisted credential, task-store auth-enabled | unreachable — `resolve_worker_bearer` returns `None`, every wire call hits 401 | `None` | startup-time failure (see below) | n/a |
++
++Posture A is the production deployment. Posture B is "operator
++removed `EDEN_ADMIN_TOKEN` from the host env after first boot" —
++intentional and documented in `resolve_worker_bearer`'s docstring
++lines 240-249. Posture C is the local-test / TestClient posture.
++Posture D is the misconfiguration we must surface clearly:
++
++- Detection: `cli.py` already calls
++  `wait_for_task_store(..., token=None)` then issues the worker
++  bootstrap (line 188-220). If the task-store is auth-enabled and
++  the worker bearer is `None`, `resolve_worker_bearer` itself
++  returns `None`; the subsequent `/whoami` probe that 12a-1
++  wave-4 added would fail with 401. **Add an explicit
++  startup-time check** in `cli.py`: after constructing
++  `app.state.store`, attempt `store.whoami()` (no admin needed,
++  bearer authenticates as worker). On 401, log a clear error
++  ("task-store is auth-enabled but no usable worker credential
++  was provided; set `--admin-token` for first boot or persist a
++  worker credential at `<credentials_dir>/<worker_id>.token`")
++  and exit non-zero. This prevents Posture D from running as a
++  silently-broken service.
++- For Postures B and C, both new admin modules render a
++  placeholder page (`admin_workers_disabled.html` /
++  `admin_groups_disabled.html`) when accessed via routes that
++  would write; the disabled placeholder explains the operator
++  must restart the web-ui with `--admin-token` or
++  `$EDEN_ADMIN_TOKEN` set. GET reads still resolve via
++  `app.state.store`. The disabled-state placeholder applies
++  symmetrically — when `admin_store is None`, *all* write
++  controls render disabled (no register form, no reissue
++  button, no add-member input, no remove buttons).
+ 
+ Process-shutdown teardown: `cli.py` runs `store.close()` in a
+ `finally` block already; we add a symmetric `admin_store.close()`
+@@ -277,15 +302,38 @@
+    each remaining line MUST contain `=`; key + value both trimmed,
+    key non-empty, key ≤64 chars, value ≤256 chars. Failures
+    render with banner naming the offending line number.
+-6. `app.state.admin_store.register_worker(worker_id, labels=...)`.
+-   On `AlreadyExists` (409, wire `eden://error/already-exists`):
+-   render with banner "worker with this id already exists". On
+-   `ReservedIdentifier` / `BadRequest`: render with banner (shouldn't
+-   reach here given step 4, but defensive). On any other exception:
+-   render with banner "transport / server error; check logs".
+-7. Success: render `admin_worker_token.html` with the plaintext
+-   `registration_token` displayed once. The page links to the
+-   worker detail (`/admin/workers/<id>/`) and the workers list
++6. `app.state.admin_store.register_worker(worker_id, labels=...)`
++   returns a `(Worker, registration_token | None)` tuple per the
++   12a-1 wire contract at
++   [`reference/packages/eden-wire/src/eden_wire/client.py`](../../reference/packages/eden-wire/src/eden_wire/client.py)
++   lines 484–498. Per spec §6.3 / 12a-1 §D.1, `register_worker` is
++   **idempotent on the existing record**: a duplicate
++   `worker_id` returns the existing `Worker` with
++   `registration_token=None`. There is **no `AlreadyExists`**
++   surface for `register_worker` (unlike `register_group`).
++   Handler branches:
++   - `token is not None` (fresh registration): render
++     `admin_worker_token.html` with the plaintext token + banner
++     "this is the only time you will see this credential".
++   - `token is None` (idempotent re-register on existing record):
++     render `admin_worker_token.html` with an explanatory banner
++     "a worker with this id already existed; no new token was
++     issued. Use the 'reissue credential' button on the detail
++     page to mint a fresh credential." and a link to the worker
++     detail. The template's token block is hidden in this branch.
++   - `ReservedIdentifier` (409, wire
++     `eden://error/reserved-identifier`): render with banner
++     "this identifier is reserved" (defensive — step 4 should have
++     caught this client-side).
++   - `BadRequest` (400, wire `eden://error/bad-request`): render
++     with banner "worker_id failed server-side validation"
++     (defensive — step 4 should have caught this client-side).
++   - Any other exception (transport, server 5xx, malformed
++     response): render with banner "transport / server error;
++     check logs" and `get_logger(__name__).exception(...)` the full
++     traceback.
++7. The success page (token-mint OR idempotent return) links to
++   the worker detail (`/admin/workers/<id>/`) and the workers list
+    (`/admin/workers/`) but does NOT include the token in those
+    links.
+ 
+@@ -309,18 +357,32 @@
+ `worker_id == X` under any of the attribution keys (linear scan;
+ ≤50 most recent rendered, same as chunk-9e).
+ 
+-Additionally lists attributed artifacts: walks `list_tasks()` /
+-`list_ideas()` / `list_variants()` filtering by the relevant
+-attribution fields. Shows up to 50 of each type, newest-first by
+-`updated_at` / `created_at`. The "show more" link goes to the
+-existing `/admin/tasks/`, `/admin/variants/`, etc. with a
+-worker-filter querystring (NEW: those existing pages don't have a
+-worker filter today; we add it lightly — `?worker=<id>` filters
+-client-side on the existing data, no schema change). The
+-`worker` querystring is sanitized via the same regex as the new
+-admin-workers form; an invalid value renders the empty rowset (the
+-chunk-9e `_INVALID_FILTER` discipline).
++Additionally lists attributed artifacts. The attribution view has
++three subsections; only the first two have "show more" links
++because only those two existing admin pages exist today:
+ 
++- **Tasks**: walks `list_tasks()` filtered by
++  `claim.worker_id == X` OR `submitted_by == X` OR
++  `created_by == X`. Shows up to 50 newest-first by `updated_at`.
++  "Show more" links to `/admin/tasks/?worker=<id>` (the new
++  worker filter added in §D.8).
++- **Variants**: walks `list_variants()` filtered by
++  `executed_by == X` OR `evaluated_by == X`. Shows up to 50
++  newest-first. "Show more" links to
++  `/admin/variants/?worker=<id>`.
++- **Ideas**: walks `list_ideas()` filtered by
++  `created_by == X`. Shows up to 50 newest-first. **No
++  "show more" link** — the existing admin surface has no
++  `/admin/ideas/` page, and adding one is out of scope (would
++  expand the chunk meaningfully; see §11). The displayed cap is
++  the operator's full view; if they need more, they go through
++  the wire directly. A note on the section explains this.
++
++The `worker` querystring on tasks/variants pages is sanitized via
++the same regex as the new admin-workers form; an invalid value
++renders the empty rowset (the chunk-9e `_INVALID_FILTER`
++discipline).
++
+ A "reissue credential" button sits below the attribution section.
+ When `app.state.admin_store is None`, the button is disabled with
+ a tooltip.
+@@ -396,15 +458,24 @@
+ 
+ 1. Session + CSRF (per D.2).
+ 2. Admin-store availability (per D.3).
+-3. Grammar regex on `member_id`. (Reserved-list check: we let the
+-   server-side reject this because `admin`/`system`/`internal` are
+-   not registerable in the first place, so adding them as members
+-   would only succeed as a dangling reference. The wire returns
+-   400 `bad-request` which we map to a friendly banner.)
++3. Grammar regex on `member_id` AND reserved-list check
++   (`admin`/`system`/`internal`). The wire's
++   [`_validate_registry_id`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
++   helper (line 1810) raises `ReservedIdentifier` for the reserved
++   set and `BadRequest` for grammar violations; we mirror both
++   client-side to short-circuit with a friendly banner. The
++   client-side rejection is the canonical UX path; the server-side
++   rejection remains as a defensive backstop if the client-side
++   regex drifts.
+ 4. `app.state.admin_store.add_to_group(group_id, member_id)`. On
+-   `CycleDetected` (409): banner `?error=cycle-detected`. On
+-   `NotFound` (group): banner `?error=group-not-found`. On
+-   `BadRequest`: banner `?error=invalid-member-id`. Other: banner
++   `CycleDetected` (409, wire `eden://error/cycle-detected`):
++   banner `?error=cycle-detected`. On `NotFound` (group, the
++   group_id from the path doesn't exist): banner
++   `?error=group-not-found`. On `ReservedIdentifier` (409, wire
++   `eden://error/reserved-identifier`): banner
++   `?error=reserved-member-id` (defensive — step 3 should catch
++   it). On `BadRequest` (400, wire `eden://error/bad-request`):
++   banner `?error=invalid-member-id` (defensive). Other: banner
+    `?error=transport`.
+ 
+ Success: 303 → `/admin/groups/<id>/?added=ok`.
+@@ -412,12 +483,19 @@
+ #### `POST /admin/groups/{group_id}/members/{member_id}/remove`
+ 
+ Same validation prelude. Calls
+-`app.state.admin_store.remove_from_group(group_id, member_id)`. On
+-`NotFound` (group): `?error=group-not-found`; on `NotFound` (member
+-not in group, if the wire surfaces this distinctly — check during
+-impl): `?error=not-a-member`. The wire today raises a generic
+-error if the member isn't present (verify in impl; if it's a
+-no-op, treat as success).
++`app.state.admin_store.remove_from_group(group_id, member_id)`.
++Per the shipped 12a-1 storage layer at
++[`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)
++line 1734, `remove_from_group` is **idempotent on absent member**:
++removing a member that is not currently in the group is a no-op
++that returns the (unchanged) group. Banner behavior:
++
++- `NotFound` (group): `?error=group-not-found`.
++- Wire returns the unchanged group when the member was already
++  absent → success path; `?removed=ok` banner is rendered
++  uniformly (the operator may notice "nothing changed" via the
++  member list, which is fine).
++- Other exception: `?error=transport`.
+ 
+ Success: 303 → `/admin/groups/<id>/?removed=ok`.
+ 
+@@ -444,20 +522,25 @@
+ 
+ ```python
+ _WORKER_REGISTER_OUTCOMES = {
+-    "ok": ("ok", "worker registered"),
+-    "already-exists": ("error", "worker with this id already exists"),
++    # Token-display page banners (rendered inline, not via 303):
++    "ok": ("ok", "worker registered — token shown below (only time)"),
++    "idempotent": ("warn", "worker already existed; no new token issued"),
++    # Error banners (rendered via re-render OR ?error= querystring):
+     "reserved-identifier": ("error", "this identifier is reserved"),
+     "invalid-worker-id": ("error", "worker_id must match [a-z0-9][a-z0-9_-]{0,63}"),
++    "invalid-labels": ("error", "label parse error (key=value per line)"),
++    "admin-disabled": ("error", "admin token not configured; registration unavailable"),
+     "transport": ("error", "transport or server error; refresh to retry"),
+ }
+ 
+ _GROUP_MEMBER_OUTCOMES = {
+     "added": ("ok", "member added"),
+-    "removed": ("ok", "member removed"),
++    "removed": ("ok", "member removed (idempotent if absent)"),
+     "cycle-detected": ("error", "adding this member would create a cycle"),
+     "group-not-found": ("error", "group no longer exists"),
+-    "not-a-member": ("error", "that worker / group is not a member"),
++    "reserved-member-id": ("error", "member_id is reserved (admin/system/internal)"),
+     "invalid-member-id": ("error", "member_id must match [a-z0-9][a-z0-9_-]{0,63}"),
++    "admin-disabled": ("error", "admin token not configured; mutation unavailable"),
+     "transport": ("error", "transport or server error; refresh to retry"),
+ }
+ ```
+@@ -593,19 +676,34 @@
+ session-user's group membership and reject if not in `admins`. We
+ don't because:
+ 
+-- The wire layer doesn't enforce admins-group membership today (only
+-  admin-token-bearer). Building a UI-side check that the wire
+-  ignores creates a false-confidence gap.
+-- 12a-2 will add the wire-layer gate atomically with the
+-  reserved-group bootstrap (per
++- The wire layer doesn't enforce admins-group membership today
++  (only admin-token-bearer). Building a UI-side check that the
++  wire ignores creates a false-confidence gap.
++- The shipped 12a-1 web-ui has **no per-session worker bearer**
++  (see §8.1). Today's session cookie is `{worker_id, csrf,
++  expires_at}` only; the `worker_id` is the deployment's
++  `--worker-id` flag, not a per-user worker registered through
++  the cookie. The 12a-1 §D.5b "per-session-user worker"
++  mechanism was deferred and is not shipped. So the pre-build
++  would also have to bring that deferred work forward — which
++  is itself a multi-decision chunk (per-sign-in `reissue_credential`
++  vs admin-derived session-only credential; CLI/web-UI
++  cross-session compat). That's exactly the 12a-1 §D.5b
++  discussion 12a-1 chose to defer.
++- 12a-2 will add the wire-layer admins-group gate atomically
++  with the reserved-group bootstrap (per
+   [`docs/plans/eden-phase-12a-2-orchestrator-as-role.md`](eden-phase-12a-2-orchestrator-as-role.md)
+-  §5.1 line 787). When that ships, 12a-1b's admin module will
+-  rebase mechanically: replace `f"admin:{admin_token}"` with
+-  `f"{worker_id}:{worker_credential}"` (the session-user's bearer)
+-  and verify the session user is in `admins` via
+-  `resolve_worker_in_group`. The 12a-1b code structure already
+-  isolates the bearer-construction in one place (`cli.py`); the
+-  migration is a 10-line diff.
++  §5.1). The 12a-2 migration of 12a-1b's admin module is a
++  **meaningful sub-chunk**, not a 10-line diff: it requires
++  (1) shipping per-session worker bearers (the deferred §D.5b
++  work), (2) updating the route layer to pick a bearer per
++  request based on the signed-in user, and (3) adding the
++  client-side check that the signed-in user is in `admins`
++  before showing admin UI controls. 12a-1b's design isolates
++  the bearer-construction in `cli.py` and routes all admin
++  writes through `app.state.admin_store`, so the migration's
++  blast radius is bounded and the rebase target is clearly
++  named — but the line count is closer to 200 than to 10.
+ - 12a-2's RBAC story is still in design review; pre-building
+   against it would couple this chunk to design that can still
+   change.
+@@ -717,7 +815,7 @@
+ | `src/eden_web_ui/templates/admin_index.html`               | New "workers and groups" section.                                                                                        |
+ | `src/eden_web_ui/templates/admin_tasks.html`               | Surface `worker` filter input + "clear filter" indicator.                                                                |
+ | `src/eden_web_ui/templates/admin_variants.html`            | Same.                                                                                                                    |
+-| `src/eden_web_ui/templates/base.html`                      | Optionally: add top-nav link to `/admin/workers/` and `/admin/groups/` (decision deferred to impl; chunk-9e didn't add per-sub-page links to the top nav, only `/admin/`). |
++| `src/eden_web_ui/templates/base.html`                      | No change. The top nav already links to `/admin/` (chunk-9e); per-sub-page nav links would clutter it. Operators navigate workers/groups via the admin landing page added in §D.7. |
+ | `src/eden_web_ui/README.md`                                | Note the new `--admin-token` requirement for the admin module + the read-only mode when omitted.                         |
+ 
+ ### 5.2 Tests (`reference/services/web-ui/tests/`)
+@@ -727,7 +825,7 @@
+ | `test_admin_workers_routes.py`                | NEW. Per-route validation: auth gate, CSRF, filter sanitization, register form, reissue, token-display, disabled state.                           |
+ | `test_admin_workers_flow.py`                  | NEW. Cross-request: register → list shows it → reissue → list still shows it → token-display once.                                                |
+ | `test_admin_workers_security.py`              | NEW. Unauthenticated POST redirects to /signin before CSRF; reserved identifiers rejected; grammar regex enforced; token NOT echoed in error paths. |
+-| `test_admin_workers_partial_write.py`         | NEW. Wire `AlreadyExists` / `BadRequest` / transport failures all surface as banners; no partial state.                                           |
++| `test_admin_workers_partial_write.py`         | NEW. Wire idempotent-re-register / `ReservedIdentifier` / `BadRequest` / transport failures all surface as the right banner; idempotent re-register renders the "no new token" page; no partial state. |
+ | `test_admin_workers_e2e.py`                   | NEW. `pytest.mark.e2e`. Real subprocess: web-ui + task-store-server with admin token; UI registers a worker; CLI claims with the resulting credential. |
+ | `test_admin_groups_routes.py`                 | NEW. Per-route validation.                                                                                                                        |
+ | `test_admin_groups_flow.py`                   | NEW. Register → add member → list shows transitive closure → remove → delete.                                                                     |
+@@ -761,15 +859,20 @@
+ ### 5.5 Compose smoke
+ 
+ The chunk-9e smoke (`reference/compose/healthcheck/smoke.sh`) is
+-unchanged. The chunk-10e e2e smoke (`e2e.sh`) covers the existing
+-admin module's reclaim walkthrough; we extend it with a worker-
+-registration walkthrough only if the additional bring-up time is
+-under the existing budget (60s headroom on the staged-bringup).
+-Decision: defer the smoke extension to the impl phase, gate on
+-"how long does the existing e2e take in CI" — adding it is a
+-~30-line shell+python diff, easy to ship as a fast-follow if it's
+-borderline.
++unchanged.
+ 
++Decision: **do not extend `e2e.sh`** in this chunk. The chunk-10e
++e2e smoke already covers the existing admin module's reclaim
++walkthrough; the pytest `pytest.mark.e2e` tests in §6.9 below
++provide real-subprocess coverage of the new admin module. A
++compose-level smoke addition would (a) lengthen the e2e budget
++(which is already a 60s headroom concern per chunk 10e) and
++(b) duplicate coverage the `pytest.mark.e2e` suite already gives.
++If post-merge observation shows the pytest e2e missing a real-
++docker integration gap (e.g., the wire's argon2id verify is too
++slow under the compose runtime profile), the smoke extension is a
++~30-line follow-up — out of scope here.
++
+ ## 6. Test design
+ 
+ ### 6.1 Test shape per route file
+@@ -869,17 +972,32 @@
+ ### 6.7 Disabled-state coverage
+ 
+ A separate test that constructs `make_app(admin_store=None)` and
+-asserts:
++asserts (postures B and C from §D.3):
+ 
+-- GET `/admin/workers/` renders successfully but the register
+-  form is absent (or rendered as a disabled placeholder).
+-- POST `/admin/workers/` redirects with `?error=admin-disabled`
+-  banner (or returns 403 — pick one in impl; redirect-with-banner
+-  matches the chunk-9e shape better).
+-- GET `/admin/groups/` same posture.
++- GET `/admin/workers/` renders successfully; the register form
++  is rendered as a disabled placeholder (input + button present
++  but `disabled` attribute set, with a banner explaining the
++  missing admin token).
++- POST `/admin/workers/` redirects (303) to
++  `/admin/workers/?error=admin-disabled`. **Decision (resolving
++  the round-0 finding-5 defer):** redirect-with-banner, NOT 403
++  — matches the chunk-9e error-banner shape, gives the operator
++  a navigable next step, and avoids the "what just happened?"
++  ambiguity of a bare 403. The 403 path is reserved for
++  CSRF-token failures and remains so.
++- GET `/admin/groups/` same posture: register form disabled, GET
++  paths still resolve.
++- POST `/admin/groups/`, POST add-member, POST remove-member, POST
++  delete-group: all redirect with `?error=admin-disabled`.
+ - Read paths (`/admin/workers/<id>/`, `/admin/groups/<id>/`) still
+   render their content; only write actions are gated.
+ 
++A second test variant exercises Posture D (auth-enabled
++task-store + no usable bearer): assert that `cli.main()` exits
++non-zero with the expected log message rather than running a
++silently-broken service. This is a `subprocess` test, not a
++TestClient one — the startup-time `/whoami` probe is the gate.
++
+ ### 6.8 Worker-filter on existing pages
+ 
+ In `test_admin_routes.py`:
+@@ -950,19 +1068,43 @@
+ 
+ ## 8. Tricky areas
+ 
+-### 8.1 Admin-token plumbing vs. session-bearer plumbing
++### 8.1 The shipped web-ui has no per-session bearer
+ 
+-The web-ui already has a session-cookie-issued credential per
+-12a-1 §D.5b (admin-issued one-shot credential on sign-in). The
+-session-bearer flow at
++Important correction to a tempting misreading: the web-ui's
++session cookie does **not** carry a per-user credential today.
++Inspect
+ [`reference/services/web-ui/src/eden_web_ui/sessions.py`](../../reference/services/web-ui/src/eden_web_ui/sessions.py)
+-stores a worker-id-bearer in the cookie. That bearer is **not**
+-admin-equivalent — it's worker-equivalent. We deliberately do NOT
+-route admin operations through the session-bearer; the admin module
+-uses the deployment admin token only. Plan reason: 12a-2 will tighten
+-this with group-based gating but does not change which bearer the
+-UI uses for admin operations today.
++— the cookie payload is `{worker_id, csrf, expires_at}` only; no
++bearer field, no admin flag. The sign-in route at
++[`reference/services/web-ui/src/eden_web_ui/routes/auth.py`](../../reference/services/web-ui/src/eden_web_ui/routes/auth.py)
++sets the cookie's `worker_id` to **the web-ui process's own
++`--worker-id` flag** (a single deployment-wide value, NOT a
++per-user worker registered through the cookie). The 12a-1 plan
++§D.5b's "per-session-user worker authentication" idea was
++**not** implemented in the shipped 12a-1; it was deferred (12a-1
++notes this as an accepted limitation).
+ 
++What this means for 12a-1b:
++
++- Every wire call the web-ui makes — on behalf of any signed-in
++  user — uses the process-level `StoreClient` constructed once in
++  [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py)
++  via `resolve_worker_bearer`. There is no per-session worker
++  bearer to thread.
++- For the new admin module, we add a **second** process-level
++  client (`admin_store`) bearing `admin:<admin_token>`. It is
++  shared across every signed-in session. The session is the
++  authorization layer ("this browser tab is authenticated to do
++  admin things"); the admin token is the wire-layer principal.
++- 12a-2's group-based RBAC migration is **not** a simple bearer
++  swap — it requires (a) shipping per-session worker bearers (the
++  deferred §D.5b work) AND (b) wiring the wire-layer admins-group
++  gate AND (c) updating the route layer to pick a bearer per
++  request based on the signed-in user's group membership. The
++  earlier §D.10 Alt C description ("10-line diff") was incorrect;
++  the actual migration is a meaningful 12a-2 sub-chunk. See §D.10
++  Alt C for the corrected scope.
++
+ Risk: a route accidentally uses `app.state.store` (worker bearer)
+ instead of `app.state.admin_store` (admin bearer) for a write
+ operation, sees 403, and surfaces an opaque "transport" banner.
