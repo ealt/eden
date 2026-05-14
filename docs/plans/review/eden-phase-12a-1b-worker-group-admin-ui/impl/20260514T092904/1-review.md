@@ -1,0 +1,7 @@
+No further substantive findings.
+
+I rechecked the two prior correctness paths with live TestClient repros and reran the focused admin route/filter suite; the dangling-member closure bug is fixed, the cross-registry collision banner is fixed, and `uv run pytest -q reference/services/web-ui/tests/test_admin_workers_routes.py reference/services/web-ui/tests/test_admin_groups_routes.py reference/services/web-ui/tests/test_admin_worker_filter.py` now passes with `88 passed`.
+
+One minor nit remains: the new collision banner/comment text cites `spec §7.4` for the shared worker/group namespace in [admin_workers.py](/Users/ericalt/Documents/eden-worktrees/phase-12a-1b-worker-group-admin-ui/reference/services/web-ui/src/eden_web_ui/routes/admin_workers.py:63) and [admin_groups.py](/Users/ericalt/Documents/eden-worktrees/phase-12a-1b-worker-group-admin-ui/reference/services/web-ui/src/eden_web_ui/routes/admin_groups.py:85), but [spec/v0/02-data-model.md](/Users/ericalt/Documents/eden-worktrees/phase-12a-1b-worker-group-admin-ui/spec/v0/02-data-model.md:259) shows §7.4 is “No default groups.” That is citation drift, not a behavior problem.
+
+On the 5-level rubric, I’d call the implementation converged on plan adherence, correctness, integration, robustness, and code quality at a substantive level.

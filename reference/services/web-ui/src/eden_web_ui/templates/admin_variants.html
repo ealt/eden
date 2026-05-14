@@ -12,8 +12,20 @@
             {% endfor %}
         </select>
     </label>
+    <label>worker
+        <input type="text" name="worker" value="{{ selected_worker }}" maxlength="64"
+               placeholder="worker_id">
+    </label>
     <button type="submit">filter</button>
+    {% if selected_worker %}
+    <a href="/admin/variants/{% if selected_status != '*' %}?status={{ selected_status }}{% endif %}">clear worker filter</a>
+    {% endif %}
 </form>
+
+{% if selected_worker %}
+<p>filtered by worker <code>{{ selected_worker }}</code>
+   (executor or evaluator).</p>
+{% endif %}
 
 {% if rows %}
 <table>

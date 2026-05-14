@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin groups{% endblock %}
+{% block main %}
+<h1>groups</h1>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+{% if not admin_enabled %}
+<div class="banner banner-warn">
+    admin token not configured; registration controls below are
+    disabled. Restart the web-ui with <code>--admin-token</code> or
+    <code>$EDEN_ADMIN_TOKEN</code> set to enable.
+</div>
+{% endif %}
+
+<section>
+    <h2>register a new group</h2>
+    <form method="post" action="/admin/groups/">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p>
+            <label>group_id
+                <input type="text" name="group_id" required maxlength="64"
+                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
+                       title="lowercase alphanumeric, hyphen, underscore; first char non-hyphen; max 64 chars"
+                       {% if not admin_enabled %}disabled{% endif %}>
+            </label>
+        </p>
+        <p>
+            <label>initial members (one per line; <code>#</code> comments ok)
+                <textarea name="members" rows="4" cols="50"
+                          placeholder="alice&#10;bob&#10;# a nested group:&#10;team-a"
+                          {% if not admin_enabled %}disabled{% endif %}></textarea>
+            </label>
+        </p>
+        <p>
+            <button type="submit" {% if not admin_enabled %}disabled{% endif %}>
+                register
+            </button>
+        </p>
+    </form>
+</section>
+
+<section>
+    <h2>registered groups ({{ rows | length }})</h2>
+    <form method="get" action="/admin/groups/" class="filters">
+        <label>filter (group_id substring)
+            <input type="text" name="q" value="{{ q }}" maxlength="64">
+        </label>
+        <button type="submit">filter</button>
+        {% if q %}
+        <a href="/admin/groups/">clear filter</a>
+        {% endif %}
+    </form>
+
+    {% if membership_transport_errors %}
+    <div class="banner banner-warn">
+        {{ membership_transport_errors }} membership lookup(s) failed
+        during this render; the "transitive workers" column may be
+        incomplete. Refresh to retry.
+    </div>
+    {% endif %}
+    {% if any_truncated %}
+    <div class="banner banner-warn">
+        at least one group's transitive-membership walk hit a
+        depth/breadth cap; counts shown as "≥N" reflect the cap, not
+        the true membership. See the group's detail page.
+    </div>
+    {% endif %}
+
+    {% if rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>group_id</th>
+                <th>created_at</th>
+                <th>created_by</th>
+                <th>direct members</th>
+                <th>transitive workers</th>
+                <th>preview</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+            <tr>
+                <td><a href="/admin/groups/{{ r.group_id }}/"><code>{{ r.group_id }}</code></a></td>
+                <td>{{ r.created_at }}</td>
+                <td>{% if r.created_by %}<code>{{ r.created_by }}</code>{% else %}—{% endif %}</td>
+                <td>{{ r.member_count }}</td>
+                <td>{{ r.transitive_worker_label }}</td>
+                <td>
+                    {% for m in r.members_preview %}<code>{{ m }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+                    {% if r.members_more %}<span class="muted">+{{ r.members_more }}</span>{% endif %}
+                    {% if not r.members_preview and not r.members_more %}—{% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no groups match these filters.</p>
+    {% endif %}
+</section>
+{% endblock %}

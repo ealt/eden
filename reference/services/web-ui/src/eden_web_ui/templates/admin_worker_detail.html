@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin worker {{ worker.worker_id }}{% endblock %}
+{% block main %}
+<h1>worker <code>{{ worker.worker_id }}</code></h1>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+{% if membership_transport_errors %}
+<div class="banner banner-warn">
+    {{ membership_transport_errors }} group-membership lookup(s) failed
+    during this render; the "groups" list below may be incomplete.
+    Refresh to retry.
+</div>
+{% endif %}
+
+<dl>
+    <dt>experiment_id</dt><dd><code>{{ worker.experiment_id }}</code></dd>
+    <dt>registered_at</dt><dd>{{ worker.registered_at }}</dd>
+    <dt>registered_by</dt><dd>{% if worker.registered_by %}<code>{{ worker.registered_by }}</code>{% else %}—{% endif %}</dd>
+    <dt>labels</dt><dd>{% if labels_preview %}{{ labels_preview }}{% else %}—{% endif %}</dd>
+    <dt>groups (transitive)</dt>
+    <dd>
+        {% for gid in groups %}<a href="/admin/groups/{{ gid }}/"><code>{{ gid }}</code></a>{% if not loop.last %}, {% endif %}{% endfor %}
+        {% if not groups %}—{% endif %}
+    </dd>
+</dl>
+
+<section>
+    <h2>reissue credential</h2>
+    {% if admin_enabled %}
+    <p class="warn">
+        <strong>this invalidates the worker's current credential.</strong>
+        Workers that still hold the prior token will need the newly
+        minted one before their next wire call.
+    </p>
+    {% else %}
+    <p class="muted">
+        admin token not configured; reissue is unavailable.
+    </p>
+    {% endif %}
+    <form method="post" action="/admin/workers/{{ worker.worker_id }}/reissue-credential">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" {% if not admin_enabled %}disabled{% endif %}>
+            reissue credential
+        </button>
+    </form>
+</section>
+
+<section>
+    <h2>attributed tasks ({{ tasks | length }})</h2>
+    {% if tasks %}
+    <table>
+        <thead><tr><th>task_id</th><th>kind</th><th>state</th><th>role</th><th>updated_at</th></tr></thead>
+        <tbody>
+        {% for t in tasks %}
+            <tr>
+                <td><a href="/admin/tasks/{{ t.task_id }}/"><code>{{ t.task_id }}</code></a></td>
+                <td>{{ t.kind }}</td>
+                <td>{{ t.state }}</td>
+                <td>
+                    {% if t.claim_worker == worker.worker_id %}claimant{% endif %}
+                    {% if t.submitted_by == worker.worker_id %}submitter{% endif %}
+                    {% if t.created_by == worker.worker_id %}creator{% endif %}
+                </td>
+                <td>{{ t.updated_at }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p><a href="/admin/tasks/?worker={{ worker.worker_id }}">show all tasks for this worker &raquo;</a></p>
+    {% else %}
+    <p>no tasks attributed to this worker.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>attributed variants ({{ variants | length }})</h2>
+    {% if variants %}
+    <table>
+        <thead><tr><th>variant_id</th><th>idea_id</th><th>status</th><th>role</th><th>started_at</th></tr></thead>
+        <tbody>
+        {% for v in variants %}
+            <tr>
+                <td><a href="/admin/variants/{{ v.variant_id }}/"><code>{{ v.variant_id }}</code></a></td>
+                <td><code>{{ v.idea_id }}</code></td>
+                <td>{{ v.status }}</td>
+                <td>
+                    {% if v.executed_by == worker.worker_id %}executor{% endif %}
+                    {% if v.evaluated_by == worker.worker_id %}evaluator{% endif %}
+                </td>
+                <td>{{ v.started_at }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p><a href="/admin/variants/?worker={{ worker.worker_id }}">show all variants for this worker &raquo;</a></p>
+    {% else %}
+    <p>no variants attributed to this worker.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>attributed ideas ({{ ideas | length }})</h2>
+    {% if ideas %}
+    <table>
+        <thead><tr><th>idea_id</th><th>slug</th><th>state</th><th>created_at</th></tr></thead>
+        <tbody>
+        {% for i in ideas %}
+            <tr>
+                <td><code>{{ i.idea_id }}</code></td>
+                <td>{{ i.slug }}</td>
+                <td>{{ i.state }}</td>
+                <td>{{ i.created_at }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p class="muted">
+        (the admin surface does not yet have a per-idea listing page;
+        the cap shown here is the full view. If you need more, query
+        the wire endpoint directly.)
+    </p>
+    {% else %}
+    <p>no ideas attributed to this worker.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>recent attribution events ({{ events | length }})</h2>
+    {% if events %}
+    <table>
+        <thead><tr><th>type</th><th>occurred_at</th><th>event_id</th></tr></thead>
+        <tbody>
+        {% for ev in events %}
+            <tr>
+                <td><code>{{ ev.type }}</code></td>
+                <td>{{ ev.occurred_at }}</td>
+                <td><code>{{ ev.event_id }}</code></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no related events.</p>
+    {% endif %}
+</section>
+{% endblock %}

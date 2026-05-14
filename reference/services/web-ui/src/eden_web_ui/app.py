@@ -22,6 +22,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import admin as admin_routes
+from .routes import admin_groups as admin_groups_routes
+from .routes import admin_workers as admin_workers_routes
 from .routes import artifacts as artifacts_routes
 from .routes import auth as auth_routes
 from .routes import evaluator as evaluator_routes
@@ -55,6 +57,7 @@ def make_app(
     repo: GitRepo | None = None,
     clone_url: str | None = None,
     base_commit_sha: str | None = None,
+    admin_store: Store | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -62,6 +65,14 @@ def make_app(
     CLI passes a real wall-clock factory. ``repo`` gates the
     executor module: when ``None`` the ``/executor/*`` routes
     are not registered and the navigation hides the entry.
+
+    ``admin_store`` is a separate ``Store`` instance bearing the
+    deployment admin credential, used by the worker / group admin
+    modules for admin-gated wire operations (register, reissue,
+    add-member, remove-member, delete). When ``None``, the modules
+    render their normal templates with mutation controls disabled
+    and short-circuit any POST with ``?error=admin-disabled``. See
+    plan §D.3 for the four-posture matrix.
     """
     app = FastAPI(title="EDEN reference Web UI", version="0.0.1")
     app.mount(
@@ -72,8 +83,10 @@ def make_app(
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     templates.env.globals["experiment_id"] = experiment_id
     templates.env.globals["executor_enabled"] = repo is not None
+    templates.env.globals["admin_enabled"] = admin_store is not None
 
     app.state.store = store
+    app.state.admin_store = admin_store
     app.state.experiment_id = experiment_id
     app.state.experiment_config = experiment_config
     app.state.worker_id = worker_id
@@ -92,6 +105,8 @@ def make_app(
     app.include_router(ideator_routes.router)
     app.include_router(evaluator_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(admin_workers_routes.router)
+    app.include_router(admin_groups_routes.router)
     app.include_router(artifacts_routes.router)
     if repo is not None:
         app.include_router(executor_routes.router)
