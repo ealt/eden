@@ -365,8 +365,9 @@ makes the route's auth posture self-contained.
 import os
 import errno
 import stat
+from pathlib import Path
 
-ARTIFACT_ROOT = artifacts_dir.resolve() if artifacts_dir else None
+ARTIFACT_ROOT: Path | None = Path(artifacts_dir) if artifacts_dir else None
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024  # 1 MiB (mirrors _read_inline_artifact)
 
 # Path components that are NEVER valid in an artifact path —
@@ -374,22 +375,34 @@ MAX_ARTIFACT_BYTES = 1 * 1024 * 1024  # 1 MiB (mirrors _read_inline_artifact)
 # below sees only well-formed segments.
 _REJECT_COMPONENTS = {"", ".", ".."}
 
+# Per Decision 6: each PATH-walking step opens `O_PATH |
+# O_DIRECTORY | O_NOFOLLOW`. The root + all intermediates
+# use this; ONLY the terminal switches to `O_RDONLY` because
+# we want to read its bytes. We deliberately do NOT call
+# `Path.resolve()` on the configured root — a symlinked
+# `artifacts_dir` would be dereferenced before the walk and
+# break the "symlinks at ANY component → ELOOP" invariant.
+_DIR_FLAGS = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+
 
 def _open_artifact_fd(root: Path, rel_path: str) -> int:
     """Open `rel_path` BENEATH `root` and return the fd.
 
     Walks each path component descriptor-relative from the
-    opened root dirfd. Every intermediate component opens
-    `O_PATH | O_DIRECTORY | O_NOFOLLOW`; the terminal opens
-    `O_RDONLY | O_NOFOLLOW`. A symlink at ANY component
-    raises `OSError(errno=ELOOP)` (mapped to 403 by the
-    caller). This is the descriptor-relative equivalent of
-    Linux 5.6+ ``openat2(RESOLVE_BENEATH)`` and is the only
-    pattern that closes the intermediate-component TOCTOU
-    window noted by Codex round 2: a concurrent renamer
-    cannot swap an intermediate dir to a symlink while we
-    walk because each step is anchored by the prior step's
-    fd, not by a path string.
+    opened root dirfd. Root + every intermediate component
+    open with `_DIR_FLAGS` (`O_PATH | O_DIRECTORY |
+    O_NOFOLLOW | O_CLOEXEC`); the terminal opens with
+    `_FILE_FLAGS` (`O_RDONLY | O_NOFOLLOW | O_CLOEXEC`). A
+    symlink at ANY component (root, intermediate, or
+    terminal) raises `OSError(errno=ELOOP)` (mapped to 403
+    by the caller). This is the descriptor-relative
+    equivalent of Linux 5.6+ ``openat2(RESOLVE_BENEATH)``
+    and is the only pattern that closes the
+    intermediate-component TOCTOU window: a concurrent
+    renamer cannot swap an intermediate dir to a symlink
+    while we walk because each step is anchored by the
+    prior step's fd, not by a path string.
 
     Raises:
       OSError on FileNotFoundError / ELOOP / EACCES / etc.
@@ -402,30 +415,26 @@ def _open_artifact_fd(root: Path, rel_path: str) -> int:
     if any("\0" in p for p in parts):
         raise ValueError(f"NUL byte in path {rel_path!r}")
 
-    root_fd = os.open(
-        root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-    )
+    # Open the configured root WITHOUT resolving any
+    # symlinks in its name — if the operator configured a
+    # symlink as artifacts_dir, _DIR_FLAGS' O_NOFOLLOW makes
+    # this raise ELOOP and the request returns 403 (a
+    # deliberate mis-configuration signal).
+    root_fd = os.open(root, _DIR_FLAGS)
     try:
-        # Walk intermediate dirs.
         current_fd = root_fd
         for intermediate in parts[:-1]:
             try:
                 next_fd = os.open(
-                    intermediate,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=current_fd,
+                    intermediate, _DIR_FLAGS, dir_fd=current_fd,
                 )
             finally:
                 if current_fd != root_fd:
                     os.close(current_fd)
             current_fd = next_fd
-        # Open terminal as regular file (O_NOFOLLOW rejects
-        # a symlink at the terminal).
         try:
             terminal_fd = os.open(
-                parts[-1],
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=current_fd,
+                parts[-1], _FILE_FLAGS, dir_fd=current_fd,
             )
         finally:
             if current_fd != root_fd:
@@ -879,7 +888,8 @@ In:
 - `setup-experiment.sh` generates + preserves
   `EDEN_READONLY_PASSWORD`, writes the rendered
   `EDEN_READONLY_STORE_URL` into `.env`.
-- Tests for the route (auth, traversal, missing, streaming),
+- Tests for the route (auth, traversal, missing, 1 MiB
+  cap, safe-delivery headers, TOCTOU race),
   for the ideator clone-on-startup wiring, for
   `ensure_readonly_role` idempotency, for the
   subprocess-env-var threading, for the binding doc.
@@ -919,7 +929,7 @@ Out:
 | File | Change |
 |---|---|
 | `reference/packages/eden-wire/src/eden_wire/server.py` | `make_app` gains an `artifacts_dir: Path \| None = None` parameter. **Always mounts** `GET /_reference/experiments/{experiment_id}/artifacts/{path:path}` with route-level auth + descriptor-relative component walk + safe-delivery headers (§D.2.a/c). When `artifacts_dir is None` the route returns 503 `eden://reference-error/artifact-serving-disabled`. |
-| `reference/packages/eden-wire/tests/test_artifact_route.py` | **NEW**: unit tests for the route — auth-required, admin OR worker accepted, traversal, missing, streaming. |
+| `reference/packages/eden-wire/tests/test_artifact_route.py` | **NEW**: unit tests for the route per §6.1 — auth-first sentinel, admin-or-worker, malformed-path 400, symlink-out-of-root 403, missing 404, 1 MiB cap 413, safe-delivery headers on every 200, TOCTOU swap-after-resolve, intermediate-component swap race, 503-when-disabled, experiment-id-mismatch 400. |
 
 ### 5.3 `eden-task-store-server`
 
@@ -966,9 +976,9 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/compose/compose.yaml` | (a) Add `EDEN_READONLY_PASSWORD` env var to task-store-server. (b) Mount `eden-artifacts-data:/var/lib/eden/artifacts:ro` on task-store-server. (c) Add `--artifacts-dir /var/lib/eden/artifacts` to task-store-server CLI. (d) Add `--repo-path /var/lib/eden/repo --gitea-url ${GITEA_REMOTE_URL} --credential-helper /etc/eden/credential-helper.sh` + new volume mounts to ideator-host. (e) Pass `EDEN_ARTIFACT_URL`, `EDEN_ARTIFACT_PATH_ROOT`, `EDEN_READONLY_STORE_URL` to ideator + evaluator. (f) Declare new `eden-ideator-repo` volume. |
-| `reference/compose/compose.subprocess.yaml` | Mirror the ideator + evaluator additions for the subprocess overlay; the env vars + repo mount are needed only when running the agent-shaped subprocess workers, but the overlay layered on top is the right home. |
-| `reference/compose/compose.docker-exec.yaml` | If forwarding `EDEN_REPO_DIR` to spawned children through `--exec-volume`, declare the new repo-volume forward for ideator + evaluator. Audit needed. |
+| `reference/compose/compose.yaml` | (a) Add `EDEN_READONLY_PASSWORD` env var to task-store-server. (b) Mount `eden-artifacts-data:/var/lib/eden/artifacts:ro` on task-store-server. (c) Add `--artifacts-dir /var/lib/eden/artifacts` + `--readonly-password ${EDEN_READONLY_PASSWORD}` to task-store-server CLI. (d) Add `--repo-path /var/lib/eden/repo --gitea-url ${GITEA_REMOTE_URL} --credential-helper /etc/eden/credential-helper.sh` + new repo / credentials / credential-helper volume mounts to ideator-host (mirrors the executor / evaluator block in the same file). (e) Declare new `eden-ideator-repo` volume. **NOTE**: the substrate-access env vars (`EDEN_REPO_DIR`, `EDEN_ARTIFACT_URL`, `EDEN_ARTIFACT_PATH_ROOT`, `EDEN_READONLY_STORE_URL`) are NOT set on the base ideator / evaluator services — they're only meaningful when running in subprocess mode (the scripted-mode ideator and evaluator do NOT spawn agentic `*_command` children). See `compose.subprocess.yaml` below. |
+| `reference/compose/compose.subprocess.yaml` | **Sole home** for the substrate-access env vars on ideator + evaluator services: set `EDEN_REPO_DIR=/var/lib/eden/repo`, `EDEN_ARTIFACT_URL=http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID}/artifacts/`, `EDEN_ARTIFACT_PATH_ROOT=/var/lib/eden/artifacts`, `EDEN_READONLY_STORE_URL=${EDEN_READONLY_STORE_URL}`. Add the `eden-ideator-repo` volume mount to the ideator service block here (subprocess-mode ideator clones into it; host-mode doesn't need it). |
+| `reference/compose/compose.docker-exec.yaml` | **No changes.** DooD-mode substrate forwarding is out-of-scope per §8.9; sibling containers can't resolve the compose-internal hostnames without separate `--network` plumbing. |
 | `reference/scripts/setup-experiment/setup-experiment.sh` | (a) Generate + preserve `EDEN_READONLY_PASSWORD`. (b) Compute + write `EDEN_READONLY_STORE_URL` to `.env`. (c) Write `EDEN_ARTIFACT_URL` (in-network compose default) + `EDEN_ARTIFACT_PATH_ROOT` to `.env`. |
 | `reference/compose/healthcheck/smoke.sh` | **Unchanged** — see §6.6: the scripted ideator the base smoke runs doesn't write real artifacts, so the route-smoke would have nothing to fetch. |
 | `reference/compose/healthcheck/smoke-subprocess.sh` | Add three assertions per §6.6: authenticated GET against `/_reference/experiments/<id>/artifacts/<path>` after quiescence; `psql` smoke against `EDEN_READONLY_STORE_URL` confirming SELECT works + INSERT fails; `docker compose exec eden-ideator-host git -C /var/lib/eden/repo log` non-empty. |
@@ -1025,10 +1035,12 @@ trust-boundary tests are the gate:
    of exactly 1 MiB → 200; assert the response is
    delivered as a single contiguous body and bytes match.
 8. **1 MiB cap.** File of 1 MiB + 1 byte → 413
-   `eden://reference-error/artifact-too-large`; assert NO response
-   bytes from the file are written (the cap check runs
-   before the `FileResponse`). Verified by inspecting the
-   response content-length / body.
+   `eden://reference-error/artifact-too-large`; assert NO
+   response bytes from the file are written (the cap check
+   on the open fd's `fstat()` runs before the
+   `os.read(...)` + `Response(content=…)` construction).
+   Verified by inspecting the response content-length /
+   body (problem+json envelope only, no file bytes).
 9. **Auth-disabled posture.** When task-store-server is
    started without `--admin-token` (test/in-process
    posture), the route serves without auth. Same posture
@@ -1333,20 +1345,33 @@ rejected: it pushes the auth posture out of the route's
 own module, making future maintainers more likely to miss
 the requirement.
 
-### 8.2 FileResponse vs StreamingResponse — why the 1 MiB cap
+### 8.2 Fixed-bytes `Response(content=…)` + 1 MiB cap
 
 The 1 MiB cap (§D.2.a) mirrors the existing
 [`_read_inline_artifact`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
-helper. The cap is **mandatory in this chunk** because:
+helper. The cap pairs with the **fixed-bytes `Response`
+delivery model** chosen in §D.2.c (NOT `FileResponse` /
+`StreamingResponse`). The combination is mandatory in this
+chunk because:
 
-- `FileResponse` does not stream by default in FastAPI; it
-  loads the full file into memory.
+- The descriptor-walk closes TOCTOU only if the bytes
+  delivered come from the open fd — not from a re-opened
+  path. `FileResponse` re-opens at body-write time and
+  would re-open the window the walk just closed.
+  `Response(content=bytes_)` reads from the open fd once
+  and embeds the bytes in the response object; no path
+  re-open occurs.
+- The 1 MiB cap makes a fixed-bytes (in-memory) response
+  acceptable — at the cap, the per-request memory cost is
+  bounded.
 - Today's idea content markdown is at most a few KB; no
   legitimate artifact is anywhere near 1 MiB. The cap is a
   conservative safety bound, not a performance limit.
 - Adding `StreamingResponse` + chunked-read here would
-  bloat the ~50-100 LOC budget and duplicate logic Phase
-  13d's `Backend` abstraction is going to ship anyway.
+  bloat the ~50-100 LOC budget AND would need its own
+  open-fd-as-iterator plumbing to preserve the TOCTOU
+  closure — Phase 13d's `Backend` abstraction is going to
+  ship that machinery via cloud-storage SDKs anyway.
 
 If an operator's artifact production legitimately generates
 files larger than 1 MiB, the route returns 413 (§D.2.a) and
@@ -1544,9 +1569,10 @@ at 13e for the hardened path.
   who don't want this surface should NOT enable the readonly
   substrate. The binding doc documents this explicitly.
 - **Artifact-server bloat across many small files.** The
-  ~50-100 LOC budget assumes basic FileResponse-shaped
-  serving. If 12a-1f grows additional features (caching,
-  range requests, ETags) it's a sign 13d's `Backend`
+  ~50-100 LOC budget assumes the basic descriptor-walk +
+  fixed-bytes `Response` shape designed in §D.2.c. If
+  12a-1f grows additional features (caching, range
+  requests, ETags, streaming) it's a sign 13d's `Backend`
   abstraction should land first.
 
 ## 10. Sequence within the chunk
@@ -1568,8 +1594,11 @@ Single PR. Internal ordering:
    wiring; mirror executor/evaluator.
 6. **`eden-service-common` shared substrate flags.**
    `add_substrate_arguments` + tests.
-7. **Subprocess env-var threading.** Ideator + evaluator
-   subprocess modes; DooD path.
+7. **Subprocess env-var threading (host-mode only).**
+   Ideator + evaluator subprocess modes. DooD-mode
+   forwarding is deferred per §8.9 / §11; do not touch
+   `container_exec.py` or the `compose.docker-exec.yaml`
+   overlay in this chunk.
 8. **Compose + setup-experiment.** Volume mounts, env-var
    plumbing, secret generation, helper script paths.
 9. **Smokes.** Add the three substrate assertions to
