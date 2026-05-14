@@ -31,7 +31,7 @@ from typing import Any
 
 from eden_contracts import Idea, TaskAdapter, Variant
 from eden_storage import Store
-from eden_storage.errors import StorageError
+from eden_storage.errors import NotFound, StorageError
 from eden_storage.submissions import (
     EvaluationSubmission,
     IdeaSubmission,
@@ -178,11 +178,27 @@ def _open_artifact_fd(root: Path, rel_path: str) -> int:
             try:
                 next_fd = os.open(intermediate, _DIR_FLAGS, dir_fd=current_fd)
             except OSError as exc:
-                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                    # Race: an attacker may have swapped the
-                    # inode between our lstat and this open.
-                    # ELOOP on Linux, ENOTDIR on macOS when the
-                    # swapped-in inode is a symlink to a non-dir.
+                if exc.errno == errno.ELOOP:
+                    # ELOOP on Linux for a swapped-in symlink at
+                    # this component (the lstat above didn't see
+                    # the symlink — TOCTOU race).
+                    raise _SymlinkRejected(
+                        exc.errno,
+                        f"symlink hit at intermediate component "
+                        f"{intermediate!r} during open",
+                    ) from exc
+                # ENOTDIR can mean (a) the component is a symlink
+                # to a non-directory (macOS's `O_DIRECTORY|
+                # O_NOFOLLOW` shape — Codex round 0 finding) or
+                # (b) the component is a plain regular file
+                # (legitimate "this isn't a directory").
+                # Distinguish via a follow-up lstat: if it's a
+                # symlink, raise _SymlinkRejected (→ 403);
+                # otherwise re-raise the OSError (outer handler →
+                # 404).
+                if exc.errno == errno.ENOTDIR and _is_symlink(
+                    intermediate, dir_fd=current_fd
+                ):
                     raise _SymlinkRejected(
                         exc.errno,
                         f"symlink hit at intermediate component "
@@ -234,6 +250,22 @@ def _check_not_symlink(component: str, *, dir_fd: int) -> None:
             errno.ELOOP,
             f"symlink not allowed at component {component!r}",
         )
+
+
+def _is_symlink(component: str, *, dir_fd: int) -> bool:
+    """Return True iff ``component`` is a symbolic link in ``dir_fd``.
+
+    Helper for the ENOTDIR disambiguation in ``_open_artifact_fd``:
+    on macOS, opening an intermediate-component symlink-to-non-dir
+    with ``O_DIRECTORY|O_NOFOLLOW`` returns ENOTDIR (not ELOOP), so
+    we lstat to distinguish "swapped-in symlink → 403" from
+    "legitimate regular file as intermediate → 404".
+    """
+    try:
+        st = os.lstat(component, dir_fd=dir_fd)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode)
 
 
 def make_app(
@@ -1311,15 +1343,16 @@ def make_app(
             # never follow the link.
             raise Forbidden("symlink not allowed") from exc
         except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=404, detail="artifact not found"
-            ) from exc
+            # Use eden_storage.NotFound so the existing
+            # @app.exception_handler(StorageError) maps to
+            # problem+json under eden://error/not-found (NOT
+            # FastAPI's default {"detail": ...} shape, which
+            # would bypass the wire-binding error vocabulary).
+            raise NotFound("artifact not found") from exc
         except OSError as exc:
             # EACCES / ENOTDIR / ENAMETOOLONG / etc. — collapse to
             # 404 to avoid leaking filesystem layout to the caller.
-            raise HTTPException(
-                status_code=404, detail="artifact not found"
-            ) from exc
+            raise NotFound("artifact not found") from exc
 
         try:
             st = os.fstat(fd)
@@ -1327,9 +1360,7 @@ def make_app(
             # 5. Regular-file check on the OPEN fd (not on the path —
             #    re-stating the path would re-open the TOCTOU window).
             if not stat.S_ISREG(st.st_mode):
-                raise HTTPException(
-                    status_code=404, detail="artifact not found"
-                )
+                raise NotFound("artifact not found")
 
             # 6. Size cap on the open fd.
             if st.st_size > MAX_ARTIFACT_BYTES:

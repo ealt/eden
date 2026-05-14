@@ -169,6 +169,18 @@ def ensure_readonly_role(
             ).format(schema=schema_ident, role=role_ident)
         )
         cur.execute(
+            sql.SQL(
+                "REVOKE ALL ON ALL SEQUENCES IN SCHEMA {schema} "
+                "FROM {role}"
+            ).format(schema=schema_ident, role=role_ident)
+        )
+        cur.execute(
+            sql.SQL(
+                "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA {schema} "
+                "FROM {role}"
+            ).format(schema=schema_ident, role=role_ident)
+        )
+        cur.execute(
             sql.SQL("REVOKE ALL ON SCHEMA {schema} FROM {role}").format(
                 schema=schema_ident, role=role_ident
             )
@@ -178,12 +190,31 @@ def ensure_readonly_role(
                 db=db_ident, role=role_ident
             )
         )
-        cur.execute(
-            sql.SQL(
-                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                "REVOKE SELECT ON TABLES FROM {role}"
-            ).format(schema=schema_ident, role=role_ident)
-        )
+        # Bulk-revoke ALL default privileges (not just SELECT, not
+        # just TABLES) — both schema-scoped AND global default
+        # privileges. Codex round-0 finding on hardening: a prior
+        # provisioning could have installed
+        # `ALTER DEFAULT PRIVILEGES GRANT INSERT ON TABLES` or
+        # similar non-SELECT grants, or a global (non-IN-SCHEMA)
+        # default-privileges entry whose new-table grants would
+        # silently bypass our column-level constraint. Sweep all
+        # of them.
+        for object_kind in ("TABLES", "SEQUENCES", "FUNCTIONS", "TYPES"):
+            cur.execute(
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                    "REVOKE ALL ON " + object_kind + " FROM {role}"
+                ).format(schema=schema_ident, role=role_ident)
+            )
+            # Global default privileges (no IN SCHEMA clause) cover
+            # tables created in any schema by the current role.
+            cur.execute(
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES REVOKE ALL ON "
+                    + object_kind
+                    + " FROM {role}"
+                ).format(role=role_ident)
+            )
 
         # 3. GRANT the safe-set.
         cur.execute(

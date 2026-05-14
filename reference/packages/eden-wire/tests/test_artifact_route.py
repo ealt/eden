@@ -227,6 +227,38 @@ def test_missing_404(store: InMemoryStore, artifacts: Path) -> None:
         headers={"Authorization": f"Bearer admin:{ADMIN_TOKEN}"},
     )
     assert resp.status_code == 404
+    # Codex round-0: 404 MUST emit the wire problem+json envelope,
+    # not FastAPI's default {"detail": ...} shape.
+    assert (
+        resp.headers["content-type"]
+        == "application/problem+json"
+    )
+    assert resp.json()["type"] == "eden://error/not-found"
+
+
+def test_regular_file_as_intermediate_404_not_403(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """Codex round-0: an intermediate-component regular file MUST
+    map to 404 (not 403). The handler distinguishes ENOTDIR-from-
+    symlink (→ 403 via lstat) from ENOTDIR-from-regular-file (→
+    404). The bug would mis-classify the latter as a symlink hit.
+    """
+    root = tmp_path / "art"
+    root.mkdir()
+    # Make a plain file (not a directory) and try to walk THROUGH it.
+    (root / "afile").write_bytes(b"not a directory\n")
+    app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=root)
+    client = TestClient(app)
+    resp = client.get(
+        _route_url("afile/inside.md"),
+        headers={"Authorization": f"Bearer admin:{ADMIN_TOKEN}"},
+    )
+    assert resp.status_code == 404, (
+        f"got {resp.status_code} {resp.json()!r}; "
+        "regular-file intermediates must be 404, not 403"
+    )
+    assert resp.json()["type"] == "eden://error/not-found"
 
 
 def test_directory_request_404(

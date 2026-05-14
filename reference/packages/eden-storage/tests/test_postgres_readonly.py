@@ -337,6 +337,62 @@ def test_legacy_over_grant_is_revoked(store_dsn: tuple[str, str]) -> None:
         cur.execute(f"SELECT credential_hash FROM {schema}.worker LIMIT 1")
 
 
+def test_legacy_non_select_default_privilege_is_revoked(
+    store_dsn: tuple[str, str],
+) -> None:
+    """Codex round-0: a non-SELECT legacy default-privilege grant
+    (e.g. ``ALTER DEFAULT PRIVILEGES GRANT INSERT ON TABLES``) MUST
+    be REVOKEd by ensure_readonly_role's hardening pass too —
+    otherwise a future credential-bearing table could inherit write
+    access. Verifies the round-0 expansion of the REVOKE sweep.
+    """
+    schema, _ = store_dsn
+    pwd_legacy = secrets.token_hex(16)
+    with (
+        psycopg.connect(DSN, autocommit=True) as conn,
+        conn.cursor() as cur,
+    ):
+        cur.execute(
+            sql.SQL("CREATE ROLE eden_readonly WITH LOGIN PASSWORD {}").format(
+                sql.Literal(pwd_legacy)
+            )
+        )
+        # Pre-install a NON-SELECT default-privilege grant — the
+        # original 12a-1f impl only revoked SELECT, so this would
+        # have slipped through pre-fix.
+        cur.execute(
+            sql.SQL(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                "GRANT INSERT ON TABLES TO eden_readonly"
+            ).format(schema=sql.Identifier(schema))
+        )
+
+    pwd_new = secrets.token_hex(16)
+    _provision(store_dsn, pwd_new)
+
+    # As eden superuser, create a fresh table. Without the round-0
+    # broader-revoke, the readonly role would inherit INSERT.
+    with (
+        psycopg.connect(DSN, autocommit=True) as conn,
+        conn.cursor() as cur,
+    ):
+        cur.execute(
+            sql.SQL("CREATE TABLE {schema}.test_legacy_drift (id int)").format(
+                schema=sql.Identifier(schema)
+            )
+        )
+
+    # eden_readonly MUST NOT have INSERT on the fresh table.
+    with (
+        psycopg.connect(_readonly_dsn(store_dsn, pwd_new)) as conn,
+        conn.cursor() as cur,
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+    ):
+        cur.execute(
+            f"INSERT INTO {schema}.test_legacy_drift (id) VALUES (1)"
+        )
+
+
 def test_default_privileges_not_installed(store_dsn: tuple[str, str]) -> None:
     """A freshly-created table in the schema MUST NOT be readable.
 
