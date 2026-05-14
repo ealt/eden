@@ -279,13 +279,41 @@ Response shape:
 
 | HTTP | Body | When |
 |---|---|---|
-| `200 OK` | file bytes (≤ 1 MiB) | `Path(artifacts_dir, path).resolve()` is a regular file under `artifacts_dir`, file size ≤ 1 MiB |
+| `200 OK` | file bytes (≤ 1 MiB) + safe-delivery headers (see below) | Path resolves to a regular file under `artifacts_dir`, file size ≤ 1 MiB |
 | `400 Bad Request` | RFC 7807 `eden://error/experiment-id-mismatch` | The URL's `experiment_id` does not equal `store.experiment_id` |
+| `400 Bad Request` | RFC 7807 `eden://reference-error/invalid-path` | Path contains a NUL byte, exceeds OS path limits, or otherwise fails to resolve (`ValueError` from `Path.resolve` / `OSError` from `stat`). Includes symlink-loop `ELOOP`. |
 | `401 Unauthorized` | RFC 7807 `eden://error/unauthorized` | Missing / malformed bearer; bad token |
-| `403 Forbidden` | RFC 7807 `eden://error/forbidden` | Resolved path is OUTSIDE `artifacts_dir` (traversal) |
+| `403 Forbidden` | RFC 7807 `eden://error/forbidden` | Resolved path is OUTSIDE `artifacts_dir` (traversal); OR an open-time check confirms the opened inode is OUTSIDE the root (TOCTOU mitigation) |
 | `404 Not Found` | RFC 7807 `eden://error/not-found` | Resolved path is inside `artifacts_dir` but doesn't exist or is not a regular file |
-| `413 Payload Too Large` | RFC 7807 `eden://error/artifact-too-large` | File is a regular file under root but its size exceeds 1 MiB |
-| `503 Service Unavailable` | RFC 7807 `eden://error/artifact-serving-disabled` | task-store-server was started without `--artifacts-dir`; the deployment opted out of artifact serving |
+| `413 Payload Too Large` | RFC 7807 `eden://reference-error/artifact-too-large` | File is a regular file under root but its size exceeds 1 MiB |
+| `503 Service Unavailable` | RFC 7807 `eden://reference-error/artifact-serving-disabled` | task-store-server was started without `--artifacts-dir`; the deployment opted out of artifact serving |
+
+**Error-vocabulary discipline.** The new artifact route is
+reference-only (`/_reference/...`), so its three new error
+URIs use the **reference-only** `eden://reference-error/...`
+namespace (pre-existing — see chapter 7 §12's
+`eden://reference-error/unauthorized`). The normative
+chapter-7 error vocabulary (§7 closed set) is **unchanged**:
+no new `eden://error/...` types are added. Errors the route
+reuses (`unauthorized`, `forbidden`, `not-found`,
+`experiment-id-mismatch`) are pre-existing normative types
+the chapter already defines.
+
+**Safe browser-delivery headers.** Every 200 response from
+this route includes:
+
+| Header | Value | Why |
+|---|---|---|
+| `Content-Disposition` | `attachment` (with optional `filename="<basename>"`) | Forces the user-agent to treat the response as a download, NOT to render inline. Defeats stored-XSS via attacker-controlled `.html` / `.svg` artifacts (an ideator subprocess writes the body; an evaluator on the same deployment reads it). |
+| `X-Content-Type-Options` | `nosniff` | Prevents the user-agent from second-guessing the declared `Content-Type` based on body sniffing. |
+| `Content-Type` | `application/octet-stream` | Generic; the agent decodes via the `artifacts_uri`-domain knowledge it already has. No `text/html`, no `image/svg+xml`, no other browser-executable types are ever sent. |
+
+This route is agent-facing, not human-facing — the existing
+web-ui `/artifacts?uri=…` route at
+[`reference/services/web-ui/src/eden_web_ui/routes/artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/routes/artifacts.py)
+keeps its mime-guessing posture for human-browser usability;
+the 12a-1f route trades human ergonomics for hostile-content
+safety.
 
 **Always-mounted, conditionally-enabled.** The route is
 mounted on every task-store-server (regardless of
@@ -326,6 +354,9 @@ makes the route's auth posture self-contained.
 #### D.2.c Path resolution + containment
 
 ```python
+import os
+import errno
+
 ARTIFACT_ROOT = artifacts_dir.resolve() if artifacts_dir else None
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024  # 1 MiB (mirrors _read_inline_artifact)
 
@@ -334,8 +365,8 @@ MAX_ARTIFACT_BYTES = 1 * 1024 * 1024  # 1 MiB (mirrors _read_inline_artifact)
 )
 async def serve_artifact(
     experiment_id: str, path: str, request: Request
-) -> FileResponse:
-    # 1. Auth-first (NEVER resolve the path before auth):
+) -> Response:
+    # 1. Auth-first (NEVER touch the filesystem before auth):
     if admin_token is not None:
         principal = authenticate(
             request.headers.get("authorization"),
@@ -357,31 +388,120 @@ async def serve_artifact(
             "task-store-server started without --artifacts-dir",
         )
 
-    # 4. Resolve + containment check:
-    candidate = (ARTIFACT_ROOT / path).resolve()
+    # 4. Resolve + path-containment check. `Path.resolve()` may
+    #    raise ValueError on NUL bytes and OSError on symlink
+    #    loops, missing intermediates, ENAMETOOLONG, etc.
+    try:
+        candidate = (ARTIFACT_ROOT / path).resolve()
+    except (ValueError, OSError) as exc:
+        # Treat malformed paths as 400, NOT 404, so an
+        # operator's access log distinguishes "client sent
+        # garbage" from "client asked for a missing artifact".
+        raise BadRequest(
+            "invalid-path",
+            f"path resolution failed: {exc!r}",
+        ) from exc
+
     try:
         candidate.relative_to(ARTIFACT_ROOT)
     except ValueError:
-        # Traversal attempt — `..` / absolute path / symlink to
-        # outside-the-root. Treat as 403, NOT 404, so an operator
-        # auditing the access log sees the traversal signal
-        # distinctly from a legitimate-but-missing fetch.
+        # Traversal — `..` / absolute / symlink-out-of-root.
+        # 403, NOT 404, so the traversal signal is distinct in
+        # the access log.
         raise Forbidden("path escapes artifacts root")
 
-    # 5. File-shape check:
-    if not candidate.is_file():
-        raise NotFound("artifact not found")
-
-    # 6. Size cap (1 MiB):
-    if candidate.stat().st_size > MAX_ARTIFACT_BYTES:
-        raise PayloadTooLarge(
-            "artifact-too-large",
-            f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap",
+    # 5. Open ONCE under O_NOFOLLOW (no following terminal-
+    #    component symlinks) — closes the TOCTOU window
+    #    between containment check and serving. After this
+    #    open(), we work exclusively with the opened fd:
+    #    a concurrent rename / unlink / replace at `candidate`
+    #    cannot affect what bytes go to the client.
+    try:
+        fd = os.open(
+            candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
         )
+    except FileNotFoundError:
+        raise NotFound("artifact not found")
+    except OSError as exc:
+        # ELOOP (symlink), EACCES (permission), ENOTDIR
+        # (intermediate is a file), etc. ELOOP via NOFOLLOW
+        # → 403 (symlink-escape posture); other OSErrors →
+        # 404 (don't leak filesystem layout).
+        if exc.errno == errno.ELOOP:
+            raise Forbidden("symlink not allowed")
+        raise NotFound("artifact not found") from exc
 
-    # 7. Serve:
-    return FileResponse(candidate)
+    try:
+        st = os.fstat(fd)
+
+        # 6. File-shape check on the OPEN fd (not on
+        #    `candidate.is_file()` — which would re-stat the
+        #    path and re-open the TOCTOU window).
+        if not stat.S_ISREG(st.st_mode):
+            raise NotFound("artifact not found")
+
+        # 7. Size cap on the open fd:
+        if st.st_size > MAX_ARTIFACT_BYTES:
+            raise PayloadTooLarge(
+                "artifact-too-large",
+                f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap",
+            )
+
+        # 8. Open-fd-belongs-to-the-root re-check (defense in
+        #    depth — even with O_NOFOLLOW, an intermediate
+        #    path component could in principle be a symlink
+        #    that was swapped between resolve() and open()):
+        try:
+            os.fstat(fd)  # already done above; reuse st
+            # The fd's inode is in the open-time root if the
+            # device + inode are still under the root. Cheap
+            # check: re-resolve and compare.
+            re_resolved = candidate.resolve()
+            re_resolved.relative_to(ARTIFACT_ROOT)
+        except (ValueError, OSError):
+            raise Forbidden("path escapes artifacts root")
+
+        # 9. Read and return. 1 MiB cap means we read it all.
+        bytes_ = os.read(fd, MAX_ARTIFACT_BYTES + 1)
+        if len(bytes_) > MAX_ARTIFACT_BYTES:
+            # Race: file grew between fstat and read.
+            raise PayloadTooLarge(
+                "artifact-too-large",
+                "artifact size grew during read",
+            )
+
+        return Response(
+            content=bytes_,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{candidate.name}"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    finally:
+        os.close(fd)
 ```
+
+**Why open-once-and-stat-the-fd?** Codex round 1 finding
+on TOCTOU: a `Path.is_file()` / `Path.stat()` after the
+`relative_to()` check would re-resolve the path each time,
+opening a window for a concurrent rename / replace to swap
+the on-disk inode between the check and the serve. The
+`os.open(...O_NOFOLLOW...)` returns an fd that's
+**locked to one inode** until close; subsequent `fstat`
+and `read` operate on that locked inode regardless of what
+happens at the path. The re-resolve at step 8 is
+belt-and-suspenders for an intermediate-component swap.
+
+**Why `Response(content=…)` instead of `FileResponse`?**
+`FileResponse` re-opens the path from scratch at write
+time — re-opening the TOCTOU window the open-once scheme
+just closed. For the 1 MiB cap a fixed-bytes `Response` is
+the right shape; for >1 MiB Phase 13d's `Backend`
+abstraction owns streaming via cloud SDKs that don't go
+through the filesystem.
 
 Three small but load-bearing posture choices:
 
@@ -452,23 +572,55 @@ surface narrow (pure path component, no `file://` parsing).
 #### D.3.a Role provisioning
 
 The deployment's Postgres instance gets a second role,
-`eden_readonly`, with SELECT-only access to the public schema:
+`eden_readonly`, with SELECT access to the public schema —
+**explicitly EXCLUDING the worker credential-hash column**:
 
 ```sql
 CREATE ROLE eden_readonly WITH LOGIN PASSWORD '<random-32-byte-hex>';
 GRANT CONNECT ON DATABASE eden TO eden_readonly;
 GRANT USAGE ON SCHEMA public TO eden_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO eden_readonly;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT ON TABLES TO eden_readonly;
+
+-- Tables that contain NO credential material: full-table SELECT.
+GRANT SELECT ON task, idea, variant, event,
+                 worker_group, group_membership,
+                 schema_version
+    TO eden_readonly;
+
+-- The `worker` table carries `auth_credential_hash` (argon2id).
+-- Column-level SELECT excludes that column. The readonly role
+-- gets every other column needed for attribution / labels /
+-- registration timestamps.
+GRANT SELECT (
+    worker_id, experiment_id, registered_at,
+    registered_by, labels
+) ON worker TO eden_readonly;
 ```
 
-The `ALTER DEFAULT PRIVILEGES` clause is load-bearing: it
-ensures new tables (e.g. the worker / worker_group /
-group_membership tables added by 12a-1, or any future schema
-bump) automatically inherit SELECT for the readonly role.
-Without it, every schema migration would need a parallel
-GRANT statement and the readonly role would silently lag.
+**Why exclude `auth_credential_hash`?** Codex round 1
+finding on credential surface: argon2id hashes are
+meaningfully sensitive (weak credentials can be brute-forced
+offline). The agent's legitimate need is exploratory
+reads — attribution worker_ids, labels, the
+`registered_at` timestamp. Hashes are never part of that
+read shape. Column-level GRANT is the cleanest tool: it
+doesn't require a view layer, doesn't break the
+`SELECT * FROM worker` shape an operator might use ad-hoc
+in `psql` (the excluded column simply doesn't return), and
+the GRANT survives schema bumps as long as the column
+name stays `auth_credential_hash`.
+
+**Default privileges (`ALTER DEFAULT PRIVILEGES`) is
+intentionally OMITTED.** A blanket
+`GRANT SELECT ON TABLES` for any future table would
+silently re-expose credential-bearing columns if a future
+schema migration adds one. The deliberately-explicit
+table-level GRANT means every schema bump that adds a new
+table needs a parallel hand-written GRANT — annoying, but
+the cost is the price of the safety property. The 12a-1f
+implementation provisions exactly the tables enumerated
+above; any future schema-bump chunk must extend the GRANT
+list in `ensure_readonly_role` and add a test asserting
+the new table is reachable from `eden_readonly`.
 
 #### D.3.b Where the provisioning runs
 
@@ -589,10 +741,20 @@ unchanged. Specifically:
   implementation of the deferred §5 contract.
 - Chapter 7 §13 (auth) is unchanged — the new route
   reuses the existing bearer.
-- Chapter 7 §6 / §7 error vocabulary is unchanged — the
-  new route emits only the existing
-  `unauthorized` / `forbidden` / `not-found` / RFC-7807
-  shapes.
+- Chapter 7 §7 normative error vocabulary (the closed
+  `eden://error/...` set) is **unchanged**. The new route
+  emits the pre-existing normative types
+  (`unauthorized`, `forbidden`, `not-found`,
+  `experiment-id-mismatch`) for cases those already cover,
+  and introduces three new reference-only types under
+  the existing `eden://reference-error/...` namespace
+  (chapter 7 §12 reference-only extension surface):
+  `eden://reference-error/invalid-path`,
+  `eden://reference-error/artifact-too-large`,
+  `eden://reference-error/artifact-serving-disabled`.
+  None of these are normative; conforming alternative
+  implementations may emit different reference-error types
+  or omit the route entirely.
 
 ## 4. Scope
 
@@ -765,6 +927,39 @@ trust-boundary tests are the gate:
     `store.experiment_id` → 400
     `eden://error/experiment-id-mismatch`. Parallel to the
     chapter-7 §1.3 invariant on the normative endpoints.
+12. **NUL-byte in path.** Path contains `%00` after URL
+    decoding → 400 `eden://reference-error/invalid-path`.
+    Codex round-1 (§D.2.c try/except on `ValueError`).
+13. **Symlink loop.** Create symlinks inside `artifacts_dir`
+    that form a loop (`a → b`, `b → a`). Request the path
+    `a` → 400 `eden://reference-error/invalid-path` (ELOOP
+    from `resolve` / `os.open`); same shape if the
+    `O_NOFOLLOW` open hits the loop at the terminal
+    component → 403 (symlink not allowed).
+14. **Permission-denied intermediate.** Create a subdir
+    under the root with mode `0` (no traverse permission)
+    plus a file inside it. Request the file's path → 404
+    (the user-agent can't distinguish "permission denied
+    intermediate" from "not found"; we collapse both to
+    avoid leaking filesystem layout).
+15. **TOCTOU swap-after-resolve.** Pre-create the target
+    file (in-root, 100 bytes). Inside a forked thread,
+    keep `rename()`-ing the file in-place to a same-path
+    decoy of size 2 MiB; in the main thread, fire 50
+    concurrent GETs. Each response MUST EITHER be
+    200-with-100-bytes (the inode the open() locked) OR
+    one of {404, 413} (the rename made the path resolve
+    differently before open). It MUST NEVER be 200-with-
+    2-MiB-bytes — the open-once-and-fstat-the-fd posture
+    prevents the size cap from being bypassed by a
+    swap-after-check race.
+16. **Symlink-out-of-root rejected by `O_NOFOLLOW`.**
+    Create a symlink inside `artifacts_dir` pointing at
+    `/etc/passwd`. Request that path. `os.open` with
+    `O_NOFOLLOW` raises `OSError(errno=ELOOP)` because the
+    trailing component IS a symlink. Handler maps ELOOP →
+    403 `eden://error/forbidden`. The response body MUST
+    NOT include any bytes from `/etc/passwd`.
 
 ### 6.2 Path-resolution edge cases
 
@@ -852,11 +1047,33 @@ The compose smoke scripts gain three additions:
    path, then `curl
    http://task-store-server:8080/_reference/experiments/<id>/artifacts/<path>`
    with the admin bearer + assert 200 + non-empty body.
-2. **Readonly-DSN smoke** (`smoke-subprocess.sh`): `psql
-   $EDEN_READONLY_STORE_URL -c 'SELECT COUNT(*) FROM
-   event'` returns ≥ N (some lower bound after
-   quiescence); `psql $EDEN_READONLY_STORE_URL -c "INSERT
-   INTO event VALUES (...)"` returns permission denied.
+2. **Readonly-DSN smoke** (`smoke-subprocess.sh`). Codex
+   round-1 finding: `psql` is NOT installed in
+   `eden-reference:dev` (only `git` / `ca-certificates` /
+   `curl`). Run psql from inside the **postgres**
+   container, which has it natively:
+
+   ```bash
+   docker compose --env-file "$ENV_FILE" exec -T postgres \
+       psql "$EDEN_READONLY_STORE_URL" \
+       -c 'SELECT COUNT(*) FROM event' \
+       # ≥ N after quiescence
+   docker compose --env-file "$ENV_FILE" exec -T postgres \
+       psql "$EDEN_READONLY_STORE_URL" \
+       -c "INSERT INTO event(data) VALUES ('{}')" \
+       # MUST fail with permission denied
+   docker compose --env-file "$ENV_FILE" exec -T postgres \
+       psql "$EDEN_READONLY_STORE_URL" \
+       -c 'SELECT auth_credential_hash FROM worker LIMIT 1' \
+       # MUST fail (column-level grant excludes it)
+   ```
+
+   Third assertion is load-bearing: it verifies the
+   column-level GRANT (§D.3.a) is actually in effect, not
+   just declared. The DSN is read from the host-side
+   `.env` and passed in; `psql` resolves the in-network
+   `postgres:5432` from inside the postgres container the
+   same way the other services do.
 3. **Ideator git-substrate smoke** (`smoke-subprocess.sh`):
    post-quiescence, exec into `eden-ideator-host` and run
    `git -C /var/lib/eden/repo log --oneline | wc -l` —
