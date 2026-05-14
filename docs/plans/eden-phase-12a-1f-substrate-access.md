@@ -312,13 +312,43 @@ Response shape:
 **Error-vocabulary discipline.** The new artifact route is
 reference-only (`/_reference/...`), so its three new error
 URIs use the **reference-only** `eden://reference-error/...`
-namespace (pre-existing — see chapter 7 §12's
-`eden://reference-error/unauthorized`). The normative
+namespace (pre-existing — see chapter 7 §12). The normative
 chapter-7 error vocabulary (§7 closed set) is **unchanged**:
 no new `eden://error/...` types are added. Errors the route
 reuses (`unauthorized`, `forbidden`, `not-found`,
 `experiment-id-mismatch`) are pre-existing normative types
 the chapter already defines.
+
+**Serialization plumbing.** The existing
+[`eden_wire/errors.py`](../../reference/packages/eden-wire/src/eden_wire/errors.py)
+defines a `WireReferenceError` base class (~line 82) and a
+companion serializer `envelope_for_reference_error`
+(~line 202), but the current
+[`make_app`](../../reference/packages/eden-wire/src/eden_wire/server.py)
+installs `@app.exception_handler` only for normative
+chapter-7 errors (`StorageError`, `BadRequest`,
+`ExperimentIdMismatch`, `Unauthorized`, `Forbidden`, plus
+the FastAPI `RequestValidationError` / pydantic
+`ValidationError`). 12a-1f's artifact route is the FIRST
+consumer of the reference-error path, so the implementation
+MUST also install:
+
+```python
+@app.exception_handler(WireReferenceError)
+def _wire_reference_error_handler(request, exc):
+    envelope = envelope_for_reference_error(
+        exc, instance=str(request.url),
+    )
+    return JSONResponse(
+        status_code=envelope.status,
+        media_type=PROBLEM_JSON,
+        content=envelope.to_dict(),
+    )
+```
+
+Without this handler, `InvalidPath` / `ArtifactTooLarge` /
+`ArtifactServingDisabled` raised from the route handler
+would fall through to FastAPI's default 500 path.
 
 **Safe browser-delivery headers.** Every 200 response from
 this route includes:
@@ -650,7 +680,9 @@ surface narrow (pure path component, no `file://` parsing).
 #### D.3.a Role provisioning
 
 The deployment's Postgres instance gets a second role,
-`eden_readonly`, with SELECT access to the public schema —
+`eden_readonly`, with SELECT access to the active schema
+(the live connection's `current_schema()` — NOT a hard-coded
+`public` — see "scope" note below) —
 **explicitly EXCLUDING the `worker.credential_hash`
 column**.
 
@@ -971,8 +1003,8 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/packages/eden-wire/src/eden_wire/server.py` | `make_app` gains an `artifacts_dir: Path \| None = None` parameter. **Always mounts** `GET /_reference/experiments/{experiment_id}/artifacts/{path:path}` with route-level auth + descriptor-relative component walk + safe-delivery headers (§D.2.a/c). When `artifacts_dir is None` the route returns 503 `eden://reference-error/artifact-serving-disabled`. |
-| `reference/packages/eden-wire/src/eden_wire/errors.py` | Add three new exception classes + `eden://reference-error/...` URI mappings: `InvalidPath` (400 `eden://reference-error/invalid-path`), `ArtifactTooLarge` (413 `eden://reference-error/artifact-too-large`), `ArtifactServingDisabled` (503 `eden://reference-error/artifact-serving-disabled`). All three follow the existing `eden://reference-error/unauthorized` shape (envelope_for_error mapping; problem+json body). |
+| `reference/packages/eden-wire/src/eden_wire/server.py` | `make_app` gains an `artifacts_dir: Path \| None = None` parameter. **Always mounts** `GET /_reference/experiments/{experiment_id}/artifacts/{path:path}` with route-level auth + descriptor-relative component walk + safe-delivery headers (§D.2.a/c). When `artifacts_dir is None` the route raises `ArtifactServingDisabled` → 503. Also installs a new `@app.exception_handler(WireReferenceError)` that serializes via `envelope_for_reference_error` (the existing helper at `eden_wire/errors.py` line ~202) into a problem+json body. The handler is needed because the existing `make_app` only registers handlers for normative chapter-7 errors; reference-error subclasses currently have no wired handler. |
+| `reference/packages/eden-wire/src/eden_wire/errors.py` | Add three new `WireReferenceError` subclasses with `eden://reference-error/...` URI mappings: `InvalidPath` (400 `eden://reference-error/invalid-path`), `ArtifactTooLarge` (413 `eden://reference-error/artifact-too-large`), `ArtifactServingDisabled` (503 `eden://reference-error/artifact-serving-disabled`). All extend the existing `WireReferenceError` base class (line ~82); the serialization helper `envelope_for_reference_error` (line ~202) already handles them generically. |
 | `reference/packages/eden-wire/tests/test_artifact_route.py` | **NEW**: unit tests for the route per §6.1 — auth-first sentinel, admin-or-worker, malformed-path 400, symlink-out-of-root 403, missing 404, 1 MiB cap 413, safe-delivery headers on every 200, TOCTOU swap-after-resolve, intermediate-component swap race, 503-when-disabled, experiment-id-mismatch 400. |
 
 ### 5.3 `eden-task-store-server`
@@ -1268,25 +1300,34 @@ Gated on `EDEN_TEST_POSTGRES_DSN`:
     operator-error shape; the test pins the failure.
   - `SELECT worker_id, data FROM worker LIMIT 1` —
     MUST succeed (explicit column projection).
-- **Hardening against legacy over-grant.** Start a fresh
-  Postgres database; manually pre-create `eden_readonly`
-  with `GRANT SELECT ON ALL TABLES IN SCHEMA public` +
-  `ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} GRANT SELECT
-  ON TABLES TO eden_readonly` (a hypothetical legacy
-  installation's posture). Then run `ensure_readonly_role`.
-  Post-condition: `SELECT credential_hash FROM
-  worker` MUST fail (the prior table-wide grant has been
-  REVOKEd before the column-level GRANT was applied).
-  Codex round-2 finding: this is the migration test that
-  proves the REVOKE-then-GRANT order works.
-- **Default-privileges removal.** As `eden` superuser,
-  create a new table in `public`. `eden_readonly` MUST NOT
-  automatically have SELECT on it (no `ALTER DEFAULT
-  PRIVILEGES` is installed). The test asserts the
-  permission-denied response on `SELECT * FROM
-  test_new_table` from `eden_readonly`. Codex round-2
-  finding: this is the dual of the legacy-over-grant test;
-  both must pass for the safety posture to hold.
+- **Hardening against legacy over-grant.** Both legs of
+  this test resolve `{schema}` from
+  `current_schema()` against the live test connection
+  (the parametrized backend tests in
+  [`reference/packages/eden-storage/tests/conftest.py`](../../reference/packages/eden-storage/tests/conftest.py)
+  install a per-test schema via `search_path`; CI uses
+  `EDEN_TEST_POSTGRES_DSN` against `dbname=postgres`).
+  Start a fresh test schema; manually pre-create
+  `eden_readonly` with `GRANT SELECT ON ALL TABLES IN
+  SCHEMA {schema}` + `ALTER DEFAULT PRIVILEGES IN SCHEMA
+  {schema} GRANT SELECT ON TABLES TO eden_readonly` (a
+  hypothetical legacy installation's posture). Then run
+  `ensure_readonly_role`. Post-condition:
+  `SELECT credential_hash FROM {schema}.worker` MUST fail
+  (the prior table-wide grant has been REVOKEd before the
+  column-level GRANT was applied). Codex round-2 finding:
+  this is the migration test that proves the
+  REVOKE-then-GRANT order works.
+- **Default-privileges removal.** Same `{schema}` resolution
+  as above. As the `eden` superuser, create a new table in
+  `{schema}` (e.g. `CREATE TABLE {schema}.test_new (id
+  int)`). `eden_readonly` MUST NOT automatically have
+  SELECT on it (no `ALTER DEFAULT PRIVILEGES` is
+  installed). The test asserts the permission-denied
+  response on `SELECT * FROM {schema}.test_new` from
+  `eden_readonly`. Codex round-2 finding: this is the
+  dual of the legacy-over-grant test; both must pass for
+  the safety posture to hold.
 
 ### 6.6 End-to-end smoke
 
@@ -1560,15 +1601,25 @@ default**, so the substrate URLs the host bakes into env
 inside the sibling.
 
 This chunk **deliberately scopes** DooD-mode substrate
-access **out**:
+access **out**, with explicit suppression to avoid a
+half-broken surface:
 
-- Host-mode subprocess (the default for the subprocess
-  overlay) gets all four new env vars wired through.
-- `--exec-mode docker` keeps the existing env-key
-  forwarding (the keys list is unchanged), but a sibling
-  container won't be able to reach the substrate URLs
-  without additional `--network` plumbing in
-  `wrap_command`.
+- **Host-mode subprocess** (the default for the
+  subprocess overlay): gets all four new env vars wired
+  through.
+- **`--exec-mode docker`**: ideator + evaluator host CLI
+  detect `exec_mode == "docker"` (resolved from
+  `resolve_exec_args(args)`) and **drop** the four
+  substrate env keys (`EDEN_REPO_DIR`,
+  `EDEN_ARTIFACT_URL`, `EDEN_ARTIFACT_PATH_ROOT`,
+  `EDEN_READONLY_STORE_URL`) from the env dict before
+  building the subprocess config. Sibling containers
+  therefore see NEITHER reachable nor unreachable
+  substrate endpoints — the keys simply aren't set. The
+  host logs a WARN line ("substrate access disabled in
+  --exec-mode docker; see §8.9") at startup so
+  operators have visibility. Same posture mirrored in
+  the host-side suppression note in §6.4.
 
 The right shape for the DooD networking design is a
 separate sub-chunk (call it 12a-1f-followup-A) that:
@@ -1580,6 +1631,8 @@ separate sub-chunk (call it 12a-1f-followup-A) that:
 - Adds an integration test that spawns a sibling
   container and confirms `task-store-server:8080`
   resolves.
+- Re-enables the substrate env-var forwarding in DooD
+  mode once the sibling can actually reach the endpoints.
 
 For 12a-1f, the AGENTS.md "Current phase" entry and the
 binding doc explicitly note the host-mode-only scope.
