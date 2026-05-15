@@ -106,18 +106,23 @@ call_wire() {
         exec -T task-store-server curl "${args[@]}"
 }
 
-echo "--- bringing up the full stack ---"
-docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait --wait-timeout 240
-
 # Per spec §3.7, `update_dispatch_mode` requires a registered worker
 # in the `admins` group; the literal `"admin"` bearer is bootstrap-
 # only and MUST NOT drive business-op routes. Reissue the initial
 # admin worker's credential (admin-token-gated, so the admin bearer
 # is allowed here) and use `Bearer <worker_id>:<token>` for the
-# subsequent PATCH /dispatch_mode calls. The reissue MUST run after
-# `compose up -d --wait` so we hit the final task-store-server
-# container (setup-experiment brought one up too, but `compose up`
-# may have recreated it on config drift).
+# subsequent PATCH /dispatch_mode calls.
+#
+# The reissue + PATCH MUST happen BEFORE bringing up the orchestrator
+# + worker-host services. The fixture ideator-host claims and submits
+# in ~milliseconds, and the orchestrator's first iteration both
+# finalizes the ideation submission AND auto-dispatches the execution
+# task in the same pass. By the time a smoke running AFTER `compose
+# up --wait` could fire its PATCH, the execution task has already
+# been auto-dispatched — the race is unwinnable from outside the
+# orchestrator's first iteration. setup-experiment already brought
+# up task-store-server (for the group bootstrap), so PATCH against
+# the running task-store-server before the workers come up.
 echo "--- reissuing initial admin worker credential for PATCH calls ---"
 ADMIN_WORKER_TOKEN="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
@@ -133,37 +138,39 @@ test -n "$ADMIN_WORKER_TOKEN"
 test "$ADMIN_WORKER_TOKEN" != "null"
 ADMIN_WORKER_BEARER="${EDEN_ADMINS_INITIAL_MEMBER}:${ADMIN_WORKER_TOKEN}"
 
-# The orchestrator + ideator-host are running; the ideation task is
-# being created by the policy + claimed by the ideator. We want to
-# flip execution_dispatch to manual BEFORE the ideator finishes
-# submitting, so the orchestrator doesn't auto-dispatch an execution
-# task on the resulting `ready` idea.
-#
-# In practice the ideator submission is fast (<2s under the fixture);
-# the most reliable way to guarantee the flip lands first is to flip
-# IMMEDIATELY after `compose up --wait` returns. The orchestrator's
-# next iteration (default poll-interval 1s) will see manual.
-
-echo "--- flipping execution_dispatch to manual ---"
+echo "--- flipping execution_dispatch to manual (BEFORE orchestrator starts) ---"
 call_wire PATCH "${EXP_BASE}/dispatch_mode" \
     '{"execution_dispatch":"manual"}' >/dev/null
 
-# Wait for an idea to reach `ready` state (ideator submitted). Up to
-# 30s; the fixture ideator finishes near-instantly.
-echo "--- waiting for an idea to reach ready ---"
+echo "--- bringing up the full stack ---"
+docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait --wait-timeout 240
+
+# Wait for the ideation task to complete. The orchestrator's first
+# iteration sees execution_dispatch=manual already, so it'll create
+# an ideation task (ideation_creation is auto), the ideator submits,
+# the orchestrator finalizes it (state=completed), but skips
+# execution dispatch entirely. We poll for `task.completed` of
+# `ideation-*` shape so the assertion is durable across the
+# ideator's lifecycle (drafting → ready → completed).
+echo "--- waiting for ideation task to complete ---"
 deadline=$((SECONDS + 30))
-ready_count=0
+ideation_completed=0
 while [[ $SECONDS -lt $deadline ]]; do
-    ready_count="$(
-        call_wire GET "${EXP_BASE}/ideas?state=ready" | jq 'length'
+    events="$(call_wire GET "${EXP_BASE}/events")"
+    ideation_completed="$(
+        echo "$events" \
+            | jq '.events | [.[] | select(
+                .type == "task.completed"
+                and (.data.task_id | startswith("ideation-"))
+              )] | length'
     )"
-    if [[ "$ready_count" -ge 1 ]]; then
+    if [[ "$ideation_completed" -ge 1 ]]; then
         break
     fi
     sleep 1
 done
-test "$ready_count" -ge 1 || {
-    echo "no idea reached 'ready' within 30s; ideator may be wedged" >&2
+test "$ideation_completed" -ge 1 || {
+    echo "no ideation task.completed event within 30s; ideator may be wedged" >&2
     exit 1
 }
 
