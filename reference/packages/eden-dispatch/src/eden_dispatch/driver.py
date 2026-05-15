@@ -29,6 +29,7 @@ from collections.abc import Callable
 
 from eden_contracts import DispatchMode, EvaluationTask
 from eden_storage import Store
+from eden_storage.errors import AlreadyExists, InvalidPrecondition
 
 from .policies import IdeationPolicy
 from .state_view import build_experiment_state_view
@@ -201,7 +202,23 @@ def _dispatch_execution_tasks(
     )
     for idea in ideas:
         task_id = factory()
-        store.create_execution_task(task_id, idea.idea_id)
+        try:
+            store.create_execution_task(task_id, idea.idea_id)
+        except (AlreadyExists, InvalidPrecondition):
+            # §6.4 exact-idempotent: a second concurrent replica
+            # observed the first's commit. Treat as benign and
+            # continue — the spec explicitly allows the racing
+            # invocation to "no-op or raise an idempotency error";
+            # the orchestrator's job is to not crash on the
+            # idempotency raise. Other classes of error (transport,
+            # malformed payload, etc.) still propagate.
+            _log.info(
+                "create_execution_task(%s) collapsed onto existing "
+                "task for idea %s (multi-instance race)",
+                task_id,
+                idea.idea_id,
+            )
+            continue
         progress = True
     return progress
 
@@ -212,7 +229,17 @@ def _dispatch_evaluation_tasks(
     progress = False
     for variant in _list_variants_needing_evaluation(store):
         task_id = factory()
-        store.create_evaluation_task(task_id, variant.variant_id)
+        try:
+            store.create_evaluation_task(task_id, variant.variant_id)
+        except (AlreadyExists, InvalidPrecondition):
+            # §6.4 exact-idempotent — see _dispatch_execution_tasks.
+            _log.info(
+                "create_evaluation_task(%s) collapsed onto existing "
+                "task for variant %s (multi-instance race)",
+                task_id,
+                variant.variant_id,
+            )
+            continue
         progress = True
     return progress
 

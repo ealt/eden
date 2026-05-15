@@ -317,6 +317,25 @@ def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
             response=resp,
         )
 
+    # The redirect banner says "ok" but the actual state could still
+    # be wrong (form wiring regression, store-side ignored the patch,
+    # template caching). Re-read the task-detail page and assert the
+    # rendered target row matches the requested {kind: worker,
+    # id: ideator-1}. Both `target_kind` (radio state) and the
+    # ideator-1 worker_id MUST appear in the post-reassign view.
+    resp = ui.get(f"/admin/tasks/{task_id}/reassign")
+    if resp.status_code != 200:
+        _fail(
+            f"post-reassign GET /admin/tasks/{task_id}/reassign failed",
+            response=resp,
+        )
+    if "ideator-1" not in resp.text:
+        _fail(
+            f"task-{task_id} target was not updated to ideator-1 "
+            "after reassign — form may not have wired through",
+            response=resp,
+        )
+
 
 def main() -> int:
     """Drive the ideator + admin-reclaim + dispatch-mode + reassign drills end-to-end."""

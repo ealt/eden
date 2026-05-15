@@ -142,10 +142,42 @@ def _apply_v3(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# 12a-2 plan §5.2: partial unique indexes that enforce the §6.4
+# at-most-one-live invariant at the DB layer. Without these, the
+# guarantee depends on the single-process server serializing
+# operations in-process — multi-replica deployments could in
+# principle race past the in-memory check. The indexes are partial:
+# they only cover ``live`` states (pending / claimed / submitted), so
+# the same idea / variant can produce a fresh live task once the
+# previous one terminalizes.
+#
+# Note on existing rows: pre-v4 stores may contain multiple live
+# rows that would fail the new index. The plan's posture is
+# greenfield-pre-external-user (AGENTS.md "Project Lifecycle"), so a
+# failed migration on stale dev data is acceptable feedback rather
+# than something to silently de-duplicate.
+_V4_STATEMENTS: list[str] = [
+    "CREATE UNIQUE INDEX task_live_execution_by_idea "
+    "ON task(json_extract(data, '$.payload.idea_id')) "
+    "WHERE kind = 'execution' "
+    "AND state IN ('pending', 'claimed', 'submitted')",
+    "CREATE UNIQUE INDEX task_live_evaluation_by_variant "
+    "ON task(json_extract(data, '$.payload.variant_id')) "
+    "WHERE kind = 'evaluation' "
+    "AND state IN ('pending', 'claimed', 'submitted')",
+]
+
+
+def _apply_v4(conn: sqlite3.Connection) -> None:
+    for stmt in _V4_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
+    _apply_v4,
 ]
 
 

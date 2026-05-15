@@ -53,7 +53,15 @@ def test_read_dispatch_mode_returns_store_value(store: InMemoryStore) -> None:
 
 
 def test_read_dispatch_mode_falls_back_on_failure(caplog) -> None:  # noqa: ANN001
-    """Transport failure during read MUST NOT crash the loop."""
+    """Transport failure during read MUST NOT crash the loop AND MUST fail closed.
+
+    Per spec §6.1, manual mode means the orchestrator MUST NOT run
+    that decision. A read failure that fell open to all-``auto``
+    would let a forbidden dispatch slip through during an operator's
+    manual window, violating §6.1. The fallback MUST gate every
+    decision off until the next iteration can re-read the actual
+    dispatch_mode.
+    """
     import logging
 
     class _BrokenStore:
@@ -62,7 +70,10 @@ def test_read_dispatch_mode_falls_back_on_failure(caplog) -> None:  # noqa: ANN0
 
     with caplog.at_level(logging.ERROR, logger="eden_orchestrator.loop"):
         mode = _read_dispatch_mode(_BrokenStore())  # type: ignore[arg-type]
-    assert mode == DispatchMode()
+    assert mode.ideation_creation == "manual"
+    assert mode.execution_dispatch == "manual"
+    assert mode.evaluation_dispatch == "manual"
+    assert mode.integration == "manual"
     assert any(
         "read_dispatch_mode_failed" in r.message for r in caplog.records
     )

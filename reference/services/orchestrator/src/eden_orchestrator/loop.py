@@ -37,22 +37,41 @@ def make_id_factory(prefix: str) -> Callable[[], str]:
     return _next
 
 
+_ALL_MANUAL = DispatchMode(
+    ideation_creation="manual",
+    execution_dispatch="manual",
+    evaluation_dispatch="manual",
+    integration="manual",
+)
+"""Fail-closed dispatch_mode for transient read failures.
+
+Per spec §6.1, ``manual`` means the orchestrator MUST NOT run that
+decision. If we can't read the experiment's actual dispatch_mode (a
+transient store read failure, mid-restart task-store, transport blip),
+the safe default is to gate every decision off until the next
+iteration can re-read. Failing OPEN to all-``auto`` would let a
+forbidden dispatch slip through during an operator's manual window —
+that violates §6.1's MUST NOT. The orchestrator's still-finalizing
+behavior (``_finalize_submitted`` is intentionally not gated) keeps
+worker submissions from getting stuck while the read recovers.
+"""
+
+
 def _read_dispatch_mode(store: Store) -> DispatchMode:
-    """Fetch the experiment's current dispatch_mode, defaulting to all-auto.
+    """Fetch the experiment's current dispatch_mode, fail-closed on error.
 
     Any exception during the fetch (transport blip, mid-restart task-
-    store) falls back to the §2.5 all-``auto`` default. This is
-    intentional: the orchestrator's continued forward motion is more
-    important than honoring a possibly-stale ``manual`` flag for one
-    iteration, and the next iteration will re-read and pick up the
-    correct value. The fallback is logged so an operator investigating
-    a wedged dispatch can still see the underlying transport problem.
+    store) falls back to the all-``manual`` mode above so the four
+    §6.2 gated decisions are skipped this iteration. The next
+    iteration re-reads and picks up the correct value. The fallback
+    is logged so an operator investigating a wedged dispatch sees
+    the underlying transport problem.
     """
     try:
         return store.read_dispatch_mode()
     except Exception:  # noqa: BLE001 — defensive at iteration boundary
-        log.exception("read_dispatch_mode_failed; using all-auto default")
-        return DispatchMode()
+        log.exception("read_dispatch_mode_failed; failing closed to all-manual")
+        return _ALL_MANUAL
 
 
 def run_orchestrator_loop(

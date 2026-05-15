@@ -104,18 +104,19 @@ for wid in orchestrator orchestrator-2; do
         }
 done
 
-# Chaos test: kill the primary orchestrator after a brief window.
-# The secondary MUST drive the experiment to completion on its own.
-# We can't pin _which_ replica wins each decision (the §6.4
-# exact-idempotent path collapses cleanly to either), only the final
-# end-state.
-echo "--- killing primary orchestrator ---"
-docker kill eden-orchestrator >/dev/null
-# `restart: "on-failure"` would restart on non-zero exit; SIGKILL
-# bypasses graceful shutdown and the container exits 137 → restart
-# kicks in. Wait for it to come back up to keep the chaos test
-# deterministic (the secondary still drives the actual work).
-sleep 3
+# Chaos test: kill AND remove the primary orchestrator. The
+# secondary MUST drive the experiment to completion ALONE — no
+# possibility of the primary coming back and silently picking up
+# work it dispatched before death.
+#
+# `docker kill` alone is not enough: compose configures the
+# orchestrator with `restart: "on-failure"`, which restarts the
+# SIGKILL'd container (exit 137 is non-zero). A restarted primary
+# would invalidate the secondary-only takeover assertion. `docker rm
+# -f` removes the container entirely so the on-failure restart
+# policy has nothing to restart.
+echo "--- killing + removing primary orchestrator (secondary-only takeover) ---"
+docker rm -f eden-orchestrator >/dev/null
 
 echo "--- waiting for orchestrator-2 to exit on quiescence ---"
 deadline=$((SECONDS + 240))

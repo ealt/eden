@@ -727,6 +727,17 @@ def make_app(
         # partial-merge semantics see only the keys the caller actually
         # supplied. Unknown keys passed via `extra="allow"` are kept.
         updates = body.model_dump(mode="json", exclude_none=True)
+        # Value-grammar validation lives at the wire layer so a bad
+        # value (including on an unknown extra="allow" key) becomes a
+        # 400 BadRequest per chapter 04 §7.1 / chapter 07 §2.8, not a
+        # 409 invalid-precondition (the store-side check exists as
+        # defense-in-depth but is reachable only via direct Store
+        # callers). The closed value-set is `auto` / `manual`.
+        for key, value in updates.items():
+            if value not in ("auto", "manual"):
+                raise BadRequest(
+                    f"dispatch_mode.{key} value {value!r} is not 'auto' or 'manual'"
+                )
         result = store.update_dispatch_mode(updates, updated_by=updated_by)
         return DispatchModeResponse.model_validate(
             result.model_dump(mode="json", exclude_none=True)
