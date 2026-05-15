@@ -444,12 +444,14 @@ class PostgresStore(_StoreBase):
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
+        tree_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__(
             experiment_id,
             evaluation_schema=evaluation_schema,
             now=now,
             event_id_factory=event_id_factory,
+            tree_resolver=tree_resolver,
         )
         self._dsn = dsn
         # autocommit=True + explicit BEGIN/COMMIT per op mirrors

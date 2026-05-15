@@ -239,6 +239,74 @@ def test_status_error_terminalizes_variant_and_blocks_evaluate_dispatch(
         )
 
 
+def test_no_op_variant_rejected(wire_client: WireClient) -> None:
+    """spec/v0/03-roles.md §3.3 non-no-op invariant + §3.4 rejection rule.
+
+    A success submission whose ``commit_sha`` is byte-equal to every
+    entry in the idea's ``parent_commits`` represents the absence of a
+    candidate (the variant tree is trivially identical to the parent
+    tree). The IUT MUST reject; where the rejection surfaces (submit
+    or accept) is implementation-defined per chapter 9 §6 latitude,
+    so this scenario asserts the observable end-state: the variant
+    MUST NOT terminalize as ``status == "success"``. When the
+    rejection surfaces a wire error envelope, the ``type`` MUST be
+    ``eden://error/no-op-variant`` ([`07-wire-protocol.md`] §9).
+
+    The scenario exercises the literal SHA-equality case: the only
+    portable no-op shape that does not require the IUT to host a real
+    git repo for the harness to construct an empty commit on parent.
+    """
+    parent = "f" * 40
+    pid = _seed.create_idea(wire_client, parent_commits=[parent])
+    _seed.mark_idea_ready(wire_client, pid)
+    exec_tid = _seed.create_execution_task(wire_client, idea_id=pid)
+    variant_id = _seed.create_variant(
+        wire_client, idea_id=pid, status="starting", parent_commits=[parent]
+    )
+    c = _seed.claim(wire_client, exec_tid)
+    # Literal no-op: commit_sha == parent_commits[0].
+    r = _seed.submit_variant(
+        wire_client,
+        exec_tid,
+        worker_id=c["worker_id"],
+        variant_id=variant_id,
+        commit_sha=parent,
+    )
+    if 400 <= r.status_code < 500:
+        # IUT rejected at submit — conforming. The closed-vocabulary
+        # type for this rejection is `eden://error/no-op-variant`
+        # ([`spec/v0/07-wire-protocol.md`] §9).
+        assert r.json().get("type") == "eden://error/no-op-variant", (
+            f"submit rejection MUST use eden://error/no-op-variant; "
+            f"got type={r.json().get('type')!r}"
+        )
+        variant = _seed.read_variant(wire_client, variant_id)
+        assert variant["status"] != "success"
+        return
+    # The IUT accepted at submit (200). The rejection must surface at
+    # accept time via the §4.3 validation-error path — the variant
+    # MUST NOT terminalize as success.
+    assert r.status_code == 200, (
+        f"no-op submit returned {r.status_code}; spec/v0/03-roles.md "
+        "§3.4 latitude is submit-time-reject (4xx) or accept-time-reject; "
+        "5xx is a server bug, not conforming behavior"
+    )
+    accept = _seed.accept(wire_client, exec_tid)
+    # Accept may surface the no-op-variant type at this stage, OR
+    # succeed and route the task through the validation-error reject
+    # path. Either way the end-state assertion below is the contract.
+    if 400 <= accept.status_code < 500:
+        assert accept.json().get("type") == "eden://error/no-op-variant", (
+            f"accept-time no-op rejection MUST use "
+            f"eden://error/no-op-variant; got type={accept.json().get('type')!r}"
+        )
+    variant = _seed.read_variant(wire_client, variant_id)
+    assert variant["status"] != "success", (
+        "no-op variant MUST NOT terminalize as success "
+        "(spec/v0/03-roles.md §3.3 non-no-op invariant + §3.4 rejection)"
+    )
+
+
 def test_resubmit_divergent_commit_sha_rejected(wire_client: WireClient) -> None:
     """spec/v0/03-roles.md §3.4 — duplicate submit disagreeing on commit_sha MUST be rejected.
 

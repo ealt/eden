@@ -7,9 +7,11 @@ booting uvicorn.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from eden_contracts import ExperimentConfig
+from eden_git import GitError, GitRepo
 from eden_service_common import load_experiment_config
 from eden_storage import (
     InMemoryStore,
@@ -29,9 +31,44 @@ log = logging.getLogger(__name__)
 __all__ = [
     "build_app",
     "build_store",
+    "build_tree_resolver",
     "load_experiment_config",
     "provision_readonly",
 ]
+
+
+def build_tree_resolver(repo_path: str | Path) -> Callable[[str], str | None]:
+    """Return a tree-of-commit resolver backed by the bare repo at ``repo_path``.
+
+    Wired into ``_StoreBase`` to enforce the
+    ``spec/v0/03-roles.md`` §3.3 non-no-op variant invariant. Returns
+    ``None`` for SHAs that don't resolve (graceful degradation when a
+    parent_commit names a SHA absent from the local repo) and never
+    raises (the Store treats raises as "resolver unavailable for this
+    SHA" and falls back to the SHA-equality fast path).
+
+    The resolver is intentionally I/O-free against any remote: it
+    queries only the local bare repo. The Store's
+    ``_validate_non_no_op_variant`` runs inside the per-operation
+    Store transaction (holding the SQLite / Postgres write lock), so
+    a network fetch here would block every other task-store request
+    behind one submit on a slow / unreachable Gitea. Population of
+    the local clone is the responsibility of a separate refresh path
+    (operator-driven or a future background helper) — this resolver
+    is the server-side, defense-in-depth backstop; the canonical
+    enforcement point for the §3.3 rule is the executor's pre-submit
+    check against its own clone (see ``_is_no_op_variant`` in the
+    executor host's subprocess_mode).
+    """
+    repo = GitRepo(Path(repo_path))
+
+    def _resolve(sha: str) -> str | None:
+        try:
+            return repo.commit_tree_sha(sha)
+        except (GitError, OSError):
+            return None
+
+    return _resolve
 
 
 def build_store(
@@ -39,6 +76,7 @@ def build_store(
     store_url: str,
     experiment_id: str,
     config: ExperimentConfig,
+    repo_path: str | Path | None = None,
 ) -> Store:
     """Open a ``Store`` backend selected by URL scheme.
 
@@ -49,17 +87,29 @@ def build_store(
     * ``postgresql://…`` (or ``postgres://…``) → :class:`PostgresStore`.
     * Bare path (no scheme) → :class:`SqliteStore` for compatibility
       with pre-Phase-10 callers.
+
+    ``repo_path``: when set, wires a tree-of-commit resolver into the
+    store so it can enforce the spec/v0/03-roles.md §3.3 non-no-op
+    variant invariant via real git tree comparison (the SHA-equality
+    fast path runs regardless). The resolver only reads the local
+    bare repo — it does not fetch from any remote (see
+    :func:`build_tree_resolver` for the rationale).
     """
+    tree_resolver = (
+        build_tree_resolver(repo_path) if repo_path is not None else None
+    )
     if store_url == ":memory:":
         return InMemoryStore(
             experiment_id=experiment_id,
             evaluation_schema=config.evaluation_schema,
+            tree_resolver=tree_resolver,
         )
     if store_url.startswith("postgresql://") or store_url.startswith("postgres://"):
         return PostgresStore(
             experiment_id=experiment_id,
             dsn=store_url,
             evaluation_schema=config.evaluation_schema,
+            tree_resolver=tree_resolver,
         )
     if store_url.startswith("sqlite:///"):
         path = store_url[len("sqlite:///") :]
@@ -70,6 +120,7 @@ def build_store(
         experiment_id=experiment_id,
         path=path,
         evaluation_schema=config.evaluation_schema,
+        tree_resolver=tree_resolver,
     )
 
 

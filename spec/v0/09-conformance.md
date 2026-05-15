@@ -71,7 +71,7 @@ The v1+roles scenario groups (added in chunk 11c), with their primary spec citat
 | Group | Scope | Spec citations |
 |---|---|---|
 | Ideator submission | Drafting-idea precondition; status vocabulary; idea-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
-| Executor submission | Submission-shape preconditions; variant-binding; status vocabulary; worker-branch uniqueness. | [`03-roles.md`](03-roles.md) §3.3, §3.4 |
+| Executor submission | Submission-shape preconditions; variant-binding; status vocabulary; worker-branch uniqueness; non-no-op variant rejection (wire-observable projection of the tree-shape invariant; see citations). | [`03-roles.md`](03-roles.md) §3.3, §3.4 |
 | Evaluator submission | Status vocabulary; evaluation-schema validation; per-status variant-side writes; evaluation_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
 | Orchestrator role contract | Decision-types are gated by `dispatch_mode`; manual mode skips orchestrator-driven decisions; orchestrator authority does not impersonate workers on terminal transitions. | [`03-roles.md`](03-roles.md) §6.1, §6.2, §6.3, §6.5 |
 | Multi-instance safety | Concurrent execution-task / evaluation-task dispatch and integration are exactly idempotent; concurrent ideation-task creation is bounded by `N * T` and self-corrects in subsequent iterations. | [`03-roles.md`](03-roles.md) §6.4 |

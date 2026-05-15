@@ -80,6 +80,7 @@ from .errors import (
     CycleDetected,
     IllegalTransition,
     InvalidPrecondition,
+    NoOpVariant,
     NotClaimed,
     NotFound,
     ReservedIdentifier,
@@ -217,12 +218,27 @@ class _StoreBase:
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
+        tree_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         self._experiment_id = experiment_id
         self._evaluation_schema = evaluation_schema
         self._now = now or (lambda: datetime.now(UTC))
         self._event_ids = itertools.count(1)
         self._event_id_factory = event_id_factory or self._default_event_id
+        # 12a-1i: tree-of-commit resolver used to enforce the
+        # `spec/v0/03-roles.md` §3.3 non-no-op variant invariant on
+        # execution-task submit. When ``None`` (e.g. unit-test fixtures
+        # without a real bare repo, or conformance harnesses that use
+        # synthetic SHAs), the Store falls back to a SHA-equality check:
+        # ``commit_sha`` equal to a parent SHA is still definitionally a
+        # no-op (a commit's tree-of-self is itself's tree). When set,
+        # the resolver is called for both the submission SHA and each
+        # parent SHA; if every resolved parent tree equals the submission
+        # tree, the submission is rejected with ``NoOpVariant``. The
+        # resolver MUST return ``None`` for SHAs that don't resolve (so
+        # the Store can degrade gracefully when a parent_commit names a
+        # SHA absent from the resolver's repo) and MUST NOT raise.
+        self._tree_resolver = tree_resolver
 
     def _default_event_id(self) -> str:
         return f"evt-{next(self._event_ids):06d}"
@@ -790,6 +806,16 @@ class _StoreBase:
                 )
             self._require_submission_kind_matches(task, submission)
             self._validate_submission_ref_binding(task, submission)
+            # 03-roles.md §3.3 non-no-op invariant + §3.4 rejection
+            # rule. Content-derived (depends only on submission fields
+            # and the idea's parent_commits), so safe to enforce at
+            # submit time even though the variant `commit_sha` write
+            # itself happens at accept time. Idempotency rule applies
+            # unchanged: a content-equivalent retry of a no-op
+            # submission is rejected the same way; an inconsistent
+            # retry against a no-op-rejected (still-claimed) task hits
+            # the same check, not the §4.2 idempotency branch.
+            self._validate_non_no_op_variant(task, submission)
 
             if task.state == "submitted":
                 prior = self._get_submission(task_id)
@@ -1545,6 +1571,84 @@ class _StoreBase:
     # ------------------------------------------------------------------
     # Validation helpers
     # ------------------------------------------------------------------
+
+    def _validate_non_no_op_variant(
+        self, task: Task, submission: Submission
+    ) -> None:
+        """Reject an execution-task success submission whose tree matches every parent.
+
+        ``spec/v0/03-roles.md`` §3.3 non-no-op invariant + §3.4
+        rejection rule. The rule fires only on ``execution`` tasks with
+        ``status == "success"`` and a non-empty ``parent_commits``.
+
+        Enforcement runs two layers:
+
+        1. **SHA-equality fast path** (always on, no git dependency).
+           If ``commit_sha`` is byte-equal to the only parent SHA, the
+           submission is rejected. (A commit's tree-of-self is itself's
+           tree, so SHA equality is unconditionally a no-op when there
+           is exactly one parent.) For multi-parent ideas, byte-equality
+           with *every* parent is a stronger condition than the
+           tree-identity rule but is the only sound SHA-only check
+           (an empty merge can have a SHA distinct from any parent).
+        2. **Tree-identity check** (when a ``tree_resolver`` is wired).
+           If the resolver resolves every parent SHA AND the submission
+           SHA to a non-``None`` tree, and every parent's tree equals
+           the submission's tree, reject. A resolver that returns
+           ``None`` for any SHA leaves the deeper check disabled for
+           this submission (e.g. fixture SHAs absent from a real repo);
+           the SHA-equality fast path still applies.
+        """
+        if not isinstance(submission, VariantSubmission):
+            return
+        if submission.status != "success":
+            return
+        if submission.commit_sha is None:
+            return
+        assert isinstance(task, ExecutionTask)
+        idea = self._get_idea(task.payload.idea_id)
+        if idea is None or not idea.parent_commits:
+            return
+
+        sha = submission.commit_sha
+        parents = list(idea.parent_commits)
+
+        # Layer 1 — SHA-equality fast path.
+        if all(p == sha for p in parents):
+            raise NoOpVariant(
+                f"execution submission for task {task.task_id!r} has "
+                f"commit_sha={sha!r} equal to every parent_commit; the "
+                "variant tree is identical to the parent tree (no-op). "
+                "spec/v0/03-roles.md §3.3 non-no-op invariant."
+            )
+
+        # Layer 2 — tree-resolver check (only when wired).
+        resolver = self._tree_resolver
+        if resolver is None:
+            return
+        try:
+            sub_tree = resolver(sha)
+        except Exception:  # noqa: BLE001 — resolver is binding-supplied; contain errors
+            return
+        if sub_tree is None:
+            return
+        parent_trees: list[str] = []
+        for p in parents:
+            try:
+                t = resolver(p)
+            except Exception:  # noqa: BLE001
+                return
+            if t is None:
+                return
+            parent_trees.append(t)
+        if all(t == sub_tree for t in parent_trees):
+            raise NoOpVariant(
+                f"execution submission for task {task.task_id!r} has "
+                f"commit_sha={sha!r} whose tree {sub_tree!r} is identical "
+                "to the tree of every parent_commit; the variant "
+                "contributes no change. spec/v0/03-roles.md §3.3 "
+                "non-no-op invariant."
+            )
 
     def _validate_submission_ref_binding(
         self, task: Task, submission: Submission

@@ -617,8 +617,10 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     # No-op guard: refuse to submit a variant whose tree is identical
     # to parent_commits[0]'s tree. Catches both `sha == parent[0]`
     # (literal no-op) and empty commits on top of parent (same tree,
-    # new SHA). The CLI does this defensively; spec-level enforcement
-    # is RFC'd at docs/design/executor-no-op-variant-rejection.md.
+    # new SHA). The server is canonical (spec/v0/03-roles.md §3.3
+    # non-no-op invariant + §3.4 rejection rule; eden://error/no-op-variant
+    # on the wire) — this client-side check is defense-in-depth so the
+    # operator gets a fast local error without a round-trip.
     if idea["parent_commits"]:
         head_tree = _git(
             "rev-parse", f"{sha}^{{tree}}",

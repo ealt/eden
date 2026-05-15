@@ -134,6 +134,8 @@ When the claimant matches, the task store MUST handle the resubmission as follow
 
 This rule exists so that a worker may safely retry a submit after a network or process failure without risk of advancing state twice or corrupting the recorded result. Bindings MAY additionally accept an optional caller-supplied `submission_id` field on the wire payload to act as an explicit idempotency key; that is a binding-layer extension and does not weaken the content-equivalence rule.
 
+Independent of the §4.1 atomic claim-match and the §4.2 idempotency rule above, the task store MUST enforce the role-specific success-contract invariants from [`03-roles.md`](03-roles.md). In particular, an `execution`-task submission with `status == "success"` whose `commit_sha`'s git tree is identical to the git tree of every entry in the idea's `parent_commits` MUST be rejected per [`03-roles.md`](03-roles.md) §3.3 (non-no-op variant) and §3.4 (rejection rule). Where the rejection surfaces on the wire — at `/submit` or at `/accept` via the §4.3 validation-error path — is implementation-defined; the observable end-state guarantee is that the referenced variant MUST NOT terminalize as `status == "success"`. When the rejection surfaces a wire error envelope, the `type` MUST be `eden://error/no-op-variant` ([`07-wire-protocol.md`](07-wire-protocol.md) §9). The rule is content-derived and idempotent in its own right: a content-equivalent retry of a no-op submission will be rejected the same way.
+
 ### 4.3 From `submitted` to terminal
 
 A submitted task is processed by the orchestrator and transitions to a terminal state. The orchestrator MUST:

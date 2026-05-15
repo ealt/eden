@@ -97,6 +97,7 @@ The executor MUST NOT write to `variant/*` or `main`; those are owned by the int
 - The `work/*` branch MUST be unique to this variant. Two variants MUST NOT share a worker branch name.
 - Every commit on the worker branch MUST be reachable from the declared `parent_commits`. An executor MUST NOT introduce commits whose history does not descend from the idea's declared parents.
 - The executor MAY produce multiple commits on the worker branch. The evaluator consumes only the tip (`commit_sha`); the integrator's squash rule is defined in [`06-integrator.md`](06-integrator.md).
+- **Non-no-op variant.** A `VariantSubmission` with `status == "success"` MUST satisfy: there exists at least one entry `p` in `idea.parent_commits` such that the git tree of `commit_sha` differs from the git tree of `p`. A variant whose tree is identical to *every* parent's tree is not a candidate — it is the absence of a candidate — and the task store MUST reject it (see §3.4 below). The rule applies only to `status == "success"`; `status == "error"` submissions are not constrained by tree-shape, since an `error` submission records a failed execution attempt rather than a candidate. ([`schemas/idea.schema.json`](schemas/idea.schema.json) requires `parent_commits` to be non-empty, so the rule has at least one parent to compare against on every well-formed idea.)
 
 ### 3.4 Submission
 
@@ -109,6 +110,8 @@ The executor submits with:
 - `commit_sha` — required when `status == "success"`; MUST equal the tip of the worker branch.
 
 A resubmission of the same `execution` task MUST be idempotent: a duplicate submit presenting the same `variant_id` and `commit_sha` MUST be accepted without side effect. A duplicate submit that disagrees with the already-recorded result MUST be rejected ([`04-task-protocol.md`](04-task-protocol.md) §4.2).
+
+A submission that violates the §3.3 non-no-op invariant MUST be rejected. The rejection MAY surface at submit time (`POST /v0/.../tasks/{T}/submit` returns 4xx) or at accept time (the orchestrator routes the submitted task to `failed` via the validation-error path); the observable end-state guarantee is that the referenced variant MUST NOT terminalize as `status == "success"`. When the rejection surfaces a wire error envelope, the `type` MUST be `eden://error/no-op-variant` ([`07-wire-protocol.md`](07-wire-protocol.md) §9). The check is content-derived (variant tree vs parent tree) and does not depend on task state, so it is safe to perform either before or after the §4.1 atomic claim-match. The rule is content-derived (it depends only on the submission's `commit_sha` and the idea's `parent_commits`), so resubmitting the same shape will be rejected the same way; no idempotency special-casing is required.
 
 ## 4. Evaluator
 
