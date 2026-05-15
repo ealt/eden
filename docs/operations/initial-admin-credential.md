@@ -113,6 +113,16 @@ credential (the web-ui container is itself a registered worker,
 bootstrapped at startup via `bootstrap_worker_credential`). The
 operator's web-UI sign-in is a session-cookie posture, not a per-user
 bearer; the UI carries its own credential to the task-store-server.
+
+To let the UI drive admins-gated ops (PATCH `/dispatch_mode`, POST
+`/tasks/{T}/reassign`), `setup-experiment.sh` pre-registers the
+web-ui's worker_id (`EDEN_WEB_UI_WORKER_ID`, default `web-ui-1`) and
+adds it to `admins` during bootstrap. The web-ui's own startup
+`bootstrap_worker_credential` then sees the existing row and reissues
+to obtain its token per §8.2. Until per-user session bearers land,
+the web-ui acts as a single deployment-level admin actor — anyone
+signed into the UI inherits its admins authority.
+
 Per-user session bearers (where each operator's web-UI session would
 authenticate as their own worker via `reissue_credential` at sign-in)
 remain a deferred 12a-1b follow-up — see [`AGENTS.md`](../../AGENTS.md)
