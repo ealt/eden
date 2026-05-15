@@ -137,21 +137,31 @@ test "$(docker inspect --format '{{.State.ExitCode}}' eden-orchestrator-2)" = "0
     exit 1
 }
 
-# §6.4 exact-idempotent: exactly N variant.integrated events for N
-# ideation tasks. With MAX_TOTAL=3 and the chaos test, both replicas
-# could in principle race; the integrate path's same-value
-# idempotency (chapter 7 §5) collapses to one event per variant.
+# §6.4 contract:
+#   - Ideation-task creation is BOUNDED-OVERSHOOT: with N=2 replicas
+#     each targeting T=MAX_TOTAL=3, post-iteration pending MUST be
+#     <= N*T = 6 (spec §6.4 / chapter 03 line 222). The fleet can
+#     therefore produce anywhere between 3 and 6 ideation tasks
+#     before quiescing — both are conforming.
+#   - Execution-task dispatch, evaluation-task dispatch, and
+#     integration are EXACT-IDEMPOTENT: each ideation task yields
+#     at most one execution task, each variant at most one
+#     evaluation task, each success variant at most one
+#     variant.integrated event.
+#
+# So the deployment-level assertion is: forward progress (>= 3 of
+# each, the MAX_TOTAL target) AND no overshoot beyond the §6.4 bound
+# (<= 6 of each, the N*T ceiling). Cardinality across the three
+# downstream stages MUST agree (one variant per ideation task that
+# succeeded, one evaluation per variant, one integration per success
+# variant), so we additionally cross-check that the three counts
+# match.
 echo "--- asserting end-state ---"
 events="$(call_wire GET "${EXP_BASE}/events")"
 integrated="$(
     echo "$events" \
         | jq '.events | [.[] | select(.type == "variant.integrated")] | length'
 )"
-test "$integrated" -eq 3 || {
-    echo "expected exactly 3 variant.integrated; got $integrated" >&2
-    exit 1
-}
-# Same posture for execution tasks: 3 ideas × 1 execution task each.
 exec_completed="$(
     echo "$events" \
         | jq '.events | [.[] | select(
@@ -159,11 +169,6 @@ exec_completed="$(
             and (.data.task_id | startswith("execution-"))
           )] | length'
 )"
-test "$exec_completed" -eq 3 || {
-    echo "expected exactly 3 execution-task.completed events; got $exec_completed" >&2
-    exit 1
-}
-# And evaluations.
 eval_completed="$(
     echo "$events" \
         | jq '.events | [.[] | select(
@@ -171,9 +176,24 @@ eval_completed="$(
             and (.data.task_id | startswith("evaluate-"))
           )] | length'
 )"
-test "$eval_completed" -eq 3 || {
-    echo "expected exactly 3 evaluation-task.completed events; got $eval_completed" >&2
+
+# N * T upper bound: 2 replicas * MAX_TOTAL=3 = 6.
+MAX_OVERSHOOT=6
+MIN_PROGRESS=3
+for name in integrated exec_completed eval_completed; do
+    count="${!name}"
+    if (( count < MIN_PROGRESS )); then
+        echo "expected >= ${MIN_PROGRESS} ${name}; got ${count}" >&2
+        exit 1
+    fi
+    if (( count > MAX_OVERSHOOT )); then
+        echo "expected <= ${MAX_OVERSHOOT} ${name} (§6.4 N*T bound); got ${count}" >&2
+        exit 1
+    fi
+done
+if (( integrated != exec_completed || integrated != eval_completed )); then
+    echo "downstream stage counts disagree: integrated=${integrated} exec=${exec_completed} eval=${eval_completed}" >&2
     exit 1
-}
+fi
 
 echo "PASS"

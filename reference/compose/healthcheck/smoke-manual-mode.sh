@@ -44,7 +44,7 @@ cleanup() {
         docker compose -f compose.yaml --env-file "$ENV_FILE" \
             ps -a >&2 2>&1 || true
         docker compose -f compose.yaml --env-file "$ENV_FILE" \
-            logs --tail 60 orchestrator >&2 2>&1 || true
+            logs --tail 80 orchestrator ideator-host task-store-server >&2 2>&1 || true
     fi
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         down -v >/dev/null 2>&1 || true
@@ -70,17 +70,31 @@ rm -f "${ENV_FILE}.bak"
 
 EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_ADMIN_TOKEN"
+EDEN_ADMINS_INITIAL_MEMBER="$(grep -E '^EDEN_ADMINS_INITIAL_MEMBER=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$EDEN_ADMINS_INITIAL_MEMBER"
 EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
+# Populated AFTER the full stack comes up; see the reissue step below.
+ADMIN_WORKER_BEARER=""
 
 call_wire() {
-    # Issue an admin-token-authenticated wire call against the
-    # task-store-server. Used to drive dispatch_mode flips + read
-    # the event log without going through the web UI.
+    # Issue a wire call against the task-store-server. Reads use the
+    # admin bearer (broadly allowed); writes that hit §3.7 admins-
+    # gated routes (PATCH /dispatch_mode, POST /tasks/{T}/reassign)
+    # MUST use the reissued worker bearer instead, since the admin
+    # principal is bootstrap-only and gets 403 on those routes.
     local method="$1" path="$2" body="${3:-}"
+    local bearer="admin:${EDEN_ADMIN_TOKEN}"
+    if [[ "$method" = "PATCH" ]]; then
+        if [[ -z "$ADMIN_WORKER_BEARER" ]]; then
+            echo "ADMIN_WORKER_BEARER not yet set; call_wire PATCH requires the reissue step to have run" >&2
+            return 2
+        fi
+        bearer="$ADMIN_WORKER_BEARER"
+    fi
     local args=(
         -fsS
         -X "$method"
-        -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}"
+        -H "Authorization: Bearer ${bearer}"
         -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}"
         -H "Content-Type: application/json"
     )
@@ -94,6 +108,30 @@ call_wire() {
 
 echo "--- bringing up the full stack ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait --wait-timeout 240
+
+# Per spec §3.7, `update_dispatch_mode` requires a registered worker
+# in the `admins` group; the literal `"admin"` bearer is bootstrap-
+# only and MUST NOT drive business-op routes. Reissue the initial
+# admin worker's credential (admin-token-gated, so the admin bearer
+# is allowed here) and use `Bearer <worker_id>:<token>` for the
+# subsequent PATCH /dispatch_mode calls. The reissue MUST run after
+# `compose up -d --wait` so we hit the final task-store-server
+# container (setup-experiment brought one up too, but `compose up`
+# may have recreated it on config drift).
+echo "--- reissuing initial admin worker credential for PATCH calls ---"
+ADMIN_WORKER_TOKEN="$(
+    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+        exec -T task-store-server curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+            -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
+            -H "Content-Type: application/json" \
+            "http://localhost:8080${EXP_BASE}/workers/${EDEN_ADMINS_INITIAL_MEMBER}/reissue-credential" \
+        | jq -r '.registration_token'
+)"
+test -n "$ADMIN_WORKER_TOKEN"
+test "$ADMIN_WORKER_TOKEN" != "null"
+ADMIN_WORKER_BEARER="${EDEN_ADMINS_INITIAL_MEMBER}:${ADMIN_WORKER_TOKEN}"
 
 # The orchestrator + ideator-host are running; the ideation task is
 # being created by the policy + claimed by the ideator. We want to

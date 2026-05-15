@@ -356,7 +356,7 @@ services:
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id
-      - web-ui-1
+      - ${EDEN_WEB_UI_WORKER_ID:-web-ui-1}
       - --host
       - 0.0.0.0
       - --port
