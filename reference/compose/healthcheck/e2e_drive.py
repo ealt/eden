@@ -320,19 +320,29 @@ def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
     # The redirect banner says "ok" but the actual state could still
     # be wrong (form wiring regression, store-side ignored the patch,
     # template caching). Re-read the task-detail page and assert the
-    # rendered target row matches the requested {kind: worker,
-    # id: ideator-1}. Both `target_kind` (radio state) and the
-    # ideator-1 worker_id MUST appear in the post-reassign view.
+    # rendered "current target" field specifically renders
+    # `worker:ideator-1`. The reassign form template (chunk-9e:
+    # admin_task_reassign.html) renders:
+    #
+    #     <dt>current target</dt>
+    #     <dd><code>{{ current_target.kind }}:{{ current_target.id }}</code></dd>
+    #
+    # so a successful reassign produces a literal
+    # `<code>worker:ideator-1</code>` substring. The dropdown's
+    # `<option value="ideator-1">` is NOT enough — that string is
+    # always present regardless of whether the target actually
+    # changed.
     resp = ui.get(f"/admin/tasks/{task_id}/reassign")
     if resp.status_code != 200:
         _fail(
             f"post-reassign GET /admin/tasks/{task_id}/reassign failed",
             response=resp,
         )
-    if "ideator-1" not in resp.text:
+    if "<code>worker:ideator-1</code>" not in resp.text:
         _fail(
-            f"task-{task_id} target was not updated to ideator-1 "
-            "after reassign — form may not have wired through",
+            f"task-{task_id} current-target row did not render "
+            "'worker:ideator-1' after reassign — form may not have "
+            "wired through",
             response=resp,
         )
 

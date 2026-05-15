@@ -325,6 +325,42 @@ class TestDispatchModeEndpoint:
         )
         assert resp.status_code == 400
 
+    def test_invalid_value_on_extra_key_rejected(
+        self, store: InMemoryStore
+    ) -> None:
+        """Bad values on `extra='allow'` keys must 400 (not slip through).
+
+        Round-1 codex regression: ``model_dump(exclude_none=True)``
+        dropped null values before validation, so
+        ``{"future_key": null}`` reached the Store as ``{}`` and
+        returned 200 OK instead of a 400. The fix walks
+        ``model_extra`` BEFORE the dump.
+        """
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        # null on an unknown key
+        resp = client.patch(
+            f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
+            headers=_worker_headers("admin-eric", admin_eric_token),
+            json={"future_key": None},
+        )
+        assert resp.status_code == 400, resp.text
+        # non-auto/manual value on an unknown key
+        resp = client.patch(
+            f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
+            headers=_worker_headers("admin-eric", admin_eric_token),
+            json={"future_key": "paused"},
+        )
+        assert resp.status_code == 400, resp.text
+        # valid value on an unknown key: §2.5 toleration → 200
+        resp = client.patch(
+            f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
+            headers=_worker_headers("admin-eric", admin_eric_token),
+            json={"future_key": "auto"},
+        )
+        assert resp.status_code == 200, resp.text
+
 
 # ----------------------------------------------------------------------
 # §3.7 authority matrix on existing endpoints

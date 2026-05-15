@@ -208,15 +208,28 @@ test "$RECLAIMED_OPERATOR" -ge 1 || {
 }
 
 # 12a-2 wave 7: the e2e drill reassigns one ideation task via the
-# admin UI. Verify the resulting `task.reassigned` event landed with
-# the right shape (worker target on ideator-1, reassigned_by stamped
-# from the web-ui's worker_id).
+# admin UI. Verify the resulting `task.reassigned` event matches the
+# exact shape the drill requested: target is worker:ideator-1, AND
+# reassigned_by is stamped from the web-ui's worker_id (the
+# admins-group principal that drove the wire call). A bare
+# "task.reassigned count >= 1" assertion would pass even if the
+# event recorded a different target or attribution, so filter by
+# all three fields.
+EDEN_WEB_UI_WORKER_ID="$(grep -E '^EDEN_WEB_UI_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$EDEN_WEB_UI_WORKER_ID"
 TASK_REASSIGNED="$(
     echo "$EVENTS_JSON" \
-        | jq '(.events // .) | [.[] | select(.type == "task.reassigned")] | length'
+        | jq --arg actor "$EDEN_WEB_UI_WORKER_ID" '(.events // .) | [.[] | select(
+            .type == "task.reassigned"
+            and .data.new_target.kind == "worker"
+            and .data.new_target.id == "ideator-1"
+            and .data.reassigned_by == $actor
+          )] | length'
 )"
 test "$TASK_REASSIGNED" -ge 1 || {
-    echo "expected >= 1 task.reassigned event; got $TASK_REASSIGNED" >&2
+    echo "expected >= 1 task.reassigned event with new_target=worker:ideator-1 reassigned_by=${EDEN_WEB_UI_WORKER_ID}; got $TASK_REASSIGNED" >&2
+    echo "all task.reassigned events:" >&2
+    echo "$EVENTS_JSON" | jq '(.events // .) | [.[] | select(.type == "task.reassigned")]' >&2 || true
     exit 1
 }
 
