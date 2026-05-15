@@ -5,8 +5,12 @@ The end-to-end real-subprocess tests in ``test_e2e.py`` /
 under quiescence. These unit tests pin the wave-4-specific contracts
 without spinning up subprocesses:
 
-- ``_read_dispatch_mode`` falls back to all-``auto`` on transport
-  failure rather than wedging the loop.
+- ``_read_dispatch_mode`` fails CLOSED to all-``manual`` on transport
+  failure rather than wedging the loop. Per spec §6.1 a forbidden
+  dispatch slipping through during an operator's manual window
+  would violate the MUST-NOT contract; failing closed gates every
+  decision off for one iteration while finalize/sweep paths keep
+  worker submissions moving until the read recovers.
 - ``run_orchestrator_loop`` reads ``dispatch_mode`` at iteration
   start and forwards it to ``run_orchestrator_iteration``.
 - The ideation-policy callable is invoked each iteration; created

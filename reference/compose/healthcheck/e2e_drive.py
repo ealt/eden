@@ -402,12 +402,15 @@ def main() -> int:
             )
 
             # 12a-2 wave 7: reassign drill — reassign one pending
-            # ideation task to the `admins` group via the admin UI.
-            # The headless ideator-host (stage 2) doesn't claim
-            # `admins`-targeted tasks, so this id stays pending
-            # through the rest of the run; we assert the wire-level
-            # task.reassigned event lands via e2e.sh's event-log
-            # post-conditions.
+            # ideation task to `worker:ideator-1` (the headless
+            # ideator-host's registered worker_id) via the admin UI.
+            # The target stays viable so the headless ideator-host
+            # in stage 2 can still claim and complete the task,
+            # keeping the end-state variant count unaffected. The
+            # drill asserts both the rendered "current target"
+            # change (GET-after-POST in `_reassign_drill`) and the
+            # wire-level `task.reassigned` event shape (in `e2e.sh`,
+            # filtered by `new_target` + `reassigned_by`).
             _reassign_drill(ui, reassign_id)
             print(
                 f"e2e_drive: reassign drill OK ({reassign_id} reassigned)",
