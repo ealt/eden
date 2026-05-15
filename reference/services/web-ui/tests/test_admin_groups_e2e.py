@@ -193,12 +193,12 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
             # existing) and add ``member-w`` to it. Doesn't affect the
             # downstream group-target claim assertion — `e2e-group`
             # (created below) is the target gate, not `admins`.
+            import contextlib
+
             from eden_storage.errors import AlreadyExists
 
-            try:
+            with contextlib.suppress(AlreadyExists):
                 admin.register_group("admins")
-            except AlreadyExists:
-                pass
             admin.add_to_group("admins", "member-w")
         finally:
             admin.close()

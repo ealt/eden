@@ -736,7 +736,27 @@ case "$rc" in
     *) echo "add_to_group(admins, ${EDEN_WEB_UI_WORKER_ID}) failed: http=$rc" >&2; exit 1 ;;
 esac
 
-echo "--- bootstrap complete: admins + orchestrators groups; initial admin = ${EDEN_ADMINS_INITIAL_MEMBER}; web-ui admin = ${EDEN_WEB_UI_WORKER_ID} ---" >&2
+# 7. Pre-register the headless worker host worker_ids (ideator-1,
+# executor-1, evaluator-1) so they're known to the registry from
+# bootstrap. Each worker host's own startup
+# `bootstrap_worker_credential` will see the existing row and reissue
+# per §8.2. Pre-registering matters for the wave-5 reassign route's
+# unknown-target check (the route validates `new_target` against the
+# live worker registry); without it, e2e drills that reassign a task
+# to a worker that hasn't yet self-registered see `error=unknown-target`.
+# The set of worker_ids is the reference deployment's known shape;
+# operators with different worker_id schemes register theirs the same
+# way (admin-gated POST /workers).
+for wid in ideator-1 executor-1 evaluator-1; do
+    rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
+        "{\"worker_id\":\"${wid}\"}")
+    case "$rc" in
+        200) ;;
+        *) echo "register_worker(${wid}) failed: http=$rc" >&2; exit 1 ;;
+    esac
+done
+
+echo "--- bootstrap complete: admins + orchestrators groups; initial admin = ${EDEN_ADMINS_INITIAL_MEMBER}; web-ui admin = ${EDEN_WEB_UI_WORKER_ID}; worker hosts pre-registered ---" >&2
 
 # If the operator passed a custom --env-file path, echo a
 # next-step that uses an absolute path so they don't have to
