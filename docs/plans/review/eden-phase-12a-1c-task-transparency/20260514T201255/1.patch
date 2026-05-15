@@ -1,0 +1,362 @@
+--- docs/plans/review/eden-phase-12a-1c-task-transparency/20260514T201255/0.md	2026-05-14 20:12:55
++++ docs/plans/eden-phase-12a-1c-task-transparency.md	2026-05-14 20:18:03
+@@ -99,13 +99,38 @@
+    row in a single iteration over `pending` (we do NOT lazy-load
+    on `<details>` open; see §D.10 for the rationale and bound).
+ 
+-4. **Lineage navigation is plain links between admin detail pages,
+-   not embedded sub-rendering.** Each step is a hyperlink. We do
+-   NOT inline-render variants inside the task detail or ideas
+-   inside the variant detail — that would multiply the surface
+-   tested per page. The lineage section is just a list of links
+-   with one-line descriptors for each linked artifact.
++4. **Lineage navigation surfaces only direct neighbors of the
++   subject page — one hop in either direction. No embedded
++   sub-rendering, no transitive walking.** Each lineage entry is
++   a hyperlink with a short one-line descriptor (no nested
++   sub-lists). Concretely:
+ 
++   - The **ideation-task** page lists the ideas its submission
++     produced (one hop forward); it does NOT additionally list the
++     variants spawned from each of those ideas (that's two hops,
++     reachable by clicking through to each idea).
++   - The **idea** page lists the ideation task it came from (one
++     hop back) and the variants spawned from it (one hop forward);
++     it does NOT list those variants' evaluations.
++   - The **execution-task** page lists the referenced idea (one hop
++     back) and every variant whose `idea_id` matches (one hop
++     forward; a single execution task may produce multiple variants
++     over reclaims). It does NOT walk back to the ideation task.
++   - The **variant** page lists the execution task that produced
++     it (one hop back), its parent idea (one hop back, also already
++     in the existing "parent idea" section), and the evaluation
++     tasks against it (one hop forward).
++   - The **evaluation-task** page lists the variant it targets
++     (one hop back). It does NOT walk back to the idea or
++     ideation task.
++
++   Cardinality at each junction is plural where the data model
++   allows it (an ideation submission has many idea_ids; an idea
++   may spawn multiple variants if a prior execution task was
++   reclaimed; a variant may have multiple evaluation tasks over
++   its life). The lineage helper's per-page view model is
++   structured to carry these collections explicitly (§D.3).
++
+ 5. **`/admin/ideas/` mirrors `/admin/variants/` and `/admin/workers/`
+    structurally.** Same banner-allowlist pattern, same auth-first
+    GET / POST discipline (though /admin/ideas/ exposes only GET in
+@@ -173,51 +198,132 @@
+ /signin`. No mutating routes in this chunk so no CSRF surface to
+ extend. Mirrors `admin_workers` line 266-272 exactly.
+ 
+-### D.3 Lineage helper module
++### D.3 Lineage helper module — per-page view models
+ 
+ New helper module:
+ [`routes/_lineage.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_lineage.py).
+-Exposes pure functions (no I/O of its own; takes a `Store` and
+-returns navigable structs) so the same logic can be tested unit-style.
++Exposes pure functions (no I/O of its own beyond the `Store` calls
++they make on the caller's behalf) so the same logic can be tested
++unit-style against a fixture `Store`.
+ 
+-```python
+-def lineage_for_task(store: Store, task: Task) -> Lineage: ...
+-def lineage_for_variant(store: Store, variant: Variant) -> Lineage: ...
+-def lineage_for_idea(store: Store, idea: Idea) -> Lineage: ...
+-```
++The data model from codex round 0 changed: a single `Lineage` struct
++cannot carry the fan-out the different pages need. Instead, **five
++per-page view models** — one per subject artifact kind — each
++carrying exactly the collections decision-4 (§2) allows for that
++page:
+ 
+-`Lineage` is a `dataclass` (frozen, slots) holding optional refs to:
+-
+ ```python
+ @dataclass(frozen=True, slots=True)
+ class LineageLink:
+-    label: str          # short human label
+-    href: str           # /admin/<...>/<id>/
+-    descriptor: str     # one-line context (e.g., "slug=foo, status=success")
++    label: str         # short human label, e.g. "ideation task"
++    href: str          # /admin/<...>/<id>/
++    descriptor: str    # one-line context, e.g. "slug=foo, status=success"
+ 
+ @dataclass(frozen=True, slots=True)
+-class Lineage:
+-    ideation_task: LineageLink | None
+-    idea: LineageLink | None
+-    variant: LineageLink | None
+-    execution_task: LineageLink | None
+-    evaluation_tasks: tuple[LineageLink, ...] = ()  # 0+ — a variant may have multiple eval tasks over its life
+-    transport_errors: int = 0                         # count of read failures that left some links unfilled
++class IdeationTaskLineage:
++    """Subject: an ideation task.
++
++    Forward (one hop): the ideas the ideator submitted.
++    No backward link (an ideation task has no upstream artifact).
++    """
++    ideas: tuple[LineageLink, ...] = ()           # may be empty if the
++                                                  # submission was status=error,
++                                                  # or the task is pre-submit
++    transport_errors: int = 0
++
++@dataclass(frozen=True, slots=True)
++class ExecutionTaskLineage:
++    """Subject: an execution task.
++
++    Backward (one hop): the referenced idea (single).
++    Forward (one hop): every variant whose ``idea_id`` matches
++        this task's ``payload.idea_id`` — plural because a reclaim
++        can produce a second variant against the same idea.
++    """
++    idea: LineageLink | None = None
++    variants: tuple[LineageLink, ...] = ()
++    transport_errors: int = 0
++
++@dataclass(frozen=True, slots=True)
++class EvaluationTaskLineage:
++    """Subject: an evaluation task.
++
++    Backward (one hop): the referenced variant (single).
++    No forward link (the evaluation task is a leaf in the chain).
++    """
++    variant: LineageLink | None = None
++    transport_errors: int = 0
++
++@dataclass(frozen=True, slots=True)
++class IdeaLineage:
++    """Subject: an idea.
++
++    Backward (one hop): the ideation task that produced it
++        (singular; reverse-walked per §D.9). May be ``None`` if
++        the originating task is not in a submitted/terminal state.
++    Forward (one hop): variants spawned from this idea (plural).
++    """
++    ideation_task: LineageLink | None = None
++    variants: tuple[LineageLink, ...] = ()
++    transport_errors: int = 0
++
++@dataclass(frozen=True, slots=True)
++class VariantLineage:
++    """Subject: a variant.
++
++    Backward (one hop): the execution task that produced this
++        variant (singular; reverse-walked over execution tasks
++        whose payload.idea_id == variant.idea_id, then taking
++        the most-recently-submitted of those — multiple are
++        possible if a prior reclaim produced another variant
++        against the same idea, but the *this* variant has at
++        most one producing execution task).
++    Backward (one hop): the parent idea (singular; already in
++        the existing "parent idea" section — we just hyperlink it).
++    Forward (one hop): evaluation tasks whose ``payload.variant_id``
++        matches (plural).
++    """
++    execution_task: LineageLink | None = None
++    idea: LineageLink | None = None
++    evaluation_tasks: tuple[LineageLink, ...] = ()
++    transport_errors: int = 0
+ ```
+ 
+-The lineage section in each template renders this list in
+-fixed order: ideation_task → idea → execution_task → variant →
+-evaluation_tasks. Each link is omitted (rendered as `(unknown)` or
+-similar) if the lookup raised `StorageNotFound` (e.g., the variant
+-was deleted by a future chunk that doesn't exist yet) or if the
+-reverse-walk found no match.
++The five callable helpers:
+ 
+-Transport-shaped reads count `transport_errors` and the rendered
+-section banner says "lineage may be incomplete — N transport errors"
+-so the operator can refresh. A read that succeeds with `None` (e.g.,
+-"this variant has no completed evaluation task yet") is the empty
+-list, not a transport error.
++```python
++def lineage_for_ideation_task(store: Store, task: IdeationTask) -> IdeationTaskLineage: ...
++def lineage_for_execution_task(store: Store, task: ExecutionTask) -> ExecutionTaskLineage: ...
++def lineage_for_evaluation_task(store: Store, task: EvaluationTask) -> EvaluationTaskLineage: ...
++def lineage_for_idea(store: Store, idea: Idea) -> IdeaLineage: ...
++def lineage_for_variant(store: Store, variant: Variant) -> VariantLineage: ...
++```
+ 
++The `admin.py::task_detail` route dispatches on `task.kind` to call
++the right per-kind helper and passes the result into the template
++under a single context key `lineage` (the template's `{% if %}` arms
++are keyed off attribute presence, not type discrimination).
++
++Each `LineageLink` carries `transport_errors` separately so a
++template-side banner can render "lineage may be incomplete — N
++transport errors" without losing the partial render. A read that
++succeeded with `None` (e.g., "this variant has no evaluations yet")
++is the empty tuple, not a transport error.
++
++Tuples are ordered:
++
++- `ideas` (in an `IdeationTaskLineage`): order matches the
++  submission's `idea_ids` tuple (creation order, deterministic).
++- `variants` (in `ExecutionTaskLineage` / `IdeaLineage`): ordered by
++  `variant.started_at`, oldest first.
++- `evaluation_tasks` (in `VariantLineage`): ordered by
++  `task.created_at`, oldest first.
++
++A hard cap of `_LINEAGE_COLLECTION_CAP = 20` applies per tuple; the
++template renders "(showing N of M)" when capped. This matches the
++chunk-9e `_TRIAL_DETAIL_EVENT_CAP = 50` discipline (smaller cap here
++because lineage entries are denser than event rows).
++
+ ### D.4 `/executor/` list — idea preview
+ 
+ [`routes/executor.py::list_pending`](../../reference/services/web-ui/src/eden_web_ui/routes/executor.py)
+@@ -292,46 +398,51 @@
+   via a small `_format_target` helper), `created_by` (or `—`),
+   `submitted_by` (or `—`), and `claim.worker_id` (if present —
+   hyperlinked to `/admin/workers/<id>/`). All four are display-only.
+-- **`lineage`** (always rendered): the linkage chain for this task's
+-  kind:
+-  - `kind=ideation` → variants whose `idea_id` appears in the
+-    submission's `idea_ids` are spawned across many follow-up
+-    execution tasks; we link to each idea in the submission (and
+-    each idea's spawned variants in turn — bounded one level deep
+-    to keep the chain small).
+-  - `kind=execution` → links to the referenced idea
+-    (`task.payload.idea_id`), the ideation task that produced it
+-    (reverse-walk per §D.9), and any variant whose `idea_id` matches
+-    (forward fan-out; a task may have produced multiple variants
+-    over its life across reclaims, but typically one — we list all).
+-  - `kind=evaluation` → links to the referenced variant
+-    (`task.payload.variant_id`), the variant's idea, the ideation
+-    task, and the execution task that produced the variant
+-    (reverse-walk over execution tasks whose `payload.idea_id` ==
+-    variant.idea_id; same scan-pattern as §D.9 but in the execution
+-    direction).
++- **`lineage`** (always rendered): the **one-hop** linkage for this
++  task's kind — direct neighbors only (§2 decision 4). The route
++  dispatches on `task.kind`:
++  - `kind=ideation` → `lineage_for_ideation_task(store, task)` →
++    `IdeationTaskLineage.ideas` (the ideas this submission
++    produced; reachable via `store.read_submission(task.task_id)`).
++    For pre-submit ideation tasks (state in {`pending`, `claimed`})
++    or status=error submissions, this is the empty tuple. We do
++    NOT additionally list each idea's spawned variants — that's
++    two hops.
++  - `kind=execution` → `lineage_for_execution_task(store, task)` →
++    `ExecutionTaskLineage.idea` (one back) + `.variants` (one
++    forward; plural because a reclaim history can produce more
++    than one variant against the same idea). We do NOT walk back
++    to the ideation task — that's two hops (operator reaches it
++    via the idea page).
++  - `kind=evaluation` → `lineage_for_evaluation_task(store, task)`
++    → `EvaluationTaskLineage.variant` (one back). We do NOT walk
++    back further (variant page exposes its own one-hop neighbors).
+ 
+ The existing `payload` + `related events` sections are preserved
+ unchanged. The "operator reclaim" section is preserved unchanged.
+ 
+-The route layer builds both sections via `lineage_for_task(store,
+-task)` and passes the `Lineage` struct to the template. If any
+-underlying read fails, the section renders with the failing link
+-shown as `(unknown — read error)` and a `transport_errors` count
+-surfaced as a per-section banner.
++If any underlying read fails, the link renders as `(unknown — read
++error)` and `transport_errors` is incremented; the template renders
++a section-scoped banner when `transport_errors > 0`.
+ 
+ ### D.7 `/admin/variants/<variant_id>/` — lineage section
+ 
+ [`routes/admin.py::variant_detail`](../../reference/services/web-ui/src/eden_web_ui/routes/admin.py)
+-gains a lineage section listing: the execution task that produced
+-this variant (reverse-walked via §D.9), the parent idea
+-(`variant.idea_id` — already loaded into the context but currently
+-not linked), the ideation task (reverse-walked via §D.9), and any
+-evaluation tasks whose `payload.variant_id` matches.
++gains a lineage section populated via `lineage_for_variant(store,
++variant) → VariantLineage`. One hop each direction:
+ 
+-The existing `parent idea` section is preserved as a sibling — but
+-the slug there becomes a hyperlink to `/admin/ideas/<idea_id>/`.
++- backward: the execution task that produced this variant
++  (`VariantLineage.execution_task`, reverse-walked per §D.9), and
++  the parent idea (already loaded into the existing "parent idea"
++  section — we just hyperlink the slug there to
++  `/admin/ideas/<idea_id>/`, which doubles as the lineage link).
++- forward: evaluation tasks whose `payload.variant_id` matches
++  (`VariantLineage.evaluation_tasks`, plural, capped at 20).
+ 
++We do NOT walk back to the ideation task — that's two hops away
++and reachable through the idea page (which has its own one-hop
++ideation-task link).
++
+ ### D.8 `/admin/ideas/` and `/admin/ideas/<idea_id>/`
+ 
+ New module
+@@ -361,8 +472,13 @@
+ - Renders the markdown content preview via `read_idea_content`
+   behind a `<details>` block (same trust-boundary path as the
+   executor draft form).
+-- Lineage section: ideation task (reverse-walk per §D.9), forward
+-  to variants spawned (each linked to `/admin/variants/<id>/`).
++- Lineage section: populated via `lineage_for_idea(store, idea) →
++  IdeaLineage`. One hop back to the ideation task (reverse-walked
++  per §D.9; may be `None` if the idea's originating ideation task
++  is pre-submit). One hop forward to variants spawned from this
++  idea (`IdeaLineage.variants`, plural, capped at 20). We do NOT
++  walk forward to variant evaluations — operator reaches those via
++  the variant page.
+ 
+ ### D.9 Idea ← ideation-task reverse linkage
+ 
+@@ -400,11 +516,48 @@
+   Cache invalidation against a live store is its own complexity
+   cost we don't pay here; the scan is cheap at fixture scale.
+ 
+-The execution-task-for-variant reverse lookup is the same shape but
+-filters `kind="execution"` and matches `task.payload.idea_id ==
+-variant.idea_id`. A single helper `_tasks_referencing(...)`
+-parametrizes both directions.
++The execution-task-for-variant reverse lookup is structurally similar
++but has an extra precision step: multiple execution tasks against the
++same idea can exist if a prior execution was reclaimed. To pick the
++right *producing* execution task for a given variant, we walk
++execution tasks whose `payload.idea_id == variant.idea_id` AND whose
++`task.submitted_by == variant.executed_by` (when both are set), then
++prefer the one whose submission's `VariantSubmission.variant_id`
++matches `variant.variant_id` (when the submission is readable). When
++none match — or when attribution fields are unset in an auth-disabled
++deployment — we return `None` and the lineage renders
++"(execution task: unknown)". Concretely:
+ 
++```python
++def _producing_execution_task(store: Store, variant: Variant) -> str | None:
++    candidates: list[ExecutionTask] = [
++        t for t in store.list_tasks(kind="execution")
++        if t.payload.idea_id == variant.idea_id
++    ]
++    # Prefer the submission whose variant_id matches.
++    for t in candidates:
++        if t.state not in {"submitted", "completed", "failed"}:
++            continue
++        sub = store.read_submission(t.task_id)
++        if isinstance(sub, VariantSubmission) and sub.variant_id == variant.variant_id:
++            return t.task_id
++    # Fallback: attribution match alone (pre-12a-1 deployments may
++    # lack submitted_by; the variant.executed_by attribution may
++    # also be unset in tests; this fallback degrades gracefully).
++    if variant.executed_by is not None:
++        for t in candidates:
++            if t.submitted_by == variant.executed_by:
++                return t.task_id
++    return None
++```
++
++The bound is O(N_execution) per render, same complexity class as the
++ideation-task reverse-walk above. A single common helper
++`_tasks_referencing_idea(store, idea_id, kind)` consolidates the
++"walk tasks whose payload references this idea" mechanic; the
++disambiguation logic is variant-specific and stays in
++`_producing_execution_task`.
++
+ ### D.10 Performance and bounds
+ 
+ - Each list-page render runs **one** `store.list_*` call per kind it
