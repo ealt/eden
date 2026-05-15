@@ -43,7 +43,18 @@ cleanup() {
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
     # Remove the host-side cidfile dir setup-experiment created.
+    # (chmod 0777 was applied at create-time, and only flat `.cid`
+    # files are written into it, so host rm works regardless of who
+    # wrote those files.)
     rm -rf "${COMPOSE_DIR}/.cidfiles-${EXPERIMENT_ID}"
+    # Phase 12a-1g hotfix: see smoke.sh for the full rationale —
+    # bind-mount subdirs are populated with files the host can't `rm`
+    # because container-created subdirectories are not world-writable.
+    # Delete from inside a root-as-uid-0 sibling container first.
+    if [[ -d "$SMOKE_DATA_ROOT" ]]; then
+        docker run --rm -v "$SMOKE_DATA_ROOT:/cleanup" alpine:3.20 \
+            sh -c 'find /cleanup -mindepth 1 -delete' >/dev/null 2>&1 || true
+    fi
     rm -rf "$SMOKE_DATA_ROOT"
     exit "$rc"
 }
