@@ -207,6 +207,61 @@ def test_invalid_commit_sha_routes_to_error(tmp_path: Path) -> None:
     assert submission.status == "error"
 
 
+def test_no_op_variant_routes_to_error(tmp_path: Path) -> None:
+    """spec/v0/03-roles.md §3.3 — variant tree identical to parent's MUST NOT succeed.
+
+    The executor-side pre-submit tree-identity check
+    (`_is_no_op_variant`) routes a no-op commit (empty commit whose
+    tree equals the parent's) to ``status="error"`` before the
+    server-side enforcement kicks in.
+    """
+    store, repo_path, _ = _store_with_idea(tmp_path)
+    # Subprocess writes nothing and commits with --allow-empty so the
+    # commit's tree is identical to its parent's tree (the seed tree).
+    body = """
+    import json, os, subprocess
+    from pathlib import Path
+    cwd = Path.cwd()
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@i",
+           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@i",
+           "GIT_AUTHOR_DATE": "2026-04-01T00:00:00+00:00",
+           "GIT_COMMITTER_DATE": "2026-04-01T00:00:00+00:00"}
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit",
+                    "--allow-empty", "-m", "no-op"],
+                   cwd=cwd, env=env, check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd,
+                         capture_output=True, text=True, check=True).stdout.strip()
+    out = cwd / os.environ["EDEN_OUTPUT"]
+    out.write_text(json.dumps({"status": "success", "commit_sha": sha}))
+    """
+    config = _config(
+        command=_write_command(tmp_path, body),
+        repo_path=repo_path,
+        experiment_dir=tmp_path,
+        worktrees_root=tmp_path / "wt-root",
+    )
+    host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
+    host_subdir.mkdir(parents=True, exist_ok=True)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
+    task = task_raw
+    _handle_one(
+        store=store,
+        worker_id="execution-1",
+        task=task,
+        config=config,
+        host_subdir=host_subdir,
+    )
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
+    assert submission.status == "error", (
+        "no-op variant (empty commit on parent) MUST NOT terminalize as success "
+        "(spec/v0/03-roles.md §3.3); executor host routes to status=error"
+    )
+    assert submission.commit_sha is None
+
+
 def test_subprocess_timeout_routes_to_error(tmp_path: Path) -> None:
     store, repo_path, _ = _store_with_idea(tmp_path)
     config = _config(
