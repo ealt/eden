@@ -50,11 +50,21 @@ cleanup() {
     # don't matter; then rmdir the now-empty bind-mount root from the
     # host side. The `|| true` keeps a cleanup failure from masking
     # the script's actual exit code.
-    if [[ -d "$SMOKE_DATA_ROOT" ]]; then
+    # Defense-in-depth: explicit empty / "/" guard. `mktemp -d` on a
+    # working system never returns either, but bind-mounting `/` into
+    # a container that then runs `find -mindepth 1 -delete` would
+    # delete the host filesystem. The cost of the check is one line.
+    if [[ -n "${SMOKE_DATA_ROOT:-}" \
+        && "$SMOKE_DATA_ROOT" != "/" \
+        && -d "$SMOKE_DATA_ROOT" ]]; then
         docker run --rm -v "$SMOKE_DATA_ROOT:/cleanup" alpine:3.20 \
             sh -c 'find /cleanup -mindepth 1 -delete' >/dev/null 2>&1 || true
     fi
-    rm -rf "$SMOKE_DATA_ROOT"
+    # `|| true` so a cleanup-side failure can't mask the script's
+    # real exit code (e.g., if the helper container above never ran
+    # because the daemon was unavailable, the host rm would still
+    # fail with EACCES on container-owned subdirs).
+    rm -rf "$SMOKE_DATA_ROOT" || true
     exit "$rc"
 }
 trap cleanup EXIT
