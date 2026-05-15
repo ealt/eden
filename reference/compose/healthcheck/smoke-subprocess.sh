@@ -37,7 +37,20 @@ cleanup() {
         --env-file "$ENV_FILE" down -v >/dev/null 2>&1 || true
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
-    rm -rf "$SMOKE_DATA_ROOT"
+    # Phase 12a-1g hotfix: see smoke.sh for the full rationale —
+    # bind-mount subdirs are populated with files the host can't `rm`
+    # because container-created subdirectories are not world-writable.
+    # Delete from inside a root-as-uid-0 sibling container first.
+    # Defense-in-depth empty / "/" guard — see smoke.sh.
+    if [[ -n "${SMOKE_DATA_ROOT:-}" \
+        && "$SMOKE_DATA_ROOT" != "/" \
+        && -d "$SMOKE_DATA_ROOT" ]]; then
+        docker run --rm -v "$SMOKE_DATA_ROOT:/cleanup" alpine:3.20 \
+            sh -c 'find /cleanup -mindepth 1 -delete' >/dev/null 2>&1 || true
+    fi
+    # `|| true` so a cleanup-side failure can't mask the script's
+    # real exit code — see smoke.sh for the full rationale.
+    rm -rf "$SMOKE_DATA_ROOT" || true
     exit "$rc"
 }
 trap cleanup EXIT

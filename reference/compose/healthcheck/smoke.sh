@@ -40,7 +40,31 @@ cleanup() {
     docker compose -f compose.yaml --env-file "$ENV_FILE" down -v >/dev/null 2>&1 || true
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
-    rm -rf "$SMOKE_DATA_ROOT"
+    # Phase 12a-1g hotfix: substrate bind-mount subdirs (postgres,
+    # gitea, *-repo) contain files written by containers as uids the
+    # host runner doesn't match (postgres=70, gitea/eden=1000), inside
+    # subdirectories the containers created with the container's
+    # umask (mode 0755 — NOT world-writable). The host's `rm -rf` then
+    # fails with EACCES on every file under those subdirs. Delete
+    # via a sibling container running as root, where uid mismatches
+    # don't matter; then rmdir the now-empty bind-mount root from the
+    # host side. The `|| true` keeps a cleanup failure from masking
+    # the script's actual exit code.
+    # Defense-in-depth: explicit empty / "/" guard. `mktemp -d` on a
+    # working system never returns either, but bind-mounting `/` into
+    # a container that then runs `find -mindepth 1 -delete` would
+    # delete the host filesystem. The cost of the check is one line.
+    if [[ -n "${SMOKE_DATA_ROOT:-}" \
+        && "$SMOKE_DATA_ROOT" != "/" \
+        && -d "$SMOKE_DATA_ROOT" ]]; then
+        docker run --rm -v "$SMOKE_DATA_ROOT:/cleanup" alpine:3.20 \
+            sh -c 'find /cleanup -mindepth 1 -delete' >/dev/null 2>&1 || true
+    fi
+    # `|| true` so a cleanup-side failure can't mask the script's
+    # real exit code (e.g., if the helper container above never ran
+    # because the daemon was unavailable, the host rm would still
+    # fail with EACCES on container-owned subdirs).
+    rm -rf "$SMOKE_DATA_ROOT" || true
     exit "$rc"
 }
 trap cleanup EXIT
