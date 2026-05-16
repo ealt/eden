@@ -17,7 +17,6 @@ exercise both auto-dispatch and operator-override paths end-to-end.
 from __future__ import annotations
 
 import pytest
-
 from conformance.harness.wire_client import WireClient
 
 pytestmark = pytest.mark.conformance

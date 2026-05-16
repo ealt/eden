@@ -12,7 +12,6 @@ and the policy-driven orchestrator branch that lands in wave 4.
 from __future__ import annotations
 
 import pytest
-
 from conformance.harness.wire_client import WireClient
 
 pytestmark = pytest.mark.conformance

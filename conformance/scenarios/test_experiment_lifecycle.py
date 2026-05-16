@@ -11,7 +11,6 @@ wave 3 (``POST /terminate`` + ``GET /state``).
 from __future__ import annotations
 
 import pytest
-
 from conformance.harness.wire_client import WireClient
 
 pytestmark = pytest.mark.conformance

@@ -11,7 +11,7 @@ The models apply the same ``strict=True`` / ``NotNone`` /
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from eden_contracts import DispatchModeValue, Event, TaskTarget
 from eden_contracts._common import CommitSha, DateTimeStr, NotNone, WorkerId
@@ -235,6 +235,29 @@ class DispatchModeResponse(_WireBase):
     integration: DispatchModeValue
 
 
+class TerminateRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/terminate`` (§2.9).
+
+    Admin-group-gated per [`07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
+    §2.9 / §13.3. The server stamps ``terminated_by`` from the
+    authenticated principal; the body MUST NOT carry it (``extra="forbid"``
+    inherited from ``_WireBase`` rejects unknown keys).
+    """
+
+    reason: str
+
+
+class ExperimentStateResponse(_WireBase):
+    """Body for ``GET /v0/experiments/{E}/state`` (§2.9 companion read).
+
+    Per [`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.5
+    the runtime ``state`` field is one of ``"running"`` or
+    ``"terminated"``.
+    """
+
+    state: Literal["running", "terminated"]
+
+
 __all__ = [
     "AddGroupMemberRequest",
     "ClaimRequest",
@@ -242,6 +265,7 @@ __all__ = [
     "DispatchModeResponse",
     "DispatchModeUpdateRequest",
     "EventsResponse",
+    "ExperimentStateResponse",
     "IntegrateRequest",
     "ReassignRequest",
     "ReclaimRequest",
@@ -249,6 +273,7 @@ __all__ = [
     "RegisterWorkerRequest",
     "RejectRequest",
     "SubmitRequest",
+    "TerminateRequest",
     "ValidateEvaluationRequest",
     "ValidateTerminalResponse",
     "WhoamiResponse",
