@@ -1732,20 +1732,18 @@ class _StoreBase:
                 f"referenced variant {submission.variant_id!r} is "
                 f"{variant.status!r}, not 'starting'"
             )
-        # 03-roles.md §3.3 non-no-op accept-time backstop: re-run the
-        # tree-identity check. The submit-time enforcement is the
-        # primary check, but a transient resolver miss at submit time
-        # (e.g., the variant SHA hadn't propagated to the server's
-        # local clone yet) silently falls through there. Re-running
-        # at accept gives the resolver another chance, since the
-        # orchestrator typically calls accept after the executor has
-        # had time to push refs upstream. spec/v0/03-roles.md §3.4
-        # explicitly allows the rejection to surface at accept via
-        # the §4.3 validation-error path.
-        try:
-            self._validate_non_no_op_variant(task, submission)
-        except NoOpVariant as exc:
-            return str(exc)
+        # 03-roles.md §3.3 enforcement runs at submit time only (see
+        # `_validate_non_no_op_variant` call from `submit`). An
+        # accept-time recheck would re-evaluate against a potentially-
+        # shifted local clone view (e.g., a SHA that wasn't resolvable
+        # at submit but is now); if it raises after the executor has
+        # already published `work/*` refs upstream, those refs leak —
+        # the recheck path doesn't have a clean-up channel. The
+        # canonical enforcement is the executor's pre-submit
+        # `_is_no_op_variant` check against its own controlled clone;
+        # the server's submit-time SHA-equality fast path catches the
+        # literal case for any wire-side caller. spec/v0/03-roles.md
+        # §3.4 explicitly permits IUT-distributed enforcement.
         # Dry-run the variant write so an invalid commit_sha pattern
         # surfaces as validation_error instead of crashing accept.
         try:
