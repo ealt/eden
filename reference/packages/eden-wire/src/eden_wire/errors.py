@@ -32,9 +32,12 @@ from eden_storage.errors import (
 )
 
 __all__ = [
+    "ArtifactServingDisabled",
+    "ArtifactTooLarge",
     "BadRequest",
     "ExperimentIdMismatch",
     "Forbidden",
+    "InvalidPath",
     "ProblemJson",
     "Unauthorized",
     "WireError",
@@ -86,6 +89,45 @@ class WireReferenceError(Exception):
     and are not part of the ``07-wire-protocol.md`` §9 closed vocabulary.
     A conforming server is free to use a different transport-level
     extension scheme.
+    """
+
+
+class InvalidPath(WireReferenceError):
+    """The request path contains a malformed component.
+
+    Raised by the 12a-1f artifact route's pre-FS component-walk guard
+    when a path part is ``..``, an empty segment (from a leading,
+    trailing, or doubled slash), or contains a NUL byte. The route
+    rejects these BEFORE any filesystem call to avoid leaking the
+    layout of the artifacts directory via timing or response-code
+    differences. Maps to HTTP 400
+    ``eden://reference-error/invalid-path``.
+    """
+
+
+class ArtifactTooLarge(WireReferenceError):
+    """The requested artifact exceeds the 1 MiB cap.
+
+    Raised by the 12a-1f artifact route when ``os.fstat`` on the
+    opened file fd reports a size larger than ``MAX_ARTIFACT_BYTES``
+    (1 MiB). The cap mirrors the existing
+    ``_read_inline_artifact`` helper and exists because the route
+    uses a fixed-bytes ``Response(content=…)`` model — Phase 13d's
+    ``Backend`` abstraction will handle streaming + range requests
+    properly. Maps to HTTP 413
+    ``eden://reference-error/artifact-too-large``.
+    """
+
+
+class ArtifactServingDisabled(WireReferenceError):
+    """The task-store-server was started without ``--artifacts-dir``.
+
+    Raised by the 12a-1f artifact route when no artifacts directory
+    is configured. The route is **always mounted** regardless of
+    configuration; this error signals to operators that the
+    deployment opted out of artifact serving (returning 404 would
+    be ambiguous with "file not found"). Maps to HTTP 503
+    ``eden://reference-error/artifact-serving-disabled``.
     """
 
 
@@ -184,19 +226,38 @@ def envelope_for_error(exc: Exception, *, instance: str | None = None) -> Proble
     )
 
 
-_REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {}
-"""Reference-only error vocabulary, intentionally empty post-12a-1.
+_REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
+    InvalidPath: (
+        "eden://reference-error/invalid-path",
+        400,
+        "Invalid Path",
+    ),
+    ArtifactTooLarge: (
+        "eden://reference-error/artifact-too-large",
+        413,
+        "Artifact Too Large",
+    ),
+    ArtifactServingDisabled: (
+        "eden://reference-error/artifact-serving-disabled",
+        503,
+        "Artifact Serving Disabled",
+    ),
+}
+"""Reference-only error vocabulary.
 
 Pre-12a-1 the reference impl shipped an informative shared-token
 auth scheme that emitted ``eden://reference-error/unauthorized``;
 that scheme has been replaced by the normative §13 per-worker /
 admin auth, with errors emitted under the closed ``eden://error/…``
-vocabulary. The table is retained as the extension point for future
-reference-only errors so downstream packages don't need to rebuild
-the reference-vs-normative split.
+vocabulary. 12a-1f's reference-only artifact route at
+``/_reference/experiments/{experiment_id}/artifacts/{path:path}``
+is the first reference-error consumer post-12a-1; the three entries
+above cover its non-normative failure modes.
 """
 
-_REF_EXC_BY_TYPE: dict[str, type[Exception]] = {}
+_REF_EXC_BY_TYPE: dict[str, type[Exception]] = {
+    wire_type: exc for exc, (wire_type, _, _) in _REF_TYPE_BY_EXC.items()
+}
 
 
 def envelope_for_reference_error(

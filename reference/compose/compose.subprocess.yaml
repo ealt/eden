@@ -23,6 +23,16 @@ name: eden-reference
 
 services:
   ideator-host:
+    # 12a-1f: subprocess-mode ideator gains the same --repo-path /
+    # --gitea-url / --credential-helper triple that executor +
+    # evaluator already use, plus the substrate-access env vars
+    # threaded into the spawned *_command. Scripted-mode (base
+    # compose.yaml) doesn't get these — see plan §D.1 / §5.8.
+    environment:
+      EDEN_REPO_DIR: /var/lib/eden/repo
+      EDEN_ARTIFACT_URL: http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID:?}/artifacts/
+      EDEN_ARTIFACT_PATH_ROOT: /var/lib/eden/artifacts
+      EDEN_READONLY_STORE_URL: ${EDEN_READONLY_STORE_URL:?EDEN_READONLY_STORE_URL must be set (run setup-experiment)}
     command:
       - python
       - -m
@@ -43,6 +53,12 @@ services:
       - /etc/eden/experiment-dir
       - --artifacts-dir
       - /var/lib/eden/artifacts
+      - --repo-path
+      - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --ideation-env-file
       - /etc/eden/ideator.env
       - --log-level
@@ -62,6 +78,15 @@ services:
       # ideator writes idea content here; the executor reads it back
       # via task.json.content_path.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
+      # Phase 12a-1f git substrate: per-host bare clone for the
+      # ideator subprocess. compose.yaml's scripted-mode ideator has
+      # no /var/lib/eden/repo mount, so this overlay declares the
+      # bind-mount cleanly here (no name-collision with a base-stack
+      # volume at the same target). Pattern mirrors 12a-1g's
+      # per-host-repo bind-mount discipline. Clone-on-startup
+      # populates it from Gitea on first run; subsequent starts fetch.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/ideator-repo:/var/lib/eden/repo
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   executor-host:
     command:
@@ -119,6 +144,13 @@ services:
         read_only: true
 
   evaluator-host:
+    # 12a-1f: substrate env vars threaded to the evaluator
+    # subprocess. Repo / artifact mounts already exist (10d-fb).
+    environment:
+      EDEN_REPO_DIR: /var/lib/eden/repo
+      EDEN_ARTIFACT_URL: http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID:?}/artifacts/
+      EDEN_ARTIFACT_PATH_ROOT: /var/lib/eden/artifacts
+      EDEN_READONLY_STORE_URL: ${EDEN_READONLY_STORE_URL:?}
     command:
       - python
       - -m
@@ -163,6 +195,12 @@ services:
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/evaluator-repo:/var/lib/eden/repo
       - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
+      # 12a-1f: evaluator subprocess reads idea content artifacts
+      # via EDEN_ARTIFACT_URL or directly from this mount (host-side
+      # path equals EDEN_ARTIFACT_PATH_ROOT). Phase 12a-1g converted
+      # the artifacts store from a named volume to a host bind-mount
+      # under the data root.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts:ro
       - type: bind
         source: ${EDEN_EXPERIMENT_DIR_HOST:?}
         target: /etc/eden/experiment-dir

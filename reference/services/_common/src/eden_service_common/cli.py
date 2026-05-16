@@ -194,3 +194,193 @@ def resolve_exec_args(args: argparse.Namespace) -> ExecArgs:
         binds=binds,
         cidfile_dir=Path(args.cidfile_dir),
     )
+
+
+RESERVED_SUBSTRATE_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "EDEN_REPO_DIR",
+        "EDEN_ARTIFACT_URL",
+        "EDEN_ARTIFACT_PATH_ROOT",
+        "EDEN_READONLY_STORE_URL",
+    }
+)
+"""Substrate-access env keys the host CLI OWNS — user env files
+MUST NOT redirect them.
+
+A user-supplied ``--ideation-env-file`` (etc.) could otherwise
+reintroduce these keys after the host's docker-mode suppression
+or partial-pair validation has run. The ideator + evaluator CLI
+call :func:`strip_reserved_substrate_keys` on the parsed user
+env before overlaying the host-resolved
+:func:`SubstrateArgs.to_env` so the host's view is authoritative
+in every mode.
+"""
+
+
+def strip_reserved_substrate_keys(env: dict[str, str]) -> dict[str, str]:
+    """Remove every :data:`RESERVED_SUBSTRATE_ENV_KEYS` entry from ``env``.
+
+    Mutates AND returns ``env`` for ergonomic chaining. Used by
+    the ideator + evaluator host CLI to defang user env files that
+    would otherwise re-inject substrate keys the host explicitly
+    suppressed (docker mode) or selectively configured (partial
+    opt-in). Codex round-3 finding on user-env override of the
+    host's substrate posture.
+    """
+    for key in RESERVED_SUBSTRATE_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
+
+@dataclass(frozen=True)
+class SubstrateArgs:
+    """Resolved 12a-1f substrate-access env values.
+
+    Each field is the value the host should set on the spawned
+    ``*_command``'s ``EDEN_*`` env var, or ``None`` when the
+    operator did not opt in (the host then omits the env var from
+    the child entirely, so ``os.environ.get(...)`` returns ``None``
+    in user code).
+
+    See ``spec/v0/reference-bindings/worker-host-subprocess.md`` §9.
+    """
+
+    repo_dir: str | None
+    artifact_url: str | None
+    artifact_path_root: str | None
+    readonly_store_url: str | None
+
+    def to_env(self) -> dict[str, str]:
+        """Render the resolved values as an env-overlay dict.
+
+        Suitable for ``env.update(substrate.to_env())`` onto the
+        spawned subprocess environment. Unset fields are omitted
+        from the result (so they don't land in the child as empty
+        strings — which would differ from "unset" for some Python
+        ``os.environ.get`` callers).
+        """
+        env: dict[str, str] = {}
+        if self.repo_dir is not None:
+            env["EDEN_REPO_DIR"] = self.repo_dir
+        if self.artifact_url is not None:
+            env["EDEN_ARTIFACT_URL"] = self.artifact_url
+        if self.artifact_path_root is not None:
+            env["EDEN_ARTIFACT_PATH_ROOT"] = self.artifact_path_root
+        if self.readonly_store_url is not None:
+            env["EDEN_READONLY_STORE_URL"] = self.readonly_store_url
+        return env
+
+
+def add_substrate_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register the 12a-1f ``--artifact-*`` + ``--readonly-store-url`` flags.
+
+    Used by the ideator + evaluator hosts (subprocess mode). The
+    git-substrate flag ``--repo-path`` is service-specific (already
+    present on executor / evaluator; added to ideator by 12a-1f) and
+    is NOT registered here — only the three substrate-access flags
+    that thread directly into the spawned child's env.
+
+    Each flag falls back to its ``EDEN_*`` env var; the convention
+    matches the rest of the CLI surface.
+    """
+    parser.add_argument(
+        "--artifact-url",
+        default=os.environ.get("EDEN_ARTIFACT_URL"),
+        help=(
+            "HTTP base URL (ending in /) of the artifact-serving "
+            "route, e.g. "
+            "http://task-store-server:8080/_reference/experiments/"
+            "<id>/artifacts/. Threaded to spawned *_command "
+            "subprocesses as EDEN_ARTIFACT_URL. Falls back to "
+            "$EDEN_ARTIFACT_URL."
+        ),
+    )
+    parser.add_argument(
+        "--artifact-path-root",
+        default=os.environ.get("EDEN_ARTIFACT_PATH_ROOT"),
+        help=(
+            "Filesystem root the EDEN_ARTIFACT_URL is rooted at "
+            "(e.g. /var/lib/eden/artifacts). Subprocesses use this "
+            "to translate file:// URIs into relative paths under "
+            "EDEN_ARTIFACT_URL. Pair with --artifact-url; both or "
+            "neither. Falls back to $EDEN_ARTIFACT_PATH_ROOT."
+        ),
+    )
+    parser.add_argument(
+        "--readonly-store-url",
+        default=os.environ.get("EDEN_READONLY_STORE_URL"),
+        help=(
+            "Postgres DSN with read-only privileges, e.g. "
+            "postgresql://eden_readonly:<pwd>@postgres:5432/eden. "
+            "Threaded to spawned *_command subprocesses as "
+            "EDEN_READONLY_STORE_URL. Falls back to "
+            "$EDEN_READONLY_STORE_URL."
+        ),
+    )
+
+
+def resolve_substrate_args(
+    args: argparse.Namespace, *, repo_dir: str | Path | None = None
+) -> SubstrateArgs:
+    """Pack the parsed substrate flags into a :class:`SubstrateArgs`.
+
+    ``repo_dir`` is supplied separately because the spelling of the
+    git-substrate flag differs across services (``--repo-path`` on
+    ideator / executor / evaluator). The caller passes the resolved
+    repo dir (typically ``args.repo_path``); ``None`` means the host
+    is not configured with a local clone (e.g. ideator in
+    scripted-mode, or subprocess-mode without ``--repo-path``).
+
+    Raises :class:`ValueError` when only ONE of ``--artifact-url`` /
+    ``--artifact-path-root`` is set (binding doc §1.1 requires the
+    pair both-or-neither so the subprocess's
+    ``file://URI``-to-URL translation is well-defined). Codex
+    round-2 finding on the pair-enforcement gap.
+    """
+    artifact_url = getattr(args, "artifact_url", None) or None
+    artifact_path_root = getattr(args, "artifact_path_root", None) or None
+    if (artifact_url is None) != (artifact_path_root is None):
+        which_set = (
+            "--artifact-url" if artifact_url is not None else "--artifact-path-root"
+        )
+        which_missing = (
+            "--artifact-path-root" if artifact_url is not None else "--artifact-url"
+        )
+        raise ValueError(
+            f"{which_set} is set but {which_missing} is not — the "
+            "artifact-URL / path-root pair is both-or-neither per the "
+            "binding doc (spec/v0/reference-bindings/"
+            "worker-host-subprocess.md §1.1); the subprocess's "
+            "file://URI → URL translation requires both."
+        )
+    return SubstrateArgs(
+        repo_dir=str(repo_dir) if repo_dir is not None else None,
+        artifact_url=artifact_url,
+        artifact_path_root=artifact_path_root,
+        readonly_store_url=getattr(args, "readonly_store_url", None) or None,
+    )
+
+
+def substrate_args_for_exec_mode(
+    substrate: SubstrateArgs, *, exec_mode: str
+) -> SubstrateArgs:
+    """Suppress all substrate values when running under ``--exec-mode docker``.
+
+    Per 12a-1f §8.9, sibling containers started by the host docker
+    daemon are not attached to the compose project network, so the
+    in-network hostnames in ``EDEN_ARTIFACT_URL`` /
+    ``EDEN_READONLY_STORE_URL`` would not resolve from inside them.
+    The clean posture is to SUPPRESS the substrate env keys in
+    docker mode (rather than forward broken URLs) — this returns an
+    empty :class:`SubstrateArgs` for that case. The host MAY log a
+    WARN line so operators understand why substrate access is
+    inert.
+    """
+    if exec_mode == "docker":
+        return SubstrateArgs(
+            repo_dir=None,
+            artifact_url=None,
+            artifact_path_root=None,
+            readonly_store_url=None,
+        )
+    return substrate

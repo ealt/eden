@@ -6,10 +6,12 @@ import argparse
 import socket
 from pathlib import Path
 
+from eden_git import GitRepo
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
     add_exec_arguments,
+    add_substrate_arguments,
     configure_logging,
     get_logger,
     install_stop_handlers,
@@ -21,7 +23,10 @@ from eden_service_common import (
     reap_orphaned_containers,
     require_command,
     resolve_exec_args,
+    resolve_substrate_args,
     resolve_worker_bearer,
+    strip_reserved_substrate_keys,
+    substrate_args_for_exec_mode,
     wait_for_task_store,
     wrap_command,
 )
@@ -78,6 +83,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Where to write content artifacts (required in --mode subprocess).",
     )
+    # 12a-1f git substrate: optional clone-on-startup wiring mirroring
+    # executor / evaluator. Subprocess-mode only — scripted-mode
+    # ideator never reads git, and these flags are validated as a
+    # set (all-three or none).
+    parser.add_argument(
+        "--repo-path",
+        default=None,
+        help=(
+            "Bare git repo (subprocess mode only). When "
+            "--gitea-url is also set, this becomes the local bare "
+            "clone of the Gitea-hosted repo (cloned at startup if "
+            "absent, otherwise fetched). The path is also threaded "
+            "to the spawned *_command's env as EDEN_REPO_DIR so "
+            "agentic ideators can `git log` / `git show` against "
+            "the full ref space."
+        ),
+    )
+    parser.add_argument(
+        "--gitea-url",
+        default=None,
+        help=(
+            "Optional HTTP(S) URL of the central git remote. Pair "
+            "with --repo-path + --credential-helper."
+        ),
+    )
+    parser.add_argument(
+        "--credential-helper",
+        default=None,
+        help=(
+            "Path to a git credential-helper script for HTTP Basic "
+            "auth against --gitea-url."
+        ),
+    )
     parser.add_argument("--ideation-startup-deadline", type=float, default=30.0)
     parser.add_argument("--ideation-task-deadline", type=float, default=120.0)
     parser.add_argument("--ideation-shutdown-deadline", type=float, default=10.0)
@@ -85,6 +123,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     add_exec_arguments(parser)
+    # 12a-1f substrate-access env flags. Registered for both
+    # scripted and subprocess modes — scripted mode ignores them
+    # (no subprocess to forward them to). See §5.5 of the plan.
+    add_substrate_arguments(parser)
     args = parser.parse_args(argv)
     if args.mode == "scripted":
         if not args.base_commit_sha:
@@ -113,6 +155,35 @@ def _validate_sha(value: str) -> None:
         )
 
 
+def _ensure_repo_clone(
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+    repo_path: str,
+    gitea_url: str | None,
+    credential_helper: str | None,
+) -> None:
+    """Materialize the ideator's local clone per Phase 10d follow-up B §D.5.
+
+    Mirrors the executor / evaluator clone-on-startup pattern. No-op
+    when ``gitea_url`` is ``None`` (the chunk-10d posture). Otherwise:
+    clone --bare at first run, fetch_all_heads on subsequent starts.
+    """
+    if gitea_url is None:
+        return
+    path = Path(repo_path)
+    if (path / "HEAD").is_file():
+        log.info("fetching_remote_heads", url=gitea_url)
+        GitRepo(path).fetch_all_heads()
+        return
+    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    GitRepo.clone_from(
+        url=gitea_url,
+        dest=path,
+        bare=True,
+        credential_helper=credential_helper,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_ideator_host``."""
     args = parse_args(argv)
@@ -139,6 +210,16 @@ def main(argv: list[str] | None = None) -> int:
         args, worker_id=args.worker_id, labels={"role": "ideator"}
     )
     log.info("starting", worker_id=args.worker_id, mode=args.mode)
+    # 12a-1f: clone-on-startup wiring for the git substrate. Only
+    # runs in subprocess mode (scripted ideator never reads git);
+    # the helper itself is also a no-op when --gitea-url is not set.
+    if args.mode == "subprocess" and args.repo_path is not None:
+        _ensure_repo_clone(
+            log=log,
+            repo_path=args.repo_path,
+            gitea_url=args.gitea_url,
+            credential_helper=args.credential_helper,
+        )
     with StoreClient(
         args.task_store_url,
         args.experiment_id,
@@ -161,7 +242,14 @@ def main(argv: list[str] | None = None) -> int:
             # the protocol surface (§D.0 contract).
             env: dict[str, str] = {}
             if args.ideation_env_file:
-                env.update(parse_env_file(args.ideation_env_file))
+                user_env = parse_env_file(args.ideation_env_file)
+                # Codex round-3: strip reserved substrate keys from
+                # the user env BEFORE merging, so a user file can
+                # NEVER reintroduce keys the host suppressed (e.g.
+                # under --exec-mode docker) or selectively
+                # configured. The host's authoritative substrate
+                # overlay is applied below.
+                env.update(strip_reserved_substrate_keys(dict(user_env)))
             # When --exec-mode=docker, EDEN_EXPERIMENT_DIR inside the
             # spawned child container resolves to the bind-mount
             # target supplied via --exec-bind, NOT the host-side path.
@@ -177,6 +265,34 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as exc:
                 parser_error_msg = str(exc)
                 raise SystemExit(f"eden-ideator-host: {parser_error_msg}") from exc
+
+            # 12a-1f substrate access: thread EDEN_REPO_DIR /
+            # EDEN_ARTIFACT_URL / EDEN_ARTIFACT_PATH_ROOT /
+            # EDEN_READONLY_STORE_URL into the spawned child's env
+            # so agentic ideators can read git / artifacts / the
+            # Postgres readonly substrate without making per-query
+            # wire round-trips. Per §6.4 / §8.9 of the plan, these
+            # keys are SUPPRESSED in --exec-mode docker because
+            # sibling containers can't resolve compose-internal
+            # hostnames (no --network plumbing in wrap_command yet).
+            substrate = resolve_substrate_args(
+                args, repo_dir=args.repo_path
+            )
+            substrate = substrate_args_for_exec_mode(
+                substrate, exec_mode=exec_args.mode
+            )
+            if exec_args.mode == "docker" and (
+                args.repo_path is not None
+                or args.artifact_url is not None
+                or args.readonly_store_url is not None
+            ):
+                log.warning(
+                    "substrate_access_disabled_in_exec_mode_docker",
+                    extra={
+                        "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+                    },
+                )
+            env.update(substrate.to_env())
 
             wrap_factory = None
             if exec_args.mode == "docker":

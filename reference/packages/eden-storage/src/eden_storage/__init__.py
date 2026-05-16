@@ -25,7 +25,7 @@ from .errors import (
     WrongClaimant,
 )
 from .memory import InMemoryStore
-from .postgres import PostgresStore
+from .postgres import PostgresStore, ensure_readonly_role
 from .protocol import Store
 from .sqlite import SqliteStore
 from .submissions import (
@@ -60,6 +60,7 @@ __all__ = [
     "WorkerNotEligible",
     "WorkerNotRegistered",
     "WrongClaimant",
+    "ensure_readonly_role",
     "iter_events_by_type",
     "submissions_equivalent",
 ]

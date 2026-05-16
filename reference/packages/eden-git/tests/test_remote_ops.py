@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import http.server
+import re
 import socket
 import threading
 from pathlib import Path
@@ -394,4 +395,8 @@ def test_credential_helper_provides_basic_auth(
         )
     auth_stderr = auth_ok.value.stderr
     assert "could not read Username" not in auth_stderr
-    assert "401" not in auth_stderr
+    # Use a word-boundary match so ephemeral test-server port numbers
+    # that happen to contain "401" (e.g., :44013) don't spuriously
+    # trip this assertion. The real "401" we care about is a status
+    # token surrounded by non-digits.
+    assert not re.search(r"\b401\b", auth_stderr), auth_stderr
