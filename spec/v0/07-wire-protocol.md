@@ -278,7 +278,7 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/not-claimed` | 409 | submit against a task whose claim has been cleared ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §10) |
 | `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
 | `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_variant` (§5) |
-| `eden://error/no-op-variant` | 409 | execution-task submission whose variant tree is identical to every parent's tree ([`03-roles.md`](03-roles.md) §3.3, §3.4) |
+| `eden://error/no-op-variant` | 409 | execution-task submission whose variant tree is identical to every parent's tree; emitted by IUTs that exercise the SHOULD-level wire-side detection from [`04-task-protocol.md`](04-task-protocol.md) §4.2 (only the type is normative when emitted; emission itself is SHOULD per the chapter 04 rule). See [`03-roles.md`](03-roles.md) §3.3, §3.4. |
 | `eden://error/reserved-identifier` | 409 | `register_worker` / `register_group` rejected the supplied id per [`02-data-model.md`](02-data-model.md) §6.1 |
 | `eden://error/cycle-detected` | 409 | a group mutation would introduce a cycle ([`02-data-model.md`](02-data-model.md) §7.3) |
 
