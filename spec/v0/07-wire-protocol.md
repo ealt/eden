@@ -39,13 +39,15 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 | `reclaim` | `POST` | `/v0/experiments/{E}/tasks/{T}/reclaim` | worker |
 | `reassign_task` | `POST` | `/v0/experiments/{E}/tasks/{T}/reassign` | worker (group-gated: `admins`) |
 | `update_dispatch_mode` | `PATCH` | `/v0/experiments/{E}/dispatch_mode` | worker (group-gated: `admins`) |
+| `terminate_experiment` | `POST` | `/v0/experiments/{E}/terminate` | worker (group-gated: `admins`) |
+| `read_experiment_state` | `GET` | `/v0/experiments/{E}/state` | either |
 
 The mutating task operations are worker-gated; some are additionally **group-gated** by the [`03-roles.md`](03-roles.md) §6 orchestrator-role contract and [`02-data-model.md`](02-data-model.md) §7.5 reserved groups:
 
-- `create_task`: caller MUST be in `admins` for `kind="ideation"` or `kind="evaluation"`; in `orchestrators` for `kind="execution"`. The §13.3 dispatcher rejects non-members with 403 `eden://error/forbidden`.
+- `create_task`: caller MUST be in `admins` OR `orchestrators` for any `kind` (`ideation` / `execution` / `evaluation`). The pre-12a-3 restriction that limited `kind="execution"` to `orchestrators` only is lifted: 12a-3's per-idea `intended_executor` hint ([`02-data-model.md`](02-data-model.md) §5.1) gives operators a normative routing seed for operator-driven execution tasks. The §13.3 dispatcher rejects non-members with 403 `eden://error/forbidden`.
 - `accept` / `reject`: caller MUST be in the `orchestrators` group (the [`04-task-protocol.md`](04-task-protocol.md) §4.3 terminal-transition decision is the orchestrator role's job per [`03-roles.md`](03-roles.md) §6).
 - `reclaim`: caller MUST be a registered worker; the [`04-task-protocol.md`](04-task-protocol.md) §5.1 cause vocabulary distinguishes operator vs. policy reclamation but the binding does not gate on group membership beyond "any registered worker".
-- `reassign_task` / `update_dispatch_mode`: caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2).
+- `reassign_task` / `update_dispatch_mode` / `terminate_experiment`: caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2, §8.2).
 - `claim` / `submit`: caller MUST be a registered worker satisfying the task's `target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5, §4.1); no group gate beyond the target eligibility check.
 
 The `Auth` column's bare `worker` annotation means "any registered worker"; the group-gated entries above narrow that to a specific reserved-group membership check. Future phases MAY introduce additional group-gating without breaking the wire grammar — the dispatcher rejects on the group check identically to how it rejects on the principal class.
@@ -57,7 +59,7 @@ The `Auth` column's bare `worker` annotation means "any registered worker"; the 
 **Authority (per-kind):**
 
 - `kind == "ideation"`: caller MUST be in the `admins` or `orchestrators` group (operator-driven seed and continuous auto-orchestrator policy both create ideation tasks; the orchestrator-role contract is in [`03-roles.md`](03-roles.md) §6.2).
-- `kind == "execution"`: caller MUST be in the `orchestrators` group. v0 with 12a-2 applied does not define an operator path for `kind == "execution"` creation; deployments that want per-task routing control SHOULD `reassign_task` (§2.7) after the orchestrator creates the task. A future spec lineage that introduces an `intended_executor` hint on ideas will broaden this authority.
+- `kind == "execution"`: caller MUST be in the `admins` or `orchestrators` group. The orchestrator-role contract drives auto-dispatch ([`03-roles.md`](03-roles.md) §6.2 decision-type 2); operators MAY also drive `create_task(kind="execution")` directly. The request body MUST carry `payload.idea_id`; the body MAY carry an explicit `payload.target` override, which wins over `idea.intended_executor` per [`04-task-protocol.md`](04-task-protocol.md) §2 ("Terminated-experiment guard" subsection — see also the §2 precondition wording). When `payload.target` is absent the Store populates it from the referenced idea's `intended_executor` (or `null` when the idea has none). Pre-12a-3 lineages restricted this to `orchestrators` only; 12a-3 lifts the restriction now that the `intended_executor` field gives operators a non-fungible routing seed.
 - `kind == "evaluation"`: caller MUST be in the `admins` or `orchestrators` group. The `admins` path enables manual evaluation-dispatch per [`03-roles.md`](03-roles.md) §6.5 when `dispatch_mode.evaluation_dispatch == "manual"`.
 
 A caller outside the authorized group(s) receives 403 `eden://error/forbidden`.
@@ -109,7 +111,7 @@ On success the server returns 200 with the updated task body. Per [`04-task-prot
 
 ### 2.8 Update dispatch mode
 
-`PATCH /v0/experiments/{E}/dispatch_mode` accepts a partial `dispatch_mode` object (any subset of the four keys from [`02-data-model.md`](02-data-model.md) §2.5) and atomically merges it into the experiment's stored `dispatch_mode` per [`04-task-protocol.md`](04-task-protocol.md) §7. The request body shape is the partial object directly (not wrapped):
+`PATCH /v0/experiments/{E}/dispatch_mode` accepts a partial `dispatch_mode` object (any subset of the five keys from [`02-data-model.md`](02-data-model.md) §2.4) and atomically merges it into the experiment's stored `dispatch_mode` per [`04-task-protocol.md`](04-task-protocol.md) §7. The request body shape is the partial object directly (not wrapped):
 
 ```json
 {"evaluation_dispatch": "manual"}
@@ -122,6 +124,24 @@ On success the server returns 200 with the full resulting `dispatch_mode` object
 **Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §7.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the event's `updated_by` field.
 
 A companion `GET /v0/experiments/{E}/dispatch_mode` MAY be exposed by the binding for read access; v0 does not require it (the field is reachable as part of `read_experiment_config` once that op exists; for now, the event log carries the authoritative history).
+
+### 2.9 Terminate experiment
+
+`POST /v0/experiments/{E}/terminate` binds the [`04-task-protocol.md`](04-task-protocol.md) §8.1 `terminate_experiment` operation. The request body shape is:
+
+```json
+{"reason": "<string>"}
+```
+
+- `reason` is a free-form string carrying the operator's explanation. The server records it in the `experiment.terminated` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4); the protocol does not enumerate a closed vocabulary.
+
+On success the server returns 200 with the resulting experiment object (matching [`schemas/experiment.schema.json`](schemas/experiment.schema.json)). The operation is idempotent on the terminated state per [`04-task-protocol.md`](04-task-protocol.md) §8.1: a second call against an already-terminated experiment MUST return 200 with the existing state and MUST NOT append a second event; the winning caller's `reason` from the first commit is the one recorded.
+
+The transition is observable through both the response body and the event stream. Subscribers that consume the per-experiment event log observe `experiment.terminated` atomically with the state field update ([`05-event-protocol.md`](05-event-protocol.md) §2).
+
+**Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §8.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the event's `terminated_by` field. The terminate op is admin-gated regardless of `dispatch_mode.termination`'s value: an operator MAY drive termination even when `dispatch_mode.termination == "auto"`; the orchestrator's policy-driven path and the operator wire op race-resolve via the §6.4 exact-idempotent rule (see [`03-roles.md`](03-roles.md) §6.4.1).
+
+A companion `GET /v0/experiments/{E}/state` returns the current state as `{"state": "running" | "terminated"}`. The endpoint is available to any registered worker.
 
 ## 3. Idea operations
 
@@ -269,13 +289,13 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/experiment-id-mismatch` | 400 | header-vs-path experiment-ID disagreement (§1.3) |
 | `eden://error/unauthorized` | 401 | authentication failed (missing / malformed / invalid bearer; §13) |
 | `eden://error/forbidden` | 403 | authentication succeeded but the principal is not authorized for this endpoint (e.g., a worker bearer on an admin-gated route; §13.3) |
-| `eden://error/worker-not-registered` | 403 | the authenticated `worker_id` is not registered for the experiment ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 2, §10) |
-| `eden://error/worker-not-eligible` | 403 | the authenticated worker is registered but does not satisfy `Task.target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 3, §10) |
-| `eden://error/wrong-claimant` | 403 | submit's authenticated `worker_id` does not match `task.claim.worker_id` ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §10) |
+| `eden://error/worker-not-registered` | 403 | the authenticated `worker_id` is not registered for the experiment ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 2, §11) |
+| `eden://error/worker-not-eligible` | 403 | the authenticated worker is registered but does not satisfy `Task.target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 3, §11) |
+| `eden://error/wrong-claimant` | 403 | submit's authenticated `worker_id` does not match `task.claim.worker_id` ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §11) |
 | `eden://error/not-found` | 404 | referenced entity does not exist |
 | `eden://error/already-exists` | 409 | insert collided with existing id |
 | `eden://error/illegal-transition` | 409 | state-machine violation |
-| `eden://error/not-claimed` | 409 | submit against a task whose claim has been cleared ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §10) |
+| `eden://error/not-claimed` | 409 | submit against a task whose claim has been cleared ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §11) |
 | `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
 | `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_variant` (§5) |
 | `eden://error/no-op-variant` | 409 | execution-task submission whose variant tree is identical to every parent's tree; emitted by IUTs that exercise the SHOULD-level wire-side detection from [`04-task-protocol.md`](04-task-protocol.md) §4.2 (only the type is normative when emitted; emission itself is SHOULD per the chapter 04 rule). See [`03-roles.md`](03-roles.md) §3.3, §3.4. |

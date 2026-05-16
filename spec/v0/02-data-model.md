@@ -48,10 +48,10 @@ The protocol defines only the **host-mechanism-independent core** of the config 
 | Field | Type | Description |
 |---|---|---|
 | `parallel_variants` | integer ≥ 1 | Maximum number of variants that MAY be in flight simultaneously. |
-| `max_variants` | integer ≥ 1 | Hard ceiling on the number of variants attempted. |
-| `max_wall_time` | duration | Hard ceiling on elapsed wall time. Format: a positive integer followed by one of `s`, `m`, `h`, `d`. |
 | `evaluation_schema` | object | A evaluation schema (§8). MUST be non-empty. |
 | `objective` | object | An objective spec (§2.2). |
+
+The pre-12a-3 `max_variants` and `max_wall_time` fields have been **removed** from the normative experiment-config. The experiment-lifecycle contract ([`03-roles.md`](03-roles.md) §6.2 decision-type 0; see also §2.5 below) places termination under a deployment-supplied policy callable; deployments that want the prior fields' semantics implement them as policies. Deployments MAY continue to carry these names as additional top-level fields under the §2.3 forward-compatibility rule; a conforming orchestrator MUST NOT interpret them.
 
 ### 2.2 Objective spec
 
@@ -62,39 +62,52 @@ The protocol defines only the **host-mechanism-independent core** of the config 
 
 The expression language is implementation-defined but MUST treat metric field names as the free variables. A conforming orchestrator MUST reject an objective expression that references a name absent from `evaluation_schema`.
 
-### 2.3 Optional fields
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `convergence_window` | integer ≥ 1 | (none) | Terminate if the objective has not improved in this many variants. |
-| `target_condition` | string | (none) | A condition over metrics; when satisfied, the experiment terminates early. |
-| `dispatch_mode` | object (§2.5) | every key `"auto"` | Per-decision-type gate on whether the orchestrator role ([`03-roles.md`](03-roles.md) §6) runs each decision automatically or leaves it for an external caller. |
-
-### 2.4 Additional top-level fields
+### 2.3 Additional top-level fields
 
 Implementations MAY define additional top-level fields for role binding and implementation-specific tuning. The experiment-config schema does not restrict unknown top-level fields; a conforming orchestrator MUST NOT reject a config solely because it carries fields this chapter does not define. This forward-compatibility rule is intentional: it lets role-binding semantics land in [`03-roles.md`](03-roles.md) without breaking previously-valid configs.
 
 An implementation SHOULD document which additional top-level fields it consumes.
 
-### 2.5 Dispatch mode
+### 2.4 Dispatch mode
 
 `dispatch_mode` is an object whose keys are the orchestrator decision types defined in [`03-roles.md`](03-roles.md) §6.2 and whose values are one of:
 
 - `"auto"` — the orchestrator role ([`03-roles.md`](03-roles.md) §6.1) MAY execute this decision automatically.
 - `"manual"` — the orchestrator role MUST NOT execute this decision; the decision is reserved for an external authorized caller (typically an operator via the wire ops) per [`03-roles.md`](03-roles.md) §6.5.
 
-The four keys are fixed in v0:
+The five keys are fixed in v0:
 
-| Key | Decision (per [`03-roles.md`](03-roles.md) §6.2) |
-|---|---|
-| `ideation_creation` | Create new `kind=="ideation"` tasks per a deployment policy. |
-| `execution_dispatch` | Create a `kind=="execution"` task for each `ready` idea with no live execution task. |
-| `evaluation_dispatch` | Create a `kind=="evaluation"` task for each `starting` variant with `commit_sha` set and no live evaluation task. |
-| `integration` | Invoke the integrator ([`06-integrator.md`](06-integrator.md)) for each `success` variant with `variant_commit_sha` unset. |
+| Key | Decision (per [`03-roles.md`](03-roles.md) §6.2) | Default |
+|---|---|---|
+| `termination` | Consult the deployment's termination policy; transition experiment state from `"running"` to `"terminated"` if the policy so directs ([`03-roles.md`](03-roles.md) §6.2 decision-type 0; §2.5 below). | `"manual"` |
+| `ideation_creation` | Create new `kind=="ideation"` tasks per a deployment policy. | `"auto"` |
+| `execution_dispatch` | Create a `kind=="execution"` task for each `ready` idea with no live execution task. | `"auto"` |
+| `evaluation_dispatch` | Create a `kind=="evaluation"` task for each `starting` variant with `commit_sha` set and no live evaluation task. | `"auto"` |
+| `integration` | Invoke the integrator ([`06-integrator.md`](06-integrator.md)) for each `success` variant with `variant_commit_sha` unset. | `"auto"` |
 
-Every key defaults to `"auto"`. A configuration that omits `dispatch_mode` is equivalent to one with all four keys set to `"auto"` (backward-compatible with pre-12a-2 configs). A configuration that supplies `dispatch_mode` with a subset of the keys is equivalent to one with the unspecified keys defaulted to `"auto"`. Additional decision-type keys MAY be introduced in later spec lineages; a conforming implementation MUST accept (and MAY ignore) keys it does not recognize.
+`termination` defaults to `"manual"` so that adding the new key in 12a-3 does not change the runtime behavior of any pre-12a-3 deployment (which had no termination policy at all). The other four keys default to `"auto"` to preserve the 12a-2 behavior. A configuration that omits `dispatch_mode` is equivalent to one with `termination == "manual"` and all four operational keys set to `"auto"`. A configuration that supplies `dispatch_mode` with a subset of the keys is equivalent to one with the unspecified keys at their defaults. Additional decision-type keys MAY be introduced in later spec lineages; a conforming implementation MUST accept (and MAY ignore) keys it does not recognize.
 
 `dispatch_mode` is mutable during an experiment's lifetime: [`04-task-protocol.md`](04-task-protocol.md) §7 defines the `update_dispatch_mode` operation and the `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4).
+
+### 2.5 Experiment lifecycle state
+
+The experiment runtime carries a `state` field independent of the declarative `experiment-config` (§2):
+
+| Value | Meaning |
+|---|---|
+| `"running"` | Default at experiment creation. The orchestrator MAY make any decision per [`03-roles.md`](03-roles.md) §6.2. Workers MAY claim pending tasks, submit results, and produce ideas / variants per their role contracts. |
+| `"terminated"` | The task store MUST reject every task-creation op (`create_task` for any `kind`) AND every `claim` op against a pending task with `eden://error/illegal-transition`. Already-claimed tasks MAY still be submitted, accepted, or rejected per the normal task-lifecycle ([`04-task-protocol.md`](04-task-protocol.md) §4) so in-progress work is not stranded. Already-claimed tasks MAY also still be reclaimed (`cause == "expired"` / `"operator"`); the resulting pending task is unreachable (the §2.5 `claim` guard rejects subsequent claims) but its existence is a no-op. The orchestrator's integration decision ([`03-roles.md`](03-roles.md) §6.2 decision-type 4) MUST continue to run until no `status == "success"` variants without `variant_commit_sha` remain, so committed work in flight is not abandoned. The other three operational decisions (ideation-task creation, execution-task dispatch, evaluation-task dispatch) MUST NOT run on a terminated experiment. |
+
+The `running → terminated` transition is one-way in v0. The transition is committed atomically with a single `experiment.terminated` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) carrying a free-form `reason` string. The protocol does not define a `terminated → running` transition; reactivation of a terminated experiment is reserved for a future spec lineage.
+
+The `state` field is observed-only — it is NOT part of `experiment-config` (which is declarative input written by the operator at experiment creation; see [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json)). The runtime experiment object that carries `state` is described by a separate schema ([`schemas/experiment.schema.json`](schemas/experiment.schema.json)). The split mirrors the task / task-payload split: declarative input lives in the config, observed runtime in the experiment object.
+
+Termination is driven by one of two paths, both committed via the same Store-level transition:
+
+- **Policy-driven** — when `dispatch_mode.termination == "auto"`, the orchestrator MAY consult a deployment-supplied termination policy each iteration ([`03-roles.md`](03-roles.md) §6.2 decision-type 0). The policy is invoked with a read-only view of experiment state and returns either `Continue` (no transition) or `Terminate(reason)` (commit the transition with the policy's `reason`).
+- **Operator-driven** — an admin caller invokes the wire op `POST /v0/experiments/{E}/terminate` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9) with body `{"reason": "<string>"}`. The Store-level op `terminate_experiment` ([`04-task-protocol.md`](04-task-protocol.md) §8, [`08-storage.md`](08-storage.md) §1.8) commits the transition with the operator's `reason`. This path is independent of `dispatch_mode.termination`: an operator MAY terminate an experiment whose `termination` is `"manual"`.
+
+Both paths are **idempotent on the terminated state**: a second `terminate_experiment` call on an already-terminated experiment MUST return success and MUST NOT emit a second `experiment.terminated` event. Multi-instance orchestrators racing the same transition therefore collapse to a single observable event; see [`03-roles.md`](03-roles.md) §6.4.
 
 ## 3. Task
 
@@ -194,7 +207,8 @@ An idea is the ideator's output.
 | `priority` | yes | number | Ordering hint; higher dispatches earlier. |
 | `parent_commits` | yes | array of SHA | One or more commit SHAs the idea is based on. |
 | `artifacts_uri` | yes | string (URI) | Where the ideator's output documents live. |
-| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §9). |
+| `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §10). |
+| `intended_executor` | no | object | OPTIONAL `Task.target`-shaped routing hint (§3.5). Names a worker or group the ideator suggests should execute this idea. When the orchestrator's `execution_dispatch` decision creates an execution task from this idea, it MUST copy `intended_executor` to `task.target` ([`03-roles.md`](03-roles.md) §6.2 decision-type 2); when omitted, the resulting task has `target` absent (open to any registered executor-class worker). Set at idea-creation time; not mutated thereafter. |
 | `created_at` | yes | timestamp | When the idea was created. |
 | `created_by` | no | string (worker_id) | The ideator's `worker_id`. Written at idea-creation time by the ideator's host and preserved across the idea's terminal state. |
 

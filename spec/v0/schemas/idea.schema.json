@@ -58,6 +58,23 @@
       "maxLength": 64,
       "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
       "description": "worker_id of the ideator that drafted the idea; preserved across the idea's terminal state."
+    },
+    "intended_executor": {
+      "type": "object",
+      "description": "OPTIONAL Task.target-shaped routing hint set at idea-creation time (spec/v0/02-data-model.md §5.1). When the orchestrator's execution_dispatch decision creates an execution task from this idea, it MUST copy intended_executor to task.target unless an admin caller supplies an explicit target override on the create request.",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["worker", "group"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        }
+      }
     }
   }
 }

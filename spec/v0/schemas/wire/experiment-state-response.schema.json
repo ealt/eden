@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — experiment state response",
+  "description": "Response body for GET /v0/experiments/{E}/state (07-wire-protocol.md §2.9 companion read). Reads the experiment's runtime lifecycle state per 02-data-model.md §2.5.",
+  "type": "object",
+  "required": ["state"],
+  "additionalProperties": false,
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": ["running", "terminated"]
+    }
+  }
+}

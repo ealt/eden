@@ -2,7 +2,7 @@
 
 This chapter defines the four role contracts that a conforming EDEN deployment implements: **ideator**, **executor**, **evaluator**, and **integrator**. For each, it pins what the role observes, what it produces, and which invariants its output MUST honor.
 
-A role contract does **not** specify how the role is hosted. A conforming ideator MAY run as a local subprocess, a long-lived service reached over HTTP, an in-process adapter, or a human at a keyboard. The protocol constrains the *observable effects* a role has on the task store, the event log, and the artifact store; how a role is invoked is a deployment concern and is deferred to a later-phase *role-binding* specification. Within v0, implementations MAY document their own binding by defining additional top-level fields on the experiment config per [`02-data-model.md`](02-data-model.md) §2.4.
+A role contract does **not** specify how the role is hosted. A conforming ideator MAY run as a local subprocess, a long-lived service reached over HTTP, an in-process adapter, or a human at a keyboard. The protocol constrains the *observable effects* a role has on the task store, the event log, and the artifact store; how a role is invoked is a deployment concern and is deferred to a later-phase *role-binding* specification. Within v0, implementations MAY document their own binding by defining additional top-level fields on the experiment config per [`02-data-model.md`](02-data-model.md) §2.3.
 
 The behavioral state machine that all worker roles participate in — claim, execute, submit, reclaim — is defined in [`04-task-protocol.md`](04-task-protocol.md). This chapter describes only the *role-specific* part of each worker's job: what it reads, what it produces, and what guarantees its output must carry. Where a rule depends on a state-machine transition, this chapter cites the transition by name and points to Chapter 04 for its semantics.
 
@@ -79,7 +79,7 @@ An executor receives:
 
 - The task object (`kind == "execution"`, `payload.idea_id == P`).
 - Read access to the idea `P`. The orchestrator MUST ensure `P.state == "ready"` before dispatch.
-- Read and write access to the git repository associated with `P.experiment_id`, at a revision reachable from `P.parent_commits`. How the repository is located and how access is granted is a role-binding concern (§6, [`02-data-model.md`](02-data-model.md) §2.4); the protocol constrains only that the executor's writes land under `work/*` and that no commit is introduced whose history does not descend from `P.parent_commits` (§3.3).
+- Read and write access to the git repository associated with `P.experiment_id`, at a revision reachable from `P.parent_commits`. How the repository is located and how access is granted is a role-binding concern (§6, [`02-data-model.md`](02-data-model.md) §2.3); the protocol constrains only that the executor's writes land under `work/*` and that no commit is introduced whose history does not descend from `P.parent_commits` (§3.3).
 - Read access to the artifacts at `P.artifacts_uri`.
 
 ### 3.2 Outputs
@@ -192,7 +192,7 @@ The orchestrator is **a role**, not a singleton process. Anything authenticated 
 
 ### 6.1 Decisions are gated by `dispatch_mode`
 
-The orchestrator MUST execute the four decision types defined in §6.2 below. Each decision type is independently gated by the experiment's `dispatch_mode.<decision>` field ([`02-data-model.md`](02-data-model.md) §2.5).
+The orchestrator MUST execute the five decision types defined in §6.2 below. Each decision type is independently gated by the experiment's `dispatch_mode.<decision>` field ([`02-data-model.md`](02-data-model.md) §2.4).
 
 - When `dispatch_mode.<decision>` is `"auto"`, an orchestrator instance MAY run the decision.
 - When `dispatch_mode.<decision>` is `"manual"`, every orchestrator instance MUST NOT run the decision. The decision is reserved for an authorized external caller (typically a human via the Web UI or an automation script) using the same wire ops the orchestrator would have used — see §6.5.
@@ -201,10 +201,23 @@ The mode is per-experiment and per-decision; flipping `evaluation_dispatch` to m
 
 ### 6.2 Decision types
 
-1. **Ideation-task creation** (`dispatch_mode.ideation_creation`). The orchestrator MAY create new `kind == "ideation"` tasks per a deployment-defined policy. The policy mechanism is binding-specific: the reference impl exposes a pluggable callable that consumes an experiment-state view and returns a count of new tasks to create per iteration (see §6.4 "bounded-overshoot" class). The protocol does not prescribe a specific policy.
-2. **Execution-task dispatch** (`dispatch_mode.execution_dispatch`). For each idea with `state == "ready"` that has no live `kind == "execution"` task referencing it (no task in `pending`, `claimed`, or `submitted` whose `payload.idea_id` equals the idea's id), an orchestrator instance MUST eventually create exactly one `kind == "execution"` task with `payload.idea_id` set. The "exactly one" property is enforced by the task store under §6.4's exact-idempotent class.
-3. **Evaluation-task dispatch** (`dispatch_mode.evaluation_dispatch`). For each variant with `status == "starting"` and `commit_sha` set that has no live `kind == "evaluation"` task referencing it (no task in `pending`, `claimed`, or `submitted` whose `payload.variant_id` equals the variant's id), an orchestrator instance MUST eventually create exactly one `kind == "evaluation"` task with `payload.variant_id` set. Same "exactly one" property as execution dispatch.
-4. **Integration** (`dispatch_mode.integration`). For each variant with `status == "success"` and `variant_commit_sha` unset, an orchestrator instance MUST eventually invoke the integrator ([`06-integrator.md`](06-integrator.md)) — which writes the §3.4 (variant_commit_sha, `variant.integrated`) composite under same-value idempotency ([`07-wire-protocol.md`](07-wire-protocol.md) §5).
+The orchestrator runs **five** decision types per iteration. Decision-type 0 (termination) is consulted **first**; it gates whether the four operational decision types (1-4) run at all on this iteration. Once the termination decision has committed a `running → terminated` transition, only the integration decision (4) continues to run on this and subsequent iterations until the integration drain completes; the other three operational decisions (1, 2, 3) MUST NOT run on a terminated experiment ([`02-data-model.md`](02-data-model.md) §2.5).
+
+0. **Termination** (`dispatch_mode.termination`). Before the four operational decisions, the orchestrator MAY consult a deployment-supplied **termination policy**. The policy is invoked with a read-only view of experiment state and returns one of:
+
+   - `Continue` — proceed to the four operational decisions below for this iteration.
+   - `Terminate(reason: str)` — atomically transition the experiment's `state` from `"running"` to `"terminated"` and append `experiment.terminated` ([`05-event-protocol.md`](05-event-protocol.md) §3.4) carrying the policy's `reason`. From this iteration's transition onward, only the integration decision continues to run.
+
+   The policy is invoked only when `dispatch_mode.termination == "auto"`. When `"manual"` (the default for backward compatibility with pre-12a-3 deployments; see [`02-data-model.md`](02-data-model.md) §2.4), the orchestrator MUST NOT consult any termination policy; the operational decisions run unconditionally. Termination MAY still occur via the operator-driven wire op ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9) regardless of `dispatch_mode.termination`'s value.
+
+   **Fault tolerance.** A termination policy that raises (rather than returning `Continue` or `Terminate(...)`) MUST be treated as `Continue`: the orchestrator continues to run the four operational decisions for this iteration. The orchestrator MUST emit an `experiment.policy_error` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) recording the failure so operators see it in the event log. A failing policy is the operator's config bug, not a deployment failure: the historical never-terminate behavior is a safer fallback than crashing the orchestrator or terminating the experiment as a fail-safe.
+
+   The protocol does not prescribe specific policies. A reference library of common policies ships separately ([`reference/packages/eden-orchestrator/`](../../reference/packages/eden-orchestrator/)) and is non-normative.
+
+1. **Ideation-task creation** (`dispatch_mode.ideation_creation`). The orchestrator MAY create new `kind == "ideation"` tasks per a deployment-defined policy. The policy mechanism is binding-specific: the reference impl exposes a pluggable callable that consumes an experiment-state view and returns a count of new tasks to create per iteration (see §6.4 "bounded-overshoot" class). The protocol does not prescribe a specific policy. **MUST NOT run** when `experiment.state == "terminated"`.
+2. **Execution-task dispatch** (`dispatch_mode.execution_dispatch`). For each idea with `state == "ready"` that has no live `kind == "execution"` task referencing it (no task in `pending`, `claimed`, or `submitted` whose `payload.idea_id` equals the idea's id), an orchestrator instance MUST eventually create exactly one `kind == "execution"` task with `payload.idea_id` set AND `payload.target` populated from `idea.intended_executor` (the idea's routing hint per [`02-data-model.md`](02-data-model.md) §5.1; `null` when omitted). The "exactly one" property is enforced by the task store under §6.4's exact-idempotent class. **MUST NOT run** when `experiment.state == "terminated"`.
+3. **Evaluation-task dispatch** (`dispatch_mode.evaluation_dispatch`). For each variant with `status == "starting"` and `commit_sha` set that has no live `kind == "evaluation"` task referencing it (no task in `pending`, `claimed`, or `submitted` whose `payload.variant_id` equals the variant's id), an orchestrator instance MUST eventually create exactly one `kind == "evaluation"` task with `payload.variant_id` set. Same "exactly one" property as execution dispatch. **MUST NOT run** when `experiment.state == "terminated"`.
+4. **Integration** (`dispatch_mode.integration`). For each variant with `status == "success"` and `variant_commit_sha` unset, an orchestrator instance MUST eventually invoke the integrator ([`06-integrator.md`](06-integrator.md)) — which writes the §3.4 (variant_commit_sha, `variant.integrated`) composite under same-value idempotency ([`07-wire-protocol.md`](07-wire-protocol.md) §5). **Continues to run** on a terminated experiment until no `status == "success"` variants without `variant_commit_sha` remain (the integration drain): stranding an unintegrated success variant would violate the canonical-lineage invariant ([`01-concepts.md`](01-concepts.md) §9), so termination stops *new work* but does not abandon *committed work in flight*.
 
 ### 6.3 Authority boundary
 
@@ -214,26 +227,38 @@ The orchestrator MUST NOT impersonate other workers when finalizing submissions.
 
 ### 6.4 Multi-instance safety
 
-The four decision types fall into two safety classes under concurrent execution by N orchestrator instances:
+The five decision types fall into two safety classes under concurrent execution by N orchestrator instances:
 
-**Exact-idempotent decisions.** `execution_dispatch`, `evaluation_dispatch`, and `integration` MUST be exactly idempotent under concurrent execution: repeated or concurrent invocation MUST converge on a single outcome. The task store MUST enforce uniqueness constraints sufficient to make this property mechanical:
+**Exact-idempotent decisions.** `termination`, `execution_dispatch`, `evaluation_dispatch`, and `integration` MUST be exactly idempotent under concurrent execution: repeated or concurrent invocation MUST converge on a single outcome. The task store MUST enforce uniqueness constraints sufficient to make this property mechanical:
 
 - At most one **live** (`pending` / `claimed` / `submitted`) `kind == "execution"` task per `payload.idea_id`. A second concurrent `create_execution_task(idea_id=I)` MUST observe the first's commit and either no-op (returning the existing task) or fail with `eden://error/already-exists`; it MUST NOT produce a second distinct task.
 - At most one **live** `kind == "evaluation"` task per `payload.variant_id`. Same shape.
 - Exactly one `variant_commit_sha` assignment per variant. Concurrent `integrate_variant` calls with the same SHA MUST collapse to one wire-visible `variant.integrated` event per [`06-integrator.md`](06-integrator.md) §3.4 and [`07-wire-protocol.md`](07-wire-protocol.md) §5's same-value idempotency.
+- Exactly one `running → terminated` transition per experiment. When N replicas each call `terminate_experiment` concurrently, the Store MUST serialize them: the first commit transitions state and appends `experiment.terminated`; subsequent calls observe the already-terminated state and no-op (returning success without a second event). The [`02-data-model.md`](02-data-model.md) §2.5 prose makes the no-op explicit; the operator's `reason` from the winning call is the one recorded.
 
 **Bounded-overshoot decisions.** `ideation_creation` MUST be bounded under concurrent execution but is NOT required to be exactly idempotent. With N concurrent orchestrator instances each applying a policy that targets a pending count of `T`, the post-iteration pending count MUST be ≤ `N * T`. Each orchestrator MUST read the experiment's pending-ideation-task count before deciding how many tasks to create, so that subsequent iterations self-correct downward as pending exceeds `T`. A deployment that requires exact control over pending-task count MUST supply a policy callable that implements its own coordination (e.g., advisory locks via the store); the protocol does not require that coordination at the role level.
 
-The split is intentional: dispatch and integration are CAS-friendly (a single CAS commit decides the outcome), so demanding exactness costs nothing. Ideation creation is not CAS-friendly (the policy returns a count, not a single resource), so demanding exactness would force every orchestrator into a global lock — exactly the lease mechanism this contract deliberately avoids. A deployment that adds a non-CAS-friendly decision type in a later spec lineage MAY introduce a lease primitive at that point; v0 does not.
+The split is intentional: dispatch, integration, and termination are CAS-friendly (a single CAS commit decides the outcome), so demanding exactness costs nothing. Ideation creation is not CAS-friendly (the policy returns a count, not a single resource), so demanding exactness would force every orchestrator into a global lock — exactly the lease mechanism this contract deliberately avoids. A deployment that adds a non-CAS-friendly decision type in a later spec lineage MAY introduce a lease primitive at that point; v0 does not.
 
-Conformance scenarios for §6.4 assert the four decision types under simulated multi-instance contention; see [`09-conformance.md`](09-conformance.md) §5.
+Conformance scenarios for §6.4 assert the five decision types under simulated multi-instance contention; see [`09-conformance.md`](09-conformance.md) §5.
+
+### 6.4.1 `terminate` racing `integrate_variant`
+
+Both `terminate_experiment` and `integrate_variant` are composite commits whose effects span experiment state and the canonical lineage. When the two race against the same Store, the Store serializes them via the §6.4 exact-idempotent rule. Three observable cases follow:
+
+- **`terminate` commits first, then `integrate`.** The integrator's commit observes `experiment.state == "terminated"`. The Store's terminated-experiment guard ([`02-data-model.md`](02-data-model.md) §2.5) does NOT block integration — the [`02-data-model.md`](02-data-model.md) §2.5 drain semantics permit (and require) `integrate_variant` to succeed on already-terminated experiments so success variants are not stranded. Observable order: `experiment.terminated` precedes `variant.integrated`.
+- **`integrate` commits first, then `terminate`.** The integrator's commit observes `experiment.state == "running"` and proceeds normally. The subsequent `terminate_experiment` commits the lifecycle transition. Observable order: `variant.integrated` precedes `experiment.terminated`.
+- **Simultaneous.** The Store's transaction lock serializes one of the two cases above.
+
+**Pinned contract:** the two events MAY appear in either order; both orderings are legal. Cardinality is pinned (exactly one `experiment.terminated`; exactly one `variant.integrated` per variant). Final state is pinned: once both calls have committed, `experiment.state == "terminated"` AND the integrated variant carries `variant_commit_sha`.
 
 ### 6.5 Manual mode
 
 When `dispatch_mode.<decision>` is `"manual"`, the decision is driven by an authorized external caller using the same wire ops the orchestrator would have used:
 
+- Manual `termination`: a caller in `admins` calls `terminate_experiment` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9) with body `{"reason": "<string>"}`. The terminate wire op is admin-gated regardless of `dispatch_mode.termination`'s value: an operator MAY terminate even when termination is auto (the §6.4.1 race resolves both paths to the same final state). `dispatch_mode.termination == "manual"` ONLY suppresses policy consultation; it does not gate the operator wire op.
 - Manual `ideation_creation` / `evaluation_dispatch`: a caller in `admins` ([`02-data-model.md`](02-data-model.md) §7.5) calls `create_task` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.1) with the appropriate `kind` and `payload`.
-- Manual `execution_dispatch`: v0 with 12a-2 applied does not define a non-orchestrator caller path for `create_task(kind="execution")` — the [`07-wire-protocol.md`](07-wire-protocol.md) §13.3 authority requirement is `orchestrators` for execution tasks (a future spec lineage that introduces an `intended_executor` hint on ideas will add an admin-gated path). Configuring `execution_dispatch == "manual"` is permitted but no caller can drive it without temporarily flipping back to `"auto"`; a deployment that wants per-task routing control SHOULD instead leave the flag `"auto"` and `reassign_task` ([`04-task-protocol.md`](04-task-protocol.md) §6) after creation.
+- Manual `execution_dispatch`: a caller in `admins` calls `create_task(kind="execution")` with `payload.idea_id` set. The body MAY include an explicit `target` to override the referenced idea's `intended_executor`; when `target` is omitted, the Store MUST populate it from `idea.intended_executor` (or `null` when the idea has none). Per [`07-wire-protocol.md`](07-wire-protocol.md) §13.3, `admins` membership is the authority gate; `orchestrators` MAY also drive the operation (the auto-orchestrator path). Pre-12a-3 lineages restricted this to `orchestrators` only; 12a-3 lifts the restriction now that the `intended_executor` field gives the operator a non-fungible routing seed.
 - Manual `integration`: a caller in `orchestrators` calls `integrate_variant` ([`07-wire-protocol.md`](07-wire-protocol.md) §5).
 
 The orchestrator-role contract is mechanism-neutral: the spec does not distinguish "human created this task" from "auto-orchestrator created this task" beyond the `task.created_by` attribution ([`02-data-model.md`](02-data-model.md) §3.1). The `dispatch_mode` flag exists so an operator can carve out a window of authority for themselves on a specific decision type without forking the orchestrator off-protocol.
@@ -247,4 +272,4 @@ How a role is invoked, addressed, or configured is **not specified in v0**. A co
 - Collapse multiple roles into a single process that consumes its own task queue.
 - Host a role as a WebAssembly module, a browser tab, or a human interface.
 
-Role-binding information that an implementation needs to invoke its roles MAY be carried as additional top-level fields on the experiment config ([`02-data-model.md`](02-data-model.md) §2.4). A future v0 addition or a v1 chapter will specify a standardized role-binding representation; until then, the protocol constrains only what each role observes and produces, not how it is reached.
+Role-binding information that an implementation needs to invoke its roles MAY be carried as additional top-level fields on the experiment config ([`02-data-model.md`](02-data-model.md) §2.3). A future v0 addition or a v1 chapter will specify a standardized role-binding representation; until then, the protocol constrains only what each role observes and produces, not how it is reached.

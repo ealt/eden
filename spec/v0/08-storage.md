@@ -47,7 +47,7 @@ Once a task is `completed` or `failed` ([`04-task-protocol.md`](04-task-protocol
 
 ### 1.6 Per-task serialization
 
-All mutating operations on a single task MUST be serialized: the observable history of a task is a total order ([`04-task-protocol.md`](04-task-protocol.md) §8.1). A conforming task store MUST NOT expose a state that has not yet been accompanied by its event ([§6](#6-transactional-guarantees)).
+All mutating operations on a single task MUST be serialized: the observable history of a task is a total order ([`04-task-protocol.md`](04-task-protocol.md) §9.1). A conforming task store MUST NOT expose a state that has not yet been accompanied by its event ([§6](#6-transactional-guarantees)).
 
 ### 1.7 Idea and variant persistence
 
@@ -59,6 +59,24 @@ Ideas ([`02-data-model.md`](02-data-model.md) §5) and variants ([`02-data-model
 - **Update** — apply the field writes the role contracts and task- terminal transitions specify ([`03-roles.md`](03-roles.md) §2.2, §3.2, §4.4; [`04-task-protocol.md`](04-task-protocol.md) §4.3, §5.4).
 
 All idea and variant writes MUST commit atomically with the accompanying event(s) per §6. The durability (§3.1), read-after-write (§3.2), crash-recovery (§3.3), and no-fabrication (§3.4) rules apply uniformly. Terminal immutability applies to ideas in `completed` and variants in `success`/`error`/`evaluation_error` — the `variant_commit_sha` field is the **one** post-terminal write permitted on a variant, written exclusively by the integrator ([`06-integrator.md`](06-integrator.md) §3.4), and it MUST be written atomically with its event and its `variant/*` ref.
+
+### 1.8 Experiment persistence and lifecycle ops
+
+Experiments ([`02-data-model.md`](02-data-model.md) §2.5) are persisted alongside tasks, ideas, and variants. A conforming deployment MAY back them with the task store itself, with a separate store, or with any combination; the protocol constrains the observable contract, not the physical layout. Every conforming deployment MUST expose:
+
+| Operation | Arguments | Effect |
+|---|---|---|
+| `read_experiment_state` | `experiment_id` | Returns the experiment's current `state` (`"running"` or `"terminated"`). |
+| `update_experiment_state` | `experiment_id`, `new_state` | Internal primitive: atomically transitions `state` to `new_state`. Used by `terminate_experiment` and the orchestrator's policy-driven termination branch ([`03-roles.md`](03-roles.md) §6.2 decision-type 0). Not a public wire op in v0. |
+| `terminate_experiment` | `experiment_id`, `reason`, `terminated_by` | Public lifecycle op ([`04-task-protocol.md`](04-task-protocol.md) §8.1). Atomically transitions `state` from `"running"` to `"terminated"` and appends `experiment.terminated` ([`05-event-protocol.md`](05-event-protocol.md) §3.4) carrying `reason` and `terminated_by`. Idempotent on the terminated state: a call against an already-terminated experiment MUST return success without appending a second event. |
+
+The state update and the `experiment.terminated` event MUST commit in a single transaction per §6.1's composite-commit rule: subscribers MUST NOT observe one without the other. The same applies to the orchestrator's policy-driven termination — the state update + event append are a single atomic commit regardless of whether the trigger was operator-driven or policy-driven.
+
+`update_experiment_state` is the underlying primitive both code paths share. It is described here so that conforming implementations have a single reference for the storage-layer contract; the wire layer (chapter 07) does not expose it.
+
+**Terminated-experiment guard.** A conforming task store MUST reject every `create_task` op and every `claim` op against a `pending` task whose experiment is in state `"terminated"`, with `eden://error/illegal-transition` ([`04-task-protocol.md`](04-task-protocol.md) §2, §3.5 step 0). Already-claimed tasks MAY still complete normally (`submit`/`accept`/`reject`); the integrator's `integrate_variant` op also continues to run per the drain semantics ([`02-data-model.md`](02-data-model.md) §2.5). The guard is the Store's responsibility, not the binding's: in-process callers that bypass the binding MUST still observe it.
+
+The §6 transactional invariant applies uniformly to experiment-state transitions: `terminate_experiment` (and the orchestrator's policy-driven path) commits the state field update and the `experiment.terminated` event in a single transaction, observably atomic to subscribers.
 
 ## 2. Event log
 

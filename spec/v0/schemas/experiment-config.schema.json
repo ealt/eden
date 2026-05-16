@@ -1,12 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN experiment config",
-  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, evaluation schema, concurrency bound, termination bounds. Role bindings (how the ideator, executor, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and travel under additional properties; chapter 03 defines the role contracts but explicitly defers a normative role-binding representation to a future v0 addition or a v1 chapter (see 03-roles.md §6).",
+  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, evaluation schema, concurrency bound. Termination is a deployment-supplied policy (see 03-roles.md §6.2 decision-type 0); the pre-12a-3 max_variants / max_wall_time / convergence_window / target_condition fields have been removed from the normative schema (deployments MAY still carry them as additional properties — conforming implementations ignore them). Role bindings (how the ideator, executor, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and travel under additional properties; chapter 03 defines the role contracts but explicitly defers a normative role-binding representation to a future v0 addition or a v1 chapter (see 03-roles.md §6).",
   "type": "object",
   "required": [
     "parallel_variants",
-    "max_variants",
-    "max_wall_time",
     "evaluation_schema",
     "objective"
   ],
@@ -15,16 +13,6 @@
       "type": "integer",
       "minimum": 1,
       "description": "Maximum variants in flight simultaneously."
-    },
-    "max_variants": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Hard ceiling on variants attempted."
-    },
-    "max_wall_time": {
-      "type": "string",
-      "pattern": "^[1-9][0-9]*[smhd]$",
-      "description": "Hard ceiling on elapsed wall time; format is a positive integer followed by one of s, m, h, d."
     },
     "evaluation_schema": {
       "$ref": "evaluation-schema.schema.json"
@@ -44,24 +32,19 @@
         }
       }
     },
-    "convergence_window": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Terminate if the objective has not improved in this many variants."
-    },
-    "target_condition": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Condition over evaluation that terminates the experiment when satisfied."
-    },
     "dispatch_mode": {
       "type": "object",
-      "description": "Per-decision-type gate on orchestrator-role automation; see 02-data-model.md §2.5 and 03-roles.md §6.1. Every key defaults to 'auto'; an omitted key is equivalent to 'auto'. Unknown keys are tolerated and ignored by conforming implementations.",
+      "description": "Per-decision-type gate on orchestrator-role automation; see 02-data-model.md §2.4 and 03-roles.md §6.1. The four operational keys default to 'auto'; the 'termination' key defaults to 'manual' (backward-compatible with pre-12a-3 deployments that had no termination policy). An omitted operational key is equivalent to 'auto'; an omitted 'termination' is equivalent to 'manual'. Unknown keys are tolerated and ignored by conforming implementations.",
       "additionalProperties": {
         "type": "string",
         "enum": ["auto", "manual"]
       },
       "properties": {
+        "termination": {
+          "type": "string",
+          "enum": ["auto", "manual"],
+          "description": "When 'auto', the orchestrator consults the deployment-supplied termination policy each iteration (03-roles.md §6.2 decision-type 0). When 'manual' (the default), no termination policy is consulted; an operator MAY still terminate via POST /v0/experiments/{E}/terminate regardless of this flag."
+        },
         "ideation_creation": {
           "type": "string",
           "enum": ["auto", "manual"],
@@ -70,7 +53,7 @@
         "execution_dispatch": {
           "type": "string",
           "enum": ["auto", "manual"],
-          "description": "When 'auto', the orchestrator creates one execution task per ready idea. When 'manual', no caller can drive the decision in v0+12a-2 (a future spec lineage broadens authority); the deployment SHOULD leave this 'auto' and use reassign_task for per-task routing control."
+          "description": "When 'auto', the orchestrator creates one execution task per ready idea. When 'manual', operators in the 'admins' or 'orchestrators' group drive execution-task creation via POST /tasks (the body MAY carry an explicit target override; otherwise idea.intended_executor is the seed)."
         },
         "evaluation_dispatch": {
           "type": "string",

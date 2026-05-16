@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — terminate experiment request",
+  "description": "Body for POST /v0/experiments/{E}/terminate (07-wire-protocol.md §2.9). Admin-group-gated. The server stamps `terminated_by` on the resulting experiment.terminated event from the authenticated principal; the body MUST NOT carry it.",
+  "type": "object",
+  "required": ["reason"],
+  "additionalProperties": false,
+  "properties": {
+    "reason": {
+      "type": "string",
+      "description": "Free-form operator explanation; recorded on the experiment.terminated event."
+    }
+  }
+}
