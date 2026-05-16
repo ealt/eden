@@ -218,7 +218,16 @@ async def add_row(task_id: str, request: Request):
     priorities = [str(v) for v in form.getlist("priority")]
     parents = [str(v) for v in form.getlist("parent_commits")]
     contents = [str(v) for v in form.getlist("content")]
-    typed_state = _form_state_from_inputs(slugs, priorities, parents, contents)
+    intended_kinds = [str(v) for v in form.getlist("intended_executor_kind")]
+    intended_ids = [str(v) for v in form.getlist("intended_executor_id")]
+    typed_state = _form_state_from_inputs(
+        slugs,
+        priorities,
+        parents,
+        contents,
+        intended_executor_kinds=intended_kinds,
+        intended_executor_ids=intended_ids,
+    )
     # Persist typed input so a navigation away + return to GET /draft
     # re-hydrates the form. Append the new empty row so the buffered
     # row count matches what was just rendered.
@@ -296,9 +305,25 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     priorities = [str(v) for v in form.getlist("priority")]
     parents = [str(v) for v in form.getlist("parent_commits")]
     contents = [str(v) for v in form.getlist("content")]
-    drafts, errors = parse_idea_rows(slugs, priorities, parents, contents)
+    intended_kinds = [str(v) for v in form.getlist("intended_executor_kind")]
+    intended_ids = [str(v) for v in form.getlist("intended_executor_id")]
+    drafts, errors = parse_idea_rows(
+        slugs,
+        priorities,
+        parents,
+        contents,
+        intended_executor_kinds=intended_kinds,
+        intended_executor_ids=intended_ids,
+    )
     if errors:
-        form_state = _form_state_from_inputs(slugs, priorities, parents, contents)
+        form_state = _form_state_from_inputs(
+            slugs,
+            priorities,
+            parents,
+            contents,
+            intended_executor_kinds=intended_kinds,
+            intended_executor_ids=intended_ids,
+        )
         # Buffer typed state so a navigation away + return to GET
         # /draft re-hydrates the form (issue #2 in MANUAL_UI_ISSUES).
         _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
@@ -532,16 +557,22 @@ def _make_idea(
     artifacts_uri: str,
     now_iso: str,
 ) -> Idea:
-    return Idea(
-        idea_id=idea_id,
-        experiment_id=experiment_id,
-        slug=draft.slug,
-        priority=draft.priority,
-        parent_commits=list(draft.parent_commits),
-        artifacts_uri=artifacts_uri,
-        state="drafting",
-        created_at=now_iso,
-    )
+    kwargs: dict[str, Any] = {
+        "idea_id": idea_id,
+        "experiment_id": experiment_id,
+        "slug": draft.slug,
+        "priority": draft.priority,
+        "parent_commits": list(draft.parent_commits),
+        "artifacts_uri": artifacts_uri,
+        "state": "drafting",
+        "created_at": now_iso,
+    }
+    # The Idea model's `intended_executor: TaskTarget | None = None`
+    # rejects an explicit-None pass-through (NotNone validator); only
+    # include the kwarg when set so absent stays absent on the wire.
+    if draft.intended_executor is not None:
+        kwargs["intended_executor"] = draft.intended_executor
+    return Idea(**kwargs)
 
 
 def _iso(dt: Any) -> str:
@@ -553,12 +584,26 @@ def _iso(dt: Any) -> str:
 
 
 def _empty_row() -> dict[str, str]:
-    return {"slug": "", "priority": "1.0", "parent_commits": "", "content": ""}
+    return {
+        "slug": "",
+        "priority": "1.0",
+        "parent_commits": "",
+        "content": "",
+        "intended_executor_kind": "none",
+        "intended_executor_id": "",
+    }
 
 
 def _form_state_from_inputs(
-    slugs: list[str], priorities: list[str], parents: list[str], contents: list[str]
+    slugs: list[str],
+    priorities: list[str],
+    parents: list[str],
+    contents: list[str],
+    intended_executor_kinds: list[str] | None = None,
+    intended_executor_ids: list[str] | None = None,
 ) -> list[dict[str, str]]:
+    kinds = intended_executor_kinds or []
+    ids = intended_executor_ids or []
     n = max(len(slugs), len(priorities), len(parents), len(contents))
     out: list[dict[str, str]] = []
     for i in range(n):
@@ -568,6 +613,10 @@ def _form_state_from_inputs(
                 "priority": priorities[i] if i < len(priorities) else "1.0",
                 "parent_commits": parents[i] if i < len(parents) else "",
                 "content": contents[i] if i < len(contents) else "",
+                "intended_executor_kind": (
+                    kinds[i] if i < len(kinds) else "none"
+                ),
+                "intended_executor_id": ids[i] if i < len(ids) else "",
             }
         )
     return out

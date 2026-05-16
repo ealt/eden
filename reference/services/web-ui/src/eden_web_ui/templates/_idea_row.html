@@ -1,5 +1,5 @@
 {# Single idea row, rendered standalone for HTMX swaps and inline by ideator_claim.html. #}
-{% set row = row_state if row_state is defined else {"slug":"","priority":"1.0","parent_commits":"","content":""} %}
+{% set row = row_state if row_state is defined else {"slug":"","priority":"1.0","parent_commits":"","content":"","intended_executor_kind":"none","intended_executor_id":""} %}
 {% set row_errs = row_errs if row_errs is defined else {} %}
 <div class="idea-row" data-row-index="{{ i }}">
     <h3>row {{ i + 1 }}</h3>
@@ -19,4 +19,24 @@
         <textarea name="content" rows="6">{{ row.content }}</textarea>
         {% if row_errs.get("content") %}<span class="field-error">{{ row_errs["content"] }}</span>{% endif %}
     </label>
+    {# 12a-3: optional routing hint. The orchestrator's
+       execution_dispatch decision copies this to the resulting
+       execution task's `target` field (03-roles.md §6.2 decision-type
+       2). 'none' = open to any registered executor. #}
+    <fieldset class="intended-executor">
+        <legend>intended executor (optional)</legend>
+        <label>kind
+            <select name="intended_executor_kind">
+                <option value="none" {% if row.get("intended_executor_kind", "none") == "none" %}selected{% endif %}>none — any executor</option>
+                <option value="worker" {% if row.get("intended_executor_kind") == "worker" %}selected{% endif %}>worker</option>
+                <option value="group" {% if row.get("intended_executor_kind") == "group" %}selected{% endif %}>group</option>
+            </select>
+        </label>
+        <label>id
+            <input type="text" name="intended_executor_id"
+                   value="{{ row.get('intended_executor_id', '') }}"
+                   placeholder="worker_id / group_id (leave blank for kind=none)">
+        </label>
+        {% if row_errs.get("intended_executor") %}<span class="field-error">{{ row_errs["intended_executor"] }}</span>{% endif %}
+    </fieldset>
 </div>

@@ -13,6 +13,7 @@ This matches the ideator / executor / evaluator pattern.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -220,6 +221,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
         events_full = store.replay()
         workers_list = store.list_workers()
         groups_list = store.list_groups()
+        experiment_state = store.read_experiment_state()
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load dashboard data")
 
@@ -273,6 +275,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
             "worker_count": len(workers_list),
             "group_count": len(groups_list),
             "admin_disabled": admin_store is None,
+            "experiment_state": experiment_state,
         },
     )
 
@@ -1228,6 +1231,308 @@ def _outcome(
         return None
     level, message = pair
     return {"level": level, "message": message}
+
+
+# ---------------------------------------------------------------------
+# Ideas (12a-3 wave 5)
+# ---------------------------------------------------------------------
+
+_IDEA_STATE_VALUES = ("drafting", "ready", "dispatched", "completed")
+
+_CREATE_EXECUTION_OUTCOMES: dict[str, tuple[str, str]] = {
+    "ok": ("ok", "execution task created"),
+    "invalid-precondition": (
+        "error",
+        "this idea is not 'ready' or already has a live execution task",
+    ),
+    "invalid-target": (
+        "error",
+        "target id must match the §6.1 registry-id grammar; pick worker / group / none",
+    ),
+    "not-found": ("error", "idea not found"),
+    "illegal-transition": (
+        "error",
+        "the experiment is terminated; new execution tasks are forbidden",
+    ),
+    "transport": (
+        "error",
+        "transport failure; refresh and verify whether the task landed",
+    ),
+}
+
+
+@router.get("/ideas/", response_class=HTMLResponse, response_model=None)
+async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
+    """List every idea, optionally filtered by state.
+
+    Read-only view; per-idea actions (admin-driven
+    create-execution-task) hang off the idea-detail page.
+    """
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    store = request.app.state.store
+    state = _coerce_filter(request.query_params.get("state"), _IDEA_STATE_VALUES)
+    if state == _INVALID_FILTER:
+        ideas: list[Any] = []
+        state_for_select = request.query_params.get("state", "*")
+    else:
+        try:
+            ideas = store.list_ideas(state=state) if state else store.list_ideas()
+        except Exception:  # noqa: BLE001 — transport/store-domain
+            return _read_failure_response(request, "could not load ideas")
+        state_for_select = state or "*"
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "admin_ideas.html",
+        {
+            "session": session,
+            "ideas": ideas,
+            "idea_states": _IDEA_STATE_VALUES,
+            "state": state_for_select,
+        },
+    )
+
+
+@router.get(
+    "/ideas/{idea_id}/", response_class=HTMLResponse, response_model=None
+)
+async def idea_detail(
+    idea_id: str, request: Request
+) -> HTMLResponse | RedirectResponse:
+    """Per-idea detail page; surfaces intended_executor + create-task form."""
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    store = request.app.state.store
+    try:
+        idea = store.read_idea(idea_id)
+        live_execution_tasks = [
+            t
+            for t in store.list_tasks(kind="execution")
+            if t.payload.idea_id == idea_id
+        ]
+        workers_list = store.list_workers()
+        groups_list = store.list_groups()
+    except StorageNotFound:
+        raise
+    except Exception:  # noqa: BLE001 — transport/store-domain
+        return _read_failure_response(request, "could not load idea")
+    can_create_execution = idea.state == "ready" and not any(
+        t.state in ("pending", "claimed", "submitted") for t in live_execution_tasks
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "admin_idea_detail.html",
+        {
+            "session": session,
+            "idea": idea,
+            "live_execution_tasks": live_execution_tasks,
+            "workers": [w.worker_id for w in workers_list],
+            "groups": [g.group_id for g in groups_list],
+            "can_create_execution": can_create_execution,
+            "outcome": _outcome(
+                request, "created", "error", _CREATE_EXECUTION_OUTCOMES
+            ),
+        },
+    )
+
+
+@router.post(
+    "/ideas/{idea_id}/create-execution-task", response_model=None
+)
+async def create_execution_task(
+    idea_id: str,
+    request: Request,
+    csrf_token: str = Form(""),
+    target_kind: str = Form("none"),
+    target_id: str = Form(""),
+) -> RedirectResponse | HTMLResponse:
+    """Admin-driven execution-task creation (12a-3 §6.5 authority lift).
+
+    The pre-12a-3 path was orchestrators-only; 12a-3 broadens the wire
+    authority to admins OR orchestrators now that
+    ``idea.intended_executor`` gives operators a non-fungible routing
+    seed. The UI POSTs here; the route calls
+    ``Store.create_execution_task`` with an optional ``target``
+    override (defaults to the idea's ``intended_executor`` when
+    ``target_kind == "none"``).
+    """
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    if not csrf_ok(session, csrf_token):
+        return _csrf_failure_response()
+    target_kind = target_kind.strip().lower()
+    target_id = target_id.strip()
+    redirect_base = f"/admin/ideas/{idea_id}/"
+    if target_kind not in ("none", "worker", "group"):
+        return RedirectResponse(
+            url=f"{redirect_base}?error=invalid-target", status_code=303
+        )
+    target: TaskTarget | None = None
+    if target_kind != "none":
+        if not _REGISTRY_ID_RE.fullmatch(target_id):
+            return RedirectResponse(
+                url=f"{redirect_base}?error=invalid-target", status_code=303
+            )
+        target = TaskTarget(kind=target_kind, id=target_id)
+    elif target_id:
+        # Mis-click: kind=none + id supplied.
+        return RedirectResponse(
+            url=f"{redirect_base}?error=invalid-target", status_code=303
+        )
+    store = request.app.state.store
+    task_id = f"execution-{uuid.uuid4().hex[:12]}"
+    try:
+        if target is None:
+            store.create_execution_task(task_id, idea_id)
+        else:
+            store.create_execution_task(task_id, idea_id, target=target)
+    except StorageNotFound:
+        return RedirectResponse(
+            url=f"{redirect_base}?error=not-found", status_code=303
+        )
+    except IllegalTransition:
+        return RedirectResponse(
+            url=f"{redirect_base}?error=illegal-transition", status_code=303
+        )
+    except InvalidPrecondition:
+        return RedirectResponse(
+            url=f"{redirect_base}?error=invalid-precondition", status_code=303
+        )
+    except Exception:  # noqa: BLE001 — transport/store-domain
+        return RedirectResponse(
+            url=f"{redirect_base}?error=transport", status_code=303
+        )
+    return RedirectResponse(
+        url=f"{redirect_base}?created=ok", status_code=303
+    )
+
+
+# ---------------------------------------------------------------------
+# Experiment lifecycle (12a-3 wave 5)
+# ---------------------------------------------------------------------
+
+_TERMINATE_OUTCOMES: dict[str, tuple[str, str]] = {
+    "ok": ("ok", "experiment terminated"),
+    "already-terminated": (
+        "ok",
+        "experiment was already terminated (idempotent no-op)",
+    ),
+    "missing-reason": ("error", "reason is required"),
+    "admin-disabled": (
+        "error",
+        "the admin bearer is not configured; cannot drive lifecycle ops",
+    ),
+    "transport": (
+        "error",
+        "transport failure; refresh and verify the lifecycle state",
+    ),
+}
+
+
+@router.get(
+    "/experiment/", response_class=HTMLResponse, response_model=None
+)
+async def experiment_detail(
+    request: Request,
+) -> HTMLResponse | RedirectResponse:
+    """Experiment-lifecycle dashboard (12a-3).
+
+    Surfaces the runtime ``Experiment`` (state + created_at) plus the
+    terminate-experiment action when the experiment is still running.
+    """
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    store = request.app.state.store
+    admin_store = request.app.state.admin_store
+    try:
+        experiment = store.read_experiment()
+        events_full = store.replay()
+    except Exception:  # noqa: BLE001 — transport/store-domain
+        return _read_failure_response(request, "could not load experiment state")
+    terminated_event = next(
+        (e for e in events_full if e.type == "experiment.terminated"),
+        None,
+    )
+    policy_errors = [
+        e for e in events_full if e.type == "experiment.policy_error"
+    ]
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "admin_experiment.html",
+        {
+            "session": session,
+            "experiment": experiment,
+            "terminated_event": terminated_event,
+            "policy_errors": policy_errors[-10:],
+            "admin_disabled": admin_store is None,
+            "outcome": _outcome(
+                request, "terminated", "error", _TERMINATE_OUTCOMES
+            ),
+        },
+    )
+
+
+@router.post("/experiment/terminate", response_model=None)
+async def terminate_experiment(
+    request: Request,
+    csrf_token: str = Form(""),
+    reason: str = Form(""),
+) -> RedirectResponse | HTMLResponse:
+    """POST /admin/experiment/terminate — admin-driven lifecycle transition."""
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    if not csrf_ok(session, csrf_token):
+        return _csrf_failure_response()
+    admin_store = request.app.state.admin_store
+    if admin_store is None:
+        return RedirectResponse(
+            url="/admin/experiment/?error=admin-disabled", status_code=303
+        )
+    reason = reason.strip()
+    if not reason:
+        return RedirectResponse(
+            url="/admin/experiment/?error=missing-reason", status_code=303
+        )
+    # The session.worker_id is the principal driving the transition;
+    # the Store stamps it onto the experiment.terminated event.
+    try:
+        experiment = admin_store.terminate_experiment(
+            reason=reason, terminated_by=session.worker_id
+        )
+    except Exception:  # noqa: BLE001 — transport/store-domain
+        return RedirectResponse(
+            url="/admin/experiment/?error=transport", status_code=303
+        )
+    # Idempotent: terminate_experiment returns success even when the
+    # experiment was already terminated. We surface that as a distinct
+    # banner so the operator isn't surprised by a duplicate-click.
+    if experiment.state == "terminated":
+        # We can't easily tell from the return value whether this call
+        # OR a prior call won the race. The event log is authoritative;
+        # if our reason matches the stored event we won.
+        try:
+            events = admin_store.replay()
+        except Exception:  # noqa: BLE001 — non-fatal
+            return RedirectResponse(
+                url="/admin/experiment/?terminated=ok", status_code=303
+            )
+        winning = next(
+            (e for e in events if e.type == "experiment.terminated"),
+            None,
+        )
+        if winning is None or winning.data.get("reason") != reason:
+            return RedirectResponse(
+                url="/admin/experiment/?terminated=already-terminated",
+                status_code=303,
+            )
+    return RedirectResponse(
+        url="/admin/experiment/?terminated=ok", status_code=303
+    )
 
 
 __all__ = ["router"]

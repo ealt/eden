@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin / idea {{ idea.idea_id }}{% endblock %}
+{% block main %}
+<h1>idea <code>{{ idea.idea_id }}</code></h1>
+<p><a href="/admin/ideas/">&laquo; all ideas</a></p>
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+<section>
+    <h2>idea record</h2>
+    <table>
+        <tbody>
+            <tr><th>idea_id</th><td><code>{{ idea.idea_id }}</code></td></tr>
+            <tr><th>slug</th><td><code>{{ idea.slug }}</code></td></tr>
+            <tr><th>state</th><td>{{ idea.state }}</td></tr>
+            <tr><th>priority</th><td>{{ idea.priority }}</td></tr>
+            <tr><th>parent_commits</th>
+                <td>
+                {% for sha in idea.parent_commits %}
+                    <code>{{ sha }}</code>{% if not loop.last %}, {% endif %}
+                {% endfor %}
+                </td>
+            </tr>
+            <tr><th>artifacts_uri</th><td><code>{{ idea.artifacts_uri }}</code></td></tr>
+            <tr><th>created_at</th><td>{{ idea.created_at }}</td></tr>
+            <tr><th>created_by</th><td>{% if idea.created_by %}<code>{{ idea.created_by }}</code>{% else %}<em>(none)</em>{% endif %}</td></tr>
+            <tr><th>intended_executor</th>
+                <td>
+                {% if idea.intended_executor %}
+                    <code>{{ idea.intended_executor.kind }}:{{ idea.intended_executor.id }}</code>
+                    &mdash; the orchestrator's execution_dispatch decision will copy this to <code>task.target</code>
+                    on the resulting execution task (spec/v0/03-roles.md §6.2 decision-type 2).
+                {% else %}
+                    <em>(none)</em> &mdash; the resulting execution task will be open to any registered executor.
+                {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+<section>
+    <h2>execution tasks for this idea</h2>
+    {% if live_execution_tasks %}
+    <table>
+        <thead><tr><th>task_id</th><th>state</th><th>target</th></tr></thead>
+        <tbody>
+        {% for t in live_execution_tasks %}
+            <tr>
+                <td><a href="/admin/tasks/{{ t.task_id }}/"><code>{{ t.task_id }}</code></a></td>
+                <td>{{ t.state }}</td>
+                <td>
+                {% if t.target %}
+                    <code>{{ t.target.kind }}:{{ t.target.id }}</code>
+                {% else %}
+                    <em>none</em>
+                {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p><em>no execution tasks yet for this idea.</em></p>
+    {% endif %}
+</section>
+<section>
+    <h2>create execution task (admin)</h2>
+    {% if not can_create_execution %}
+        <p><em>
+            Only available when the idea is in <code>state == "ready"</code> AND no live
+            execution task already exists for it (spec/v0/03-roles.md §6.4 at-most-one-live).
+        </em></p>
+    {% else %}
+        <p>
+            12a-3 (spec/v0/03-roles.md §6.5): admins MAY now drive execution-task creation
+            directly. Pick a target override or leave kind=none to inherit the idea's
+            <code>intended_executor</code>.
+        </p>
+        <form action="/admin/ideas/{{ idea.idea_id }}/create-execution-task" method="post">
+            <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+            <label>target kind
+                <select name="target_kind">
+                    <option value="none" selected>none (inherit idea.intended_executor)</option>
+                    <option value="worker">worker</option>
+                    <option value="group">group</option>
+                </select>
+            </label>
+            <label>target id
+                <input type="text" name="target_id"
+                       list="registered-targets"
+                       placeholder="worker_id / group_id (leave blank when kind=none)">
+            </label>
+            <datalist id="registered-targets">
+                {% for w in workers %}<option value="{{ w }}">{% endfor %}
+                {% for g in groups %}<option value="{{ g }}">{% endfor %}
+            </datalist>
+            <button type="submit">create execution task</button>
+        </form>
+    {% endif %}
+</section>
+{% endblock %}
