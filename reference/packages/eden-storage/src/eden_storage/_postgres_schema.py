@@ -149,11 +149,33 @@ def _apply_v4(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# 12a-3: parallels the SQLite v5 migration. Adds `state` and
+# `created_at` to the experiment row and rewrites the persisted
+# `dispatch_mode` to include the new `termination: "manual"` key.
+# Pre-12a-3 rows pick up the 1970 sentinel for `created_at`;
+# deployments that care can rewrite the row out-of-band.
+_V5_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN state text NOT NULL DEFAULT 'running'",
+    "ALTER TABLE experiment ADD COLUMN created_at text NOT NULL "
+    "DEFAULT '1970-01-01T00:00:00Z'",
+    "UPDATE experiment SET dispatch_mode = "
+    "'{\"termination\":\"manual\",\"ideation_creation\":\"auto\","
+    "\"execution_dispatch\":\"auto\",\"evaluation_dispatch\":\"auto\","
+    "\"integration\":\"auto\"}'",
+]
+
+
+def _apply_v5(cur: Any) -> None:
+    for stmt in _V5_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
     _apply_v4,
+    _apply_v5,
 ]
 
 

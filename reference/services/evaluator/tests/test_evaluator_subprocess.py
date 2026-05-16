@@ -116,8 +116,6 @@ def _config(
 def _experiment_config() -> ExperimentConfig:
     return ExperimentConfig(
         parallel_variants=1,
-        max_variants=10,
-        max_wall_time="1h",
         evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
         objective=ObjectiveSpec(expr="score", direction="maximize"),
     )

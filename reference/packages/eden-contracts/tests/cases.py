@@ -30,21 +30,23 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "minimal",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
         True,
     ),
     Case(
-        "with_optional",
+        "with_legacy_fields_as_extras",
+        # 12a-3 dropped max_variants / max_wall_time / convergence_window /
+        # target_condition from the normative schema; legacy configs that
+        # still carry them are accepted as additional top-level properties
+        # under 02-data-model.md §2.3's forward-compatibility rule.
         {
             "parallel_variants": 4,
-            "max_variants": 200,
-            "max_wall_time": "30m",
             "evaluation_schema": {"loss": "real", "tokens": "integer", "note": "text"},
             "objective": {"expr": "loss", "direction": "minimize"},
+            "max_variants": 200,
+            "max_wall_time": "30m",
             "convergence_window": 20,
             "target_condition": "loss < 0.01",
         },
@@ -53,8 +55,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
     Case(
         "missing_parallel_variants",
         {
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
@@ -64,30 +64,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "parallel_variants_zero",
         {
             "parallel_variants": 0,
-            "max_variants": 50,
-            "max_wall_time": "4h",
-            "evaluation_schema": {"accuracy": "real"},
-            "objective": {"expr": "accuracy", "direction": "maximize"},
-        },
-        False,
-    ),
-    Case(
-        "wall_time_zero_prefix",
-        {
-            "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "0s",
-            "evaluation_schema": {"accuracy": "real"},
-            "objective": {"expr": "accuracy", "direction": "maximize"},
-        },
-        False,
-    ),
-    Case(
-        "wall_time_bad_unit",
-        {
-            "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4y",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
@@ -97,8 +73,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "evaluation_schema_empty",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {},
             "objective": {"expr": "accuracy", "direction": "maximize"},
         },
@@ -108,8 +82,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "evaluation_schema_reserved_key",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"variant_id": "text"},
             "objective": {"expr": "variant_id", "direction": "maximize"},
         },
@@ -119,8 +91,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "objective_invalid_direction",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "sideways"},
         },
@@ -130,45 +100,8 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "parallel_variants_bool",
         {
             "parallel_variants": True,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
-        },
-        False,
-    ),
-    Case(
-        "max_variants_string",
-        {
-            "parallel_variants": 2,
-            "max_variants": "50",
-            "max_wall_time": "4h",
-            "evaluation_schema": {"accuracy": "real"},
-            "objective": {"expr": "accuracy", "direction": "maximize"},
-        },
-        False,
-    ),
-    Case(
-        "convergence_window_string",
-        {
-            "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
-            "evaluation_schema": {"accuracy": "real"},
-            "objective": {"expr": "accuracy", "direction": "maximize"},
-            "convergence_window": "3",
-        },
-        False,
-    ),
-    Case(
-        "convergence_window_null",
-        {
-            "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
-            "evaluation_schema": {"accuracy": "real"},
-            "objective": {"expr": "accuracy", "direction": "maximize"},
-            "convergence_window": None,
         },
         False,
     ),
@@ -176,11 +109,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "dispatch_mode_all_auto",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "dispatch_mode": {
+                "termination": "auto",
                 "ideation_creation": "auto",
                 "execution_dispatch": "auto",
                 "evaluation_dispatch": "auto",
@@ -193,11 +125,10 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "dispatch_mode_mixed",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "dispatch_mode": {
+                "termination": "manual",
                 "evaluation_dispatch": "manual",
                 "integration": "manual",
             },
@@ -205,14 +136,24 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         True,
     ),
     Case(
+        "dispatch_mode_termination_only",
+        # 12a-3: a deployment that wants policy-driven termination flips
+        # only the new key; the four operational keys default to "auto".
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {"termination": "auto"},
+        },
+        True,
+    ),
+    Case(
         "dispatch_mode_unknown_key_tolerated",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
-            # Per 02-data-model.md §2.5: unknown keys are tolerated
+            # Per 02-data-model.md §2.4: unknown keys are tolerated
             # by the schema and ignored by conforming implementations.
             "dispatch_mode": {"future_decision": "auto"},
         },
@@ -222,8 +163,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "dispatch_mode_invalid_value",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "dispatch_mode": {"ideation_creation": "paused"},
@@ -234,8 +173,6 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "dispatch_mode_null",
         {
             "parallel_variants": 2,
-            "max_variants": 50,
-            "max_wall_time": "4h",
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "dispatch_mode": None,
@@ -952,6 +889,70 @@ EVENT_CASES: list[Case] = [
         },
         False,
     ),
+    # --- registered types: experiment.terminated (12a-3) ---
+    Case(
+        "experiment_terminated_ok",
+        {
+            "event_id": "evt-term-1",
+            "type": "experiment.terminated",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "reason": "max_variants policy reached",
+                "terminated_by": "admin-eric",
+            },
+        },
+        True,
+    ),
+    Case(
+        "experiment_terminated_missing_reason",
+        {
+            "event_id": "evt-term-2",
+            "type": "experiment.terminated",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"terminated_by": "admin-eric"},
+        },
+        False,
+    ),
+    Case(
+        "experiment_terminated_actor_uppercase",
+        {
+            "event_id": "evt-term-3",
+            "type": "experiment.terminated",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"reason": "done", "terminated_by": "Admin"},
+        },
+        False,
+    ),
+    # --- registered types: experiment.policy_error (12a-3) ---
+    Case(
+        "experiment_policy_error_ok",
+        {
+            "event_id": "evt-pe-1",
+            "type": "experiment.policy_error",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "policy_kind": "termination",
+                "error_type": "ValueError",
+                "error_message": "policy callable raised: bad config",
+            },
+        },
+        True,
+    ),
+    Case(
+        "experiment_policy_error_missing_type",
+        {
+            "event_id": "evt-pe-2",
+            "type": "experiment.policy_error",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"policy_kind": "termination", "error_message": "x"},
+        },
+        False,
+    ),
     # --- registered types: idea.* ---
     Case(
         "idea_drafted_ok",
@@ -1328,6 +1329,68 @@ IDEA_CASES: list[Case] = [
             "state": "drafting",
             "created_at": _DT,
             "created_by": None,
+        },
+        False,
+    ),
+    Case(
+        "intended_executor_worker",
+        # 12a-3: the ideator MAY tag a routing hint that the
+        # orchestrator's execution_dispatch copies to task.target.
+        {
+            "idea_id": "idea-18",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "intended_executor": {"kind": "worker", "id": "executor-a"},
+        },
+        True,
+    ),
+    Case(
+        "intended_executor_group",
+        {
+            "idea_id": "idea-19",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "intended_executor": {"kind": "group", "id": "humans"},
+        },
+        True,
+    ),
+    Case(
+        "intended_executor_bad_kind",
+        {
+            "idea_id": "idea-20",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "intended_executor": {"kind": "team", "id": "humans"},
+        },
+        False,
+    ),
+    Case(
+        "intended_executor_null",
+        {
+            "idea_id": "idea-21",
+            "experiment_id": "exp-1",
+            "slug": "s",
+            "priority": 0.0,
+            "parent_commits": [_SHA1],
+            "artifacts_uri": "s3://b/",
+            "state": "drafting",
+            "created_at": _DT,
+            "intended_executor": None,
         },
         False,
     ),

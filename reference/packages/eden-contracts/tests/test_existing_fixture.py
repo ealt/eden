@@ -27,6 +27,5 @@ def test_experiment_fixture_validates() -> None:
     data = yaml.safe_load(FIXTURE.read_text())
     config = ExperimentConfig.model_validate(data)
     assert config.parallel_variants >= 1
-    assert config.max_variants >= 1
     assert config.objective.expr
     assert config.evaluation_schema.root

@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ._common import CommitSha, DateTimeStr, NotNone, UriStr, WorkerId
+from .task import TaskTarget
 
 IdeaState = Literal["drafting", "ready", "dispatched", "completed"]
 """Idea lifecycle states; ``completed`` is terminal and covers both success and failure."""
@@ -33,3 +34,9 @@ class Idea(BaseModel):
     state: IdeaState
     created_at: DateTimeStr
     created_by: Annotated[WorkerId | None, NotNone] = None
+    # 12a-3 routing hint: when the ideator names a preferred executor
+    # (worker or group), the orchestrator's execution_dispatch decision
+    # copies it to the resulting execution task's ``target`` field per
+    # ``03-roles.md`` §6.2 decision-type 2. Absent (or admin-overridden
+    # via ``create_task`` payload.target) means "any registered executor".
+    intended_executor: Annotated[TaskTarget | None, NotNone] = None

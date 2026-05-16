@@ -368,6 +368,7 @@ class TestDispatchModeUpdateRequestParity:
 class TestDispatchModeResponseParity:
     def test_accept_default(self) -> None:
         model = DispatchModeResponse(
+            termination="manual",
             ideation_creation="auto",
             execution_dispatch="auto",
             evaluation_dispatch="auto",
@@ -383,6 +384,7 @@ class TestDispatchModeResponseParity:
             _validate_against(
                 "dispatch-mode-response.schema.json",
                 {
+                    "termination": "manual",
                     "ideation_creation": "auto",
                     "execution_dispatch": "auto",
                     "evaluation_dispatch": "auto",

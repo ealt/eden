@@ -7,13 +7,14 @@ from .config import (
     DispatchModeValue,
     ExperimentConfig,
     ObjectiveSpec,
-    WallTime,
 )
 from .evaluation import EvaluationSchema, MetricName, MetricType
 from .event import (
     REGISTERED_EVENT_TYPES,
     Event,
     ExperimentDispatchModeChangedEvent,
+    ExperimentPolicyErrorEvent,
+    ExperimentTerminatedEvent,
     FailReason,
     IdeaCompletedEvent,
     IdeaDispatchedEvent,
@@ -35,6 +36,7 @@ from .event import (
     VariantStartedEvent,
     VariantSucceededEvent,
 )
+from .experiment import Experiment, ExperimentState
 from .group import Group, GroupMember
 from .idea import Idea, IdeaState, Slug
 from .task import (
@@ -65,8 +67,12 @@ __all__ = [
     "EvaluationPayload",
     "EvaluationTask",
     "Event",
+    "Experiment",
     "ExperimentConfig",
     "ExperimentDispatchModeChangedEvent",
+    "ExperimentPolicyErrorEvent",
+    "ExperimentState",
+    "ExperimentTerminatedEvent",
     "FailReason",
     "ExecutionPayload",
     "ExecutionTask",
@@ -109,7 +115,6 @@ __all__ = [
     "VariantStartedEvent",
     "VariantStatus",
     "VariantSucceededEvent",
-    "WallTime",
     "WorkBranch",
     "Worker",
     "WorkerId",

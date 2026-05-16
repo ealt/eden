@@ -48,6 +48,8 @@ from eden_contracts import (
     EvaluationTask,
     Event,
     ExecutionTask,
+    Experiment,
+    ExperimentState,
     FailReason,
     Group,
     Idea,
@@ -194,8 +196,21 @@ class Store(Protocol):
         """Atomically insert an ``ideation`` task + ``task.created`` event."""
         ...
 
-    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
-        """Create an ``execution`` task; composite-commits ``idea.dispatched``."""
+    def create_execution_task(
+        self,
+        task_id: str,
+        idea_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> ExecutionTask:
+        """Create an ``execution`` task; composite-commits ``idea.dispatched``.
+
+        12a-3: ``target`` is the optional admin-supplied override on
+        the resulting ``task.target``. When omitted, the task inherits
+        the referenced idea's ``intended_executor``; an explicit
+        ``target`` wins over the idea's hint per
+        [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md) §6.5.
+        """
         ...
 
     def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
@@ -279,6 +294,47 @@ class Store(Protocol):
         Returns the post-update task. ``StoreClient`` ships this as a
         wave-3 stub that raises ``NotImplementedError`` until the wire
         endpoint lands.
+        """
+        ...
+
+    def read_experiment(self) -> Experiment:
+        """Return the experiment runtime object (state + created_at).
+
+        Per [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5. Distinct from the declarative ``experiment-config`` —
+        this object carries only observed runtime state.
+        """
+        ...
+
+    def read_experiment_state(self) -> ExperimentState:
+        """Return the experiment's current lifecycle state.
+
+        Convenience shorthand for ``self.read_experiment().state``.
+        """
+        ...
+
+    def update_experiment_state(self, new_state: ExperimentState) -> Experiment:
+        """Internal primitive: atomically update the experiment lifecycle state.
+
+        Not a public wire op in v0 (per
+        [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §8.3). Used by :meth:`terminate_experiment` and the
+        orchestrator's policy-driven termination branch. v0 defines
+        exactly one legal transition (``"running" → "terminated"``).
+        """
+        ...
+
+    def terminate_experiment(
+        self, *, reason: str, terminated_by: str
+    ) -> Experiment:
+        """Atomically commit the ``running → terminated`` lifecycle transition.
+
+        Per [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §8.1: the state field update and the ``experiment.terminated``
+        event are a single transaction. Idempotent on the terminated
+        state — a second call returns success without committing a
+        second transition and without appending a second event; the
+        winning caller's ``reason`` is the one recorded.
         """
         ...
 

@@ -253,6 +253,9 @@ class TestDispatchModeEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {
+            # 12a-3: `termination` defaults to "manual"; the four
+            # operational keys default to "auto".
+            "termination": "manual",
             "ideation_creation": "auto",
             "execution_dispatch": "auto",
             "evaluation_dispatch": "auto",

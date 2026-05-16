@@ -197,14 +197,16 @@ class DispatchModeUpdateRequest(_WireBase):
 
     A partial dispatch_mode object — any subset of the four normative
     keys (``ideation_creation`` / ``execution_dispatch`` /
-    ``evaluation_dispatch`` / ``integration``). Unknown keys are
-    tolerated per [`02-data-model.md`](../../../../spec/v0/02-data-model.md)
-    §2.5 and round-trip through via ``extra="allow"``. The server
-    stamps ``updated_by`` from the authenticated principal.
+    ``evaluation_dispatch`` / ``integration``, plus the 12a-3
+    ``termination`` key). Unknown keys are tolerated per
+    [`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.4
+    and round-trip through via ``extra="allow"``. The server stamps
+    ``updated_by`` from the authenticated principal.
     """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
+    termination: Annotated[DispatchModeValue | None, NotNone] = None
     ideation_creation: Annotated[
         DispatchModeValue | None, NotNone
     ] = None
@@ -220,12 +222,13 @@ class DispatchModeUpdateRequest(_WireBase):
 class DispatchModeResponse(_WireBase):
     """Body for ``GET`` / ``PATCH`` ``/v0/experiments/{E}/dispatch_mode``.
 
-    Full post-update state, all four normative keys present. Unknown
+    Full post-update state, all five normative keys present. Unknown
     keys persisted by older writes round-trip via ``extra="allow"``.
     """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
+    termination: DispatchModeValue
     ideation_creation: DispatchModeValue
     execution_dispatch: DispatchModeValue
     evaluation_dispatch: DispatchModeValue

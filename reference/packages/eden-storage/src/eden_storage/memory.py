@@ -20,9 +20,14 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from threading import RLock
 
-from eden_contracts import Event, Group, Idea, Task, Variant, Worker
+from eden_contracts import Event, Experiment, Group, Idea, Task, Variant, Worker
 
-from ._base import _DEFAULT_DISPATCH_MODE, _StoreBase, _Tx
+from ._base import (
+    _DEFAULT_DISPATCH_MODE,
+    _DEFAULT_EXPERIMENT_STATE,
+    _StoreBase,
+    _Tx,
+)
 from .submissions import Submission
 
 
@@ -47,10 +52,18 @@ class InMemoryStore(_StoreBase):
         self._workers: dict[str, Worker] = {}
         self._worker_credentials: dict[str, str] = {}
         self._groups: dict[str, Group] = {}
-        # 12a-2 dispatch_mode. Initialized to the all-`auto` default
-        # from `02-data-model.md` §2.5; mutated atomically via
+        # 12a-2 dispatch_mode. Initialized to the four-operational-key
+        # all-`auto` plus `termination` `manual` default from
+        # `02-data-model.md` §2.4; mutated atomically via
         # `update_dispatch_mode`.
         self._dispatch_mode: dict[str, str] = dict(_DEFAULT_DISPATCH_MODE)
+        # 12a-3 experiment lifecycle state (`02-data-model.md` §2.5).
+        # `_experiment_state` defaults to "running" at construction;
+        # `_experiment_created_at` is captured from the store's clock
+        # so termination policies that key off wall-time work without
+        # extra plumbing.
+        self._experiment_state: str = _DEFAULT_EXPERIMENT_STATE
+        self._experiment_created_at: str = self._ts()
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -115,6 +128,13 @@ class InMemoryStore(_StoreBase):
     def _get_dispatch_mode(self) -> dict[str, str]:
         return dict(self._dispatch_mode)
 
+    def _get_experiment(self) -> Experiment:
+        return Experiment(
+            experiment_id=self._experiment_id,
+            state=self._experiment_state,  # type: ignore[arg-type]
+            created_at=self._experiment_created_at,
+        )
+
     def _apply_commit(self, tx: _Tx) -> None:
         for task_id, task in tx.tasks.items():
             self._tasks[task_id] = task
@@ -139,4 +159,6 @@ class InMemoryStore(_StoreBase):
             self._groups.pop(group_id, None)
         if tx.dispatch_mode is not None:
             self._dispatch_mode = dict(tx.dispatch_mode)
+        if tx.experiment_state is not None:
+            self._experiment_state = tx.experiment_state
         self._events.extend(tx.events)

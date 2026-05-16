@@ -173,11 +173,42 @@ def _apply_v4(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# 12a-3: the experiment row gains a `state` column carrying the
+# lifecycle state per `02-data-model.md` §2.5, and a `created_at`
+# column so termination policies that key off wall-time work without
+# extra plumbing. Pre-12a-3 rows pick up `state='running'` (every
+# unterminated experiment) and a sentinel `created_at` that signals
+# "we don't actually know" — deployments that care can rewrite the
+# row out-of-band. The `dispatch_mode` default is also rewritten to
+# include the new `termination: "manual"` key; existing rows are
+# UPDATEd in place so the merged 5-key shape is what reads see.
+_V5_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN state text NOT NULL DEFAULT 'running'",
+    "ALTER TABLE experiment ADD COLUMN created_at text NOT NULL "
+    "DEFAULT '1970-01-01T00:00:00Z'",
+    # Update the dispatch_mode DEFAULT for future inserts and rewrite
+    # the existing rows in place so reads see the 5-key shape.
+    # SQLite does not support ALTER COLUMN DEFAULT directly; the
+    # existing default carries through (DEFAULT only applies to new
+    # rows, and there is exactly one experiment row per database).
+    "UPDATE experiment SET dispatch_mode = "
+    "'{\"termination\":\"manual\",\"ideation_creation\":\"auto\","
+    "\"execution_dispatch\":\"auto\",\"evaluation_dispatch\":\"auto\","
+    "\"integration\":\"auto\"}'",
+]
+
+
+def _apply_v5(conn: sqlite3.Connection) -> None:
+    for stmt in _V5_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
     _apply_v4,
+    _apply_v5,
 ]
 
 

@@ -31,6 +31,8 @@ from eden_contracts import (
     EvaluationTask,
     Event,
     ExecutionTask,
+    Experiment,
+    ExperimentState,
     FailReason,
     Group,
     Idea,
@@ -285,17 +287,24 @@ class StoreClient:
         assert isinstance(created, IdeationTask)
         return created
 
-    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
-        task = ExecutionTask.model_validate(
-            {
-                "task_id": task_id,
-                "kind": "execution",
-                "state": "pending",
-                "created_at": _now(),
-                "updated_at": _now(),
-                "payload": {"idea_id": idea_id},
-            }
-        )
+    def create_execution_task(
+        self,
+        task_id: str,
+        idea_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> ExecutionTask:
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "kind": "execution",
+            "state": "pending",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "payload": {"idea_id": idea_id},
+        }
+        if target is not None:
+            body["target"] = target.model_dump(mode="json", exclude_none=True)
+        task = ExecutionTask.model_validate(body)
         created = self.create_task(task)
         assert isinstance(created, ExecutionTask)
         return created
@@ -810,6 +819,44 @@ class StoreClient:
             f"requested update (observed={observed_dump!r}, requested="
             f"{payload!r}) — operator must investigate"
         ) from original
+
+    # ------------------------------------------------------------------
+    # Experiment lifecycle (12a-3) — chapter 7 §2.9
+    # ------------------------------------------------------------------
+    #
+    # The lifecycle wire endpoints land in wave 3 alongside the
+    # `terminate_experiment` server route. The stubs below satisfy the
+    # ``Store`` Protocol signature so the in-process Store and the wire
+    # client share a single static type; they raise
+    # :class:`NotImplementedError` until wave 3 wires the HTTP path,
+    # matching the established pattern for `reassign_task` and the
+    # worker-registry methods.
+
+    def read_experiment(self) -> Experiment:
+        raise NotImplementedError(
+            "StoreClient.read_experiment lands in 12a-3 wave 3 (wire endpoint)"
+        )
+
+    def read_experiment_state(self) -> ExperimentState:
+        raise NotImplementedError(
+            "StoreClient.read_experiment_state lands in 12a-3 wave 3 "
+            "(wire endpoint)"
+        )
+
+    def update_experiment_state(self, new_state: ExperimentState) -> Experiment:
+        raise NotImplementedError(
+            "update_experiment_state is an internal Store primitive; it is "
+            "not exposed as a wire endpoint (04-task-protocol.md §8.3). "
+            "Use terminate_experiment for the public lifecycle op."
+        )
+
+    def terminate_experiment(
+        self, *, reason: str, terminated_by: str
+    ) -> Experiment:
+        raise NotImplementedError(
+            "StoreClient.terminate_experiment lands in 12a-3 wave 3 "
+            "(wire endpoint)"
+        )
 
     def _try_read_task(self, task_id: str) -> Task | None:
         for _ in range(self._read_back_attempts):
