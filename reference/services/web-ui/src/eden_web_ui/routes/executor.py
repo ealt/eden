@@ -95,17 +95,67 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     store = request.app.state.store
     pending = store.list_tasks(kind="execution", state="pending")
     config = request.app.state.experiment_config
+    artifacts_dir = request.app.state.artifacts_dir
+    pending_rows, read_failed_count = _build_executor_pending_rows(
+        store, pending, artifacts_dir
+    )
     return request.app.state.templates.TemplateResponse(
         request,
         "executor_list.html",
         {
             "session": session,
             "pending": pending,
+            "pending_rows": pending_rows,
+            "read_failed_count": read_failed_count,
             "objective": config.objective,
             "recent_variants": _list_recent_variants(store),
             "banner": request.query_params.get("banner"),
         },
     )
+
+
+def _build_executor_pending_rows(
+    store: Any, pending: list[Any], artifacts_dir: Any
+) -> tuple[list[dict[str, Any]], int]:
+    """Per pending execution task, build a preview row with idea context.
+
+    Plan §D.4 — one ``read_idea`` per row. ``StorageNotFound`` →
+    ``idea=None`` and the template renders "(idea unavailable)".
+    Transport-shaped → ``read_failed=True`` and the page-level
+    counter increments.
+    """
+    from eden_storage.errors import NotFound as StorageNotFound
+
+    rows: list[dict[str, Any]] = []
+    read_failed = 0
+    for task in pending:
+        idea: Any | None = None
+        idea_content: str | None = None
+        read_failed_row = False
+        try:
+            idea = store.read_idea(task.payload.idea_id)
+        except StorageNotFound:
+            idea = None
+        except Exception:  # noqa: BLE001 — transport-shaped
+            idea = None
+            read_failed_row = True
+            read_failed += 1
+        if idea is not None:
+            try:
+                idea_content = read_idea_content(idea, artifacts_dir)
+            except Exception:  # noqa: BLE001 — defensive
+                idea_content = None
+        rows.append(
+            {
+                "task": task,
+                "idea": idea,
+                "idea_content": idea_content,
+                "target": task.target,
+                "lineage_link": f"/admin/tasks/{task.task_id}/",
+                "read_failed": read_failed_row,
+            }
+        )
+    return rows, read_failed
 
 
 @router.post("/{task_id}/claim", response_model=None)

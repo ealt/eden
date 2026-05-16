@@ -3,23 +3,70 @@
 {% block main %}
 <h1>evaluator</h1>
 {% if banner %}<div class="banner banner-error">{{ banner }}</div>{% endif %}
+{% if read_failed_count and read_failed_count > 0 %}
+<div class="banner banner-warn">
+    {{ read_failed_count }} variant/idea read(s) failed; refresh to retry.
+</div>
+{% endif %}
 <section class="objective">
     <h2>objective</h2>
     <p><strong>{{ objective.direction }}</strong> <code>{{ objective.expr }}</code></p>
 </section>
 <section class="pending">
     <h2>pending evaluation tasks</h2>
-    {% if pending %}
+    {% if pending_rows %}
     <table>
-        <thead><tr><th>task id</th><th>variant id</th><th>created</th><th>action</th></tr></thead>
+        <thead><tr><th>task id</th><th>variant</th><th>target</th><th>created</th><th>action</th></tr></thead>
         <tbody>
-        {% for task in pending %}
+        {% for row in pending_rows %}
             <tr>
-                <td><code>{{ task.task_id }}</code></td>
-                <td><code>{{ task.payload.variant_id }}</code></td>
-                <td>{{ task.created_at }}</td>
                 <td>
-                    <form action="/evaluator/{{ task.task_id }}/claim" method="post">
+                    <code>{{ row.task.task_id }}</code>
+                    &nbsp;<a href="{{ row.lineage_link }}" title="view in admin"><small>(details)</small></a>
+                </td>
+                <td>
+                    {% if row.read_failed %}
+                        <em>(read failed)</em>
+                    {% elif row.variant is none %}
+                        <em>(variant unavailable)</em>
+                        &nbsp;<code>{{ row.task.payload.variant_id }}</code>
+                    {% else %}
+                        <code>{{ row.variant.variant_id }}</code>
+                        <small>
+                            {% if row.variant.branch %}branch=<code>{{ row.variant.branch }}</code>{% endif %}
+                            {% if row.variant.commit_sha %}, commit=<code>{{ row.variant.commit_sha[:8] }}</code>{% endif %}
+                            {% if row.variant.executed_by %}, executed_by=<a href="/admin/workers/{{ row.variant.executed_by }}/"><code>{{ row.variant.executed_by }}</code></a>{% endif %}
+                        </small>
+                        <details>
+                            <summary>artifacts preview</summary>
+                            {% if row.variant.artifacts_uri %}
+                            <p>artifacts_uri: <code>{{ row.variant.artifacts_uri }}</code></p>
+                            {% if row.variant_artifact %}
+                            <pre>{{ row.variant_artifact }}</pre>
+                            {% else %}
+                            <p><em>(artifact unavailable inline: scheme not file://, outside artifacts-dir, or &gt; 1 MiB)</em></p>
+                            {% endif %}
+                            {% else %}
+                            <p><em>(executor did not set artifacts_uri)</em></p>
+                            {% endif %}
+                            {% if row.idea %}
+                            <p>idea: <a href="/admin/ideas/{{ row.idea.idea_id }}/"><code>{{ row.idea.idea_id }}</code></a>
+                                <small>slug=<code>{{ row.idea.slug }}</code></small>
+                            </p>
+                            {% endif %}
+                        </details>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if row.target %}
+                        {{ row.target.kind }}:<code>{{ row.target.id }}</code>
+                    {% else %}
+                        anyone
+                    {% endif %}
+                </td>
+                <td>{{ row.task.created_at }}</td>
+                <td>
+                    <form action="/evaluator/{{ row.task.task_id }}/claim" method="post">
                         <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
                         <button type="submit">claim</button>
                     </form>
