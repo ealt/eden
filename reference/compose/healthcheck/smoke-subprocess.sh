@@ -183,15 +183,32 @@ echo "--- asserting 12a-1f substrate-access (ideator git repo) ---"
 # Subprocess-mode ideator should have a populated bare clone at
 # /var/lib/eden/repo. The integrator's variant/* refs land there
 # after quiescence; we assert at least one commit is reachable.
+# Pass `-c safe.directory=*` so git tolerates the bind-mount's
+# host-uid (1001 from setup-experiment) vs container-uid (eden:1000)
+# mismatch — matches the eden_git wrapper's internal flag pattern.
 IDEATOR_LOG_LINES="$(
     docker compose -f compose.yaml -f compose.subprocess.yaml \
         --env-file "$ENV_FILE" \
         exec -T ideator-host \
-        git -C /var/lib/eden/repo log --oneline --all 2>/dev/null \
+        git -c 'safe.directory=*' -C /var/lib/eden/repo log --oneline --all \
         | wc -l | tr -d ' '
-)"
+)" || {
+    echo "ideator-host git log failed; dumping diagnostics:" >&2
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T ideator-host sh -c \
+        'ls -la /var/lib/eden/repo/ 2>&1; echo ---; id; echo ---; git -c safe.directory=* -C /var/lib/eden/repo log --oneline --all 2>&1' >&2 || true
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        logs --tail 80 ideator-host >&2 || true
+    exit 1
+}
 test "${IDEATOR_LOG_LINES:-0}" -ge 1 || {
     echo "expected >= 1 commit reachable from ideator-host's bare clone; got $IDEATOR_LOG_LINES" >&2
+    docker compose -f compose.yaml -f compose.subprocess.yaml \
+        --env-file "$ENV_FILE" \
+        exec -T ideator-host sh -c \
+        'ls -la /var/lib/eden/repo/ 2>&1; echo ---; ls -la /var/lib/eden/repo/refs/heads 2>&1' >&2 || true
     exit 1
 }
 
