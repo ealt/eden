@@ -21,13 +21,17 @@ from typing import Any
 
 import jsonschema
 import pytest
+from eden_contracts import TaskTarget
 from eden_wire.errors import ProblemJson
 from eden_wire.models import (
     AddGroupMemberRequest,
     ClaimRequest,
     ClaimResponse,
+    DispatchModeResponse,
+    DispatchModeUpdateRequest,
     EventsResponse,
     IntegrateRequest,
+    ReassignRequest,
     ReclaimRequest,
     RegisterGroupRequest,
     RegisterWorkerRequest,
@@ -264,6 +268,127 @@ class TestEventsResponseParity:
             "events-response.schema.json",
             model.model_dump(mode="json", exclude_none=True),
         )
+
+
+class TestReassignRequestParity:
+    def test_accept_worker_target(self) -> None:
+        model = ReassignRequest(
+            new_target=TaskTarget(kind="worker", id="eric"),
+            reason="operator",
+        )
+        dumped = model.model_dump(mode="json", exclude_none=True)
+        _validate_against("reassign-request.schema.json", dumped)
+
+    def test_accept_group_target(self) -> None:
+        model = ReassignRequest(
+            new_target=TaskTarget(kind="group", id="humans"),
+            reason="route to humans",
+        )
+        _validate_against(
+            "reassign-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_accept_null_target_round_trips_key(self) -> None:
+        """``new_target`` is required-nullable; the wrap-serializer keeps the key."""
+        model = ReassignRequest(new_target=None, reason="open up to any worker")
+        dumped = model.model_dump(mode="json", exclude_none=True)
+        assert "new_target" in dumped
+        assert dumped["new_target"] is None
+        _validate_against("reassign-request.schema.json", dumped)
+
+    def test_reject_empty_reason(self) -> None:
+        with pytest.raises(ValidationError):
+            ReassignRequest(new_target=None, reason="")
+
+    def test_schema_rejects_missing_new_target(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "reassign-request.schema.json",
+                {"reason": "operator"},
+            )
+
+    def test_schema_rejects_reassigned_by_in_body(self) -> None:
+        """Server stamps reassigned_by; the body MUST NOT carry it."""
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "reassign-request.schema.json",
+                {
+                    "new_target": None,
+                    "reason": "operator",
+                    "reassigned_by": "admin-eric",
+                },
+            )
+
+
+class TestDispatchModeUpdateRequestParity:
+    def test_accept_single_key(self) -> None:
+        model = DispatchModeUpdateRequest(evaluation_dispatch="manual")
+        dumped = model.model_dump(mode="json", exclude_none=True)
+        assert dumped == {"evaluation_dispatch": "manual"}
+        _validate_against("dispatch-mode-request.schema.json", dumped)
+
+    def test_accept_full(self) -> None:
+        model = DispatchModeUpdateRequest(
+            ideation_creation="auto",
+            execution_dispatch="auto",
+            evaluation_dispatch="manual",
+            integration="manual",
+        )
+        _validate_against(
+            "dispatch-mode-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_accept_empty(self) -> None:
+        model = DispatchModeUpdateRequest()
+        dumped = model.model_dump(mode="json", exclude_none=True)
+        assert dumped == {}
+        _validate_against("dispatch-mode-request.schema.json", dumped)
+
+    def test_reject_invalid_value(self) -> None:
+        with pytest.raises(ValidationError):
+            DispatchModeUpdateRequest.model_validate({"ideation_creation": "paused"})
+
+    def test_schema_rejects_invalid_value(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "dispatch-mode-request.schema.json",
+                {"ideation_creation": "paused"},
+            )
+
+    def test_schema_tolerates_unknown_keys(self) -> None:
+        """§2.5: unknown keys are tolerated and round-trip through."""
+        _validate_against(
+            "dispatch-mode-request.schema.json",
+            {"future_decision": "auto"},
+        )
+
+
+class TestDispatchModeResponseParity:
+    def test_accept_default(self) -> None:
+        model = DispatchModeResponse(
+            ideation_creation="auto",
+            execution_dispatch="auto",
+            evaluation_dispatch="auto",
+            integration="auto",
+        )
+        _validate_against(
+            "dispatch-mode-response.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_schema_rejects_missing_normative_key(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "dispatch-mode-response.schema.json",
+                {
+                    "ideation_creation": "auto",
+                    "execution_dispatch": "auto",
+                    "evaluation_dispatch": "auto",
+                    # `integration` missing — required-set violation.
+                },
+            )
 
 
 class TestErrorEnvelopeParity:

@@ -53,6 +53,7 @@ from typing import Any
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from eden_contracts import (
+    DispatchMode,
     EvaluationPayload,
     EvaluationSchema,
     EvaluationTask,
@@ -67,6 +68,7 @@ from eden_contracts import (
     ReclaimCause,
     Task,
     TaskClaim,
+    TaskTarget,
     Variant,
     Worker,
 )
@@ -99,6 +101,21 @@ from .submissions import (
 RESERVED_IDENTIFIERS: frozenset[str] = frozenset({"admin", "system", "internal"})
 
 _WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# Live task states for the 12a-2 §6.4 at-most-one-live invariants.
+# A task in any of these states is "in-flight" and blocks a second
+# create for the same idea / variant. Terminal states (completed,
+# failed) do not block.
+_LIVE_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed", "submitted"})
+
+# The default dispatch_mode on a freshly-initialized experiment per
+# `02-data-model.md` §2.5. Backends seed this on first open.
+_DEFAULT_DISPATCH_MODE: dict[str, str] = {
+    "ideation_creation": "auto",
+    "execution_dispatch": "auto",
+    "evaluation_dispatch": "auto",
+    "integration": "auto",
+}
 
 _METRIC_PY_TYPES: dict[str, tuple[type, ...]] = {
     # spec/v0/02-data-model.md §1.3 type mapping: integer / real / text.
@@ -139,6 +156,12 @@ class _Tx:
     # post-mutation Group object, and `group_deletes` removes a row.
     groups: dict[str, Group] = field(default_factory=dict)
     group_deletes: set[str] = field(default_factory=set)
+    # 12a-2 dispatch_mode (`02-data-model.md` §2.5). A full post-update
+    # state is staged when any key changes; backends overwrite the
+    # persisted record atomically with the rest of the commit. ``None``
+    # means "no dispatch_mode write this commit" — callers that only
+    # update task / event state leave this field at its default.
+    dispatch_mode: dict[str, str] | None = None
 
 
 def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
@@ -286,6 +309,18 @@ class _StoreBase:
 
     def _iter_groups(self) -> Iterable[Group]:
         """Iterate registered groups (any order; backends sort by ``group_id``)."""
+        raise NotImplementedError
+
+    def _get_dispatch_mode(self) -> dict[str, str]:
+        """Return the persisted dispatch_mode (full state, every normative key).
+
+        Backends MUST return a dict whose keys cover the four normative
+        decision-types (``ideation_creation`` / ``execution_dispatch``
+        / ``evaluation_dispatch`` / ``integration``); unknown keys
+        previously written are preserved verbatim per
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5.
+        """
         raise NotImplementedError
 
     def _apply_commit(self, tx: _Tx) -> None:
@@ -461,6 +496,7 @@ class _StoreBase:
                     f"idea {idea_id!r} must be 'ready' "
                     f"to dispatch, not {idea.state!r}"
                 )
+            self._require_no_live_execution_task_for_idea(idea_id)
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
             tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
@@ -492,6 +528,7 @@ class _StoreBase:
                 raise InvalidPrecondition(
                     f"variant {variant_id!r} has no commit_sha; executor must set it first"
                 )
+            self._require_no_live_evaluation_task_for_variant(variant_id)
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
             tx.events.append(
@@ -525,6 +562,14 @@ class _StoreBase:
         Per ``05-event-protocol.md`` §2.2: creating the execution task
         and transitioning the referenced idea from ``ready`` to
         ``dispatched`` land in one atomic commit.
+
+        Per ``03-roles.md`` §6.4 the Store enforces at-most-one live
+        execution task per idea; a duplicate concurrent attempt
+        observes the first commit and raises ``AlreadyExists`` here
+        (in practice the idea-state precondition catches it first,
+        since the first create transitions the idea to ``dispatched``,
+        but the explicit live-task check makes the §6.4 invariant
+        unambiguous in code).
         """
         with self._atomic_operation():
             self._require_no_task(task_id)
@@ -536,6 +581,7 @@ class _StoreBase:
                     f"idea {idea_id!r} must be 'ready' "
                     f"to dispatch, not {idea.state!r}"
                 )
+            self._require_no_live_execution_task_for_idea(idea_id)
             now = self._ts()
             task = ExecutionTask(
                 task_id=task_id,
@@ -561,7 +607,14 @@ class _StoreBase:
             return _deep(task)
 
     def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
-        """Create an ``evaluation`` task against a starting variant with ``commit_sha``."""
+        """Create an ``evaluation`` task against a starting variant with ``commit_sha``.
+
+        Per ``03-roles.md`` §6.4 the Store enforces at-most-one live
+        evaluation task per starting variant; a duplicate concurrent
+        attempt raises ``AlreadyExists``. A previously-failed
+        evaluation task for the same variant does NOT block a new one
+        (terminal states are not live).
+        """
         with self._atomic_operation():
             self._require_no_task(task_id)
             variant = self._get_variant(variant_id)
@@ -576,6 +629,7 @@ class _StoreBase:
                 raise InvalidPrecondition(
                     f"variant {variant_id!r} has no commit_sha; executor must set it first"
                 )
+            self._require_no_live_evaluation_task_for_variant(variant_id)
             now = self._ts()
             task = EvaluationTask(
                 task_id=task_id,
@@ -935,6 +989,207 @@ class _StoreBase:
                     )
 
             self._apply_commit(tx)
+
+    def reassign_task(
+        self,
+        task_id: str,
+        new_target: TaskTarget | None,
+        *,
+        reason: str,
+        reassigned_by: str,
+    ) -> Task:
+        """Atomically update a task's ``target`` per chapter 04 §6.
+
+        ``pending`` → field update + ``task.reassigned`` event.
+        ``claimed`` → composite-commit: clear the claim,
+        emit ``task.reclaimed`` (``cause="operator"``), update target,
+        emit ``task.reassigned``. The reclaim path follows the
+        execution-task variant-side rule from ``reclaim``: if the
+        claimant was an executor whose in-flight variant is still in
+        ``starting``, the variant transitions to ``error`` atomically.
+        ``submitted`` / terminal → ``InvalidPrecondition``; the spec
+        forbids reassign past the claimed phase to preserve
+        attribution-of-submission contracts.
+
+        Reason text must be non-empty (``05-event-protocol.md`` §3.1
+        carries it in the event payload). ``reassigned_by`` must match
+        the §6.1 grammar; binding-layer authorization is the caller's
+        responsibility.
+        """
+        if not reason:
+            raise InvalidPrecondition("reassign_task requires a non-empty reason")
+        self._validate_registry_id(reassigned_by, kind="actor")
+        with self._atomic_operation():
+            task = self._require_task(task_id)
+            if task.state not in {"pending", "claimed"}:
+                raise InvalidPrecondition(
+                    f"cannot reassign task {task_id!r} in state {task.state!r}; "
+                    "only pending or claimed tasks may be reassigned "
+                    "(04-task-protocol.md §6.1)"
+                )
+            # No-op idempotency: same target shape → emit nothing.
+            current_target = task.target
+            if self._targets_equal(current_target, new_target) and task.state == "pending":
+                return _deep(task)
+
+            now = self._ts()
+            tx = _Tx()
+            # `target=None` removes the field; `_validated_update`'s
+            # None-as-absent convention handles that. The state itself
+            # always lands at "pending" after a reassign — either it
+            # was already pending (no transition) or the composite
+            # reclaim-then-reassign path took it from claimed→pending.
+            updated_kwargs: dict[str, Any] = {
+                "target": new_target,
+                "state": "pending",
+                "claim": None,
+                "updated_at": now,
+            }
+            tx.tasks[task_id] = _validated_update(task, **updated_kwargs)
+
+            if task.state == "claimed":
+                # Composite-commit: reclaim first, then reassign.
+                # Order in the event log mirrors the causal order; both
+                # land in the same `read_range` slice and no
+                # intermediate state is observable.
+                tx.events.append(
+                    self._event(
+                        "task.reclaimed",
+                        {"task_id": task_id, "cause": "operator"},
+                    )
+                )
+                # Per `reclaim`: an execution task whose claimant's
+                # in-flight variant is still `starting` transitions
+                # that variant to `error` atomically (`05-event-protocol.md`
+                # §2.2). The reassign-on-claimed path inherits this so
+                # an operator who reassigns to a different executor
+                # doesn't leave an orphaned `starting` variant.
+                if task.kind == "execution":
+                    variant = self._find_starting_variant_for_implement_task(task)
+                    if variant is not None:
+                        tx.variants[variant.variant_id] = _validated_update(
+                            variant, status="error", completed_at=now
+                        )
+                        tx.events.append(
+                            self._event(
+                                "variant.errored",
+                                {"variant_id": variant.variant_id},
+                            )
+                        )
+                # A submission MUST NOT survive the reclaim half of the
+                # composite (a claimed task can't yet have a recorded
+                # submission, but be defensive in case the state model
+                # ever permits it).
+                if self._get_submission(task_id) is not None:
+                    tx.task_deletes_submission.add(task_id)
+
+            new_target_payload: TaskTarget | None
+            if new_target is None:
+                new_target_payload = None
+            else:
+                # Re-dump through the model so the event payload's
+                # shape is identical to the wire schema.
+                new_target_payload = TaskTarget.model_validate(
+                    new_target.model_dump(mode="json", exclude_none=True)
+                )
+
+            tx.events.append(
+                self._event(
+                    "task.reassigned",
+                    {
+                        "task_id": task_id,
+                        "new_target": (
+                            None
+                            if new_target_payload is None
+                            else new_target_payload.model_dump(
+                                mode="json", exclude_none=True
+                            )
+                        ),
+                        "reason": reason,
+                        "reassigned_by": reassigned_by,
+                    },
+                )
+            )
+            self._apply_commit(tx)
+            return _deep(tx.tasks[task_id])
+
+    @staticmethod
+    def _targets_equal(
+        a: TaskTarget | None, b: TaskTarget | None
+    ) -> bool:
+        if a is None and b is None:
+            return True
+        if a is None or b is None:
+            return False
+        return a.kind == b.kind and a.id == b.id
+
+    # ------------------------------------------------------------------
+    # Dispatch mode (12a-2)
+    # ------------------------------------------------------------------
+
+    def read_dispatch_mode(self) -> DispatchMode:
+        """Return the experiment's current dispatch_mode (every key).
+
+        Defaults to all-``auto`` on a freshly-initialized experiment
+        ([`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5). Unknown keys persisted by older writes are returned via
+        the model's ``extra="allow"`` carry-through.
+        """
+        with self._atomic_operation():
+            return DispatchMode.model_validate(self._get_dispatch_mode())
+
+    def update_dispatch_mode(
+        self,
+        updates: DispatchMode | dict[str, str],
+        *,
+        updated_by: str,
+    ) -> DispatchMode:
+        """Atomically merge ``updates`` into the experiment's dispatch_mode.
+
+        Spec: [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §7 + [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §3.4. Omitted keys are preserved; unknown keys in ``updates``
+        round-trip through (§2.5 tolerance). When no key actually
+        changes value, NO event fires (the spec records changes, not
+        idempotent no-ops).
+        """
+        self._validate_registry_id(updated_by, kind="actor")
+        if isinstance(updates, DispatchMode):
+            update_map = updates.model_dump(mode="json", exclude_none=True)
+        else:
+            update_map = dict(updates)
+        # Reject values that are not in the closed value-set; tolerate
+        # unknown keys per §2.5 but keep the value-grammar strict.
+        for key, value in update_map.items():
+            if value not in {"auto", "manual"}:
+                raise InvalidPrecondition(
+                    f"dispatch_mode.{key} value {value!r} is not 'auto' or 'manual'"
+                )
+        with self._atomic_operation():
+            current = dict(self._get_dispatch_mode())
+            changed: dict[str, str] = {}
+            for key, value in update_map.items():
+                if current.get(key) != value:
+                    changed[key] = value
+            if not changed:
+                # No-op flip: no event, no write. The committed state
+                # is exactly what we read.
+                return DispatchMode.model_validate(current)
+            new_state = {**current, **changed}
+            tx = _Tx()
+            tx.dispatch_mode = new_state
+            tx.events.append(
+                self._event(
+                    "experiment.dispatch_mode_changed",
+                    {
+                        "dispatch_mode": new_state,
+                        "changed": changed,
+                        "updated_by": updated_by,
+                    },
+                )
+            )
+            self._apply_commit(tx)
+            return DispatchMode.model_validate(new_state)
 
     # ------------------------------------------------------------------
     # Idea store
@@ -1488,6 +1743,42 @@ class _StoreBase:
             ):
                 return variant
         return None
+
+    def _require_no_live_execution_task_for_idea(self, idea_id: str) -> None:
+        """Raise ``AlreadyExists`` if a live execution task already targets ``idea_id``.
+
+        ``03-roles.md`` §6.4: the Store enforces at-most-one live
+        execution task per idea so concurrent orchestrator invocations
+        collapse to a single dispatch. "Live" ≡ state in
+        ``_LIVE_TASK_STATES``; terminal tasks do not block.
+        """
+        for existing in self._iter_tasks(kind="execution"):
+            if existing.state in _LIVE_TASK_STATES and (
+                isinstance(existing, ExecutionTask)
+                and existing.payload.idea_id == idea_id
+            ):
+                raise AlreadyExists(
+                    f"a live execution task already exists for idea {idea_id!r} "
+                    f"(task_id={existing.task_id!r}, state={existing.state!r})"
+                )
+
+    def _require_no_live_evaluation_task_for_variant(self, variant_id: str) -> None:
+        """Raise ``AlreadyExists`` if a live evaluation task already targets ``variant_id``.
+
+        ``03-roles.md`` §6.4: at-most-one live evaluation task per
+        starting variant. A previously-failed (terminal) evaluation
+        task does NOT block a retry.
+        """
+        for existing in self._iter_tasks(kind="evaluation"):
+            if existing.state in _LIVE_TASK_STATES and (
+                isinstance(existing, EvaluationTask)
+                and existing.payload.variant_id == variant_id
+            ):
+                raise AlreadyExists(
+                    f"a live evaluation task already exists for variant "
+                    f"{variant_id!r} (task_id={existing.task_id!r}, "
+                    f"state={existing.state!r})"
+                )
 
     def _require_submission_kind_matches(self, task: Task, submission: Submission) -> None:
         expected: type[Submission]

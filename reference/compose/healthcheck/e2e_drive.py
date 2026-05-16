@@ -61,27 +61,48 @@ def _form_post(
 
 
 def _wait_for_seeded_tasks(
-    ui: httpx.Client, ids: tuple[str, ...], deadline_s: float
-) -> None:
-    """Poll ``/ideator/`` until all ``ids`` are visible.
+    ui: httpx.Client, expected_count: int, deadline_s: float
+) -> list[str]:
+    """Poll ``/ideator/`` until at least ``expected_count`` ideation tasks are pending.
+
+    Returns the discovered task ids in the order they appear on the
+    page. 12a-2 wave 4 replaced the fixed ``ideation-0001..N`` seed
+    shape with policy-driven UUID-suffixed ids — the drill must read
+    whatever ids the orchestrator's policy produced rather than
+    assume specific values.
 
     The orchestrator has no compose healthcheck so ``compose up --wait``
-    can return before seeding completes. Polling avoids both an
-    arbitrary sleep and a race against slow startup.
+    can return before policy-driven seeding completes. Polling avoids
+    both an arbitrary sleep and a race against slow startup.
     """
+    # Match ``/ideator/<task-id>/claim`` action attributes — the
+    # ideator list page renders one claim form per pending task and
+    # the form's action is uniquely the task id we want.
+    claim_re = re.compile(
+        r'action="/ideator/(?P<tid>[A-Za-z0-9_.\-]+)/claim"'
+    )
     end = time.monotonic() + deadline_s
     last: httpx.Response | None = None
     while time.monotonic() < end:
         resp = ui.get("/ideator/")
         last = resp
-        if resp.status_code == 200 and all(tid in resp.text for tid in ids):
-            return
+        if resp.status_code == 200:
+            ids: list[str] = []
+            seen: set[str] = set()
+            for m in claim_re.finditer(resp.text):
+                tid = m.group("tid")
+                if tid not in seen:
+                    seen.add(tid)
+                    ids.append(tid)
+            if len(ids) >= expected_count:
+                return ids[:expected_count]
         time.sleep(0.5)
     _fail(
-        f"orchestrator did not seed all tasks {ids} within "
-        f"{deadline_s:.0f}s",
+        f"orchestrator did not seed >= {expected_count} ideation tasks "
+        f"within {deadline_s:.0f}s",
         response=last,
     )
+    return []  # unreachable
 
 
 def _ideator_walkthrough(
@@ -180,8 +201,154 @@ def _admin_reclaim_drill(ui: httpx.Client, task_id: str) -> None:
         )
 
 
+def _dispatch_mode_toggle_drill(ui: httpx.Client) -> None:
+    """Flip `integration` to manual and back, verifying the form reflects state.
+
+    The drill goes through the /admin/dispatch-mode/ web-UI route
+    rather than the wire endpoint directly so we exercise the
+    POST → 303 → re-render path the operator uses. After the flip,
+    the form's manual radio for ``integration`` should be checked;
+    after flipping back, the auto radio.
+    """
+    resp = ui.get("/admin/dispatch-mode/")
+    if resp.status_code != 200:
+        _fail("GET /admin/dispatch-mode/ failed", response=resp)
+    csrf = _scrape_csrf(resp.text, where="GET /admin/dispatch-mode/")
+
+    # Flip integration to manual; preserve other keys at auto.
+    fields = [
+        ("csrf_token", csrf),
+        ("ideation_creation", "auto"),
+        ("execution_dispatch", "auto"),
+        ("evaluation_dispatch", "auto"),
+        ("integration", "manual"),
+    ]
+    resp = _form_post(ui, "/admin/dispatch-mode/", fields)
+    if resp.status_code != 303:
+        _fail("dispatch-mode flip POST did not 303", response=resp)
+    location = resp.headers.get("location", "")
+    if "dispatched=ok" not in location:
+        _fail(
+            f"dispatch-mode flip redirected to {location!r}; "
+            "expected 'dispatched=ok'",
+            response=resp,
+        )
+
+    # Follow the redirect and verify the integration row's manual
+    # radio is now checked. The integration row contains
+    # ``name="integration"`` and the manual <input> is on the same
+    # form line as the ``checked`` marker.
+    resp = ui.get("/admin/dispatch-mode/")
+    if resp.status_code != 200:
+        _fail("post-flip GET /admin/dispatch-mode/ failed", response=resp)
+    idx = resp.text.find('name="integration"')
+    if idx < 0:
+        _fail(
+            "dispatch-mode form has no integration row after flip",
+            response=resp,
+        )
+    manual_idx = resp.text.find('value="manual"', idx)
+    if manual_idx < 0:
+        _fail("dispatch-mode integration row has no manual radio")
+    window = resp.text[manual_idx : manual_idx + 200]
+    if "checked" not in window:
+        _fail(
+            "dispatch-mode integration manual radio is not checked after flip"
+        )
+
+    # Flip back to auto so the rest of the e2e proceeds normally
+    # (integration must run for the variants to reach
+    # variant.integrated).
+    csrf = _scrape_csrf(resp.text, where="post-flip GET dispatch-mode")
+    fields = [
+        ("csrf_token", csrf),
+        ("ideation_creation", "auto"),
+        ("execution_dispatch", "auto"),
+        ("evaluation_dispatch", "auto"),
+        ("integration", "auto"),
+    ]
+    resp = _form_post(ui, "/admin/dispatch-mode/", fields)
+    if resp.status_code != 303:
+        _fail("dispatch-mode flip-back POST did not 303", response=resp)
+
+
+def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
+    """Reassign a pending ideation task and verify the target update.
+
+    Pending reassign emits a single ``task.reassigned`` event. The
+    drill posts the form, follows the redirect to confirm the
+    success banner, and re-reads the task-detail page to verify the
+    target was updated.
+
+    The target is the worker ``ideator-1`` (the headless ideator-host
+    container's registered worker_id) so the task can STILL be
+    claimed and completed by the headless ideator in stage 2. The
+    eligibility ladder will reject claims by any other worker; the
+    task being completed at all proves the targeted-claim path
+    works end-to-end.
+    """
+    # GET the reassign form to scrape CSRF.
+    resp = ui.get(f"/admin/tasks/{task_id}/reassign")
+    if resp.status_code != 200:
+        _fail(
+            f"GET /admin/tasks/{task_id}/reassign failed", response=resp
+        )
+    csrf = _scrape_csrf(
+        resp.text, where=f"GET /admin/tasks/{task_id}/reassign"
+    )
+    fields = [
+        ("csrf_token", csrf),
+        ("target_kind", "worker"),
+        ("target_id_worker", "ideator-1"),
+        ("reason", "e2e drill route"),
+    ]
+    resp = _form_post(
+        ui, f"/admin/tasks/{task_id}/reassign", fields
+    )
+    if resp.status_code != 303:
+        _fail(
+            f"reassign POST {task_id} did not 303", response=resp
+        )
+    location = resp.headers.get("location", "")
+    if "reassigned=ok" not in location:
+        _fail(
+            f"reassign {task_id} redirected to {location!r}; "
+            "expected 'reassigned=ok'",
+            response=resp,
+        )
+
+    # The redirect banner says "ok" but the actual state could still
+    # be wrong (form wiring regression, store-side ignored the patch,
+    # template caching). Re-read the task-detail page and assert the
+    # rendered "current target" field specifically renders
+    # `worker:ideator-1`. The reassign form template (chunk-9e:
+    # admin_task_reassign.html) renders:
+    #
+    #     <dt>current target</dt>
+    #     <dd><code>{{ current_target.kind }}:{{ current_target.id }}</code></dd>
+    #
+    # so a successful reassign produces a literal
+    # `<code>worker:ideator-1</code>` substring. The dropdown's
+    # `<option value="ideator-1">` is NOT enough — that string is
+    # always present regardless of whether the target actually
+    # changed.
+    resp = ui.get(f"/admin/tasks/{task_id}/reassign")
+    if resp.status_code != 200:
+        _fail(
+            f"post-reassign GET /admin/tasks/{task_id}/reassign failed",
+            response=resp,
+        )
+    if "<code>worker:ideator-1</code>" not in resp.text:
+        _fail(
+            f"task-{task_id} current-target row did not render "
+            "'worker:ideator-1' after reassign — form may not have "
+            "wired through",
+            response=resp,
+        )
+
+
 def main() -> int:
-    """Drive the ideator walkthrough and admin-reclaim drill end-to-end."""
+    """Drive the ideator + admin-reclaim + dispatch-mode + reassign drills end-to-end."""
     web_url = os.environ.get("EDEN_E2E_WEB_UI_URL")
     base_sha = os.environ.get("EDEN_BASE_COMMIT_SHA")
     if not web_url:
@@ -194,10 +361,6 @@ def main() -> int:
     assert web_url is not None  # noqa: S101 — type narrowing only
     assert base_sha is not None  # noqa: S101 — type narrowing only
 
-    seeded_ids = tuple(f"ideation-{i:04d}" for i in range(1, 5))
-    submit_id = "ideation-0001"
-    reclaim_id = "ideation-0002"
-
     print(f"e2e_drive: connecting to {web_url}", flush=True)
     try:
         with httpx.Client(base_url=web_url, timeout=15.0) as ui:
@@ -208,13 +371,49 @@ def main() -> int:
             if resp.status_code != 303:
                 _fail("POST /signin did not 303", response=resp)
 
-            # Wait for the orchestrator's seed to land. Polls /ideator/
-            # — both /ideator/ and /admin/tasks/ are auth-gated, so
-            # this only works after sign-in.
-            _wait_for_seeded_tasks(ui, seeded_ids, deadline_s=30.0)
+            # 12a-2 wave 7: the orchestrator now uses UUID-suffixed
+            # ideation task ids (policy-driven). Discover them
+            # dynamically. e2e.sh sets MAX_TOTAL=4 so we poll for
+            # exactly 4 pending tasks; the drill claims the first
+            # two and leaves the rest for the headless ideator-host
+            # stage 2 picks up.
+            seeded_ids = _wait_for_seeded_tasks(
+                ui, expected_count=4, deadline_s=30.0
+            )
             print(
-                f"e2e_drive: all {len(seeded_ids)} seeded ideation tasks "
-                "visible",
+                f"e2e_drive: discovered {len(seeded_ids)} seeded ideation "
+                f"tasks: {seeded_ids}",
+                flush=True,
+            )
+            submit_id, reclaim_id = seeded_ids[0], seeded_ids[1]
+            reassign_id = seeded_ids[2]
+
+            # 12a-2 wave 7: dispatch-mode toggle drill — flip
+            # integration to manual and back, verifying the form
+            # reflects state. Must run BEFORE the ideator
+            # walkthrough so the manual flip doesn't strand
+            # already-success variants without integration. (The
+            # flip-back inside the helper restores auto so the rest
+            # of the experiment proceeds normally.)
+            _dispatch_mode_toggle_drill(ui)
+            print(
+                "e2e_drive: dispatch-mode toggle drill OK",
+                flush=True,
+            )
+
+            # 12a-2 wave 7: reassign drill — reassign one pending
+            # ideation task to `worker:ideator-1` (the headless
+            # ideator-host's registered worker_id) via the admin UI.
+            # The target stays viable so the headless ideator-host
+            # in stage 2 can still claim and complete the task,
+            # keeping the end-state variant count unaffected. The
+            # drill asserts both the rendered "current target"
+            # change (GET-after-POST in `_reassign_drill`) and the
+            # wire-level `task.reassigned` event shape (in `e2e.sh`,
+            # filtered by `new_target` + `reassigned_by`).
+            _reassign_drill(ui, reassign_id)
+            print(
+                f"e2e_drive: reassign drill OK ({reassign_id} reassigned)",
                 flush=True,
             )
 

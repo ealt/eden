@@ -1,0 +1,66 @@
+# 12a-2 wave 7 overlay — second auto-orchestrator instance.
+#
+# Layered on top of compose.yaml to exercise the §6.4 multi-instance
+# safety invariants in the smoke-multi-orchestrator drill. Adds a
+# second orchestrator container that holds its own unique worker_id
+# (`orchestrator-2`) and joins the `orchestrators` group at startup
+# via the same `_ensure_orchestrators_membership` helper the primary
+# orchestrator uses.
+#
+# The primary orchestrator from compose.yaml keeps its default
+# worker_id (`orchestrator`); two unique ids are required because
+# 12a-1 worker registry is identity-keyed and a duplicate id would
+# clobber the credential.
+#
+# Compose drops this overlay's services on `compose down`; nothing
+# here is needed outside the multi-orchestrator smoke.
+
+services:
+  orchestrator-2:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-orchestrator-2
+    restart: "on-failure"
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_orchestrator
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
+      - --worker-id
+      - orchestrator-2
+      - --repo-path
+      - /var/lib/eden/repo
+      - --gitea-url
+      - ${GITEA_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
+      - --poll-interval
+      - "1.0"
+      - --max-quiescent-iterations
+      - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
+      - --log-level
+      - info
+    environment:
+      EDEN_IDEATION_POLICY_TARGET_PENDING: ${EDEN_IDEATION_POLICY_TARGET_PENDING:-3}
+      EDEN_IDEATION_POLICY_MAX_TOTAL: ${EDEN_IDEATION_POLICY_MAX_TOTAL:-}
+    volumes:
+      # Separate per-replica repo volume so neither orchestrator's git
+      # state collides with the other. Per-replica clones is the
+      # design posture; the wire is the only synchronization point.
+      - eden-orchestrator-2-repo:/var/lib/eden/repo
+      - eden-orchestrator-2-credentials:/var/lib/eden/credentials
+      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+
+volumes:
+  eden-orchestrator-2-repo:
+  eden-orchestrator-2-credentials:

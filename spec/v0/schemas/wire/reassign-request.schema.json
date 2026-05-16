@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — reassign request",
+  "description": "Request body for POST /v0/experiments/{E}/tasks/{T}/reassign (07-wire-protocol.md §2.7). Admin-group-gated; the server stamps `reassigned_by` from the authenticated principal.",
+  "type": "object",
+  "required": ["new_target", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "new_target": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["kind", "id"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"type": "string", "enum": ["worker", "group"]},
+            "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+          }
+        }
+      ],
+      "description": "The new value of `task.target`: null opens the task to any registered worker; an object scopes it to a worker or group."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Audit string carried into the task.reassigned event payload (typical: 'operator', 'failed_worker', 'misrouted')."
+    }
+  }
+}

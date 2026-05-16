@@ -44,7 +44,7 @@ from eden_contracts import (
 )
 
 from . import _postgres_schema
-from ._base import _StoreBase, _Tx
+from ._base import _DEFAULT_DISPATCH_MODE, _StoreBase, _Tx
 from .errors import InvalidPrecondition
 from .submissions import (
     EvaluationSubmission,
@@ -406,6 +406,17 @@ class PostgresStore(_StoreBase):
             rows = cur.fetchall()
         return [Group.model_validate_json(row[0]) for row in rows]
 
+    def _get_dispatch_mode(self) -> dict[str, str]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT dispatch_mode FROM experiment WHERE experiment_id = %s",
+                (self._experiment_id,),
+            )
+            row = cur.fetchone()
+        if row is None or row[0] is None:
+            return dict(_DEFAULT_DISPATCH_MODE)
+        return dict(json.loads(row[0]))
+
     # ------------------------------------------------------------------
     # Commit
     # ------------------------------------------------------------------
@@ -444,6 +455,16 @@ class PostgresStore(_StoreBase):
             with self._conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM worker_group WHERE group_id = %s", (group_id,)
+                )
+        if tx.dispatch_mode is not None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE experiment SET dispatch_mode = %s "
+                    "WHERE experiment_id = %s",
+                    (
+                        json.dumps(tx.dispatch_mode, sort_keys=True),
+                        self._experiment_id,
+                    ),
                 )
         for event in tx.events:
             self._insert_event(event)

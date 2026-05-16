@@ -181,7 +181,61 @@ The integrator writes a single commit on a `variant/*` branch for each integrate
 
 Evaluation and integration are separate roles because a successful evaluation is a necessary but not sufficient condition for integrating a variant: the integrator applies experiment-level policy (squash shape, conflict resolution with concurrent variants, manifest attachment) that is not meaningful to the evaluator. A conforming implementation MAY collapse evaluator and integrator into the same process, but MUST still honor both contracts independently.
 
-## 6. Role binding (deferred)
+## 6. Orchestrator
+
+The orchestrator drives the task protocol. Unlike the worker roles (§2–§4), the orchestrator does not claim and submit tasks; it creates them, finalizes their submitted state, and integrates successful variants. A conforming deployment MAY run zero, one, or multiple orchestrator instances. Multi-instance deployments rely on §6.4 for safety.
+
+The orchestrator is **a role**, not a singleton process. Anything authenticated as a member of the `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5) that respects this contract is an orchestrator: an automated polling service is one instance, a human driving the same wire ops manually is another, a single-shot batch script that runs one iteration of the loop is another. The spec constrains the **decisions** and their **idempotency / authority** envelopes; the mechanism is binding-defined.
+
+### 6.1 Decisions are gated by `dispatch_mode`
+
+The orchestrator MUST execute the four decision types defined in §6.2 below. Each decision type is independently gated by the experiment's `dispatch_mode.<decision>` field ([`02-data-model.md`](02-data-model.md) §2.5).
+
+- When `dispatch_mode.<decision>` is `"auto"`, an orchestrator instance MAY run the decision.
+- When `dispatch_mode.<decision>` is `"manual"`, every orchestrator instance MUST NOT run the decision. The decision is reserved for an authorized external caller (typically a human via the Web UI or an automation script) using the same wire ops the orchestrator would have used — see §6.5.
+
+The mode is per-experiment and per-decision; flipping `evaluation_dispatch` to manual does not affect the orchestrator's authority to run the other three decisions.
+
+### 6.2 Decision types
+
+1. **Ideation-task creation** (`dispatch_mode.ideation_creation`). The orchestrator MAY create new `kind == "ideation"` tasks per a deployment-defined policy. The policy mechanism is binding-specific: the reference impl exposes a pluggable callable that consumes an experiment-state view and returns a count of new tasks to create per iteration (see §6.4 "bounded-overshoot" class). The protocol does not prescribe a specific policy.
+2. **Execution-task dispatch** (`dispatch_mode.execution_dispatch`). For each idea with `state == "ready"` that has no live `kind == "execution"` task referencing it (no task in `pending`, `claimed`, or `submitted` whose `payload.idea_id` equals the idea's id), an orchestrator instance MUST eventually create exactly one `kind == "execution"` task with `payload.idea_id` set. The "exactly one" property is enforced by the task store under §6.4's exact-idempotent class.
+3. **Evaluation-task dispatch** (`dispatch_mode.evaluation_dispatch`). For each variant with `status == "starting"` and `commit_sha` set that has no live `kind == "evaluation"` task referencing it (no task in `pending`, `claimed`, or `submitted` whose `payload.variant_id` equals the variant's id), an orchestrator instance MUST eventually create exactly one `kind == "evaluation"` task with `payload.variant_id` set. Same "exactly one" property as execution dispatch.
+4. **Integration** (`dispatch_mode.integration`). For each variant with `status == "success"` and `variant_commit_sha` unset, an orchestrator instance MUST eventually invoke the integrator ([`06-integrator.md`](06-integrator.md)) — which writes the §3.4 (variant_commit_sha, `variant.integrated`) composite under same-value idempotency ([`07-wire-protocol.md`](07-wire-protocol.md) §5).
+
+### 6.3 Authority boundary
+
+The orchestrator MUST authenticate as a registered worker per [`07-wire-protocol.md`](07-wire-protocol.md) §13. The orchestrator's `worker_id` MUST be a member of the reserved `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5); wire endpoints that gate on `orchestrators` membership ([`07-wire-protocol.md`](07-wire-protocol.md) §13.3) MUST refuse calls from workers outside the group.
+
+The orchestrator MUST NOT impersonate other workers when finalizing submissions. The `submitted_by` field on a terminalized task ([`02-data-model.md`](02-data-model.md) §3.1) reflects the **claimant**'s `worker_id` written at §4.1 submit time, not the orchestrator's. Similarly the `executed_by` / `evaluated_by` attribution on variants ([`02-data-model.md`](02-data-model.md) §9) is written from `task.submitted_by` on the accept and reject paths, never overridden by whoever invoked `accept` / `reject`.
+
+### 6.4 Multi-instance safety
+
+The four decision types fall into two safety classes under concurrent execution by N orchestrator instances:
+
+**Exact-idempotent decisions.** `execution_dispatch`, `evaluation_dispatch`, and `integration` MUST be exactly idempotent under concurrent execution: repeated or concurrent invocation MUST converge on a single outcome. The task store MUST enforce uniqueness constraints sufficient to make this property mechanical:
+
+- At most one **live** (`pending` / `claimed` / `submitted`) `kind == "execution"` task per `payload.idea_id`. A second concurrent `create_execution_task(idea_id=I)` MUST observe the first's commit and either no-op (returning the existing task) or fail with `eden://error/already-exists`; it MUST NOT produce a second distinct task.
+- At most one **live** `kind == "evaluation"` task per `payload.variant_id`. Same shape.
+- Exactly one `variant_commit_sha` assignment per variant. Concurrent `integrate_variant` calls with the same SHA MUST collapse to one wire-visible `variant.integrated` event per [`06-integrator.md`](06-integrator.md) §3.4 and [`07-wire-protocol.md`](07-wire-protocol.md) §5's same-value idempotency.
+
+**Bounded-overshoot decisions.** `ideation_creation` MUST be bounded under concurrent execution but is NOT required to be exactly idempotent. With N concurrent orchestrator instances each applying a policy that targets a pending count of `T`, the post-iteration pending count MUST be ≤ `N * T`. Each orchestrator MUST read the experiment's pending-ideation-task count before deciding how many tasks to create, so that subsequent iterations self-correct downward as pending exceeds `T`. A deployment that requires exact control over pending-task count MUST supply a policy callable that implements its own coordination (e.g., advisory locks via the store); the protocol does not require that coordination at the role level.
+
+The split is intentional: dispatch and integration are CAS-friendly (a single CAS commit decides the outcome), so demanding exactness costs nothing. Ideation creation is not CAS-friendly (the policy returns a count, not a single resource), so demanding exactness would force every orchestrator into a global lock — exactly the lease mechanism this contract deliberately avoids. A deployment that adds a non-CAS-friendly decision type in a later spec lineage MAY introduce a lease primitive at that point; v0 does not.
+
+Conformance scenarios for §6.4 assert the four decision types under simulated multi-instance contention; see [`09-conformance.md`](09-conformance.md) §5.
+
+### 6.5 Manual mode
+
+When `dispatch_mode.<decision>` is `"manual"`, the decision is driven by an authorized external caller using the same wire ops the orchestrator would have used:
+
+- Manual `ideation_creation` / `evaluation_dispatch`: a caller in `admins` ([`02-data-model.md`](02-data-model.md) §7.5) calls `create_task` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.1) with the appropriate `kind` and `payload`.
+- Manual `execution_dispatch`: v0 with 12a-2 applied does not define a non-orchestrator caller path for `create_task(kind="execution")` — the [`07-wire-protocol.md`](07-wire-protocol.md) §13.3 authority requirement is `orchestrators` for execution tasks (a future spec lineage that introduces an `intended_executor` hint on ideas will add an admin-gated path). Configuring `execution_dispatch == "manual"` is permitted but no caller can drive it without temporarily flipping back to `"auto"`; a deployment that wants per-task routing control SHOULD instead leave the flag `"auto"` and `reassign_task` ([`04-task-protocol.md`](04-task-protocol.md) §6) after creation.
+- Manual `integration`: a caller in `orchestrators` calls `integrate_variant` ([`07-wire-protocol.md`](07-wire-protocol.md) §5).
+
+The orchestrator-role contract is mechanism-neutral: the spec does not distinguish "human created this task" from "auto-orchestrator created this task" beyond the `task.created_by` attribution ([`02-data-model.md`](02-data-model.md) §3.1). The `dispatch_mode` flag exists so an operator can carve out a window of authority for themselves on a specific decision type without forking the orchestrator off-protocol.
+
+## 7. Role binding (deferred)
 
 How a role is invoked, addressed, or configured is **not specified in v0**. A conforming deployment MAY:
 

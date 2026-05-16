@@ -177,14 +177,20 @@ services:
       - ${EDEN_EXPERIMENT_ID:?}
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
+      - --worker-id
+      - ${EDEN_ORCHESTRATOR_WORKER_ID:-orchestrator}
       - --repo-path
       - /var/lib/eden/repo
       - --gitea-url
       - ${GITEA_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
-      - --ideation-tasks
-      - ${EDEN_IDEATION_TASKS:-3}
+      # 12a-2 wave 4: --ideation-tasks retired. The orchestrator now
+      # invokes `eden_dispatch.policies:default_policy` once per
+      # iteration; the policy reads
+      # EDEN_IDEATION_POLICY_TARGET_PENDING /
+      # EDEN_IDEATION_POLICY_MAX_TOTAL from the environment block
+      # below.
       # Compose-friendly quiescence: 30 iterations × 1s = 30s of
       # zero progress before the orchestrator declares the
       # experiment done. Tuned for the smoke tests where worker
@@ -198,6 +204,11 @@ services:
       - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
       - --log-level
       - info
+    environment:
+      # 12a-2 wave 4: the default ideation policy reads these. An
+      # empty value (or unset) means "unbounded" for MAX_TOTAL.
+      EDEN_IDEATION_POLICY_TARGET_PENDING: ${EDEN_IDEATION_POLICY_TARGET_PENDING:-3}
+      EDEN_IDEATION_POLICY_MAX_TOTAL: ${EDEN_IDEATION_POLICY_MAX_TOTAL:-}
     volumes:
       # Durable substrates (Phase 12a-1g) under the per-experiment
       # data root. The per-host bare clone survives restart so the
@@ -345,7 +356,7 @@ services:
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id
-      - web-ui-1
+      - ${EDEN_WEB_UI_WORKER_ID:-web-ui-1}
       - --host
       - 0.0.0.0
       - --port

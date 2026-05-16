@@ -108,7 +108,53 @@ def _apply_v2(cur: Any) -> None:
         cur.execute(stmt)
 
 
-_MIGRATIONS: list[Callable[[Any], None]] = [_apply_v1, _apply_v2]
+# 12a-2: parallels the SQLite v3 migration. The column is stored as
+# ``text`` (not ``jsonb``) to keep round-trips byte-for-byte parallel
+# with ``SqliteStore``; ``08-storage.md`` §3 doesn't constrain on-disk
+# typing, only observable contracts.
+_V3_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN dispatch_mode text NOT NULL DEFAULT "
+    "'{\"ideation_creation\":\"auto\",\"execution_dispatch\":\"auto\","
+    "\"evaluation_dispatch\":\"auto\",\"integration\":\"auto\"}'",
+]
+
+
+def _apply_v3(cur: Any) -> None:
+    for stmt in _V3_STATEMENTS:
+        cur.execute(stmt)
+
+
+# 12a-2 plan §5.2: partial unique indexes that enforce the §6.4
+# at-most-one-live invariant at the DB layer. See the parallel
+# SQLite v4 migration in `_schema.py` for the full rationale.
+#
+# Postgres uses the `->>` operator on ``data::json`` (the column is
+# ``text``, not ``jsonb``, per the chunk-10b parity decision in
+# ``_postgres_schema.py``'s header). Because the column is text, we
+# cast to ``json`` inline so ``->>`` works.
+_V4_STATEMENTS: list[str] = [
+    "CREATE UNIQUE INDEX task_live_execution_by_idea "
+    "ON task(((data::json -> 'payload' ->> 'idea_id'))) "
+    "WHERE kind = 'execution' "
+    "AND state IN ('pending', 'claimed', 'submitted')",
+    "CREATE UNIQUE INDEX task_live_evaluation_by_variant "
+    "ON task(((data::json -> 'payload' ->> 'variant_id'))) "
+    "WHERE kind = 'evaluation' "
+    "AND state IN ('pending', 'claimed', 'submitted')",
+]
+
+
+def _apply_v4(cur: Any) -> None:
+    for stmt in _V4_STATEMENTS:
+        cur.execute(stmt)
+
+
+_MIGRATIONS: list[Callable[[Any], None]] = [
+    _apply_v1,
+    _apply_v2,
+    _apply_v3,
+    _apply_v4,
+]
 
 
 def current_version(cur: Any) -> int:

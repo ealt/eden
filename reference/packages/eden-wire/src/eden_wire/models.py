@@ -13,9 +13,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from eden_contracts import Event
+from eden_contracts import DispatchModeValue, Event, TaskTarget
 from eden_contracts._common import CommitSha, DateTimeStr, NotNone, WorkerId
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 
 class _WireBase(BaseModel):
@@ -151,12 +157,90 @@ class AddGroupMemberRequest(_WireBase):
     member_id: WorkerId
 
 
+# ---------------------------------------------------------------------
+# Reassign / dispatch_mode (12a-2 wave 3)
+# ---------------------------------------------------------------------
+
+
+class ReassignRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/tasks/{T}/reassign`` (§2.7).
+
+    ``new_target`` is the post-reassign value of ``task.target``: ``None``
+    (encoded as JSON ``null``) opens the task to any registered worker;
+    a ``TaskTarget`` scopes it to a worker or group. ``reason`` is a
+    free-form audit string carried into the ``task.reassigned`` event.
+
+    The server stamps ``reassigned_by`` from the authenticated principal
+    per [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
+    §2.7 / §13.3, so it is NOT carried in the request body.
+    """
+
+    new_target: TaskTarget | None
+    reason: Annotated[str, Field(min_length=1)]
+
+    # ``new_target`` is required-nullable on the wire (the schema's
+    # ``required`` list pins it). ``model_dump(exclude_none=True)`` would
+    # drop the ``null`` value; the wrap serializer below restores the
+    # key. Same shape as ``_TaskReassignedData`` in eden_contracts.
+    @model_serializer(mode="wrap")
+    def _keep_new_target_key(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        result = handler(self)
+        if "new_target" not in result:
+            result["new_target"] = None
+        return result
+
+
+class DispatchModeUpdateRequest(_WireBase):
+    """Body for ``PATCH /v0/experiments/{E}/dispatch_mode`` (§2.8).
+
+    A partial dispatch_mode object — any subset of the four normative
+    keys (``ideation_creation`` / ``execution_dispatch`` /
+    ``evaluation_dispatch`` / ``integration``). Unknown keys are
+    tolerated per [`02-data-model.md`](../../../../spec/v0/02-data-model.md)
+    §2.5 and round-trip through via ``extra="allow"``. The server
+    stamps ``updated_by`` from the authenticated principal.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    ideation_creation: Annotated[
+        DispatchModeValue | None, NotNone
+    ] = None
+    execution_dispatch: Annotated[
+        DispatchModeValue | None, NotNone
+    ] = None
+    evaluation_dispatch: Annotated[
+        DispatchModeValue | None, NotNone
+    ] = None
+    integration: Annotated[DispatchModeValue | None, NotNone] = None
+
+
+class DispatchModeResponse(_WireBase):
+    """Body for ``GET`` / ``PATCH`` ``/v0/experiments/{E}/dispatch_mode``.
+
+    Full post-update state, all four normative keys present. Unknown
+    keys persisted by older writes round-trip via ``extra="allow"``.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    ideation_creation: DispatchModeValue
+    execution_dispatch: DispatchModeValue
+    evaluation_dispatch: DispatchModeValue
+    integration: DispatchModeValue
+
+
 __all__ = [
     "AddGroupMemberRequest",
     "ClaimRequest",
     "ClaimResponse",
+    "DispatchModeResponse",
+    "DispatchModeUpdateRequest",
     "EventsResponse",
     "IntegrateRequest",
+    "ReassignRequest",
     "ReclaimRequest",
     "RegisterGroupRequest",
     "RegisterWorkerRequest",

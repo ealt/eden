@@ -73,6 +73,10 @@ The v1+roles scenario groups (added in chunk 11c), with their primary spec citat
 | Ideator submission | Drafting-idea precondition; status vocabulary; idea-set semantics. | [`03-roles.md`](03-roles.md) §2.4 |
 | Executor submission | Submission-shape preconditions; variant-binding; status vocabulary; worker-branch uniqueness. | [`03-roles.md`](03-roles.md) §3.3, §3.4 |
 | Evaluator submission | Status vocabulary; evaluation-schema validation; per-status variant-side writes; evaluation_error non-grafting. | [`03-roles.md`](03-roles.md) §4.2, §4.4 |
+| Orchestrator role contract | Decision-types are gated by `dispatch_mode`; manual mode skips orchestrator-driven decisions; orchestrator authority does not impersonate workers on terminal transitions. | [`03-roles.md`](03-roles.md) §6.1, §6.2, §6.3, §6.5 |
+| Multi-instance safety | Concurrent execution-task / evaluation-task dispatch and integration are exactly idempotent; concurrent ideation-task creation is bounded by `N * T` and self-corrects in subsequent iterations. | [`03-roles.md`](03-roles.md) §6.4 |
+| Reassignment | Pending reassign updates target + emits `task.reassigned`; claimed reassign atomically clears the claim and emits both `task.reclaimed(operator)` and `task.reassigned`; submitted / terminal reassign rejected with 409 invalid-precondition; non-`admins` caller rejected with 403 forbidden. | [`04-task-protocol.md`](04-task-protocol.md) §6; [`05-event-protocol.md`](05-event-protocol.md) §3.1; [`07-wire-protocol.md`](07-wire-protocol.md) §2.7 |
+| Dispatch mode | Partial-update merge semantics; `experiment.dispatch_mode_changed` event payload (resulting state + `changed` diff + `updated_by`); manual mode prevents auto-orchestrator from running the gated decision; non-`admins` caller rejected with 403 forbidden. | [`02-data-model.md`](02-data-model.md) §2.5; [`04-task-protocol.md`](04-task-protocol.md) §7; [`05-event-protocol.md`](05-event-protocol.md) §3.4; [`07-wire-protocol.md`](07-wire-protocol.md) §2.8 |
 
 The v1+roles+integrator scenario groups (added in chunk 11d), with their primary spec citations:
 

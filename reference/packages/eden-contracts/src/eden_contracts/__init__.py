@@ -1,11 +1,19 @@
 """Pydantic bindings for the EDEN protocol wire formats (spec/v0)."""
 
 from ._common import CommitSha, DateTimeStr, WorkerId
-from .config import Direction, ExperimentConfig, ObjectiveSpec, WallTime
+from .config import (
+    Direction,
+    DispatchMode,
+    DispatchModeValue,
+    ExperimentConfig,
+    ObjectiveSpec,
+    WallTime,
+)
 from .evaluation import EvaluationSchema, MetricName, MetricType
 from .event import (
     REGISTERED_EVENT_TYPES,
     Event,
+    ExperimentDispatchModeChangedEvent,
     FailReason,
     IdeaCompletedEvent,
     IdeaDispatchedEvent,
@@ -18,6 +26,7 @@ from .event import (
     TaskCompletedEvent,
     TaskCreatedEvent,
     TaskFailedEvent,
+    TaskReassignedEvent,
     TaskReclaimedEvent,
     TaskSubmittedEvent,
     VariantErroredEvent,
@@ -51,10 +60,13 @@ __all__ = [
     "CommitSha",
     "DateTimeStr",
     "Direction",
+    "DispatchMode",
+    "DispatchModeValue",
     "EvaluationPayload",
     "EvaluationTask",
     "Event",
     "ExperimentConfig",
+    "ExperimentDispatchModeChangedEvent",
     "FailReason",
     "ExecutionPayload",
     "ExecutionTask",
@@ -84,6 +96,7 @@ __all__ = [
     "TaskCreatedEvent",
     "TaskFailedEvent",
     "TaskKind",
+    "TaskReassignedEvent",
     "TaskReclaimedEvent",
     "TaskState",
     "TaskSubmittedEvent",

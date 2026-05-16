@@ -19,6 +19,30 @@ WALL_TIME_PATTERN = r"^[1-9][0-9]*[smhd]$"
 WallTime = Annotated[str, StringConstraints(pattern=WALL_TIME_PATTERN)]
 """Duration string — positive integer followed by one of s, m, h, d."""
 
+DispatchModeValue = Literal["auto", "manual"]
+"""Per-decision-type dispatch-mode value (``02-data-model.md`` §2.5)."""
+
+
+class DispatchMode(BaseModel):
+    """Per-experiment, per-decision-type gate on orchestrator automation.
+
+    Each key gates one orchestrator decision (``03-roles.md`` §6.2):
+    ``ideation_creation`` toggles auto-creation of ideation tasks,
+    ``execution_dispatch`` toggles per-ready-idea execution-task creation,
+    ``evaluation_dispatch`` toggles per-starting-variant evaluation-task
+    creation, and ``integration`` toggles auto-invocation of the
+    integrator on success variants. Every key defaults to ``"auto"``;
+    an omitted key is equivalent to ``"auto"``. Unknown keys are
+    tolerated and ignored per ``02-data-model.md`` §2.5.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    ideation_creation: DispatchModeValue = "auto"
+    execution_dispatch: DispatchModeValue = "auto"
+    evaluation_dispatch: DispatchModeValue = "auto"
+    integration: DispatchModeValue = "auto"
+
 
 class ObjectiveSpec(BaseModel):
     """Scalar optimization target: expression over metrics + direction."""
@@ -46,3 +70,4 @@ class ExperimentConfig(BaseModel):
     objective: ObjectiveSpec
     convergence_window: Annotated[int | None, NotNone, Field(ge=1)] = None
     target_condition: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    dispatch_mode: Annotated[DispatchMode | None, NotNone] = None

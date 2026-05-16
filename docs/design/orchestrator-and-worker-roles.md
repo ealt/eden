@@ -1,6 +1,6 @@
 # Orchestrator and worker roles — design discussion
 
-**Status:** design exploration; not yet a spec change.
+**Status:** design exploration; **§§ 1 / 2 / 6 / 7 / 10 resolved by Phase 12a-1 + 12a-2** (see annotations on each section). §3 (per-idea executor hint), §4 (evaluator assignment via the same `reassign_task` mechanism — partially resolved by 12a-2 §7), §5 (worker attribution survives on artifacts — resolved by 12a-1), §8 (claims scoped to the worker), §9 (termination as deployment policy) remain partially open / deferred.
 **Origin:** captured during a manual-UI validation run on 2026-05-02
 through conversation with @ericalt. Supersedes issues #9–#12 of
 `MANUAL_UI_ISSUES.md`.
@@ -35,6 +35,8 @@ multiple competing auto-processes) can play.
 
 ### 1. Worker identity: ids and groups (RBAC-style)
 
+> **Status: resolved by Phase 12a-1 + 12a-2.** 12a-1 landed the registry / groups / `Task.target` / claim-time RBAC. 12a-2 added the `admins` and `orchestrators` reserved groups + the §3.7 authority matrix on top.
+
 **Resolved by Phase 12a-1** — landed in [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §6 (worker registry), §7 (groups), §3.5 (`Task.target`) and [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §3.5 (claim-time RBAC ladder). The §3.5 ladder runs three preconditions atomically with the claim write: (1) state is `pending`; (2) `worker_id` is registered or → `WorkerNotRegistered`; (3) `worker_id` satisfies `Task.target` (null/worker/group) or → `WorkerNotEligible`. Transitive group resolution with cycle detection lives in `Store.resolve_worker_in_group`.
 
 - Every worker has a unique ``worker_id`` registered with the store.
@@ -60,6 +62,8 @@ Mapping examples:
 | "Teammate Alice specifically" | ``alice`` |
 
 ### 2. Ideation-task creation: shared between auto-orchestrator and humans
+
+> **Status: resolved by Phase 12a-2.** Both the auto-orchestrator and admins-group operators can create `kind=ideation` tasks via the wire (chapter 04 §2.1 + chapter 07 §§2.1 / 13.3). The auto-orchestrator's continuous creation is driven by the policy module `eden_dispatch.policies` (default `maintain_pending(target=3)`, configured via `EDEN_IDEATION_POLICY_TARGET_PENDING` + `EDEN_IDEATION_POLICY_MAX_TOTAL`); the pre-12a-2 static-seed `--ideation-tasks N` flag was retired. The `dispatch_mode.ideation_creation` key (chapter 02 §2.5) gates the orchestrator's auto-creation; flipping it to `manual` hands the decision to operators using the same wire op.
 
 Today the orchestrator pre-seeds N ideation tasks at startup and never
 creates more. This conflates "experiment planning capacity" with
@@ -115,6 +119,8 @@ mechanism (§6).
 
 ### 5. Worker attribution survives on artifacts
 
+> **Status: resolved by Phase 12a-1.** `submitted_by` (on tasks), `executed_by` and `evaluated_by` (on variants), and `created_by` (on ideas/tasks) survive terminal transitions per chapter 02 §9. Phase 12a-2 adds the same posture to `task.reassigned` events (`reassigned_by`) and `experiment.dispatch_mode_changed` events (`updated_by`), both stamped server-side from the authenticated principal.
+
 **Resolved by Phase 12a-1** — `Task.submitted_by` / `Task.created_by`, `Idea.created_by`, and `Variant.executed_by` / `Variant.evaluated_by` shipped per [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §3.1, §5.1, §9. Each is written atomically with the transition that produces the artifact and preserved across the terminal transitions that clear `task.claim`. Wave-5 of the chunk wired the executor / evaluator accept-step writes; the conformance suite's `test_attribution_persistence.py` (chapter 9 §5 "Attribution persistence") pins the survival MUSTs.
 
 Currently ``Task.claim.worker_id`` is cleared after accept; attribution
@@ -133,6 +139,8 @@ Backward-compat: each is a new optional field; existing artifacts
 without the field still validate.
 
 ### 6. Per-decision pause/unpause toggle (UI-driven)
+
+> **Status: resolved by Phase 12a-2.** The `dispatch_mode` field (chapter 02 §2.5) gates each of the four §6.2 decision types independently: `ideation_creation` / `execution_dispatch` / `evaluation_dispatch` / `integration`. Each defaults to `"auto"`; flipping to `"manual"` removes the auto-orchestrator from that decision and reserves it for admins-group operator action via the same wire op. The web UI surfaces all four toggles at `/admin/dispatch-mode/`; the wire endpoint is `PATCH /v0/experiments/{E}/dispatch_mode` (chapter 07 §2.8). Partial-merge semantics: omitted keys preserved; idempotent no-diff flips emit no event.
 
 The auto-orchestrator runs each of its four decision types
 independently. For each type, the experiment carries a ``dispatch_mode:
@@ -156,6 +164,8 @@ The pause is per-decision-type, not global. Humans pausing "evaluate
 dispatch" doesn't stop "execution-task dispatch" or integration.
 
 ### 7. Task reassignment
+
+> **Status: resolved by Phase 12a-2.** `reassign_task(task_id, new_target, *, reason, reassigned_by)` is in the `Store` Protocol; wire endpoint `POST /v0/experiments/{E}/tasks/{T}/reassign` (chapter 07 §2.7). Semantics per chapter 04 §6: pending → field update + single `task.reassigned` event; claimed → composite-commit `task.reclaimed(cause=operator)` + `task.reassigned` (execution tasks with an in-flight starting variant additionally emit `variant.errored` atomically); submitted/terminal → 409 invalid-precondition with no partial state. Authority: caller in `admins`. Web UI exposes the form at `/admin/tasks/{T}/reassign` with target-kind radios + per-kind selects populated from the registry.
 
 GitHub-style reassignment as an admin op:
 
@@ -315,6 +325,8 @@ absorbing. A future spec change could add ``terminated → running``
 transitions for operator-resumable experiments.
 
 ### 10. Orchestrator as a role (cumulative implication)
+
+> **Status: resolved by Phase 12a-2.** The orchestrator role contract is chapter 03 §6 (§6.1 dispatch_mode-gated invocation, §6.2 four decision types, §6.3 authority boundary, §6.4 multi-instance safety, §6.5 manual mode). §6.4 splits decisions into exact-idempotent (execution / evaluation / integrate — uniqueness constraints enforce single-outcome under concurrency) and bounded-overshoot (ideation creation, `N * T` worst-case overshoot self-correcting in subsequent iterations). The reference deployment supports running multiple replicas via the `compose.multi-orchestrator.yaml` overlay; each replica authenticates as a unique `worker_id` in the `orchestrators` group, and the `_ensure_orchestrators_membership` startup helper handles group bootstrap idempotently. The `compose-smoke-multi-orchestrator` CI job exercises the chaos posture (kill primary, secondary drives experiment to quiescence).
 
 Putting it all together: the auto-orchestrator becomes one worker in
 the orchestrator role pool, with a permissive default selector. A

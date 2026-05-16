@@ -317,6 +317,68 @@ def reclaim(client: WireClient, task_id: str, *, cause: str) -> Any:
     return client.post(client.tasks_path(task_id, "/reclaim"), json={"cause": cause})
 
 
+def reassign_task(
+    client: WireClient,
+    task_id: str,
+    *,
+    new_target: dict[str, str] | None,
+    reason: str,
+    actor_id: str = "admin-actor",
+) -> Any:
+    """POST /tasks/{task_id}/reassign (12a-2 wire §2.7).
+
+    ``new_target`` is exactly the post-reassign value of ``task.target``:
+    ``None`` (encoded as JSON ``null``) opens the task to any registered
+    worker; an ``{kind, id}`` dict scopes it to a worker or group.
+    ``reason`` is non-empty audit text carried into the
+    ``task.reassigned`` event.
+
+    With auth disabled the reference adapter reads
+    ``X-Eden-Worker-Id`` to derive the authenticated principal and
+    stamps it as ``reassigned_by`` on the emitted event. ``actor_id``
+    sets that header — pass a §6.1-grammar value
+    (``admin-actor`` matches by default).
+    """
+    body: dict[str, Any] = {"new_target": new_target, "reason": reason}
+    return client.post(
+        client.tasks_path(task_id, "/reassign"),
+        json=body,
+        headers={"X-Eden-Worker-Id": actor_id},
+    )
+
+
+def update_dispatch_mode(
+    client: WireClient,
+    patch: dict[str, str],
+    *,
+    actor_id: str = "admin-actor",
+) -> Any:
+    """PATCH /dispatch_mode (12a-2 wire §2.8).
+
+    ``patch`` is a partial dispatch_mode object — any subset of the
+    four normative keys (``ideation_creation`` / ``execution_dispatch``
+    / ``evaluation_dispatch`` / ``integration``). Each value MUST be
+    ``"auto"`` or ``"manual"``; unknown keys are tolerated per §2.5
+    and round-trip through.
+
+    The server stamps ``updated_by`` from the authenticated principal;
+    with auth disabled it falls back to the ``X-Eden-Worker-Id``
+    header set here.
+    """
+    return client.patch(
+        client.dispatch_mode_path(),
+        json=patch,
+        headers={"X-Eden-Worker-Id": actor_id},
+    )
+
+
+def read_dispatch_mode(client: WireClient) -> dict[str, str]:
+    """GET /dispatch_mode (12a-2 wire §2.8 companion read)."""
+    resp = client.get(client.dispatch_mode_path())
+    resp.raise_for_status()
+    return resp.json()
+
+
 # Idea / variant seeding -----------------------------------------
 
 

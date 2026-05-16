@@ -172,6 +172,76 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         },
         False,
     ),
+    Case(
+        "dispatch_mode_all_auto",
+        {
+            "parallel_variants": 2,
+            "max_variants": 50,
+            "max_wall_time": "4h",
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {
+                "ideation_creation": "auto",
+                "execution_dispatch": "auto",
+                "evaluation_dispatch": "auto",
+                "integration": "auto",
+            },
+        },
+        True,
+    ),
+    Case(
+        "dispatch_mode_mixed",
+        {
+            "parallel_variants": 2,
+            "max_variants": 50,
+            "max_wall_time": "4h",
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {
+                "evaluation_dispatch": "manual",
+                "integration": "manual",
+            },
+        },
+        True,
+    ),
+    Case(
+        "dispatch_mode_unknown_key_tolerated",
+        {
+            "parallel_variants": 2,
+            "max_variants": 50,
+            "max_wall_time": "4h",
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            # Per 02-data-model.md §2.5: unknown keys are tolerated
+            # by the schema and ignored by conforming implementations.
+            "dispatch_mode": {"future_decision": "auto"},
+        },
+        True,
+    ),
+    Case(
+        "dispatch_mode_invalid_value",
+        {
+            "parallel_variants": 2,
+            "max_variants": 50,
+            "max_wall_time": "4h",
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {"ideation_creation": "paused"},
+        },
+        False,
+    ),
+    Case(
+        "dispatch_mode_null",
+        {
+            "parallel_variants": 2,
+            "max_variants": 50,
+            "max_wall_time": "4h",
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": None,
+        },
+        False,
+    ),
 ]
 
 
@@ -697,6 +767,188 @@ EVENT_CASES: list[Case] = [
             "occurred_at": _DT,
             "experiment_id": "exp-1",
             "data": {"task_id": "t-1", "cause": "timeout"},
+        },
+        False,
+    ),
+    # --- registered types: task.reassigned ---
+    Case(
+        "task_reassigned_to_worker_ok",
+        {
+            "event_id": "evt-tre-1",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-1",
+                "new_target": {"kind": "worker", "id": "eric"},
+                "reason": "operator",
+                "reassigned_by": "admin-eric",
+            },
+        },
+        True,
+    ),
+    Case(
+        "task_reassigned_to_group_ok",
+        {
+            "event_id": "evt-tre-2",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-2",
+                "new_target": {"kind": "group", "id": "humans"},
+                "reason": "misrouted",
+                "reassigned_by": "ops-1",
+            },
+        },
+        True,
+    ),
+    Case(
+        "task_reassigned_to_null_ok",
+        {
+            "event_id": "evt-tre-3",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-3",
+                "new_target": None,
+                "reason": "open up to any worker",
+                "reassigned_by": "ops-1",
+            },
+        },
+        True,
+    ),
+    Case(
+        "task_reassigned_missing_new_target",
+        {
+            "event_id": "evt-tre-4",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-4",
+                "reason": "operator",
+                "reassigned_by": "ops-1",
+            },
+        },
+        False,
+    ),
+    Case(
+        "task_reassigned_empty_reason",
+        {
+            "event_id": "evt-tre-5",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-5",
+                "new_target": None,
+                "reason": "",
+                "reassigned_by": "ops-1",
+            },
+        },
+        False,
+    ),
+    Case(
+        "task_reassigned_actor_uppercase",
+        {
+            "event_id": "evt-tre-6",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-6",
+                "new_target": None,
+                "reason": "operator",
+                "reassigned_by": "Admin-Eric",
+            },
+        },
+        False,
+    ),
+    Case(
+        "task_reassigned_bad_target_kind",
+        {
+            "event_id": "evt-tre-7",
+            "type": "task.reassigned",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "task_id": "t-7",
+                "new_target": {"kind": "anyone", "id": "eric"},
+                "reason": "operator",
+                "reassigned_by": "ops-1",
+            },
+        },
+        False,
+    ),
+    # --- registered types: experiment.dispatch_mode_changed ---
+    Case(
+        "experiment_dispatch_mode_changed_ok",
+        {
+            "event_id": "evt-edm-1",
+            "type": "experiment.dispatch_mode_changed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "dispatch_mode": {
+                    "ideation_creation": "auto",
+                    "execution_dispatch": "auto",
+                    "evaluation_dispatch": "manual",
+                    "integration": "auto",
+                },
+                "changed": {"evaluation_dispatch": "manual"},
+                "updated_by": "admin-eric",
+            },
+        },
+        True,
+    ),
+    Case(
+        "experiment_dispatch_mode_changed_missing_changed",
+        {
+            "event_id": "evt-edm-2",
+            "type": "experiment.dispatch_mode_changed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "dispatch_mode": {
+                    "ideation_creation": "auto",
+                    "execution_dispatch": "auto",
+                    "evaluation_dispatch": "auto",
+                    "integration": "auto",
+                },
+                "updated_by": "admin-eric",
+            },
+        },
+        False,
+    ),
+    Case(
+        "experiment_dispatch_mode_changed_invalid_value",
+        {
+            "event_id": "evt-edm-3",
+            "type": "experiment.dispatch_mode_changed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "dispatch_mode": {"ideation_creation": "paused"},
+                "changed": {"ideation_creation": "paused"},
+                "updated_by": "admin-eric",
+            },
+        },
+        False,
+    ),
+    Case(
+        "experiment_dispatch_mode_changed_actor_uppercase",
+        {
+            "event_id": "evt-edm-4",
+            "type": "experiment.dispatch_mode_changed",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {
+                "dispatch_mode": {"integration": "manual"},
+                "changed": {"integration": "manual"},
+                "updated_by": "Admin",
+            },
         },
         False,
     ),

@@ -76,6 +76,14 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE" \
     --data-root "$SMOKE_DATA_ROOT"
 
+# 12a-2 wave 7: the default ideation policy maintains a pending depth
+# of 3 by default but is unbounded — without a MAX_TOTAL cap the
+# orchestrator would top up the queue every iteration and never
+# quiesce. The smoke pins the per-experiment lifetime ideation count
+# to exactly 3 so the loop quiesces after the 3 variants land.
+sed -i.bak 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=3/' "$ENV_FILE"
+rm -f "${ENV_FILE}.bak"
+
 # Resolve the project name from compose config and assert it
 # matches the value pinned in compose.yaml. Same pattern as 10a.
 PROJECT="$(docker compose -f compose.yaml --env-file "$ENV_FILE" \
@@ -187,11 +195,56 @@ WORKERS_JSON="$(
             "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/workers"
 )"
 REGISTERED_WORKERS="$(echo "$WORKERS_JSON" | jq '[.workers[] | .worker_id] | length')"
-test "$REGISTERED_WORKERS" -ge 4 || {
-    echo "expected >= 4 registered workers (orchestrator + ideator-1 + executor-1 + evaluator-1); got $REGISTERED_WORKERS" >&2
+# After wave-7 setup-experiment runs the reserved-group bootstrap, the
+# initial admin worker (EDEN_ADMINS_INITIAL_MEMBER, default
+# "operator") is in the registry too, so we now expect >= 5 workers:
+# orchestrator + ideator-1 + executor-1 + evaluator-1 + initial admin.
+# (web-ui-1 is also registered if the web-ui container has come up.)
+test "$REGISTERED_WORKERS" -ge 5 || {
+    echo "expected >= 5 registered workers (orchestrator + worker hosts + initial admin); got $REGISTERED_WORKERS" >&2
     echo "workers response: $WORKERS_JSON" >&2
     exit 1
 }
+
+# 12a-2 §3.5 / §5.7: the `admins` and `orchestrators` reserved groups
+# MUST exist after setup-experiment runs the bootstrap. `admins`
+# carries the initial admin member; `orchestrators` carries the
+# auto-orchestrator (added by its own startup helper).
+echo "--- asserting reserved groups + initial admin ---"
+ADMINS_INITIAL_MEMBER="$(grep -E '^EDEN_ADMINS_INITIAL_MEMBER=' "$ENV_FILE" | cut -d= -f2-)"
+ORCH_WORKER_ID="$(grep -E '^EDEN_ORCHESTRATOR_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$ADMINS_INITIAL_MEMBER"
+test -n "$ORCH_WORKER_ID"
+
+ADMINS_JSON="$(
+    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+        exec -T task-store-server \
+        curl -fsS \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+            -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
+            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/groups/admins"
+)"
+echo "$ADMINS_JSON" \
+    | jq -e --arg m "$ADMINS_INITIAL_MEMBER" '.members | index($m)' >/dev/null \
+    || {
+        echo "admins group missing initial admin '${ADMINS_INITIAL_MEMBER}': $ADMINS_JSON" >&2
+        exit 1
+    }
+
+ORCH_JSON="$(
+    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+        exec -T task-store-server \
+        curl -fsS \
+            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+            -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
+            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/groups/orchestrators"
+)"
+echo "$ORCH_JSON" \
+    | jq -e --arg w "$ORCH_WORKER_ID" '.members | index($w)' >/dev/null \
+    || {
+        echo "orchestrators group missing auto-orchestrator '${ORCH_WORKER_ID}': $ORCH_JSON" >&2
+        exit 1
+    }
 EVENTS_JSON="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         exec -T task-store-server \

@@ -163,6 +163,31 @@ def _admin_register(server: dict[str, str], worker_id: str) -> str:
         return token
 
 
+def _admin_put_in_group(
+    server: dict[str, str], worker_id: str, group_id: str
+) -> None:
+    """Idempotently add ``worker_id`` to ``group_id`` via the admin bearer.
+
+    Used by tests that need a worker bearer to clear the §3.7 kind-
+    keyed authority gate on ``POST /tasks`` (wave-3 wire change). Tries
+    ``register_group`` first (swallowing AlreadyExists), then
+    ``add_to_group``.
+    """
+    with _client(server, bearer=f"admin:{server['admin_token']}") as c:
+        reg = c.post(
+            f"/v0/experiments/{server['experiment_id']}/groups",
+            json={"group_id": group_id},
+        )
+        # 409 already-exists is fine; setup-experiment or a prior test
+        # may have already registered the group.
+        assert reg.status_code in (200, 409), reg.text
+        add = c.post(
+            f"/v0/experiments/{server['experiment_id']}/groups/{group_id}/members",
+            json={"member_id": worker_id},
+        )
+        add.raise_for_status()
+
+
 def test_missing_bearer_returns_401(auth_server: dict[str, str]) -> None:
     """spec/v0/07-wire-protocol.md §13 — missing bearer returns 401 unauthorized."""
     with _client(auth_server) as c:
@@ -269,6 +294,10 @@ def test_create_task_stamps_created_by_from_principal(
     """
     wid = "eric"
     token = _admin_register(auth_server, wid)
+    # Wave-3 §3.7 gates POST /tasks (kind=ideation) on `admins` OR
+    # `orchestrators` group membership; the bearer-class check alone
+    # is no longer sufficient.
+    _admin_put_in_group(auth_server, wid, "admins")
     body = {
         "task_id": "t-stamp",
         "kind": "ideation",
@@ -291,6 +320,7 @@ def test_create_task_rejects_spoofed_created_by(
     """spec/v0/02-data-model.md §3.1 — disagreeing created_by → 400 bad-request."""
     wid = "eric"
     token = _admin_register(auth_server, wid)
+    _admin_put_in_group(auth_server, wid, "admins")  # §3.7 gate
     body = {
         "task_id": "t-spoof",
         "kind": "ideation",

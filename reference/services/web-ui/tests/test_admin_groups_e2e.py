@@ -186,6 +186,20 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
             assert member_token is not None
             other_worker, other_token = admin.register_worker("non-member-w")
             assert other_token is not None
+            # 12a-2 wave 3 §3.7: create_task(kind=ideation) requires the
+            # caller to be a transitive member of `admins` or
+            # `orchestrators`. The test creates the seed task as
+            # ``member-w``, so register the `admins` group (idempotent on
+            # existing) and add ``member-w`` to it. Doesn't affect the
+            # downstream group-target claim assertion — `e2e-group`
+            # (created below) is the target gate, not `admins`.
+            import contextlib
+
+            from eden_storage.errors import AlreadyExists
+
+            with contextlib.suppress(AlreadyExists):
+                admin.register_group("admins")
+            admin.add_to_group("admins", "member-w")
         finally:
             admin.close()
 

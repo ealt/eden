@@ -79,6 +79,23 @@
 </section>
 
 <section>
+    <h2>orchestrator controls</h2>
+    <p>
+        <a href="/admin/dispatch-mode/">dispatch_mode toggles &raquo;</a> &mdash;
+        gate the auto-orchestrator's four decision types
+        (ideation creation, execution dispatch, evaluation dispatch,
+        integration). Manual mode hands the decision to operators via
+        the admin UI / wire endpoints.
+    </p>
+    <p>
+        <small>
+            Per-task reassignment is available from each task's
+            detail page (<a href="/admin/tasks/">tasks &raquo;</a>).
+        </small>
+    </p>
+</section>
+
+<section>
     <h2>work refs</h2>
     {% if not repo_enabled %}
         <p>(<code>--repo-path</code> not configured; ref GC unavailable)</p>

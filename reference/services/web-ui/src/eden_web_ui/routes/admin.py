@@ -17,8 +17,8 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from eden_contracts import Event, Task, Variant
-from eden_storage.errors import IllegalTransition
+from eden_contracts import Event, Task, TaskTarget, Variant
+from eden_storage.errors import IllegalTransition, InvalidPrecondition
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -50,6 +50,80 @@ _RECLAIM_OUTCOMES: dict[str, tuple[str, str]] = {
         "transport failure; refresh and try again if the task did not move to pending",
     ),
 }
+
+_DISPATCH_MODE_OUTCOMES: dict[str, tuple[str, str]] = {
+    "ok": ("ok", "dispatch_mode updated"),
+    "no-change": ("ok", "no changes — dispatch_mode already at requested values"),
+    "invalid-value": (
+        "error",
+        "every key must be 'auto' or 'manual'",
+    ),
+    "transport": (
+        "error",
+        "transport failure; refresh and verify whether your change landed",
+    ),
+}
+
+_REASSIGN_OUTCOMES: dict[str, tuple[str, str]] = {
+    "ok": ("ok", "task reassigned"),
+    "no-change": ("ok", "no change — task target already at requested value"),
+    "invalid-target": (
+        "error",
+        "target id must match the §6.1 grammar; pick a worker or group from the lists",
+    ),
+    "missing-reason": ("error", "reason is required"),
+    "illegal-state": (
+        "error",
+        "this task cannot be reassigned (submitted or terminal)",
+    ),
+    "unknown-target": (
+        "error",
+        "the named worker / group is not registered in this experiment",
+    ),
+    "transport": (
+        "error",
+        "transport failure; refresh and verify whether your change landed",
+    ),
+}
+
+# Per spec §2.5 — closed set of dispatch_mode decision keys with
+# display labels for the toggle UI. The ordering in this tuple drives
+# the on-screen ordering of the toggles; we lead with the
+# orchestrator's most-frequent decision (execution_dispatch) and
+# finish with integration so the page reads top-to-bottom in
+# pipeline order.
+_DISPATCH_MODE_KEYS: tuple[tuple[str, str, str], ...] = (
+    (
+        "ideation_creation",
+        "ideation-task creation",
+        "Auto-orchestrator creates new ideation tasks per the configured policy.",
+    ),
+    (
+        "execution_dispatch",
+        "execution dispatch",
+        "Auto-orchestrator creates one execution task per ready idea.",
+    ),
+    (
+        "evaluation_dispatch",
+        "evaluation dispatch",
+        "Auto-orchestrator creates one evaluation task per starting variant with commit_sha.",
+    ),
+    (
+        "integration",
+        "integration",
+        "Auto-orchestrator invokes the integrator on success variants.",
+    ),
+)
+
+_DISPATCH_MODE_VALUES: tuple[str, ...] = ("auto", "manual")
+
+_REASSIGN_TARGET_KINDS: tuple[str, ...] = ("none", "worker", "group")
+
+# Reused from `eden_storage._base` — the §6.1 grammar for worker /
+# group ids. Inline so admin.py doesn't reach into a leading-
+# underscore module of eden_storage.
+_REGISTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
 
 _REF_DELETE_OUTCOMES: dict[str, tuple[str, str]] = {
     "ok": ("ok", "ref deleted"),
@@ -360,6 +434,320 @@ async def task_reclaim(
     return RedirectResponse(
         url=f"/admin/tasks/{task_id}/?reclaimed=ok",
         status_code=303,
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/reassign", response_class=HTMLResponse, response_model=None
+)
+async def task_reassign_form(
+    task_id: str, request: Request
+) -> HTMLResponse | RedirectResponse:
+    """Render the per-task reassign form (12a-2 §2.7).
+
+    Loads the current task plus the registered workers + groups so the
+    operator picks from the existing registry instead of typing a
+    free-form id. Submitted / terminal tasks render a read-only banner
+    explaining that the spec rejects reassign past the claimed phase
+    (§6.1), so the operator doesn't waste a POST to discover it.
+    """
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    store = request.app.state.store
+
+    try:
+        task = store.read_task(task_id)
+        workers = store.list_workers()
+        groups = store.list_groups()
+    except StorageNotFound:
+        raise
+    except Exception:  # noqa: BLE001 — transport / store domain
+        return _read_failure_response(request, "could not load task")
+
+    outcome = _outcome(request, "reassigned", "error", _REASSIGN_OUTCOMES)
+    can_reassign = task.state in {"pending", "claimed"}
+    current_target = task.target
+
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "admin_task_reassign.html",
+        {
+            "session": session,
+            "csrf_token": session.csrf,
+            "task": task,
+            "current_target": current_target,
+            "can_reassign": can_reassign,
+            "workers": [w.worker_id for w in workers],
+            "groups": [g.group_id for g in groups],
+            "target_kinds": _REASSIGN_TARGET_KINDS,
+            "outcome": outcome,
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/reassign", response_model=None)
+async def task_reassign(
+    task_id: str,
+    request: Request,
+    target_kind: str = Form(""),
+    target_id: str = Form(""),
+    target_id_worker: str = Form(""),
+    target_id_group: str = Form(""),
+    reason: str = Form(""),
+    csrf_token: str = Form(""),
+) -> RedirectResponse | HTMLResponse:
+    """Reassign a task to a new target via :meth:`Store.reassign_task`.
+
+    Per spec §2.7 + §3.6:
+
+    - ``target_kind="none"`` → ``new_target=None`` (the task opens to
+      any registered worker that satisfies the eligibility ladder).
+    - ``target_kind="worker"`` or ``"group"`` → ``new_target =
+      TaskTarget(kind=..., id=target_id)``; ``target_id`` MUST match
+      the §6.1 grammar AND name a registered worker / group.
+    - ``reason`` is non-empty audit text (the Store rejects empty
+      reasons; the route does its own check so the operator gets a
+      cleaner banner than the underlying ``InvalidPrecondition``).
+
+    Outcome → ``303`` redirect to the reassign form with a
+    closed-allowlist banner. Plan §G error handling: every
+    StorageError subclass maps to a distinct banner, transport-shaped
+    exceptions map to ``transport`` so the operator can refresh and
+    verify.
+    """
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    if not csrf_ok(session, csrf_token):
+        return _csrf_failure_response()
+    store = request.app.state.store
+
+    redirect_base = f"/admin/tasks/{task_id}/reassign"
+    if not reason or reason.strip() == "":
+        return RedirectResponse(
+            url=f"{redirect_base}?error=missing-reason", status_code=303
+        )
+    if target_kind not in _REASSIGN_TARGET_KINDS:
+        return RedirectResponse(
+            url=f"{redirect_base}?error=invalid-target", status_code=303
+        )
+
+    new_target: TaskTarget | None
+    if target_kind == "none":
+        new_target = None
+    else:
+        # The form offers per-kind dropdowns AND a manual override
+        # text field, with the manual field taking precedence when
+        # both are supplied. Pick the active value in that order so
+        # the operator can either click a dropdown row or paste a
+        # registered id directly without flipping between fields.
+        if target_kind == "worker":
+            resolved_id = target_id.strip() or target_id_worker.strip()
+        else:  # target_kind == "group"
+            resolved_id = target_id.strip() or target_id_group.strip()
+        if not _REGISTRY_ID_RE.fullmatch(resolved_id):
+            return RedirectResponse(
+                url=f"{redirect_base}?error=invalid-target", status_code=303
+            )
+        target_id = resolved_id
+        # Existence check against the registry. The wave-2 Store
+        # contract requires the target to identify a real worker /
+        # group for the §3.5 eligibility ladder to admit any claimant.
+        # We surface "unknown-target" here instead of letting the
+        # claim flow silently produce WorkerNotEligible errors on
+        # every subsequent attempt.
+        try:
+            registered = (
+                {w.worker_id for w in store.list_workers()}
+                if target_kind == "worker"
+                else {g.group_id for g in store.list_groups()}
+            )
+        except Exception:  # noqa: BLE001 — registry read transport blip
+            return RedirectResponse(
+                url=f"{redirect_base}?error=transport", status_code=303
+            )
+        if target_id not in registered:
+            return RedirectResponse(
+                url=f"{redirect_base}?error=unknown-target", status_code=303
+            )
+        new_target = TaskTarget(kind=target_kind, id=target_id)  # type: ignore[arg-type]
+
+    actor = request.app.state.worker_id
+    try:
+        updated = store.reassign_task(
+            task_id,
+            new_target,
+            reason=reason.strip(),
+            reassigned_by=actor,
+        )
+    except InvalidPrecondition:
+        # Submitted / terminal tasks; OR same-target no-op on the
+        # claim-state path (the wave-2 Store treats same-target on
+        # pending as a no-op success — claimed always emits the
+        # composite). The route can't distinguish these without
+        # re-reading, so it reports "illegal-state" for both —
+        # operationally the user's next refresh will show the actual
+        # task state.
+        return RedirectResponse(
+            url=f"{redirect_base}?error=illegal-state", status_code=303
+        )
+    except StorageNotFound:
+        raise
+    except Exception:  # noqa: BLE001 — transport-shaped from StoreClient
+        return RedirectResponse(
+            url=f"{redirect_base}?error=transport", status_code=303
+        )
+
+    # Wave-2 same-target idempotency: pending + already-at-target
+    # emits no event and returns the task unchanged. Surface this to
+    # the operator as a distinct "no-change" banner so the absence of
+    # an audit-log entry isn't surprising. The composite-commit path
+    # (claimed→pending) ALSO ends with state=pending and matching
+    # target, so we additionally check whether the latest event for
+    # this task is `task.reassigned` — the Store skips emission only
+    # on the pending+same-target path.
+    if (
+        _targets_equal(updated.target, new_target)
+        and updated.state == "pending"
+        and not _last_event_is_reassign(store, task_id)
+    ):
+        return RedirectResponse(
+            url=f"{redirect_base}?reassigned=no-change", status_code=303
+        )
+    return RedirectResponse(
+        url=f"{redirect_base}?reassigned=ok", status_code=303
+    )
+
+
+def _targets_equal(a: TaskTarget | None, b: TaskTarget | None) -> bool:
+    """Structural equality on ``Task.target`` values, None-safe."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return a.kind == b.kind and a.id == b.id
+
+
+def _last_event_is_reassign(store: Any, task_id: str) -> bool:
+    """Return True iff the most recent event referencing ``task_id`` is task.reassigned.
+
+    Helper for the post-write "did the Store actually emit?" branch on
+    the same-target idempotent path. The wave-2 Store treats a
+    same-target reassign on a `pending` task as a no-op (no event); we
+    surface this distinction to the operator via the ``no-change``
+    banner.
+    """
+    try:
+        events = store.replay()
+    except Exception:  # noqa: BLE001 — best-effort heuristic
+        return False
+    for ev in reversed(events):
+        if ev.data.get("task_id") == task_id:
+            return ev.type == "task.reassigned"
+    return False
+
+
+# ---------------------------------------------------------------------
+# Dispatch mode
+# ---------------------------------------------------------------------
+
+
+@router.get("/dispatch-mode/", response_class=HTMLResponse, response_model=None)
+async def dispatch_mode_form(
+    request: Request,
+) -> HTMLResponse | RedirectResponse:
+    """Render the 4-toggle dispatch_mode page (12a-2 §2.8)."""
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    store = request.app.state.store
+    try:
+        mode = store.read_dispatch_mode()
+    except Exception:  # noqa: BLE001 — transport / store domain
+        return _read_failure_response(request, "could not load dispatch_mode")
+    outcome = _outcome(request, "dispatched", "error", _DISPATCH_MODE_OUTCOMES)
+    mode_dump = mode.model_dump(mode="json", exclude_none=True)
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "admin_dispatch_mode.html",
+        {
+            "session": session,
+            "csrf_token": session.csrf,
+            "keys": _DISPATCH_MODE_KEYS,
+            "values": _DISPATCH_MODE_VALUES,
+            "current": mode_dump,
+            "outcome": outcome,
+        },
+    )
+
+
+@router.post("/dispatch-mode/", response_model=None)
+async def dispatch_mode_update(
+    request: Request,
+    csrf_token: str = Form(""),
+    ideation_creation: str = Form(""),
+    execution_dispatch: str = Form(""),
+    evaluation_dispatch: str = Form(""),
+    integration: str = Form(""),
+) -> RedirectResponse | HTMLResponse:
+    """Apply a 4-key dispatch_mode update.
+
+    The form submits all four keys every time (even if only one
+    toggle changed) because HTML radio groups can't omit a key
+    cleanly. The route assembles the dict and lets the wave-2
+    ``update_dispatch_mode`` partial-merge semantics no-op the
+    unchanged keys; the event payload's ``changed`` diff will only
+    record the keys that actually flipped.
+
+    Invalid values (anything outside ``{"auto", "manual"}``) →
+    ``?error=invalid-value`` with no Store write.
+    """
+    session = get_session(request)
+    if session is None:
+        return RedirectResponse(url="/signin", status_code=303)
+    if not csrf_ok(session, csrf_token):
+        return _csrf_failure_response()
+    store = request.app.state.store
+
+    updates: dict[str, str] = {
+        "ideation_creation": ideation_creation,
+        "execution_dispatch": execution_dispatch,
+        "evaluation_dispatch": evaluation_dispatch,
+        "integration": integration,
+    }
+    for key, value in updates.items():
+        if value not in _DISPATCH_MODE_VALUES:
+            return RedirectResponse(
+                url=f"/admin/dispatch-mode/?error=invalid-value&offending={key}",
+                status_code=303,
+            )
+
+    actor = request.app.state.worker_id
+    try:
+        # Read the pre-update state to detect the no-op flip case (so
+        # the operator gets a distinct "no-change" banner instead of
+        # the generic success message when nothing flipped).
+        before = store.read_dispatch_mode().model_dump(
+            mode="json", exclude_none=True
+        )
+        store.update_dispatch_mode(updates, updated_by=actor)
+    except InvalidPrecondition:
+        return RedirectResponse(
+            url="/admin/dispatch-mode/?error=invalid-value", status_code=303
+        )
+    except Exception:  # noqa: BLE001 — transport-shaped from StoreClient
+        return RedirectResponse(
+            url="/admin/dispatch-mode/?error=transport", status_code=303
+        )
+
+    changed = {k: v for k, v in updates.items() if before.get(k) != v}
+    if not changed:
+        return RedirectResponse(
+            url="/admin/dispatch-mode/?dispatched=no-change", status_code=303
+        )
+    return RedirectResponse(
+        url="/admin/dispatch-mode/?dispatched=ok", status_code=303
     )
 
 

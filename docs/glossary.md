@@ -61,11 +61,13 @@ workers may claim the same kind of task.
 
 | Term | One-line meaning | Spec ref |
 |---|---|---|
-| **orchestrator** | Dispatches tasks and advances the protocol's state machine in response to submissions. No unique authority beyond what the protocol grants. May run with multiple cooperating instances. | [`01-concepts.md`](../spec/v0/01-concepts.md) §11 |
-| **auto-orchestrator** | Informal: the automated polling-loop instance of the orchestrator role (`reference/services/orchestrator/`). Distinct from "the orchestrator role" — a deployment may run zero, one, or many. | (informal) |
-| **operator** | Human running a deployment, distinct from worker roles. The operator runs `setup-experiment`, brings up the stack, performs admin actions like `reclaim`, etc. | (informal; not normative) |
+| **orchestrator** | A role (not a singleton). Drives the four `dispatch_mode`-gated decision types: ideation-task creation, execution-task dispatch, evaluation-task dispatch, integration. Per [`03-roles.md`](../spec/v0/03-roles.md) §6, zero, one, or many concurrent instances are permitted; each authenticates as a registered worker in the `orchestrators` group. | [`03-roles.md`](../spec/v0/03-roles.md) §6; [`01-concepts.md`](../spec/v0/01-concepts.md) §11 |
+| **auto-orchestrator** | Informal: an automated polling-loop instance of the orchestrator role (`reference/services/orchestrator/`). Distinct from "the orchestrator role" — a deployment may run zero, one, or many; per-replica `EDEN_ORCHESTRATOR_WORKER_ID` MUST be unique. | (informal) |
+| **operator** | Human running a deployment, distinct from worker roles. Acts through a registered worker that's a member of the `admins` group (operator-mode web UI, or direct wire calls). | (informal; not normative) |
 | **owner** | The authority over an experiment — can configure, terminate, reassign, transfer. Today implicit; should be a first-class concept once authentication and authorization land. | (forward-looking) |
 | **observer** / **subscriber** | Read-only consumer of the event log (UIs, dashboards, downstream tooling). Distinct from workers; has no claim/submit capability. | (informal) |
+| **`admins` group** | Reserved group (chapter 02 §7.5). Members have operator authority: `reassign_task`, `update_dispatch_mode`, `create_task(kind=ideation \| evaluation)`. The deployment-admin bearer (literal `"admin"` principal) is bootstrap-only and CANNOT drive these ops — it's reserved for registry mgmt (`register_worker` / `register_group` / `reissue_credential` etc.). | [`02-data-model.md`](../spec/v0/02-data-model.md) §7.5; [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13.3 |
+| **`orchestrators` group** | Reserved group (chapter 02 §7.5). Members have auto-orchestrator authority: `accept`, `reject`, `integrate_variant`, `create_task(kind=execution)`. Auto-orchestrator instances populate themselves into this group at startup via `_ensure_orchestrators_membership`; setup-experiment creates the group empty. | [`02-data-model.md`](../spec/v0/02-data-model.md) §7.5; [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13.3 |
 
 ## 3. Data shapes (value objects)
 
@@ -79,6 +81,9 @@ workers may claim the same kind of task.
 | **submission** | The role-specific payload a worker hands back when completing a task. Three shapes: `IdeaSubmission`, `VariantSubmission`, `EvaluationSubmission`. | [`03-roles.md`](../spec/v0/03-roles.md) §§2.4 / 3.4 / 4.4 |
 | **claim** | A worker's hold on a task; the task store records the worker_id and an expiry. | [`01`](../spec/v0/01-concepts.md) §8 |
 | **claim token** | The opaque secret returned to a worker when it claims; required to submit. | [`01`](../spec/v0/01-concepts.md) §8 |
+| **dispatch_mode** | A per-experiment object with four normative keys (`ideation_creation`, `execution_dispatch`, `evaluation_dispatch`, `integration`), each `"auto"` (default) or `"manual"`. Gates the orchestrator-role's four §6.2 decision types. Partial-merge: omitted keys preserved. Idempotent no-diff flip emits no event. | [`02-data-model.md`](../spec/v0/02-data-model.md) §2.5 |
+| **ideation policy** | A `Callable[[ExperimentStateView], int]` invoked once per orchestrator iteration when `dispatch_mode.ideation_creation == "auto"`; returns the number of new ideation tasks to create. Reference policies: `maintain_pending(target, max_total)` (bounded-overshoot per §6.4) and `fixed_total(N)` (one-shot equivalent of the retired `--ideation-tasks` static seed). | [`03-roles.md`](../spec/v0/03-roles.md) §6.4; [`reference/packages/eden-dispatch/src/eden_dispatch/policies.py`](../reference/packages/eden-dispatch/src/eden_dispatch/policies.py) |
+| **ExperimentStateView** | Snapshot facade over experiment counters (`pending_ideation_count`, `in_flight_ideation_count`, `total_ideation_count`, `running_variant_count`, `integrated_variant_count`) passed to the ideation policy each iteration. Read-only; not a live proxy. | [`reference/packages/eden-dispatch/src/eden_dispatch/state_view.py`](../reference/packages/eden-dispatch/src/eden_dispatch/state_view.py) |
 
 ### 3.1 Sub-fields worth naming
 
@@ -157,6 +162,8 @@ error.
 | **accept** | Orchestrator validates a submission and writes it as committed; task → `completed`. |
 | **reject** | Orchestrator rejects a submission; task → `failed`. Reasons include `worker_error` and `validation_error`. |
 | **reclaim** | Operator (or sweeper) revokes a claim, returning the task to `pending`. |
+| **reassign** | Operator updates a task's `target` field. Pending → single `task.reassigned` event. Claimed → composite-commit (`task.reclaimed(cause=operator)` + `task.reassigned`); execution tasks with an in-flight starting variant additionally emit `variant.errored`. Submitted/terminal → 409 invalid-precondition. Authority: caller in `admins`. |
+| **update_dispatch_mode** | Operator atomically merges a partial `dispatch_mode` object into the experiment's stored state. Idempotent no-diff flips emit no event. The event payload carries the full post-update state + a `changed` diff + `updated_by`. Authority: caller in `admins`. |
 | **dispatch** | Orchestrator creates a downstream task from a state transition (e.g. ready idea → execution task; success-with-commit_sha variant → evaluation task). |
 | **integrate** | Integrator squashes a successful variant's `work/*` content into a single commit on `variant/*`, attaches the evaluation manifest, and emits `variant.integrated`. |
 

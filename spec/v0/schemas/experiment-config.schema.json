@@ -53,6 +53,36 @@
       "type": "string",
       "minLength": 1,
       "description": "Condition over evaluation that terminates the experiment when satisfied."
+    },
+    "dispatch_mode": {
+      "type": "object",
+      "description": "Per-decision-type gate on orchestrator-role automation; see 02-data-model.md §2.5 and 03-roles.md §6.1. Every key defaults to 'auto'; an omitted key is equivalent to 'auto'. Unknown keys are tolerated and ignored by conforming implementations.",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["auto", "manual"]
+      },
+      "properties": {
+        "ideation_creation": {
+          "type": "string",
+          "enum": ["auto", "manual"],
+          "description": "When 'auto', the orchestrator runs its ideation-creation policy. When 'manual', operators in the 'admins' group drive ideation-task creation via POST /tasks."
+        },
+        "execution_dispatch": {
+          "type": "string",
+          "enum": ["auto", "manual"],
+          "description": "When 'auto', the orchestrator creates one execution task per ready idea. When 'manual', no caller can drive the decision in v0+12a-2 (a future spec lineage broadens authority); the deployment SHOULD leave this 'auto' and use reassign_task for per-task routing control."
+        },
+        "evaluation_dispatch": {
+          "type": "string",
+          "enum": ["auto", "manual"],
+          "description": "When 'auto', the orchestrator creates one evaluation task per starting variant with commit_sha set. When 'manual', operators in the 'admins' group drive evaluation-task creation via POST /tasks."
+        },
+        "integration": {
+          "type": "string",
+          "enum": ["auto", "manual"],
+          "description": "When 'auto', the orchestrator invokes the integrator on success variants. When 'manual', the operator drives integration via POST /variants/{T}/integrate."
+        }
+      }
     }
   }
 }

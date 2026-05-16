@@ -34,22 +34,23 @@ The central invariant of the event protocol, stated in [`01-concepts.md`](01-con
 
 "Atomic" means: either both the state change and the event append are durable, or neither is. A conforming implementation MUST NOT expose a state change to readers (direct store reads, cached projections, push notifications, role dispatch) before its event is durable in the log; conversely, it MUST NOT append an event whose state change has not been durably written. If a transaction covering both is aborted, neither is observable.
 
-The invariant applies to the set of entities enumerated in [`02-data-model.md`](02-data-model.md): tasks, ideas, variants. Implementations MAY emit *additional* events outside this set (see §3.5) that do not correspond to a protocol-defined state change; those additional events are not subject to the transactional invariant because there is no state change to bind them to.
+The invariant applies to the set of entities enumerated in [`02-data-model.md`](02-data-model.md): tasks, ideas, variants. The §3.4 experiment-scoped event covers a configuration-state mutation under the same atomicity rule. Implementations MAY emit *additional* events outside this set (see §3.6) that do not correspond to a protocol-defined state change; those additional events are not subject to the transactional invariant because there is no state change to bind them to.
 
 ### 2.1 Why atomic
 
-The event log is the normative observability channel ([`04-task-protocol.md`](04-task-protocol.md) §6.3). Without atomicity, subscribers reconstructing history can observe either a state without its event or an event whose state the store does not yet expose — either is a protocol violation that leaves subscribers unable to trust the log.
+The event log is the normative observability channel ([`04-task-protocol.md`](04-task-protocol.md) §8.3). Without atomicity, subscribers reconstructing history can observe either a state without its event or an event whose state the store does not yet expose — either is a protocol violation that leaves subscribers unable to trust the log.
 
 ### 2.2 Composite transitions
 
 Several transitions span multiple entities and MUST commit together:
 
 - **Execution-task dispatch** — creating a `task` with `kind=execution` and transitioning its referenced `idea` from `ready` to `dispatched` ([`04-task-protocol.md`](04-task-protocol.md) §2). Events: `task.created` + `idea.dispatched`, in one atomic commit.
-- **Execution-task terminal** — the `execution` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §7). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
+- **Execution-task terminal** — the `execution` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §9). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
 - **Evaluation-task terminal (`success`/`error`)** — the `evaluation` task's terminal transition plus writes to the variant's `status`, `evaluation`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
 - **Execution-task reclaim with in-flight variant** — reclamation of an `execution` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
 - **Retry-exhausted `evaluation_error` terminal** — the orchestrator's transition of a variant from `starting` to `evaluation_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.evaluation_errored` atomically.
 - **Variant integration** — the integrator's write of a `variant/*` commit and the `variant_commit_sha` field on the variant ([`06-integrator.md`](06-integrator.md)). Event: `variant.integrated`.
+- **Reassignment of a claimed task** — `reassign_task` on a claimed task is the composite `clear claim` + `update target` ([`04-task-protocol.md`](04-task-protocol.md) §6.1). Events: `task.reclaimed` (with `cause == "operator"`) + `task.reassigned` (with `new_target`), in one atomic commit.
 
 A subscriber processing any of these composite events MUST therefore either observe the full set or observe none; partial visibility is a protocol violation.
 
@@ -67,7 +68,7 @@ Implementations MAY expose operational telemetry through other channels without 
 
 Every v0 event `type` defined by the protocol is listed below. For each, the `data` object's required fields are pinned; optional fields are called out per entry. The JSON Schema in [`schemas/event.schema.json`](schemas/event.schema.json) enforces these shapes via `if/then` dispatch on `type`.
 
-Implementations MAY emit additional event types outside this registry (§3.5). The `type` pattern in §1 is the only structural constraint on them.
+Implementations MAY emit additional event types outside this registry (§3.6). The `type` pattern in §1 is the only structural constraint on them.
 
 ### 3.1 Task events
 
@@ -81,14 +82,17 @@ Produced atomically with the transitions defined in [`04-task-protocol.md`](04-t
 | `task.completed` | `submitted` → `completed` | `task_id` |
 | `task.failed` | `submitted` → `failed` | `task_id`, `reason` |
 | `task.reclaimed` | `claimed`/`submitted` → `pending` | `task_id`, `cause` |
+| `task.reassigned` | `pending` → `pending` (with new `target`) | `task_id`, `new_target`, `reason`, `reassigned_by` |
 
 Payload field definitions:
 
 - `task_id` — the `task_id` of the transitioning task.
 - `kind` — the task's `kind` ([`02-data-model.md`](02-data-model.md) §3.1); one of `ideation`, `execution`, `evaluation`.
 - `worker_id` — the `claim.worker_id` recorded on the successful claim ([`04-task-protocol.md`](04-task-protocol.md) §3.2).
-- `reason` — one of the strings `"worker_error"` (the worker's submission declared failure), `"validation_error"` (the orchestrator rejected the result as malformed or non-conforming), or `"policy_limit"` (a policy such as retry budget caused the failure). The literal set is closed for v0; an implementation that needs finer granularity MAY add a separate operator-level event under its own type (§3.5).
+- `reason` — for `task.failed`: one of the strings `"worker_error"` (the worker's submission declared failure), `"validation_error"` (the orchestrator rejected the result as malformed or non-conforming), or `"policy_limit"` (a policy such as retry budget caused the failure). The literal set is closed for v0; an implementation that needs finer granularity MAY add a separate operator-level event under its own type (§3.6). For `task.reassigned`: a free-form string (typical: `"operator"`, `"failed_worker"`, `"misrouted"`); not enumerated by the protocol.
 - `cause` — one of `"expired"` (claim `expires_at` passed), `"operator"` (explicit operator action), or `"health_policy"` (task store health policy declared the worker unreachable). The literal set is closed for v0 on the same terms as `reason`.
+- `new_target` — the `Task.target` value installed by the reassignment ([`02-data-model.md`](02-data-model.md) §3.5). `null` for "any worker"; otherwise an object with `kind` (`"worker"` / `"group"`) and `id`.
+- `reassigned_by` — the `worker_id` of the caller that invoked `reassign_task` ([`04-task-protocol.md`](04-task-protocol.md) §6), drawn from the binding's authenticated principal. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §6.2.
 
 The payload MAY include additional fields beyond those required; subscribers MUST tolerate them. A conforming orchestrator SHOULD include the submitting worker's `worker_id` on `task.submitted`, `task.completed`, and `task.failed` events when known, as an operational convenience — but this is not required because the worker-task binding is already recoverable from the preceding `task.claimed` event.
 
@@ -129,17 +133,33 @@ Payload field definitions:
 
 `variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks integration so subscribers can reconstruct the canonical lineage without reading git directly.
 
-### 3.4 Subscriber observability guarantee
+### 3.4 Experiment events
 
-Every protocol-owned state-machine transition in v0 is covered by exactly one event type in §3.1–§3.3. A subscriber that consumes every event with a registered `type`, in log order, MUST be able to reconstruct the **lifecycle history** of every task, idea, and variant in the experiment: which entities exist, in what states, in what order. A conforming implementation MUST NOT expose a state- machine transition that is not marked by its corresponding registered event.
+Produced atomically with mutations of experiment-scoped configuration. The `experiment_id` is implicit (events live in the per-experiment log per §4.6); the payload describes the experiment-level state change.
+
+| Type | Trigger | `data` required fields |
+|---|---|---|
+| `experiment.dispatch_mode_changed` | `update_dispatch_mode` ([`04-task-protocol.md`](04-task-protocol.md) §7) | `dispatch_mode`, `changed`, `updated_by` |
+
+Payload field definitions:
+
+- `dispatch_mode` — the **resulting** `dispatch_mode` object on the experiment after the merge ([`02-data-model.md`](02-data-model.md) §2.5). Includes every key (defaults applied), so a subscriber that resyncs from this event observes the full post-update state without needing the prior value.
+- `changed` — an object mapping each key whose value flipped to its new value (subset of `dispatch_mode`). Empty if the update was a no-op (every supplied key already matched the stored value); in that case the implementation MAY skip the event entirely per [`04-task-protocol.md`](04-task-protocol.md) §7.1.
+- `updated_by` — the `worker_id` of the caller that invoked `update_dispatch_mode`. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §7.2.
+
+Note on ideation-task creation: the orchestrator-role contract's continuous-policy mechanism ([`03-roles.md`](03-roles.md) §6.2) does NOT introduce a new event type. Every ideation-task creation (whether driven by the auto-orchestrator's policy or by an operator under `dispatch_mode.ideation_creation == "manual"`) emits the standard `task.created` event from §3.1, with attribution recorded in `task.created_by` ([`02-data-model.md`](02-data-model.md) §3.1).
+
+### 3.5 Subscriber observability guarantee
+
+Every protocol-owned state-machine transition in v0 is covered by exactly one event type in §3.1–§3.4. A subscriber that consumes every event with a registered `type`, in log order, MUST be able to reconstruct the **lifecycle history** of every task, idea, variant, and experiment-scoped configuration in the experiment: which entities exist, in what states, in what order. A conforming implementation MUST NOT expose a state-machine transition that is not marked by its corresponding registered event.
 
 Registered event payloads carry only the fields needed to *identify* the transitioning entity and any cross-entity references (e.g. `idea.dispatched` carries the implement `task_id`). They do not carry full entity snapshots. A subscriber that needs the content of an entity (the idea's `parent_commits` and `artifacts_uri`, the variant's `metrics` and `completed_at`) MUST read that entity from its store using the identifier the event carries; the read returns the entity's current state ([`08-storage.md`](08-storage.md) §1.7). This boundary is deliberate: events mark what happened; the entity stores hold what the entity *is*. Coupling the two into a full event-sourced projection — a subscriber reconstructing every intermediate entity value from events alone — is a deployment MAY implement on top of v0 but is not a protocol requirement, since v0 does not mandate historical reads on the entity stores.
 
 The transactional invariant (§2) combined with the atomic event + state-change rule guarantees that any entity reachable via an event's identifier is already durable at read time.
 
-### 3.5 Non-registered event types
+### 3.6 Non-registered event types
 
-Implementations MAY emit events whose `type` is not listed in §3.1–§3.3, provided the type conforms to the `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` pattern. Such events carry no protocol-defined semantics and MUST NOT be required by any conforming subscriber.
+Implementations MAY emit events whose `type` is not listed in §3.1–§3.4, provided the type conforms to the `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` pattern. Such events carry no protocol-defined semantics and MUST NOT be required by any conforming subscriber.
 
 A non-registered event MUST NOT carry a registered `type` with a non-conforming payload; that is a protocol violation, not an extension. The registry is closed at v0: a future spec lineage (`v1`) MAY add or revise registered types.
 
@@ -189,5 +209,5 @@ What the protocol does **not** leave to implementations:
 
 - The envelope fields (§1).
 - The transactional invariant (§2).
-- The registered event types and their payloads (§3.1–§3.3).
+- The registered event types and their payloads (§3.1–§3.4).
 - The delivery guarantees in §4.

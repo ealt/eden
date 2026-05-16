@@ -7,7 +7,7 @@ set -euo pipefail
 #
 #   1. Web UI ideator walkthrough (sign-in, claim, submit)
 #   2. Admin-reclaim drill (claim, do-not-submit, admin-reclaim)
-#   3. End-state assertions adjusted for EDEN_IDEATION_TASKS=4
+#   3. End-state assertions adjusted for MAX_TOTAL=4 ideation tasks
 #   4. Termination drill (compose stop --timeout 10; verify no SIGKILL)
 #
 # See docs/archive/eden-phase-10e-compose-e2e.md for the design rationale,
@@ -91,11 +91,16 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE" \
     --data-root "$SMOKE_DATA_ROOT"
 
-# Override EDEN_IDEATION_TASKS to 4 (default is 3). The four deterministic
-# IDs ideation-0001..ideation-0004 are seeded; the drill claims ideation-0001 and
-# ideation-0002, leaving ideation-0003 and ideation-0004 (plus reclaimed ideation-0002)
-# for the headless ideator-host stage 2 picks up.
-sed -i.bak 's/^EDEN_IDEATION_TASKS=.*/EDEN_IDEATION_TASKS=4/' "$ENV_FILE"
+# 12a-2 wave 7: the policy-driven dispatch creates UUID-suffixed task
+# ids (not the pre-12a-2 fixed ``ideation-NNNN`` shape). Set the
+# target-pending depth to 4 and cap lifetime ideation at 4 so the
+# orchestrator quiesces after 4 variants land. The e2e_drive.py
+# script discovers the task ids dynamically from the wire — it
+# can't assume ideation-0001..ideation-0004 anymore.
+sed -i.bak \
+    -e 's/^EDEN_IDEATION_POLICY_TARGET_PENDING=.*/EDEN_IDEATION_POLICY_TARGET_PENDING=4/' \
+    -e 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=4/' \
+    "$ENV_FILE"
 rm -f "${ENV_FILE}.bak"
 
 echo "--- stage 1: bring up everything except gitea + ideator-host ---"
@@ -199,6 +204,47 @@ RECLAIMED_OPERATOR="$(
 )"
 test "$RECLAIMED_OPERATOR" -ge 1 || {
     echo "expected >= 1 task.reclaimed (cause=operator) event; got $RECLAIMED_OPERATOR" >&2
+    exit 1
+}
+
+# 12a-2 wave 7: the e2e drill reassigns one ideation task via the
+# admin UI. Verify the resulting `task.reassigned` event matches the
+# exact shape the drill requested: target is worker:ideator-1, AND
+# reassigned_by is stamped from the web-ui's worker_id (the
+# admins-group principal that drove the wire call). A bare
+# "task.reassigned count >= 1" assertion would pass even if the
+# event recorded a different target or attribution, so filter by
+# all three fields.
+EDEN_WEB_UI_WORKER_ID="$(grep -E '^EDEN_WEB_UI_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$EDEN_WEB_UI_WORKER_ID"
+TASK_REASSIGNED="$(
+    echo "$EVENTS_JSON" \
+        | jq --arg actor "$EDEN_WEB_UI_WORKER_ID" '(.events // .) | [.[] | select(
+            .type == "task.reassigned"
+            and .data.new_target.kind == "worker"
+            and .data.new_target.id == "ideator-1"
+            and .data.reassigned_by == $actor
+          )] | length'
+)"
+test "$TASK_REASSIGNED" -ge 1 || {
+    echo "expected >= 1 task.reassigned event with new_target=worker:ideator-1 reassigned_by=${EDEN_WEB_UI_WORKER_ID}; got $TASK_REASSIGNED" >&2
+    echo "all task.reassigned events:" >&2
+    echo "$EVENTS_JSON" | jq '(.events // .) | [.[] | select(.type == "task.reassigned")]' >&2 || true
+    exit 1
+}
+
+# 12a-2 wave 7: the dispatch-mode toggle drill flips integration to
+# manual + back to auto. Verify both `experiment.dispatch_mode_changed`
+# events landed (or that at least one diff-bearing event is in the
+# log — the flip-back-to-auto MAY collapse to no event depending on
+# starting state, but the initial flip-to-manual MUST emit at least
+# one event with `integration: manual` in `changed`).
+DISPATCH_MODE_CHANGED="$(
+    echo "$EVENTS_JSON" \
+        | jq '(.events // .) | [.[] | select(.type == "experiment.dispatch_mode_changed")] | length'
+)"
+test "$DISPATCH_MODE_CHANGED" -ge 1 || {
+    echo "expected >= 1 experiment.dispatch_mode_changed event; got $DISPATCH_MODE_CHANGED" >&2
     exit 1
 }
 

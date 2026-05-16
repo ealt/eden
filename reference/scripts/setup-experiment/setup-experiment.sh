@@ -207,8 +207,35 @@ GITEA_SSH_HOST_PORT="${EXISTING_GITEA_SSH_HOST_PORT:-2222}"
 EXISTING_WEB_UI_HOST_PORT="$(read_env_key WEB_UI_HOST_PORT "$ENV_FILE")"
 WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
 
-EXISTING_PLAN_TASKS="$(read_env_key EDEN_IDEATION_TASKS "$ENV_FILE")"
-EDEN_IDEATION_TASKS="${EXISTING_PLAN_TASKS:-3}"
+# 12a-2 wave 4: the pre-12a-2 EDEN_IDEATION_TASKS static-seed env is
+# retired. The orchestrator now drives ideation creation through
+# `eden_dispatch.policies:default_policy`, parameterized by
+# EDEN_IDEATION_POLICY_TARGET_PENDING (default 3) +
+# EDEN_IDEATION_POLICY_MAX_TOTAL (default unbounded). Preserved across
+# re-runs.
+EXISTING_TARGET_PENDING="$(read_env_key EDEN_IDEATION_POLICY_TARGET_PENDING "$ENV_FILE")"
+EDEN_IDEATION_POLICY_TARGET_PENDING="${EXISTING_TARGET_PENDING:-3}"
+EXISTING_MAX_TOTAL="$(read_env_key EDEN_IDEATION_POLICY_MAX_TOTAL "$ENV_FILE")"
+EDEN_IDEATION_POLICY_MAX_TOTAL="${EXISTING_MAX_TOTAL:-}"
+# 12a-2 wave 4 / §3.8: auto-orchestrator worker_id. Multi-replica
+# deployments override per-replica.
+EXISTING_ORCH_WID="$(read_env_key EDEN_ORCHESTRATOR_WORKER_ID "$ENV_FILE")"
+EDEN_ORCHESTRATOR_WORKER_ID="${EXISTING_ORCH_WID:-orchestrator}"
+# 12a-2 wave 7 / §5.7: initial admin worker_id seeded into the
+# `admins` group below. Operators acting through the web UI
+# authenticate as this worker; it's the only principal that can
+# drive reassign_task / update_dispatch_mode / create_task(kind=execution)
+# under the wave-3 §3.7 authority gates.
+EXISTING_ADMIN_MEMBER="$(read_env_key EDEN_ADMINS_INITIAL_MEMBER "$ENV_FILE")"
+EDEN_ADMINS_INITIAL_MEMBER="${EXISTING_ADMIN_MEMBER:-operator}"
+
+# 12a-2 wave 7 follow-up: the web-ui's worker_id is the deployment-
+# level admin actor (until the §D.5b per-user session-bearer retrofit
+# lands in a later phase). Adding it to `admins` lets operators flip
+# dispatch_mode + reassign tasks through the /admin/ routes; without
+# this, the web-ui's StoreClient hits 403 on every admin-gated PATCH.
+EXISTING_WEB_UI_WID="$(read_env_key EDEN_WEB_UI_WORKER_ID "$ENV_FILE")"
+EDEN_WEB_UI_WORKER_ID="${EXISTING_WEB_UI_WID:-web-ui-1}"
 
 # 10d subprocess overlay: experiment-dir bind-mount source. Default
 # is the directory containing the experiment config's `.eden`
@@ -429,7 +456,6 @@ EDEN_EXPERIMENT_ID=${EXPERIMENT_ID}
 EDEN_ADMIN_TOKEN=${EDEN_ADMIN_TOKEN}
 EDEN_SESSION_SECRET=${EDEN_SESSION_SECRET}
 EDEN_STORE_URL=${EDEN_STORE_URL}
-EDEN_IDEATION_TASKS=${EDEN_IDEATION_TASKS}
 WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 
 # --- 12a-1g substrate data root ---
@@ -439,6 +465,13 @@ WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 # experiment-data-durability.md. Override via setup-experiment.sh
 # --data-root <path>.
 EDEN_EXPERIMENT_DATA_ROOT=${EDEN_EXPERIMENT_DATA_ROOT}
+
+# --- 12a-2 orchestrator-role ---
+EDEN_IDEATION_POLICY_TARGET_PENDING=${EDEN_IDEATION_POLICY_TARGET_PENDING}
+EDEN_IDEATION_POLICY_MAX_TOTAL=${EDEN_IDEATION_POLICY_MAX_TOTAL}
+EDEN_ORCHESTRATOR_WORKER_ID=${EDEN_ORCHESTRATOR_WORKER_ID}
+EDEN_ADMINS_INITIAL_MEMBER=${EDEN_ADMINS_INITIAL_MEMBER}
+EDEN_WEB_UI_WORKER_ID=${EDEN_WEB_UI_WORKER_ID}
 
 # --- 10d subprocess overlay (only used by compose.subprocess.yaml) ---
 EDEN_EXPERIMENT_DIR_HOST=${EDEN_EXPERIMENT_DIR_HOST}
@@ -596,6 +629,134 @@ TMP_REPLACE="$(mktemp)"
 sed -E "s/^EDEN_BASE_COMMIT_SHA=.*/EDEN_BASE_COMMIT_SHA=${SEED_SHA}/" \
     "$ENV_FILE" > "$TMP_REPLACE"
 mv "$TMP_REPLACE" "$ENV_FILE"
+
+# --- 12a-2 wave 7: reserved-group + initial-admin bootstrap ---
+#
+# Per plan §5.7: register the `admins` and `orchestrators` groups
+# (both reserved per chapter 02 §7.5) and seed the initial admin
+# worker into `admins`. The `orchestrators` group is created empty;
+# auto-orchestrator instances populate it themselves at startup via
+# `_ensure_orchestrators_membership` (12a-2 wave 4).
+#
+# All three calls are admin-token-authenticated and idempotent on
+# existing record (per 12a-1 §D.1 / §D.2), so re-running setup on an
+# already-configured experiment is safe. We swallow 409 on
+# register_group (group exists) and 200 on register_worker
+# (idempotent re-registration returns the existing record without a
+# new token).
+echo "--- bringing up task-store-server for group bootstrap ---" >&2
+(cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
+    up -d --wait task-store-server >&2)
+
+bootstrap_curl() {
+    # Issue an admin-token-authenticated wire call from inside the
+    # task-store-server container; that keeps the bootstrap working
+    # whether or not the host has curl, and avoids guessing at the
+    # exposed port (the container always listens on 8080).
+    local method="$1" path="$2" body="${3:-}"
+    local args=(
+        -fsS -o /dev/null -w '%{http_code}'
+        -X "$method"
+        -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}"
+        -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}"
+        -H "Content-Type: application/json"
+    )
+    if [[ -n "$body" ]]; then
+        args+=(-d "$body")
+    fi
+    args+=("http://localhost:8080${path}")
+    docker compose -f compose.yaml --env-file "$ENV_FILE" \
+        exec -T task-store-server curl "${args[@]}" || true
+}
+
+echo "--- registering reserved groups + initial admin worker ---" >&2
+EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
+
+# 1. register_group("orchestrators") — accept 200 (created) or 409
+# (already exists; orchestrator may have raced us, or this is a
+# re-run).
+rc=$(bootstrap_curl POST "${EXP_BASE}/groups" \
+    "{\"group_id\":\"orchestrators\"}")
+case "$rc" in
+    200|409) ;;
+    *) echo "register_group(orchestrators) failed: http=$rc" >&2; exit 1 ;;
+esac
+
+# 2. register_group("admins") — same idempotency posture.
+rc=$(bootstrap_curl POST "${EXP_BASE}/groups" \
+    "{\"group_id\":\"admins\"}")
+case "$rc" in
+    200|409) ;;
+    *) echo "register_group(admins) failed: http=$rc" >&2; exit 1 ;;
+esac
+
+# 3. register_worker(EDEN_ADMINS_INITIAL_MEMBER) — admin-gated. Per
+# chapter 02 §6.3, re-registration of an existing worker_id returns
+# the existing record (200) without a fresh registration_token. We
+# intentionally do NOT capture the returned token here; the operator
+# acquires a credential via the documented reissue path
+# (`reference/scripts/setup-experiment/README.md` will be updated to
+# point at the `eden_orchestrator` host's cred dir for inspection).
+rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
+    "{\"worker_id\":\"${EDEN_ADMINS_INITIAL_MEMBER}\"}")
+case "$rc" in
+    200) ;;
+    *) echo "register_worker(${EDEN_ADMINS_INITIAL_MEMBER}) failed: http=$rc" >&2; exit 1 ;;
+esac
+
+# 4. add_to_group(initial-admin, "admins") — admin-gated; idempotent
+# on existing membership.
+rc=$(bootstrap_curl POST "${EXP_BASE}/groups/admins/members" \
+    "{\"member_id\":\"${EDEN_ADMINS_INITIAL_MEMBER}\"}")
+case "$rc" in
+    200) ;;
+    *) echo "add_to_group(admins, ${EDEN_ADMINS_INITIAL_MEMBER}) failed: http=$rc" >&2; exit 1 ;;
+esac
+
+# 5. register_worker(EDEN_WEB_UI_WORKER_ID) — admin-gated, idempotent
+# (re-registration returns existing record without a fresh token).
+# Pre-registering here means the web-ui container's startup
+# bootstrap_worker_credential will see an existing row and reissue
+# (per §8.2: no fall-through to fresh register on existing record).
+rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
+    "{\"worker_id\":\"${EDEN_WEB_UI_WORKER_ID}\"}")
+case "$rc" in
+    200) ;;
+    *) echo "register_worker(${EDEN_WEB_UI_WORKER_ID}) failed: http=$rc" >&2; exit 1 ;;
+esac
+
+# 6. add_to_group(web-ui, "admins") — admin-gated; idempotent on
+# existing membership. The web-ui's StoreClient bearer is its own
+# worker_id, so PATCH /dispatch_mode + POST /tasks/{T}/reassign
+# routes (both admins-gated per §3.7) need this membership to land.
+rc=$(bootstrap_curl POST "${EXP_BASE}/groups/admins/members" \
+    "{\"member_id\":\"${EDEN_WEB_UI_WORKER_ID}\"}")
+case "$rc" in
+    200) ;;
+    *) echo "add_to_group(admins, ${EDEN_WEB_UI_WORKER_ID}) failed: http=$rc" >&2; exit 1 ;;
+esac
+
+# 7. Pre-register the headless worker host worker_ids (ideator-1,
+# executor-1, evaluator-1) so they're known to the registry from
+# bootstrap. Each worker host's own startup
+# `bootstrap_worker_credential` will see the existing row and reissue
+# per §8.2. Pre-registering matters for the wave-5 reassign route's
+# unknown-target check (the route validates `new_target` against the
+# live worker registry); without it, e2e drills that reassign a task
+# to a worker that hasn't yet self-registered see `error=unknown-target`.
+# The set of worker_ids is the reference deployment's known shape;
+# operators with different worker_id schemes register theirs the same
+# way (admin-gated POST /workers).
+for wid in ideator-1 executor-1 evaluator-1; do
+    rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
+        "{\"worker_id\":\"${wid}\"}")
+    case "$rc" in
+        200) ;;
+        *) echo "register_worker(${wid}) failed: http=$rc" >&2; exit 1 ;;
+    esac
+done
+
+echo "--- bootstrap complete: admins + orchestrators groups; initial admin = ${EDEN_ADMINS_INITIAL_MEMBER}; web-ui admin = ${EDEN_WEB_UI_WORKER_ID}; worker hosts pre-registered ---" >&2
 
 # If the operator passed a custom --env-file path, echo a
 # next-step that uses an absolute path so they don't have to

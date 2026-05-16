@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — dispatch_mode response",
+  "description": "Full dispatch_mode object returned by GET / PATCH /v0/experiments/{E}/dispatch_mode (07-wire-protocol.md §2.8). Always includes the four normative keys; unknown keys persisted by older writes round-trip through per 02-data-model.md §2.5.",
+  "type": "object",
+  "required": ["ideation_creation", "execution_dispatch", "evaluation_dispatch", "integration"],
+  "additionalProperties": {"type": "string", "enum": ["auto", "manual"]},
+  "properties": {
+    "ideation_creation": {"type": "string", "enum": ["auto", "manual"]},
+    "execution_dispatch": {"type": "string", "enum": ["auto", "manual"]},
+    "evaluation_dispatch": {"type": "string", "enum": ["auto", "manual"]},
+    "integration": {"type": "string", "enum": ["auto", "manual"]}
+  }
+}
