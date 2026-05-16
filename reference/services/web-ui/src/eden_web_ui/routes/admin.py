@@ -18,13 +18,27 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from eden_contracts import Event, Task, TaskTarget, Variant
+from eden_contracts import (
+    EvaluationTask,
+    Event,
+    ExecutionTask,
+    IdeationTask,
+    Task,
+    TaskTarget,
+    Variant,
+)
 from eden_storage.errors import IllegalTransition, InvalidPrecondition
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ._helpers import csrf_ok, get_session, read_variant_artifact
+from ._lineage import (
+    lineage_for_evaluation_task,
+    lineage_for_execution_task,
+    lineage_for_ideation_task,
+    lineage_for_variant,
+)
 from .admin_workers import WORKER_FILTER_INVALID, coerce_worker_filter
 
 router = APIRouter(prefix="/admin")
@@ -392,6 +406,19 @@ async def task_detail(
     can_reclaim = task.state in {"claimed", "submitted"}
     is_force = task.state == "submitted"
 
+    # Lineage (plan §D.6) — dispatch on kind. Build best-effort; per-call
+    # transport failures surface via the view model's transport_errors
+    # counter, never crash the page.
+    lineage: Any
+    if isinstance(task, IdeationTask):
+        lineage = lineage_for_ideation_task(store, task)
+    elif isinstance(task, ExecutionTask):
+        lineage = lineage_for_execution_task(store, task)
+    elif isinstance(task, EvaluationTask):
+        lineage = lineage_for_evaluation_task(store, task)
+    else:  # pragma: no cover — TaskAdapter union is exhaustive
+        lineage = None
+
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_task_detail.html",
@@ -406,6 +433,7 @@ async def task_detail(
             "outcome": reclaim_outcome,
             "can_reclaim": can_reclaim,
             "is_force": is_force,
+            "lineage": lineage,
         },
     )
 
@@ -864,6 +892,8 @@ async def variant_detail(
 
     inline_artifact = read_variant_artifact(variant.artifacts_uri, artifacts_dir)
 
+    lineage = lineage_for_variant(store, variant)
+
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_variant_detail.html",
@@ -874,6 +904,7 @@ async def variant_detail(
             "related_events": list(reversed(related))[:_TRIAL_DETAIL_EVENT_CAP],
             "related_total": total_related,
             "variant_artifact_inline": inline_artifact,
+            "lineage": lineage,
         },
     )
 
