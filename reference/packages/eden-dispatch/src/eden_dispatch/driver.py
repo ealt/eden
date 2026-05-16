@@ -29,12 +29,15 @@ from collections.abc import Callable
 
 from eden_contracts import DispatchMode, EvaluationTask
 from eden_storage import Store
-from eden_storage.errors import AlreadyExists, InvalidPrecondition
+from eden_storage.errors import AlreadyExists, IllegalTransition, InvalidPrecondition
 
 from .policies import IdeationPolicy
 from .state_view import build_experiment_state_view
+from .termination import Continue, Terminate, TerminationPolicy
 
 _log = logging.getLogger(__name__)
+
+_DEFAULT_TERMINATED_BY = "orchestrator"
 
 
 def run_orchestrator_iteration(
@@ -46,8 +49,10 @@ def run_orchestrator_iteration(
     dispatch_mode: DispatchMode | None = None,
     ideation_policy: IdeationPolicy | None = None,
     ideation_task_id_factory: Callable[[], str] | None = None,
+    termination_policy: TerminationPolicy | None = None,
+    terminated_by: str = _DEFAULT_TERMINATED_BY,
 ) -> bool:
-    """Run one orchestrator pass: finalize + dispatch + integrate.
+    """Run one orchestrator pass: terminate-check + finalize + dispatch + integrate.
 
     Returns ``True`` if any transition fired this iteration.
 
@@ -57,10 +62,22 @@ def run_orchestrator_iteration(
     §3.2 / §3.4 integration (writing the ref, the variant field, and the
     event atomically). The return value is ignored.
 
-    The 12a-2 orchestrator-role contract (chapter 03 §6.2) gates each
-    of four decision types on the experiment's per-key ``dispatch_mode``
-    flag ([`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.5):
+    The orchestrator-role contract (chapter 03 §6.2) gates five
+    decision types on the experiment's per-key ``dispatch_mode``
+    flag ([`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.4):
 
+    - **Decision-type 0 (12a-3) — termination** (``dispatch_mode.termination``).
+      Consulted FIRST each iteration. The orchestrator invokes the
+      caller-supplied ``termination_policy`` (when set and
+      ``dispatch_mode.termination == "auto"``); ``Continue`` proceeds
+      to the four operational decisions, ``Terminate(reason)``
+      commits the ``running → terminated`` transition via
+      ``store.terminate_experiment(reason, terminated_by=...)``. A
+      policy that raises is treated as ``Continue`` AND emits an
+      ``experiment.policy_error`` event so operators see the fault.
+      The terminate commit is idempotent on already-terminated state
+      per ``04-task-protocol.md`` §8.1; a multi-instance race
+      collapses to a single observable transition.
     - ``ideation_creation`` — invoke ``ideation_policy(state)`` and
       create that many ideation tasks via
       ``ideation_task_id_factory``. Requires BOTH
@@ -76,36 +93,214 @@ def run_orchestrator_iteration(
       variant lacking ``variant_commit_sha``. Skipped if
       ``integrate_variant is None``.
 
-    ``dispatch_mode=None`` is treated as all-``auto`` (the default
-    state from §2.5) — backward-compatible with pre-12a-2 callers
-    that haven't yet adopted the new parameter.
+    ``dispatch_mode=None`` is treated as the model default: ``termination``
+    ``"manual"`` (12a-3 backward-compat) plus the four operational keys
+    ``"auto"``.
 
-    Finalize (accept / reject of submitted tasks) is NOT gated by
-    ``dispatch_mode`` — finalizing submissions is the orchestrator
-    role's unconditional responsibility per spec §2.5 / §6. Gating
-    finalize on a ``dispatch_mode`` key would leave submitted tasks
-    stuck in the live set and starve workers waiting for terminal
-    transitions; the spec lists only the FOUR creation/dispatch/
-    integration decisions as gated.
+    **Drain semantics.** When the experiment's state is ``"terminated"``
+    at iteration start (either entering this iteration or after the
+    termination decision commits), the three creation/dispatch
+    decisions (ideation_creation / execution_dispatch /
+    evaluation_dispatch) MUST NOT run per
+    [`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.5;
+    the integration decision continues to run until no
+    ``status == "success"`` variants without ``variant_commit_sha``
+    remain. Finalize (accept / reject of submitted tasks) is NOT
+    gated and runs in both states — already-claimed tasks complete
+    normally so committed work in flight is not stranded.
     """
     mode = dispatch_mode if dispatch_mode is not None else DispatchMode()
     progress = False
+
+    # Decision-type 0 (12a-3): termination. Consulted FIRST.
+    is_running = _terminate_if_directed(
+        store,
+        mode=mode,
+        termination_policy=termination_policy,
+        terminated_by=terminated_by,
+    )
+    if not is_running.was_running_at_entry and not is_running.terminated_this_iter:
+        # Experiment was already terminated when we entered; no policy
+        # consultation, only the integration drain runs (plus finalize
+        # for in-flight work).
+        progress = is_running.terminated_this_iter
+    progress |= is_running.terminated_this_iter
+
+    # Finalize runs in both states (drain semantics).
     progress |= _finalize_submitted(store, kind="ideation")
-    if mode.ideation_creation == "auto":
+    if is_running.now_running and mode.ideation_creation == "auto":
         progress |= _create_ideation_tasks(
             store,
             policy=ideation_policy,
             factory=ideation_task_id_factory,
         )
-    if mode.execution_dispatch == "auto":
+    if is_running.now_running and mode.execution_dispatch == "auto":
         progress |= _dispatch_execution_tasks(store, execution_task_id_factory)
     progress |= _finalize_submitted(store, kind="execution")
-    if mode.evaluation_dispatch == "auto":
+    if is_running.now_running and mode.evaluation_dispatch == "auto":
         progress |= _dispatch_evaluation_tasks(store, evaluation_task_id_factory)
     progress |= _finalize_submitted(store, kind="evaluation")
     if mode.integration == "auto" and integrate_variant is not None:
         progress |= _integrate_successful_variants(store, integrate_variant)
     return progress
+
+
+class _TerminationOutcome:
+    """Result of the iteration's decision-type 0 phase.
+
+    Three flags rather than two booleans make the call-site
+    intentful: callers want to know "should I run operational
+    decisions 1-3" (``now_running``), separately from "did anything
+    fire this iteration" (``terminated_this_iter``), separately from
+    "what was the entry state for diagnostic logging"
+    (``was_running_at_entry``).
+    """
+
+    def __init__(
+        self,
+        *,
+        was_running_at_entry: bool,
+        terminated_this_iter: bool,
+        now_running: bool,
+    ) -> None:
+        self.was_running_at_entry = was_running_at_entry
+        self.terminated_this_iter = terminated_this_iter
+        self.now_running = now_running
+
+
+def _terminate_if_directed(
+    store: Store,
+    *,
+    mode: DispatchMode,
+    termination_policy: TerminationPolicy | None,
+    terminated_by: str,
+) -> _TerminationOutcome:
+    """Apply chapter 03 §6.2 decision-type 0 to the current iteration.
+
+    Reads the experiment state, optionally consults the policy, and
+    commits the transition. Returns a small struct the caller uses to
+    decide which downstream decisions to run.
+
+    A transient ``read_experiment_state`` failure falls back to the
+    safer "not running" assumption — the loop's ``_read_dispatch_mode``
+    fail-closed posture exists for the same reason — and skips both
+    the policy consultation and the operational decisions for this
+    iteration. The integration drain still runs unconditionally
+    because ``mode.integration`` is the only gate.
+    """
+    try:
+        current_state = store.read_experiment_state()
+    except Exception:  # noqa: BLE001 — defensive at iteration boundary
+        _log.exception(
+            "read_experiment_state_failed; treating as terminated for "
+            "this iteration to fail closed on the operational decisions"
+        )
+        return _TerminationOutcome(
+            was_running_at_entry=False,
+            terminated_this_iter=False,
+            now_running=False,
+        )
+    if current_state != "running":
+        return _TerminationOutcome(
+            was_running_at_entry=False,
+            terminated_this_iter=False,
+            now_running=False,
+        )
+    # state == "running": consult the policy when auto + supplied.
+    if (
+        mode.termination != "auto"
+        or termination_policy is None
+    ):
+        return _TerminationOutcome(
+            was_running_at_entry=True,
+            terminated_this_iter=False,
+            now_running=True,
+        )
+    view = build_experiment_state_view(store)
+    try:
+        decision = termination_policy(view)
+    except Exception as exc:  # noqa: BLE001 — §6.2 fault-tolerance
+        _log.exception(
+            "termination_policy raised; treating as Continue and "
+            "emitting experiment.policy_error"
+        )
+        _emit_policy_error_best_effort(
+            store,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return _TerminationOutcome(
+            was_running_at_entry=True,
+            terminated_this_iter=False,
+            now_running=True,
+        )
+    if isinstance(decision, Continue):
+        return _TerminationOutcome(
+            was_running_at_entry=True,
+            terminated_this_iter=False,
+            now_running=True,
+        )
+    if isinstance(decision, Terminate):
+        try:
+            store.terminate_experiment(
+                reason=decision.reason, terminated_by=terminated_by
+            )
+            return _TerminationOutcome(
+                was_running_at_entry=True,
+                terminated_this_iter=True,
+                now_running=False,
+            )
+        except IllegalTransition:
+            # §8.1 race: another orchestrator instance won; we observe
+            # the post-commit state as already terminated.
+            return _TerminationOutcome(
+                was_running_at_entry=True,
+                terminated_this_iter=False,
+                now_running=False,
+            )
+    # Unknown decision shape — defensive fall-through; treat as Continue.
+    _log.error(
+        "termination_policy returned unknown shape %r; treating as Continue",
+        type(decision).__name__,
+    )
+    return _TerminationOutcome(
+        was_running_at_entry=True,
+        terminated_this_iter=False,
+        now_running=True,
+    )
+
+
+def _emit_policy_error_best_effort(
+    store: Store, *, error_type: str, error_message: str
+) -> None:
+    """Append ``experiment.policy_error`` if the Store supports it; else log only.
+
+    ``StoreClient`` (the wire-binding-backed Store) currently raises
+    :class:`NotImplementedError` from this method — the wire endpoint
+    lands in a follow-up to wave 4. In-process Stores (memory / sqlite
+    / postgres) append the event normally. Catching the
+    ``NotImplementedError`` here keeps the orchestrator service
+    operational against a remote task-store; the operator-visibility
+    cost is documented in the policy-error spec note.
+    """
+    try:
+        store.emit_policy_error(
+            policy_kind="termination",
+            error_type=error_type,
+            error_message=error_message,
+        )
+    except NotImplementedError:
+        _log.warning(
+            "store.emit_policy_error not implemented on this backend; "
+            "policy fault recorded in logs only (error_type=%s)",
+            error_type,
+        )
+    except Exception:  # noqa: BLE001 — defensive; transport failures, etc.
+        _log.exception(
+            "store.emit_policy_error raised; policy fault recorded in "
+            "logs only (error_type=%s)",
+            error_type,
+        )
 
 
 def _create_ideation_tasks(

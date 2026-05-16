@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from eden_contracts import DispatchMode
 from eden_dispatch import (
     IdeationPolicy,
+    TerminationPolicy,
     run_orchestrator_iteration,
     sweep_expired_claims,
 )
@@ -38,6 +39,7 @@ def make_id_factory(prefix: str) -> Callable[[], str]:
 
 
 _ALL_MANUAL = DispatchMode(
+    termination="manual",
     ideation_creation="manual",
     execution_dispatch="manual",
     evaluation_dispatch="manual",
@@ -53,7 +55,9 @@ iteration can re-read. Failing OPEN to all-``auto`` would let a
 forbidden dispatch slip through during an operator's manual window —
 that violates §6.1's MUST NOT. The orchestrator's still-finalizing
 behavior (``_finalize_submitted`` is intentionally not gated) keeps
-worker submissions from getting stuck while the read recovers.
+worker submissions from getting stuck while the read recovers. The
+12a-3 ``termination`` key also folds into ``manual`` for the same
+reason: a transient read shouldn't trigger a stray termination check.
 """
 
 
@@ -79,6 +83,8 @@ def run_orchestrator_loop(
     store: Store,
     integrator: Integrator,
     ideation_policy: IdeationPolicy,
+    termination_policy: TerminationPolicy,
+    terminated_by: str,
     ideation_task_prefix: str,
     execution_task_prefix: str,
     evaluation_task_prefix: str,
@@ -86,18 +92,26 @@ def run_orchestrator_loop(
     max_quiescent_iterations: int,
     stop: StopFlag,
 ) -> None:
-    """Loop finalize + dispatch + integrate to quiescence.
+    """Loop finalize + dispatch + integrate to quiescence (or termination).
 
-    Per plan §3.3 the pre-12a-2 static seed loop is replaced by the
-    per-iteration ``ideation_policy`` callable: each iteration reads
-    the experiment's dispatch_mode, the policy decides how many
-    ideation tasks to create (when ``ideation_creation == "auto"``),
-    and ``run_orchestrator_iteration`` drives the four §6.2 decisions
-    against the current dispatch_mode.
+    Per plan §3.5: each iteration first consults the
+    ``termination_policy`` (decision-type 0 per ``03-roles.md`` §6.2)
+    when ``dispatch_mode.termination == "auto"``. A ``Terminate(reason)``
+    decision commits the ``running → terminated`` transition; from
+    that point on only the integration drain runs until success
+    variants without ``variant_commit_sha`` are exhausted, at which
+    point the existing quiescence heuristic drives the loop's exit.
+
+    ``terminated_by`` is the orchestrator instance's ``worker_id`` —
+    stamped on the ``experiment.terminated`` event the policy-driven
+    path commits.
 
     Returns when either ``stop`` is set or the orchestrator has
     observed ``max_quiescent_iterations`` consecutive iterations with
-    no progress.
+    no progress. The drain-after-termination path uses the same
+    quiescence counter — no special-case exit path is needed because
+    integration drain is exact-finite, so the post-terminate loop
+    naturally quiesces.
     """
     ideation_factory = make_id_factory(ideation_task_prefix)
     implement_factory = make_id_factory(execution_task_prefix)
@@ -122,6 +136,8 @@ def run_orchestrator_loop(
             dispatch_mode=dispatch_mode,
             ideation_policy=ideation_policy,
             ideation_task_id_factory=ideation_factory,
+            termination_policy=termination_policy,
+            terminated_by=terminated_by,
         )
         if reclaimed or progress:
             quiescent = 0

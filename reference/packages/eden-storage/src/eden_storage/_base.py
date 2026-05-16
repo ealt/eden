@@ -1343,6 +1343,41 @@ class _StoreBase:
             self._apply_commit(tx)
             return _validated_update(current, state="terminated")
 
+    def emit_policy_error(
+        self,
+        *,
+        policy_kind: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Append an ``experiment.policy_error`` event (12a-3).
+
+        Per [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md)
+        §6.2 decision-type 0 fault-tolerance: when an orchestrator
+        policy callable raises, the orchestrator MUST emit a
+        registered ``experiment.policy_error`` event so operators see
+        the failure in the admin event log. The event is registered
+        but EXEMPT from the §2 transactional invariant (no
+        protocol-owned state mutation pairs with it).
+        """
+        if not policy_kind:
+            raise InvalidPrecondition("policy_kind MUST be non-empty")
+        if not error_type:
+            raise InvalidPrecondition("error_type MUST be non-empty")
+        with self._atomic_operation():
+            tx = _Tx()
+            tx.events.append(
+                self._event(
+                    "experiment.policy_error",
+                    {
+                        "policy_kind": policy_kind,
+                        "error_type": error_type,
+                        "error_message": error_message,
+                    },
+                )
+            )
+            self._apply_commit(tx)
+
     def _require_running(self) -> None:
         """Raise :class:`IllegalTransition` if the experiment is terminated.
 

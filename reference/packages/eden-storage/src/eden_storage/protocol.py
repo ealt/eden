@@ -338,6 +338,32 @@ class Store(Protocol):
         """
         ...
 
+    def emit_policy_error(
+        self,
+        *,
+        policy_kind: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Append an ``experiment.policy_error`` event (12a-3).
+
+        Per [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md)
+        §6.2 decision-type 0 fault-tolerance: when an orchestrator
+        policy callable raises, the orchestrator MUST emit a
+        registered ``experiment.policy_error`` event so operators see
+        the failure in the admin event log. The event is registered
+        but EXEMPT from the
+        [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §2 transactional invariant — there is no protocol-owned
+        state mutation paired with it; this is a single-event append
+        rather than a composite commit.
+
+        v0 defines only ``policy_kind == "termination"``; future
+        decision types that introduce policy callables MAY add new
+        values.
+        """
+        ...
+
     def read_dispatch_mode(self) -> DispatchMode:
         """Return the experiment's current dispatch_mode (12a-2).
 

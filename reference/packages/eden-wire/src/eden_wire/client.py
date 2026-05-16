@@ -848,19 +848,28 @@ class StoreClient:
     def read_experiment(self) -> Experiment:
         """Read the experiment runtime object.
 
-        v0 exposes only the lifecycle state through the wire binding
-        (`GET /state`); the full Experiment object — including
-        ``created_at`` — is read by fetching `/state` and treating the
-        binding's returned model as the authoritative state slice.
-        Callers that need the full Experiment (e.g. termination
-        policies keyed on wall-time) MUST go through the in-process
-        Store; the wire client raises `NotImplementedError` here to
-        keep the binding's surface narrow.
+        v0 exposes only the lifecycle ``state`` slice through the wire
+        binding (`GET /state`); a full Experiment endpoint is not part
+        of the chapter-7 §2.9 surface in v0. To keep the ``Store``
+        Protocol satisfiable against the wire client, this method
+        wraps :meth:`read_experiment_state` and synthesizes the full
+        :class:`Experiment` shape with a best-effort ``created_at``.
+
+        The ``created_at`` field on the synthesized object is the
+        client's wall-clock at read time, not the actual experiment-
+        creation timestamp. Callers that need the recorded
+        ``created_at`` (e.g. ``max_wall_time_policy``) MUST go through
+        an in-process ``Store``; running such a policy against the
+        wire client will use the synthesized timestamp and never
+        accumulate wall-time toward the deadline. Documented as a
+        known degradation pending a future ``GET /experiment``
+        endpoint.
         """
-        raise NotImplementedError(
-            "StoreClient.read_experiment is not exposed as a wire endpoint "
-            "in v0; use read_experiment_state for the lifecycle slice or "
-            "the in-process Store for the full Experiment object."
+        state = self.read_experiment_state()
+        return Experiment(
+            experiment_id=self._experiment_id,
+            state=state,
+            created_at=_now(),
         )
 
     def read_experiment_state(self) -> ExperimentState:
@@ -890,6 +899,30 @@ class StoreClient:
         raise NotImplementedError(
             "update_experiment_state is an internal Store primitive; "
             "not exposed as a wire endpoint per 04-task-protocol.md §8.3"
+        )
+
+    def emit_policy_error(
+        self,
+        *,
+        policy_kind: str,  # noqa: ARG002 — wire endpoint not yet wired
+        error_type: str,  # noqa: ARG002 — wire endpoint not yet wired
+        error_message: str,  # noqa: ARG002 — wire endpoint not yet wired
+    ) -> None:
+        """Not yet wired through HTTP — orchestrator service uses in-process Store path.
+
+        The ``experiment.policy_error`` event is registered per
+        [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §3.4 but is fault-output, not state-change, and the policy-driven
+        emit path runs inside the orchestrator service today
+        (`reference/services/orchestrator/`). A future chapter-7 binding
+        for emit will land alongside Phase 12c control-plane work; until
+        then, callers that exercise the StoreClient path catch this
+        :class:`NotImplementedError` and fall back to a structured log.
+        """
+        raise NotImplementedError(
+            "StoreClient.emit_policy_error has no wire endpoint in v0; "
+            "the orchestrator's in-process Store path handles event "
+            "emission. See 05-event-protocol.md §3.4."
         )
 
     def terminate_experiment(

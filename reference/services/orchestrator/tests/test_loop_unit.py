@@ -26,7 +26,12 @@ from typing import Any
 
 import pytest
 from eden_contracts import DispatchMode, EvaluationSchema
-from eden_dispatch import ExperimentStateView, InMemoryStore, maintain_pending
+from eden_dispatch import (
+    ExperimentStateView,
+    InMemoryStore,
+    maintain_pending,
+    never_terminate,
+)
 from eden_orchestrator.cli import _ensure_orchestrators_membership
 from eden_orchestrator.loop import _read_dispatch_mode, run_orchestrator_loop
 from eden_service_common import StopFlag
@@ -122,6 +127,8 @@ def test_loop_invokes_ideation_policy_and_creates_tasks(
         store=store,
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=policy,
+        termination_policy=never_terminate,
+        terminated_by="orchestrator",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
@@ -168,6 +175,8 @@ def test_loop_honors_manual_ideation_creation(store: InMemoryStore) -> None:
         store=store,
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=gating_policy,
+        termination_policy=never_terminate,
+        terminated_by="orchestrator",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
@@ -206,6 +215,8 @@ def test_loop_picks_up_mode_changes_between_iterations(
         store=store,
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=policy,
+        termination_policy=never_terminate,
+        terminated_by="orchestrator",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
