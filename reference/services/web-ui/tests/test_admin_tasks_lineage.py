@@ -18,12 +18,12 @@ def _drive_full_pipeline(
 ) -> dict[str, str]:
     """Drive an ideation → idea → execution → variant → evaluation pipeline.
 
-    Returns a dict of {plan_task_id, idea_id, exec_task_id, variant_id,
+    Returns a dict of {ideation_task_id, idea_id, exec_task_id, variant_id,
     eval_task_id} for assertion convenience.
     """
-    plan_task_id = "plan-1"
-    store.create_ideation_task(plan_task_id)
-    pclaim = store.claim(plan_task_id, "ideator-w")
+    ideation_task_id = "plan-1"
+    store.create_ideation_task(ideation_task_id)
+    pclaim = store.claim(ideation_task_id, "ideator-w")
 
     # Seed idea + drive to ready, attribute to ideator-w
     from eden_contracts import Idea
@@ -44,11 +44,11 @@ def _drive_full_pipeline(
     )
     store.mark_idea_ready(idea_id)
     store.submit(
-        plan_task_id,
+        ideation_task_id,
         pclaim.worker_id,
         IdeaSubmission(status="success", idea_ids=(idea_id,)),
     )
-    store.accept(plan_task_id)
+    store.accept(ideation_task_id)
 
     # Execution
     from eden_contracts import Variant
@@ -82,7 +82,7 @@ def _drive_full_pipeline(
     eval_task_id = "eval-1"
     store.create_evaluation_task(eval_task_id, variant_id)
     return {
-        "plan_task_id": plan_task_id,
+        "ideation_task_id": ideation_task_id,
         "idea_id": idea_id,
         "exec_task_id": exec_task_id,
         "variant_id": variant_id,
@@ -136,7 +136,7 @@ class TestTaskAttribution:
     ) -> None:
         _signed_in(client)
         ids = _drive_full_pipeline(store)
-        resp = client.get(f"/admin/tasks/{ids['plan_task_id']}/")
+        resp = client.get(f"/admin/tasks/{ids['ideation_task_id']}/")
         assert resp.status_code == 200
         body = resp.text
         # submitted_by is set via the submit flow
@@ -161,7 +161,7 @@ class TestIdeationTaskLineage:
     ) -> None:
         _signed_in(client)
         ids = _drive_full_pipeline(store)
-        resp = client.get(f"/admin/tasks/{ids['plan_task_id']}/")
+        resp = client.get(f"/admin/tasks/{ids['ideation_task_id']}/")
         assert resp.status_code == 200
         body = resp.text
         assert f'/admin/ideas/{ids["idea_id"]}/' in body
