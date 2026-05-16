@@ -34,6 +34,7 @@ from eden_storage import (
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
+    NoOpVariant,
     NotClaimed,
     VariantSubmission,
     WrongClaimant,
@@ -267,6 +268,44 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                     errors=errors,
                     status_code=400,
                 )
+        # spec/v0/03-roles.md §3.3 non-no-op invariant: refuse to
+        # accept a variant whose tree is identical to every parent's
+        # tree. The reference task-store-server enforces the SHA-
+        # equality fast path unconditionally; the Web UI executor
+        # has full git access to the bare repo so it performs the
+        # full tree-identity check here, matching the executor host's
+        # pre-submit posture (`_is_no_op_variant`).
+        try:
+            variant_tree = repo.commit_tree_sha(draft.commit_sha)
+            parent_trees = [
+                repo.commit_tree_sha(p) for p in idea.parent_commits
+            ]
+        except Exception:  # noqa: BLE001 — git-shaped; defer to server's SHA fast path
+            variant_tree = None
+            parent_trees = []
+        if (
+            variant_tree is not None
+            and parent_trees
+            and all(t == variant_tree for t in parent_trees)
+        ):
+            errors.add(
+                0,
+                "commit_sha",
+                (
+                    f"commit {draft.commit_sha!r} has the same git tree as every parent; "
+                    "refusing to submit a no-op variant (spec/v0/03-roles.md §3.3)"
+                ),
+            )
+            return _render_draft(
+                request,
+                session=session,
+                task_id=task_id,
+                idea=idea,
+                variant_id=variant_id,
+                form_state=form_state,
+                errors=errors,
+                status_code=400,
+            )
         # Pre-Phase-1 ref-collision guard.
         if repo.ref_exists(f"refs/heads/{branch}"):
             errors.add(
@@ -470,6 +509,12 @@ def _retry_submit_with_readback(
             break
         except ConflictingResubmission as exc:
             return "conflict", _wire_error_banner(exc)
+        except NoOpVariant as exc:
+            # Definitive: the variant tree matches every parent's
+            # tree. A retry of the same payload will be rejected the
+            # same way. The pre-submit check (above) normally catches
+            # this; defense-in-depth surfaces the wire error here.
+            return "conflict", _wire_error_banner(exc)
         except Exception as exc:  # noqa: BLE001 — transport-shaped
             last_exc = exc
             time.sleep(delay)
@@ -647,6 +692,7 @@ _ERROR_NAMES: dict[type, str] = {
     IllegalTransition: "eden://error/illegal-transition",
     ConflictingResubmission: "eden://error/conflicting-resubmission",
     InvalidPrecondition: "eden://error/invalid-precondition",
+    NoOpVariant: "eden://error/no-op-variant",
 }
 
 

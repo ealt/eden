@@ -393,6 +393,32 @@ def _handle_one(
                 "commit_sha": commit_sha,
             },
         )
+        # The local ref (and the remote ref if origin is configured)
+        # were created in Phase 2f/2g above. The variant is now
+        # terminalizing as `error`, so the orchestrator will never
+        # integrate this branch — clean up the refs to avoid leaking
+        # orphan `work/*` that the integrator's startup-time
+        # reconcile_remote_orphans would later have to GC. Same shape
+        # as the push-failure recovery above: remote first (so the
+        # remote-of-record matches the local view if the local delete
+        # fails), local second.
+        if _repo_has_origin(repo):
+            try:
+                repo.delete_remote_ref(f"refs/heads/{branch}")
+            except Exception:  # noqa: BLE001 — git-shaped
+                log.warning(
+                    "executor_no_op_remote_rollback_failed",
+                    extra={"task_id": task.task_id, "branch": branch},
+                )
+        try:
+            repo.delete_ref(
+                f"refs/heads/{branch}", expected_old_sha=commit_sha
+            )
+        except Exception:  # noqa: BLE001 — git-shaped
+            log.warning(
+                "executor_no_op_local_rollback_failed",
+                extra={"task_id": task.task_id, "branch": branch},
+            )
         _submit_with_readback(
             store=store,
             task_id=task.task_id,

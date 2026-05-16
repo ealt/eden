@@ -188,6 +188,55 @@ class TestReachabilityRejections:
         assert bare_repo.list_refs("refs/heads/work/*") == []
         assert store.read_task(task_id).state == "claimed"
 
+    def test_no_op_variant_rejected(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        bare_repo: GitRepo,
+        base_sha: str,
+    ) -> None:
+        """spec/v0/03-roles.md §3.3 — variant tree identical to parent's MUST be rejected.
+
+        Constructs an empty commit on top of base_sha (same tree, different
+        SHA) — the case the server's SHA-equality fast path cannot catch.
+        The Web UI executor's pre-submit tree-identity check fires before
+        any variant or ref is created; the form re-renders with a 400 and
+        no state changes.
+        """
+        from conftest import _TEST_DATE, _TEST_IDENTITY
+
+        base_tree = bare_repo.commit_tree_sha(base_sha)
+        empty_commit_sha = bare_repo.commit_tree(
+            base_tree,
+            parents=[base_sha],
+            message="empty\n",
+            author=_TEST_IDENTITY,
+            committer=_TEST_IDENTITY,
+            author_date=_TEST_DATE,
+            committer_date=_TEST_DATE,
+        )
+        # Sanity: distinct SHA, same tree.
+        assert empty_commit_sha != base_sha
+        assert bare_repo.commit_tree_sha(empty_commit_sha) == base_tree
+
+        task_id = _claim(signed_in_impl_client, store, base_sha, slug="noop")
+        csrf = get_csrf(signed_in_impl_client)
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/executor/{task_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("commit_sha", empty_commit_sha),
+                ("description", ""),
+            ],
+        )
+        assert resp.status_code == 400
+        assert "no-op variant" in resp.text
+        assert store.list_variants() == []
+        assert bare_repo.list_refs("refs/heads/work/*") == []
+        assert store.read_task(task_id).state == "claimed"
+
 
 class TestErrorSubmission:
     def test_error_submission_creates_starting_variant_no_ref(
