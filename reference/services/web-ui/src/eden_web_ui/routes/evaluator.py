@@ -74,12 +74,69 @@ def _list_recent_variants(store: Any, *, limit: int = 20) -> list[Any]:
     return items[-limit:]
 
 
+def _build_evaluator_pending_rows(
+    store: Any, pending: list[Any], artifacts_dir: Any
+) -> tuple[list[dict[str, Any]], int]:
+    """Per pending evaluation task, build a preview row with variant + artifact.
+
+    Plan §D.5 — one ``read_variant`` per row (and one ``read_idea``
+    for parent-idea context). ``StorageNotFound`` on either degrades
+    that row gracefully; transport-shaped failures increment the
+    page-level counter.
+    """
+    from eden_storage.errors import NotFound as StorageNotFound
+
+    rows: list[dict[str, Any]] = []
+    read_failed = 0
+    for task in pending:
+        variant: Variant | None = None
+        idea: Idea | None = None
+        variant_artifact: str | None = None
+        read_failed_row = False
+        try:
+            variant = store.read_variant(task.payload.variant_id)
+        except StorageNotFound:
+            variant = None
+        except Exception:  # noqa: BLE001 — transport-shaped
+            variant = None
+            read_failed_row = True
+            read_failed += 1
+        if variant is not None:
+            try:
+                idea = store.read_idea(variant.idea_id)
+            except StorageNotFound:
+                idea = None
+            except Exception:  # noqa: BLE001 — transport-shaped
+                idea = None
+                read_failed_row = True
+                read_failed += 1
+            try:
+                variant_artifact = read_variant_artifact(
+                    variant.artifacts_uri, artifacts_dir
+                )
+            except Exception:  # noqa: BLE001 — defensive
+                variant_artifact = None
+        rows.append(
+            {
+                "task": task,
+                "variant": variant,
+                "idea": idea,
+                "variant_artifact": variant_artifact,
+                "target": task.target,
+                "lineage_link": f"/admin/tasks/{task.task_id}/",
+                "read_failed": read_failed_row,
+            }
+        )
+    return rows, read_failed
+
+
 @router.get("/", response_class=HTMLResponse, response_model=None)
 async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
+    artifacts_dir = request.app.state.artifacts_dir
     try:
         pending = store.list_tasks(kind="evaluation", state="pending")
         recent = _list_recent_variants(store)
@@ -90,12 +147,17 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
             request, f"task-store transport failure: {exc.__class__.__name__}"
         )
     config = request.app.state.experiment_config
+    pending_rows, read_failed_count = _build_evaluator_pending_rows(
+        store, pending, artifacts_dir
+    )
     return request.app.state.templates.TemplateResponse(
         request,
         "evaluator_list.html",
         {
             "session": session,
             "pending": pending,
+            "pending_rows": pending_rows,
+            "read_failed_count": read_failed_count,
             "objective": config.objective,
             "recent_variants": recent,
             "banner": request.query_params.get("banner"),
