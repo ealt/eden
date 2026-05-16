@@ -292,13 +292,27 @@ def test_no_op_variant_rejected(wire_client: WireClient) -> None:
         "5xx is a server bug, not conforming behavior"
     )
     accept = _seed.accept(wire_client, exec_tid)
-    # Accept may surface the no-op-variant type at this stage, OR
-    # succeed and route the task through the validation-error reject
-    # path. Either way the end-state assertion below is the contract.
+    # Accept may take several conforming shapes: (a) return 2xx and
+    # accept; the variant MUST then NOT have terminalized as success
+    # (the IUT either routes through validate_terminal+reject server-
+    # side or surfaces some other check that prevents the
+    # `starting → success` transition); (b) return 4xx
+    # `eden://error/no-op-variant` with a wire envelope; or
+    # (c) return 4xx with a more general type like
+    # `eden://error/illegal-transition` (the §4.3 validation-error
+    # path typically calls `reject` after `validate_terminal`, leaving
+    # `/accept` to raise a generic illegal-transition; spec §3.4
+    # latitude permits any closed-vocabulary type for accept-time
+    # rejection — only submit-time rejection pins the no-op-variant
+    # type). The end-state assertion below is the only contract.
     if 400 <= accept.status_code < 500:
-        assert accept.json().get("type") == "eden://error/no-op-variant", (
-            f"accept-time no-op rejection MUST use "
-            f"eden://error/no-op-variant; got type={accept.json().get('type')!r}"
+        observed_type = accept.json().get("type")
+        assert observed_type in (
+            "eden://error/no-op-variant",
+            "eden://error/illegal-transition",
+        ), (
+            f"accept-time no-op rejection MUST use a closed-vocabulary "
+            f"type; got type={observed_type!r}"
         )
     variant = _seed.read_variant(wire_client, variant_id)
     assert variant["status"] != "success", (
