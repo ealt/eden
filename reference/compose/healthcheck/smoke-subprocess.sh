@@ -248,7 +248,7 @@ ART_BODY_LEN="$(
     docker compose -f compose.yaml -f compose.subprocess.yaml \
         --env-file "$ENV_FILE" \
         exec -T task-store-server \
-        wc -c < /tmp/art-body | tr -d ' '
+        sh -c 'wc -c < /tmp/art-body' | tr -d ' '
 )"
 test "$ART_BODY_LEN" -gt 0 || {
     echo "artifact route returned empty body for $ARTIFACT_REL" >&2
