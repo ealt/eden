@@ -806,18 +806,17 @@ class _StoreBase:
                 )
             self._require_submission_kind_matches(task, submission)
             self._validate_submission_ref_binding(task, submission)
-            # 03-roles.md §3.3 non-no-op invariant + §3.4 rejection
-            # rule. Content-derived (depends only on submission fields
-            # and the idea's parent_commits), so safe to enforce at
-            # submit time even though the variant `commit_sha` write
-            # itself happens at accept time. Idempotency rule applies
-            # unchanged: a content-equivalent retry of a no-op
-            # submission is rejected the same way; an inconsistent
-            # retry against a no-op-rejected (still-claimed) task hits
-            # the same check, not the §4.2 idempotency branch.
-            self._validate_non_no_op_variant(task, submission)
 
             if task.state == "submitted":
+                # §4.2 idempotency precedes the no-op check: a
+                # content-equivalent retry of an already-committed
+                # submission MUST be accepted without re-evaluation.
+                # Re-running `_validate_non_no_op_variant` here could
+                # raise `NoOpVariant` on a previously-accepted submit
+                # if the tree resolver's view of the SHAs has shifted
+                # since the first commit (e.g. submit-time resolver
+                # transient miss now resolved), which would violate
+                # §4.2.
                 prior = self._get_submission(task_id)
                 if prior is None:
                     raise IllegalTransition(
@@ -828,6 +827,14 @@ class _StoreBase:
                         f"resubmit of {task_id!r} disagrees with committed result"
                     )
                 return
+
+            # 03-roles.md §3.3 non-no-op invariant + §3.4 rejection
+            # rule. Content-derived (depends only on submission fields
+            # and the idea's parent_commits), so enforced at submit
+            # time for fresh submissions. Resubmits against a still-
+            # `submitted` task short-circuit at the §4.2 equivalence
+            # check above, never reaching here.
+            self._validate_non_no_op_variant(task, submission)
 
             now = self._ts()
             tx = _Tx()
@@ -1725,6 +1732,20 @@ class _StoreBase:
                 f"referenced variant {submission.variant_id!r} is "
                 f"{variant.status!r}, not 'starting'"
             )
+        # 03-roles.md §3.3 non-no-op accept-time backstop: re-run the
+        # tree-identity check. The submit-time enforcement is the
+        # primary check, but a transient resolver miss at submit time
+        # (e.g., the variant SHA hadn't propagated to the server's
+        # local clone yet) silently falls through there. Re-running
+        # at accept gives the resolver another chance, since the
+        # orchestrator typically calls accept after the executor has
+        # had time to push refs upstream. spec/v0/03-roles.md §3.4
+        # explicitly allows the rejection to surface at accept via
+        # the §4.3 validation-error path.
+        try:
+            self._validate_non_no_op_variant(task, submission)
+        except NoOpVariant as exc:
+            return str(exc)
         # Dry-run the variant write so an invalid commit_sha pattern
         # surfaces as validation_error instead of crashing accept.
         try:
