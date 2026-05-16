@@ -413,9 +413,61 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         variant_id=variant_id,
         commit_sha=draft.commit_sha if draft.status == "success" else None,
     )
-    outcome, banner = _retry_submit_with_readback(
-        store=store, task_id=task_id, token=token, submission=submission
-    )
+    try:
+        outcome, banner = _retry_submit_with_readback(
+            store=store, task_id=task_id, token=token, submission=submission
+        )
+    except NoOpVariant:
+        # Server-side no-op rejection after the local pre-submit check
+        # missed (e.g. transient git read failure in `commit_tree_sha`).
+        # The variant is now in `starting`, and a `work/*` ref has been
+        # created locally (Phase 2 above) and possibly pushed to origin.
+        # Roll back the refs (remote first per the chapter-06 §3.4
+        # compensating-delete order) and re-submit as `status="error"`
+        # so the variant terminalizes cleanly. Mirrors the executor
+        # host's `NoOpVariant` fallback in subprocess_mode.
+        if draft.status == "success" and _repo_has_origin(repo):
+            with contextlib.suppress(Exception):
+                repo.delete_remote_ref(f"refs/heads/{branch}")
+        if draft.status == "success":
+            with contextlib.suppress(Exception):
+                repo.delete_ref(
+                    f"refs/heads/{branch}",
+                    expected_old_sha=draft.commit_sha,
+                )
+        error_submission = VariantSubmission(
+            status="error",
+            variant_id=variant_id,
+            commit_sha=None,
+        )
+        outcome, banner = _retry_submit_with_readback(
+            store=store,
+            task_id=task_id,
+            token=token,
+            submission=error_submission,
+        )
+        if outcome == "ok":
+            _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+            return _render_submitted(
+                request,
+                task_id=task_id,
+                variant_id=variant_id,
+                commit_sha=None,
+                branch=None,
+                status="error",
+            )
+        return _render_orphaned(
+            request,
+            task_id=task_id,
+            variant_id=variant_id,
+            commit_sha=draft.commit_sha,
+            branch=branch if draft.status == "success" else None,
+            banner=(
+                "server rejected as no-op; "
+                f"follow-up error-submit also failed: {banner or outcome}"
+            ),
+            recovery_kind=outcome,
+        )
     if outcome == "ok":
         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
         return _render_submitted(
@@ -509,12 +561,15 @@ def _retry_submit_with_readback(
             break
         except ConflictingResubmission as exc:
             return "conflict", _wire_error_banner(exc)
-        except NoOpVariant as exc:
+        except NoOpVariant:
             # Definitive: the variant tree matches every parent's
-            # tree. A retry of the same payload will be rejected the
-            # same way. The pre-submit check (above) normally catches
-            # this; defense-in-depth surfaces the wire error here.
-            return "conflict", _wire_error_banner(exc)
+            # tree. Re-raise so the caller can run the §3.3 cleanup
+            # path (delete remote/local refs, resubmit `status="error"`)
+            # — analogous to the executor host's `NoOpVariant`
+            # fallback. Treating this as a generic `conflict` orphan
+            # would leak the Phase 1 variant + Phase 2 work/* ref the
+            # caller has already created.
+            raise
         except Exception as exc:  # noqa: BLE001 — transport-shaped
             last_exc = exc
             time.sleep(delay)
