@@ -223,6 +223,13 @@ services:
       - "1.0"
       - --max-quiescent-iterations
       - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
+      # 12a-3 wave 4: --termination-policy gates the new decision-type 0
+      # branch. Default `default_termination_policy` returns
+      # `never_terminate`; deployments that want policy-driven
+      # termination point this at a configured factory (see
+      # docs/operations/experiment-lifecycle.md for the patterns).
+      - --termination-policy
+      - ${EDEN_TERMINATION_POLICY:-eden_dispatch.termination:default_termination_policy}
       - --log-level
       - info
     environment:
@@ -230,6 +237,10 @@ services:
       # empty value (or unset) means "unbounded" for MAX_TOTAL.
       EDEN_IDEATION_POLICY_TARGET_PENDING: ${EDEN_IDEATION_POLICY_TARGET_PENDING:-3}
       EDEN_IDEATION_POLICY_MAX_TOTAL: ${EDEN_IDEATION_POLICY_MAX_TOTAL:-}
+      # 12a-3 wave 4: per-policy configuration. The
+      # `env_max_variants_policy` factory reads this; other
+      # deployment-supplied policies MAY follow the same convention.
+      EDEN_TERMINATION_MAX_VARIANTS: ${EDEN_TERMINATION_MAX_VARIANTS:-}
     volumes:
       # Durable substrates (Phase 12a-1g) under the per-experiment
       # data root. The per-host bare clone survives restart so the

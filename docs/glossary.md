@@ -144,6 +144,7 @@ machines, even when conceptually similar. Worth knowing the mapping:
 | Task | `state` | `pending` → `claimed` → `submitted` → `completed` (or `failed`) |
 | Idea | `state` | `drafting` → `ready` → `dispatched` → `completed` |
 | Variant | `status` | `starting` → `success` (or `error`, `evaluation_error`) |
+| Experiment | `state` | `running` → `terminated` (one-way per 12a-3 `02-data-model.md` §2.5) |
 | IdeaSubmission | `status` | `success`, `error` |
 | VariantSubmission | `status` | `success`, `error` |
 | EvaluationSubmission | `status` | `success`, `error`, `evaluation_error` |
@@ -166,6 +167,8 @@ error.
 | **update_dispatch_mode** | Operator atomically merges a partial `dispatch_mode` object into the experiment's stored state. Idempotent no-diff flips emit no event. The event payload carries the full post-update state + a `changed` diff + `updated_by`. Authority: caller in `admins`. |
 | **dispatch** | Orchestrator creates a downstream task from a state transition (e.g. ready idea → execution task; success-with-commit_sha variant → evaluation task). |
 | **integrate** | Integrator squashes a successful variant's `work/*` content into a single commit on `variant/*`, attaches the evaluation manifest, and emits `variant.integrated`. |
+| **terminate** | Commit the `running → terminated` lifecycle transition on an experiment (12a-3 `02-data-model.md` §2.5 + `04-task-protocol.md` §8.1). Composite-commits the state field update and `experiment.terminated` event atomically. Idempotent on the terminated state — a second call returns success without a second event; the winning caller's `reason` is the one recorded. Authority: caller in `admins`. Two drivers: an operator wire op (`POST /v0/experiments/{E}/terminate`) and the orchestrator's policy-driven branch (decision-type 0). The terminated state is **absorbing** in v0 — no `terminated → running` transition exists; reactivation is reserved for a future spec lineage. Drain semantics: already-claimed tasks may still complete; integration drains success-variants normally; only the three creation/dispatch decisions are suppressed. |
+| **intended_executor** | Optional `TaskTarget`-shaped routing hint set on an `Idea` at creation time (12a-3 `02-data-model.md` §5.1). When the orchestrator's `execution_dispatch` decision creates an execution task from the idea, it copies `intended_executor` to `task.target` per `03-roles.md` §6.2 decision-type 2. Resolution is **claim-time**: a deregistered worker / emptied group named in the hint leaves the resulting task pending until an operator reassigns. The admin-driven `create_task(kind=execution)` path (12a-3 §6.5 authority lift) accepts an explicit `target` override that wins over `idea.intended_executor`. |
 
 ## 5. Storage components
 
