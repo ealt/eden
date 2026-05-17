@@ -274,20 +274,38 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         # equality fast path unconditionally; the Web UI executor
         # has full git access to the bare repo so it performs the
         # full tree-identity check here, matching the executor host's
-        # pre-submit posture (`_is_no_op_variant`).
+        # pre-submit posture (`_is_no_op_variant`). Fail-closed: if
+        # any tree-of-commit lookup raises, refuse the submission
+        # rather than skipping the check — a transient git read
+        # failure must not allow a no-op variant past this gate, since
+        # the task-store-server's SHA-equality fast path won't catch
+        # the empty-commit-on-parent case in the default deployment.
         try:
             variant_tree = repo.commit_tree_sha(draft.commit_sha)
             parent_trees = [
                 repo.commit_tree_sha(p) for p in idea.parent_commits
             ]
-        except Exception:  # noqa: BLE001 — git-shaped; defer to server's SHA fast path
-            variant_tree = None
-            parent_trees = []
-        if (
-            variant_tree is not None
-            and parent_trees
-            and all(t == variant_tree for t in parent_trees)
-        ):
+        except Exception as exc:  # noqa: BLE001 — git-shaped
+            errors.add(
+                0,
+                "commit_sha",
+                (
+                    f"failed to resolve commit tree for the §3.3 non-no-op "
+                    f"check: {exc.__class__.__name__}. Refusing submit; "
+                    "retry once the local git state is healthy."
+                ),
+            )
+            return _render_draft(
+                request,
+                session=session,
+                task_id=task_id,
+                idea=idea,
+                variant_id=variant_id,
+                form_state=form_state,
+                errors=errors,
+                status_code=400,
+            )
+        if all(t == variant_tree for t in parent_trees):
             errors.add(
                 0,
                 "commit_sha",

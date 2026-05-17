@@ -301,16 +301,21 @@ def test_no_op_variant_rejected(wire_client: WireClient) -> None:
     # text. The shared `test_observed_types_are_in_v0_vocabulary`
     # scenario asserts membership in the closed vocabulary; this
     # test focuses on the end-state contract only.
+    #
+    # Reject 5xx explicitly: a server-bug crash during accept-time
+    # no-op rejection would leave the variant in `starting` and the
+    # end-state assertion below would still pass, falsely blessing a
+    # broken IUT. The spec latitude is 2xx or 4xx; 5xx is never
+    # conforming.
+    assert accept.status_code < 500, (
+        f"accept returned {accept.status_code} on no-op rejection path; "
+        "5xx is a server bug, not conforming behavior"
+    )
     variant = _seed.read_variant(wire_client, variant_id)
     assert variant["status"] != "success", (
         "no-op variant MUST NOT terminalize as success "
         "(spec/v0/03-roles.md §3.3 non-no-op invariant + §3.4 rejection)"
     )
-    # Suppress "unused local" — `accept` is intentionally observed so
-    # the response body gets routed through the session-scoped wire-
-    # error-type observer; the closed-vocabulary check downstream
-    # captures any type emitted here.
-    _ = accept
 
 
 def test_resubmit_divergent_commit_sha_rejected(wire_client: WireClient) -> None:

@@ -456,18 +456,30 @@ def _is_no_op_variant(
     enforce the full tree-identity check before submission. Returns True
     when the variant is a no-op (no candidate change) and must be routed
     to ``status="error"`` instead of being submitted as a success.
+
+    Fail-closed on git-read errors: if either the variant SHA or any
+    parent SHA cannot be resolved to a tree (transient git read failure,
+    repo corruption, missing object), return True so the caller routes
+    to ``status="error"`` rather than submitting an unverified
+    ``status="success"``. The reference task-store-server's default
+    deployment cannot catch the empty-commit-on-parent case in its
+    SHA-equality fast path, so letting an unverified submit through here
+    would create a wire-side gap. An errored variant from a transient
+    git failure is recoverable (operator restarts the worker, or the
+    sweeper reclaims the task and a fresh attempt runs); a
+    spec-violating success variant is not.
     """
     if not idea.parent_commits:
         return False
     try:
         variant_tree = repo.commit_tree_sha(commit_sha)
-    except Exception:  # noqa: BLE001 — git-shaped; defense-in-depth path is server
-        return False
+    except Exception:  # noqa: BLE001 — git-shaped; fail-closed
+        return True
     for parent in idea.parent_commits:
         try:
             parent_tree = repo.commit_tree_sha(parent)
-        except Exception:  # noqa: BLE001
-            return False
+        except Exception:  # noqa: BLE001 — git-shaped; fail-closed
+            return True
         if parent_tree != variant_tree:
             return False
     return True
