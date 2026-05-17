@@ -47,6 +47,14 @@
                 —
             {% endif %}
         </dd>
+        <dt>claim.worker_id</dt>
+        <dd>
+            {% if task.claim %}
+                <a href="/admin/workers/{{ task.claim.worker_id }}/"><code>{{ task.claim.worker_id }}</code></a>
+            {% else %}
+                —
+            {% endif %}
+        </dd>
     </dl>
 </section>
 

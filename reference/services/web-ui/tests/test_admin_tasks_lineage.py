@@ -143,6 +143,41 @@ class TestTaskAttribution:
         assert "ideator-w" in body
         assert '/admin/workers/ideator-w/' in body
 
+    def test_attribution_renders_claim_worker_id(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """Plan §D.6: the attribution section surfaces target /
+        created_by / submitted_by / claim.worker_id. The claim section
+        also shows the worker at the top, but the attribution
+        section's claim.worker_id row is the canonical operator-
+        attribution surface."""
+        _signed_in(client)
+        store.create_ideation_task("plan-claim-A")
+        store.register_worker("ideator-claim")
+        store.claim("plan-claim-A", "ideator-claim")
+        resp = client.get("/admin/tasks/plan-claim-A/")
+        assert resp.status_code == 200
+        body = resp.text
+        attribution_block = body.split("attribution", 1)[1].split("payload", 1)[0]
+        assert "claim.worker_id" in attribution_block
+        assert "ideator-claim" in attribution_block
+        assert "/admin/workers/ideator-claim/" in attribution_block
+
+    def test_attribution_claim_worker_id_em_dash_when_unclaimed(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """Unclaimed task renders em dash in the claim.worker_id row,
+        not a broken link."""
+        _signed_in(client)
+        store.create_ideation_task("plan-unclaimed-A")
+        resp = client.get("/admin/tasks/plan-unclaimed-A/")
+        assert resp.status_code == 200
+        body = resp.text
+        attribution_block = body.split("attribution", 1)[1].split("payload", 1)[0]
+        assert "claim.worker_id" in attribution_block
+        # The em-dash placeholder; no link.
+        assert "—" in attribution_block
+
 
 class TestIdeationTaskLineage:
     def test_pending_ideation_task_shows_no_ideas(
