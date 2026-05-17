@@ -607,3 +607,57 @@ def read_variant(client: WireClient, variant_id: str) -> dict[str, Any]:
     resp = client.get(client.variants_path(variant_id))
     resp.raise_for_status()
     return resp.json()
+
+
+# Experiment lifecycle ops (12a-3 wire §2.9) ---------------------------
+
+
+def terminate_experiment(
+    client: WireClient,
+    *,
+    reason: str,
+    actor_id: str = "admin-actor",
+) -> Any:
+    """POST /v0/experiments/{E}/terminate (12a-3 wire §2.9).
+
+    The server stamps ``terminated_by`` from the authenticated
+    principal; with auth disabled the reference adapter falls back to
+    the ``X-Eden-Worker-Id`` header set here. The body MUST NOT carry
+    ``terminated_by`` (the request schema rejects unknown keys); pass
+    only ``reason``.
+
+    Returns the raw httpx response so the caller decides how to
+    interpret status codes (e.g. 200 happy-path vs 200 idempotent
+    re-terminate vs 4xx envelope assertions).
+    """
+    return client.post(
+        client.terminate_path(),
+        json={"reason": reason},
+        headers={"X-Eden-Worker-Id": actor_id},
+    )
+
+
+def read_experiment_state(client: WireClient) -> dict[str, Any]:
+    """GET /v0/experiments/{E}/state (12a-3 wire §2.9 companion read).
+
+    Returns ``{"state": "running" | "terminated"}``. Either-auth on
+    the reference adapter; no special header needed.
+    """
+    resp = client.get(client.state_path())
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_events(client: WireClient, **params: Any) -> list[dict[str, Any]]:
+    """GET /v0/experiments/{E}/events; return the raw event list.
+
+    Used by scenarios that assert event-log cardinality / shape after
+    a sequence of writes (e.g. "exactly one experiment.terminated
+    event" or "no second event from an idempotent re-call").
+    """
+    resp = client.get(client.events_path(), params=params)
+    resp.raise_for_status()
+    body = resp.json()
+    if isinstance(body, dict) and "events" in body:
+        return list(body["events"])
+    return list(body)

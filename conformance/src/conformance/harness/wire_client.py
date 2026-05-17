@@ -129,3 +129,11 @@ class WireClient:
 
     def events_path(self, suffix: str = "") -> str:
         return f"{self.base_path}/events{suffix}"
+
+    def terminate_path(self) -> str:
+        """``POST /v0/experiments/{E}/terminate`` (12a-3 §2.9)."""
+        return f"{self.base_path}/terminate"
+
+    def state_path(self) -> str:
+        """``GET /v0/experiments/{E}/state`` (12a-3 §2.9 companion read)."""
+        return f"{self.base_path}/state"
