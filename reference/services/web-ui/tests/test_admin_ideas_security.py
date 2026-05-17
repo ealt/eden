@@ -79,6 +79,92 @@ class TestAutoescape:
         # acceptable because the select-element value is autoescaped.
         assert "<script>alert(1)</script>" not in body
 
+    def test_jinja_autoescape_on_idea_slug(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """The Idea Pydantic model rejects angle brackets in slug at
+        construction (SLUG_PATTERN = ``^[a-z0-9][a-z0-9-]*$``), so
+        injection is impossible through normal flow. As defense-in-
+        depth, this test bypasses validation via ``model_construct``
+        and writes the unsafe value directly into the store, then
+        verifies the rendered HTML carries the autoescaped form —
+        proving the template does NOT use a ``|safe`` filter on the
+        slug."""
+        _signed_in(client)
+        unsafe = Idea.model_construct(
+            idea_id="idea-A",
+            experiment_id=store.experiment_id,
+            slug="<script>alert(1)</script>",
+            priority=1.0,
+            parent_commits=[BASE_SHA],
+            artifacts_uri="https://example.invalid/x.md",
+            state="drafting",
+            created_at="2026-04-24T11:00:00Z",
+            created_by=None,
+        )
+        store.create_idea(unsafe)
+        # Both surfaces (list + detail) must escape.
+        list_resp = client.get("/admin/ideas/")
+        assert list_resp.status_code == 200
+        assert "<script>alert(1)</script>" not in list_resp.text
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in list_resp.text
+        detail_resp = client.get("/admin/ideas/idea-A/")
+        assert detail_resp.status_code == 200
+        assert "<script>alert(1)</script>" not in detail_resp.text
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in detail_resp.text
+
+    def test_jinja_autoescape_on_created_by(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """``created_by`` is a ``WorkerId`` constrained by the worker
+        grammar (``^[a-z0-9][a-z0-9_-]{0,63}$``); injection is rejected
+        by the Pydantic constraint at construction. We bypass via
+        ``model_construct`` and confirm the rendered HTML carries the
+        autoescaped form for both the list (where ``created_by`` is
+        not shown today, so we only verify detail)."""
+        _signed_in(client)
+        unsafe = Idea.model_construct(
+            idea_id="idea-B",
+            experiment_id=store.experiment_id,
+            slug="beta",
+            priority=1.0,
+            parent_commits=[BASE_SHA],
+            artifacts_uri="https://example.invalid/x.md",
+            state="drafting",
+            created_at="2026-04-24T11:00:00Z",
+            created_by="<script>alert(1)</script>",
+        )
+        store.create_idea(unsafe)
+        resp = client.get("/admin/ideas/idea-B/")
+        assert resp.status_code == 200
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in resp.text
+
+    def test_jinja_autoescape_on_parent_commits(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """``parent_commits`` are ``CommitSha`` (40-hex strings); the
+        Pydantic constraint rejects ``<``. We bypass via
+        ``model_construct`` and confirm the rendered HTML carries the
+        autoescaped form."""
+        _signed_in(client)
+        unsafe = Idea.model_construct(
+            idea_id="idea-C",
+            experiment_id=store.experiment_id,
+            slug="gamma",
+            priority=1.0,
+            parent_commits=["<script>alert(1)</script>"],
+            artifacts_uri="https://example.invalid/x.md",
+            state="drafting",
+            created_at="2026-04-24T11:00:00Z",
+            created_by=None,
+        )
+        store.create_idea(unsafe)
+        resp = client.get("/admin/ideas/idea-C/")
+        assert resp.status_code == 200
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text
+
 
 class TestPathParameterEncoding:
     def test_encoded_slash_does_not_decode_into_path(
