@@ -1371,7 +1371,7 @@ Recommended PR shape (in order):
 
 8. **Compose smoke PR.** New cross-backend smoke.
 
-9. **Docs PR.** Glossary; roadmap delta; AGENTS.md "Current phase".
+9. **Docs PR.** Glossary; roadmap delta (one-line status flip per chunk); `CHANGELOG.md [Unreleased]` entry (per-chunk completion prose lives here, not in AGENTS.md — see AGENTS.md "Recording chunk completions").
 
 A reviewer going from PR 1 to PR 9 should expect tests to go red
 around PR 6 (when the native format is removed) and come back
