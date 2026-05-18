@@ -38,5 +38,5 @@ class Idea(BaseModel):
     # (worker or group), the orchestrator's execution_dispatch decision
     # copies it to the resulting execution task's ``target`` field per
     # ``03-roles.md`` §6.2 decision-type 2. Absent (or admin-overridden
-    # via ``create_task`` payload.target) means "any registered executor".
+    # via ``create_task``'s body-level ``target``) means "any registered executor".
     intended_executor: Annotated[TaskTarget | None, NotNone] = None
