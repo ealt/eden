@@ -882,8 +882,18 @@ async def variant_detail(
         variant = store.read_variant(variant_id)
         idea = store.read_idea(variant.idea_id)
         events_full = store.replay()
+        # Plan §D.10: one list_tasks() per kind per render. Pre-fetch
+        # here and pass to both ``_events_for_variant`` and
+        # ``lineage_for_variant`` so the helpers don't each repeat the
+        # same scan.
+        exec_tasks = store.list_tasks(kind="execution")
+        eval_tasks = store.list_tasks(kind="evaluation")
         related, total_related = _events_for_variant(
-            events_full, store, variant_id=variant_id, idea_id=variant.idea_id
+            events_full,
+            variant_id=variant_id,
+            idea_id=variant.idea_id,
+            exec_tasks=exec_tasks,
+            eval_tasks=eval_tasks,
         )
     except StorageNotFound:
         raise
@@ -892,7 +902,12 @@ async def variant_detail(
 
     inline_artifact = read_variant_artifact(variant.artifacts_uri, artifacts_dir)
 
-    lineage = lineage_for_variant(store, variant)
+    lineage = lineage_for_variant(
+        store,
+        variant,
+        exec_tasks=exec_tasks,
+        eval_tasks=eval_tasks,
+    )
 
     return request.app.state.templates.TemplateResponse(
         request,
@@ -911,26 +926,27 @@ async def variant_detail(
 
 def _events_for_variant(
     events_full: list[Event],
-    store: Any,
     *,
     variant_id: str,
     idea_id: str,
+    exec_tasks: list[Any],
+    eval_tasks: list[Any],
 ) -> tuple[list[Event], int]:
     """Return (events_correlated_to_this_variant_in_replay_order, total_match_count).
 
     Correlation per chunk-9e plan §A.5: variant-id direct match + task-id
     match for the execution task that produced this variant + task-id
     match for any evaluation task whose payload references this variant.
+
+    Per phase-12a-1c plan §D.10, the caller pre-fetches the kind-scoped
+    task lists once and passes them in here AND to ``lineage_for_variant``,
+    avoiding duplicate ``store.list_tasks`` scans on the same render.
     """
     exec_task_ids = {
-        t.task_id
-        for t in store.list_tasks(kind="execution")
-        if t.payload.idea_id == idea_id
+        t.task_id for t in exec_tasks if t.payload.idea_id == idea_id
     }
     eval_task_ids = {
-        t.task_id
-        for t in store.list_tasks(kind="evaluation")
-        if t.payload.variant_id == variant_id
+        t.task_id for t in eval_tasks if t.payload.variant_id == variant_id
     }
     related: list[Event] = []
     for ev in events_full:  # replay order

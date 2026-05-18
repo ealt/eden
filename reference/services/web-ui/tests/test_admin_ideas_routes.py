@@ -99,6 +99,64 @@ class TestIdeasIndex:
         assert "idea-beta" in resp.text
         assert "idea-alpha" not in resp.text
 
+    def test_filter_state_dispatched(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """Plan §6: ideas in each state filter cleanly; dispatched and
+        completed are the late-lifecycle states the earlier test did
+        not cover."""
+        _signed_in(client)
+        idea_id = _seed_idea(store, slug="alpha", state="ready")
+        # Driving the idea to ``dispatched`` requires creating an
+        # execution task that references it (chapter 04 §3.1).
+        store.create_execution_task("exec-alpha", idea_id)
+
+        resp = client.get("/admin/ideas/?state=dispatched")
+        assert resp.status_code == 200
+        assert "idea-alpha" in resp.text
+
+        # And the filter excludes dispatched from a ready-only query.
+        resp = client.get("/admin/ideas/?state=ready")
+        assert resp.status_code == 200
+        assert "idea-alpha" not in resp.text
+
+    def test_filter_state_completed(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """Drive an idea through the full lifecycle and verify it
+        surfaces under ``state=completed``."""
+        _signed_in(client)
+        from eden_contracts import Variant
+        from eden_storage import VariantSubmission
+
+        idea_id = _seed_idea(store, slug="alpha", state="ready")
+        store.create_execution_task("exec-alpha", idea_id)
+        eclaim = store.claim("exec-alpha", "executor-w")
+        store.create_variant(
+            Variant(
+                variant_id="v-1",
+                experiment_id=store.experiment_id,
+                idea_id=idea_id,
+                status="starting",
+                parent_commits=[BASE_SHA],
+                branch="work/v-1",
+                started_at="2026-04-24T12:00:00Z",
+            )
+        )
+        store.submit(
+            "exec-alpha",
+            eclaim.worker_id,
+            VariantSubmission(
+                status="success", variant_id="v-1", commit_sha="b" * 40
+            ),
+        )
+        store.accept("exec-alpha")
+        # accept of a successful execution task marks the idea
+        # ``completed`` (chapter 04 idea-lifecycle terminal transition).
+        resp = client.get("/admin/ideas/?state=completed")
+        assert resp.status_code == 200
+        assert "idea-alpha" in resp.text
+
     def test_filter_invalid_state_renders_empty(
         self, client: TestClient, store: InMemoryStore
     ) -> None:

@@ -699,3 +699,51 @@ def test_lineage_link_is_a_dataclass() -> None:
 def test_evaluationsubmission_export_is_present() -> None:
     """Sanity guard: the evaluator-side imports compile."""
     assert EvaluationSubmission is not None
+
+
+# ---------------------------------------------------------------------
+# Reverse-walk performance (soft-timing per plan §6)
+# ---------------------------------------------------------------------
+
+
+def test_idea_reverse_walk_soft_timing_at_fixture_scale() -> None:
+    """Soft assertion: with 20 ideation tasks and 200 ideas, a single
+    ``lineage_for_idea`` call completes well under 1 second on the
+    test fixture. Plan §6 describes this as a soft assertion (skip on
+    slow CI runners); the real bound is "scales linearly with task
+    count", which the assertion implicitly checks by the wall-clock
+    budget being looser than O(N^2) at this scale."""
+    import time as _time
+
+    store = _store()
+    # Seed 20 ideation tasks each producing 10 ideas → 200 ideas.
+    all_idea_ids: list[str] = []
+    for task_idx in range(20):
+        task_id = f"plan-{task_idx:02d}"
+        store.create_ideation_task(task_id)
+        claim = store.claim(task_id, "ideator-w")
+        idea_ids_this_task: list[str] = []
+        for idea_idx in range(10):
+            slug = f"t{task_idx:02d}i{idea_idx:02d}"
+            idea_id = _make_idea(store, slug=slug)
+            idea_ids_this_task.append(idea_id)
+        all_idea_ids.extend(idea_ids_this_task)
+        store.submit(
+            task_id,
+            claim.worker_id,
+            IdeaSubmission(status="success", idea_ids=tuple(idea_ids_this_task)),
+        )
+
+    # Pick the last-seeded idea so the reverse walk visits the most
+    # ideation tasks before finding the producer.
+    target_idea = store.read_idea(all_idea_ids[-1])
+
+    t0 = _time.perf_counter()
+    result = lineage_for_idea(store, target_idea)
+    elapsed = _time.perf_counter() - t0
+
+    assert result.ideation_task is not None
+    assert result.ideation_task.href == "/admin/tasks/plan-19/"
+    # Generous bound — local-dev runs hit <50 ms; the soft 2-second
+    # ceiling guards against unintended quadratic-or-worse regressions.
+    assert elapsed < 2.0, f"reverse walk took {elapsed:.3f}s at fixture scale"

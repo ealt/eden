@@ -116,20 +116,6 @@
     {% endif %}
 </section>
 
-{% if task.state in ["pending", "claimed"] %}
-<section>
-    <h2>operator reassign</h2>
-    <p>
-        <a href="/admin/tasks/{{ task.task_id }}/reassign">reassign this task &raquo;</a>
-        &mdash; update <code>task.target</code>
-        {% if task.state == "claimed" %}
-        (composite-commits a <code>task.reclaimed</code>; the current
-        claimant is bumped)
-        {% endif %}
-    </p>
-</section>
-{% endif %}
-
 {% if can_reclaim %}
 <section>
     <h2>operator reclaim</h2>
@@ -143,6 +129,20 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit">{% if is_force %}force-reclaim (replays work){% else %}reclaim{% endif %}</button>
     </form>
+</section>
+{% endif %}
+
+{% if task.state in ["pending", "claimed"] %}
+<section>
+    <h2>operator reassign</h2>
+    <p>
+        <a href="/admin/tasks/{{ task.task_id }}/reassign">reassign this task &raquo;</a>
+        &mdash; update <code>task.target</code>
+        {% if task.state == "claimed" %}
+        (composite-commits a <code>task.reclaimed</code>; the current
+        claimant is bumped)
+        {% endif %}
+    </p>
 </section>
 {% endif %}
 

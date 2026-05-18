@@ -93,7 +93,15 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
-    pending = store.list_tasks(kind="execution", state="pending")
+    try:
+        pending = store.list_tasks(kind="execution", state="pending")
+        recent = _list_recent_variants(store)
+    except DispatchError as exc:
+        return _render_error(request, _wire_error_banner(exc))
+    except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
+        return _render_error(
+            request, f"task-store transport failure: {exc.__class__.__name__}"
+        )
     config = request.app.state.experiment_config
     artifacts_dir = request.app.state.artifacts_dir
     pending_rows, read_failed_count = _build_executor_pending_rows(
@@ -108,7 +116,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
             "pending_rows": pending_rows,
             "read_failed_count": read_failed_count,
             "objective": config.objective,
-            "recent_variants": _list_recent_variants(store),
+            "recent_variants": recent,
             "banner": request.query_params.get("banner"),
         },
     )
