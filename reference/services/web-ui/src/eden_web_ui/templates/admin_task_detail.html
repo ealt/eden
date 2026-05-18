@@ -89,6 +89,8 @@
         <h3>upstream</h3>
         {% if lineage and lineage.idea %}
         <p><a href="{{ lineage.idea.href }}">{{ lineage.idea.label }}</a> — <small>{{ lineage.idea.descriptor }}</small></p>
+        {% elif lineage and lineage.transport_errors > 0 %}
+        <p><em>(idea unknown — read error)</em></p>
         {% else %}
         <p><em>(idea unknown)</em></p>
         {% endif %}
@@ -103,6 +105,8 @@
             <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
             {% endfor %}
         </ul>
+        {% elif lineage and lineage.transport_errors > 0 %}
+        <p><em>(variants unknown — read error)</em></p>
         {% else %}
         <p><em>no variants yet.</em></p>
         {% endif %}
@@ -110,6 +114,8 @@
         <h3>variant under evaluation</h3>
         {% if lineage and lineage.variant %}
         <p><a href="{{ lineage.variant.href }}">{{ lineage.variant.label }}</a> — <small>{{ lineage.variant.descriptor }}</small></p>
+        {% elif lineage and lineage.transport_errors > 0 %}
+        <p><em>(variant unknown — read error)</em></p>
         {% else %}
         <p><em>(variant unknown)</em></p>
         {% endif %}
