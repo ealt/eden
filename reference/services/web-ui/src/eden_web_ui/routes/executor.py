@@ -34,6 +34,7 @@ from eden_storage import (
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
+    NoOpVariant,
     NotClaimed,
     VariantSubmission,
     WrongClaimant,
@@ -267,6 +268,62 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                     errors=errors,
                     status_code=400,
                 )
+        # spec/v0/03-roles.md §3.3 non-no-op invariant: refuse to
+        # accept a variant whose tree is identical to every parent's
+        # tree. The reference task-store-server enforces the SHA-
+        # equality fast path unconditionally; the Web UI executor
+        # has full git access to the bare repo so it performs the
+        # full tree-identity check here, matching the executor host's
+        # pre-submit posture (`_is_no_op_variant`). Fail-closed: if
+        # any tree-of-commit lookup raises, refuse the submission
+        # rather than skipping the check — a transient git read
+        # failure must not allow a no-op variant past this gate, since
+        # the task-store-server's SHA-equality fast path won't catch
+        # the empty-commit-on-parent case in the default deployment.
+        try:
+            variant_tree = repo.commit_tree_sha(draft.commit_sha)
+            parent_trees = [
+                repo.commit_tree_sha(p) for p in idea.parent_commits
+            ]
+        except Exception as exc:  # noqa: BLE001 — git-shaped
+            errors.add(
+                0,
+                "commit_sha",
+                (
+                    f"failed to resolve commit tree for the §3.3 non-no-op "
+                    f"check: {exc.__class__.__name__}. Refusing submit; "
+                    "retry once the local git state is healthy."
+                ),
+            )
+            return _render_draft(
+                request,
+                session=session,
+                task_id=task_id,
+                idea=idea,
+                variant_id=variant_id,
+                form_state=form_state,
+                errors=errors,
+                status_code=400,
+            )
+        if all(t == variant_tree for t in parent_trees):
+            errors.add(
+                0,
+                "commit_sha",
+                (
+                    f"commit {draft.commit_sha!r} has the same git tree as every parent; "
+                    "refusing to submit a no-op variant (spec/v0/03-roles.md §3.3)"
+                ),
+            )
+            return _render_draft(
+                request,
+                session=session,
+                task_id=task_id,
+                idea=idea,
+                variant_id=variant_id,
+                form_state=form_state,
+                errors=errors,
+                status_code=400,
+            )
         # Pre-Phase-1 ref-collision guard.
         if repo.ref_exists(f"refs/heads/{branch}"):
             errors.add(
@@ -374,9 +431,61 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         variant_id=variant_id,
         commit_sha=draft.commit_sha if draft.status == "success" else None,
     )
-    outcome, banner = _retry_submit_with_readback(
-        store=store, task_id=task_id, token=token, submission=submission
-    )
+    try:
+        outcome, banner = _retry_submit_with_readback(
+            store=store, task_id=task_id, token=token, submission=submission
+        )
+    except NoOpVariant:
+        # Server-side no-op rejection after the local pre-submit check
+        # missed (e.g. transient git read failure in `commit_tree_sha`).
+        # The variant is now in `starting`, and a `work/*` ref has been
+        # created locally (Phase 2 above) and possibly pushed to origin.
+        # Roll back the refs (remote first per the chapter-06 §3.4
+        # compensating-delete order) and re-submit as `status="error"`
+        # so the variant terminalizes cleanly. Mirrors the executor
+        # host's `NoOpVariant` fallback in subprocess_mode.
+        if draft.status == "success" and _repo_has_origin(repo):
+            with contextlib.suppress(Exception):
+                repo.delete_remote_ref(f"refs/heads/{branch}")
+        if draft.status == "success":
+            with contextlib.suppress(Exception):
+                repo.delete_ref(
+                    f"refs/heads/{branch}",
+                    expected_old_sha=draft.commit_sha,
+                )
+        error_submission = VariantSubmission(
+            status="error",
+            variant_id=variant_id,
+            commit_sha=None,
+        )
+        outcome, banner = _retry_submit_with_readback(
+            store=store,
+            task_id=task_id,
+            token=token,
+            submission=error_submission,
+        )
+        if outcome == "ok":
+            _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+            return _render_submitted(
+                request,
+                task_id=task_id,
+                variant_id=variant_id,
+                commit_sha=None,
+                branch=None,
+                status="error",
+            )
+        return _render_orphaned(
+            request,
+            task_id=task_id,
+            variant_id=variant_id,
+            commit_sha=draft.commit_sha,
+            branch=branch if draft.status == "success" else None,
+            banner=(
+                "server rejected as no-op; "
+                f"follow-up error-submit also failed: {banner or outcome}"
+            ),
+            recovery_kind=outcome,
+        )
     if outcome == "ok":
         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
         return _render_submitted(
@@ -470,6 +579,15 @@ def _retry_submit_with_readback(
             break
         except ConflictingResubmission as exc:
             return "conflict", _wire_error_banner(exc)
+        except NoOpVariant:
+            # Definitive: the variant tree matches every parent's
+            # tree. Re-raise so the caller can run the §3.3 cleanup
+            # path (delete remote/local refs, resubmit `status="error"`)
+            # — analogous to the executor host's `NoOpVariant`
+            # fallback. Treating this as a generic `conflict` orphan
+            # would leak the Phase 1 variant + Phase 2 work/* ref the
+            # caller has already created.
+            raise
         except Exception as exc:  # noqa: BLE001 — transport-shaped
             last_exc = exc
             time.sleep(delay)
@@ -647,6 +765,7 @@ _ERROR_NAMES: dict[type, str] = {
     IllegalTransition: "eden://error/illegal-transition",
     ConflictingResubmission: "eden://error/conflicting-resubmission",
     InvalidPrecondition: "eden://error/invalid-precondition",
+    NoOpVariant: "eden://error/no-op-variant",
 }
 
 

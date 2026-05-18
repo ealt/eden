@@ -39,6 +39,7 @@ from eden_storage import (
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
+    NoOpVariant,
     NotClaimed,
     Store,
     VariantSubmission,
@@ -290,6 +291,32 @@ def _handle_one(
     assert isinstance(commit_sha_raw, str)
     commit_sha: str = commit_sha_raw
 
+    # Spec §3.3 non-no-op invariant: refuse to submit a variant whose
+    # tree is identical to every parent's tree. The reference server
+    # enforces only the SHA-equality fast path (no `--repo-path` wired
+    # in default Compose); the executor host has full git access and
+    # is the conforming enforcement point for the empty-commit-on-
+    # parent case. Routes to `status="error"` rather than `success`
+    # so the variant terminalizes cleanly and the task is freed.
+    if _is_no_op_variant(repo=repo, commit_sha=commit_sha, idea=idea):
+        log.warning(
+            "executor_no_op_variant",
+            extra={
+                "task_id": task.task_id,
+                "variant_id": variant_id,
+                "commit_sha": commit_sha,
+            },
+        )
+        _submit_with_readback(
+            store=store,
+            task_id=task.task_id,
+            token=claim.worker_id,
+            submission=VariantSubmission(
+                status="error", variant_id=variant_id, commit_sha=None
+            ),
+        )
+        return
+
     # Phase 2f: create_ref locally.
     try:
         repo.create_ref(f"refs/heads/{branch}", commit_sha)
@@ -344,14 +371,62 @@ def _handle_one(
             return
 
     # Phase 3: submit success with retry-before-orphan + read-back.
-    _submit_with_readback(
-        store=store,
-        task_id=task.task_id,
-        token=claim.worker_id,
-        submission=VariantSubmission(
-            status="success", variant_id=variant_id, commit_sha=commit_sha
-        ),
-    )
+    # If the server's `NoOpVariant` enforcement fires (e.g., executor's
+    # local pre-submit check disagreed with the server because of a
+    # transient git read failure), fall back to a clean status="error"
+    # submission so the claim is freed and the variant terminalizes.
+    try:
+        _submit_with_readback(
+            store=store,
+            task_id=task.task_id,
+            token=claim.worker_id,
+            submission=VariantSubmission(
+                status="success", variant_id=variant_id, commit_sha=commit_sha
+            ),
+        )
+    except NoOpVariant:
+        log.warning(
+            "executor_no_op_variant_server_rejected",
+            extra={
+                "task_id": task.task_id,
+                "variant_id": variant_id,
+                "commit_sha": commit_sha,
+            },
+        )
+        # The local ref (and the remote ref if origin is configured)
+        # were created in Phase 2f/2g above. The variant is now
+        # terminalizing as `error`, so the orchestrator will never
+        # integrate this branch — clean up the refs to avoid leaking
+        # orphan `work/*` that the integrator's startup-time
+        # reconcile_remote_orphans would later have to GC. Same shape
+        # as the push-failure recovery above: remote first (so the
+        # remote-of-record matches the local view if the local delete
+        # fails), local second.
+        if _repo_has_origin(repo):
+            try:
+                repo.delete_remote_ref(f"refs/heads/{branch}")
+            except Exception:  # noqa: BLE001 — git-shaped
+                log.warning(
+                    "executor_no_op_remote_rollback_failed",
+                    extra={"task_id": task.task_id, "branch": branch},
+                )
+        try:
+            repo.delete_ref(
+                f"refs/heads/{branch}", expected_old_sha=commit_sha
+            )
+        except Exception:  # noqa: BLE001 — git-shaped
+            log.warning(
+                "executor_no_op_local_rollback_failed",
+                extra={"task_id": task.task_id, "branch": branch},
+            )
+        _submit_with_readback(
+            store=store,
+            task_id=task.task_id,
+            token=claim.worker_id,
+            submission=VariantSubmission(
+                status="error", variant_id=variant_id, commit_sha=None
+            ),
+        )
 
 
 def _validate_commit(
@@ -367,6 +442,47 @@ def _validate_commit(
     return all(
         repo.is_ancestor(parent, commit_sha) for parent in idea.parent_commits
     )
+
+
+def _is_no_op_variant(
+    *, repo: GitRepo, commit_sha: str, idea: Idea
+) -> bool:
+    """Spec §3.3 non-no-op invariant: would the variant tree match every parent?
+
+    The reference task-store-server's default deployment only enforces the
+    SHA-equality fast path of the §3.3 rule (it has no git repo to resolve
+    trees against). The executor host runs against a real clone with the
+    work branch + parents resolved locally, so it is the natural place to
+    enforce the full tree-identity check before submission. Returns True
+    when the variant is a no-op (no candidate change) and must be routed
+    to ``status="error"`` instead of being submitted as a success.
+
+    Fail-closed on git-read errors: if either the variant SHA or any
+    parent SHA cannot be resolved to a tree (transient git read failure,
+    repo corruption, missing object), return True so the caller routes
+    to ``status="error"`` rather than submitting an unverified
+    ``status="success"``. The reference task-store-server's default
+    deployment cannot catch the empty-commit-on-parent case in its
+    SHA-equality fast path, so letting an unverified submit through here
+    would create a wire-side gap. An errored variant from a transient
+    git failure is recoverable (operator restarts the worker, or the
+    sweeper reclaims the task and a fresh attempt runs); a
+    spec-violating success variant is not.
+    """
+    if not idea.parent_commits:
+        return False
+    try:
+        variant_tree = repo.commit_tree_sha(commit_sha)
+    except Exception:  # noqa: BLE001 — git-shaped; fail-closed
+        return True
+    for parent in idea.parent_commits:
+        try:
+            parent_tree = repo.commit_tree_sha(parent)
+        except Exception:  # noqa: BLE001 — git-shaped; fail-closed
+            return True
+        if parent_tree != variant_tree:
+            return False
+    return True
 
 
 def _run_subprocess(
@@ -521,7 +637,21 @@ def _submit_with_readback(
     token: str,
     submission: VariantSubmission,
 ) -> None:
-    """Phase 3 submission with retry-before-orphan + committed-state read-back."""
+    """Phase 3 submission with retry-before-orphan + committed-state read-back.
+
+    Definitive server-side rejections short-circuit (NotClaimed,
+    ConflictingResubmission, InvalidPrecondition); a retry of the
+    same payload will be rejected the same way and leaving the task
+    hanging in ``claimed`` until the sweeper TTL is a worse outcome
+    than a fast return.
+
+    ``NoOpVariant`` is re-raised to the caller so the success-submit
+    path in :func:`_handle_one` can route to ``status="error"`` and
+    free the claim cleanly. The executor's own pre-submit check
+    (`_is_no_op_variant`) normally prevents this from firing; a
+    re-raise here is the defense-in-depth path when the executor's
+    local view of the SHAs disagrees with the server's enforcement.
+    """
     last_exc: Exception | None = None
     for delay in (0.0, *_RETRY_DELAYS_S):
         if delay:
@@ -531,6 +661,12 @@ def _submit_with_readback(
             return
         except (NotClaimed, ConflictingResubmission, InvalidPrecondition):
             return
+        except NoOpVariant:
+            # Re-raise so the caller can route to status="error"; a
+            # retry of the same success submission will be rejected
+            # the same way, and leaving the task claimed until the
+            # sweeper TTL is the worst outcome.
+            raise
         except IllegalTransition:
             # The task may already be terminal (we won, response
             # lost, orchestrator already terminalized). Fall through

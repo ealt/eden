@@ -19,7 +19,7 @@ from eden_evaluator_host.subprocess_mode import (
     _handle_one,
     host_worktrees_subdir,
 )
-from eden_git import GitRepo
+from eden_git import GitRepo, Identity, TreeEntry
 from eden_service_common import seed_bare_repo
 from eden_storage import EvaluationSubmission, InMemoryStore
 
@@ -30,6 +30,25 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     repo_path = tmp_path / "bare.git"
     GitRepo.init_bare(repo_path)
     seed_sha = seed_bare_repo(str(repo_path))
+    # Write a child commit whose tree differs from seed so the §3.3
+    # non-no-op variant invariant (added in 12a-1i) doesn't reject
+    # the test's execution submission. The variant SHA is the child;
+    # parent_commits[0] is seed_sha; their trees differ.
+    repo = GitRepo(repo_path)
+    real_blob = repo.write_blob(b"variant-tip\n")
+    child_tree = repo.write_tree_from_entries(
+        [TreeEntry(mode="100644", type="blob", sha=real_blob, path="variant.txt")]
+    )
+    _ident = Identity(name="EDEN test", email="test@eden.local")
+    variant_sha = repo.commit_tree(
+        child_tree,
+        parents=[seed_sha],
+        message="eden: variant-tip\n",
+        author=_ident,
+        committer=_ident,
+        author_date="2026-04-01T00:00:00+00:00",
+        committer_date="2026-04-01T00:00:00+00:00",
+    )
     schema = EvaluationSchema.model_validate({"score": "real"})
     store = InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema=schema)
     # 12a-1 wave 5: pre-register the worker_ids the evaluator-subprocess
@@ -65,7 +84,7 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     store.submit(
         "execution-1",
         claim.worker_id,
-        VariantSubmission(status="success", variant_id="variant-t1", commit_sha=seed_sha),
+        VariantSubmission(status="success", variant_id="variant-t1", commit_sha=variant_sha),
     )
     # Drive accept so the variant picks up commit_sha and we can dispatch evaluate.
     decision, _ = store.validate_terminal("execution-1")

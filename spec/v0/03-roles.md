@@ -97,6 +97,7 @@ The executor MUST NOT write to `variant/*` or `main`; those are owned by the int
 - The `work/*` branch MUST be unique to this variant. Two variants MUST NOT share a worker branch name.
 - Every commit on the worker branch MUST be reachable from the declared `parent_commits`. An executor MUST NOT introduce commits whose history does not descend from the idea's declared parents.
 - The executor MAY produce multiple commits on the worker branch. The evaluator consumes only the tip (`commit_sha`); the integrator's squash rule is defined in [`06-integrator.md`](06-integrator.md).
+- **Non-no-op variant.** *(Role-side MUST.)* An executor MUST NOT submit a `VariantSubmission` with `status == "success"` whose `commit_sha`'s git tree is identical to the git tree of every entry in `idea.parent_commits`. A variant whose tree is identical to *every* parent's tree is not a candidate — it is the absence of a candidate — and submitting one violates the executor's role contract. The rule applies only to `status == "success"`; `status == "error"` submissions are not constrained by tree-shape, since an `error` submission records a failed execution attempt rather than a candidate. ([`schemas/idea.schema.json`](schemas/idea.schema.json) requires `parent_commits` to be non-empty, so the rule has at least one parent to compare against on every well-formed idea.) The executor performs this check against its own git clone (where it just produced the variant) — the natural enforcement point, since the executor has full git access by construction. Task-store-side enforcement is SHOULD-level (see [`04-task-protocol.md`](04-task-protocol.md) §4.2): a conforming task store SHOULD reject the trivially-detectable case where `commit_sha` is bytewise equal to a `parent_commits` entry, and MAY perform a deeper tree-identity check when it has git access; deeper enforcement is not required because it would force the task store to acquire out-of-band git connectivity, which is not otherwise part of the chapter 04 / 07 contract.
 
 ### 3.4 Submission
 
@@ -109,6 +110,8 @@ The executor submits with:
 - `commit_sha` — required when `status == "success"`; MUST equal the tip of the worker branch.
 
 A resubmission of the same `execution` task MUST be idempotent: a duplicate submit presenting the same `variant_id` and `commit_sha` MUST be accepted without side effect. A duplicate submit that disagrees with the already-recorded result MUST be rejected ([`04-task-protocol.md`](04-task-protocol.md) §4.2).
+
+A conforming executor that respects §3.3 will never produce a no-op submission, so the wire-side detection question only matters for non-conforming or malicious clients. The IUT SHOULD reject such submissions when it has the means to detect them (see [`04-task-protocol.md`](04-task-protocol.md) §4.2 for the SHA-equality SHOULD); when a wire-level rejection does surface, the `type` MUST be `eden://error/no-op-variant` ([`07-wire-protocol.md`](07-wire-protocol.md) §9). Detection that requires the task store to fetch the submitted commit from a remote git store is MAY-level (not required). The check is content-derived and idempotent: a content-equivalent retry of a no-op submission resolves the same way (the SHA-equality fast path always trips identically; a deeper check, if implemented, is also content-derived).
 
 ## 4. Evaluator
 

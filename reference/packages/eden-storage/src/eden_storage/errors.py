@@ -111,6 +111,20 @@ class CycleDetected(StorageError):
     """
 
 
+class NoOpVariant(StorageError):
+    """Execution-task submission whose variant tree matches every parent's tree.
+
+    Raised by ``submit`` (or, at IUT latitude, the accept-time
+    validation path) per
+    [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md) §3.3
+    non-no-op invariant + §3.4 rejection rule. A successful
+    `VariantSubmission` whose `commit_sha` resolves to a git tree
+    identical to the tree of every entry in `idea.parent_commits`
+    represents the absence of a candidate, not a candidate, and MUST
+    NOT terminalize the variant as ``success``.
+    """
+
+
 DispatchError = StorageError
 """Legacy alias for pre-Phase-6 callers that import
 ``DispatchError`` from ``eden_dispatch.errors``.

@@ -22,6 +22,7 @@ from eden_storage.errors import (
     CycleDetected,
     IllegalTransition,
     InvalidPrecondition,
+    NoOpVariant,
     NotClaimed,
     NotFound,
     ReservedIdentifier,
@@ -174,6 +175,11 @@ _TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
         "eden://error/invalid-precondition",
         409,
         "Invalid Precondition",
+    ),
+    NoOpVariant: (
+        "eden://error/no-op-variant",
+        409,
+        "No-Op Variant",
     ),
     WorkerNotRegistered: (
         "eden://error/worker-not-registered",

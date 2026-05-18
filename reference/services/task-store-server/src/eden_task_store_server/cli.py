@@ -67,6 +67,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="TCP port to bind (0 = ephemeral; printed on startup).",
     )
     parser.add_argument(
+        "--repo-path",
+        default=None,
+        help=(
+            "Optional path to a bare git repo used for the §3.3 "
+            "non-no-op variant tree-identity check. When unset, the "
+            "Store falls back to a SHA-equality fast path "
+            "(commit_sha == parent_commits[k] always rejected); when "
+            "set, the Store additionally compares real git trees so "
+            "an empty commit on parent (same tree, different SHA) is "
+            "also rejected for SHAs already present in the local "
+            "bare repo. The resolver is intentionally I/O-free: it "
+            "does not fetch from any remote (a fetch inside the per-"
+            "operation Store transaction would block every other "
+            "task-store request behind a slow / unreachable Gitea). "
+            "Operators who want the deeper check should pre-populate "
+            "the bare repo via setup-experiment or external tooling; "
+            "the executor's pre-submit `_is_no_op_variant` check is "
+            "the canonical enforcement point and runs against the "
+            "executor's own controlled clone."
+        ),
+    )
+    parser.add_argument(
         "--admin-token",
         default=None,
         help=(
@@ -179,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         store_url=store_url,
         experiment_id=args.experiment_id,
         config=config,
+        repo_path=args.repo_path,
     )
     try:
         # 12a-1f: provision the eden_readonly Postgres role if a
