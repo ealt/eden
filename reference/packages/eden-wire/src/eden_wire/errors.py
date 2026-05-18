@@ -16,6 +16,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from eden_checkpoint import (
+    CheckpointInvalid,
+    ExperimentIdConflict,
+    SpecVersionMismatch,
+    UnsupportedCheckpointVersion,
+)
 from eden_storage.errors import (
     AlreadyExists,
     ConflictingResubmission,
@@ -205,6 +211,31 @@ _TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
     ),
     Unauthorized: ("eden://error/unauthorized", 401, "Unauthorized"),
     Forbidden: ("eden://error/forbidden", 403, "Forbidden"),
+    # Portable-checkpoint errors per spec/v0/07-wire-protocol.md §9 and
+    # spec/v0/10-checkpoints.md. The eden-checkpoint
+    # ExperimentIdMismatch is NOT registered here — the import-endpoint
+    # handler in server.py catches it and re-raises the wire-layer
+    # ExperimentIdMismatch above so a single class maps the wire type.
+    CheckpointInvalid: (
+        "eden://error/checkpoint-invalid",
+        400,
+        "Checkpoint Invalid",
+    ),
+    ExperimentIdConflict: (
+        "eden://error/experiment-id-conflict",
+        409,
+        "Experiment ID Conflict",
+    ),
+    SpecVersionMismatch: (
+        "eden://error/spec-version-mismatch",
+        409,
+        "Spec Version Mismatch",
+    ),
+    UnsupportedCheckpointVersion: (
+        "eden://error/unsupported-checkpoint-version",
+        409,
+        "Unsupported Checkpoint Version",
+    ),
 }
 
 _EXC_BY_TYPE: dict[str, type[Exception]] = {

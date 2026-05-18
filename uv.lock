@@ -643,6 +643,7 @@ name = "eden-wire"
 version = "0.0.1"
 source = { editable = "reference/packages/eden-wire" }
 dependencies = [
+    { name = "eden-checkpoint" },
     { name = "eden-contracts" },
     { name = "eden-storage" },
     { name = "fastapi" },
@@ -653,6 +654,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "fastapi", specifier = ">=0.115,<1" },
