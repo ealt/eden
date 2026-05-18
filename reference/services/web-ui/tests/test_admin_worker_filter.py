@@ -146,8 +146,9 @@ class TestAdminLandingPage:
         store.register_group("team-landing")
         resp = signed_in_client.get("/admin/")
         assert resp.status_code == 200
-        # Section header
-        assert "workers and groups" in resp.text
+        # Section header — chunk 12a-1c renamed to include the ideas module.
+        assert "workers" in resp.text
+        assert "groups" in resp.text
         # The link targets
         assert 'href="/admin/workers/"' in resp.text
         assert 'href="/admin/groups/"' in resp.text

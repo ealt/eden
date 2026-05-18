@@ -1,43 +1,98 @@
 {% extends "base.html" %}
-{% block title %}EDEN — admin / idea {{ idea.idea_id }}{% endblock %}
+{% block title %}EDEN — admin idea {{ idea.idea_id }}{% endblock %}
 {% block main %}
 <h1>idea <code>{{ idea.idea_id }}</code></h1>
 <p><a href="/admin/ideas/">&laquo; all ideas</a></p>
+
 {% if outcome %}
 <div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
 {% endif %}
+
 <section>
     <h2>idea record</h2>
-    <table>
-        <tbody>
-            <tr><th>idea_id</th><td><code>{{ idea.idea_id }}</code></td></tr>
-            <tr><th>slug</th><td><code>{{ idea.slug }}</code></td></tr>
-            <tr><th>state</th><td>{{ idea.state }}</td></tr>
-            <tr><th>priority</th><td>{{ idea.priority }}</td></tr>
-            <tr><th>parent_commits</th>
-                <td>
-                {% for sha in idea.parent_commits %}
-                    <code>{{ sha }}</code>{% if not loop.last %}, {% endif %}
-                {% endfor %}
-                </td>
-            </tr>
-            <tr><th>artifacts_uri</th><td><code>{{ idea.artifacts_uri }}</code></td></tr>
-            <tr><th>created_at</th><td>{{ idea.created_at }}</td></tr>
-            <tr><th>created_by</th><td>{% if idea.created_by %}<code>{{ idea.created_by }}</code>{% else %}<em>(none)</em>{% endif %}</td></tr>
-            <tr><th>intended_executor</th>
-                <td>
-                {% if idea.intended_executor %}
-                    <code>{{ idea.intended_executor.kind }}:{{ idea.intended_executor.id }}</code>
-                    &mdash; the orchestrator's execution_dispatch decision will copy this to <code>task.target</code>
-                    on the resulting execution task (spec/v0/03-roles.md §6.2 decision-type 2).
+    <dl>
+        <dt>slug</dt><dd><code>{{ idea.slug }}</code></dd>
+        <dt>priority</dt><dd>{{ idea.priority }}</dd>
+        <dt>state</dt><dd>{{ idea.state }}</dd>
+        <dt>parent_commits</dt><dd>
+            {% for sha in idea.parent_commits %}<code>{{ sha }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        </dd>
+        <dt>artifacts_uri</dt><dd>
+            {% if idea.artifacts_uri %}
+                {% set scheme = idea.artifacts_uri.split(":", 1)[0] | lower %}
+                {% if scheme == "file" %}
+                <a href="/artifacts?uri={{ idea.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
+                {% elif scheme in ("http", "https") %}
+                <a href="{{ idea.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
                 {% else %}
-                    <em>(none)</em> &mdash; the resulting execution task will be open to any registered executor.
+                <code>{{ idea.artifacts_uri }}</code>
                 {% endif %}
-                </td>
-            </tr>
-        </tbody>
-    </table>
+            {% else %}—{% endif %}
+        </dd>
+        <dt>created_at</dt><dd>{{ idea.created_at }}</dd>
+        <dt>created_by</dt><dd>
+            {% if idea.created_by %}
+            <a href="/admin/workers/{{ idea.created_by }}/"><code>{{ idea.created_by }}</code></a>
+            {% else %}—{% endif %}
+        </dd>
+        <dt>intended_executor</dt><dd>
+            {% if idea.intended_executor %}
+                <code>{{ idea.intended_executor.kind }}:{{ idea.intended_executor.id }}</code>
+                &mdash; the orchestrator's execution_dispatch decision will copy this to <code>task.target</code>
+                on the resulting execution task (spec/v0/03-roles.md §6.2 decision-type 2).
+            {% else %}
+                <em>(none)</em> &mdash; the resulting execution task will be open to any registered executor.
+            {% endif %}
+        </dd>
+    </dl>
 </section>
+
+<section>
+    <h2>content preview</h2>
+    {% if inline_content %}
+    <details>
+        <summary>view markdown body</summary>
+        <pre>{{ inline_content }}</pre>
+    </details>
+    {% else %}
+    <p><em>(content unavailable: scheme not file://, outside artifacts-dir, or &gt; 1 MiB)</em></p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>lineage</h2>
+    {% if lineage.transport_errors > 0 %}
+    <div class="banner banner-warn">
+        lineage may be incomplete — {{ lineage.transport_errors }} transport error(s)
+    </div>
+    {% endif %}
+    <h3>originating ideation task</h3>
+    {% if lineage.ideation_task %}
+    <p><a href="{{ lineage.ideation_task.href }}">{{ lineage.ideation_task.label }}</a> — <small>{{ lineage.ideation_task.descriptor }}</small></p>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(ideation task: unknown — read error)</em></p>
+    {% else %}
+    <p><em>(ideation task: in progress, status=error, or unknown)</em></p>
+    {% endif %}
+
+    <h3>spawned variants
+        {% if lineage.variants_total > lineage.variants|length %}
+            (showing {{ lineage.variants|length }} of {{ lineage.variants_total }})
+        {% endif %}
+    </h3>
+    {% if lineage.variants %}
+    <ul>
+        {% for link in lineage.variants %}
+        <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
+        {% endfor %}
+    </ul>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(variants unknown — read error)</em></p>
+    {% else %}
+    <p><em>no variants yet.</em></p>
+    {% endif %}
+</section>
+
 <section>
     <h2>execution tasks for this idea</h2>
     {% if live_execution_tasks %}
@@ -63,6 +118,7 @@
     <p><em>no execution tasks yet for this idea.</em></p>
     {% endif %}
 </section>
+
 <section>
     <h2>create execution task (admin)</h2>
     {% if not can_create_execution %}
