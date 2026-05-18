@@ -611,6 +611,37 @@ def test_variant_lineage_ambiguous_attribution_yields_none() -> None:
     assert result.execution_task is None
 
 
+def test_variant_lineage_no_attribution_with_submission_still_yields_none() -> None:
+    """Auth-disabled deployment: variant.executed_by is unset; even
+    though the submission would match by variant_id, plan §D.9 says
+    we refuse to guess and return None. The attribution gate is the
+    primary disambiguator; submission match is the precision step
+    *within* the attribution-filtered candidate set."""
+    store = _store()
+    _, (idea_id,) = _seed_ideation_submission(store, slugs=("alpha",))
+    # Drive an execution task to success with a known commit_sha, but
+    # then strip variant.executed_by to simulate the auth-disabled
+    # posture (variant exists, has a submission, but no attribution).
+    exec_task_id, variant_id = _seed_execution_completed(
+        store, idea_id=idea_id
+    )
+    variant = store.read_variant(variant_id)
+    # Construct a variant view with executed_by cleared
+    stripped = variant.model_copy(update={"executed_by": None})
+
+    result = lineage_for_variant(store, stripped)
+
+    assert result.execution_task is None
+    # Cross-check: with attribution restored the lookup DOES find it
+    # (sanity guard against the new gate being too strict).
+    result_with_attr = lineage_for_variant(store, variant)
+    assert result_with_attr.execution_task is not None
+    assert (
+        result_with_attr.execution_task.href
+        == f"/admin/tasks/{exec_task_id}/"
+    )
+
+
 def test_variant_lineage_no_attribution_no_submission_yields_none() -> None:
     """An auth-disabled deployment with no attribution: no producer found."""
     store = _store()

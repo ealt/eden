@@ -121,6 +121,40 @@ class TestEvaluatorListPreview:
         assert resp.status_code == 200
         assert "anyone" in resp.text
 
+    def test_idea_read_failure_preserves_variant_context(
+        self,
+        client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        """Plan §D.5 / codex r4 W2: when only the parent-idea read
+        transport-fails, the variant context (branch / commit /
+        executed_by / artifact) is still rendered; only the idea
+        line shows ``(idea: read error)`` and the page-level banner
+        still fires."""
+        _signed_in(client)
+        seed_evaluate_task(store, slug="alpha", variant_id="va")
+
+        orig_read_idea = store.read_idea
+
+        def _flaky_idea(_: str) -> object:
+            raise RuntimeError("transport blip")
+
+        store.read_idea = _flaky_idea  # type: ignore[method-assign]
+        try:
+            resp = client.get("/evaluator/")
+            assert resp.status_code == 200
+            # variant context still surfaces
+            assert "work/alpha-va" in resp.text
+            assert "executor-w" in resp.text
+            # idea inline marker
+            assert "(idea: read error)" in resp.text
+            # page-level banner
+            assert "variant/idea read(s) failed" in resp.text
+            # but the row is NOT collapsed to (read failed)
+            assert "(read failed)" not in resp.text
+        finally:
+            store.read_idea = orig_read_idea
+
     def test_admin_lineage_link_is_present(
         self,
         client: TestClient,

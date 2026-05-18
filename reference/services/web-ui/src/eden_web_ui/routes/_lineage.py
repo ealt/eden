@@ -401,6 +401,20 @@ def _producing_execution_task(
     candidates = [
         t for t in exec_tasks_all if t.payload.idea_id == variant.idea_id
     ]
+    # Plan §D.9 prose: candidates are walked only when their
+    # ``submitted_by`` matches ``variant.executed_by`` (when attribution
+    # is set on both sides). When attribution is unset in an auth-
+    # disabled deployment, we refuse to guess and return ``None``
+    # rather than linking a producer discovered only via submission
+    # scanning. The submission-readable success path below still
+    # applies inside the attribution-gated candidate set.
+    if variant.executed_by is not None:
+        candidates = [
+            t for t in candidates if t.submitted_by == variant.executed_by
+        ]
+    else:
+        # No attribution to gate on — refuse to guess (plan §D.9).
+        return None
 
     for t in candidates:
         if t.state not in {"submitted", "completed", "failed"}:
