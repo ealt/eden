@@ -32,10 +32,11 @@ from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ._helpers import csrf_ok, get_session, read_variant_artifact
+from ._helpers import csrf_ok, get_session, read_idea_content, read_variant_artifact
 from ._lineage import (
     lineage_for_evaluation_task,
     lineage_for_execution_task,
+    lineage_for_idea,
     lineage_for_ideation_task,
     lineage_for_variant,
 )
@@ -1313,7 +1314,10 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
     """List every idea, optionally filtered by state.
 
     Read-only view; per-idea actions (admin-driven
-    create-execution-task) hang off the idea-detail page.
+    create-execution-task) hang off the idea-detail page. Each row
+    carries the 12a-1c transparency columns (slug / priority /
+    parent_commits[:8] / created_by / intended_executor /
+    variant_count / created_at).
     """
     session = get_session(request)
     if session is None:
@@ -1321,22 +1325,54 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
     store = request.app.state.store
     state = _coerce_filter(request.query_params.get("state"), _IDEA_STATE_VALUES)
     if state == _INVALID_FILTER:
-        ideas: list[Any] = []
-        state_for_select = request.query_params.get("state", "*")
-    else:
-        try:
-            ideas = store.list_ideas(state=state) if state else store.list_ideas()
-        except Exception:  # noqa: BLE001 — transport/store-domain
-            return _read_failure_response(request, "could not load ideas")
-        state_for_select = state or "*"
+        return request.app.state.templates.TemplateResponse(
+            request,
+            "admin_ideas.html",
+            {
+                "session": session,
+                "rows": [],
+                "idea_states": _IDEA_STATE_VALUES,
+                "selected_state": request.query_params.get("state", "*"),
+            },
+        )
+    try:
+        ideas_list = store.list_ideas(state=state) if state else store.list_ideas()
+        variants = store.list_variants()
+    except Exception:  # noqa: BLE001 — transport/store-domain
+        return _read_failure_response(request, "could not load ideas")
+
+    variant_count_by_idea: dict[str, int] = {}
+    for v in variants:
+        variant_count_by_idea[v.idea_id] = (
+            variant_count_by_idea.get(v.idea_id, 0) + 1
+        )
+
+    rows: list[dict[str, Any]] = []
+    for idea in ideas_list:
+        rows.append(
+            {
+                "idea_id": idea.idea_id,
+                "slug": idea.slug,
+                "priority": idea.priority,
+                "state": idea.state,
+                "created_by": idea.created_by,
+                "parent_commits_preview": [
+                    sha[:8] for sha in idea.parent_commits
+                ],
+                "intended_executor": getattr(idea, "intended_executor", None),
+                "variant_count": variant_count_by_idea.get(idea.idea_id, 0),
+                "created_at": idea.created_at,
+            }
+        )
+
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_ideas.html",
         {
             "session": session,
-            "ideas": ideas,
+            "rows": rows,
             "idea_states": _IDEA_STATE_VALUES,
-            "state": state_for_select,
+            "selected_state": state or "*",
         },
     )
 
@@ -1347,11 +1383,18 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
 async def idea_detail(
     idea_id: str, request: Request
 ) -> HTMLResponse | RedirectResponse:
-    """Per-idea detail page; surfaces intended_executor + create-task form."""
+    """Per-idea detail page; surfaces intended_executor + create-task form.
+
+    Phase 12a-1c additions: ``inline_content`` (markdown body via
+    ``read_idea_content`` trust-boundary helper) and ``lineage``
+    (one hop back to ideation task + one hop forward to spawned
+    variants per plan §D.8).
+    """
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
     store = request.app.state.store
+    artifacts_dir = request.app.state.artifacts_dir
     try:
         idea = store.read_idea(idea_id)
         live_execution_tasks = [
@@ -1368,12 +1411,16 @@ async def idea_detail(
     can_create_execution = idea.state == "ready" and not any(
         t.state in ("pending", "claimed", "submitted") for t in live_execution_tasks
     )
+    inline_content = read_idea_content(idea, artifacts_dir)
+    lineage = lineage_for_idea(store, idea)
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_idea_detail.html",
         {
             "session": session,
             "idea": idea,
+            "inline_content": inline_content,
+            "lineage": lineage,
             "live_execution_tasks": live_execution_tasks,
             "workers": [w.worker_id for w in workers_list],
             "groups": [g.group_id for g in groups_list],

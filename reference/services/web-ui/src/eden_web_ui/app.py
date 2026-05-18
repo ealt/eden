@@ -23,7 +23,6 @@ from fastapi.templating import Jinja2Templates
 
 from .routes import admin as admin_routes
 from .routes import admin_groups as admin_groups_routes
-from .routes import admin_ideas as admin_ideas_routes
 from .routes import admin_workers as admin_workers_routes
 from .routes import artifacts as artifacts_routes
 from .routes import auth as auth_routes
@@ -108,7 +107,6 @@ def make_app(
     app.include_router(admin_routes.router)
     app.include_router(admin_workers_routes.router)
     app.include_router(admin_groups_routes.router)
-    app.include_router(admin_ideas_routes.router)
     app.include_router(artifacts_routes.router)
     if repo is not None:
         app.include_router(executor_routes.router)
