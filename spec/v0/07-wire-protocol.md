@@ -41,6 +41,7 @@ The following endpoints bind the task-store operations in [`04-task-protocol.md`
 | `update_dispatch_mode` | `PATCH` | `/v0/experiments/{E}/dispatch_mode` | worker (group-gated: `admins`) |
 | `terminate_experiment` | `POST` | `/v0/experiments/{E}/terminate` | worker (group-gated: `admins`) |
 | `read_experiment_state` | `GET` | `/v0/experiments/{E}/state` | either |
+| `emit_policy_error` | `POST` | `/v0/experiments/{E}/policy-errors` | worker (group-gated: `orchestrators`) |
 
 The mutating task operations are worker-gated; some are additionally **group-gated** by the [`03-roles.md`](03-roles.md) §6 orchestrator-role contract and [`02-data-model.md`](02-data-model.md) §7.5 reserved groups:
 
@@ -48,6 +49,7 @@ The mutating task operations are worker-gated; some are additionally **group-gat
 - `accept` / `reject`: caller MUST be in the `orchestrators` group (the [`04-task-protocol.md`](04-task-protocol.md) §4.3 terminal-transition decision is the orchestrator role's job per [`03-roles.md`](03-roles.md) §6).
 - `reclaim`: caller MUST be a registered worker; the [`04-task-protocol.md`](04-task-protocol.md) §5.1 cause vocabulary distinguishes operator vs. policy reclamation but the binding does not gate on group membership beyond "any registered worker".
 - `reassign_task` / `update_dispatch_mode` / `terminate_experiment`: caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2, §8.2).
+- `emit_policy_error`: caller MUST be in the `orchestrators` group. The endpoint exists to satisfy chapter 03 §6.2 decision-type 0's fault-tolerance MUST when the orchestrator runs over the wire binding; the policy is invoked by orchestrators, not admins, so the authority gate is `orchestrators`-only (the `admins` path would expose a manual log-spam vector that the protocol does not need).
 - `claim` / `submit`: caller MUST be a registered worker satisfying the task's `target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5, §4.1); no group gate beyond the target eligibility check.
 
 The `Auth` column's bare `worker` annotation means "any registered worker"; the group-gated entries above narrow that to a specific reserved-group membership check. Future phases MAY introduce additional group-gating without breaking the wire grammar — the dispatcher rejects on the group check identically to how it rejects on the principal class.
@@ -142,6 +144,26 @@ The transition is observable through both the response body and the event stream
 **Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §8.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the event's `terminated_by` field. The terminate op is admin-gated regardless of `dispatch_mode.termination`'s value: an operator MAY drive termination even when `dispatch_mode.termination == "auto"`; the orchestrator's policy-driven path and the operator wire op race-resolve via the §6.4 exact-idempotent rule (see [`03-roles.md`](03-roles.md) §6.4.1).
 
 A companion `GET /v0/experiments/{E}/state` returns the current state as `{"state": "running" | "terminated"}`. The endpoint is available to any registered worker.
+
+### 2.10 Emit policy error
+
+`POST /v0/experiments/{E}/policy-errors` is the wire surface for the [`03-roles.md`](03-roles.md) §6.2 decision-type 0 fault-tolerance MUST: when a deployment-supplied termination policy callable raises rather than returning `Continue` or `Terminate(...)`, the orchestrator MUST emit a registered `experiment.policy_error` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) so operators see the failure in the event log. This endpoint exists so an orchestrator running over the wire binding (rather than embedded in-process with a `Store`) can append that event without bypassing the protocol.
+
+The request body shape is:
+
+```json
+{"policy_kind": "<string>", "error_type": "<string>", "error_message": "<string>"}
+```
+
+- `policy_kind` identifies which policy kind raised. v0 defines only `"termination"`; future decision types that introduce policy callables MAY add new values.
+- `error_type` is the exception class name (e.g. `"ValueError"`); free-form per implementation language.
+- `error_message` is the exception's `str()` representation; free-form.
+
+All three fields MUST be present; `policy_kind` and `error_type` MUST be non-empty. The body MUST NOT carry additional keys (the request schema has `additionalProperties: false`).
+
+On success the server returns 204 with an empty body. The single-event append is exempt from the [`05-event-protocol.md`](05-event-protocol.md) §2 transactional invariant: no protocol-owned state mutation pairs with it, so the endpoint is not a composite commit. The append is at-least-once observable; a transport-indeterminate failure on the emit path is an at-most-once observability gap rather than a state-correctness risk, and the orchestrator-side caller SHOULD log the original fault locally as a fallback (the reference dispatch driver does so).
+
+**Authority:** caller MUST be in the `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5). A caller outside the group receives 403 `eden://error/forbidden`. The endpoint is NOT exposed to `admins` — the policy is invoked by orchestrators, not admins, and `admins` access would create a manual log-spam surface the protocol does not need.
 
 ## 3. Idea operations
 

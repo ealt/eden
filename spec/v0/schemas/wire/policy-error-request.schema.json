@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — emit policy_error request",
+  "description": "Body for POST /v0/experiments/{E}/policy-errors (07-wire-protocol.md §2.10). Orchestrators-group-gated. The endpoint appends a single experiment.policy_error event (05-event-protocol.md §3.4) and is exempt from the §2 transactional invariant — no protocol-owned state mutation pairs with it. additionalProperties: false rejects unknown keys; the server appends the event verbatim from the supplied fields.",
+  "type": "object",
+  "required": ["policy_kind", "error_type", "error_message"],
+  "additionalProperties": false,
+  "properties": {
+    "policy_kind": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifies which policy kind raised. v0 defines 'termination'; future decision types that introduce policy callables MAY add new values."
+    },
+    "error_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The exception class name; free-form per implementation language."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "The exception's str() representation; free-form."
+    }
+  }
+}
