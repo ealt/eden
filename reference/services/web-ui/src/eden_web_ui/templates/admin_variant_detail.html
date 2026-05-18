@@ -71,15 +71,13 @@
     <h3>producing execution task</h3>
     {% if lineage.execution_task %}
     <p><a href="{{ lineage.execution_task.href }}">{{ lineage.execution_task.label }}</a> — <small>{{ lineage.execution_task.descriptor }}</small></p>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(execution task: unknown — read error)</em></p>
     {% else %}
     <p><em>(execution task: unknown)</em></p>
     {% endif %}
-    <h3>parent idea</h3>
-    {% if lineage.idea %}
-    <p><a href="{{ lineage.idea.href }}">{{ lineage.idea.label }}</a> — <small>{{ lineage.idea.descriptor }}</small></p>
-    {% else %}
-    <p><em>(idea unknown)</em></p>
-    {% endif %}
+    {# parent idea is hyperlinked in the "parent idea" section above #}
+    {# (plan §D.7: that hyperlink doubles as the lineage link) #}
     <h3>evaluation tasks
         {% if lineage.evaluation_tasks_total > lineage.evaluation_tasks|length %}
             (showing {{ lineage.evaluation_tasks|length }} of {{ lineage.evaluation_tasks_total }})
@@ -91,6 +89,8 @@
         <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
         {% endfor %}
     </ul>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(evaluation tasks unknown — read error)</em></p>
     {% else %}
     <p><em>no evaluation tasks yet.</em></p>
     {% endif %}

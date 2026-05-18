@@ -292,3 +292,28 @@ class TestLineageTransportErrors:
             assert "lineage may be incomplete" in resp.text
         finally:
             store.list_variants = orig_list_variants
+
+    def test_transport_error_distinguishes_slot_message(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        """Plan §D.6: when a lineage read fails, the slot renders
+        ``(... — read error)`` AND the section-scoped banner fires.
+        Missing-but-no-transport-error renders plain ``(... unknown)``
+        WITHOUT the banner."""
+        _signed_in(client)
+        ids = _drive_full_pipeline(store)
+        # Force a transport-shaped failure on read_idea so the
+        # execution-task's upstream "idea" slot bumps transport_errors
+        # without the helper returning a link.
+        orig_read_idea = store.read_idea
+
+        def _flaky(_: str) -> object:
+            raise RuntimeError("transport blip")
+
+        store.read_idea = _flaky  # type: ignore[method-assign]
+        try:
+            resp = client.get(f"/admin/tasks/{ids['exec_task_id']}/")
+            assert resp.status_code == 200
+            assert "(idea unknown — read error)" in resp.text
+        finally:
+            store.read_idea = orig_read_idea
