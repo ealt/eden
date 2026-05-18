@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin / experiment{% endblock %}
+{% block main %}
+<h1>experiment lifecycle</h1>
+<p><a href="/admin/">&laquo; admin dashboard</a></p>
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+<section>
+    <h2>runtime state</h2>
+    <table>
+        <tbody>
+            <tr><th>experiment_id</th><td><code>{{ experiment.experiment_id }}</code></td></tr>
+            <tr><th>state</th>
+                <td>
+                {% if experiment.state == "terminated" %}
+                    <strong class="state-terminated">terminated</strong>
+                {% else %}
+                    <strong class="state-running">running</strong>
+                {% endif %}
+                </td>
+            </tr>
+            <tr><th>created_at</th><td>{{ experiment.created_at }}</td></tr>
+        </tbody>
+    </table>
+</section>
+{% if terminated_event %}
+<section>
+    <h2>termination record</h2>
+    <table>
+        <tbody>
+            <tr><th>reason</th><td>{{ terminated_event.data.reason }}</td></tr>
+            <tr><th>terminated_by</th><td><code>{{ terminated_event.data.terminated_by }}</code></td></tr>
+            <tr><th>occurred_at</th><td>{{ terminated_event.occurred_at }}</td></tr>
+            <tr><th>event_id</th><td><code>{{ terminated_event.event_id }}</code></td></tr>
+        </tbody>
+    </table>
+</section>
+{% endif %}
+{% if policy_errors %}
+<section>
+    <h2>recent policy errors</h2>
+    <table>
+        <thead><tr><th>occurred_at</th><th>policy_kind</th><th>error_type</th><th>error_message</th></tr></thead>
+        <tbody>
+        {% for ev in policy_errors %}
+            <tr>
+                <td>{{ ev.occurred_at }}</td>
+                <td><code>{{ ev.data.policy_kind }}</code></td>
+                <td><code>{{ ev.data.error_type }}</code></td>
+                <td>{{ ev.data.error_message }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+{% if experiment.state == "running" %}
+<section>
+    <h2>terminate experiment</h2>
+    {% if admin_disabled %}
+        <p class="banner banner-warn">
+            admin bearer not configured; lifecycle ops are unavailable
+            (the deployment needs <code>--admin-token</code> or
+            <code>$EDEN_ADMIN_TOKEN</code> set).
+        </p>
+    {% else %}
+        <p>
+            One-way transition (spec/v0/02-data-model.md §2.5). After
+            termination: no new tasks may be created, no pending tasks
+            may be claimed; already-claimed work drains normally.
+        </p>
+        <form action="/admin/experiment/terminate" method="post">
+            <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+            <label>reason
+                <input type="text" name="reason" required
+                       placeholder="why are you terminating?">
+            </label>
+            <button type="submit" class="danger">terminate</button>
+        </form>
+    {% endif %}
+</section>
+{% else %}
+<section>
+    <h2>terminated &mdash; idempotent</h2>
+    <p>
+        The experiment is in <code>terminated</code> state.
+        Re-termination is a no-op (spec/v0/04-task-protocol.md §8.1
+        idempotency); the integration drain continues until all
+        committed success-variants are integrated.
+    </p>
+</section>
+{% endif %}
+{% endblock %}

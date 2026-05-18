@@ -253,6 +253,9 @@ class TestDispatchModeEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {
+            # 12a-3: `termination` defaults to "manual"; the four
+            # operational keys default to "auto".
+            "termination": "manual",
             "ideation_creation": "auto",
             "execution_dispatch": "auto",
             "evaluation_dispatch": "auto",
@@ -447,15 +450,20 @@ class TestAuthorityMatrix:
         assert resp.status_code == 403
         assert resp.json()["type"] == "eden://error/forbidden"
 
-    def test_create_task_execution_admins_forbidden(
+    def test_create_task_execution_admins_ok(
         self, app_client: tuple[TestClient, dict[str, str]], store: InMemoryStore
     ) -> None:
-        """Execution-task creation is orchestrators-only in 12a-2."""
+        """12a-3 broadened execution-task creation to admins OR orchestrators.
+
+        Pre-12a-3 only orchestrators could drive ``kind=execution``;
+        12a-3 lifts the restriction now that ``idea.intended_executor``
+        gives operators a non-fungible routing seed (see
+        ``03-roles.md`` §6.5 + ``07-wire-protocol.md`` §2.1). An admin
+        request now passes the authority gate; the store rejects with
+        404 NotFound because the referenced idea doesn't exist — the
+        important assertion is that the response is NOT 403.
+        """
         client, tokens = app_client
-        # An idea has to exist for the create to reach group-check; we
-        # construct the request with idea_id="missing" so even if the
-        # gate admits, the store rejects with NotFound. Either outcome
-        # is acceptable for the admins-rejected assertion.
         body = {
             "task_id": "t-exec",
             "kind": "execution",
@@ -467,6 +475,31 @@ class TestAuthorityMatrix:
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
             headers=_worker_headers("admin-eric", tokens["admin-eric"]),
+            json=body,
+        )
+        # The admin gate now lets the request through; the store
+        # rejects with 404 because the referenced idea doesn't exist.
+        # The forbidden envelope MUST NOT appear.
+        assert resp.status_code != 403, resp.text
+        assert resp.status_code == 404
+        assert resp.json()["type"] == "eden://error/not-found"
+
+    def test_create_task_execution_random_forbidden(
+        self, app_client: tuple[TestClient, dict[str, str]]
+    ) -> None:
+        """A registered worker outside both groups MUST still be rejected."""
+        client, tokens = app_client
+        body = {
+            "task_id": "t-exec-2",
+            "kind": "execution",
+            "state": "pending",
+            "payload": {"idea_id": "missing"},
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-01T00:00:00Z",
+        }
+        resp = client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}/tasks",
+            headers=_worker_headers("random-worker", tokens["random-worker"]),
             json=body,
         )
         assert resp.status_code == 403

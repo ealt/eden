@@ -31,7 +31,7 @@ def _clear_substrate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_substrate_flags_parsed(tmp_path: Path) -> None:
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "parallel_variants: 1\nmax_variants: 1\nmax_wall_time: 1h\n"
+        "parallel_variants: 1\n"
         "evaluation_schema:\n  score: real\n"
         "objective:\n  expr: score\n  direction: maximize\n"
         "evaluation_command: 'true'\n"

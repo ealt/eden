@@ -34,18 +34,18 @@ The central invariant of the event protocol, stated in [`01-concepts.md`](01-con
 
 "Atomic" means: either both the state change and the event append are durable, or neither is. A conforming implementation MUST NOT expose a state change to readers (direct store reads, cached projections, push notifications, role dispatch) before its event is durable in the log; conversely, it MUST NOT append an event whose state change has not been durably written. If a transaction covering both is aborted, neither is observable.
 
-The invariant applies to the set of entities enumerated in [`02-data-model.md`](02-data-model.md): tasks, ideas, variants. The §3.4 experiment-scoped event covers a configuration-state mutation under the same atomicity rule. Implementations MAY emit *additional* events outside this set (see §3.6) that do not correspond to a protocol-defined state change; those additional events are not subject to the transactional invariant because there is no state change to bind them to.
+The invariant applies to the set of entities enumerated in [`02-data-model.md`](02-data-model.md): tasks, ideas, variants, and experiments. The §3.4 experiment-scoped events cover both a configuration-state mutation (`experiment.dispatch_mode_changed`) and the lifecycle-state mutation `experiment.terminated` ([`02-data-model.md`](02-data-model.md) §2.5) under the same atomicity rule. Implementations MAY emit *additional* events outside this set (see §3.6) that do not correspond to a protocol-defined state change; those additional events are not subject to the transactional invariant because there is no state change to bind them to.
 
 ### 2.1 Why atomic
 
-The event log is the normative observability channel ([`04-task-protocol.md`](04-task-protocol.md) §8.3). Without atomicity, subscribers reconstructing history can observe either a state without its event or an event whose state the store does not yet expose — either is a protocol violation that leaves subscribers unable to trust the log.
+The event log is the normative observability channel ([`04-task-protocol.md`](04-task-protocol.md) §9.3). Without atomicity, subscribers reconstructing history can observe either a state without its event or an event whose state the store does not yet expose — either is a protocol violation that leaves subscribers unable to trust the log.
 
 ### 2.2 Composite transitions
 
 Several transitions span multiple entities and MUST commit together:
 
 - **Execution-task dispatch** — creating a `task` with `kind=execution` and transitioning its referenced `idea` from `ready` to `dispatched` ([`04-task-protocol.md`](04-task-protocol.md) §2). Events: `task.created` + `idea.dispatched`, in one atomic commit.
-- **Execution-task terminal** — the `execution` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §9). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
+- **Execution-task terminal** — the `execution` task's terminal transition (`submitted → completed` or `submitted → failed`) and the matching `idea` transition from `dispatched` to `completed` ([`04-task-protocol.md`](04-task-protocol.md) §4.3, §10). Events: `task.completed` (or `task.failed`) + `idea.completed`, in one atomic commit.
 - **Evaluation-task terminal (`success`/`error`)** — the `evaluation` task's terminal transition plus writes to the variant's `status`, `evaluation`, `artifacts_uri`, and `completed_at` ([`03-roles.md`](03-roles.md) §4.4). Events: `task.completed` (or `task.failed`) + `variant.succeeded` / `variant.errored`, in one atomic commit.
 - **Execution-task reclaim with in-flight variant** — reclamation of an `execution` task whose prior execution left a variant in `starting` requires transitioning that variant to `error` atomically with the reclaim ([`04-task-protocol.md`](04-task-protocol.md) §5.4). Events: `task.reclaimed` + `variant.errored`, in one atomic commit.
 - **Retry-exhausted `evaluation_error` terminal** — the orchestrator's transition of a variant from `starting` to `evaluation_error` ([`04-task-protocol.md`](04-task-protocol.md) §4.3). When the orchestrator persists this transition as a state change on the variant, it MUST emit `variant.evaluation_errored` atomically.
@@ -135,19 +135,28 @@ Payload field definitions:
 
 ### 3.4 Experiment events
 
-Produced atomically with mutations of experiment-scoped configuration. The `experiment_id` is implicit (events live in the per-experiment log per §4.6); the payload describes the experiment-level state change.
+Produced atomically with mutations of experiment-scoped configuration or lifecycle state. The `experiment_id` is implicit (events live in the per-experiment log per §4.6); the payload describes the experiment-level state change.
 
 | Type | Trigger | `data` required fields |
 |---|---|---|
 | `experiment.dispatch_mode_changed` | `update_dispatch_mode` ([`04-task-protocol.md`](04-task-protocol.md) §7) | `dispatch_mode`, `changed`, `updated_by` |
+| `experiment.terminated` | `terminate_experiment` ([`04-task-protocol.md`](04-task-protocol.md) §8.1) or the orchestrator's termination decision ([`03-roles.md`](03-roles.md) §6.2 decision-type 0) | `reason`, `terminated_by` |
+| `experiment.policy_error` | A termination policy callable raises ([`03-roles.md`](03-roles.md) §6.2 decision-type 0, fault-tolerance subsection) | `policy_kind`, `error_type`, `error_message` |
 
 Payload field definitions:
 
-- `dispatch_mode` — the **resulting** `dispatch_mode` object on the experiment after the merge ([`02-data-model.md`](02-data-model.md) §2.5). Includes every key (defaults applied), so a subscriber that resyncs from this event observes the full post-update state without needing the prior value.
+- `dispatch_mode` — the **resulting** `dispatch_mode` object on the experiment after the merge ([`02-data-model.md`](02-data-model.md) §2.4). Includes every key (defaults applied), so a subscriber that resyncs from this event observes the full post-update state without needing the prior value.
 - `changed` — an object mapping each key whose value flipped to its new value (subset of `dispatch_mode`). Empty if the update was a no-op (every supplied key already matched the stored value); in that case the implementation MAY skip the event entirely per [`04-task-protocol.md`](04-task-protocol.md) §7.1.
 - `updated_by` — the `worker_id` of the caller that invoked `update_dispatch_mode`. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §7.2.
+- `reason` — free-form string supplied by the caller of `terminate_experiment` (operator-driven) or by the termination policy's `Terminate(reason)` return (policy-driven). The protocol does not constrain the format; deployments use it as a human-readable explanation. The first commit's `reason` is the one recorded; subsequent idempotent calls' `reason` strings are discarded per [`04-task-protocol.md`](04-task-protocol.md) §8.1.
+- `terminated_by` — the `worker_id` of the principal credited with the transition. For operator-driven termination this is the authenticated `admins` caller. For policy-driven termination this is the `worker_id` of the orchestrator instance whose policy callable returned `Terminate`.
+- `policy_kind` — a string identifying which policy kind raised. v0 defines only `"termination"`; future decision types that introduce policy callables MAY add new values.
+- `error_type` — the exception class name (e.g. `"ValueError"`, `"KeyError"`); free-form per implementation language.
+- `error_message` — the exception's `str()` representation; free-form.
 
 Note on ideation-task creation: the orchestrator-role contract's continuous-policy mechanism ([`03-roles.md`](03-roles.md) §6.2) does NOT introduce a new event type. Every ideation-task creation (whether driven by the auto-orchestrator's policy or by an operator under `dispatch_mode.ideation_creation == "manual"`) emits the standard `task.created` event from §3.1, with attribution recorded in `task.created_by` ([`02-data-model.md`](02-data-model.md) §3.1).
+
+Note on `experiment.policy_error`: this event records an orchestrator-side fault, not a state change on the experiment. It is exempt from the §2 transactional invariant: there is no protocol-owned state mutation paired with it. The event is registered to give operators a normative observability channel for policy faults; subscribers that do not consume it MUST NOT therefore miss any state-machine transition.
 
 ### 3.5 Subscriber observability guarantee
 

@@ -2,8 +2,6 @@ parallel_variants: 1
 evaluation_command: "python3 ${EDEN_EXPERIMENT_DIR}/evaluation.py"
 execution_command: "python3 ${EDEN_EXPERIMENT_DIR}/execution.py"
 ideation_command: "python3 ${EDEN_EXPERIMENT_DIR}/ideation.py"
-max_variants: 20
-max_wall_time: "10m"
 evaluation_schema:
   score: real
 objective:

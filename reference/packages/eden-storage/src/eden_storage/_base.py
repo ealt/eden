@@ -60,6 +60,8 @@ from eden_contracts import (
     Event,
     ExecutionPayload,
     ExecutionTask,
+    Experiment,
+    ExperimentState,
     FailReason,
     Group,
     Idea,
@@ -110,13 +112,23 @@ _WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _LIVE_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed", "submitted"})
 
 # The default dispatch_mode on a freshly-initialized experiment per
-# `02-data-model.md` §2.5. Backends seed this on first open.
+# `02-data-model.md` §2.4. Backends seed this on first open. The four
+# operational keys default to "auto"; `termination` (added in 12a-3)
+# defaults to "manual" so pre-12a-3 deployments are unchanged by the
+# new key — operators have to flip it on explicitly to opt in to
+# policy-driven termination.
 _DEFAULT_DISPATCH_MODE: dict[str, str] = {
+    "termination": "manual",
     "ideation_creation": "auto",
     "execution_dispatch": "auto",
     "evaluation_dispatch": "auto",
     "integration": "auto",
 }
+
+# Experiment lifecycle states per `02-data-model.md` §2.5. The default
+# at experiment creation is "running"; "terminated" is a one-way
+# transition committed by `terminate_experiment`.
+_DEFAULT_EXPERIMENT_STATE: str = "running"
 
 _METRIC_PY_TYPES: dict[str, tuple[type, ...]] = {
     # spec/v0/02-data-model.md §1.3 type mapping: integer / real / text.
@@ -157,12 +169,18 @@ class _Tx:
     # post-mutation Group object, and `group_deletes` removes a row.
     groups: dict[str, Group] = field(default_factory=dict)
     group_deletes: set[str] = field(default_factory=set)
-    # 12a-2 dispatch_mode (`02-data-model.md` §2.5). A full post-update
+    # 12a-2 dispatch_mode (`02-data-model.md` §2.4). A full post-update
     # state is staged when any key changes; backends overwrite the
     # persisted record atomically with the rest of the commit. ``None``
     # means "no dispatch_mode write this commit" — callers that only
     # update task / event state leave this field at its default.
     dispatch_mode: dict[str, str] | None = None
+    # 12a-3 experiment lifecycle state (`02-data-model.md` §2.5).
+    # ``None`` means "no experiment-state write this commit"; a literal
+    # ``"running"`` / ``"terminated"`` stages the field for atomic
+    # commit alongside ``experiment.terminated`` (or any future
+    # lifecycle event).
+    experiment_state: str | None = None
 
 
 def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
@@ -330,12 +348,24 @@ class _StoreBase:
     def _get_dispatch_mode(self) -> dict[str, str]:
         """Return the persisted dispatch_mode (full state, every normative key).
 
-        Backends MUST return a dict whose keys cover the four normative
-        decision-types (``ideation_creation`` / ``execution_dispatch``
+        Backends MUST return a dict whose keys cover the normative
+        decision-types (``termination`` from 12a-3 plus the four
+        operational keys ``ideation_creation`` / ``execution_dispatch``
         / ``evaluation_dispatch`` / ``integration``); unknown keys
         previously written are preserved verbatim per
         [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §2.5.
+        §2.4.
+        """
+        raise NotImplementedError
+
+    def _get_experiment(self) -> Experiment:
+        """Return the experiment runtime object (state + created_at).
+
+        Backends MUST persist these fields across restart per
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5. On a freshly-initialized experiment, ``state`` is
+        ``"running"`` and ``created_at`` is the timestamp the row was
+        first inserted.
         """
         raise NotImplementedError
 
@@ -491,6 +521,7 @@ class _StoreBase:
                 f"does not match store experiment {self._experiment_id!r}"
             )
         with self._atomic_operation():
+            self._require_running()
             self._require_no_task(task.task_id)
             tx = _Tx()
             tx.tasks[task.task_id] = _deep(task)
@@ -502,6 +533,7 @@ class _StoreBase:
 
     def _insert_execution_task(self, task: ExecutionTask) -> ExecutionTask:
         with self._atomic_operation():
+            self._require_running()
             self._require_no_task(task.task_id)
             idea_id = task.payload.idea_id
             idea = self._get_idea(idea_id)
@@ -513,23 +545,37 @@ class _StoreBase:
                     f"to dispatch, not {idea.state!r}"
                 )
             self._require_no_live_execution_task_for_idea(idea_id)
+            # 12a-3 intended_executor flow-through (`03-roles.md` §6.2
+            # decision-type 2): when the caller does not supply an
+            # explicit task.target on the create payload, the resulting
+            # task inherits the idea's routing hint. An explicit
+            # task.target wins over the idea's hint (admin override).
+            insert_task = task
+            if task.target is None and idea.intended_executor is not None:
+                insert_task = _validated_update(
+                    task, target=idea.intended_executor
+                )
             tx = _Tx()
-            tx.tasks[task.task_id] = _deep(task)
+            tx.tasks[insert_task.task_id] = _deep(insert_task)
             tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "execution"})
+                self._event(
+                    "task.created",
+                    {"task_id": insert_task.task_id, "kind": "execution"},
+                )
             )
             tx.events.append(
                 self._event(
                     "idea.dispatched",
-                    {"idea_id": idea_id, "task_id": task.task_id},
+                    {"idea_id": idea_id, "task_id": insert_task.task_id},
                 )
             )
             self._apply_commit(tx)
-            return _deep(task)
+            return _deep(insert_task)
 
     def _insert_evaluation_task(self, task: EvaluationTask) -> EvaluationTask:
         with self._atomic_operation():
+            self._require_running()
             self._require_no_task(task.task_id)
             variant_id = task.payload.variant_id
             variant = self._get_variant(variant_id)
@@ -556,6 +602,7 @@ class _StoreBase:
     def create_ideation_task(self, task_id: str) -> IdeationTask:
         """Create an ``ideation`` task. Emits ``task.created`` atomically."""
         with self._atomic_operation():
+            self._require_running()
             self._require_no_task(task_id)
             now = self._ts()
             task = IdeationTask(
@@ -572,7 +619,13 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
+    def create_execution_task(
+        self,
+        task_id: str,
+        idea_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> ExecutionTask:
         """Create an ``execution`` task; composite-commits ``idea.dispatched``.
 
         Per ``05-event-protocol.md`` §2.2: creating the execution task
@@ -586,8 +639,16 @@ class _StoreBase:
         since the first create transitions the idea to ``dispatched``,
         but the explicit live-task check makes the §6.4 invariant
         unambiguous in code).
+
+        12a-3: when ``target`` is supplied, the resulting task uses it
+        verbatim (admin override path per ``03-roles.md`` §6.5). When
+        ``target`` is ``None``, the task inherits
+        ``idea.intended_executor`` (the auto-orchestrator path per
+        ``03-roles.md`` §6.2 decision-type 2). When both are unset
+        the task is open to any registered executor-class worker.
         """
         with self._atomic_operation():
+            self._require_running()
             self._require_no_task(task_id)
             idea = self._get_idea(idea_id)
             if idea is None:
@@ -599,14 +660,25 @@ class _StoreBase:
                 )
             self._require_no_live_execution_task_for_idea(idea_id)
             now = self._ts()
-            task = ExecutionTask(
-                task_id=task_id,
-                kind="execution",
-                state="pending",
-                payload=ExecutionPayload(idea_id=idea_id),
-                created_at=now,
-                updated_at=now,
+            # Explicit caller-supplied target wins; otherwise inherit
+            # `idea.intended_executor` per the 12a-3 §6.2 decision-type 2
+            # flow-through rule. The `NotNone` validator on
+            # `_TaskBase.target` rejects explicit None — keep the kwarg
+            # absent when no target applies.
+            effective_target = (
+                target if target is not None else idea.intended_executor
             )
+            task_kwargs: dict[str, Any] = {
+                "task_id": task_id,
+                "kind": "execution",
+                "state": "pending",
+                "payload": ExecutionPayload(idea_id=idea_id),
+                "created_at": now,
+                "updated_at": now,
+            }
+            if effective_target is not None:
+                task_kwargs["target"] = effective_target
+            task = ExecutionTask(**task_kwargs)
             tx = _Tx()
             tx.tasks[task_id] = task
             tx.ideas[idea_id] = _validated_update(idea, state="dispatched")
@@ -632,6 +704,7 @@ class _StoreBase:
         (terminal states are not live).
         """
         with self._atomic_operation():
+            self._require_running()
             self._require_no_task(task_id)
             variant = self._get_variant(variant_id)
             if variant is None:
@@ -696,6 +769,11 @@ class _StoreBase:
         responsibility (§3.3).
         """
         with self._atomic_operation():
+            # §3.5 step 0 (12a-3): terminated-experiment guard runs
+            # before the state precondition so a `pending` task in a
+            # terminated experiment is unreachable, not "claim
+            # rejected because not pending".
+            self._require_running()
             task = self._require_task(task_id)
             if task.state != "pending":
                 raise IllegalTransition(
@@ -1163,13 +1241,160 @@ class _StoreBase:
     def read_dispatch_mode(self) -> DispatchMode:
         """Return the experiment's current dispatch_mode (every key).
 
-        Defaults to all-``auto`` on a freshly-initialized experiment
-        ([`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §2.5). Unknown keys persisted by older writes are returned via
+        Defaults to all-``auto`` on the four operational keys and
+        ``"manual"`` on ``termination`` for a freshly-initialized
+        experiment ([`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.4). Unknown keys persisted by older writes are returned via
         the model's ``extra="allow"`` carry-through.
         """
         with self._atomic_operation():
             return DispatchMode.model_validate(self._get_dispatch_mode())
+
+    def read_experiment(self) -> Experiment:
+        """Return the experiment runtime object (state + created_at).
+
+        Per [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5. The runtime object is distinct from the declarative
+        ``experiment-config``; it carries only observed runtime state.
+        """
+        with self._atomic_operation():
+            return _deep(self._get_experiment())
+
+    def read_experiment_state(self) -> ExperimentState:
+        """Return the experiment's current lifecycle state.
+
+        Defaults to ``"running"`` on a freshly-initialized experiment;
+        becomes ``"terminated"`` after :meth:`terminate_experiment` or
+        the policy-driven termination branch commits the transition.
+        """
+        with self._atomic_operation():
+            return self._get_experiment().state
+
+    def update_experiment_state(self, new_state: ExperimentState) -> Experiment:
+        """Internal primitive: atomically update the experiment lifecycle state.
+
+        Not a public wire op in v0 (per
+        [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §8.3). Used by :meth:`terminate_experiment` and the
+        orchestrator's policy-driven termination branch
+        ([`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md)
+        §6.2 decision-type 0). v0 defines exactly one legal transition
+        (``"running" → "terminated"``); other values raise
+        ``IllegalTransition``.
+
+        This method does NOT emit ``experiment.terminated`` on its own
+        — composite commit with the appropriate event is the caller's
+        responsibility. Use :meth:`terminate_experiment` for the
+        normal public-op shape.
+        """
+        if new_state not in ("running", "terminated"):
+            raise InvalidPrecondition(
+                f"experiment.state value {new_state!r} is not "
+                "'running' or 'terminated'"
+            )
+        with self._atomic_operation():
+            current = self._get_experiment()
+            if current.state == new_state:
+                return _deep(current)
+            if not (current.state == "running" and new_state == "terminated"):
+                raise IllegalTransition(
+                    f"cannot transition experiment state "
+                    f"{current.state!r} → {new_state!r}"
+                )
+            tx = _Tx()
+            tx.experiment_state = new_state
+            self._apply_commit(tx)
+            return _validated_update(current, state=new_state)
+
+    def terminate_experiment(
+        self, *, reason: str, terminated_by: str
+    ) -> Experiment:
+        """Atomically commit the ``running → terminated`` lifecycle transition.
+
+        Per [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §8.1: the state field update and the ``experiment.terminated``
+        event are a single transaction. Idempotent on the terminated
+        state — a second call returns success without committing a
+        second transition and without appending a second event; the
+        winning caller's ``reason`` (the first commit) is the one
+        recorded.
+
+        Authority enforcement (caller in ``admins``) is the binding's
+        responsibility; the Store trusts ``terminated_by`` as data.
+        Composite-commits the state update and the event per
+        [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §2.
+        """
+        self._validate_registry_id(terminated_by, kind="actor")
+        with self._atomic_operation():
+            current = self._get_experiment()
+            if current.state == "terminated":
+                # §8.1 idempotency: success, no second event, prior
+                # reason preserved.
+                return _deep(current)
+            tx = _Tx()
+            tx.experiment_state = "terminated"
+            tx.events.append(
+                self._event(
+                    "experiment.terminated",
+                    {"reason": reason, "terminated_by": terminated_by},
+                )
+            )
+            self._apply_commit(tx)
+            return _validated_update(current, state="terminated")
+
+    def emit_policy_error(
+        self,
+        *,
+        policy_kind: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Append an ``experiment.policy_error`` event (12a-3).
+
+        Per [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md)
+        §6.2 decision-type 0 fault-tolerance: when an orchestrator
+        policy callable raises, the orchestrator MUST emit a
+        registered ``experiment.policy_error`` event so operators see
+        the failure in the admin event log. The event is registered
+        but EXEMPT from the §2 transactional invariant (no
+        protocol-owned state mutation pairs with it).
+        """
+        if not policy_kind:
+            raise InvalidPrecondition("policy_kind MUST be non-empty")
+        if not error_type:
+            raise InvalidPrecondition("error_type MUST be non-empty")
+        with self._atomic_operation():
+            tx = _Tx()
+            tx.events.append(
+                self._event(
+                    "experiment.policy_error",
+                    {
+                        "policy_kind": policy_kind,
+                        "error_type": error_type,
+                        "error_message": error_message,
+                    },
+                )
+            )
+            self._apply_commit(tx)
+
+    def _require_running(self) -> None:
+        """Raise :class:`IllegalTransition` if the experiment is terminated.
+
+        Called from every ``create_task`` entry point and from
+        :meth:`claim` to enforce the terminated-experiment guard per
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5 and [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §2 / §3.5 step 0. Already-claimed tasks may still complete;
+        the guard applies only to new claim and create-task attempts.
+        """
+        state = self._get_experiment().state
+        if state != "running":
+            raise IllegalTransition(
+                f"experiment {self._experiment_id!r} is "
+                f"{state!r}; new tasks and claims are forbidden "
+                "(02-data-model.md §2.5)"
+            )
 
     def update_dispatch_mode(
         self,

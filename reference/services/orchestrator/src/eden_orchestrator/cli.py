@@ -6,7 +6,7 @@ import argparse
 import importlib
 import re
 
-from eden_dispatch import IdeationPolicy
+from eden_dispatch import IdeationPolicy, TerminationPolicy
 from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
     StopFlag,
@@ -129,6 +129,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--termination-policy",
+        default="eden_dispatch.termination:default_termination_policy",
+        help=(
+            "Importable ``module:callable`` whose call returns a "
+            "``TerminationPolicy`` "
+            "(``Callable[[ExperimentStateView], TerminationDecision]``). "
+            "Consulted once per orchestrator iteration when "
+            "``dispatch_mode.termination == 'auto'`` "
+            "(03-roles.md §6.2 decision-type 0). Default: "
+            "``eden_dispatch.termination:default_termination_policy`` "
+            "(``never_terminate``; preserves pre-12a-3 behavior). "
+            "Reference policies: ``max_variants_policy``, "
+            "``max_wall_time_policy``, ``convergence_window_policy``, "
+            "``target_condition_policy`` — see the module docstring."
+        ),
+    )
+    parser.add_argument(
         "--ideation-task-prefix",
         default="ideation-",
         help="Prefix for policy-created ideation task IDs (default: 'ideation-').",
@@ -185,22 +202,57 @@ def _resolve_ideation_policy(spec: str) -> IdeationPolicy:
     return maintain_pending(target=5, max_total=100)`` and pass
     ``--ideation-policy my_policies:my_policy``.
     """
+    return _resolve_factory_callable(
+        spec, flag="--ideation-policy"
+    )
+
+
+def _resolve_termination_policy(spec: str) -> TerminationPolicy:
+    """Import ``module:callable`` and call it to get a :data:`TerminationPolicy`.
+
+    Same shape as :func:`_resolve_ideation_policy`: the CLI flag
+    points at a no-arg factory that returns the configured policy.
+    Deployments that want one of the four reference policies wrap them
+    in a small factory module:
+
+        # my_term.py
+        from datetime import timedelta
+        from eden_dispatch.termination import max_wall_time_policy
+
+        def two_hour_deadline():
+            return max_wall_time_policy(timedelta(hours=2))
+
+    and pass ``--termination-policy my_term:two_hour_deadline``.
+    """
+    return _resolve_factory_callable(
+        spec, flag="--termination-policy"
+    )
+
+
+def _resolve_factory_callable(spec: str, *, flag: str):  # noqa: ANN202
+    """Shared ``module:callable`` factory-call helper.
+
+    Used by both ``--ideation-policy`` and ``--termination-policy``
+    so the error-message shape and import flow stay in lockstep. The
+    return type is intentionally untyped at the helper layer — the
+    two callers narrow with their own annotations.
+    """
     if ":" not in spec:
         raise SystemExit(
-            f"--ideation-policy {spec!r}: expected 'module:callable' format"
+            f"{flag} {spec!r}: expected 'module:callable' format"
         )
     module_name, callable_name = spec.split(":", 1)
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         raise SystemExit(
-            f"--ideation-policy: cannot import module {module_name!r}: {exc}"
+            f"{flag}: cannot import module {module_name!r}: {exc}"
         ) from exc
     try:
         factory = getattr(module, callable_name)
     except AttributeError as exc:
         raise SystemExit(
-            f"--ideation-policy: module {module_name!r} has no attribute "
+            f"{flag}: module {module_name!r} has no attribute "
             f"{callable_name!r}"
         ) from exc
     return factory()
@@ -266,10 +318,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ideation_policy = _resolve_ideation_policy(args.ideation_policy)
+    termination_policy = _resolve_termination_policy(args.termination_policy)
     admin_token = resolve_admin_token(args)
     log.info(
         "starting",
         ideation_policy=args.ideation_policy,
+        termination_policy=args.termination_policy,
         repo=args.repo_path,
         worker_id=args.worker_id,
     )
@@ -324,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
             store=client,
             integrator=integrator,
             ideation_policy=ideation_policy,
+            termination_policy=termination_policy,
+            terminated_by=args.worker_id,
             ideation_task_prefix=args.ideation_task_prefix,
             execution_task_prefix=args.execution_task_prefix,
             evaluation_task_prefix=args.evaluation_task_prefix,

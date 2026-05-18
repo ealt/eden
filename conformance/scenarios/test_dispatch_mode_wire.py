@@ -20,7 +20,13 @@ CONFORMANCE_GROUP = "Dispatch mode"
 
 
 def test_default_state_is_all_auto(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §2.5 — every key defaults to "auto" on init."""
+    """spec/v0/02-data-model.md §2.4 — the four operational keys default to "auto".
+
+    12a-3 added a fifth key (``termination``) with a default of
+    ``"manual"`` for backward compatibility; this test asserts the
+    four operational keys still default to ``"auto"`` on a fresh
+    experiment.
+    """
     mode = _seed.read_dispatch_mode(wire_client)
     assert mode["ideation_creation"] == "auto"
     assert mode["execution_dispatch"] == "auto"
@@ -119,9 +125,9 @@ def test_invalid_value_rejected(wire_client: WireClient) -> None:
 
 
 def test_unknown_top_level_key_tolerated(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §2.5 — unknown keys tolerated per §2.5.
+    """spec/v0/02-data-model.md §2.4 — unknown keys tolerated per §2.4.
 
-    §2.5: "Unknown keys are tolerated and ignored by conforming
+    §2.4: "Unknown keys are tolerated and ignored by conforming
     implementations." The MUST-level invariant is that an unknown key
     doesn't cause a 400 — the implementation MUST accept the patch
     and apply any recognized keys alongside.

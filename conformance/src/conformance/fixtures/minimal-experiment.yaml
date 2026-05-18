@@ -2,8 +2,6 @@ parallel_variants: 1
 ideation_command: "true"
 execution_command: "true"
 evaluation_command: "true"
-max_variants: 20
-max_wall_time: "10m"
 evaluation_schema:
   score: real
   retries: integer

@@ -1,10 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN wire — update dispatch_mode request",
-  "description": "Partial dispatch_mode object for PATCH /v0/experiments/{E}/dispatch_mode (07-wire-protocol.md §2.8). Admin-group-gated. Any subset of the four normative keys; unknown keys are tolerated per 02-data-model.md §2.5. The server stamps `updated_by` from the authenticated principal.",
+  "description": "Partial dispatch_mode object for PATCH /v0/experiments/{E}/dispatch_mode (07-wire-protocol.md §2.8). Admin-group-gated. Any subset of the five normative keys; unknown keys are tolerated per 02-data-model.md §2.4. The server stamps `updated_by` from the authenticated principal.",
   "type": "object",
   "additionalProperties": {"type": "string", "enum": ["auto", "manual"]},
   "properties": {
+    "termination": {"type": "string", "enum": ["auto", "manual"]},
     "ideation_creation": {"type": "string", "enum": ["auto", "manual"]},
     "execution_dispatch": {"type": "string", "enum": ["auto", "manual"]},
     "evaluation_dispatch": {"type": "string", "enum": ["auto", "manual"]},

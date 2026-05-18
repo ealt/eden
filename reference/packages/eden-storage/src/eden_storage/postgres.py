@@ -35,6 +35,7 @@ import psycopg
 from eden_contracts import (
     EvaluationSchema,
     Event,
+    Experiment,
     Group,
     Idea,
     Task,
@@ -44,7 +45,12 @@ from eden_contracts import (
 )
 
 from . import _postgres_schema
-from ._base import _DEFAULT_DISPATCH_MODE, _StoreBase, _Tx
+from ._base import (
+    _DEFAULT_DISPATCH_MODE,
+    _DEFAULT_EXPERIMENT_STATE,
+    _StoreBase,
+    _Tx,
+)
 from .errors import InvalidPrecondition
 from .submissions import (
     EvaluationSubmission,
@@ -494,10 +500,20 @@ class PostgresStore(_StoreBase):
             )
             row = cur.fetchone()
             if row is None:
+                # 12a-3: stamp `created_at` at row creation so a
+                # subsequent `read_experiment` returns the real
+                # experiment-creation timestamp rather than the v5
+                # migration's 1970 sentinel.
+                created_at = self._ts()
                 cur.execute(
-                    "INSERT INTO experiment(experiment_id, evaluation_schema) "
-                    "VALUES (%s, %s)",
-                    (experiment_id, schema_json),
+                    "INSERT INTO experiment(experiment_id, evaluation_schema, "
+                    "state, created_at) VALUES (%s, %s, %s, %s)",
+                    (
+                        experiment_id,
+                        schema_json,
+                        _DEFAULT_EXPERIMENT_STATE,
+                        created_at,
+                    ),
                 )
                 return
             stored_id, stored_schema = row
@@ -728,6 +744,23 @@ class PostgresStore(_StoreBase):
             return dict(_DEFAULT_DISPATCH_MODE)
         return dict(json.loads(row[0]))
 
+    def _get_experiment(self) -> Experiment:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT state, created_at FROM experiment WHERE experiment_id = %s",
+                (self._experiment_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"experiment {self._experiment_id!r} row missing from store"
+            )
+        return Experiment(
+            experiment_id=self._experiment_id,
+            state=row[0],
+            created_at=row[1],
+        )
+
     # ------------------------------------------------------------------
     # Commit
     # ------------------------------------------------------------------
@@ -776,6 +809,12 @@ class PostgresStore(_StoreBase):
                         json.dumps(tx.dispatch_mode, sort_keys=True),
                         self._experiment_id,
                     ),
+                )
+        if tx.experiment_state is not None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE experiment SET state = %s WHERE experiment_id = %s",
+                    (tx.experiment_state, self._experiment_id),
                 )
         for event in tx.events:
             self._insert_event(event)

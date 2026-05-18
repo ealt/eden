@@ -9,7 +9,8 @@ Exports:
   call's outcome cannot be determined after a transport-indeterminate
   failure (``IndeterminateIntegration`` for ``integrate_variant``;
   ``IndeterminateReassign`` for ``reassign_task``;
-  ``IndeterminateDispatchModeUpdate`` for ``update_dispatch_mode``).
+  ``IndeterminateDispatchModeUpdate`` for ``update_dispatch_mode``;
+  ``IndeterminateTermination`` for ``terminate_experiment``).
 - ``Principal`` / ``parse_bearer`` / ``authenticate`` from the §13
   auth module.
 """
@@ -21,6 +22,7 @@ from .client import (
     IndeterminateDispatchModeUpdate,
     IndeterminateIntegration,
     IndeterminateReassign,
+    IndeterminateTermination,
     StoreClient,
 )
 from .errors import Forbidden, Unauthorized, WireError, WireReferenceError
@@ -31,6 +33,7 @@ __all__ = [
     "IndeterminateDispatchModeUpdate",
     "IndeterminateIntegration",
     "IndeterminateReassign",
+    "IndeterminateTermination",
     "Principal",
     "StoreClient",
     "Unauthorized",

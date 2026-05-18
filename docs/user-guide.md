@@ -52,14 +52,13 @@ Every experiment is driven by a YAML config validated against [`spec/v0/schemas/
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `parallel_variants` | integer ≥ 1 | yes | Max variants in flight simultaneously. |
-| `max_variants` | integer ≥ 1 | yes | Hard ceiling on variants attempted. |
-| `max_wall_time` | string `^[1-9][0-9]*[smhd]$` | yes | Hard wall-time ceiling, e.g. `10m`, `4h`. |
 | `evaluation_schema` | map | yes | Field name → one of `"integer"`, `"real"`, `"text"`. Reserved names (`variant_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at`) are forbidden. |
 | `objective.expr` | string | yes | Scalar expression over `evaluation_schema` fields. |
 | `objective.direction` | `"maximize"` \| `"minimize"` | yes | |
-| `convergence_window` | integer ≥ 1 | no | Terminate if the objective hasn't improved in this many variants. |
-| `target_condition` | string | no | Termination predicate over evaluation. |
+| `dispatch_mode.<key>` | `"auto"` \| `"manual"` | no | Per-key gate on the orchestrator's five decision types (`termination` defaults to `"manual"`; the four operational keys default to `"auto"`). See [`02-data-model.md`](../spec/v0/02-data-model.md) §2.4. |
 | `ideation_command` / `execution_command` / `evaluation_command` | string | no (impl-specific) | Shell commands to invoke for [subprocess mode](#3-worker-host-modes). Travel under additional-properties; the spec defers role-bindings to a future chapter. |
+
+The pre-12a-3 termination fields (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) are **removed** from the normative schema. Termination is now a deployment-supplied policy callable per [`03-roles.md`](../spec/v0/03-roles.md) §6.2 decision-type 0 — see [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md) for the operator playbook. Configs that still carry the old fields validate (they round-trip under the schema's permissive additional-properties posture) but the orchestrator ignores them.
 
 Concrete example — the repo's fixture at [`tests/fixtures/experiment/.eden/config.yaml`](../tests/fixtures/experiment/.eden/config.yaml):
 
@@ -68,8 +67,6 @@ parallel_variants: 1
 evaluation_command: "python3 ${EDEN_EXPERIMENT_DIR}/evaluation.py"
 execution_command: "python3 ${EDEN_EXPERIMENT_DIR}/execution.py"
 ideation_command: "python3 ${EDEN_EXPERIMENT_DIR}/ideation.py"
-max_variants: 20
-max_wall_time: "10m"
 evaluation_schema:
   score: real
 objective:

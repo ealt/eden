@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin / ideas{% endblock %}
+{% block main %}
+<h1>ideas</h1>
+<p><a href="/admin/">&laquo; admin dashboard</a></p>
+<form method="get" action="/admin/ideas/">
+    <label>state
+        <select name="state">
+            <option value="*" {% if state == "*" %}selected{% endif %}>all</option>
+            {% for s in idea_states %}
+                <option value="{{ s }}" {% if state == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <button type="submit">filter</button>
+</form>
+{% if not ideas %}
+    <p><em>no ideas match.</em></p>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            <th>idea_id</th>
+            <th>slug</th>
+            <th>state</th>
+            <th>priority</th>
+            <th>intended_executor</th>
+            <th>created_at</th>
+            <th>actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for p in ideas %}
+        <tr>
+            <td><code>{{ p.idea_id }}</code></td>
+            <td><code>{{ p.slug }}</code></td>
+            <td>{{ p.state }}</td>
+            <td>{{ p.priority }}</td>
+            <td>
+                {% if p.intended_executor %}
+                    <code>{{ p.intended_executor.kind }}:{{ p.intended_executor.id }}</code>
+                {% else %}
+                    <em>none</em>
+                {% endif %}
+            </td>
+            <td>{{ p.created_at }}</td>
+            <td><a href="/admin/ideas/{{ p.idea_id }}/">detail &raquo;</a></td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

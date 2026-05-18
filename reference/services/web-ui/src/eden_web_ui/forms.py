@@ -13,11 +13,16 @@ field-by-field so forms re-render with the user's input intact.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-from eden_contracts import EvaluationSchema
+from eden_contracts import EvaluationSchema, TaskTarget
+
+# Registry-id grammar per spec/v0/02-data-model.md §6.1; reused for
+# the 12a-3 `intended_executor` field's worker_id / group_id slot.
+_REGISTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -27,12 +32,20 @@ class IdeaDraft:
     The canonical ``Idea`` model is constructed by the route
     handler from this draft plus the server-generated
     ``idea_id`` and ``artifacts_uri`` from the artifact writer.
+
+    The optional ``intended_executor`` is a 12a-3 routing hint: when
+    set, the orchestrator's ``execution_dispatch`` decision copies it
+    to the resulting execution task's ``target`` field per
+    ``03-roles.md`` §6.2 decision-type 2. ``None`` means "no hint"
+    (the resulting execution task is open to any registered
+    executor-class worker).
     """
 
     slug: str
     priority: float
     parent_commits: tuple[str, ...]
     content: str
+    intended_executor: TaskTarget | None = None
 
 
 @dataclass
@@ -59,17 +72,29 @@ def parse_idea_rows(
     priorities: list[str],
     parent_commits_csv: list[str],
     contents: list[str],
+    intended_executor_kinds: list[str] | None = None,
+    intended_executor_ids: list[str] | None = None,
 ) -> tuple[list[IdeaDraft], FormErrors]:
     """Parse parallel-list form input into validated drafts + accumulated errors.
 
     Each row is one idea. Fields are validated independently so a
     bad row 1 still yields an error report covering rows 2..N.
+
+    12a-3: ``intended_executor_kinds`` (``"none"`` / ``"worker"`` /
+    ``"group"``) + ``intended_executor_ids`` are an optional parallel
+    list of routing hints per row. ``None`` (or ``"none"`` in the
+    kinds list) yields a draft with no hint; ``"worker"`` /
+    ``"group"`` with a registry-id-grammar-valid id yields a tagged
+    ``TaskTarget``.
     """
     errors = FormErrors()
     n = max(len(slugs), len(priorities), len(parent_commits_csv), len(contents))
     if n == 0:
         errors.add_overall("at least one idea row is required")
         return [], errors
+
+    kinds = intended_executor_kinds or []
+    ids = intended_executor_ids or []
 
     drafts: list[IdeaDraft] = []
     parsed_count = 0
@@ -111,6 +136,41 @@ def parse_idea_rows(
         if not content:
             errors.add(i, "content", "content markdown is required")
 
+        intended_executor: TaskTarget | None = None
+        kind_raw = (kinds[i] if i < len(kinds) else "").strip().lower() or "none"
+        id_raw = (ids[i] if i < len(ids) else "").strip()
+        if kind_raw not in ("none", "worker", "group"):
+            errors.add(
+                i,
+                "intended_executor",
+                "intended_executor kind must be 'none', 'worker', or 'group'",
+            )
+        elif kind_raw != "none":
+            if not id_raw:
+                errors.add(
+                    i,
+                    "intended_executor",
+                    f"intended_executor id is required for kind={kind_raw!r}",
+                )
+            elif not _REGISTRY_ID_PATTERN.fullmatch(id_raw):
+                errors.add(
+                    i,
+                    "intended_executor",
+                    "intended_executor id must match the §6.1 registry-id grammar",
+                )
+            else:
+                intended_executor = TaskTarget(kind=kind_raw, id=id_raw)
+        elif id_raw:
+            # Operator typed an id but selected kind=none — surface
+            # this as an error rather than silently dropping the id,
+            # since the most likely cause is a mis-click.
+            errors.add(
+                i,
+                "intended_executor",
+                "intended_executor id supplied but kind is 'none'; "
+                "pick a kind or clear the id",
+            )
+
         parsed_count += 1
         if not errors.by_row.get(i):
             drafts.append(
@@ -119,6 +179,7 @@ def parse_idea_rows(
                     priority=priority,
                     parent_commits=parents,
                     content=content,
+                    intended_executor=intended_executor,
                 )
             )
 

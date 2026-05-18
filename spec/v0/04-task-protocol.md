@@ -52,11 +52,13 @@ A task enters the system in the `pending` state. A conforming orchestrator MUST:
 - Populate `task_id`, `kind`, `state = "pending"`, `payload`, `created_at`, `updated_at` ([`02-data-model.md`](02-data-model.md) §3.1).
 - Ensure the payload satisfies the dispatch preconditions for the task's `kind`:
   - `ideation` — `payload.experiment_id` names an experiment the ideator is authorized to work on.
-  - `execution` — `payload.idea_id` names an idea with `state == "ready"` at creation time. Creating the execution task and transitioning the idea from `"ready"` to `"dispatched"` MUST be atomic; an idea's `"dispatched"` state signals that exactly one execution task has been created for it.
+  - `execution` — `payload.idea_id` names an idea with `state == "ready"` at creation time. Creating the execution task and transitioning the idea from `"ready"` to `"dispatched"` MUST be atomic; an idea's `"dispatched"` state signals that exactly one execution task has been created for it. The created task's top-level `target` field ([`02-data-model.md`](02-data-model.md) §3.5) MUST be populated from the referenced idea's `intended_executor` ([`02-data-model.md`](02-data-model.md) §5.1) when the create operation does not supply an explicit `target` override; an explicit `target` on the create request wins over `idea.intended_executor`.
   - `evaluation` — `payload.variant_id` names a variant with `status == "starting"` and `commit_sha` set at creation time.
 - Emit the corresponding `task.created` event ( [`05-event-protocol.md`](05-event-protocol.md)) atomically with the task insert.
 
 A worker MAY rely on these preconditions ([`03-roles.md`](03-roles.md) §1.1). A task created without them is a protocol violation by the orchestrator.
+
+**Terminated-experiment guard.** When the experiment's `state == "terminated"` ([`02-data-model.md`](02-data-model.md) §2.5), every `create_task` call MUST be rejected with `eden://error/illegal-transition` (HTTP 409); the Store MUST NOT insert the task or emit `task.created`. This applies to all three kinds and to both orchestrator-driven and operator-driven calls. The guard is mechanical: a deployment running concurrent orchestrators that race a terminate transition relies on this guard to converge on "no new work after termination" without inter-orchestrator coordination.
 
 ## 3. Claim
 
@@ -86,6 +88,7 @@ A conforming task store MUST reject a claim attempt against a task whose `state`
 
 In addition to the §3.4 state precondition, a `claim(task_id, worker_id)` operation MUST satisfy the task's `Task.target` constraint ([`02-data-model.md`](02-data-model.md) §3.5). The store MUST evaluate the following preconditions in order, atomically with the claim write:
 
+0. The experiment's `state == "running"` ([`02-data-model.md`](02-data-model.md) §2.5). A claim against a `pending` task whose experiment has been terminated MUST be rejected with `IllegalTransition` (wire mapping: 409 `eden://error/illegal-transition`); the pending task remains in storage but is unreachable.
 1. The task is in state `pending` (§3.4).
 2. `worker_id` names a worker registered for the experiment ([`02-data-model.md`](02-data-model.md) §6). A claim by a non-registered `worker_id` MUST be rejected with `WorkerNotRegistered`.
 3. `worker_id` satisfies `Task.target`:
@@ -96,7 +99,9 @@ In addition to the §3.4 state precondition, a `claim(task_id, worker_id)` opera
    A claim that fails this step MUST be rejected with `WorkerNotEligible`.
 4. The atomic claim-write per §3.1.
 
-`WorkerNotRegistered` and `WorkerNotEligible` are typed errors at the Store layer ([§12](#12-worker-eligibility-errors)). The binding maps them to HTTP statuses per [`07-wire-protocol.md`](07-wire-protocol.md).
+Already-claimed tasks at the moment of termination MAY still be submitted, accepted, or rejected normally — the terminated-experiment guard applies only to **new** claim attempts. This is what [`02-data-model.md`](02-data-model.md) §2.5's drain semantics depend on: termination stops new work; it does not abandon committed work in flight.
+
+`WorkerNotRegistered` and `WorkerNotEligible` are typed errors at the Store layer ([§13](#13-worker-eligibility-errors)). The binding maps them to HTTP statuses per [`07-wire-protocol.md`](07-wire-protocol.md).
 
 ## 4. Submit
 
@@ -219,11 +224,11 @@ The claimed-task case (`reclaim + target update`) means a worker holding the pri
 
 ## 7. Dispatch mode
 
-The orchestrator role contract ([`03-roles.md`](03-roles.md) §6) is gated per-decision-type by the experiment's `dispatch_mode` field ([`02-data-model.md`](02-data-model.md) §2.5). This section defines the task-store operation that updates that field.
+The orchestrator role contract ([`03-roles.md`](03-roles.md) §6) is gated per-decision-type by the experiment's `dispatch_mode` field ([`02-data-model.md`](02-data-model.md) §2.4). This section defines the task-store operation that updates that field.
 
 ### 7.1 The `update_dispatch_mode` operation
 
-`update_dispatch_mode(experiment_id, patch)` accepts a partial `dispatch_mode` object (any subset of the four keys defined in [`02-data-model.md`](02-data-model.md) §2.5) and atomically merges it into the experiment's stored `dispatch_mode`. Unspecified keys are unchanged. Each value in the patch MUST be either `"auto"` or `"manual"`; an unrecognized value MUST be rejected (`BadRequest`; wire mapping: 400 `eden://error/bad-request`).
+`update_dispatch_mode(experiment_id, patch)` accepts a partial `dispatch_mode` object (any subset of the four keys defined in [`02-data-model.md`](02-data-model.md) §2.4) and atomically merges it into the experiment's stored `dispatch_mode`. Unspecified keys are unchanged. Each value in the patch MUST be either `"auto"` or `"manual"`; an unrecognized value MUST be rejected (`BadRequest`; wire mapping: 400 `eden://error/bad-request`).
 
 A successful update emits exactly one `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) whose payload records the **resulting** `dispatch_mode` object plus a `changed` object listing the keys whose values flipped. A no-op patch (every supplied key already matches the stored value) MUST still be accepted — it MAY emit an event whose `changed` is empty, or MAY skip the event entirely (implementation-defined; the §1.3 atomicity requirement applies only to state changes, and a no-op is not a state change).
 
@@ -237,21 +242,43 @@ Flipping a `dispatch_mode.<decision>` key from `"auto"` to `"manual"` does **not
 
 The `experiment.dispatch_mode_changed` event lets subscribers (UI, dashboards, audit) observe the change without polling. Multi-instance orchestrator deployments observe the event through their own event-log polling; the protocol does not require push-based reconfiguration.
 
-## 8. Ordering and concurrency
+## 8. Experiment lifecycle ops
 
-### 8.1 Per-task serialization
+The experiment lifecycle state ([`02-data-model.md`](02-data-model.md) §2.5) is mutated by exactly one public task-store operation in v0.
+
+### 8.1 The `terminate_experiment` operation
+
+`terminate_experiment(experiment_id, reason)` atomically transitions the experiment's `state` from `"running"` to `"terminated"` and appends an `experiment.terminated` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) carrying the supplied `reason: string`. The state update and the event append MUST commit in a single transaction: observers MUST NOT see one without the other.
+
+The operation is idempotent on the terminated state. A `terminate_experiment` call against an experiment whose state is already `"terminated"` MUST succeed without committing a second state transition and MUST NOT append a second `experiment.terminated` event. The winning caller's `reason` is the one recorded; subsequent callers' `reason` strings are discarded.
+
+There is no `terminated → running` transition in v0. The protocol does not define a `resume_experiment` op; reactivation of a terminated experiment is reserved for a future spec lineage.
+
+### 8.2 Authority
+
+`terminate_experiment` requires the caller to be in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). The wire binding for the operation is [`07-wire-protocol.md`](07-wire-protocol.md) §2.9 (`POST /v0/experiments/{E}/terminate`).
+
+The op is admin-gated independently of `dispatch_mode.termination` ([`02-data-model.md`](02-data-model.md) §2.4): an operator MAY drive termination even when `dispatch_mode.termination == "auto"`. `dispatch_mode.termination` gates only the orchestrator's policy-driven path ([`03-roles.md`](03-roles.md) §6.2 decision-type 0), not the operator wire op.
+
+### 8.3 Internal `update_experiment_state` primitive
+
+The Store layer exposes `update_experiment_state(experiment_id, new_state)` as an internal primitive used by both `terminate_experiment` and the policy-driven path ([`03-roles.md`](03-roles.md) §6.2 decision-type 0). The primitive is not a public wire op in v0; its only callers are the higher-level lifecycle ops defined in this section and the orchestrator's policy-driven termination branch. The full storage-layer contract is in [`08-storage.md`](08-storage.md) §1.8.
+
+## 9. Ordering and concurrency
+
+### 9.1 Per-task serialization
 
 All transitions on a single task MUST be serialized: the observable history of a task is a total order. A conforming task store MUST NOT expose a state to readers that has not yet been accompanied by its event.
 
-### 8.2 Cross-task concurrency
+### 9.2 Cross-task concurrency
 
 Distinct tasks MAY progress concurrently. The protocol imposes no global ordering on transitions across tasks beyond the causal order preserved by the event log ([`02-data-model.md`](02-data-model.md) §4.3, [`05-event-protocol.md`](05-event-protocol.md)).
 
-### 8.3 Observability
+### 9.3 Observability
 
 A subscriber that reads the event log MUST be able to reconstruct every task's state-machine history exactly. Implementations MAY provide faster paths (direct task reads, push notifications) but MUST NOT let those paths expose states that the event log does not record.
 
-## 9. Idea and variant lifecycle interactions
+## 10. Idea and variant lifecycle interactions
 
 The task state machine is not the only lifecycle in the system. Ideas ([`02-data-model.md`](02-data-model.md) §5.1) and variants ([`02-data-model.md`](02-data-model.md) §9) have their own state fields. The task protocol interacts with these lifecycles at the following points:
 
@@ -259,7 +286,7 @@ The task state machine is not the only lifecycle in the system. Ideas ([`02-data
 - **Execution-task submission.** A successful execution-task submission requires a variant created and advanced by the executor ([`03-roles.md`](03-roles.md) §3.2). On any terminal transition of the execution task (whether `submitted → completed` or `submitted → failed`), the orchestrator MUST transition the referenced idea's `state` from `"dispatched"` to `"completed"`, atomically with the task's terminal event. The idea's `"completed"` state therefore means *"the executor's attempt on this idea has finished"*, not *"the attempt succeeded"*; the variant's `status` field records the outcome. An idea in `"dispatched"` always names a non-terminal execution task; no idea remains in `"dispatched"` after its execution task has reached a terminal state.
 - **Evaluation-task submission.** A successful evaluation-task submission populates the variant's `evaluation`, `completed_at`, and (per worker-declared status) the variant's `status`. The integrator's subsequent integration of the variant into the canonical lineage is out of this chapter's scope ([`06-integrator.md`](06-integrator.md)).
 
-## 10. Implementation latitude
+## 11. Implementation latitude
 
 The protocol leaves to implementations:
 
@@ -270,22 +297,25 @@ The protocol leaves to implementations:
 - Whether `submitted → completed` is fully synchronous with submit or a subsequent orchestrator step, as long as the observable state machine above is preserved.
 - The credential scheme used by the binding to authenticate the calling actor (§3.3); the §3 / §4 contracts only require that the binding produce a verified `worker_id` for the Store call.
 - The ideation-creation policy callable (§6 of [`03-roles.md`](03-roles.md)) and the mechanism for invoking it.
+- The termination policy callable ([`03-roles.md`](03-roles.md) §6.2 decision-type 0) and the mechanism for invoking it.
 
 What the protocol does **not** leave to implementations:
 
 - The set of states and the permitted transitions among them (§1).
 - The atomicity of claim (§3.1) and the §3.5 target-eligibility check.
-- The atomic claim-match on submit (§4.1 step 2) and its error vocabulary (§12).
+- The atomic claim-match on submit (§4.1 step 2) and its error vocabulary (§13).
 - The idempotency rule for resubmission (§4.2).
-- The orchestrator-role idempotency classes for the four decision types ([`03-roles.md`](03-roles.md) §6.4).
+- The orchestrator-role idempotency classes for the five decision types ([`03-roles.md`](03-roles.md) §6.4).
 - The atomicity of `reassign_task` on claimed tasks (§6.1) and the authority requirement (§6.2).
-- The requirement that every state change be accompanied by an atomic event (§1.3) and that the event log is the normative observability channel (§8.3).
+- The atomicity of `terminate_experiment` (§8.1) and the idempotent no-op on already-terminated experiments.
+- The requirement that every state change be accompanied by an atomic event (§1.3) and that the event log is the normative observability channel (§9.3).
+- The terminated-experiment guard on `create_task` (§2) and `claim` (§3.5).
 
-## 11. Worker registry preconditions
+## 12. Worker registry preconditions
 
 Before a worker can claim or submit, it MUST be registered in the experiment's worker registry ([`02-data-model.md`](02-data-model.md) §6). `Store.claim` enforces this at §3.5 step 2; `Store.submit` likewise rejects calls whose `worker_id` is not registered (the binding's authentication step typically catches this earlier, but the Store MUST defend against in-process callers that bypass the binding).
 
-## 12. Worker eligibility errors
+## 13. Worker eligibility errors
 
 The Store-layer typed errors raised on §3 / §4 enforcement form a closed vocabulary. Wire bindings map them to transport-specific status codes ([`07-wire-protocol.md`](07-wire-protocol.md) §7).
 

@@ -31,6 +31,7 @@ from eden_wire.models import (
     DispatchModeUpdateRequest,
     EventsResponse,
     IntegrateRequest,
+    PolicyErrorRequest,
     ReassignRequest,
     ReclaimRequest,
     RegisterGroupRequest,
@@ -368,6 +369,7 @@ class TestDispatchModeUpdateRequestParity:
 class TestDispatchModeResponseParity:
     def test_accept_default(self) -> None:
         model = DispatchModeResponse(
+            termination="manual",
             ideation_creation="auto",
             execution_dispatch="auto",
             evaluation_dispatch="auto",
@@ -383,10 +385,58 @@ class TestDispatchModeResponseParity:
             _validate_against(
                 "dispatch-mode-response.schema.json",
                 {
+                    "termination": "manual",
                     "ideation_creation": "auto",
                     "execution_dispatch": "auto",
                     "evaluation_dispatch": "auto",
                     # `integration` missing — required-set violation.
+                },
+            )
+
+
+class TestPolicyErrorRequestParity:
+    def test_accept(self) -> None:
+        model = PolicyErrorRequest(
+            policy_kind="termination",
+            error_type="ValueError",
+            error_message="policy callable raised: bad config",
+        )
+        _validate_against(
+            "policy-error-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_schema_rejects_missing_required_field(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "policy-error-request.schema.json",
+                {
+                    "policy_kind": "termination",
+                    "error_type": "X",
+                    # `error_message` missing.
+                },
+            )
+
+    def test_schema_rejects_empty_policy_kind(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "policy-error-request.schema.json",
+                {
+                    "policy_kind": "",
+                    "error_type": "X",
+                    "error_message": "y",
+                },
+            )
+
+    def test_schema_rejects_additional_keys(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "policy-error-request.schema.json",
+                {
+                    "policy_kind": "termination",
+                    "error_type": "X",
+                    "error_message": "y",
+                    "extra": "field",
                 },
             )
 

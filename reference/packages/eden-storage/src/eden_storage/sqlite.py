@@ -42,6 +42,7 @@ from typing import Any
 from eden_contracts import (
     EvaluationSchema,
     Event,
+    Experiment,
     Group,
     Idea,
     Task,
@@ -51,7 +52,12 @@ from eden_contracts import (
 )
 
 from . import _schema
-from ._base import _DEFAULT_DISPATCH_MODE, _StoreBase, _Tx
+from ._base import (
+    _DEFAULT_DISPATCH_MODE,
+    _DEFAULT_EXPERIMENT_STATE,
+    _StoreBase,
+    _Tx,
+)
 from .errors import InvalidPrecondition
 from .submissions import (
     EvaluationSubmission,
@@ -212,9 +218,18 @@ class SqliteStore(_StoreBase):
                 evaluation_schema.model_dump(mode="json"), sort_keys=True
             )
         if row is None:
+            # 12a-3: stamp `created_at` at row creation so a future
+            # `read_experiment` returns the actual experiment-created
+            # timestamp rather than the v5 migration's 1970 sentinel
+            # (which only applies to rows that pre-existed the v5
+            # migration). `state` defaults to "running" via the column
+            # DEFAULT; explicit pass-through here makes the contract
+            # legible without relying on the DDL.
+            created_at = self._ts()
             self._conn.execute(
-                "INSERT INTO experiment(experiment_id, evaluation_schema) VALUES (?, ?)",
-                (experiment_id, schema_json),
+                "INSERT INTO experiment(experiment_id, evaluation_schema, "
+                "state, created_at) VALUES (?, ?, ?, ?)",
+                (experiment_id, schema_json, _DEFAULT_EXPERIMENT_STATE, created_at),
             )
             self._conn.commit()
             return
@@ -438,6 +453,24 @@ class SqliteStore(_StoreBase):
             return dict(_DEFAULT_DISPATCH_MODE)
         return dict(json.loads(row[0]))
 
+    def _get_experiment(self) -> Experiment:
+        row = self._conn.execute(
+            "SELECT state, created_at FROM experiment WHERE experiment_id = ?",
+            (self._experiment_id,),
+        ).fetchone()
+        # The row is created in `_initialize_experiment` before this
+        # method is ever called; a missing row would mean someone
+        # deleted it out-of-band.
+        if row is None:
+            raise RuntimeError(
+                f"experiment {self._experiment_id!r} row missing from store"
+            )
+        return Experiment(
+            experiment_id=self._experiment_id,
+            state=row[0],
+            created_at=row[1],
+        )
+
     # ------------------------------------------------------------------
     # Commit
     # ------------------------------------------------------------------
@@ -486,6 +519,11 @@ class SqliteStore(_StoreBase):
                     json.dumps(tx.dispatch_mode, sort_keys=True),
                     self._experiment_id,
                 ),
+            )
+        if tx.experiment_state is not None:
+            self._conn.execute(
+                "UPDATE experiment SET state = ? WHERE experiment_id = ?",
+                (tx.experiment_state, self._experiment_id),
             )
         for event in tx.events:
             self._insert_event(event)

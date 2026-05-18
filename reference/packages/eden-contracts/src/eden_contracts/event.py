@@ -188,6 +188,50 @@ class ExperimentDispatchModeChangedEvent(_RegisteredEventBase):
     data: _ExperimentDispatchModeChangedData
 
 
+class _ExperimentTerminatedData(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    reason: str
+    terminated_by: Annotated[str, StringConstraints(pattern=ACTOR_ID_PATTERN)]
+
+
+class ExperimentTerminatedEvent(_RegisteredEventBase):
+    """``experiment.terminated`` — ``running → terminated`` lifecycle transition.
+
+    Emitted atomically with the state-field update per
+    ``04-task-protocol.md`` §8.1. Both the operator wire op
+    (``POST /v0/experiments/{E}/terminate``) and the orchestrator's
+    policy-driven termination decision (``03-roles.md`` §6.2
+    decision-type 0) route through the same Store-level
+    ``terminate_experiment`` op; the winning call's ``reason`` is the
+    one recorded (idempotent on already-terminated state).
+    """
+
+    type: Literal["experiment.terminated"]
+    data: _ExperimentTerminatedData
+
+
+class _ExperimentPolicyErrorData(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    policy_kind: Annotated[str, Field(min_length=1)]
+    error_type: Annotated[str, Field(min_length=1)]
+    error_message: str
+
+
+class ExperimentPolicyErrorEvent(_RegisteredEventBase):
+    """``experiment.policy_error`` — an orchestrator policy callable raised.
+
+    Recorded so operators see the failure in the event log. Exempt from
+    the ``05-event-protocol.md`` §2 transactional invariant: no
+    protocol-owned state mutation pairs with it. v0 defines only
+    ``policy_kind == "termination"``; the field is open so future
+    decision types that introduce policy callables can reuse the
+    event type.
+    """
+
+    type: Literal["experiment.policy_error"]
+    data: _ExperimentPolicyErrorData
+
+
 class _IdeaIdOnlyData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
     idea_id: Annotated[str, Field(min_length=1)]
@@ -294,6 +338,8 @@ RegisteredEvent = Annotated[
     | TaskReclaimedEvent
     | TaskReassignedEvent
     | ExperimentDispatchModeChangedEvent
+    | ExperimentTerminatedEvent
+    | ExperimentPolicyErrorEvent
     | IdeaDraftedEvent
     | IdeaReadyEvent
     | IdeaDispatchedEvent
@@ -320,6 +366,8 @@ REGISTERED_EVENT_TYPES: frozenset[str] = frozenset(
         "task.reclaimed",
         "task.reassigned",
         "experiment.dispatch_mode_changed",
+        "experiment.terminated",
+        "experiment.policy_error",
         "idea.drafted",
         "idea.ready",
         "idea.dispatched",
@@ -331,7 +379,7 @@ REGISTERED_EVENT_TYPES: frozenset[str] = frozenset(
         "variant.integrated",
     }
 )
-"""The v0 normative event registry (spec §3.1–§3.3)."""
+"""The v0 normative event registry (spec §3.1–§3.4)."""
 
 
 __all__ = [
@@ -339,6 +387,8 @@ __all__ = [
     "EVENT_TYPE_PATTERN",
     "Event",
     "ExperimentDispatchModeChangedEvent",
+    "ExperimentPolicyErrorEvent",
+    "ExperimentTerminatedEvent",
     "FailReason",
     "IdeaCompletedEvent",
     "IdeaDispatchedEvent",

@@ -67,13 +67,16 @@ from .models import (
     DispatchModeResponse,
     DispatchModeUpdateRequest,
     EventsResponse,
+    ExperimentStateResponse,
     IntegrateRequest,
+    PolicyErrorRequest,
     ReassignRequest,
     ReclaimRequest,
     RegisterGroupRequest,
     RegisterWorkerRequest,
     RejectRequest,
     SubmitRequest,
+    TerminateRequest,
     ValidateEvaluationRequest,
     ValidateTerminalResponse,
 )
@@ -595,10 +598,15 @@ def make_app(
         # unrecognized the downstream TaskAdapter.validate_python
         # produces the canonical bad-request envelope; we fall through
         # to that path without claiming authority either way.
+        #
+        # 12a-3 broadened `kind=execution` from orchestrators-only to
+        # admins OR orchestrators: the new ``idea.intended_executor``
+        # field gives operators a non-fungible routing seed, so the
+        # pre-12a-3 deferral that the operator path needed first no
+        # longer applies (`03-roles.md` §6.5, `07-wire-protocol.md`
+        # §2.1).
         kind = body.get("kind") if isinstance(body, dict) else None
-        if kind == "execution":
-            _enforce_in_any_group(request, ("orchestrators",))
-        elif kind in ("ideation", "evaluation"):
+        if kind in ("ideation", "execution", "evaluation"):
             _enforce_in_any_group(request, ("admins", "orchestrators"))
         else:
             # Unrecognized kind — let the schema validator decide. We
@@ -1008,6 +1016,7 @@ def make_app(
         # payload like `{"future_key": null}` would otherwise dump
         # to `{}` and slip through as a vacuous 200 OK.
         known_fields = {
+            "termination",
             "ideation_creation",
             "execution_dispatch",
             "evaluation_dispatch",
@@ -1032,6 +1041,103 @@ def make_app(
         return DispatchModeResponse.model_validate(
             result.model_dump(mode="json", exclude_none=True)
         ).model_dump(mode="json", exclude_none=True)
+
+    # ------------------------------------------------------------------
+    # Experiment lifecycle (12a-3) — chapter 7 §2.9
+    # ------------------------------------------------------------------
+
+    @app.post(f"{base}/terminate")
+    async def _terminate_experiment(
+        request: Request,
+        experiment_id: str,
+        body: TerminateRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        """§2.9 admin-group-gated lifecycle transition.
+
+        Stamps ``terminated_by`` from the authenticated principal; the
+        request body MUST NOT carry it (the model's ``extra="forbid"``
+        rejects unknown keys). Idempotent on the terminated state
+        (`04-task-protocol.md` §8.1) — a second call returns 200 with
+        the existing experiment and emits no second event; the
+        winning caller's ``reason`` is the one recorded.
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/terminate",
+        )
+        terminated_by = _enforce_in_any_group(request, ("admins",))
+        experiment = store.terminate_experiment(
+            reason=body.reason, terminated_by=terminated_by
+        )
+        return experiment.model_dump(mode="json", exclude_none=True)
+
+    @app.post(f"{base}/policy-errors")
+    async def _emit_policy_error(
+        request: Request,
+        experiment_id: str,
+        body: PolicyErrorRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> Response:
+        """12a-3 wave-7 follow-up: emit ``experiment.policy_error``.
+
+        Per [`03-roles.md`](../../../../spec/v0/03-roles.md) §6.2
+        decision-type 0 fault-tolerance, when a termination policy
+        raises the orchestrator MUST emit a registered
+        ``experiment.policy_error`` event so operators see the
+        failure in the event log. The orchestrator service runs
+        against ``StoreClient`` (wire-bound), so the event needs a
+        wire endpoint to land in the per-experiment log.
+
+        Authority: ``orchestrators`` — the orchestrator instance is
+        the only caller that produces these events. The endpoint is
+        NOT exposed to ``admins`` to keep the event surface from
+        becoming a manual log-spam vector.
+
+        The event is exempt from the
+        [`05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §2 transactional invariant: no protocol-owned state mutation
+        pairs with it. The route delegates to
+        ``Store.emit_policy_error`` for the actual single-event
+        append; 204 on success.
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/policy-errors",
+        )
+        _enforce_in_any_group(request, ("orchestrators",))
+        store.emit_policy_error(
+            policy_kind=body.policy_kind,
+            error_type=body.error_type,
+            error_message=body.error_message,
+        )
+        return Response(status_code=204)
+
+    @app.get(f"{base}/state")
+    async def _read_experiment_state(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        """§2.9 companion read endpoint.
+
+        Either-auth — any registered worker MAY read the state.
+        Mirrors the `GET /dispatch_mode` posture (both reads support
+        the corresponding StoreClient's read-back ladders).
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/state",
+        )
+        if admin_token is not None:
+            _ = request.state.principal  # ensure auth was run
+        state = store.read_experiment_state()
+        return ExperimentStateResponse(state=state).model_dump(
+            mode="json", exclude_none=True
+        )
 
     # ------------------------------------------------------------------
     # Events

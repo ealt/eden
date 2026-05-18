@@ -310,6 +310,37 @@
           }
         }
       }
+    },
+    {
+      "if": {"properties": {"type": {"const": "experiment.terminated"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["reason", "terminated_by"],
+            "properties": {
+              "reason": {"type": "string"},
+              "terminated_by": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "experiment.policy_error"}}, "required": ["type"]},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["policy_kind", "error_type", "error_message"],
+            "properties": {
+              "policy_kind": {"type": "string", "minLength": 1},
+              "error_type": {"type": "string", "minLength": 1},
+              "error_message": {"type": "string"}
+            }
+          }
+        }
+      }
     }
   ]
 }

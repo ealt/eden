@@ -11,7 +11,7 @@ The models apply the same ``strict=True`` / ``NotNone`` /
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from eden_contracts import DispatchModeValue, Event, TaskTarget
 from eden_contracts._common import CommitSha, DateTimeStr, NotNone, WorkerId
@@ -197,14 +197,16 @@ class DispatchModeUpdateRequest(_WireBase):
 
     A partial dispatch_mode object — any subset of the four normative
     keys (``ideation_creation`` / ``execution_dispatch`` /
-    ``evaluation_dispatch`` / ``integration``). Unknown keys are
-    tolerated per [`02-data-model.md`](../../../../spec/v0/02-data-model.md)
-    §2.5 and round-trip through via ``extra="allow"``. The server
-    stamps ``updated_by`` from the authenticated principal.
+    ``evaluation_dispatch`` / ``integration``, plus the 12a-3
+    ``termination`` key). Unknown keys are tolerated per
+    [`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.4
+    and round-trip through via ``extra="allow"``. The server stamps
+    ``updated_by`` from the authenticated principal.
     """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
+    termination: Annotated[DispatchModeValue | None, NotNone] = None
     ideation_creation: Annotated[
         DispatchModeValue | None, NotNone
     ] = None
@@ -220,16 +222,62 @@ class DispatchModeUpdateRequest(_WireBase):
 class DispatchModeResponse(_WireBase):
     """Body for ``GET`` / ``PATCH`` ``/v0/experiments/{E}/dispatch_mode``.
 
-    Full post-update state, all four normative keys present. Unknown
+    Full post-update state, all five normative keys present. Unknown
     keys persisted by older writes round-trip via ``extra="allow"``.
     """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
+    termination: DispatchModeValue
     ideation_creation: DispatchModeValue
     execution_dispatch: DispatchModeValue
     evaluation_dispatch: DispatchModeValue
     integration: DispatchModeValue
+
+
+class TerminateRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/terminate`` (§2.9).
+
+    Admin-group-gated per [`07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
+    §2.9 / §13.3. The server stamps ``terminated_by`` from the
+    authenticated principal; the body MUST NOT carry it (``extra="forbid"``
+    inherited from ``_WireBase`` rejects unknown keys).
+    """
+
+    reason: str
+
+
+class ExperimentStateResponse(_WireBase):
+    """Body for ``GET /v0/experiments/{E}/state`` (§2.9 companion read).
+
+    Per [`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.5
+    the runtime ``state`` field is one of ``"running"`` or
+    ``"terminated"``.
+    """
+
+    state: Literal["running", "terminated"]
+
+
+class PolicyErrorRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/policy-errors`` (12a-3 wave 7).
+
+    The orchestrator posts here when a termination-policy callable
+    raises, so the registered ``experiment.policy_error`` event
+    ([`05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+    §3.4) lands in the event log per chapter 03 §6.2 decision-type 0's
+    fault-tolerance subsection. The event is exempt from the §2
+    transactional invariant: there is no protocol-owned state mutation
+    pairs with it; this is a single-event append.
+
+    Three fields per the registered schema: ``policy_kind`` (v0
+    defines ``"termination"``; future decision types MAY add new
+    values), ``error_type`` (the exception class name), and
+    ``error_message`` (the exception's ``str()`` representation).
+    """
+
+    policy_kind: Annotated[str, Field(min_length=1)]
+    error_type: Annotated[str, Field(min_length=1)]
+    error_message: str
 
 
 __all__ = [
@@ -239,13 +287,16 @@ __all__ = [
     "DispatchModeResponse",
     "DispatchModeUpdateRequest",
     "EventsResponse",
+    "ExperimentStateResponse",
     "IntegrateRequest",
+    "PolicyErrorRequest",
     "ReassignRequest",
     "ReclaimRequest",
     "RegisterGroupRequest",
     "RegisterWorkerRequest",
     "RejectRequest",
     "SubmitRequest",
+    "TerminateRequest",
     "ValidateEvaluationRequest",
     "ValidateTerminalResponse",
     "WhoamiResponse",

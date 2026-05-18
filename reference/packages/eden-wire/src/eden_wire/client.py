@@ -31,6 +31,8 @@ from eden_contracts import (
     EvaluationTask,
     Event,
     ExecutionTask,
+    Experiment,
+    ExperimentState,
     FailReason,
     Group,
     Idea,
@@ -53,7 +55,13 @@ from eden_storage.submissions import (
 
 from .errors import raise_for_envelope
 
-__all__ = ["IndeterminateIntegration", "StoreClient"]
+__all__ = [
+    "IndeterminateDispatchModeUpdate",
+    "IndeterminateIntegration",
+    "IndeterminateReassign",
+    "IndeterminateTermination",
+    "StoreClient",
+]
 
 
 class IndeterminateIntegration(RuntimeError):
@@ -88,6 +96,21 @@ class IndeterminateDispatchModeUpdate(RuntimeError):
     of the experiment's current ``dispatch_mode`` (read-back itself
     fails, or the observed state matches neither "before" nor "after"
     semantics). Operator intervention is required.
+    """
+
+
+class IndeterminateTermination(RuntimeError):
+    """A ``terminate_experiment`` call's outcome cannot be determined.
+
+    Raised by :meth:`StoreClient.terminate_experiment` when a
+    transport-indeterminate failure cannot be resolved by a read-back
+    of the experiment's lifecycle ``state`` (read-back itself fails,
+    or the observed state remains ``"running"``). Note that the
+    operation is idempotent on the terminated state per
+    [`04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+    §8.1, so an observed ``"terminated"`` state after a transport
+    error is treated as confirmed success regardless of which call
+    actually won the race.
     """
 
 
@@ -285,17 +308,24 @@ class StoreClient:
         assert isinstance(created, IdeationTask)
         return created
 
-    def create_execution_task(self, task_id: str, idea_id: str) -> ExecutionTask:
-        task = ExecutionTask.model_validate(
-            {
-                "task_id": task_id,
-                "kind": "execution",
-                "state": "pending",
-                "created_at": _now(),
-                "updated_at": _now(),
-                "payload": {"idea_id": idea_id},
-            }
-        )
+    def create_execution_task(
+        self,
+        task_id: str,
+        idea_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> ExecutionTask:
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "kind": "execution",
+            "state": "pending",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "payload": {"idea_id": idea_id},
+        }
+        if target is not None:
+            body["target"] = target.model_dump(mode="json", exclude_none=True)
+        task = ExecutionTask.model_validate(body)
         created = self.create_task(task)
         assert isinstance(created, ExecutionTask)
         return created
@@ -811,6 +841,169 @@ class StoreClient:
             f"{payload!r}) — operator must investigate"
         ) from original
 
+    # ------------------------------------------------------------------
+    # Experiment lifecycle (12a-3) — chapter 7 §2.9
+    # ------------------------------------------------------------------
+
+    def read_experiment(self) -> Experiment:
+        """Read the experiment runtime object.
+
+        v0 exposes only the lifecycle ``state`` slice through the wire
+        binding (`GET /state`); a full Experiment endpoint is not part
+        of the chapter-7 §2.9 surface in v0. To keep the ``Store``
+        Protocol satisfiable against the wire client, this method
+        wraps :meth:`read_experiment_state` and synthesizes the full
+        :class:`Experiment` shape with a best-effort ``created_at``.
+
+        The ``created_at`` field on the synthesized object is the
+        client's wall-clock at read time, not the actual experiment-
+        creation timestamp. Callers that need the recorded
+        ``created_at`` (e.g. ``max_wall_time_policy``) MUST go through
+        an in-process ``Store``; running such a policy against the
+        wire client will use the synthesized timestamp and never
+        accumulate wall-time toward the deadline. Documented as a
+        known degradation pending a future ``GET /experiment``
+        endpoint.
+        """
+        state = self.read_experiment_state()
+        return Experiment(
+            experiment_id=self._experiment_id,
+            state=state,
+            created_at=_now(),
+        )
+
+    def read_experiment_state(self) -> ExperimentState:
+        """Fetch the experiment's current lifecycle state (§2.9 read).
+
+        Either-auth on the server (any registered worker MAY read).
+        The endpoint returns ``{"state": "running"|"terminated"}``.
+        """
+        resp = self._request("GET", f"{self._base}/state")
+        body = resp.json()
+        state = body.get("state")
+        if state not in ("running", "terminated"):
+            raise RuntimeError(
+                f"unexpected experiment state {state!r} in response body"
+            )
+        return state
+
+    def update_experiment_state(self, new_state: ExperimentState) -> Experiment:
+        """Not exposed on the wire — internal Store primitive only.
+
+        Per [`04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §8.3, ``update_experiment_state`` is the storage-layer primitive
+        used by ``terminate_experiment`` and the orchestrator's
+        policy-driven branch; it is NOT a wire endpoint in v0. Use
+        :meth:`terminate_experiment` for the public lifecycle op.
+        """
+        raise NotImplementedError(
+            "update_experiment_state is an internal Store primitive; "
+            "not exposed as a wire endpoint per 04-task-protocol.md §8.3"
+        )
+
+    def emit_policy_error(
+        self,
+        *,
+        policy_kind: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Append an ``experiment.policy_error`` event over the wire.
+
+        Posts to ``POST /v0/experiments/{E}/policy-errors`` (the
+        12a-3 wave-7 follow-up endpoint added to satisfy the
+        ``03-roles.md`` §6.2 decision-type 0 fault-tolerance MUST
+        through the wire-bound orchestrator service). Authority:
+        ``orchestrators`` — caller's bearer MUST be a member of that
+        group per chapter 07 §13.3. The route returns 204 on success.
+
+        No read-back ladder is needed: the event is exempt from the
+        ``05-event-protocol.md`` §2 transactional invariant (no state
+        mutation pairs with it), so a transport-indeterminate failure
+        is an at-most-once observability gap, not a state-correctness
+        risk. The driver layer catches generic ``Exception`` and
+        degrades to a structured log so a single failed emit cannot
+        cascade into a stuck orchestrator iteration.
+        """
+        path = f"{self._base}/policy-errors"
+        body = {
+            "policy_kind": policy_kind,
+            "error_type": error_type,
+            "error_message": error_message,
+        }
+        resp = self._request("POST", path, json=body)
+        resp.raise_for_status()
+
+    def terminate_experiment(
+        self, *, reason: str, terminated_by: str  # noqa: ARG002 — server stamps it
+    ) -> Experiment:
+        """Commit the ``running → terminated`` transition over the wire (§2.9).
+
+        Admin-group-gated server-side; the bearer's principal is the
+        authoritative ``terminated_by``. The ``terminated_by`` parameter
+        here exists to satisfy the ``Store`` Protocol signature; the
+        wire body MUST NOT carry the field (the
+        :class:`TerminateRequest` model rejects unknown keys), and the
+        server stamps the recorded event from the authenticated
+        principal.
+
+        Idempotent on the terminated state per
+        [`04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §8.1 — a second call against an already-terminated experiment
+        returns the recorded ``Experiment`` without committing a second
+        transition.
+
+        On transport-indeterminate failure, runs a read-back ladder
+        parallel to ``integrate_variant`` (§5):
+
+        - read-back shows ``state == "terminated"`` → confirmed success
+          (idempotency means our call OR a racing call has won; either
+          way the operator's intent is satisfied).
+        - read-back shows ``state == "running"`` →
+          :class:`IndeterminateTermination` (the server-side outcome
+          can't be determined; our request may have committed but a
+          subsequent resume — not in v0 — could have reverted, or our
+          request never landed).
+        - read-back itself fails →
+          :class:`IndeterminateTermination`.
+        """
+        path = f"{self._base}/terminate"
+        body: dict[str, Any] = {"reason": reason}
+        try:
+            resp = self._request("POST", path, json=body)
+            return Experiment.model_validate(resp.json())
+        except httpx.TransportError as exc:
+            original = exc
+
+        observed = self._try_read_experiment_state()
+        if observed is None:
+            raise IndeterminateTermination(
+                f"terminate_experiment transport failed "
+                f"({type(original).__name__}) and read-back of "
+                f"experiment state could not be completed; server-side "
+                f"outcome unknown"
+            ) from original
+        if observed == "terminated":
+            # Idempotency wins: the server is in the requested
+            # post-condition. We can't reconstruct the recorded
+            # `created_at` without an explicit read-experiment endpoint,
+            # so the read-back caller surfaces a synthetic Experiment
+            # whose `created_at` is best-effort — the lifecycle field
+            # is what callers care about here. The chapter-7 §2.9
+            # binding returns the full Experiment on the happy path;
+            # this fallback exists only for the indeterminate branch.
+            return Experiment(
+                experiment_id=self._experiment_id,
+                state="terminated",
+                created_at=_now(),
+            )
+        raise IndeterminateTermination(
+            f"terminate_experiment transport failed "
+            f"({type(original).__name__}); read-back shows "
+            f"state={observed!r} — server-side outcome unknown, "
+            "operator must investigate"
+        ) from original
+
     def _try_read_task(self, task_id: str) -> Task | None:
         for _ in range(self._read_back_attempts):
             try:
@@ -823,6 +1016,14 @@ class StoreClient:
         for _ in range(self._read_back_attempts):
             try:
                 return self.read_dispatch_mode()
+            except Exception:
+                continue
+        return None
+
+    def _try_read_experiment_state(self) -> ExperimentState | None:
+        for _ in range(self._read_back_attempts):
+            try:
+                return self.read_experiment_state()
             except Exception:
                 continue
         return None

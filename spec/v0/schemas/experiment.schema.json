@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN experiment runtime object",
+  "description": "Observed runtime state of an EDEN experiment, distinct from the declarative experiment-config (experiment-config.schema.json). Carries the lifecycle state field introduced in 12a-3 (spec/v0/02-data-model.md §2.5). The split mirrors task vs task-payload: declarative input lives in the config, observed runtime in the experiment object.",
+  "type": "object",
+  "required": ["experiment_id", "state", "created_at"],
+  "properties": {
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "type": "string",
+      "enum": ["running", "terminated"],
+      "description": "Lifecycle state per 02-data-model.md §2.5. Default at creation is 'running'; the transition to 'terminated' is one-way in v0."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "Wall-clock time at which the experiment was created. Used by deployment-supplied termination policies (e.g. max_wall_time) and not constrained beyond ISO-8601 UTC."
+    }
+  }
+}

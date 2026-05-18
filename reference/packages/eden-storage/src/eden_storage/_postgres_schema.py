@@ -149,11 +149,37 @@ def _apply_v4(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# 12a-3: parallels the SQLite v5 migration. Adds `state` and
+# `created_at` to the experiment row and patches the persisted
+# `dispatch_mode` to include the new `termination: "manual"` key
+# WITHOUT clobbering any forward-compat keys persisted under the
+# `02-data-model.md` §2.4 unknown-keys-tolerated rule. The
+# Postgres ``jsonb || jsonb`` operator is RFC 7396-merge-equivalent:
+# right-hand-side keys win, others are preserved. Cast through
+# `jsonb` (the column is `text` per the chunk-10b parity decision)
+# and back. Skip rows that already carry a `termination` key so
+# pre-set values aren't downgraded to the default.
+_V5_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN state text NOT NULL DEFAULT 'running'",
+    "ALTER TABLE experiment ADD COLUMN created_at text NOT NULL "
+    "DEFAULT '1970-01-01T00:00:00Z'",
+    "UPDATE experiment SET dispatch_mode = "
+    "(dispatch_mode::jsonb || '{\"termination\":\"manual\"}'::jsonb)::text "
+    "WHERE (dispatch_mode::jsonb ->> 'termination') IS NULL",
+]
+
+
+def _apply_v5(cur: Any) -> None:
+    for stmt in _V5_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
     _apply_v4,
+    _apply_v5,
 ]
 
 

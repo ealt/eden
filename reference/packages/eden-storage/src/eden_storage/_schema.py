@@ -173,11 +173,47 @@ def _apply_v4(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# 12a-3: the experiment row gains a `state` column carrying the
+# lifecycle state per `02-data-model.md` §2.5, and a `created_at`
+# column so termination policies that key off wall-time work without
+# extra plumbing. Pre-12a-3 rows pick up `state='running'` (every
+# unterminated experiment) and a sentinel `created_at` that signals
+# "we don't actually know" — deployments that care can rewrite the
+# row out-of-band. The `dispatch_mode` field is patched in place:
+# any unknown extension keys persisted under `02-data-model.md` §2.4
+# forward-compatibility are preserved, and the new `termination` key
+# is added only when missing (using `json_patch`, an RFC 7396 merge
+# that keys-in-target win over keys-in-source). A naive
+# whole-column REWRITE would silently clobber forward-compat keys,
+# violating the §2.4 tolerance contract.
+_V5_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN state text NOT NULL DEFAULT 'running'",
+    "ALTER TABLE experiment ADD COLUMN created_at text NOT NULL "
+    "DEFAULT '1970-01-01T00:00:00Z'",
+    # `json_patch(target, source)` returns the source merged ON TOP
+    # of target — meaning keys present in both are taken from
+    # `source`. To preserve target's existing values for the four
+    # operational keys while ADDING the new `termination` key only
+    # when missing, we patch in only `{"termination": "manual"}`.
+    # Existing `termination` values (if a deployment somehow already
+    # set one) and all other keys round-trip unchanged.
+    "UPDATE experiment SET dispatch_mode = "
+    "json_patch(dispatch_mode, '{\"termination\":\"manual\"}') "
+    "WHERE json_extract(dispatch_mode, '$.termination') IS NULL",
+]
+
+
+def _apply_v5(conn: sqlite3.Connection) -> None:
+    for stmt in _V5_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
     _apply_v4,
+    _apply_v5,
 ]
 
 

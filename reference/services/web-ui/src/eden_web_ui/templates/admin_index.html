@@ -3,6 +3,13 @@
 {% block main %}
 <h1>admin dashboard</h1>
 
+{% if experiment_state == "terminated" %}
+<div class="banner banner-warn">
+    experiment is <strong>terminated</strong> — no new tasks accepted; integration may still drain.
+    <a href="/admin/experiment/">details &raquo;</a>
+</div>
+{% endif %}
+
 {% if expired_count %}
 <div class="banner banner-warn">
     {{ expired_count }} claim(s) past <code>expires_at</code> — the next sweeper iteration will reclaim them automatically.
@@ -82,10 +89,20 @@
     <h2>orchestrator controls</h2>
     <p>
         <a href="/admin/dispatch-mode/">dispatch_mode toggles &raquo;</a> &mdash;
-        gate the auto-orchestrator's four decision types
-        (ideation creation, execution dispatch, evaluation dispatch,
-        integration). Manual mode hands the decision to operators via
-        the admin UI / wire endpoints.
+        gate the auto-orchestrator's five decision types
+        (termination, ideation creation, execution dispatch,
+        evaluation dispatch, integration). Manual mode hands the
+        decision to operators via the admin UI / wire endpoints.
+    </p>
+    <p>
+        <a href="/admin/experiment/">experiment lifecycle &raquo;</a> &mdash;
+        terminate the experiment (one-way transition per
+        <code>spec/v0/02-data-model.md</code> §2.5).
+    </p>
+    <p>
+        <a href="/admin/ideas/">ideas &raquo;</a> &mdash;
+        per-idea detail with admin-driven execution-task creation
+        (12a-3 §6.5 lifted authority).
     </p>
     <p>
         <small>
