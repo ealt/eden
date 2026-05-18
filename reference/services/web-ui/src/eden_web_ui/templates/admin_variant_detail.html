@@ -54,10 +54,46 @@
 <section>
     <h2>parent idea</h2>
     <dl>
-        <dt>slug</dt><dd>{{ idea.slug }}</dd>
+        <dt>idea_id</dt><dd><a href="/admin/ideas/{{ idea.idea_id }}/"><code>{{ idea.idea_id }}</code></a></dd>
+        <dt>slug</dt><dd><a href="/admin/ideas/{{ idea.idea_id }}/">{{ idea.slug }}</a></dd>
         <dt>state</dt><dd>{{ idea.state }}</dd>
         <dt>priority</dt><dd>{{ idea.priority }}</dd>
     </dl>
+</section>
+
+<section>
+    <h2>lineage</h2>
+    {% if lineage.transport_errors > 0 %}
+    <div class="banner banner-warn">
+        lineage may be incomplete — {{ lineage.transport_errors }} transport error(s)
+    </div>
+    {% endif %}
+    <h3>producing execution task</h3>
+    {% if lineage.execution_task %}
+    <p><a href="{{ lineage.execution_task.href }}">{{ lineage.execution_task.label }}</a> — <small>{{ lineage.execution_task.descriptor }}</small></p>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(execution task: unknown — read error)</em></p>
+    {% else %}
+    <p><em>(execution task: unknown)</em></p>
+    {% endif %}
+    {# parent idea is hyperlinked in the "parent idea" section above #}
+    {# (plan §D.7: that hyperlink doubles as the lineage link) #}
+    <h3>evaluation tasks
+        {% if lineage.evaluation_tasks_total > lineage.evaluation_tasks|length %}
+            (showing {{ lineage.evaluation_tasks|length }} of {{ lineage.evaluation_tasks_total }})
+        {% endif %}
+    </h3>
+    {% if lineage.evaluation_tasks %}
+    <ul>
+        {% for link in lineage.evaluation_tasks %}
+        <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
+        {% endfor %}
+    </ul>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(evaluation tasks unknown — read error)</em></p>
+    {% else %}
+    <p><em>no evaluation tasks yet.</em></p>
+    {% endif %}
 </section>
 
 <section>

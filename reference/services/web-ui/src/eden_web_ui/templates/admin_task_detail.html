@@ -13,7 +13,7 @@
     <dt>created_at</dt><dd>{{ task.created_at }}</dd>
     <dt>updated_at</dt><dd>{{ task.updated_at }}</dd>
     {% if task.claim %}
-    <dt>worker</dt><dd><code>{{ task.claim.worker_id }}</code></dd>
+    <dt>worker</dt><dd><a href="/admin/workers/{{ task.claim.worker_id }}/"><code>{{ task.claim.worker_id }}</code></a></dd>
     <dt>claimed_at</dt><dd>{{ task.claim.claimed_at }}</dd>
     <dt>expires_at</dt><dd>{% if task.claim.expires_at %}{{ task.claim.expires_at }}{% else %}—{% endif %}</dd>
     <dt>claim age (s)</dt><dd>{% if claim_age is not none %}{{ "%.1f"|format(claim_age) }}{% else %}—{% endif %}</dd>
@@ -21,23 +21,106 @@
 </dl>
 
 <section>
+    <h2>attribution</h2>
+    <dl>
+        <dt>target</dt>
+        <dd>
+            {% if task.target %}
+                {{ task.target.kind }}:<code>{{ task.target.id }}</code>
+            {% else %}
+                anyone
+            {% endif %}
+        </dd>
+        <dt>created_by</dt>
+        <dd>
+            {% if task.created_by %}
+                <a href="/admin/workers/{{ task.created_by }}/"><code>{{ task.created_by }}</code></a>
+            {% else %}
+                —
+            {% endif %}
+        </dd>
+        <dt>submitted_by</dt>
+        <dd>
+            {% if task.submitted_by %}
+                <a href="/admin/workers/{{ task.submitted_by }}/"><code>{{ task.submitted_by }}</code></a>
+            {% else %}
+                —
+            {% endif %}
+        </dd>
+        <dt>claim.worker_id</dt>
+        <dd>
+            {% if task.claim %}
+                <a href="/admin/workers/{{ task.claim.worker_id }}/"><code>{{ task.claim.worker_id }}</code></a>
+            {% else %}
+                —
+            {% endif %}
+        </dd>
+    </dl>
+</section>
+
+<section>
     <h2>payload</h2>
     <pre>{{ payload_json | tojson(indent=2) }}</pre>
 </section>
 
-{% if task.state in ["pending", "claimed"] %}
 <section>
-    <h2>operator reassign</h2>
-    <p>
-        <a href="/admin/tasks/{{ task.task_id }}/reassign">reassign this task &raquo;</a>
-        &mdash; update <code>task.target</code>
-        {% if task.state == "claimed" %}
-        (composite-commits a <code>task.reclaimed</code>; the current
-        claimant is bumped)
+    <h2>lineage</h2>
+    {% if lineage and lineage.transport_errors and lineage.transport_errors > 0 %}
+    <div class="banner banner-warn">
+        lineage may be incomplete — {{ lineage.transport_errors }} transport error(s)
+    </div>
+    {% endif %}
+    {% if task.kind == "ideation" %}
+        {% if lineage and lineage.ideas %}
+        <p>ideas produced by this submission
+            {% if lineage.ideas_total and lineage.ideas_total > lineage.ideas|length %}
+                (showing {{ lineage.ideas|length }} of {{ lineage.ideas_total }})
+            {% endif %}:
+        </p>
+        <ul>
+            {% for link in lineage.ideas %}
+            <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p><em>no ideas produced yet (task is pre-submit or status=error).</em></p>
         {% endif %}
-    </p>
+    {% elif task.kind == "execution" %}
+        <h3>upstream</h3>
+        {% if lineage and lineage.idea %}
+        <p><a href="{{ lineage.idea.href }}">{{ lineage.idea.label }}</a> — <small>{{ lineage.idea.descriptor }}</small></p>
+        {% elif lineage and lineage.transport_errors > 0 %}
+        <p><em>(idea unknown — read error)</em></p>
+        {% else %}
+        <p><em>(idea unknown)</em></p>
+        {% endif %}
+        <h3>variants produced
+            {% if lineage and lineage.variants_total and lineage.variants_total > lineage.variants|length %}
+                (showing {{ lineage.variants|length }} of {{ lineage.variants_total }})
+            {% endif %}
+        </h3>
+        {% if lineage and lineage.variants %}
+        <ul>
+            {% for link in lineage.variants %}
+            <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
+            {% endfor %}
+        </ul>
+        {% elif lineage and lineage.transport_errors > 0 %}
+        <p><em>(variants unknown — read error)</em></p>
+        {% else %}
+        <p><em>no variants yet.</em></p>
+        {% endif %}
+    {% elif task.kind == "evaluation" %}
+        <h3>variant under evaluation</h3>
+        {% if lineage and lineage.variant %}
+        <p><a href="{{ lineage.variant.href }}">{{ lineage.variant.label }}</a> — <small>{{ lineage.variant.descriptor }}</small></p>
+        {% elif lineage and lineage.transport_errors > 0 %}
+        <p><em>(variant unknown — read error)</em></p>
+        {% else %}
+        <p><em>(variant unknown)</em></p>
+        {% endif %}
+    {% endif %}
 </section>
-{% endif %}
 
 {% if can_reclaim %}
 <section>
@@ -52,6 +135,20 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit">{% if is_force %}force-reclaim (replays work){% else %}reclaim{% endif %}</button>
     </form>
+</section>
+{% endif %}
+
+{% if task.state in ["pending", "claimed"] %}
+<section>
+    <h2>operator reassign</h2>
+    <p>
+        <a href="/admin/tasks/{{ task.task_id }}/reassign">reassign this task &raquo;</a>
+        &mdash; update <code>task.target</code>
+        {% if task.state == "claimed" %}
+        (composite-commits a <code>task.reclaimed</code>; the current
+        claimant is bumped)
+        {% endif %}
+    </p>
 </section>
 {% endif %}
 

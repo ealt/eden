@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin idea {{ idea.idea_id }}{% endblock %}
+{% block main %}
+<h1>idea <code>{{ idea.idea_id }}</code></h1>
+
+<dl>
+    <dt>slug</dt><dd><code>{{ idea.slug }}</code></dd>
+    <dt>priority</dt><dd>{{ idea.priority }}</dd>
+    <dt>state</dt><dd>{{ idea.state }}</dd>
+    <dt>parent_commits</dt><dd>
+        {% for sha in idea.parent_commits %}<code>{{ sha }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+    </dd>
+    <dt>artifacts_uri</dt><dd>
+        {% if idea.artifacts_uri %}
+            {% set scheme = idea.artifacts_uri.split(":", 1)[0] | lower %}
+            {% if scheme == "file" %}
+            <a href="/artifacts?uri={{ idea.artifacts_uri | urlencode }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
+            {% elif scheme in ("http", "https") %}
+            <a href="{{ idea.artifacts_uri }}" target="_blank" rel="noopener"><code>{{ idea.artifacts_uri }}</code></a>
+            {% else %}
+            <code>{{ idea.artifacts_uri }}</code>
+            {% endif %}
+        {% else %}—{% endif %}
+    </dd>
+    <dt>created_at</dt><dd>{{ idea.created_at }}</dd>
+    <dt>created_by</dt><dd>
+        {% if idea.created_by %}
+        <a href="/admin/workers/{{ idea.created_by }}/"><code>{{ idea.created_by }}</code></a>
+        {% else %}—{% endif %}
+    </dd>
+</dl>
+
+<section>
+    <h2>content preview</h2>
+    {% if inline_content %}
+    <details>
+        <summary>view markdown body</summary>
+        <pre>{{ inline_content }}</pre>
+    </details>
+    {% else %}
+    <p><em>(content unavailable: scheme not file://, outside artifacts-dir, or &gt; 1 MiB)</em></p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>lineage</h2>
+    {% if lineage.transport_errors > 0 %}
+    <div class="banner banner-warn">
+        lineage may be incomplete — {{ lineage.transport_errors }} transport error(s)
+    </div>
+    {% endif %}
+    <h3>originating ideation task</h3>
+    {% if lineage.ideation_task %}
+    <p><a href="{{ lineage.ideation_task.href }}">{{ lineage.ideation_task.label }}</a> — <small>{{ lineage.ideation_task.descriptor }}</small></p>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(ideation task: unknown — read error)</em></p>
+    {% else %}
+    <p><em>(ideation task: in progress, status=error, or unknown)</em></p>
+    {% endif %}
+
+    <h3>spawned variants
+        {% if lineage.variants_total > lineage.variants|length %}
+            (showing {{ lineage.variants|length }} of {{ lineage.variants_total }})
+        {% endif %}
+    </h3>
+    {% if lineage.variants %}
+    <ul>
+        {% for link in lineage.variants %}
+        <li><a href="{{ link.href }}">{{ link.label }}</a> — <small>{{ link.descriptor }}</small></li>
+        {% endfor %}
+    </ul>
+    {% elif lineage.transport_errors > 0 %}
+    <p><em>(variants unknown — read error)</em></p>
+    {% else %}
+    <p><em>no variants yet.</em></p>
+    {% endif %}
+</section>
+{% endblock %}

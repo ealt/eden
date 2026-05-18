@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin ideas{% endblock %}
+{% block main %}
+<h1>ideas</h1>
+<form method="get">
+    <label>state:
+        <select name="state">
+            <option value="*"{% if selected_state == "*" %} selected{% endif %}>any</option>
+            {% for s in idea_states %}
+            <option value="{{ s }}"{% if selected_state == s %} selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <button type="submit">filter</button>
+</form>
+{% if rows %}
+<table>
+    <thead>
+        <tr>
+            <th>idea</th>
+            <th>slug</th>
+            <th>priority</th>
+            <th>state</th>
+            <th>parent_commits</th>
+            <th>created_by</th>
+            <th>variants</th>
+            <th>created</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in rows %}
+        <tr>
+            <td><a href="/admin/ideas/{{ r.idea_id }}/"><code>{{ r.idea_id }}</code></a></td>
+            <td><code>{{ r.slug }}</code></td>
+            <td>{{ r.priority }}</td>
+            <td>{{ r.state }}</td>
+            <td>
+                {% for sha in r.parent_commits_preview %}<code>{{ sha }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+            </td>
+            <td>
+                {% if r.created_by %}
+                <a href="/admin/workers/{{ r.created_by }}/"><code>{{ r.created_by }}</code></a>
+                {% else %}—{% endif %}
+            </td>
+            <td>{{ r.variant_count }}</td>
+            <td>{{ r.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>no ideas matching this filter.</p>
+{% endif %}
+{% endblock %}
