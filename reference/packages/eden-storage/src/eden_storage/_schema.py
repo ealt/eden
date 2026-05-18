@@ -208,12 +208,29 @@ def _apply_v5(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# 12b: the experiment row gains an `imported_from` column carrying the
+# JSON-serialized `ImportProvenance` shape per `02-data-model.md` §2.5.
+# NULL on rows produced by native creation; populated on rows produced
+# by `import_checkpoint` (`10-checkpoints.md` §10). The column is
+# `text NULL` so pre-12b rows keep the null sentinel; native creation
+# in 12b+ also writes NULL.
+_V6_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN imported_from text",
+]
+
+
+def _apply_v6(conn: sqlite3.Connection) -> None:
+    for stmt in _V6_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
     _apply_v4,
     _apply_v5,
+    _apply_v6,
 ]
 
 

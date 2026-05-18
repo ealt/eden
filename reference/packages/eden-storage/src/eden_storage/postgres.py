@@ -38,6 +38,7 @@ from eden_contracts import (
     Experiment,
     Group,
     Idea,
+    ImportProvenance,
     Task,
     TaskAdapter,
     Variant,
@@ -747,7 +748,8 @@ class PostgresStore(_StoreBase):
     def _get_experiment(self) -> Experiment:
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT state, created_at FROM experiment WHERE experiment_id = %s",
+                "SELECT state, created_at, imported_from FROM experiment "
+                "WHERE experiment_id = %s",
                 (self._experiment_id,),
             )
             row = cur.fetchone()
@@ -755,10 +757,14 @@ class PostgresStore(_StoreBase):
             raise RuntimeError(
                 f"experiment {self._experiment_id!r} row missing from store"
             )
+        imported_from: ImportProvenance | None = None
+        if row[2] is not None:
+            imported_from = ImportProvenance.model_validate_json(row[2])
         return Experiment(
             experiment_id=self._experiment_id,
             state=row[0],
             created_at=row[1],
+            imported_from=imported_from,
         )
 
     # ------------------------------------------------------------------
@@ -815,6 +821,19 @@ class PostgresStore(_StoreBase):
                 cur.execute(
                     "UPDATE experiment SET state = %s WHERE experiment_id = %s",
                     (tx.experiment_state, self._experiment_id),
+                )
+        if tx.imported_from_update is not None:
+            (new_imported_from,) = tx.imported_from_update
+            serialized = (
+                None
+                if new_imported_from is None
+                else json.dumps(new_imported_from.model_dump(mode="json"))
+            )
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE experiment SET imported_from = %s "
+                    "WHERE experiment_id = %s",
+                    (serialized, self._experiment_id),
                 )
         for event in tx.events:
             self._insert_event(event)

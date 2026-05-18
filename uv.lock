@@ -563,6 +563,7 @@ version = "0.0.1"
 source = { editable = "reference/packages/eden-storage" }
 dependencies = [
     { name = "argon2-cffi" },
+    { name = "eden-checkpoint" },
     { name = "eden-contracts" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -571,6 +572,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1,<24" },
+    { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2.9,<3" },

@@ -174,12 +174,27 @@ def _apply_v5(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# 12b: parallels the SQLite v6 migration. Adds the `imported_from`
+# column to the experiment row; NULL on natively-created experiments,
+# populated on rows produced by `import_checkpoint`. Stored as `text`
+# (JSON literal) for byte-for-byte parity with SqliteStore.
+_V6_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN imported_from text",
+]
+
+
+def _apply_v6(cur: Any) -> None:
+    for stmt in _V6_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
     _apply_v3,
     _apply_v4,
     _apply_v5,
+    _apply_v6,
 ]
 
 
