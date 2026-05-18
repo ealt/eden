@@ -209,28 +209,48 @@ def lineage_for_idea(store: Any, idea: Idea) -> IdeaLineage:
     )
 
 
-def lineage_for_variant(store: Any, variant: Variant) -> VariantLineage:
-    """Lineage for a variant — back to execution task + parent idea, forward to evaluations."""
+def lineage_for_variant(
+    store: Any,
+    variant: Variant,
+    *,
+    exec_tasks: list[Any] | None = None,
+    eval_tasks: list[Any] | None = None,
+) -> VariantLineage:
+    """Lineage for a variant — back to execution task + parent idea, forward to evaluations.
+
+    The caller MAY pass pre-fetched ``exec_tasks`` / ``eval_tasks`` to
+    avoid duplicate ``store.list_tasks`` scans when the same route also
+    runs an event-correlation walk (admin variant_detail does this; the
+    helper falls back to per-call ``list_tasks`` when the kwargs are
+    omitted, so unit-test callers stay unchanged).
+    """
     acc = _Accumulator()
     idea_link = _idea_link(store, variant.idea_id, acc)
-    exec_task_id = _producing_execution_task(store, variant, acc)
+    exec_task_id = _producing_execution_task(
+        store, variant, acc, exec_tasks=exec_tasks
+    )
     exec_link: LineageLink | None = None
     if exec_task_id is not None:
         exec_link = _execution_task_link(store, exec_task_id, acc)
 
-    try:
-        eval_tasks = [
-            t
-            for t in store.list_tasks(kind="evaluation")
-            if t.payload.variant_id == variant.variant_id
-        ]
-    except Exception:  # noqa: BLE001 — transport-shaped
-        acc.transport_errors += 1
-        eval_tasks = []
-    eval_tasks.sort(key=lambda t: t.created_at or "")
+    candidate_eval_tasks: list[Any]
+    if eval_tasks is None:
+        try:
+            candidate_eval_tasks = list(store.list_tasks(kind="evaluation"))
+        except Exception:  # noqa: BLE001 — transport-shaped
+            acc.transport_errors += 1
+            candidate_eval_tasks = []
+    else:
+        candidate_eval_tasks = list(eval_tasks)
+    filtered = [
+        t
+        for t in candidate_eval_tasks
+        if t.payload.variant_id == variant.variant_id
+    ]
+    filtered.sort(key=lambda t: t.created_at or "")
 
-    total = len(eval_tasks)
-    capped = eval_tasks[:_LINEAGE_COLLECTION_CAP]
+    total = len(filtered)
+    capped = filtered[:_LINEAGE_COLLECTION_CAP]
     eval_links = tuple(_eval_task_link_from_obj(t) for t in capped)
     return VariantLineage(
         execution_task=exec_link,
@@ -348,7 +368,11 @@ def _ideation_task_link_for_idea(
 
 
 def _producing_execution_task(
-    store: Any, variant: Variant, acc: _Accumulator
+    store: Any,
+    variant: Variant,
+    acc: _Accumulator,
+    *,
+    exec_tasks: list[Any] | None = None,
 ) -> str | None:
     """Resolve which execution task produced ``variant`` (plan §D.9).
 
@@ -361,16 +385,22 @@ def _producing_execution_task(
        variant.executed_by``) ONLY when exactly one candidate matches —
        multiple candidates with the same attribution means we cannot
        disambiguate without guessing, so return ``None``.
+
+    The caller MAY supply pre-fetched ``exec_tasks`` to share the
+    ``list_tasks(kind="execution")`` scan with sibling code on the
+    same render (plan §D.10).
     """
-    try:
-        candidates = [
-            t
-            for t in store.list_tasks(kind="execution")
-            if t.payload.idea_id == variant.idea_id
-        ]
-    except Exception:  # noqa: BLE001 — transport-shaped
-        acc.transport_errors += 1
-        return None
+    if exec_tasks is None:
+        try:
+            exec_tasks_all = list(store.list_tasks(kind="execution"))
+        except Exception:  # noqa: BLE001 — transport-shaped
+            acc.transport_errors += 1
+            return None
+    else:
+        exec_tasks_all = list(exec_tasks)
+    candidates = [
+        t for t in exec_tasks_all if t.payload.idea_id == variant.idea_id
+    ]
 
     for t in candidates:
         if t.state not in {"submitted", "completed", "failed"}:

@@ -35,6 +35,7 @@
                         <small>
                             {% if row.variant.branch %}branch=<code>{{ row.variant.branch }}</code>{% endif %}
                             {% if row.variant.commit_sha %}, commit=<code>{{ row.variant.commit_sha[:8] }}</code>{% endif %}
+                            {% if row.variant.parent_commits %}, parents=[{% for sha in row.variant.parent_commits %}<code>{{ sha[:8] }}</code>{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}
                             {% if row.variant.executed_by %}, executed_by=<a href="/admin/workers/{{ row.variant.executed_by }}/"><code>{{ row.variant.executed_by }}</code></a>{% endif %}
                         </small>
                         <details>
