@@ -648,6 +648,61 @@ def read_experiment_state(client: WireClient) -> dict[str, Any]:
     return resp.json()
 
 
+# Portable-checkpoint helpers (12b wire §14) --------------------------
+
+
+def read_experiment(client: WireClient) -> dict[str, Any]:
+    """GET /v0/experiments/{E} (12b chapter 07 §14.3 full read).
+
+    Returns ``{"experiment_id", "state", "created_at", "imported_from"}``.
+    Admin-gated server-side; with auth disabled the reference adapter
+    accepts the unauthenticated read.
+    """
+    resp = client.get(client.experiment_path())
+    resp.raise_for_status()
+    return resp.json()
+
+
+def export_checkpoint(client: WireClient) -> bytes:
+    """POST /v0/experiments/{E}/checkpoint (12b chapter 07 §14.1).
+
+    Returns the tar archive bytes. Raises if the server emits a
+    non-2xx response.
+    """
+    resp = client.post(client.export_checkpoint_path())
+    resp.raise_for_status()
+    return resp.content
+
+
+def import_checkpoint(
+    client: WireClient,
+    archive_bytes: bytes,
+    *,
+    as_experiment_id: str | None = None,
+    omit_experiment_header: bool = True,
+    extra_headers: dict[str, str] | None = None,
+) -> Any:
+    """POST /v0/checkpoints/import (12b chapter 07 §14.2).
+
+    Returns the raw httpx response so the caller decides how to
+    interpret status codes. Per the §1.3 carve-out, this binding
+    defaults to OMITTING the ``X-Eden-Experiment-Id`` header (the
+    endpoint accepts the body's manifest as the source of truth).
+    """
+    params: dict[str, str] = {}
+    if as_experiment_id is not None:
+        params["as_experiment_id"] = as_experiment_id
+    return client.request_bytes(
+        "POST",
+        client.import_checkpoint_path(),
+        content=archive_bytes,
+        content_type="application/x-eden-checkpoint+tar",
+        params=params or None,
+        headers=extra_headers,
+        omit_experiment_header=omit_experiment_header,
+    )
+
+
 def list_events(client: WireClient, **params: Any) -> list[dict[str, Any]]:
     """GET /v0/experiments/{E}/events; return the raw event list.
 

@@ -167,7 +167,7 @@ The receiving deployment can then resume the experiment from the imported state.
 
 ## 9. Round-trip semantics
 
-Export immediately followed by import yields a structurally-equivalent experiment, modulo:
+A conforming implementation MUST preserve every protocol-defined field of every protocol-owned object through the export → import round-trip per the per-object contracts below. Export immediately followed by import yields a structurally-equivalent experiment, modulo:
 
 (a) `artifacts_uri` rewrites on every idea, variant, and submission;
 (b) event-id reassignment if the importer's event-id factory differs from the exporter's (event ids are opaque per [`02-data-model.md`](02-data-model.md) §4.1);
@@ -190,11 +190,11 @@ The contract per object kind:
 
 ## 10. Recovery on lost import response
 
-The `POST /v0/checkpoints/import` wire endpoint commits state-mutating writes; it is not idempotent in the strict HTTP sense (re-sending the same archive against the same source `experiment_id` returns 409 `eden://error/experiment-id-conflict` on the second call by §11 below). To make safe retry possible after a transport-indeterminate failure, the receiving Store records provenance on the imported experiment:
+The `POST /v0/checkpoints/import` wire endpoint commits state-mutating writes; it is not idempotent in the strict HTTP sense (re-sending the same archive against the same source `experiment_id` returns 409 `eden://error/experiment-id-conflict` on the second call by §11 below). To make safe retry possible after a transport-indeterminate failure, a conforming receiving Store MUST record provenance on the imported experiment:
 
-- The imported Experiment row carries an `imported_from` field of shape `{checkpoint_exported_at: timestamp, checkpoint_format_version: string}` ([`02-data-model.md`](02-data-model.md) §2.5).
-- The `checkpoint_exported_at` value is taken from the manifest's `exported_at` field, verbatim.
-- Natively-created experiments (never imported) have `imported_from` absent (`null` on the wire).
+- The imported Experiment row MUST carry an `imported_from` field of shape `{checkpoint_exported_at: timestamp, checkpoint_format_version: string}` ([`02-data-model.md`](02-data-model.md) §2.5).
+- The `checkpoint_exported_at` value MUST be taken from the manifest's `exported_at` field verbatim.
+- Natively-created experiments (never imported) MUST have `imported_from` absent (`null` on the wire).
 
 A client whose import call lost its `201 Created` response queries `read_experiment` ([`08-storage.md`](08-storage.md) §1.9, [`07-wire-protocol.md`](07-wire-protocol.md) §14.3) against the target experiment id:
 

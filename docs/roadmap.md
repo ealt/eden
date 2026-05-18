@@ -256,7 +256,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 
 **Phase 12b / 12c chunks** (in-flight planning):
 
-- [12b](plans/eden-phase-12b-portable-checkpoints.md) — Portable checkpoints — **planned**
+- [12b](plans/eden-phase-12b-portable-checkpoints.md) — Portable checkpoints — **shipped 2026-05-19** (see [CHANGELOG](../CHANGELOG.md))
 - [12c](plans/eden-phase-12c-control-plane.md) — Control plane — **planned**
 
 ---
