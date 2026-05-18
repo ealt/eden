@@ -258,6 +258,28 @@ class ExperimentStateResponse(_WireBase):
     state: Literal["running", "terminated"]
 
 
+class PolicyErrorRequest(_WireBase):
+    """Body for ``POST /v0/experiments/{E}/policy-errors`` (12a-3 wave 7).
+
+    The orchestrator posts here when a termination-policy callable
+    raises, so the registered ``experiment.policy_error`` event
+    ([`05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+    §3.4) lands in the event log per chapter 03 §6.2 decision-type 0's
+    fault-tolerance subsection. The event is exempt from the §2
+    transactional invariant: there is no protocol-owned state mutation
+    pairs with it; this is a single-event append.
+
+    Three fields per the registered schema: ``policy_kind`` (v0
+    defines ``"termination"``; future decision types MAY add new
+    values), ``error_type`` (the exception class name), and
+    ``error_message`` (the exception's ``str()`` representation).
+    """
+
+    policy_kind: Annotated[str, Field(min_length=1)]
+    error_type: Annotated[str, Field(min_length=1)]
+    error_message: str
+
+
 __all__ = [
     "AddGroupMemberRequest",
     "ClaimRequest",
@@ -267,6 +289,7 @@ __all__ = [
     "EventsResponse",
     "ExperimentStateResponse",
     "IntegrateRequest",
+    "PolicyErrorRequest",
     "ReassignRequest",
     "ReclaimRequest",
     "RegisterGroupRequest",

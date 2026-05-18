@@ -280,6 +280,70 @@ class TestExperimentStateEndpoint:
 
 
 # ----------------------------------------------------------------------
+# POST /policy-errors — §6.2 decision-type 0 fault-tolerance
+# ----------------------------------------------------------------------
+
+
+class TestPolicyErrorEndpoint:
+    def test_orchestrator_emits_policy_error(self, store: InMemoryStore) -> None:
+        """Orchestrators-group caller appends experiment.policy_error."""
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
+        pre_events = len(store.events())
+        resp = client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
+            headers=_worker_headers("orch-1", orch_token),
+            json={
+                "policy_kind": "termination",
+                "error_type": "ValueError",
+                "error_message": "policy callable raised: bad config",
+            },
+        )
+        assert resp.status_code == 204, resp.text
+        new_events = store.events()[pre_events:]
+        policy_errors = [
+            e for e in new_events if e.type == "experiment.policy_error"
+        ]
+        assert len(policy_errors) == 1
+        assert policy_errors[0].data["policy_kind"] == "termination"
+        assert policy_errors[0].data["error_type"] == "ValueError"
+        assert policy_errors[0].data["error_message"].startswith(
+            "policy callable raised"
+        )
+
+    def test_non_orchestrators_caller_rejected(self, store: InMemoryStore) -> None:
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        # Admin group membership is NOT sufficient — the endpoint is
+        # gated specifically on the orchestrators group.
+        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        resp = client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
+            headers=_worker_headers("admin-eric", admin_token),
+            json={
+                "policy_kind": "termination",
+                "error_type": "X",
+                "error_message": "y",
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["type"] == "eden://error/forbidden"
+
+    def test_missing_required_field_rejected(self, store: InMemoryStore) -> None:
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
+        resp = client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
+            headers=_worker_headers("orch-1", orch_token),
+            json={"policy_kind": "termination", "error_type": ""},
+        )
+        # Missing `error_message` (or empty `error_type`) → 400.
+        assert resp.status_code == 400
+
+
+# ----------------------------------------------------------------------
 # Lifecycle-bound knock-on: terminated-experiment guards via wire
 # ----------------------------------------------------------------------
 

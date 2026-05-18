@@ -62,7 +62,7 @@ def test_scripted_mode_substrate_flags_optional() -> None:
 
 def test_subprocess_mode_substrate_flags_parsed(tmp_path: Path) -> None:
     cfg = tmp_path / "config.yaml"
-    cfg.write_text("parallel_variants: 1\nmax_variants: 1\nmax_wall_time: 1h\n"
+    cfg.write_text("parallel_variants: 1\n"
                    "evaluation_schema:\n  score: real\n"
                    "objective:\n  expr: score\n  direction: maximize\n"
                    "ideation_command: 'true'\n")

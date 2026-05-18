@@ -904,26 +904,35 @@ class StoreClient:
     def emit_policy_error(
         self,
         *,
-        policy_kind: str,  # noqa: ARG002 — wire endpoint not yet wired
-        error_type: str,  # noqa: ARG002 — wire endpoint not yet wired
-        error_message: str,  # noqa: ARG002 — wire endpoint not yet wired
+        policy_kind: str,
+        error_type: str,
+        error_message: str,
     ) -> None:
-        """Not yet wired through HTTP — orchestrator service uses in-process Store path.
+        """Append an ``experiment.policy_error`` event over the wire.
 
-        The ``experiment.policy_error`` event is registered per
-        [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
-        §3.4 but is fault-output, not state-change, and the policy-driven
-        emit path runs inside the orchestrator service today
-        (`reference/services/orchestrator/`). A future chapter-7 binding
-        for emit will land alongside Phase 12c control-plane work; until
-        then, callers that exercise the StoreClient path catch this
-        :class:`NotImplementedError` and fall back to a structured log.
+        Posts to ``POST /v0/experiments/{E}/policy-errors`` (the
+        12a-3 wave-7 follow-up endpoint added to satisfy the
+        ``03-roles.md`` §6.2 decision-type 0 fault-tolerance MUST
+        through the wire-bound orchestrator service). Authority:
+        ``orchestrators`` — caller's bearer MUST be a member of that
+        group per chapter 07 §13.3. The route returns 204 on success.
+
+        No read-back ladder is needed: the event is exempt from the
+        ``05-event-protocol.md`` §2 transactional invariant (no state
+        mutation pairs with it), so a transport-indeterminate failure
+        is an at-most-once observability gap, not a state-correctness
+        risk. The driver layer catches generic ``Exception`` and
+        degrades to a structured log so a single failed emit cannot
+        cascade into a stuck orchestrator iteration.
         """
-        raise NotImplementedError(
-            "StoreClient.emit_policy_error has no wire endpoint in v0; "
-            "the orchestrator's in-process Store path handles event "
-            "emission. See 05-event-protocol.md §3.4."
-        )
+        path = f"{self._base}/policy-errors"
+        body = {
+            "policy_kind": policy_kind,
+            "error_type": error_type,
+            "error_message": error_message,
+        }
+        resp = self._request("POST", path, json=body)
+        resp.raise_for_status()
 
     def terminate_experiment(
         self, *, reason: str, terminated_by: str  # noqa: ARG002 — server stamps it

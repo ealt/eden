@@ -69,6 +69,7 @@ from .models import (
     EventsResponse,
     ExperimentStateResponse,
     IntegrateRequest,
+    PolicyErrorRequest,
     ReassignRequest,
     ReclaimRequest,
     RegisterGroupRequest,
@@ -1071,6 +1072,48 @@ def make_app(
             reason=body.reason, terminated_by=terminated_by
         )
         return experiment.model_dump(mode="json", exclude_none=True)
+
+    @app.post(f"{base}/policy-errors")
+    async def _emit_policy_error(
+        request: Request,
+        experiment_id: str,
+        body: PolicyErrorRequest,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> Response:
+        """12a-3 wave-7 follow-up: emit ``experiment.policy_error``.
+
+        Per [`03-roles.md`](../../../../spec/v0/03-roles.md) §6.2
+        decision-type 0 fault-tolerance, when a termination policy
+        raises the orchestrator MUST emit a registered
+        ``experiment.policy_error`` event so operators see the
+        failure in the event log. The orchestrator service runs
+        against ``StoreClient`` (wire-bound), so the event needs a
+        wire endpoint to land in the per-experiment log.
+
+        Authority: ``orchestrators`` — the orchestrator instance is
+        the only caller that produces these events. The endpoint is
+        NOT exposed to ``admins`` to keep the event surface from
+        becoming a manual log-spam vector.
+
+        The event is exempt from the
+        [`05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+        §2 transactional invariant: no protocol-owned state mutation
+        pairs with it. The route delegates to
+        ``Store.emit_policy_error`` for the actual single-event
+        append; 204 on success.
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/policy-errors",
+        )
+        _enforce_in_any_group(request, ("orchestrators",))
+        store.emit_policy_error(
+            policy_kind=body.policy_kind,
+            error_type=body.error_type,
+            error_message=body.error_message,
+        )
+        return Response(status_code=204)
 
     @app.get(f"{base}/state")
     async def _read_experiment_state(

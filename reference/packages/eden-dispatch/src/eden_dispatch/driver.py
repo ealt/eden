@@ -273,15 +273,18 @@ def _terminate_if_directed(
 def _emit_policy_error_best_effort(
     store: Store, *, error_type: str, error_message: str
 ) -> None:
-    """Append ``experiment.policy_error`` if the Store supports it; else log only.
+    """Append ``experiment.policy_error`` for the §6.2 fault-tolerance MUST.
 
-    ``StoreClient`` (the wire-binding-backed Store) currently raises
-    :class:`NotImplementedError` from this method — the wire endpoint
-    lands in a follow-up to wave 4. In-process Stores (memory / sqlite
-    / postgres) append the event normally. Catching the
-    ``NotImplementedError`` here keeps the orchestrator service
-    operational against a remote task-store; the operator-visibility
-    cost is documented in the policy-error spec note.
+    All three backends — in-process Stores (memory / sqlite /
+    postgres) and the wire-bound ``StoreClient`` — implement
+    ``emit_policy_error``; the wire path posts to
+    ``POST /v0/experiments/{E}/policy-errors`` (chapter 07
+    §2.9-adjacent endpoint added in 12a-3 wave 7). The "best-effort"
+    naming is preserved because a transient transport failure on the
+    emit path still degrades to log-only: a single failed
+    fault-observability emit MUST NOT cascade into a stuck
+    orchestrator iteration, per the chapter 03 §6.2 fault-tolerance
+    posture.
     """
     try:
         store.emit_policy_error(
