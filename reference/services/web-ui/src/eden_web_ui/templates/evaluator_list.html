@@ -54,6 +54,8 @@
                             <p>idea: <a href="/admin/ideas/{{ row.idea.idea_id }}/"><code>{{ row.idea.idea_id }}</code></a>
                                 <small>slug=<code>{{ row.idea.slug }}</code></small>
                             </p>
+                            {% elif row.idea_read_failed %}
+                            <p><em>(idea: read error)</em></p>
                             {% endif %}
                         </details>
                     {% endif %}

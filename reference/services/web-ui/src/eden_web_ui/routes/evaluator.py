@@ -83,6 +83,14 @@ def _build_evaluator_pending_rows(
     for parent-idea context). ``StorageNotFound`` on either degrades
     that row gracefully; transport-shaped failures increment the
     page-level counter.
+
+    Per codex r4 W2: the row-level ``read_failed`` flag fires ONLY
+    when the *variant* itself could not be read. A failed parent-idea
+    read sets ``idea_read_failed=True`` on the row but leaves the
+    variant context (branch / commit / executed_by / artifact) intact;
+    the template surfaces a localized "(idea: read error)" note inline
+    while still incrementing the page-level read-failed counter so the
+    "N read(s) failed" banner fires.
     """
     from eden_storage.errors import NotFound as StorageNotFound
 
@@ -93,6 +101,7 @@ def _build_evaluator_pending_rows(
         idea: Idea | None = None
         variant_artifact: str | None = None
         read_failed_row = False
+        idea_read_failed = False
         try:
             variant = store.read_variant(task.payload.variant_id)
         except StorageNotFound:
@@ -108,7 +117,7 @@ def _build_evaluator_pending_rows(
                 idea = None
             except Exception:  # noqa: BLE001 — transport-shaped
                 idea = None
-                read_failed_row = True
+                idea_read_failed = True
                 read_failed += 1
             try:
                 variant_artifact = read_variant_artifact(
@@ -125,6 +134,7 @@ def _build_evaluator_pending_rows(
                 "target": task.target,
                 "lineage_link": f"/admin/tasks/{task.task_id}/",
                 "read_failed": read_failed_row,
+                "idea_read_failed": idea_read_failed,
             }
         )
     return rows, read_failed
