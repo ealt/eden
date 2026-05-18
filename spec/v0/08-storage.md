@@ -66,7 +66,7 @@ Experiments ([`02-data-model.md`](02-data-model.md) §2.5) are persisted alongsi
 
 | Operation | Arguments | Effect |
 |---|---|---|
-| `read_experiment_state` | `experiment_id` | Returns the experiment's current `state` (`"running"` or `"terminated"`). |
+| `read_experiment` | `experiment_id` | Returns the full experiment runtime object (`experiment_id`, `state`, `created_at`, `imported_from`). See [§1.9](#19-checkpoint-operations) for the full definition; state-only callers project the `state` field from the result. The 12a-3 `read_experiment_state` primitive is subsumed by this op. |
 | `update_experiment_state` | `experiment_id`, `new_state` | Internal primitive: atomically transitions `state` to `new_state`. Used by `terminate_experiment` and the orchestrator's policy-driven termination branch ([`03-roles.md`](03-roles.md) §6.2 decision-type 0). Not a public wire op in v0. |
 | `terminate_experiment` | `experiment_id`, `reason`, `terminated_by` | Public lifecycle op ([`04-task-protocol.md`](04-task-protocol.md) §8.1). Atomically transitions `state` from `"running"` to `"terminated"` and appends `experiment.terminated` ([`05-event-protocol.md`](05-event-protocol.md) §3.4) carrying `reason` and `terminated_by`. Idempotent on the terminated state: a call against an already-terminated experiment MUST return success without appending a second event. |
 
@@ -77,6 +77,22 @@ The state update and the `experiment.terminated` event MUST commit in a single t
 **Terminated-experiment guard.** A conforming task store MUST reject every `create_task` op and every `claim` op against a `pending` task whose experiment is in state `"terminated"`, with `eden://error/illegal-transition` ([`04-task-protocol.md`](04-task-protocol.md) §2, §3.5 step 0). Already-claimed tasks MAY still complete normally (`submit`/`accept`/`reject`); the integrator's `integrate_variant` op also continues to run per the drain semantics ([`02-data-model.md`](02-data-model.md) §2.5). The guard is the Store's responsibility, not the binding's: in-process callers that bypass the binding MUST still observe it.
 
 The §6 transactional invariant applies uniformly to experiment-state transitions: `terminate_experiment` (and the orchestrator's policy-driven path) commits the state field update and the `experiment.terminated` event in a single transaction, observably atomic to subscribers.
+
+### 1.9 Checkpoint operations
+
+Implementations that claim the v1+checkpoints conformance level ([`09-conformance.md`](09-conformance.md) §4) MUST expose the following operations. Implementations that do not claim that level MAY omit them.
+
+| Operation | Arguments | Effect |
+|---|---|---|
+| `read_experiment` | `experiment_id` | Returns the full experiment runtime object: `experiment_id`, `state`, `created_at`, and `imported_from` (`null` on natively-created experiments). Replaces the 12a-3 `read_experiment_state` projection ([§1.8](#18-experiment-persistence-and-lifecycle-ops)); state-only callers project the `state` field from the result. |
+| `export_checkpoint` | `experiment_id`, output stream | Materializes an atomic snapshot of `experiment_id`'s full protocol state (tasks, ideas, variants, submissions, events, workers, groups, experiment runtime, git repo, artifacts) into the portable-checkpoint format defined in [`10-checkpoints.md`](10-checkpoints.md). The snapshot MUST satisfy the atomicity contract in [`10-checkpoints.md`](10-checkpoints.md) §6. Read-only with respect to source state. |
+| `import_checkpoint` | input stream, OPTIONAL `as_experiment_id` | Reads a portable-checkpoint archive and creates a new experiment whose state matches the round-trip equivalence rules of [`10-checkpoints.md`](10-checkpoints.md) §9. Returns the imported `experiment_id` (the manifest's value, or `as_experiment_id` if supplied). Atomic: either every protocol-owned row, ref, and artifact commits, or none does. Sets the new experiment's `imported_from` field per [`02-data-model.md`](02-data-model.md) §2.5. |
+
+`read_experiment` is exposed on the wire at [`07-wire-protocol.md`](07-wire-protocol.md) §14.3.
+
+`export_checkpoint` reads from every store the deployment uses (task store, event log, artifact store) plus the git repository. Implementations MAY apply either of the §6 atomicity strategies in [`10-checkpoints.md`](10-checkpoints.md). The op MUST NOT mutate any persistent state.
+
+`import_checkpoint` writes to every store. The implementation MUST validate every cross-reference between the JSONL contents and the git bundle per [`10-checkpoints.md`](10-checkpoints.md) §12 BEFORE committing any state. Validation failure rejects the archive with `eden://error/checkpoint-invalid`; collision on the resulting `experiment_id` rejects with `eden://error/experiment-id-conflict`; the `requires_credential_reissue` semantics in [`10-checkpoints.md`](10-checkpoints.md) §8 apply. The single composite commit observes the §6 transactional invariant uniformly across all touched stores.
 
 ## 2. Event log
 
@@ -211,7 +227,7 @@ The protocol leaves to implementations:
 
 What the protocol does **not** leave to implementations:
 
-- The set of operations each store MUST expose (§1.1, §2.1, §5.1, §9.1).
+- The set of operations each store MUST expose (§1.1, §1.8, §2.1, §5.1, §9.1; additionally §1.9 for implementations claiming the v1+checkpoints conformance level).
 - The atomicity contract of each operation (§1, §6).
 - The read-after-write and crash-recovery guarantees (§3).
 - The evaluation-schema enforcement rules (§4).

@@ -35,6 +35,8 @@ Commit SHAs are lowercase hexadecimal strings of one of the two lengths git supp
 
 Artifact locations are URIs. The protocol does not mandate a scheme; file URLs, S3 URLs, or custom schemes are permitted. A conforming artifact store MUST document which schemes it issues.
 
+The deployment-issued `artifacts_uri` on an idea or variant ([§5.1](#51-fields), [§9.1](#91-fields)) is **deployment-local**: a URI issued by deployment A is not expected to resolve in deployment B. Portable export/import normalizes references to the content-addressed `checkpoint:sha256:<hex>` form defined in [`10-checkpoints.md`](10-checkpoints.md) §7; consumers rewriting URIs across deployments MUST use that scheme rather than carrying deployment-local URIs across the wire.
+
 ## 2. Experiment config
 
 Schema: [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json).
@@ -108,6 +110,15 @@ Termination is driven by one of two paths, both committed via the same Store-lev
 - **Operator-driven** — an admin caller invokes the wire op `POST /v0/experiments/{E}/terminate` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9) with body `{"reason": "<string>"}`. The Store-level op `terminate_experiment` ([`04-task-protocol.md`](04-task-protocol.md) §8, [`08-storage.md`](08-storage.md) §1.8) commits the transition with the operator's `reason`. This path is independent of `dispatch_mode.termination`: an operator MAY terminate an experiment whose `termination` is `"manual"`.
 
 Both paths are **idempotent on the terminated state**: a second `terminate_experiment` call on an already-terminated experiment MUST return success and MUST NOT emit a second `experiment.terminated` event. Multi-instance orchestrators racing the same transition therefore collapse to a single observable event; see [`03-roles.md`](03-roles.md) §6.4.
+
+The experiment runtime object additionally carries an optional `imported_from` field of shape `{checkpoint_exported_at: timestamp, checkpoint_format_version: string}`:
+
+| Subfield | Required | Type | Description |
+|---|---|---|---|
+| `checkpoint_exported_at` | yes | timestamp | The source checkpoint manifest's `exported_at` value, copied verbatim at import time ([`10-checkpoints.md`](10-checkpoints.md) §5). |
+| `checkpoint_format_version` | yes | string | The source checkpoint manifest's `checkpoint_format_version` value, copied verbatim at import time. |
+
+`imported_from` is absent (JSON null on the wire) on natively-created experiments and present on experiments produced by the portable-checkpoint import endpoint ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2). The field is the recovery-probe anchor for [`10-checkpoints.md`](10-checkpoints.md) §10: a client that lost the import response queries `read_experiment` and compares `imported_from.checkpoint_exported_at` against the source manifest's `exported_at` to disambiguate "commit succeeded; response lost" from "commit never happened". The field is written exactly once (at import) and is immutable thereafter.
 
 ## 3. Task
 

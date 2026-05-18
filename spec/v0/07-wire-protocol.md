@@ -20,7 +20,9 @@ Breaking changes to the binding produce a new root (`/v1/`), the same way breaki
 
 ### 1.3 Experiment scoping
 
-Every normative path segment below `/v0/` begins with `experiments/{experiment_id}/`, and every request MUST additionally send the header `X-Eden-Experiment-Id: {experiment_id}` with a value equal to the path segment. A server MUST reject a request whose header disagrees with its path segment with `eden://error/experiment-id-mismatch` (HTTP 400); see §6. The header is defense-in-depth against misrouted clients and proxies.
+Every normative path segment below `/v0/` begins with `experiments/{experiment_id}/`, and every request MUST additionally send the header `X-Eden-Experiment-Id: {experiment_id}` with a value equal to the path segment. A server MUST reject a request whose header disagrees with its path segment with `eden://error/experiment-id-mismatch` (HTTP 400); see §9. The header is defense-in-depth against misrouted clients and proxies.
+
+**Exception: portable-checkpoint endpoints.** Paths under `/v0/checkpoints/` (currently only `POST /v0/checkpoints/import` per §14.2) are not experiment-scoped at the URL level — the experiment_id appears in the uploaded checkpoint manifest's `experiment_id` field ([`10-checkpoints.md`](10-checkpoints.md) §5), not in the URL. On these endpoints the `X-Eden-Experiment-Id` header is OPTIONAL; when present, it MUST equal the manifest's `experiment_id` after applying any `as_experiment_id` override. A mismatch MUST be rejected with `eden://error/experiment-id-mismatch` (HTTP 400). When the header is absent the server proceeds with the experiment id derived from the manifest + override.
 
 ## 2. Task operations (chapter 4)
 
@@ -323,6 +325,11 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/no-op-variant` | 409 | execution-task submission whose variant tree is identical to every parent's tree; emitted by IUTs that exercise the SHOULD-level wire-side detection from [`04-task-protocol.md`](04-task-protocol.md) §4.2 (only the type is normative when emitted; emission itself is SHOULD per the chapter 04 rule). See [`03-roles.md`](03-roles.md) §3.3, §3.4. |
 | `eden://error/reserved-identifier` | 409 | `register_worker` / `register_group` rejected the supplied id per [`02-data-model.md`](02-data-model.md) §6.1 |
 | `eden://error/cycle-detected` | 409 | a group mutation would introduce a cycle ([`02-data-model.md`](02-data-model.md) §7.3) |
+| `eden://error/checkpoint-invalid` | 400 | uploaded checkpoint archive is malformed; fails JSONL ↔ bundle cross-reference validation per [`10-checkpoints.md`](10-checkpoints.md) §12, or carries a missing `artifacts/sha256/<hex>` referenced by JSONL data per [`10-checkpoints.md`](10-checkpoints.md) §7 |
+| `eden://error/experiment-id-conflict` | 409 | portable-checkpoint import would collide with an existing `experiment_id` and no `as_experiment_id` override was supplied ([`10-checkpoints.md`](10-checkpoints.md) §11) |
+| `eden://error/spec-version-mismatch` | 409 | the checkpoint manifest's `spec_version` does not match the importer's spec version ([`10-checkpoints.md`](10-checkpoints.md) §13) |
+| `eden://error/unsupported-checkpoint-version` | 409 | the checkpoint manifest's `checkpoint_format_version` is not recognized by the importer ([`10-checkpoints.md`](10-checkpoints.md) §13) |
+| `eden://error/checkpoint-in-progress` | 409 | OPTIONAL — an exporter that rejects concurrent state-mutating operations during a live export ([`10-checkpoints.md`](10-checkpoints.md) §6) MAY use this code; servers that serialize instead MUST NOT emit it |
 
 A server MUST NOT emit a `type` outside this vocabulary for a v0 endpoint. Implementations MAY add custom error types at non-`/v0/` paths (e.g. `/_reference/...`) using the same envelope. The pre-12a-1 `eden://error/wrong-token` is **removed**: per-claim tokens no longer exist.
 
@@ -413,7 +420,76 @@ The [`04-task-protocol.md`](04-task-protocol.md) §3.3 requirement that the bind
 
 Bearer tokens are sensitive: any logging that captures HTTP request headers MUST redact the `Authorization` value. A conforming server's structured request logger MUST NOT emit the bearer in plaintext; deployments are responsible for proxy / sidecar log discipline.
 
-## 14. Implementation latitude
+## 14. Checkpoint operations
+
+These endpoints bind the portable-checkpoint operations defined in [`10-checkpoints.md`](10-checkpoints.md) and the [`08-storage.md`](08-storage.md) §1.9 Store ops. Implementations that claim the v1+checkpoints conformance level ([`09-conformance.md`](09-conformance.md) §4) MUST expose them; other implementations MAY omit them. The endpoints are admin-gated (§13.3): the operator authority over export and import is reserved for the deployment-admin principal or members of the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5).
+
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `export_checkpoint` | `POST` | `/v0/experiments/{E}/checkpoint` | worker (group-gated: `admins`) |
+| `import_checkpoint` | `POST` | `/v0/checkpoints/import` | worker (group-gated: `admins`) |
+| `read_experiment` | `GET` | `/v0/experiments/{E}` | worker (group-gated: `admins`) |
+
+The `import_checkpoint` endpoint is the only normative v0 path outside `/v0/experiments/{E}/...`; it is carved out of the §1.3 experiment-scoping rule (see §1.3 paragraph 2). The `X-Eden-Experiment-Id` header is OPTIONAL on `/v0/checkpoints/...` paths.
+
+### 14.1 Export checkpoint
+
+`POST /v0/experiments/{E}/checkpoint` accepts an empty request body. On success the server returns `200 OK` with `Content-Type: application/x-eden-checkpoint+tar` and a body containing the portable-checkpoint archive per [`10-checkpoints.md`](10-checkpoints.md) §§3-4. The server MAY use `Transfer-Encoding: chunked` or buffer the response with `Content-Length`; clients MUST handle both.
+
+Optional query parameters:
+
+- `format_version=<n>` — the desired `checkpoint_format_version` ([`10-checkpoints.md`](10-checkpoints.md) §5). Defaults to the highest version the server supports. An unrecognized value returns 400 `eden://error/bad-request`.
+
+The export is atomic per [`10-checkpoints.md`](10-checkpoints.md) §6. A server that rejects concurrent state-mutating operations during a live export MAY return 409 `eden://error/checkpoint-in-progress` on those mutating operations; servers that serialize them after the export instead MUST NOT emit that code.
+
+**Authority:** caller MUST be in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). A caller outside the group receives 403 `eden://error/forbidden`.
+
+### 14.2 Import checkpoint
+
+`POST /v0/checkpoints/import` accepts a request body with `Content-Type: application/x-eden-checkpoint+tar` carrying a portable-checkpoint archive ([`10-checkpoints.md`](10-checkpoints.md) §§3-4). The server MAY accept chunked or `Content-Length`-buffered uploads; bindings MUST handle both. On success the server returns `201 Created` with a JSON body:
+
+```json
+{
+  "experiment_id": "<id>",
+  "warnings": ["<warning string>", ...]
+}
+```
+
+- `experiment_id` is the imported experiment's id (the manifest's `experiment_id`, or the override if `as_experiment_id` was supplied).
+- `warnings` is an array of free-form strings the importer surfaces to the operator. Typical entries: the path of a credentials sidecar file ([`10-checkpoints.md`](10-checkpoints.md) §8 step 4), an indication that one or more refs were ignored because no protocol-owned object referenced them ([`10-checkpoints.md`](10-checkpoints.md) §12 final paragraph).
+
+Optional query parameters:
+
+- `as_experiment_id=<new_id>` — override the source's experiment id. When supplied, the imported experiment is created with this id throughout (the manifest's id is replaced everywhere in the stored data). When absent and the source's id collides with an existing experiment, the server returns 409 `eden://error/experiment-id-conflict`.
+
+The import is a single composite commit per [`08-storage.md`](08-storage.md) §6 and [`10-checkpoints.md`](10-checkpoints.md) §7. Validation failures (cross-reference checks per [`10-checkpoints.md`](10-checkpoints.md) §12, missing artifact files, malformed JSONL) MUST cause the entire commit to roll back with 400 `eden://error/checkpoint-invalid`. Version-mismatch failures return 409 (`eden://error/spec-version-mismatch`, `eden://error/unsupported-checkpoint-version`). Experiment-id collisions return 409 `eden://error/experiment-id-conflict`.
+
+If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md`](10-checkpoints.md) §5), the importer MUST mint fresh credentials for every imported worker as part of the same composite commit. The new credentials are surfaced to the operator via the `warnings` array; the side-channel format is implementation-defined.
+
+**Header carve-out (§1.3).** The `X-Eden-Experiment-Id` header is OPTIONAL on this endpoint. When present, its value MUST equal the imported experiment's resulting id (the manifest's `experiment_id` after any `as_experiment_id` rewrite). A mismatch returns 400 `eden://error/experiment-id-mismatch`. When absent the server proceeds without that check.
+
+**Authority:** caller MUST be in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). A caller outside the group receives 403 `eden://error/forbidden`.
+
+### 14.3 Read experiment
+
+`GET /v0/experiments/{E}` returns the full experiment runtime object ([`08-storage.md`](08-storage.md) §1.9), shape per [`schemas/experiment.schema.json`](schemas/experiment.schema.json):
+
+```json
+{
+  "experiment_id": "<id>",
+  "state": "running" | "terminated",
+  "created_at": "<RFC 3339 timestamp>",
+  "imported_from": null | {"checkpoint_exported_at": "<timestamp>", "checkpoint_format_version": "<string>"}
+}
+```
+
+`imported_from` is `null` on natively-created experiments and an object on imported experiments ([`02-data-model.md`](02-data-model.md) §2.5, [`10-checkpoints.md`](10-checkpoints.md) §10). The endpoint is the recovery-probe surface for the import-response-lost case described in [`10-checkpoints.md`](10-checkpoints.md) §10.
+
+The companion `GET /v0/experiments/{E}/state` (§2.9) remains worker-accessible and returns only the state projection; this endpoint exposes the full object including `imported_from` and is admin-gated to avoid widening the recovery-probe surface.
+
+**Authority:** caller MUST be in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). A caller outside the group receives 403 `eden://error/forbidden`.
+
+## 15. Implementation latitude
 
 The binding leaves to implementations:
 

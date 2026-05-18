@@ -19,6 +19,29 @@
       "format": "date-time",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
       "description": "Wall-clock time at which the experiment was created. Used by deployment-supplied termination policies (e.g. max_wall_time) and not constrained beyond ISO-8601 UTC."
+    },
+    "imported_from": {
+      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md §10). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md §15.2). Recovery probe: a client that lost the import 201 response queries this field and matches checkpoint_exported_at against the local manifest's exported_at.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["checkpoint_exported_at", "checkpoint_format_version"],
+          "properties": {
+            "checkpoint_exported_at": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+              "description": "The source checkpoint's manifest.exported_at value, copied verbatim at import time."
+            },
+            "checkpoint_format_version": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The source checkpoint's manifest.checkpoint_format_version value, copied verbatim at import time."
+            }
+          }
+        }
+      ]
     }
   }
 }

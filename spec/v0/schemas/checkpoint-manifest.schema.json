@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN portable-checkpoint manifest",
+  "description": "Top-level descriptor for a portable checkpoint archive, per spec/v0/10-checkpoints.md §5. Carries format + spec version, source experiment id, exporter metadata, and the per-component file paths within the archive. Every consumer MUST validate the manifest against this schema before reading other archive contents.",
+  "type": "object",
+  "required": [
+    "checkpoint_format_version",
+    "spec_version",
+    "experiment_id",
+    "exported_at",
+    "requires_credential_reissue",
+    "counts",
+    "files"
+  ],
+  "properties": {
+    "checkpoint_format_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Version of the portable-checkpoint format specified by spec/v0/10-checkpoints.md. v0 of the EDEN spec ships format version '1'. Importers MUST reject unrecognized values with eden://error/unsupported-checkpoint-version."
+    },
+    "spec_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "EDEN spec version the contained data conforms to (currently 'v0'). Importers MUST reject mismatched values with eden://error/spec-version-mismatch."
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The source experiment's id. The receiving deployment uses this verbatim unless an as_experiment_id override is supplied at import time (spec/v0/07-wire-protocol.md §15.2)."
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "RFC 3339 UTC timestamp at which the source snapshot was taken. Normative: serves as the recovery-probe anchor (10-checkpoints.md §10) and the value stored on the importer's Experiment.imported_from.checkpoint_exported_at field."
+    },
+    "exporter": {
+      "type": "object",
+      "description": "Informative metadata describing the producing implementation. Consumers MUST NOT key behavior on its contents; it exists for operator debugging.",
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "description": "Free-form identifier of the exporting impl (e.g., 'eden-reference/0.x')."
+        },
+        "atomicity_mechanism": {
+          "type": "string",
+          "description": "Free-form indicator of which §6 atomicity strategy was used (e.g., 'transactional_snapshot', 'quiesce_and_dump')."
+        }
+      }
+    },
+    "requires_credential_reissue": {
+      "type": "boolean",
+      "description": "When true, the importer MUST mint fresh credentials for every imported worker (spec/v0/10-checkpoints.md §8). v0 producers MUST set this to true."
+    },
+    "counts": {
+      "type": "object",
+      "description": "Informative per-component object counts. Consumers MAY use this for early validation; the authoritative count is the actual line count of each JSONL file.",
+      "required": [
+        "tasks",
+        "ideas",
+        "variants",
+        "submissions",
+        "events",
+        "workers",
+        "groups"
+      ],
+      "properties": {
+        "tasks": {"type": "integer", "minimum": 0},
+        "ideas": {"type": "integer", "minimum": 0},
+        "variants": {"type": "integer", "minimum": 0},
+        "submissions": {"type": "integer", "minimum": 0},
+        "events": {"type": "integer", "minimum": 0},
+        "workers": {"type": "integer", "minimum": 0},
+        "groups": {"type": "integer", "minimum": 0}
+      }
+    },
+    "files": {
+      "type": "object",
+      "description": "Per-component file paths within the archive. Implementations MUST emit each file at the named path; the fixed shape below is the v0 contract.",
+      "required": [
+        "experiment_config",
+        "experiment",
+        "tasks",
+        "ideas",
+        "variants",
+        "submissions",
+        "events",
+        "workers",
+        "groups",
+        "repo_bundle",
+        "artifacts_dir"
+      ],
+      "properties": {
+        "experiment_config": {"type": "string", "minLength": 1},
+        "experiment": {"type": "string", "minLength": 1},
+        "tasks": {"type": "string", "minLength": 1},
+        "ideas": {"type": "string", "minLength": 1},
+        "variants": {"type": "string", "minLength": 1},
+        "submissions": {"type": "string", "minLength": 1},
+        "events": {"type": "string", "minLength": 1},
+        "workers": {"type": "string", "minLength": 1},
+        "groups": {"type": "string", "minLength": 1},
+        "repo_bundle": {"type": "string", "minLength": 1},
+        "artifacts_dir": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
