@@ -65,7 +65,7 @@ ALLOWLIST_PATHS: tuple[str, ...] = (
     "docs/archive/",
     "docs/plans/eden-phase-",
     "docs/plans/review/",
-    "MANUAL_UI_ISSUES.md",
+    "CHANGELOG.md",  # historical per-chunk completion record; preserves pre-rename verbatim text
     "scripts/check-rename-discipline.py",  # this file documents the names
 )
 

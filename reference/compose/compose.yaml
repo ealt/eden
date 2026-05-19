@@ -218,7 +218,9 @@ services:
       # hosts auto-claim within milliseconds. Manual-UI sessions
       # (a human at the keyboard) want a much higher value — set
       # EDEN_MAX_QUIESCENT_ITERATIONS in .env to override. See
-      # MANUAL_UI_ISSUES.md #1 for the design discussion.
+      # GitHub issue #98 for the design discussion (the structural fix
+      # — orchestrator as cross-experiment infra — is deferred to
+      # Phase 12c control plane).
       - --poll-interval
       - "1.0"
       - --max-quiescent-iterations
@@ -448,6 +450,6 @@ volumes:
   # is passed (otherwise compose's `<project>_<volume>` prefix makes
   # the name operator-deployment-dependent and re-seeds silently
   # no-op because repo-init short-circuits with
-  # EDEN_REPO_ALREADY_SEEDED). See MANUAL_UI_ISSUES.md §8.
+  # EDEN_REPO_ALREADY_SEEDED). Resolved via closed issue #55.
   eden-repo-init-staging:
     name: eden-repo-init-staging
