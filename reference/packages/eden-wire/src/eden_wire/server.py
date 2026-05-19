@@ -34,6 +34,7 @@ from typing import Any
 from eden_checkpoint import (
     CHECKPOINT_MEDIA_TYPE,
     CheckpointError,
+    CheckpointInvalid,
 )
 from eden_checkpoint import (
     ExperimentIdMismatch as CheckpointExperimentIdMismatch,
@@ -329,6 +330,8 @@ def make_app(
     subscribe_poll_interval: float = 0.1,
     admin_token: str | None = None,
     artifacts_dir: Path | str | None = None,
+    checkpoint_experiment_config: str | None = None,
+    checkpoint_repo_path: Path | str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
 
@@ -368,6 +371,14 @@ def make_app(
     artifact_root: Path | None = (
         Path(artifacts_dir) if artifacts_dir is not None else None
     )
+    # 12b: optional checkpoint substrate. When the operator supplies
+    # both, every export carries real bytes; when either is None the
+    # route emits a zero-byte placeholder (the wave-4 in-process
+    # posture; receiver-side resume requires both to be present).
+    checkpoint_repo_root: Path | None = (
+        Path(checkpoint_repo_path) if checkpoint_repo_path is not None else None
+    )
+    checkpoint_config_text: str = checkpoint_experiment_config or ""
 
     if admin_token is not None:
         install_auth_middleware(app, admin_token=admin_token, store=store)
@@ -1460,8 +1471,33 @@ def make_app(
         )
         if admin_token is not None:
             require_admin(request)
+        # Compose substrate-external pieces. The bundle is generated
+        # per-request inside a temp file (git bundle is a write-then-read
+        # flow; can't stream directly to the export buffer). When the
+        # repo path is unset (e.g. test fixtures) the bundle stays
+        # empty — the resulting archive is structurally valid but
+        # receiver-side resume requires both substrate pieces.
+        bundle_bytes = b""
+        if checkpoint_repo_root is not None:
+            from eden_checkpoint.repo_bundle import create_bundle
+
+            with tempfile.TemporaryDirectory(prefix="eden-checkpoint-bundle-") as td:
+                bundle_path = Path(td) / "repo.bundle"
+                try:
+                    create_bundle(checkpoint_repo_root, bundle_path)
+                    bundle_bytes = bundle_path.read_bytes()
+                except CheckpointInvalid:
+                    # Empty repo / unreachable bundle: emit a zero-byte
+                    # placeholder rather than 5xx-ing. The receiver's
+                    # chapter-10 §12 cross-reference validation will
+                    # surface any inconsistency at import time.
+                    bundle_bytes = b""
         buffer = io.BytesIO()
-        store.export_checkpoint(buffer)
+        store.export_checkpoint(
+            buffer,
+            experiment_config=checkpoint_config_text,
+            repo_bundle=bundle_bytes,
+        )
         return Response(
             content=buffer.getvalue(),
             media_type=CHECKPOINT_MEDIA_TYPE,

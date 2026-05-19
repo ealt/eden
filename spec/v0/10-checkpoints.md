@@ -117,6 +117,12 @@ Field semantics:
 
 ## 6. Atomicity contract
 
+A conforming exporter assembles the archive from three categories of input:
+
+1. **Store-managed state** — tasks, ideas, variants, submissions, events, workers, groups, runtime experiment object. The Store-side `export_checkpoint` operation ([`08-storage.md`](08-storage.md) §1.9) provides this stream.
+2. **Caller-supplied substrate-external pieces** — the experiment-config text (carried verbatim into `experiment-config.yaml`) and the git repository state (carried verbatim into `repo.bundle`). The wire binding's export endpoint ([`07-wire-protocol.md`](07-wire-protocol.md) §14.1) composes these from deployment-local substrates; an implementation whose server process has no access to the experiment-config file or the git repo MAY emit zero-byte placeholders (the resulting archive is structurally valid but the receiver MUST treat it as non-resumable — chapter 10 §12's cross-reference validation MAY skip when the bundle is empty).
+3. **Content-addressed artifacts** — bytes of every `artifacts_uri` reference (§7).
+
 The exporter MUST snapshot the source state at a single logical instant. Two strategies are conforming:
 
 1. **Quiesce-and-dump.** The exporter pauses the orchestrator and all workers (e.g., via a deployment-level lock or by flipping every `dispatch_mode` key to `"manual"`), captures the snapshot, and resumes. Simple; introduces brief downtime.

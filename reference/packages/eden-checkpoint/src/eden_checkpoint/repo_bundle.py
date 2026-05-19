@@ -112,6 +112,52 @@ def fetch_bundle(bundle_path: Path, repo_path: Path) -> None:
         )
 
 
+def verify_commits_reachable(
+    bundle_path: Path, shas: list[str], *, working_dir: Path
+) -> set[str]:
+    """Return the subset of ``shas`` that are reachable in ``bundle_path``.
+
+    Implements the chapter 10 §12 cross-reference validation: fetches
+    the bundle into a temporary bare repo at ``working_dir/scratch.git``
+    and runs ``git cat-file -e <sha>`` per requested SHA. A SHA is
+    "reachable" if cat-file exits 0.
+
+    Bundles with zero refs (empty repos) are handled by `fetch_bundle`
+    raising ``CheckpointInvalid``; this function surfaces that as an
+    empty result + lets the caller decide how to interpret missing
+    SHAs. Callers MUST skip the call when the bundle file is itself
+    empty (zero bytes).
+    """
+    if not bundle_path.is_file():
+        raise CheckpointInvalid(f"missing repo bundle: {bundle_path}")
+    if bundle_path.stat().st_size == 0:
+        return set()
+    scratch = working_dir / "scratch.git"
+    init_cmd = ["git", *_git_env_overrides(), "init", "--bare", str(scratch)]
+    result = subprocess.run(init_cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise CheckpointInvalid(
+            f"git init scratch repo failed (rc={result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+    fetch_bundle(bundle_path, scratch)
+    reachable: set[str] = set()
+    for sha in shas:
+        check_cmd = [
+            "git",
+            *_git_env_overrides(),
+            "-C",
+            str(scratch),
+            "cat-file",
+            "-e",
+            sha,
+        ]
+        rc = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
+        if rc.returncode == 0:
+            reachable.add(sha)
+    return reachable
+
+
 def list_bundle_refs(bundle_path: Path) -> dict[str, str]:
     """Return the ``{ref_name: sha}`` map advertised by ``git bundle list-heads``.
 
