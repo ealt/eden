@@ -1169,12 +1169,15 @@ class StoreClient:
            operator intervention is required.
         """
         # Parse the local manifest to know what `exported_at` to match.
+        # Codex round-2 finding: don't extract the whole archive just to
+        # read manifest.json — for large checkpoints this doubles local
+        # disk/I/O on the very path that's supposed to harden a dropped-
+        # response recovery. Stream-walk the tar entries instead and
+        # consume bytes only for the manifest.
         import io as _io
-        import tempfile
+        import tarfile as _tarfile
 
-        from eden_checkpoint import (  # local import — avoid cyclical
-            extract_checkpoint,
-        )
+        from eden_checkpoint import CheckpointManifest
         from eden_storage.errors import (
             AlreadyExists,
             InvalidPrecondition,
@@ -1187,11 +1190,22 @@ class StoreClient:
         local_format_version: str | None = None
         try:
             buf = _io.BytesIO(archive_bytes)
-            with tempfile.TemporaryDirectory(prefix="eden-import-probe-") as td:
-                reader = extract_checkpoint(buf, Path(td))
-                local_exported_at = reader.manifest.exported_at
-                local_format_version = reader.manifest.checkpoint_format_version
-                target_id = as_experiment_id or reader.manifest.experiment_id
+            manifest_bytes: bytes | None = None
+            with _tarfile.open(fileobj=buf, mode="r|") as tar:
+                for member in tar:
+                    # Match `*/manifest.json` at archive root (the
+                    # checkpoint format's single-top-level convention).
+                    if member.name.endswith("/manifest.json") and member.isfile():
+                        extracted = tar.extractfile(member)
+                        if extracted is not None:
+                            manifest_bytes = extracted.read()
+                        break
+            if manifest_bytes is None:
+                raise ValueError("manifest.json not found in archive")
+            manifest_obj = CheckpointManifest.model_validate_json(manifest_bytes)
+            local_exported_at = manifest_obj.exported_at
+            local_format_version = manifest_obj.checkpoint_format_version
+            target_id = as_experiment_id or manifest_obj.experiment_id
         except Exception as parse_exc:
             # If we can't even parse the archive, we can't probe. Treat
             # as indeterminate — the caller's archive may have been
