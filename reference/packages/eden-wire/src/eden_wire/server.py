@@ -1428,19 +1428,26 @@ def make_app(
     ) -> dict[str, Any]:
         """Chapter 7 §14.3: read the full experiment runtime object.
 
-        Admin-gated (literal ``admin`` principal per §13.1). Returns
-        ``state`` + ``created_at`` + ``imported_from`` per
+        Either-auth (any registered worker MAY read, parallel to the
+        §2.9 ``GET /state`` companion read). Returns ``state`` +
+        ``created_at`` + ``imported_from`` per
         ``spec/v0/schemas/experiment.schema.json``; the
         ``imported_from`` field is the recovery-probe anchor for the
-        lost-import-response case in chapter 10 §10.
+        lost-import-response case in chapter 10 §10. The orchestrator's
+        per-iteration ``ExperimentStateView.experiment_created_at`` is
+        the other consumer; restricting this surface to admin-only
+        would 403 the orchestrator's worker bearer and break the
+        dispatch loop (caught by the wave-5 smoke regression). See
+        §14 intro for the bootstrap-class boundary rationale.
         """
         _check_experiment(
             experiment_id,
             x_eden_experiment_id,
             f"/v0/experiments/{experiment_id}",
         )
-        if admin_token is not None:
-            require_admin(request)
+        # Auth middleware (when admin_token is set) has already
+        # authenticated the principal; either-auth means we accept any
+        # registered principal class. No additional gate here.
         return store.read_experiment().model_dump(mode="json", exclude_none=False)
 
     @app.post(f"{base}/checkpoint")

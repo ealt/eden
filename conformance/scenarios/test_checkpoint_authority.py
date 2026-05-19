@@ -174,31 +174,39 @@ def test_export_worker_bearer_rejected(auth_server: dict[str, str]) -> None:
         assert resp.json()["type"] == "eden://error/forbidden"
 
 
-def test_read_experiment_worker_bearer_rejected(
+def test_read_experiment_worker_bearer_accepted(
     auth_server: dict[str, str],
 ) -> None:
-    """spec/v0/07-wire-protocol.md §14.3 — worker bearer is rejected on read_experiment.
+    """spec/v0/07-wire-protocol.md §14.3 — worker bearer reads the full experiment.
 
-    Per §14.3 the full ``read_experiment`` endpoint is admin-gated;
-    worker bearers MUST receive 403 ``eden://error/forbidden``.
+    Per the post-wave-5 §14.3 amendment, the full ``read_experiment``
+    endpoint is **either-auth** (any registered worker). The
+    orchestrator's per-iteration policy view depends on this surface
+    being readable over its worker bearer; restricting to admin-only
+    would break the dispatch loop (caught by the wave-5 smoke
+    regression). The recovery-probe contract still flows through this
+    endpoint with the admin bearer, so both principal classes have
+    legitimate read access.
     """
     admin_bearer = f"admin:{auth_server['admin_token']}"
     with _client(auth_server, bearer=admin_bearer) as c:
         reg = c.post(
             f"/v0/experiments/{auth_server['experiment_id']}/workers",
             headers={"X-Eden-Experiment-Id": auth_server["experiment_id"]},
-            json={"worker_id": "no-read-w"},
+            json={"worker_id": "read-experiment-w"},
         )
         reg.raise_for_status()
         worker_token = reg.json()["registration_token"]
 
-    with _client(auth_server, bearer=f"no-read-w:{worker_token}") as c:
+    with _client(auth_server, bearer=f"read-experiment-w:{worker_token}") as c:
         resp = c.get(
             f"/v0/experiments/{auth_server['experiment_id']}",
             headers={"X-Eden-Experiment-Id": auth_server["experiment_id"]},
         )
-        assert resp.status_code == 403
-        assert resp.json()["type"] == "eden://error/forbidden"
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["experiment_id"] == auth_server["experiment_id"]
+        assert body["state"] in ("running", "terminated")
 
 
 def test_import_unauthenticated_rejected(auth_server: dict[str, str]) -> None:

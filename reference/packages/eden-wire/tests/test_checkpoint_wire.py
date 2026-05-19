@@ -119,8 +119,14 @@ def test_read_experiment_returns_full_object(store: InMemoryStore) -> None:
     assert body["imported_from"] is None
 
 
-def test_read_experiment_rejects_worker_bearer(store: InMemoryStore) -> None:
-    """Worker bearer receives 403 per chapter 7 §14.3 (admin-gated)."""
+def test_read_experiment_worker_bearer_accepted(store: InMemoryStore) -> None:
+    """Worker bearer reads the full experiment per chapter 7 §14.3 (either-auth).
+
+    Post-wave-5 amendment: GET /v0/experiments/{E} is either-auth so
+    the orchestrator's per-iteration policy view can read
+    `created_at` over its worker bearer. The recovery-probe flow uses
+    admin; both legitimately need read access.
+    """
     app = make_app(store, admin_token=ADMIN_TOKEN)
     client = TestClient(app)
     token = _register_worker(client, "non-admin")
@@ -131,8 +137,9 @@ def test_read_experiment_rejects_worker_bearer(store: InMemoryStore) -> None:
             "Authorization": f"Bearer non-admin:{token}",
         },
     )
-    assert resp.status_code == 403
-    assert resp.json()["type"] == "eden://error/forbidden"
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["experiment_id"] == EXPERIMENT_ID
 
 
 # ----------------------------------------------------------------------

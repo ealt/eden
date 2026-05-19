@@ -401,7 +401,7 @@ Every `/v0/` endpoint MUST be classified as **admin-gated**, **worker-gated**, o
 
 Summary of the v0 classifications:
 
-- **admin-gated** — registry mutations: `register_worker`, `reissue_credential`, `register_group`, `add_to_group` / `remove_from_group` / `delete_group`. Plus the §14 portable-checkpoint endpoints (`export_checkpoint`, `import_checkpoint`, `read_experiment`); see §14 for the bootstrap-class rationale.
+- **admin-gated** — registry mutations: `register_worker`, `reissue_credential`, `register_group`, `add_to_group` / `remove_from_group` / `delete_group`. Plus the §14 portable-checkpoint mutation endpoints (`export_checkpoint`, `import_checkpoint`); see §14 for the bootstrap-class rationale. The §14 `read_experiment` endpoint is either-auth (not admin-gated) so the orchestrator's per-iteration policy view can read `created_at` over its worker bearer; see §14.3 for the rationale.
 - **worker-gated, no group-gate** — `claim`, `submit`, `reclaim`, `create_idea`, `mark_idea_ready`, `create_variant`, `declare_variant_evaluation_error`, and the `whoami` probe (`verify_worker_credential`).
 - **worker-gated, `orchestrators` group required** — `accept`, `reject`, `integrate_variant`, and `create_task(kind="execution")` per [`03-roles.md`](03-roles.md) §6.
 - **worker-gated, `admins` group required** — `reassign_task`, `update_dispatch_mode`, `create_task(kind="ideation")`, `create_task(kind="evaluation")` ([`02-data-model.md`](02-data-model.md) §7.5; [`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2). Note that `create_task(kind="ideation")` and `create_task(kind="evaluation")` admit `orchestrators` in addition to `admins` per the per-kind authority in §2.1.
@@ -422,13 +422,15 @@ Bearer tokens are sensitive: any logging that captures HTTP request headers MUST
 
 ## 14. Checkpoint operations
 
-These endpoints bind the portable-checkpoint operations defined in [`10-checkpoints.md`](10-checkpoints.md) and the [`08-storage.md`](08-storage.md) §1.9 Store ops. Implementations that claim the v1+checkpoints conformance level ([`09-conformance.md`](09-conformance.md) §4) MUST expose them; other implementations MAY omit them. The three endpoints are **admin-gated** in the §13.3 sense — caller MUST present the deployment-admin bearer (literal `admin` principal). Unlike the `admins`-group-gated operational endpoints (`reassign_task` / `update_dispatch_mode` / `terminate_experiment`), checkpoint operations belong to the **bootstrap class**: a fresh receiving deployment cannot have an `admins`-group member registered before its first `import_checkpoint` (the import is what populates the worker / group registries). Gating import on the literal admin principal sidesteps that chicken-and-egg; gating export + `read_experiment` the same way keeps the §14 surface uniformly bootstrap-class.
+These endpoints bind the portable-checkpoint operations defined in [`10-checkpoints.md`](10-checkpoints.md) and the [`08-storage.md`](08-storage.md) §1.9 Store ops. Implementations that claim the v1+checkpoints conformance level ([`09-conformance.md`](09-conformance.md) §4) MUST expose them; other implementations MAY omit them. The **export and import** endpoints are **admin-gated** in the §13.3 sense — caller MUST present the deployment-admin bearer (literal `admin` principal). Unlike the `admins`-group-gated operational endpoints (`reassign_task` / `update_dispatch_mode` / `terminate_experiment`), checkpoint export/import operations belong to the **bootstrap class**: a fresh receiving deployment cannot have an `admins`-group member registered before its first `import_checkpoint` (the import is what populates the worker / group registries). Gating import on the literal admin principal sidesteps that chicken-and-egg; gating export the same way keeps the mutation surface uniformly bootstrap-class. The `read_experiment` endpoint is **either-auth** because the orchestrator role's per-iteration policy evaluation reads `created_at` from this surface (`ExperimentStateView.experiment_created_at` in the reference dispatch driver); restricting it to the admin principal would block the orchestrator's worker bearer from ever resolving the policy view. The recovery-probe contract in [`10-checkpoints.md`](10-checkpoints.md) §10 also flows through this endpoint and is operator-driven (admin bearer) — both principal classes legitimately need read access, so the endpoint is either-auth and matches the §2.9 `GET /state` shape.
 
 | Operation | HTTP | Path | Auth |
 |---|---|---|---|
 | `export_checkpoint` | `POST` | `/v0/experiments/{E}/checkpoint` | admin |
 | `import_checkpoint` | `POST` | `/v0/checkpoints/import` | admin |
-| `read_experiment` | `GET` | `/v0/experiments/{E}` | admin |
+| `read_experiment` | `GET` | `/v0/experiments/{E}` | either |
+
+The export and import endpoints are bootstrap-class — see the §14 introduction above. `read_experiment` is **either-auth** (any registered worker MAY read), parallel to the §2.9 `GET /state` companion read: the full experiment object's `created_at` and `imported_from` fields are needed by the orchestrator's per-iteration policy evaluation (`ExperimentStateView.experiment_created_at`) and by post-import recovery probes alike, neither of which can authenticate as the deployment-admin principal. The recovery-probe contract in [`10-checkpoints.md`](10-checkpoints.md) §10 is operator-driven and the operator's bearer (typically the admin token) is one valid principal for this either-auth surface; the orchestrator-as-worker path is the other.
 
 The `import_checkpoint` endpoint is the only normative v0 path outside `/v0/experiments/{E}/...`; it is carved out of the §1.3 experiment-scoping rule (see §1.3 paragraph 2). The `X-Eden-Experiment-Id` header is OPTIONAL on `/v0/checkpoints/...` paths.
 
@@ -487,7 +489,7 @@ If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md
 
 The companion `GET /v0/experiments/{E}/state` (§2.9) remains worker-accessible and returns only the state projection; this endpoint exposes the full object including `imported_from` and is admin-gated to avoid widening the recovery-probe surface.
 
-**Authority:** caller MUST present the deployment-admin bearer (literal `admin` principal per §13.1). A worker bearer receives 403 `eden://error/forbidden`. The bootstrap-class gating is uniform across §14 — `read_experiment` is the lost-import-response recovery probe and MUST be callable against a deployment whose worker / group registries are still empty.
+**Authority:** **either-auth** — any registered worker MAY read, parallel to the §2.9 `GET /state` companion read. The recovery-probe flow (admin bearer after a dropped import 201) and the orchestrator's per-iteration policy view (worker bearer reading `created_at`) both legitimately need this surface; restricting it to one principal class would block the other. The `imported_from` field is informational provenance (it does not carry secret material), so the broader read surface does not widen attack surface beyond the existing `GET /state` posture. See the §14 introduction above.
 
 ## 15. Implementation latitude
 
