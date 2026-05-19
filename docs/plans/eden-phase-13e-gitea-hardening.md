@@ -1891,7 +1891,7 @@ Docs:
 | `docs/deployment/helm.md` (extend) | Add a "Gitea hardening" section under the values reference; cross-reference the migration runbook. |
 | `AGENTS.md` "Commands" table | Add `eden-gitea-admin` invocations + the `helm-smoke-gitea-oauth` local-equivalent. |
 | `docs/roadmap.md` Phase 13 entry | Mark 13e complete; cross-link to this plan. |
-| `MANUAL_UI_ISSUES.md` | Mark resolved any items pinned to "Phase 13 Gitea hardening". |
+| GitHub Issues (label `manual-ui`) | Close any open issues pinned to "Phase 13 Gitea hardening". |
 
 ## 6. Test design
 

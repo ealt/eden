@@ -31,10 +31,11 @@ contract.
 Kubernetes reference deployment" lists "S3/GCS blob backend"
 as the fourth post-13a sub-project. 13d is the **fourth** chunk
 in the substrate sequence (13a → 13b → 13c → 13d → 13e).
-13d also resolves [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md)
-§20 — the unconsumed `blob-init` service + `eden-blob-data`
-volume that ship in Compose today as a Phase-13-tracked
-placeholder.
+The `blob-init` service + `eden-blob-data` volume that previously
+shipped in Compose as a Phase-13-tracked placeholder (formerly
+`MANUAL_UI_ISSUES.md` §20) were removed entirely in Phase 12a-1g;
+13d ships the real consumer for the post-12a-1g `${EDEN_EXPERIMENT_DATA_ROOT}/blobs`
+bind-mount instead.
 
 **Naming.** Pre-draft check against
 [`docs/glossary.md`](../glossary.md) and AGENTS.md "Naming discipline":
@@ -161,7 +162,7 @@ After 13a + 13b + 13c the reference k8s deployment runs:
   ([`reference/compose/compose.yaml`](../../reference/compose/compose.yaml)
   lines 72-84, 385) — created so postgres + gitea's
   `depends_on: blob-init` succeeds. Per
-  [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
+  the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
   this is a Phase-13-tracked placeholder; nothing currently
   reads or writes the volume. The actual artifacts volume
   the web-ui consumes is `eden-artifacts-data`
@@ -293,7 +294,7 @@ requirement at the deployment-config level.
 | [`reference/services/executor/`](../../reference/services/executor/) | Adds `--blob-backend` (and `--blob-fallback-*` flags for §3.6 composite mode); `_rationale_path_from_uri` (line 493) gains fetch-to-temp dispatch by URI scheme per §3.4.3. The `rationale_path` written into `EDEN_TASK_JSON` (line 392) is unchanged in shape. |
 | [`reference/services/evaluator/`](../../reference/services/evaluator/) | Per §3.4.2: NO functional change in v0. The CLI does NOT add `--blob-backend`; the host stays a passthrough on the evaluator's `artifacts_uri` field. The pod receives blob-auth wiring at the chart layer per §5.3 so role-side direct upload works. |
 | [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | `blob-init` + `eden-blob-data` volume removed; `eden-artifacts-data` stays as the web-ui's bind. The `depends_on: blob-init` lines on postgres + gitea become unnecessary and are removed. |
-| [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during MANUAL_UI_ISSUES §20's inline fix) is removed; nothing mounts at that path anymore. |
+| [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during the prior §20 inline fix (file since deleted; see CHANGELOG.md Phase 12a-1g)) is removed; nothing mounts at that path anymore. |
 | [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) | Adds `blob.backend`, `blob.file.*`, `blob.s3.*`, `blob.gcs.*`, and the new `blob.migration.fileFallback.*` block per §3.6. The legacy `storage.artifactsSize` becomes effective only when `blob.backend=file`. |
 | [`reference/helm/eden/templates/web-ui-statefulset.yaml`](../../reference/helm/eden/templates/web-ui-statefulset.yaml) | The artifacts PVC `volumeClaimTemplates` entry becomes conditional on `blob.backend=file` OR `blob.migration.fileFallback.enabled=true` (per §3.6). When migration-mode is active, the Pod's `volumeMounts` entry is `readOnly: true`. The CLI args block adds the per-backend flags plus `--blob-fallback-*` when migration-mode is active. |
 
@@ -482,7 +483,7 @@ These are the load-bearing design calls; §3 unpacks each.
 
 7. **The unused Compose `blob-init` + `eden-blob-data` are
    retired.** Per
-   [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
+   the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
    resolution direction (b): "defer cleanup to Phase 13,
    when the consumer ships". 13d ships the consumer; the
    placeholder volume + bootstrap service get removed. The
@@ -1286,7 +1287,7 @@ trigger. See §3.11.
 
 ### 3.7 Compose cleanup
 
-[`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
+the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
 documented the unconsumed `blob-init` + `eden-blob-data`
 volume + the latent `/blob` vs `/blobs` Dockerfile typo
 (already fixed inline). 13d removes:
@@ -1713,7 +1714,7 @@ Compose cleanup:
 - `reference/scripts/setup-experiment/setup-experiment.sh`:
   no change needed (`.env` rendering uses operator-supplied
   values; the new vars default to backend=file).
-- `MANUAL_UI_ISSUES.md` §20: mark resolved.
+- §20 (no longer tracked; resolved by Phase 12a-1g — see CHANGELOG.md).
 
 CI:
 
@@ -1853,7 +1854,7 @@ Docs:
 |---|---|
 | `docs/deployment/migrating-to-blob-backend.md` (new) | Full runbook per §3.11 (Path A fresh + Path B migration). Includes IAM-policy + Workload-Identity-binding templates. |
 | `docs/deployment/helm.md` (extend) | Add a "Blob backend" section under the values reference; cover `file` (default, 13a behavior) / `s3` / `gcs`. Cross-reference the migration runbook. |
-| `MANUAL_UI_ISSUES.md` §20 | Mark resolved (13d shipped the blob consumer; the placeholder volume is gone). |
+| §20 (historical) | Already resolved by Phase 12a-1g; this row retained for plan-history continuity. |
 | `docs/roadmap.md` Phase 13 entry | Mark 13d complete; cross-link to this plan. |
 | `reference/packages/eden-blob/README.md` | Replaces the placeholder with a real package README. |
 
@@ -2062,7 +2063,7 @@ only applies to `LocalFsBackend`.
 
 ### 8.8 Compose-side `eden-artifacts-data` vs `eden-blob-data`
 
-[`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
+the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
 notes the Dockerfile typo (`/blob` vs `/blobs`) was
 already fixed inline. 13d removes the now-orphaned line
 entirely. The DIFFERENT volume `eden-artifacts-data` (the
@@ -2218,7 +2219,7 @@ Recommended PR shape (in order):
 6. **Compose cleanup PR.** Remove `blob-init` +
    `eden-blob-data` + the depends_on lines + the
    Dockerfile chown line. Add `compose.blob-s3.yaml` /
-   `compose.blob-gcs.yaml` overlays. `MANUAL_UI_ISSUES.md`
+   `compose.blob-gcs.yaml` overlays. The prior `MANUAL_UI_ISSUES.md`
    §20 marked resolved.
 
 7. **CI PR.** `helm-smoke-blob-s3` job;
@@ -2329,7 +2330,7 @@ The PVC-backed `LocalFsBackend` path stays for greenfield
 clusters and test environments. The Compose deployment
 keeps `LocalFsBackend` by default; operators MAY override
 to S3/GCS via the new env vars + opt-in overlays.
-[`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20 is
+the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g) is
 resolved (the unconsumed `blob-init` + `eden-blob-data`
 plumbing is gone). 13e (Gitea auth + ACLs + native PR
 review) is the remaining 13-series substrate chunk; it

@@ -2,8 +2,8 @@
 
 **Status:** design exploration; **§§ 1 / 2 / 6 / 7 / 10 resolved by Phase 12a-1 + 12a-2** (see annotations on each section). §3 (per-idea executor hint), §4 (evaluator assignment via the same `reassign_task` mechanism — partially resolved by 12a-2 §7), §5 (worker attribution survives on artifacts — resolved by 12a-1), §8 (claims scoped to the worker), §9 (termination as deployment policy) remain partially open / deferred.
 **Origin:** captured during a manual-UI validation run on 2026-05-02
-through conversation with @ericalt. Supersedes issues #9–#12 of
-`MANUAL_UI_ISSUES.md`.
+through conversation with @ericalt. Supersedes issues #9–#12 of the
+prior `MANUAL_UI_ISSUES.md` (file deleted; see [CHANGELOG.md](../../CHANGELOG.md) for the migration record).
 
 ## Problem statement
 
@@ -240,8 +240,10 @@ declares four termination fields (``max_variants``, ``max_wall_time``,
 Pydantic models declare them too. **None are enforced anywhere in the
 reference implementation.** The orchestrator's only termination is
 the 30-iteration quiescence heuristic (which is itself the wrong
-abstraction; see #1). See `MANUAL_UI_ISSUES.md` issue #14 for the
-audit findings.
+abstraction; see #1). The audit findings that surfaced this drift are
+preserved in the [CHANGELOG.md](../../CHANGELOG.md) Phase 12a-3 entry,
+which resolves this section by removing the four fields from the
+normative spec.
 
 **The right framing isn't "implement those four fields".** It's:
 *termination is policy, not protocol.* The spec should not enumerate
@@ -386,14 +388,15 @@ is a working list.
 
 ## Issues now superseded by this doc
 
-The following entries in `MANUAL_UI_ISSUES.md` are consolidated into
-this doc:
+The following entries in the prior `MANUAL_UI_ISSUES.md` (file deleted in
+the docs/state-tracking reshape; see [CHANGELOG.md](../../CHANGELOG.md))
+are consolidated into this doc:
 
 - #9 — Ideation-task budget is statically pre-allocated
 - #10 — No worker affinity
 - #11 — Orchestrator should be a role
 - #12 — Worker attribution should survive on tasks/variants/ideas
 
-(#1 — orchestrator quiescence-exit — is also addressed by §6/§9/§10 here
-but kept in the issues file as an immediate-impact bug for current
-runs.)
+(#1 — orchestrator quiescence-exit — is also addressed by §6/§9/§10 here;
+the residual cross-experiment dispatch concern is tracked at GitHub
+issue [#98](https://github.com/ealt/eden/issues/98).)

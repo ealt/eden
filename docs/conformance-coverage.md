@@ -297,7 +297,7 @@ After this pass:
 - Effective coverage (scenario + consequence): ≈82% direct, ≈87% if cross-chapter ancestry is credited.
 - New genuine gaps surfaced: 2 (chapter 03 §3.3 line 97, chapter 07 §1.1).
 
-These two gaps + the chapter-04 §6.1/§6.3/§7-line-183 rows that remain mechanically-fixable are the next batch of follow-up work. Both new genuine gaps are filed as MANUAL_UI_ISSUES.md entries (#26 + #27).
+These two gaps + the chapter-04 §6.1/§6.3/§7-line-183 rows that remain mechanically-fixable are the next batch of follow-up work. Both new genuine gaps (formerly tracked as MANUAL_UI_ISSUES.md §26 + §27) were resolved via [PR #70](https://github.com/ealt/eden/pull/70).
 
 ### Methodology refinements (additional, beyond chapter-04 pilot's list)
 

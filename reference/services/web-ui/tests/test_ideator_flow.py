@@ -756,7 +756,7 @@ class TestStrandedClaim:
 
 
 class TestDraftBufferReHydration:
-    """MANUAL_UI_ISSUES #2 — typed draft input survives navigation.
+    """Regression test for #2 — typed draft input survives navigation (resolved in commit c30cafa).
 
     Before the fix, a user who hit a validation error and then
     navigated away (back / refresh / nav click) and returned to

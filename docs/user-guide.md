@@ -167,7 +167,7 @@ The orchestrator is tuned for CI: `EDEN_MAX_QUIESCENT_ITERATIONS=30` × 1s poll 
 EDEN_MAX_QUIESCENT_ITERATIONS=86400   # 24h-equivalent budget
 ```
 
-The CLI requires `>= 2`; "never exit" is not available. Pick a large enough value for your session. See [`MANUAL_UI_ISSUES.md`](../MANUAL_UI_ISSUES.md) §1.
+The CLI requires `>= 2`; "never exit" is not available. Pick a large enough value for your session. See GitHub issue [#98](https://github.com/ealt/eden/issues/98) (multi-experiment orchestrator) for the structural fix tracked against Phase 12c.
 
 ### Verifying health
 

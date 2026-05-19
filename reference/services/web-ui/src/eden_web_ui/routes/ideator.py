@@ -325,7 +325,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             intended_executor_ids=intended_ids,
         )
         # Buffer typed state so a navigation away + return to GET
-        # /draft re-hydrates the form (issue #2 in MANUAL_UI_ISSUES).
+        # /draft re-hydrates the form (regression guard for issue #2).
         _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
         ctx: dict[str, Any] = {
             "session": session,
