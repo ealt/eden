@@ -1,0 +1,315 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eed152e..4bdce7e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -34,6 +34,10 @@ Promotes [`docs/design/executor-no-op-variant-rejection.md`](docs/design/executo
+ 
+ **Phase 12a-2 complete (orchestrator as role).** The orchestrator is now a role (not a singleton process): zero, one, or many auto-orchestrator instances may run concurrently, each authenticating as a registered worker in the reserved `orchestrators` group. Decisions are gated per-experiment by a `dispatch_mode` field, and operators have first-class wire ops to reassign tasks and flip dispatch_mode on a live experiment. Eight waves shipped — `ce85dd6` (spec) / `48c07c6` (pydantic + storage) / `eaa36e4` (eden-wire + §3.7 authority) / `81ae6d7` (dispatch + orchestrator service) / `abef67b` (web UI) / `359d74a` (conformance scenarios + harness) / `2dd74bd` (compose + setup-experiment + smokes) / wave 8 (docs). **What's covered:** chapter 02 §2.5 (`dispatch_mode` — per-experiment object with four normative keys `ideation_creation` / `execution_dispatch` / `evaluation_dispatch` / `integration`, each `"auto"` (default) or `"manual"`; partial-merge semantics; unknown keys tolerated) + §7.5 (reserved-group carve-out for `admins` and `orchestrators` — names reserved against shadowing; deployments register them via `register_group` like any other group); chapter 03 §6 (new — orchestrator role contract: §6.1 dispatch_mode-gated invocation, §6.2 four decision types — ideation-task creation, execution-task dispatch, evaluation-task dispatch, integration, §6.3 authority boundary, §6.4 multi-instance safety with exact-idempotent vs bounded-overshoot split, §6.5 manual mode); chapter 04 §6 (new — `reassign_task` op: pending → field update + single `task.reassigned` event; claimed → composite-commit `task.reclaimed`(cause=operator) + `task.reassigned`; claimed-execution with in-flight starting variant → composite also emits `variant.errored`; submitted/terminal → 409 `invalid-precondition` with no partial state) + §7 (new — `update_dispatch_mode` op: atomic partial-merge; idempotent no-diff flip emits no event); chapter 05 §3.1 (new `task.reassigned` event with required-nullable `new_target`, `reason`, `reassigned_by` payload) + §3.4 (new `experiment.dispatch_mode_changed` event carrying post-update full state + `changed` diff + `updated_by`); chapter 07 §§2.7-2.8 (wire endpoints — `POST /tasks/{T}/reassign` body `{new_target, reason}`, `PATCH /dispatch_mode` partial object, `GET /dispatch_mode` companion read) + §13.3 (group-gated authority added to the bearer-classification ladder); chapter 09 §5 (four new index groups — `Orchestrator role contract` / `Multi-instance safety` / `Reassignment` / `Dispatch mode`). The **§3.7 authority matrix** is the canonical operator reference: `create_task(kind=ideation|evaluation)` requires worker in `admins` OR `orchestrators`; `create_task(kind=execution)` requires `orchestrators` only (operator-driven `kind=execution` deferred to 12a-3 / `intended_executor`); `accept` / `reject` / `integrate_variant` require `orchestrators`; `reassign_task` / `update_dispatch_mode` require `admins`. The deployment-admin bearer (literal `"admin"` principal) is **bootstrap-only** — it registers workers, registers groups, reissues credentials. It MUST NOT drive business-op routes; the server returns 403 forbidden for those attempts. **New `Store` Protocol operations:** `reassign_task(task_id, new_target, *, reason, reassigned_by)` / `read_dispatch_mode()` / `update_dispatch_mode(updates, *, updated_by)`, plus tightened at-most-one-live invariants in `_insert_execution_task` / `_insert_evaluation_task` / `create_execution_task` / `create_evaluation_task` (§6.4 exact-idempotent: a second concurrent create observes the first's commit and either no-ops or raises). **Pydantic bindings:** `DispatchMode` model (in [`reference/packages/eden-contracts/src/eden_contracts/config.py`](reference/packages/eden-contracts/src/eden_contracts/config.py)); `TaskReassignedEvent` + `ExperimentDispatchModeChangedEvent` with a `model_serializer(mode="wrap")` that keeps `new_target` JSON-null on `exclude_none=True` round-trips (required-nullable field). **SQLite + Postgres v3 migration** adding `dispatch_mode text NOT NULL` to the `experiment` table; default value is the all-`auto` JSON literal. **`reassigned_by` / `updated_by` attribution stamping**: the binding stamps these server-side from the authenticated principal; wire body MUST NOT carry them (wire schemas use `additionalProperties: false`). **Wire schemas:** three new files under [`spec/v0/schemas/wire/`](spec/v0/schemas/wire/) — `reassign-request.schema.json` (required-nullable `new_target`), `dispatch-mode-request.schema.json` (partial object), `dispatch-mode-response.schema.json` (full state, all four keys required). **Error types:** new `IndeterminateReassign` and `IndeterminateDispatchModeUpdate` in [`reference/packages/eden-wire/src/eden_wire/client.py`](reference/packages/eden-wire/src/eden_wire/client.py) — read-back ladders for transport-indeterminate POST/PATCH failures, parallel to the §5 `integrate_variant` ladder. **Reference policy module:** [`eden_dispatch.policies`](reference/packages/eden-dispatch/src/eden_dispatch/policies.py) exposes `maintain_pending(target, max_total=None)` (bounded-overshoot per §6.4 — returns `min(max(0, target - pending), max(0, max_total - total))`), `fixed_total(N)` (one-shot equivalent of the retired `--ideation-tasks N` static seed), and `default_policy()` (the orchestrator-CLI default factory; reads `EDEN_IDEATION_POLICY_TARGET_PENDING` and `EDEN_IDEATION_POLICY_MAX_TOTAL` from the environment). The **`ExperimentStateView`** dataclass (in [`reference/packages/eden-dispatch/src/eden_dispatch/state_view.py`](reference/packages/eden-dispatch/src/eden_dispatch/state_view.py)) is a snapshot facade over five counters (`pending_ideation_count` / `in_flight_ideation_count` / `total_ideation_count` / `running_variant_count` / `integrated_variant_count`) the policy callable consults; built per-iteration with no caching. **Orchestrator service:** CLI drops `--ideation-tasks`; adds `--ideation-policy <module:callable>` (default `eden_dispatch.policies:default_policy`). The loop reads `dispatch_mode` at iteration start (all-auto fallback on transport blip) and forwards it to `run_orchestrator_iteration`, which gates each of the four §6.2 decision types; finalize (`accept`/`reject` of submitted tasks) is intentionally NOT gated — the spec lists creation / dispatch / integrate as the four gated decisions, and gating finalize would starve workers waiting for terminal transitions. A new **`_ensure_orchestrators_membership`** startup helper (in [`reference/services/orchestrator/src/eden_orchestrator/cli.py`](reference/services/orchestrator/src/eden_orchestrator/cli.py)) defensively registers the `orchestrators` group (swallowing `AlreadyExists`) and adds the configured `worker_id` (idempotent on existing membership), with NotFound race recovery — defense-in-depth alongside setup-experiment's bootstrap. **Web UI:** new `/admin/dispatch-mode/` page (4-toggle table driving `Store.update_dispatch_mode`) and `/admin/tasks/{T}/reassign` page (target-kind radios + per-kind selects populated from `list_workers` / `list_groups` + manual override + reason field). Both follow the chunk-9e auth-first POST + closed-allowlist banner discipline; namespace-disjoint from a parallel 12a-1b delegate's `/admin/workers/` and `/admin/groups/` routes (collision-guard tests pin this). **Compose plumbing:** `compose.yaml` drops `--ideation-tasks ${EDEN_IDEATION_TASKS:-3}` (the wave-4 CLI retirement made this stale and would have broken `compose-smoke` on first push) and threads `EDEN_IDEATION_POLICY_TARGET_PENDING` + `EDEN_IDEATION_POLICY_MAX_TOTAL` into the orchestrator's `environment:` block. New [`compose.multi-orchestrator.yaml`](reference/compose/compose.multi-orchestrator.yaml) overlay adds a second orchestrator container (`worker_id=orchestrator-2`) with per-replica repo + credentials volumes. New `EDEN_ORCHESTRATOR_WORKER_ID` (default `orchestrator`) and `EDEN_ADMINS_INITIAL_MEMBER` (default `operator`) env vars on [`.env.example`](reference/compose/.env.example). **`setup-experiment.sh`** gains a reserved-group bootstrap step after the seed: brings up `task-store-server` (with its postgres + blob-init deps), then makes four admin-token-authenticated wire calls inside the container, all idempotent on existing record per 12a-1 §D.1 / §D.2 — `register_group("orchestrators")` (accept 200 or 409), `register_group("admins")` (same), `register_worker(${EDEN_ADMINS_INITIAL_MEMBER})`, `add_to_group("admins", ${EDEN_ADMINS_INITIAL_MEMBER})`. The `orchestrators` group is created empty; auto-orchestrator instances populate it themselves at startup via the helper above. **Smoke scripts:** existing `smoke.sh` / `smoke-subprocess.sh` / `smoke-subprocess-docker.sh` / `e2e.sh` all pin `EDEN_IDEATION_POLICY_MAX_TOTAL` so the policy quiesces deterministically; `smoke.sh` bumps the registered-workers floor from ≥4 to ≥5 (initial admin worker now seeded) and adds assertions that `/groups/admins` contains the initial admin + `/groups/orchestrators` contains the auto-orchestrator. Two new smoke scripts: [`smoke-manual-mode.sh`](reference/compose/healthcheck/smoke-manual-mode.sh) (flips `execution_dispatch` to manual, asserts the orchestrator skips the gated decision while an idea reaches `ready`, then flips back and asserts catch-up) and [`smoke-multi-orchestrator.sh`](reference/compose/healthcheck/smoke-multi-orchestrator.sh) (uses the overlay, asserts both worker_ids end up in `orchestrators`, chaos-kills the primary, asserts the secondary drives the experiment to quiescence with exactly 3 `variant.integrated` + 3 execution `task.completed` + 3 evaluation `task.completed`). The [`e2e_drive.py`](reference/compose/healthcheck/e2e_drive.py) UI driver now discovers task IDs dynamically from the `/ideator/` page (policy-driven UUID-suffixed ids replaced the fixed `ideation-0001..0004` shape) and adds two new drills: a `_dispatch_mode_toggle_drill` (flips `integration` to manual via the web UI, verifies the form reflects state, flips back) and a `_reassign_drill` (reassigns one pending task to `{kind: worker, id: ideator-1}` — the targeted-claim path means the headless ideator-1 still completes the task so end-state variant count is unaffected). **Conformance:** four new scenario files / 26 tests at [`conformance/scenarios/test_orchestrator_role_contract.py`](conformance/scenarios/test_orchestrator_role_contract.py) + [`test_multi_instance_safety.py`](conformance/scenarios/test_multi_instance_safety.py) + [`test_reassignment.py`](conformance/scenarios/test_reassignment.py) + [`test_dispatch_mode_wire.py`](conformance/scenarios/test_dispatch_mode_wire.py) resolve the four wave-1 citation-check expected failures. Harness gains a PATCH verb + `dispatch_mode_path()` helper on `WireClient` plus three `_seed.py` helpers (`reassign_task`, `update_dispatch_mode`, `read_dispatch_mode`). The auth-disabled posture (reference adapter runs without `--admin-token`) means new scenarios don't exercise the §3.7 403-forbidden ladder — that surface is covered by wave-3 wire tests in [`reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py`](reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py). The reference impl is now v1+roles+orchestrator-substrate conformant: 184/184 scenarios pass. **CI:** two new jobs `compose-smoke-manual-mode` + `compose-smoke-multi-orchestrator` (not branch-protected yet; same posture chunks 10c / 10d / 10e took for newly-added jobs — bump to required-status after staying clean on main for ~2 weeks). **Deferred to 12a-3:** `intended_executor` on ideas (would enable operator-driven `kind=execution` task creation under §3.7's currently orchestrators-only gate) + an explicit termination-policy contract (today's `EDEN_MAX_QUIESCENT_ITERATIONS` env stays as the operational escape hatch). The bounded-overshoot §6.4 `N * T` math is exercised at the unit-test level in [`reference/packages/eden-dispatch/tests/test_dispatch_mode_gating.py`](reference/packages/eden-dispatch/tests/test_dispatch_mode_gating.py); a wire-level conformance test for it would require an orchestrator-bearing IUT (chapter 9 §6 pins the suite to the chapter-7 binding) and is left for a future `v1+roles+orchestrator-instance` level if/when that becomes useful. 8-wave plan + per-wave commit record at [`docs/plans/eden-phase-12a-2-orchestrator-as-role.md`](docs/plans/eden-phase-12a-2-orchestrator-as-role.md). Operator playbooks under [`docs/operations/`](docs/operations/) cover dispatch-mode flipping, task reassignment, multi-orchestrator deployment, and initial-admin credential recovery.
+ 
++## Phase 12a-1g hotfix — container-side rm in smoke-script teardown — 2026-05-15
++
++Hotfix for a CI regression introduced by 12a-1g: after switching substrates to host bind-mounts, all four compose smokes started failing CI on teardown with `rm: cannot remove '/tmp/eden-smoke-XXXXXX/.../hooks/update.sample': Permission denied`. Containers wrote into the bind-mounts as their own uid (postgres=70, gitea/eden=1000) and created subdirectories with their own umask; the smoke trap's `rm -rf` runs as the host CI runner (uid 1001 on GH Actions) and cannot delete files inside container-created subdirs. macOS Docker Desktop's VFS uid-translation layer masked the failure during local validation. Fix: before the host-side `rm -rf`, run a sibling `alpine:3.20` container as root with the bind-mount mapped at `/cleanup` and `find /cleanup -mindepth 1 -delete`. Applied identically to all four smoke scripts (`smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `e2e.sh`).
++
+ ## Phase 12a-1h — port eden-manual CLI to post-12a-1 auth + no-op variant design — 2026-05-14
+ 
+ Closes the manual-UI CLI auth gap flagged in PR #67's commit message. Phase 12a-1 (PR #78) shipped per-worker bearer auth and retired the per-claim opaque token; the rest of the stack was ported in that wave but `reference/scripts/manual-ui/eden-manual` was deliberately left as a known gap. This PR closes the auth half. **Changes:** `reference/scripts/manual-ui/eden-manual` — env-var rename (`EDEN_SHARED_TOKEN` → `EDEN_ADMIN_TOKEN`); `_wire()` gains `bearer` + `swallow_401` kwargs; new `_worker_bearer()` ladder (whoami-verify → register-or-reissue); per-worker credentials at `/tmp/eden-manual/.credentials.json` mode 0600; claim/submit bodies drop the retired `"token"` field; `cmd_push` tolerates a clean working tree; new no-op variant guard in `cmd_execution_submit`. **New design doc** at `docs/design/executor-no-op-variant-rejection.md` (~215 lines): RFC for the spec amendment + reference-store enforcement + v1+roles conformance scenario (subsequently promoted in 12a-1i). Skill docs (3 files): `eden-manual-{ideator,executor,evaluator}/SKILL.md` updated for post-12a-1 auth shape + `.env`-divergence troubleshooting note.
+@@ -121,7 +125,3 @@ Cosmetic rename: the markdown body the ideator writes was previously called "rat
+ ## Phase 8a — eden-wire HTTP binding — 2026-04-23
+ 
+ **Phase 8a complete.** `eden-wire` ships an HTTP binding for the chapter 4 / 5 / 6 §3.4 / 8 §§1.1–2.1 operations specified in the new [`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) chapter. The package exposes a FastAPI ``make_app(store)`` that routes every wire endpoint to a ``Store`` instance, and a ``StoreClient`` that satisfies the same ``Store`` Protocol against the HTTP surface — so existing callers (dispatch driver, integrator) work across the process boundary unchanged. Errors round-trip as RFC 7807 problem+json with a closed vocabulary of ``eden://error/<name>`` types (§7). ``Store.integrate_variant`` is now same-value idempotent (§5 of the chapter); the ``Integrator`` distinguishes different-SHA divergence (``AtomicityViolation``, no ref compensation) from other synchronous rejections (normal §3.4 compensating-delete flow). ``StoreClient.integrate_variant`` reconciles transport-indeterminate failures via read-back: the three outcomes are confirmed success, confirmed divergence (``InvalidPrecondition``), or ``IndeterminateIntegration`` when the server's outcome cannot be determined. Polling + long-poll-style subscribe are both bound (§6). Worker-process extraction, SSE/WebSocket push, and cut-over of in-process paths remain Phase 8b / 8c.
+-
+-## Phase 12a-1g hotfix — container-side rm in smoke-script teardown — 2026-05-15
+-
+-Hotfix for a CI regression introduced by 12a-1g: after switching substrates to host bind-mounts, all four compose smokes started failing CI on teardown with `rm: cannot remove '/tmp/eden-smoke-XXXXXX/.../hooks/update.sample': Permission denied`. Containers wrote into the bind-mounts as their own uid (postgres=70, gitea/eden=1000) and created subdirectories with their own umask; the smoke trap's `rm -rf` runs as the host CI runner (uid 1001 on GH Actions) and cannot delete files inside container-created subdirs. macOS Docker Desktop's VFS uid-translation layer masked the failure during local validation. Fix: before the host-side `rm -rf`, run a sibling `alpine:3.20` container as root with the bind-mount mapped at `/cleanup` and `find /cleanup -mindepth 1 -delete`. Applied identically to all four smoke scripts (`smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `e2e.sh`).
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index a21ff09..9d95e33 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -6,9 +6,9 @@ EDEN is a **protocol** for directed evolution orchestration. This repo contains
+ 
+ ## Current phase
+ 
+-**Phase 11 complete.** Chapters 00–09 of spec/v0 are on the protected `main`, alongside the full reference implementation (workspace under [`reference/`](reference/) — six services + five packages on a Compose stack with Postgres + Gitea) and the conformance suite at the **v1+roles+integrator** level (110 scenarios green). CI gates the reference impl on docs-lint, schema-validity, schema-parity, python-lint, python-typecheck, python-test, python-test-postgres, conformance, compose-smoke, compose-smoke-subprocess, compose-smoke-subprocess-docker, and compose-e2e. See [`AGENTS.md`](AGENTS.md) for the canonical "what's done" narrative and [`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 12–13 plan.
++**Phase 11 complete.** Chapters 00–09 of spec/v0 are on the protected `main`, alongside the full reference implementation (workspace under [`reference/`](reference/) — six services + five packages on a Compose stack with Postgres + Gitea) and the conformance suite at the **v1+roles+integrator** level (110 scenarios green). CI gates the reference impl on docs-lint, schema-validity, schema-parity, python-lint, python-typecheck, python-test, python-test-postgres, conformance, compose-smoke, compose-smoke-subprocess, compose-smoke-subprocess-docker, and compose-e2e. See [`CHANGELOG.md`](CHANGELOG.md) for the canonical per-chunk "what's done" record, [`AGENTS.md`](AGENTS.md) for the agent contract (commands, naming discipline, pitfalls), and [`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 12–13 plan.
+ 
+-If you want to contribute, useful areas are: spec gaps surfaced by [`docs/conformance-coverage.md`](docs/conformance-coverage.md), follow-ups in [`MANUAL_UI_ISSUES.md`](MANUAL_UI_ISSUES.md), or scoping work for Phase 12 (multi-experiment / control plane).
++If you want to contribute, useful areas are: spec gaps surfaced by [`docs/conformance-coverage.md`](docs/conformance-coverage.md), open issues labeled [`manual-ui`](https://github.com/ealt/eden/issues?q=is%3Aopen+label%3Amanual-ui), or scoping work for Phase 12 (multi-experiment / control plane).
+ 
+ ## Contributing to the spec
+ 
+diff --git a/docs/conformance-coverage.md b/docs/conformance-coverage.md
+index ed2ac48..5be286b 100644
+--- a/docs/conformance-coverage.md
++++ b/docs/conformance-coverage.md
+@@ -297,7 +297,7 @@ After this pass:
+ - Effective coverage (scenario + consequence): ≈82% direct, ≈87% if cross-chapter ancestry is credited.
+ - New genuine gaps surfaced: 2 (chapter 03 §3.3 line 97, chapter 07 §1.1).
+ 
+-These two gaps + the chapter-04 §6.1/§6.3/§7-line-183 rows that remain mechanically-fixable are the next batch of follow-up work. Both new genuine gaps are filed as MANUAL_UI_ISSUES.md entries (#26 + #27).
++These two gaps + the chapter-04 §6.1/§6.3/§7-line-183 rows that remain mechanically-fixable are the next batch of follow-up work. Both new genuine gaps (formerly tracked as MANUAL_UI_ISSUES.md §26 + §27) were resolved via [PR #70](https://github.com/ealt/eden/pull/70).
+ 
+ ### Methodology refinements (additional, beyond chapter-04 pilot's list)
+ 
+diff --git a/docs/design/orchestrator-and-worker-roles.md b/docs/design/orchestrator-and-worker-roles.md
+index a0d2cd7..76f1988 100644
+--- a/docs/design/orchestrator-and-worker-roles.md
++++ b/docs/design/orchestrator-and-worker-roles.md
+@@ -2,8 +2,8 @@
+ 
+ **Status:** design exploration; **§§ 1 / 2 / 6 / 7 / 10 resolved by Phase 12a-1 + 12a-2** (see annotations on each section). §3 (per-idea executor hint), §4 (evaluator assignment via the same `reassign_task` mechanism — partially resolved by 12a-2 §7), §5 (worker attribution survives on artifacts — resolved by 12a-1), §8 (claims scoped to the worker), §9 (termination as deployment policy) remain partially open / deferred.
+ **Origin:** captured during a manual-UI validation run on 2026-05-02
+-through conversation with @ericalt. Supersedes issues #9–#12 of
+-`MANUAL_UI_ISSUES.md`.
++through conversation with @ericalt. Supersedes issues #9–#12 of the
++prior `MANUAL_UI_ISSUES.md` (file deleted; see [CHANGELOG.md](../../CHANGELOG.md) for the migration record).
+ 
+ ## Problem statement
+ 
+@@ -240,8 +240,10 @@ declares four termination fields (``max_variants``, ``max_wall_time``,
+ Pydantic models declare them too. **None are enforced anywhere in the
+ reference implementation.** The orchestrator's only termination is
+ the 30-iteration quiescence heuristic (which is itself the wrong
+-abstraction; see #1). See `MANUAL_UI_ISSUES.md` issue #14 for the
+-audit findings.
++abstraction; see #1). The audit findings that surfaced this drift are
++preserved in the [CHANGELOG.md](../../CHANGELOG.md) Phase 12a-3 entry,
++which resolves this section by removing the four fields from the
++normative spec.
+ 
+ **The right framing isn't "implement those four fields".** It's:
+ *termination is policy, not protocol.* The spec should not enumerate
+@@ -386,14 +388,15 @@ is a working list.
+ 
+ ## Issues now superseded by this doc
+ 
+-The following entries in `MANUAL_UI_ISSUES.md` are consolidated into
+-this doc:
++The following entries in the prior `MANUAL_UI_ISSUES.md` (file deleted in
++the docs/state-tracking reshape; see [CHANGELOG.md](../../CHANGELOG.md))
++are consolidated into this doc:
+ 
+ - #9 — Ideation-task budget is statically pre-allocated
+ - #10 — No worker affinity
+ - #11 — Orchestrator should be a role
+ - #12 — Worker attribution should survive on tasks/variants/ideas
+ 
+-(#1 — orchestrator quiescence-exit — is also addressed by §6/§9/§10 here
+-but kept in the issues file as an immediate-impact bug for current
+-runs.)
++(#1 — orchestrator quiescence-exit — is also addressed by §6/§9/§10 here;
++the residual cross-experiment dispatch concern is tracked at GitHub
++issue [#98](https://github.com/ealt/eden/issues/98).)
+diff --git a/docs/plans/eden-phase-13d-blob-backend.md b/docs/plans/eden-phase-13d-blob-backend.md
+index ad154f9..de7a979 100644
+--- a/docs/plans/eden-phase-13d-blob-backend.md
++++ b/docs/plans/eden-phase-13d-blob-backend.md
+@@ -31,10 +31,11 @@ contract.
+ Kubernetes reference deployment" lists "S3/GCS blob backend"
+ as the fourth post-13a sub-project. 13d is the **fourth** chunk
+ in the substrate sequence (13a → 13b → 13c → 13d → 13e).
+-13d also resolves [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md)
+-§20 — the unconsumed `blob-init` service + `eden-blob-data`
+-volume that ship in Compose today as a Phase-13-tracked
+-placeholder.
++The `blob-init` service + `eden-blob-data` volume that previously
++shipped in Compose as a Phase-13-tracked placeholder (formerly
++`MANUAL_UI_ISSUES.md` §20) were removed entirely in Phase 12a-1g;
++13d ships the real consumer for the post-12a-1g `${EDEN_EXPERIMENT_DATA_ROOT}/blobs`
++bind-mount instead.
+ 
+ **Naming.** Pre-draft check against
+ [`docs/glossary.md`](../glossary.md) and AGENTS.md "Naming discipline":
+@@ -161,7 +162,7 @@ After 13a + 13b + 13c the reference k8s deployment runs:
+   ([`reference/compose/compose.yaml`](../../reference/compose/compose.yaml)
+   lines 72-84, 385) — created so postgres + gitea's
+   `depends_on: blob-init` succeeds. Per
+-  [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
++  the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
+   this is a Phase-13-tracked placeholder; nothing currently
+   reads or writes the volume. The actual artifacts volume
+   the web-ui consumes is `eden-artifacts-data`
+@@ -293,7 +294,7 @@ requirement at the deployment-config level.
+ | [`reference/services/executor/`](../../reference/services/executor/) | Adds `--blob-backend` (and `--blob-fallback-*` flags for §3.6 composite mode); `_rationale_path_from_uri` (line 493) gains fetch-to-temp dispatch by URI scheme per §3.4.3. The `rationale_path` written into `EDEN_TASK_JSON` (line 392) is unchanged in shape. |
+ | [`reference/services/evaluator/`](../../reference/services/evaluator/) | Per §3.4.2: NO functional change in v0. The CLI does NOT add `--blob-backend`; the host stays a passthrough on the evaluator's `artifacts_uri` field. The pod receives blob-auth wiring at the chart layer per §5.3 so role-side direct upload works. |
+ | [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | `blob-init` + `eden-blob-data` volume removed; `eden-artifacts-data` stays as the web-ui's bind. The `depends_on: blob-init` lines on postgres + gitea become unnecessary and are removed. |
+-| [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during MANUAL_UI_ISSUES §20's inline fix) is removed; nothing mounts at that path anymore. |
++| [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during the prior §20 inline fix (file since deleted; see CHANGELOG.md Phase 12a-1g)) is removed; nothing mounts at that path anymore. |
+ | [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) | Adds `blob.backend`, `blob.file.*`, `blob.s3.*`, `blob.gcs.*`, and the new `blob.migration.fileFallback.*` block per §3.6. The legacy `storage.artifactsSize` becomes effective only when `blob.backend=file`. |
+ | [`reference/helm/eden/templates/web-ui-statefulset.yaml`](../../reference/helm/eden/templates/web-ui-statefulset.yaml) | The artifacts PVC `volumeClaimTemplates` entry becomes conditional on `blob.backend=file` OR `blob.migration.fileFallback.enabled=true` (per §3.6). When migration-mode is active, the Pod's `volumeMounts` entry is `readOnly: true`. The CLI args block adds the per-backend flags plus `--blob-fallback-*` when migration-mode is active. |
+ 
+@@ -482,7 +483,7 @@ These are the load-bearing design calls; §3 unpacks each.
+ 
+ 7. **The unused Compose `blob-init` + `eden-blob-data` are
+    retired.** Per
+-   [`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
++   the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
+    resolution direction (b): "defer cleanup to Phase 13,
+    when the consumer ships". 13d ships the consumer; the
+    placeholder volume + bootstrap service get removed. The
+@@ -1286,7 +1287,7 @@ trigger. See §3.11.
+ 
+ ### 3.7 Compose cleanup
+ 
+-[`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
++the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
+ documented the unconsumed `blob-init` + `eden-blob-data`
+ volume + the latent `/blob` vs `/blobs` Dockerfile typo
+ (already fixed inline). 13d removes:
+@@ -1713,7 +1714,7 @@ Compose cleanup:
+ - `reference/scripts/setup-experiment/setup-experiment.sh`:
+   no change needed (`.env` rendering uses operator-supplied
+   values; the new vars default to backend=file).
+-- `MANUAL_UI_ISSUES.md` §20: mark resolved.
++- §20 (no longer tracked; resolved by Phase 12a-1g — see CHANGELOG.md).
+ 
+ CI:
+ 
+@@ -1853,7 +1854,7 @@ Docs:
+ |---|---|
+ | `docs/deployment/migrating-to-blob-backend.md` (new) | Full runbook per §3.11 (Path A fresh + Path B migration). Includes IAM-policy + Workload-Identity-binding templates. |
+ | `docs/deployment/helm.md` (extend) | Add a "Blob backend" section under the values reference; cover `file` (default, 13a behavior) / `s3` / `gcs`. Cross-reference the migration runbook. |
+-| `MANUAL_UI_ISSUES.md` §20 | Mark resolved (13d shipped the blob consumer; the placeholder volume is gone). |
++| §20 (historical) | Already resolved by Phase 12a-1g; this row retained for plan-history continuity. |
+ | `docs/roadmap.md` Phase 13 entry | Mark 13d complete; cross-link to this plan. |
+ | `reference/packages/eden-blob/README.md` | Replaces the placeholder with a real package README. |
+ 
+@@ -2062,7 +2063,7 @@ only applies to `LocalFsBackend`.
+ 
+ ### 8.8 Compose-side `eden-artifacts-data` vs `eden-blob-data`
+ 
+-[`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20
++the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
+ notes the Dockerfile typo (`/blob` vs `/blobs`) was
+ already fixed inline. 13d removes the now-orphaned line
+ entirely. The DIFFERENT volume `eden-artifacts-data` (the
+@@ -2218,7 +2219,7 @@ Recommended PR shape (in order):
+ 6. **Compose cleanup PR.** Remove `blob-init` +
+    `eden-blob-data` + the depends_on lines + the
+    Dockerfile chown line. Add `compose.blob-s3.yaml` /
+-   `compose.blob-gcs.yaml` overlays. `MANUAL_UI_ISSUES.md`
++   `compose.blob-gcs.yaml` overlays. The prior `MANUAL_UI_ISSUES.md`
+    §20 marked resolved.
+ 
+ 7. **CI PR.** `helm-smoke-blob-s3` job;
+@@ -2329,7 +2330,7 @@ The PVC-backed `LocalFsBackend` path stays for greenfield
+ clusters and test environments. The Compose deployment
+ keeps `LocalFsBackend` by default; operators MAY override
+ to S3/GCS via the new env vars + opt-in overlays.
+-[`MANUAL_UI_ISSUES.md`](../../MANUAL_UI_ISSUES.md) §20 is
++the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g) is
+ resolved (the unconsumed `blob-init` + `eden-blob-data`
+ plumbing is gone). 13e (Gitea auth + ACLs + native PR
+ review) is the remaining 13-series substrate chunk; it
+diff --git a/docs/plans/eden-phase-13e-gitea-hardening.md b/docs/plans/eden-phase-13e-gitea-hardening.md
+index 37a5da0..6f63542 100644
+--- a/docs/plans/eden-phase-13e-gitea-hardening.md
++++ b/docs/plans/eden-phase-13e-gitea-hardening.md
+@@ -1891,7 +1891,7 @@ Docs:
+ | `docs/deployment/helm.md` (extend) | Add a "Gitea hardening" section under the values reference; cross-reference the migration runbook. |
+ | `AGENTS.md` "Commands" table | Add `eden-gitea-admin` invocations + the `helm-smoke-gitea-oauth` local-equivalent. |
+ | `docs/roadmap.md` Phase 13 entry | Mark 13e complete; cross-link to this plan. |
+-| `MANUAL_UI_ISSUES.md` | Mark resolved any items pinned to "Phase 13 Gitea hardening". |
++| GitHub Issues (label `manual-ui`) | Close any open issues pinned to "Phase 13 Gitea hardening". |
+ 
+ ## 6. Test design
+ 
+diff --git a/docs/roadmap.md b/docs/roadmap.md
+index 6d408a3..9e232d0 100644
+--- a/docs/roadmap.md
++++ b/docs/roadmap.md
+@@ -248,6 +248,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
+ - [12a-1d](https://github.com/ealt/eden/pull/81) — Rename `rationale` → `content` for idea markdown body — **shipped 2026-05-14** (see [CHANGELOG](../CHANGELOG.md))
+ - [12a-1f](plans/eden-phase-12a-1f-substrate-access.md) — Substrate read access for ideator + evaluator agents — **shipped 2026-05-16** (see [CHANGELOG](../CHANGELOG.md))
+ - [12a-1g](plans/eden-phase-12a-1g-experiment-durability.md) — Experiment durability (spec invariant + Compose bind-mounts) — **shipped 2026-05-14** (see [CHANGELOG](../CHANGELOG.md))
++- [12a-1g hotfix](https://github.com/ealt/eden/pull/94) — container-side rm in smoke-script teardown — **shipped 2026-05-15** (see [CHANGELOG](../CHANGELOG.md))
+ - [12a-1h](plans/eden-phase-12a-1h-cli-port.md) — Port eden-manual CLI to post-12a-1 auth + no-op variant design — **shipped 2026-05-14** (see [CHANGELOG](../CHANGELOG.md))
+ - [12a-1i](https://github.com/ealt/eden/pull/93) — Spec amendment + server enforcement for executor no-op variant rejection — **shipped 2026-05-18** (see [CHANGELOG](../CHANGELOG.md))
+ - [12a-2](plans/eden-phase-12a-2-orchestrator-as-role.md) — Orchestrator as role — **shipped 2026-05-16** (see [CHANGELOG](../CHANGELOG.md))
+diff --git a/docs/user-guide.md b/docs/user-guide.md
+index f974322..1270fc6 100644
+--- a/docs/user-guide.md
++++ b/docs/user-guide.md
+@@ -167,7 +167,7 @@ The orchestrator is tuned for CI: `EDEN_MAX_QUIESCENT_ITERATIONS=30` × 1s poll
+ EDEN_MAX_QUIESCENT_ITERATIONS=86400   # 24h-equivalent budget
+ ```
+ 
+-The CLI requires `>= 2`; "never exit" is not available. Pick a large enough value for your session. See [`MANUAL_UI_ISSUES.md`](../MANUAL_UI_ISSUES.md) §1.
++The CLI requires `>= 2`; "never exit" is not available. Pick a large enough value for your session. See GitHub issue [#98](https://github.com/ealt/eden/issues/98) (multi-experiment orchestrator) for the structural fix tracked against Phase 12c.
+ 
+ ### Verifying health
+ 
+diff --git a/reference/compose/compose.yaml b/reference/compose/compose.yaml
+index ce45ab0..b946034 100644
+--- a/reference/compose/compose.yaml
++++ b/reference/compose/compose.yaml
+@@ -218,7 +218,9 @@ services:
+       # hosts auto-claim within milliseconds. Manual-UI sessions
+       # (a human at the keyboard) want a much higher value — set
+       # EDEN_MAX_QUIESCENT_ITERATIONS in .env to override. See
+-      # MANUAL_UI_ISSUES.md #1 for the design discussion.
++      # GitHub issue #98 for the design discussion (the structural fix
++      # — orchestrator as cross-experiment infra — is deferred to
++      # Phase 12c control plane).
+       - --poll-interval
+       - "1.0"
+       - --max-quiescent-iterations
+@@ -448,6 +450,6 @@ volumes:
+   # is passed (otherwise compose's `<project>_<volume>` prefix makes
+   # the name operator-deployment-dependent and re-seeds silently
+   # no-op because repo-init short-circuits with
+-  # EDEN_REPO_ALREADY_SEEDED). See MANUAL_UI_ISSUES.md §8.
++  # EDEN_REPO_ALREADY_SEEDED). Resolved via closed issue #55.
+   eden-repo-init-staging:
+     name: eden-repo-init-staging
+diff --git a/reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py b/reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py
+index be06479..71edc55 100644
+--- a/reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py
++++ b/reference/packages/eden-dispatch/tests/test_orchestrator_iteration.py
+@@ -261,7 +261,7 @@ def test_quiesced_store_returns_false() -> None:
+ 
+ 
+ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
+-    """MANUAL_UI_ISSUES #6 / #7 — a malformed variant must not bring the orchestrator down.
++    """Regression test for #6 / #7 — a malformed variant must not bring the orchestrator down (resolved in commit 17d35d7).
+ 
+     Before the fix, a single ``success`` variant whose integration
+     callback raised (e.g. ``NotReadyForIntegration`` because
+diff --git a/reference/scripts/setup-experiment/setup-experiment.sh b/reference/scripts/setup-experiment/setup-experiment.sh
+index c0cc1c3..b3913d8 100755
+--- a/reference/scripts/setup-experiment/setup-experiment.sh
++++ b/reference/scripts/setup-experiment/setup-experiment.sh
+@@ -625,7 +625,7 @@ if [[ -n "$ARG_SEED_FROM" ]]; then
+     echo "--- seeding from host directory: ${SEED_FROM_ABS} ---" >&2
+     # Drop any prior staging volume so repo-init doesn't short-circuit
+     # via EDEN_REPO_ALREADY_SEEDED and silently ignore the new --seed-from
+-    # content. See MANUAL_UI_ISSUES.md §8. The volume has explicit
++    # content. Resolved via closed issue #55. The volume has explicit
+     # `name: eden-repo-init-staging` in compose.yaml so this rm works
+     # regardless of the compose project name.
+     docker volume rm eden-repo-init-staging >/dev/null 2>&1 || true
+diff --git a/reference/services/web-ui/src/eden_web_ui/routes/ideator.py b/reference/services/web-ui/src/eden_web_ui/routes/ideator.py
+index acd0f1f..da8c850 100644
+--- a/reference/services/web-ui/src/eden_web_ui/routes/ideator.py
++++ b/reference/services/web-ui/src/eden_web_ui/routes/ideator.py
+@@ -325,7 +325,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
+             intended_executor_ids=intended_ids,
+         )
+         # Buffer typed state so a navigation away + return to GET
+-        # /draft re-hydrates the form (issue #2 in MANUAL_UI_ISSUES).
++        # /draft re-hydrates the form (regression guard for issue #2).
+         _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
+         ctx: dict[str, Any] = {
+             "session": session,
+diff --git a/reference/services/web-ui/tests/test_ideator_flow.py b/reference/services/web-ui/tests/test_ideator_flow.py
+index d4abc8b..678649d 100644
+--- a/reference/services/web-ui/tests/test_ideator_flow.py
++++ b/reference/services/web-ui/tests/test_ideator_flow.py
+@@ -756,7 +756,7 @@ class TestStrandedClaim:
+ 
+ 
+ class TestDraftBufferReHydration:
+-    """MANUAL_UI_ISSUES #2 — typed draft input survives navigation.
++    """Regression test for #2 — typed draft input survives navigation (resolved in commit c30cafa).
+ 
+     Before the fix, a user who hit a validation error and then
+     navigated away (back / refresh / nav click) and returned to

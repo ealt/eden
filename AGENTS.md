@@ -20,7 +20,11 @@ For per-chunk completion records — what shipped, contract amendments, impl det
 
 ## Recording chunk completions
 
-The final wave of every chunk (the "docs PR" wave, usually wave 7 or 8 per the chunk's plan) MUST append an entry to `CHANGELOG.md` under `## [Unreleased]` describing the shipped work. On merge, that entry flips to a dated chunk heading (`## Phase <id> — <title> — <YYYY-MM-DD>`) at the top of the file, and a one-line status flip lands in the matching `docs/roadmap.md` entry (`- [<id>](plans/...) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`). Do NOT edit AGENTS.md to record chunk completions; the per-chunk prose lives in `CHANGELOG.md`.
+Every shipped chunk MUST land an entry in `CHANGELOG.md` and a one-line status flip in `docs/roadmap.md`. Do NOT edit AGENTS.md to record chunk completions.
+
+For chunks that have a chunk-plan in `docs/plans/`, the final-wave "docs PR" appends to `CHANGELOG.md [Unreleased]` describing the shipped work; on merge, that entry flips to a dated chunk heading (`## Phase <id> — <title> — <YYYY-MM-DD>`) at the top of the file, and the roadmap status flip points at the plan: `- [<id>](plans/eden-phase-<id>-<slug>.md) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`.
+
+For planless chunks (hotfixes, mechanical renames, single-PR doc fix-ups) the same shape applies, except the roadmap one-liner points at the merged PR instead of a plan: `- [<id>](https://github.com/<org>/<repo>/pull/<N>) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`. Use the planless shape when no plan was authored — never invent a plan path after the fact.
 
 ## Commands
 
