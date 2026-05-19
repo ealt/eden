@@ -8,6 +8,7 @@ live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 """
 
 from ._base import RESERVED_IDENTIFIERS, iter_events_by_type
+from ._checkpoint import ImportResult
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,
@@ -50,6 +51,7 @@ __all__ = [
     "NotClaimed",
     "NotFound",
     "IdeaSubmission",
+    "ImportResult",
     "NoOpVariant",
     "PostgresStore",
     "RESERVED_IDENTIFIERS",

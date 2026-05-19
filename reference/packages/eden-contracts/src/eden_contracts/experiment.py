@@ -26,6 +26,22 @@ termination path (``03-roles.md`` §6.2 decision-type 0).
 """
 
 
+class ImportProvenance(BaseModel):
+    """Provenance recorded on an experiment that was created by import.
+
+    Mirrors the ``imported_from`` object on
+    ``spec/v0/schemas/experiment.schema.json``. Carried verbatim from the
+    source checkpoint's manifest at import time; the recovery-probe
+    anchor for the lost-201 case in
+    ``spec/v0/10-checkpoints.md`` §10.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    checkpoint_exported_at: DateTimeStr
+    checkpoint_format_version: Annotated[str, Field(min_length=1)]
+
+
 class Experiment(BaseModel):
     """Runtime object backing the ``experiment.state`` lifecycle field.
 
@@ -38,3 +54,10 @@ class Experiment(BaseModel):
     experiment_id: Annotated[str, Field(min_length=1)]
     state: ExperimentState
     created_at: DateTimeStr
+    imported_from: ImportProvenance | None = None
+    """Set at import time on experiments produced by ``import_checkpoint``;
+    ``None`` (serialized as JSON ``null``) on natively-created experiments.
+    The wire response intentionally allows the literal ``null`` (see
+    ``spec/v0/schemas/experiment.schema.json``'s ``oneOf: [null, object]``)
+    so callers can detect "field present, no import" without branching on
+    key-presence. Written exactly once and immutable thereafter."""

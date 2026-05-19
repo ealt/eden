@@ -10,6 +10,7 @@ package = false
 [tool.uv.workspace]
 members = [
     "conformance",
+    "reference/packages/eden-checkpoint",
     "reference/packages/eden-contracts",
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
@@ -25,6 +26,7 @@ members = [
 ]
 
 [tool.uv.sources]
+eden-checkpoint = { workspace = true }
 eden-conformance = { workspace = true }
 eden-contracts = { workspace = true }
 eden-dispatch = { workspace = true }
@@ -47,6 +49,7 @@ dev = [
     "jsonschema>=4.21",
     "referencing>=0.30",
     "pyyaml>=6.0",
+    "eden-checkpoint",
     "eden-conformance",
     "eden-contracts",
     "eden-dispatch",
@@ -99,6 +102,7 @@ convention = "google"
 
 [tool.pyright]
 include = [
+    "reference/packages/eden-checkpoint",
     "reference/packages/eden-contracts",
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
@@ -119,6 +123,7 @@ reportMissingTypeStubs = "none"
 
 [tool.pytest.ini_options]
 testpaths = [
+    "reference/packages/eden-checkpoint/tests",
     "reference/packages/eden-contracts/tests",
     "reference/packages/eden-dispatch/tests",
     "reference/packages/eden-git/tests",

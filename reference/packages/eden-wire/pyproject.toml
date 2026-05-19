@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
+    "eden-checkpoint",
     "eden-contracts",
     "eden-storage",
     "fastapi>=0.115,<1",

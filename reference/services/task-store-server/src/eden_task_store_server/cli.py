@@ -214,11 +214,24 @@ def main(argv: list[str] | None = None) -> int:
         if readonly_password:
             provision_readonly(store, password=readonly_password)
         artifacts_dir = Path(args.artifacts_dir) if args.artifacts_dir else None
+        # 12b: pass the experiment-config text + repo path through to
+        # the checkpoint endpoints so exports carry real bytes rather
+        # than the wave-4 zero-byte placeholders. Both are optional —
+        # test deployments without a paired bare repo leave repo-path
+        # unset and the route emits an empty bundle.
+        try:
+            experiment_config_text = Path(args.experiment_config).read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            experiment_config_text = None
         app = build_app(
             store=store,
             admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
             artifacts_dir=artifacts_dir,
+            checkpoint_experiment_config=experiment_config_text,
+            checkpoint_repo_path=args.repo_path,
         )
         uv_config = uvicorn.Config(
             app,

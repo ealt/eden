@@ -23,12 +23,22 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import io
 import os
 import stat
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
+from eden_checkpoint import (
+    CHECKPOINT_MEDIA_TYPE,
+    CheckpointError,
+    CheckpointInvalid,
+)
+from eden_checkpoint import (
+    ExperimentIdMismatch as CheckpointExperimentIdMismatch,
+)
 from eden_contracts import Idea, TaskAdapter, Variant
 from eden_storage import Store
 from eden_storage.errors import NotFound, StorageError
@@ -320,6 +330,8 @@ def make_app(
     subscribe_poll_interval: float = 0.1,
     admin_token: str | None = None,
     artifacts_dir: Path | str | None = None,
+    checkpoint_experiment_config: str | None = None,
+    checkpoint_repo_path: Path | str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
 
@@ -359,6 +371,14 @@ def make_app(
     artifact_root: Path | None = (
         Path(artifacts_dir) if artifacts_dir is not None else None
     )
+    # 12b: optional checkpoint substrate. When the operator supplies
+    # both, every export carries real bytes; when either is None the
+    # route emits a zero-byte placeholder (the wave-4 in-process
+    # posture; receiver-side resume requires both to be present).
+    checkpoint_repo_root: Path | None = (
+        Path(checkpoint_repo_path) if checkpoint_repo_path is not None else None
+    )
+    checkpoint_config_text: str = checkpoint_experiment_config or ""
 
     if admin_token is not None:
         install_auth_middleware(app, admin_token=admin_token, store=store)
@@ -1395,6 +1415,203 @@ def make_app(
             require_admin(request)
         store.delete_group(group_id)
         return Response(status_code=204)
+
+    # ------------------------------------------------------------------
+    # Portable checkpoints (chapter 7 §14, chapter 10)
+    # ------------------------------------------------------------------
+
+    @app.get(f"{base}")
+    async def _read_experiment(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, Any]:
+        """Chapter 7 §14.3: read the full experiment runtime object.
+
+        Either-auth (any registered worker MAY read, parallel to the
+        §2.9 ``GET /state`` companion read). Returns ``state`` +
+        ``created_at`` + ``imported_from`` per
+        ``spec/v0/schemas/experiment.schema.json``; the
+        ``imported_from`` field is the recovery-probe anchor for the
+        lost-import-response case in chapter 10 §10. The orchestrator's
+        per-iteration ``ExperimentStateView.experiment_created_at`` is
+        the other consumer; restricting this surface to admin-only
+        would 403 the orchestrator's worker bearer and break the
+        dispatch loop (caught by the wave-5 smoke regression). See
+        §14 intro for the bootstrap-class boundary rationale.
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}",
+        )
+        # Auth middleware (when admin_token is set) has already
+        # authenticated the principal; either-auth means we accept any
+        # registered principal class. No additional gate here.
+        return store.read_experiment().model_dump(mode="json", exclude_none=False)
+
+    @app.post(f"{base}/checkpoint")
+    async def _export_checkpoint(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> Response:
+        """Chapter 7 §14.1: stream a portable-checkpoint archive.
+
+        Admin-gated (literal ``admin`` principal per §13.1). Returns the tar bytes with
+        ``Content-Type: application/x-eden-checkpoint+tar``. The wave-4
+        binding materializes the archive to an in-memory buffer; future
+        revisions MAY switch to a streaming temp-file model for very
+        large experiments (chapter 10 §6 leaves the materialization
+        strategy implementation-defined).
+
+        Caller-supplied substrate-external pieces (``experiment_config``
+        text and ``repo_bundle`` bytes) are NOT carried on this wave-4
+        endpoint — wave 4 surfaces only the Store-managed JSONL data
+        plus zero-byte placeholders for those fields. Wave 5 wires the
+        substrate-external integration.
+        """
+        _check_experiment(
+            experiment_id,
+            x_eden_experiment_id,
+            f"/v0/experiments/{experiment_id}/checkpoint",
+        )
+        if admin_token is not None:
+            require_admin(request)
+        # Compose substrate-external pieces. The bundle is generated
+        # per-request inside a temp file (git bundle is a write-then-read
+        # flow; can't stream directly to the export buffer). When the
+        # repo path is unset (e.g. test fixtures) the bundle stays
+        # empty — the resulting archive is structurally valid but
+        # receiver-side resume requires both substrate pieces.
+        bundle_bytes = b""
+        if checkpoint_repo_root is not None:
+            from eden_checkpoint.repo_bundle import create_bundle
+
+            with tempfile.TemporaryDirectory(prefix="eden-checkpoint-bundle-") as td:
+                bundle_path = Path(td) / "repo.bundle"
+                try:
+                    create_bundle(checkpoint_repo_root, bundle_path)
+                    bundle_bytes = bundle_path.read_bytes()
+                except CheckpointInvalid:
+                    # Empty repo / unreachable bundle: emit a zero-byte
+                    # placeholder rather than 5xx-ing. The receiver's
+                    # chapter-10 §12 cross-reference validation will
+                    # surface any inconsistency at import time.
+                    bundle_bytes = b""
+        buffer = io.BytesIO()
+        store.export_checkpoint(
+            buffer,
+            experiment_config=checkpoint_config_text,
+            repo_bundle=bundle_bytes,
+        )
+        return Response(
+            content=buffer.getvalue(),
+            media_type=CHECKPOINT_MEDIA_TYPE,
+        )
+
+    @app.post("/v0/checkpoints/import")
+    async def _import_checkpoint(
+        request: Request,
+        as_experiment_id: str | None = Query(None),
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> Response:
+        """Chapter 7 §14.2: import a portable-checkpoint archive.
+
+        Admin-gated (literal ``admin`` principal per §13.1;
+        bootstrap-class because a fresh receiver has no ``admins``-
+        group member). The §1.3 experiment-scoping carve-out applies:
+        the ``X-Eden-Experiment-Id`` header is OPTIONAL on this
+        endpoint, but if present MUST equal the post-rewrite
+        experiment_id (the manifest's id, or ``as_experiment_id`` if
+        supplied). The wire layer's ``ExperimentIdMismatch`` covers
+        that surface; the eden-checkpoint ``ExperimentIdMismatch``
+        covers the store-target-vs-manifest mismatch and is re-raised
+        through the same wire type per the spec error-vocabulary
+        uniformity rule.
+
+        The body MUST be the raw tar archive bytes; this wave does not
+        accept multipart/form-data — operators using the script
+        wrapper or the StoreClient send the bytes directly.
+        """
+        if admin_token is not None:
+            require_admin(request)
+        archive_bytes = await request.body()
+        if not archive_bytes:
+            raise BadRequest("empty request body; expected tar archive")
+        # Pre-route ExperimentIdMismatch: when the optional header is
+        # supplied, fail fast against the post-rewrite id BEFORE
+        # extracting the archive (avoids creating a tempdir for a
+        # request we'll reject anyway).
+        target_id = as_experiment_id or store.experiment_id
+        if (
+            x_eden_experiment_id is not None
+            and x_eden_experiment_id != target_id
+        ):
+            raise ExperimentIdMismatch(
+                f"X-Eden-Experiment-Id header {x_eden_experiment_id!r} does "
+                f"not match the post-rewrite experiment_id {target_id!r}"
+            )
+        with tempfile.TemporaryDirectory(prefix="eden-checkpoint-wire-") as td:
+            extract_dir = Path(td)
+            try:
+                result = store.import_checkpoint(
+                    io.BytesIO(archive_bytes),
+                    as_experiment_id=as_experiment_id,
+                    extract_dir=extract_dir,
+                )
+            except CheckpointExperimentIdMismatch as exc:
+                # Surface the chapter-10 §11 mismatch through the same
+                # wire vocabulary as the §1.3 header check.
+                raise ExperimentIdMismatch(str(exc)) from exc
+        # Reissue-required workers are surfaced as warnings so the
+        # operator can drive `reissue_credential` per chapter 10 §8.
+        warnings: list[str] = list(result.warnings)
+        imported_workers = sorted(w.worker_id for w in store.list_workers())
+        if imported_workers:
+            warnings.append(
+                "credentials reissue required for imported workers: "
+                + ", ".join(imported_workers)
+            )
+        # Chapter 7 §14.2 mandates 201 Created on a successful import
+        # (a new experiment row is materialized). FastAPI's default
+        # would be 200; an explicit JSONResponse sets the spec-pinned
+        # status without losing the problem+json envelope wiring above.
+        return JSONResponse(
+            status_code=201,
+            content={
+                "experiment_id": result.experiment_id,
+                "warnings": warnings,
+            },
+        )
+
+    @app.exception_handler(CheckpointError)
+    async def _checkpoint_error_handler(
+        request: Request, exc: CheckpointError
+    ) -> JSONResponse:
+        # Most CheckpointError subclasses (CheckpointInvalid,
+        # ExperimentIdConflict, SpecVersionMismatch,
+        # UnsupportedCheckpointVersion) have direct entries in
+        # _TYPE_BY_EXC. CheckpointExperimentIdMismatch is converted in
+        # the import handler above, so by the time we get here only
+        # the registered subclasses arrive.
+        try:
+            envelope = envelope_for_error(exc, instance=str(request.url))
+        except ValueError:
+            # Defense in depth: an un-mapped CheckpointError surfaces
+            # as a generic 400 rather than a 500.
+            return _problem(
+                400,
+                "eden://error/checkpoint-invalid",
+                "Checkpoint Invalid",
+                str(exc) or type(exc).__name__,
+                str(request.url),
+            )
+        return JSONResponse(
+            status_code=envelope.status,
+            media_type=PROBLEM_JSON,
+            content=envelope.to_dict(),
+        )
 
     # ------------------------------------------------------------------
     # Reference-only helpers (non-normative)

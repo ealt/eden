@@ -36,7 +36,7 @@ from .event import (
     VariantStartedEvent,
     VariantSucceededEvent,
 )
-from .experiment import Experiment, ExperimentState
+from .experiment import Experiment, ExperimentState, ImportProvenance
 from .group import Group, GroupMember
 from .idea import Idea, IdeaState, Slug
 from .task import (
@@ -90,6 +90,7 @@ __all__ = [
     "IdeaDraftedEvent",
     "IdeaReadyEvent",
     "IdeaState",
+    "ImportProvenance",
     "ReclaimCause",
     "RegisteredEvent",
     "RegisteredEventAdapter",

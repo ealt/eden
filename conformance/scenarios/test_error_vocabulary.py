@@ -51,6 +51,18 @@ _IMPL_OPTIONAL_TYPES: frozenset[str] = frozenset(
         # via validation-error), or both. End-state guarantee is on
         # the variant, not the wire surface.
         "eden://error/no-op-variant",
+        # spec/v0/07-wire-protocol.md §9 + §14, spec/v0/10-checkpoints.md:
+        # the v1+checkpoints conformance level (chapter 9 §4) adds these
+        # four wire types. They are MANDATORY for impls that claim that
+        # level (the import endpoint emits them on the documented
+        # failure paths), but an impl claiming only v1 / v1+roles /
+        # v1+roles+integrator MAY omit the checkpoint endpoints entirely
+        # — in which case these types never surface. Treat as
+        # optional-at-observation to match.
+        "eden://error/checkpoint-invalid",
+        "eden://error/experiment-id-conflict",
+        "eden://error/spec-version-mismatch",
+        "eden://error/unsupported-checkpoint-version",
     }
 )
 

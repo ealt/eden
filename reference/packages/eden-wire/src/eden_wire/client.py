@@ -20,12 +20,15 @@ caller's responsibility per the binding's §8.3.
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
+from eden_checkpoint import ExperimentIdConflict
 from eden_contracts import (
     DispatchMode,
     EvaluationTask,
@@ -57,11 +60,24 @@ from .errors import raise_for_envelope
 
 __all__ = [
     "IndeterminateDispatchModeUpdate",
+    "IndeterminateImport",
     "IndeterminateIntegration",
     "IndeterminateReassign",
     "IndeterminateTermination",
     "StoreClient",
 ]
+
+
+class IndeterminateImport(RuntimeError):
+    """An ``import_checkpoint`` call's outcome cannot be determined.
+
+    Raised by :meth:`StoreClient.import_checkpoint` when a transport-
+    indeterminate failure cannot be resolved by the
+    chapter-10 §10 ``read_experiment`` recovery probe (read-back
+    itself fails, or the experiment does not exist). The caller MUST
+    NOT assume the server has not committed; operator intervention is
+    required.
+    """
 
 
 class IndeterminateIntegration(RuntimeError):
@@ -846,31 +862,17 @@ class StoreClient:
     # ------------------------------------------------------------------
 
     def read_experiment(self) -> Experiment:
-        """Read the experiment runtime object.
+        """Read the experiment runtime object via ``GET /v0/experiments/{E}``.
 
-        v0 exposes only the lifecycle ``state`` slice through the wire
-        binding (`GET /state`); a full Experiment endpoint is not part
-        of the chapter-7 §2.9 surface in v0. To keep the ``Store``
-        Protocol satisfiable against the wire client, this method
-        wraps :meth:`read_experiment_state` and synthesizes the full
-        :class:`Experiment` shape with a best-effort ``created_at``.
-
-        The ``created_at`` field on the synthesized object is the
-        client's wall-clock at read time, not the actual experiment-
-        creation timestamp. Callers that need the recorded
-        ``created_at`` (e.g. ``max_wall_time_policy``) MUST go through
-        an in-process ``Store``; running such a policy against the
-        wire client will use the synthesized timestamp and never
-        accumulate wall-time toward the deadline. Documented as a
-        known degradation pending a future ``GET /experiment``
-        endpoint.
+        Admin-gated server-side per chapter 7 §14.3. Returns the full
+        :class:`Experiment` shape including ``imported_from``, which is
+        the recovery-probe anchor for the
+        chapter-10 §10 lost-import-response case. Worker-bearer callers
+        who only need the lifecycle ``state`` projection should use
+        :meth:`read_experiment_state` (either-auth ``GET /state``).
         """
-        state = self.read_experiment_state()
-        return Experiment(
-            experiment_id=self._experiment_id,
-            state=state,
-            created_at=_now(),
-        )
+        resp = self._request("GET", self._base)
+        return Experiment.model_validate(resp.json())
 
     def read_experiment_state(self) -> ExperimentState:
         """Fetch the experiment's current lifecycle state (§2.9 read).
@@ -1002,6 +1004,281 @@ class StoreClient:
             f"({type(original).__name__}); read-back shows "
             f"state={observed!r} — server-side outcome unknown, "
             "operator must investigate"
+        ) from original
+
+    # ------------------------------------------------------------------
+    # Portable checkpoints (chapter 7 §14)
+    # ------------------------------------------------------------------
+
+    def export_checkpoint(
+        self,
+        stream: Any,
+        *,
+        experiment_config: str | bytes = "",  # noqa: ARG002 — server-side composes its own
+        repo_bundle: bytes = b"",  # noqa: ARG002
+        exporter_info: Any | None = None,  # noqa: ARG002
+    ) -> Any:
+        """Download a portable-checkpoint archive to ``stream``.
+
+        Calls ``POST /v0/experiments/{E}/checkpoint`` and copies the
+        response bytes into ``stream``. Admin-gated server-side per
+        chapter 7 §14.1. Returns the parsed :class:`CheckpointManifest`
+        recovered from the archive (mirrors the in-process Store-level
+        return signature so callers don't branch by transport).
+
+        The substrate-external parameters (``experiment_config``,
+        ``repo_bundle``, ``exporter_info``) are accepted for Store-
+        Protocol signature parity but are NOT forwarded — the server
+        composes those from its own substrates. Wave-4 callers that
+        want to customize them should use the in-process Store
+        directly.
+        """
+        from eden_checkpoint import (  # local import — avoid cyclical at module-load
+            CheckpointReader,
+            extract_checkpoint,
+        )
+
+        url = f"{self._base}/checkpoint"
+        with self._client.stream(
+            "POST", url, headers=self._headers, timeout=self._timeout
+        ) as resp:
+            if 400 <= resp.status_code < 600:
+                # Consume the response so the connection releases, then
+                # raise.
+                body = resp.read()
+                try:
+                    import json as _json
+
+                    payload = _json.loads(body)
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict) and "type" in payload:
+                    raise_for_envelope(payload)
+                resp.raise_for_status()
+            buf = io.BytesIO()
+            for chunk in resp.iter_bytes():
+                buf.write(chunk)
+                stream.write(chunk)
+        # Recover the manifest by re-reading the buffered bytes. The
+        # operation is admin-only so the extra round-trip into a temp
+        # dir is acceptable; production callers that own the bytes can
+        # call extract_checkpoint themselves.
+        import tempfile
+
+        buf.seek(0)
+        with tempfile.TemporaryDirectory(prefix="eden-checkpoint-export-") as td:
+            reader: CheckpointReader = extract_checkpoint(buf, Path(td))
+            return reader.manifest
+
+    def import_checkpoint(
+        self,
+        stream: Any,
+        *,
+        as_experiment_id: str | None = None,
+        extract_dir: Any | None = None,  # noqa: ARG002 — server owns extraction
+    ) -> Any:
+        """Upload a portable-checkpoint archive to the receiving server.
+
+        Calls ``POST /v0/checkpoints/import`` with the archive bytes in
+        the request body. Admin-gated per chapter 7 §14.2. The
+        ``X-Eden-Experiment-Id`` header is OPTIONAL on this endpoint
+        per the §1.3 carve-out; the client sends it so server-side
+        defense-in-depth still applies, but the server will accept the
+        request equally without it.
+
+        Returns a dict with ``experiment_id`` and ``warnings`` (the
+        wave-4 surface; full :class:`ImportResult` parity will land
+        when the format library's substrate-external pieces flow
+        through the wire — wave 5).
+
+        Read-back ladder on transport-indeterminate failure: the
+        server-side import is a single composite commit, so the client
+        probes ``GET /v0/experiments/{target_id}`` and matches
+        ``imported_from`` against a synthesized expectation. The probe
+        path returns the experiment object including ``imported_from``
+        per chapter 10 §10. Unlike ``terminate_experiment``, the import
+        is NOT idempotent on the post-success state — a retry against
+        an already-imported experiment raises ``ExperimentIdConflict``,
+        which the client surfaces unchanged.
+        """
+        # Read all bytes — the FastAPI request handler does the same.
+        # We need the bytes twice: once for the POST + once to parse the
+        # manifest's exported_at for the recovery-probe ladder.
+        if hasattr(stream, "read"):
+            data = stream.read()
+        else:
+            data = bytes(stream)
+        params: dict[str, Any] = {}
+        if as_experiment_id is not None:
+            params["as_experiment_id"] = as_experiment_id
+        url = f"{self._base_url}/v0/checkpoints/import"
+        # The §1.3 carve-out makes X-Eden-Experiment-Id optional on
+        # this route; we omit our default header so the server's
+        # carve-out logic exercises through the wave-5 conformance
+        # suite too.
+        headers = {
+            k: v for k, v in self._headers.items() if k != "X-Eden-Experiment-Id"
+        }
+        try:
+            resp = self._client.request(
+                "POST",
+                url,
+                content=data,
+                params=params,
+                headers={**headers, "Content-Type": "application/x-eden-checkpoint+tar"},
+                timeout=self._timeout,
+            )
+        except httpx.TransportError as exc:
+            return self._import_recovery_probe(
+                data, as_experiment_id=as_experiment_id, original=exc
+            )
+        if 400 <= resp.status_code < 600:
+            body = self._maybe_json(resp)
+            if isinstance(body, dict) and "type" in body:
+                raise_for_envelope(body)
+            resp.raise_for_status()
+        return resp.json()
+
+    def _import_recovery_probe(
+        self,
+        archive_bytes: bytes,
+        *,
+        as_experiment_id: str | None,
+        original: BaseException,
+    ) -> dict[str, Any]:
+        """Read-back ladder for ``import_checkpoint`` transport-indeterminacy.
+
+        Per chapter 10 §10, a client whose import call lost its 201
+        response probes ``read_experiment(target_id)`` and compares
+        ``imported_from.checkpoint_exported_at`` against the manifest's
+        ``exported_at``. Three outcomes:
+
+        1. **Confirmed success.** The receiving experiment exists with
+           ``imported_from.checkpoint_exported_at`` matching the local
+           manifest's ``exported_at``: the import already committed;
+           the missing 201 was a transport blip. Return a synthesized
+           response.
+        2. **Confirmed divergence.** The receiving experiment exists
+           but ``imported_from`` is absent or mismatched: a different
+           import won the race (or the receiver was non-empty before
+           our call). Raise the ``ExperimentIdConflict`` the server
+           would have returned.
+        3. **Indeterminate.** The read-back itself fails (transport
+           error, NotFound on the target id): we cannot determine
+           whether our POST landed. Raise :class:`IndeterminateImport`;
+           operator intervention is required.
+        """
+        # Parse the local manifest to know what `exported_at` to match.
+        # Codex round-2 finding: don't extract the whole archive just to
+        # read manifest.json — for large checkpoints this doubles local
+        # disk/I/O on the very path that's supposed to harden a dropped-
+        # response recovery. Stream-walk the tar entries instead and
+        # consume bytes only for the manifest.
+        import io as _io
+        import tarfile as _tarfile
+
+        from eden_checkpoint import CheckpointManifest
+        from eden_storage.errors import (
+            AlreadyExists,
+            InvalidPrecondition,
+        )
+        from eden_storage.errors import (
+            NotFound as _NotFound,
+        )
+
+        local_exported_at: str | None = None
+        local_format_version: str | None = None
+        try:
+            buf = _io.BytesIO(archive_bytes)
+            manifest_bytes: bytes | None = None
+            with _tarfile.open(fileobj=buf, mode="r|") as tar:
+                for member in tar:
+                    # Match `*/manifest.json` at archive root (the
+                    # checkpoint format's single-top-level convention).
+                    if member.name.endswith("/manifest.json") and member.isfile():
+                        extracted = tar.extractfile(member)
+                        if extracted is not None:
+                            manifest_bytes = extracted.read()
+                        break
+            if manifest_bytes is None:
+                raise ValueError("manifest.json not found in archive")
+            manifest_obj = CheckpointManifest.model_validate_json(manifest_bytes)
+            local_exported_at = manifest_obj.exported_at
+            local_format_version = manifest_obj.checkpoint_format_version
+            target_id = as_experiment_id or manifest_obj.experiment_id
+        except Exception as parse_exc:
+            # If we can't even parse the archive, we can't probe. Treat
+            # as indeterminate — the caller's archive may have been
+            # corrupted at the same moment the transport failed.
+            raise IndeterminateImport(
+                f"import_checkpoint transport failed "
+                f"({type(original).__name__}) and the local archive "
+                f"could not be parsed for recovery-probe: {parse_exc}"
+            ) from original
+
+        # Probe the receiving server. We bypass the StoreClient's
+        # default base path (which is scoped to the StoreClient's own
+        # experiment_id, not the target_id) and hit the absolute path.
+        probe_url = f"{self._base_url}/v0/experiments/{target_id}"
+        probe_headers = {
+            k: v for k, v in self._headers.items() if k != "X-Eden-Experiment-Id"
+        }
+        probe_headers["X-Eden-Experiment-Id"] = target_id
+        try:
+            probe = self._client.request(
+                "GET", probe_url, headers=probe_headers, timeout=self._timeout
+            )
+        except httpx.TransportError:
+            raise IndeterminateImport(
+                f"import_checkpoint transport failed "
+                f"({type(original).__name__}) and the recovery-probe "
+                f"GET /v0/experiments/{target_id} also failed; "
+                "server-side outcome unknown"
+            ) from original
+        if probe.status_code == 404:
+            raise IndeterminateImport(
+                f"import_checkpoint transport failed "
+                f"({type(original).__name__}) and the recovery-probe "
+                f"shows experiment {target_id!r} does not exist on the "
+                "receiver; server-side outcome unknown (the request may "
+                "still be in flight)"
+            ) from original
+        if 400 <= probe.status_code < 600:
+            body = self._maybe_json(probe)
+            if isinstance(body, dict) and "type" in body:
+                try:
+                    raise_for_envelope(body)
+                except (AlreadyExists, InvalidPrecondition, _NotFound) as e:
+                    raise IndeterminateImport(
+                        f"import_checkpoint transport failed "
+                        f"({type(original).__name__}); read-back probe "
+                        f"surfaced {type(e).__name__}: {e}"
+                    ) from original
+            probe.raise_for_status()
+        body = probe.json()
+        imported = body.get("imported_from")
+        if (
+            isinstance(imported, dict)
+            and imported.get("checkpoint_exported_at") == local_exported_at
+            and imported.get("checkpoint_format_version") == local_format_version
+        ):
+            # Confirmed success: our request landed; the 201 was lost.
+            return {
+                "experiment_id": target_id,
+                "warnings": ["recovered from transport-indeterminate import"],
+            }
+        # The experiment exists but with no matching provenance — either
+        # `imported_from is None` (native) or a different import won.
+        # Surface as ExperimentIdConflict to match the server-side
+        # response shape when a second client tries to claim the same
+        # id.
+        raise ExperimentIdConflict(
+            f"import_checkpoint transport failed "
+            f"({type(original).__name__}); read-back of experiment "
+            f"{target_id!r} shows it exists with non-matching "
+            f"imported_from={imported!r} (expected exported_at="
+            f"{local_exported_at!r}). The target experiment id is taken "
+            "by a different import."
         ) from original
 
     def _try_read_task(self, task_id: str) -> Task | None:

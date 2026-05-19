@@ -20,7 +20,16 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from threading import RLock
 
-from eden_contracts import Event, Experiment, Group, Idea, Task, Variant, Worker
+from eden_contracts import (
+    Event,
+    Experiment,
+    Group,
+    Idea,
+    ImportProvenance,
+    Task,
+    Variant,
+    Worker,
+)
 
 from ._base import (
     _DEFAULT_DISPATCH_MODE,
@@ -64,6 +73,9 @@ class InMemoryStore(_StoreBase):
         # extra plumbing.
         self._experiment_state: str = _DEFAULT_EXPERIMENT_STATE
         self._experiment_created_at: str = self._ts()
+        # 12b: import-provenance per `02-data-model.md` §2.5. `None` on
+        # natively-created experiments; populated by `import_checkpoint`.
+        self._imported_from: ImportProvenance | None = None
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -133,6 +145,7 @@ class InMemoryStore(_StoreBase):
             experiment_id=self._experiment_id,
             state=self._experiment_state,  # type: ignore[arg-type]
             created_at=self._experiment_created_at,
+            imported_from=self._imported_from,
         )
 
     def _apply_commit(self, tx: _Tx) -> None:
@@ -161,4 +174,7 @@ class InMemoryStore(_StoreBase):
             self._dispatch_mode = dict(tx.dispatch_mode)
         if tx.experiment_state is not None:
             self._experiment_state = tx.experiment_state
+        if tx.imported_from_update is not None:
+            (new_imported_from,) = tx.imported_from_update
+            self._imported_from = new_imported_from
         self._events.extend(tx.events)

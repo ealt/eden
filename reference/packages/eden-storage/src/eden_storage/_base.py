@@ -67,6 +67,7 @@ from eden_contracts import (
     Idea,
     IdeationPayload,
     IdeationTask,
+    ImportProvenance,
     ReclaimCause,
     Task,
     TaskClaim,
@@ -181,6 +182,14 @@ class _Tx:
     # commit alongside ``experiment.terminated`` (or any future
     # lifecycle event).
     experiment_state: str | None = None
+    # 12b experiment import-provenance (`02-data-model.md` §2.5,
+    # `10-checkpoints.md` §10). Two-state semantics distinct from the
+    # value space: ``None`` means "no imported_from write this commit"
+    # (the field is unchanged); a one-tuple wraps the value to write
+    # (where the inner value MAY itself be ``None`` for the "native
+    # creation" state). The wrapper sidesteps the
+    # absent-vs-explicit-null ambiguity at the staging layer.
+    imported_from_update: tuple[ImportProvenance | None] | None = None
 
 
 def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
@@ -260,6 +269,41 @@ class _StoreBase:
 
     def _default_event_id(self) -> str:
         return f"evt-{next(self._event_ids):06d}"
+
+    def _reseed_default_event_counter(self) -> None:
+        r"""Advance the default ``_event_ids`` counter past every persisted event.
+
+        Called by :func:`eden_storage._checkpoint.import_checkpoint`
+        AFTER a successful bulk-insert so the next emitted event_id does
+        not collide with any imported ``evt-NNNNNN`` value (the
+        12a-1 / 12b factory format). Scans the persisted event log for
+        ids matching ``evt-(\d+)``; the counter restarts at
+        ``max(seen) + 1``. Foreign IUTs whose event_ids don't match the
+        pattern are ignored — the receiving counter restarts at 1
+        regardless (foreign formats don't collide with ``evt-NNNNNN``
+        emissions by construction).
+
+        No-op when the caller supplied a custom ``event_id_factory``;
+        responsibility for collision-avoidance falls on the caller in
+        that case. Bound-method identity (``is``) is unreliable here
+        because each ``self._default_event_id`` attribute access
+        creates a fresh bound-method object; we compare against the
+        underlying function via ``__func__`` so the equality holds
+        across the init-time / reseed-time access.
+        """
+        factory = self._event_id_factory
+        if getattr(factory, "__func__", None) is not _StoreBase._default_event_id:
+            return
+        max_seen = 0
+        for event in self._iter_events():
+            m = re.match(r"^evt-(\d+)$", event.event_id)
+            if m is None:
+                continue
+            n = int(m.group(1))
+            if n > max_seen:
+                max_seen = n
+        if max_seen > 0:
+            self._event_ids = itertools.count(max_seen + 1)
 
     @property
     def experiment_id(self) -> str:
@@ -2601,6 +2645,64 @@ class _StoreBase:
         else:
             value = value.astimezone(UTC)
         return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    # ------------------------------------------------------------------
+    # Portable-checkpoint export / import (12b, `10-checkpoints.md`)
+    # ------------------------------------------------------------------
+
+    def export_checkpoint(
+        self,
+        stream: Any,
+        *,
+        experiment_config: str | bytes = "",
+        repo_bundle: bytes = b"",
+        exporter_info: Any | None = None,
+    ) -> Any:
+        """Write a portable-checkpoint archive of the store's state.
+
+        Delegates to :func:`eden_storage._checkpoint.export_checkpoint`;
+        see that function's docstring for the full contract. Runs inside
+        :meth:`_atomic_operation` so the snapshot is transactionally
+        consistent per ``spec/v0/10-checkpoints.md`` §6.
+
+        Returns the :class:`CheckpointManifest` written into the archive.
+        """
+        from ._checkpoint import export_checkpoint as _export
+
+        return _export(
+            self,
+            stream,
+            experiment_config=experiment_config,
+            repo_bundle=repo_bundle,
+            exporter_info=exporter_info,
+        )
+
+    def import_checkpoint(
+        self,
+        stream: Any,
+        *,
+        as_experiment_id: str | None = None,
+        extract_dir: Any | None = None,
+    ) -> Any:
+        """Bulk-insert a portable-checkpoint archive into the store.
+
+        Delegates to :func:`eden_storage._checkpoint.import_checkpoint`;
+        see that function's docstring for the full contract. The store
+        MUST be empty (chapter 10 §11 collision rule) and the manifest's
+        ``spec_version`` MUST match this binding's
+        :data:`CHECKPOINT_SPEC_VERSION`. Returns an
+        :class:`ImportResult` carrying the substrate-external pieces the
+        caller must wire (experiment_config text, git bundle path,
+        artifact digests).
+        """
+        from ._checkpoint import import_checkpoint as _import
+
+        return _import(
+            self,
+            stream,
+            as_experiment_id=as_experiment_id,
+            extract_dir=extract_dir,
+        )
 
 
 def iter_events_by_type(events: Iterable[Event], type_: str) -> Iterator[Event]:

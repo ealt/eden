@@ -130,6 +130,8 @@ def build_app(
     admin_token: str | None = None,
     subscribe_timeout: float = 30.0,
     artifacts_dir: Path | str | None = None,
+    checkpoint_experiment_config: str | None = None,
+    checkpoint_repo_path: Path | str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app that wraps ``store`` with the §13 auth middleware.
 
@@ -145,12 +147,26 @@ def build_app(
     The route is always mounted regardless; when ``artifacts_dir`` is
     ``None`` every request returns 503 with a closed-vocabulary
     reference-error type.
+
+    ``checkpoint_experiment_config`` (12b) — the experiment-config YAML
+    text, served verbatim into every checkpoint archive's
+    ``experiment-config.yaml`` entry per chapter 10 §3. When ``None``,
+    the route emits an empty placeholder (the wave-4 in-process
+    posture; receiver-side resume requires a non-empty config).
+
+    ``checkpoint_repo_path`` (12b) — path to a bare git repo whose
+    refs/objects flow into every checkpoint archive's ``repo.bundle``
+    entry via ``git bundle create --all`` per chapter 10 §3. When
+    ``None``, the route emits an empty placeholder. Test deployments
+    that don't have a paired bare repo leave this unset.
     """
     return make_app(
         store,
         admin_token=admin_token,
         subscribe_timeout=subscribe_timeout,
         artifacts_dir=artifacts_dir,
+        checkpoint_experiment_config=checkpoint_experiment_config,
+        checkpoint_repo_path=checkpoint_repo_path,
     )
 
 

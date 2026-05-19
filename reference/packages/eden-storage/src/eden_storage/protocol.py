@@ -41,7 +41,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 from eden_contracts import (
     DispatchMode,
@@ -63,6 +64,11 @@ from eden_contracts import (
 )
 
 from .submissions import Submission
+
+if TYPE_CHECKING:
+    from eden_checkpoint import CheckpointManifest, ExporterInfo
+
+    from ._checkpoint import ImportResult
 
 __all__ = ["Store"]
 
@@ -524,4 +530,60 @@ class Store(Protocol):
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
         """Return whether ``worker_id`` is transitively in ``group_id``."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Portable-checkpoint export / import (12b)
+    # ------------------------------------------------------------------
+
+    def export_checkpoint(
+        self,
+        stream: BinaryIO,
+        *,
+        experiment_config: str | bytes = "",
+        repo_bundle: bytes = b"",
+        exporter_info: ExporterInfo | None = None,
+    ) -> CheckpointManifest:
+        """Write a portable-checkpoint archive of the store's state to ``stream``.
+
+        Implements the ``Store.export_checkpoint`` operation defined in
+        [`spec/v0/08-storage.md`](../../../../spec/v0/08-storage.md) §1.9
+        and the format in
+        [`spec/v0/10-checkpoints.md`](../../../../spec/v0/10-checkpoints.md).
+        The snapshot is transactionally consistent per chapter 10 §6.
+
+        ``experiment_config`` and ``repo_bundle`` are caller-supplied
+        substrate-external pieces; the format carries them alongside
+        the Store-managed JSONL data so a receiver has everything it
+        needs to re-materialize the experiment.
+        """
+        ...
+
+    def import_checkpoint(
+        self,
+        stream: BinaryIO,
+        *,
+        as_experiment_id: str | None = None,
+        extract_dir: Path | None = None,
+    ) -> ImportResult:
+        """Read a portable-checkpoint archive and bulk-insert into the store.
+
+        Implements the ``Store.import_checkpoint`` operation defined in
+        [`spec/v0/08-storage.md`](../../../../spec/v0/08-storage.md) §1.9.
+        Preconditions:
+
+        - The manifest's ``spec_version`` MUST match this binding's
+          target.
+        - The store's ``experiment_id`` MUST equal the manifest's id
+          (or ``as_experiment_id`` if supplied), or the call raises
+          ``ExperimentIdMismatch``.
+        - The store MUST be empty (no Store-managed mutations beyond
+          defaults), or the call raises ``ExperimentIdConflict`` per
+          [`spec/v0/10-checkpoints.md`](../../../../spec/v0/10-checkpoints.md)
+          §11.
+
+        On success commits a single atomic transaction containing every
+        Store-managed entity + the imported experiment's runtime state +
+        ``imported_from`` per chapter 10 §10.
+        """
         ...

@@ -9,6 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "eden",
+    "eden-checkpoint",
     "eden-conformance",
     "eden-contracts",
     "eden-dispatch",
@@ -308,6 +309,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "eden-checkpoint" },
     { name = "eden-conformance" },
     { name = "eden-contracts" },
     { name = "eden-dispatch" },
@@ -333,6 +335,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-conformance", editable = "conformance" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
@@ -352,6 +355,21 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "referencing", specifier = ">=0.30" },
     { name = "ruff", specifier = ">=0.7" },
+]
+
+[[package]]
+name = "eden-checkpoint"
+version = "0.0.1"
+source = { editable = "reference/packages/eden-checkpoint" }
+dependencies = [
+    { name = "eden-contracts" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "pydantic", specifier = ">=2.9,<3" },
 ]
 
 [[package]]
@@ -545,6 +563,7 @@ version = "0.0.1"
 source = { editable = "reference/packages/eden-storage" }
 dependencies = [
     { name = "argon2-cffi" },
+    { name = "eden-checkpoint" },
     { name = "eden-contracts" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -553,6 +572,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1,<24" },
+    { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2.9,<3" },
@@ -623,6 +643,7 @@ name = "eden-wire"
 version = "0.0.1"
 source = { editable = "reference/packages/eden-wire" }
 dependencies = [
+    { name = "eden-checkpoint" },
     { name = "eden-contracts" },
     { name = "eden-storage" },
     { name = "fastapi" },
@@ -633,6 +654,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "eden-storage", editable = "reference/packages/eden-storage" },
     { name = "fastapi", specifier = ">=0.115,<1" },

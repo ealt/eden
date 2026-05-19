@@ -45,6 +45,7 @@ from eden_contracts import (
     Experiment,
     Group,
     Idea,
+    ImportProvenance,
     Task,
     TaskAdapter,
     Variant,
@@ -455,7 +456,8 @@ class SqliteStore(_StoreBase):
 
     def _get_experiment(self) -> Experiment:
         row = self._conn.execute(
-            "SELECT state, created_at FROM experiment WHERE experiment_id = ?",
+            "SELECT state, created_at, imported_from FROM experiment "
+            "WHERE experiment_id = ?",
             (self._experiment_id,),
         ).fetchone()
         # The row is created in `_initialize_experiment` before this
@@ -465,10 +467,14 @@ class SqliteStore(_StoreBase):
             raise RuntimeError(
                 f"experiment {self._experiment_id!r} row missing from store"
             )
+        imported_from: ImportProvenance | None = None
+        if row[2] is not None:
+            imported_from = ImportProvenance.model_validate_json(row[2])
         return Experiment(
             experiment_id=self._experiment_id,
             state=row[0],
             created_at=row[1],
+            imported_from=imported_from,
         )
 
     # ------------------------------------------------------------------
@@ -524,6 +530,17 @@ class SqliteStore(_StoreBase):
             self._conn.execute(
                 "UPDATE experiment SET state = ? WHERE experiment_id = ?",
                 (tx.experiment_state, self._experiment_id),
+            )
+        if tx.imported_from_update is not None:
+            (new_imported_from,) = tx.imported_from_update
+            serialized = (
+                None
+                if new_imported_from is None
+                else json.dumps(new_imported_from.model_dump(mode="json"))
+            )
+            self._conn.execute(
+                "UPDATE experiment SET imported_from = ? WHERE experiment_id = ?",
+                (serialized, self._experiment_id),
             )
         for event in tx.events:
             self._insert_event(event)

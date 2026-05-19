@@ -137,3 +137,60 @@ class WireClient:
     def state_path(self) -> str:
         """``GET /v0/experiments/{E}/state`` (12a-3 §2.9 companion read)."""
         return f"{self.base_path}/state"
+
+    def experiment_path(self) -> str:
+        """``GET /v0/experiments/{E}`` (12b chapter 07 §14.3 full read)."""
+        return self.base_path
+
+    def export_checkpoint_path(self) -> str:
+        """``POST /v0/experiments/{E}/checkpoint`` (12b chapter 07 §14.1)."""
+        return f"{self.base_path}/checkpoint"
+
+    def import_checkpoint_path(self) -> str:
+        """``POST /v0/checkpoints/import`` (12b chapter 07 §14.2).
+
+        Global path outside ``experiments/{E}/`` per the §1.3 carve-out;
+        callers MAY omit the ``X-Eden-Experiment-Id`` header on this
+        endpoint.
+        """
+        return "/v0/checkpoints/import"
+
+    def request_bytes(
+        self,
+        method: str,
+        path: str,
+        *,
+        content: bytes,
+        content_type: str,
+        params: Mapping[str, str | int] | None = None,
+        headers: Mapping[str, str] | None = None,
+        omit_experiment_header: bool = False,
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        """Send a raw-bytes request body (no JSON encoding).
+
+        Used by the checkpoint endpoints, which carry tar archive bytes
+        as the body. ``omit_experiment_header`` flips the §1.3
+        carve-out: when True, the default ``X-Eden-Experiment-Id``
+        header is stripped before dispatch.
+        """
+        merged: dict[str, str] = {"Content-Type": content_type}
+        if headers is not None:
+            merged.update(headers)
+        if omit_experiment_header:
+            request_headers = {
+                k: v
+                for k, v in self._client.headers.items()
+                if k.lower() != "x-eden-experiment-id"
+            }
+            request_headers.update(merged)
+            kwargs: dict[str, Any] = {"headers": request_headers, "content": content}
+        else:
+            kwargs = {"headers": merged, "content": content}
+        if params is not None:
+            kwargs["params"] = params
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        resp = self._client.request(method, path, **kwargs)
+        self._record_problem_type(resp)
+        return resp
