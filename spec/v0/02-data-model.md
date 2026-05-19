@@ -120,6 +120,10 @@ The experiment runtime object additionally carries an optional `imported_from` f
 
 `imported_from` is absent (JSON null on the wire) on natively-created experiments and present on experiments produced by the portable-checkpoint import endpoint ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2). The field is the recovery-probe anchor for [`10-checkpoints.md`](10-checkpoints.md) §10: a client that lost the import response queries `read_experiment` and compares `imported_from.checkpoint_exported_at` against the source manifest's `exported_at` to disambiguate "commit succeeded; response lost" from "commit never happened". The field is written exactly once (at import) and is immutable thereafter.
 
+### 2.6 Control-plane registry projection (informative)
+
+A deployment that runs the control plane ([`11-control-plane.md`](11-control-plane.md)) maintains a deployment-wide experiment registry that mirrors the per-experiment `state` field above into a `last_known_state` projection. The registry also carries a `lease: ExperimentLease | null` field that names the currently-active lease holder, if any; the lease shape is normative in [`11-control-plane.md`](11-control-plane.md) §4.2 and its schema is [`schemas/lease.schema.json`](schemas/lease.schema.json). The registry projection is observed only through the control-plane wire endpoints ([`07-wire-protocol.md`](07-wire-protocol.md) §15); it does NOT appear on the task-store-server's `read_experiment` response ([`07-wire-protocol.md`](07-wire-protocol.md) §14.3). A deployment without a control plane does not have the projection; the task-store-server's authoritative `state` is the only lifecycle datum.
+
 ## 3. Task
 
 Schema: [`schemas/task.schema.json`](schemas/task.schema.json).

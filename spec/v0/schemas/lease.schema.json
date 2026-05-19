@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN experiment lease",
+  "description": "An ExperimentLease record issued by the control plane (spec/v0/11-control-plane.md §4.2). A lease is a per-experiment, time-bounded ownership claim held by exactly one orchestrator replica at any instant; the holder is authorized to run the chapter 03 §6.2 orchestrator decisions for the leased experiment. Lease records are observed through the control-plane wire endpoints (spec/v0/07-wire-protocol.md §15.2); they are NOT part of the task-store-server's runtime experiment object (spec/v0/schemas/experiment.schema.json).",
+  "type": "object",
+  "required": ["lease_id", "experiment_id", "holder", "holder_instance", "acquired_at", "expires_at", "renewed_at"],
+  "properties": {
+    "lease_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque identifier assigned by the control plane on acquire. Stable across renewals; replaced on a fresh acquire over an expired or released predecessor."
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The experiment this lease binds. Matches the chapter 02 §1.1 identifier grammar."
+    },
+    "holder": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The deployment-scoped worker_id of the orchestrator replica holding the lease (spec/v0/11-control-plane.md §6). Distinct from any per-experiment worker_id."
+    },
+    "holder_instance": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Per-process UUID supplied by the orchestrator at acquire time (spec/v0/11-control-plane.md §4.7). Defends against duplicate worker_id misconfigurations across replicas. renew_lease and release_lease MUST present the same value; mismatch returns 409 eden://error/lease-instance-mismatch."
+    },
+    "acquired_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "Wall-clock time at which the lease was acquired. Set by the control plane; not advanced on renewal."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "Wall-clock time after which the lease is no longer active. Set to acquired_at + lease_duration at acquire; reset to now + lease_duration on each successful renew_lease. The control plane is the source of truth — the orchestrator MUST use the control-plane-computed value, not its locally-computed now + lease_duration."
+    },
+    "renewed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "Wall-clock time of the most recent successful renew, or acquired_at if the lease has never been renewed."
+    }
+  }
+}

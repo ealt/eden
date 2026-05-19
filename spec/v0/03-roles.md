@@ -238,7 +238,9 @@ The five decision types fall into two safety classes under concurrent execution 
 
 **Bounded-overshoot decisions.** `ideation_creation` MUST be bounded under concurrent execution but is NOT required to be exactly idempotent. With N concurrent orchestrator instances each applying a policy that targets a pending count of `T`, the post-iteration pending count MUST be ≤ `N * T`. Each orchestrator MUST read the experiment's pending-ideation-task count before deciding how many tasks to create, so that subsequent iterations self-correct downward as pending exceeds `T`. A deployment that requires exact control over pending-task count MUST supply a policy callable that implements its own coordination (e.g., advisory locks via the store); the protocol does not require that coordination at the role level.
 
-The split is intentional: dispatch, integration, and termination are CAS-friendly (a single CAS commit decides the outcome), so demanding exactness costs nothing. Ideation creation is not CAS-friendly (the policy returns a count, not a single resource), so demanding exactness would force every orchestrator into a global lock — exactly the lease mechanism this contract deliberately avoids. A deployment that adds a non-CAS-friendly decision type in a later spec lineage MAY introduce a lease primitive at that point; v0 does not.
+The split is intentional: dispatch, integration, and termination are CAS-friendly (a single CAS commit decides the outcome), so demanding exactness costs nothing. Ideation creation is not CAS-friendly (the policy returns a count, not a single resource), so demanding exactness would force every orchestrator into a global lock at the per-decision-type granularity. This chapter's §6.4 contract deliberately does NOT introduce such a lock; ideation creation remains a bounded-overshoot decision.
+
+The per-experiment lease primitive introduced in [`11-control-plane.md`](11-control-plane.md) §4 is a separate concern: it scopes which replica MAY run *any* of the five decisions for a given experiment, not which replica wins a single decision invocation. Under multi-replica deployments that use the control plane, normal-case operation has exactly one lease holder running the five decisions for each experiment, so the §6.4 race classes apply only during the brief lease hand-off window per [`11-control-plane.md`](11-control-plane.md) §5.4.
 
 Conformance scenarios for §6.4 assert the five decision types under simulated multi-instance contention; see [`09-conformance.md`](09-conformance.md) §5.
 
@@ -262,6 +264,16 @@ When `dispatch_mode.<decision>` is `"manual"`, the decision is driven by an auth
 - Manual `integration`: a caller in `orchestrators` calls `integrate_variant` ([`07-wire-protocol.md`](07-wire-protocol.md) §5).
 
 The orchestrator-role contract is mechanism-neutral: the spec does not distinguish "human created this task" from "auto-orchestrator created this task" beyond the `task.created_by` attribution ([`02-data-model.md`](02-data-model.md) §3.1). The `dispatch_mode` flag exists so an operator can carve out a window of authority for themselves on a specific decision type without forking the orchestrator off-protocol.
+
+### 6.6 Lease ownership (deployments with a control plane)
+
+A deployment that runs the control plane ([`11-control-plane.md`](11-control-plane.md)) further constrains when an orchestrator instance MAY run the §6.2 decisions: every orchestrator instance MUST hold an active lease ([`11-control-plane.md`](11-control-plane.md) §4) for an experiment before running ANY of the five §6.2 decisions for that experiment. A non-holder running a decision is a protocol violation.
+
+The lease check is per-iteration and per-experiment: an instance MUST verify it currently holds an active lease at the start of each iteration; a stale check is not sufficient. The check applies uniformly to all five decisions — the `dispatch_mode` flag from §6.1 gates each decision independently, but the lease check is a precondition for considering any of them. An instance MAY hold leases for multiple experiments concurrently and run their decisions independently per the `dispatch_mode` gates.
+
+A deployment that does NOT run a control plane (single-experiment Compose deployments, the pre-12c topology) is not subject to the lease check; the existing `dispatch_mode` gates plus the §6.4 multi-instance safety classes are the full contract.
+
+This sub-section is normative for instances participating in a control-plane-bound deployment. The chapter 11 lease primitive defines `holder` identity, expiration, hand-off, and the safety net during the brief hand-off race window; this sub-section pins only that the chapter 03 §6.2 decisions MUST be lease-gated when the deployment provides leases.
 
 ## 7. Role binding (deferred)
 
