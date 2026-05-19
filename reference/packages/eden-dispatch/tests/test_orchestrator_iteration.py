@@ -261,7 +261,9 @@ def test_quiesced_store_returns_false() -> None:
 
 
 def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
-    """Regression test for #6 / #7 — a malformed variant must not bring the orchestrator down (resolved in commit 17d35d7).
+    """Regression for issues #6 / #7 (fix: 17d35d7).
+
+    A malformed variant must not crash the orchestrator.
 
     Before the fix, a single ``success`` variant whose integration
     callback raised (e.g. ``NotReadyForIntegration`` because
