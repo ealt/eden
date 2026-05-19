@@ -42,7 +42,7 @@ def test_empty_experiment_round_trips(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
     post = _seed.read_experiment(receiver_wire_client)
     assert post.get("imported_from") is not None
@@ -73,7 +73,7 @@ def test_experiment_with_workers_round_trips(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
     # The receiver-side worker / group registries match the sender's.
     workers = receiver_wire_client.get(
@@ -114,7 +114,7 @@ def test_experiment_with_idea_round_trips(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
     received_idea = _seed.read_idea(receiver_wire_client, idea_id)
     assert received_idea["slug"] == "round-trip-idea"
@@ -142,7 +142,7 @@ def test_event_log_round_trips_in_order(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
     received_types = [e["type"] for e in _seed.list_events(receiver_wire_client)]
     assert received_types == sender_types

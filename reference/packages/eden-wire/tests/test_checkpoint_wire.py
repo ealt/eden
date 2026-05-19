@@ -21,9 +21,14 @@ from typing import Any
 
 import httpx
 import pytest
-from eden_checkpoint import CHECKPOINT_MEDIA_TYPE, extract_checkpoint
+from eden_checkpoint import (
+    CHECKPOINT_MEDIA_TYPE,
+    ExperimentIdConflict,
+    extract_checkpoint,
+)
 from eden_storage import InMemoryStore
 from eden_wire import StoreClient, make_app
+from eden_wire.client import IndeterminateImport
 from fastapi.testclient import TestClient
 
 EXPERIMENT_ID = "exp-checkpoint-wire"
@@ -201,7 +206,8 @@ def test_import_round_trip_through_wire(
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
     )
-    assert resp.status_code == 200, resp.text
+    # Chapter 7 §14.2 mandates 201 Created on a successful import.
+    assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["experiment_id"] == EXPERIMENT_ID
     # The receiver's experiment now carries imported_from.
@@ -234,7 +240,7 @@ def test_import_rejects_collision(
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
     )
-    assert first.status_code == 200
+    assert first.status_code == 201
 
     second = receiver_client.post(
         "/v0/checkpoints/import",
@@ -282,7 +288,7 @@ def test_import_rejects_mismatched_header(
 def test_import_header_optional_per_carveout(
     store: InMemoryStore, fresh_store_factory: Any
 ) -> None:
-    """Header absent on /v0/checkpoints/import → still 200 per §1.3 carve-out."""
+    """Header absent on /v0/checkpoints/import → 201 per §14.2 + §1.3 carve-out."""
     client, admin_bearer = _make_admin_worker_client(store)
     export = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
@@ -306,7 +312,7 @@ def test_import_header_optional_per_carveout(
             # NOTE: no X-Eden-Experiment-Id.
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
 
 
 def test_import_rejects_empty_body(
@@ -452,5 +458,191 @@ def _proxy_to_app(app_client: TestClient) -> httpx.MockTransport:
         )
 
     return httpx.MockTransport(_handler)
+
+
+# ----------------------------------------------------------------------
+# Codex round-1 #5: 3-outcome recovery-probe ladder on import
+# ----------------------------------------------------------------------
+
+
+def _flaky_transport_dropping_import_post(
+    app_client: TestClient,
+) -> httpx.MockTransport:
+    """MockTransport that raises ConnectError on POST /v0/checkpoints/import.
+
+    All other requests (including the recovery-probe GET) proxy
+    transparently to ``app_client``. Lets us simulate "POST landed
+    server-side but the response was dropped".
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if (
+            request.method == "POST"
+            and request.url.path == "/v0/checkpoints/import"
+        ):
+            # Server-side: REPLAY the POST against TestClient so the
+            # import actually commits, then raise to simulate the
+            # dropped 201 response. This matches the "we committed,
+            # response lost" case.
+            app_client.request(
+                request.method,
+                request.url.raw_path.decode("ascii"),
+                headers=dict(request.headers),
+                content=request.content,
+            )
+            raise httpx.ConnectError("simulated transport failure")
+        response = app_client.request(
+            request.method,
+            request.url.raw_path.decode("ascii"),
+            headers=dict(request.headers),
+            content=request.content,
+        )
+        return httpx.Response(
+            response.status_code,
+            headers=dict(response.headers),
+            content=response.content,
+        )
+
+    return httpx.MockTransport(_handler)
+
+
+def test_import_recovery_probe_confirmed_success(
+    store: InMemoryStore, fresh_store_factory: Any
+) -> None:
+    """Transport blip after commit + matching imported_from → synthesized success."""
+    sender_client, _admin = _make_admin_worker_client(store)
+    archive_bytes = sender_client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    ).content
+
+    receiver = fresh_store_factory()
+    receiver_app = make_app(receiver, admin_token=ADMIN_TOKEN)
+    receiver_client = TestClient(receiver_app)
+    flaky_http = httpx.Client(
+        transport=_flaky_transport_dropping_import_post(receiver_client),
+        base_url="http://unused",
+    )
+    sc = StoreClient(
+        "http://unused",
+        EXPERIMENT_ID,
+        bearer=f"admin:{ADMIN_TOKEN}",
+        client=flaky_http,
+    )
+    # The POST raises transport error; the probe ladder reads back
+    # imported_from matching the local manifest → confirmed success.
+    result = sc.import_checkpoint(io.BytesIO(archive_bytes))
+    assert result["experiment_id"] == EXPERIMENT_ID
+    assert "recovered from transport-indeterminate" in result["warnings"][0]
+    sc.close()
+
+
+def test_import_recovery_probe_confirmed_divergence(
+    store: InMemoryStore, fresh_store_factory: Any
+) -> None:
+    """Uncommitted POST + receiver has different import → ExperimentIdConflict."""
+    sender_client, _admin = _make_admin_worker_client(store)
+    first_archive = sender_client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    ).content
+    # Land a SUCCESSFUL import on the receiver first (so imported_from
+    # is set but won't match our future probe's manifest).
+    receiver = fresh_store_factory()
+    receiver_app = make_app(receiver, admin_token=ADMIN_TOKEN)
+    receiver_client = TestClient(receiver_app)
+    first_imp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=first_archive,
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    assert first_imp.status_code == 201
+
+    # Build a DIFFERENT archive (re-export from sender → different
+    # exported_at timestamp) to drive the divergence branch.
+    import time
+
+    time.sleep(0.01)
+    second_archive = sender_client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    ).content
+
+    # Build a transport that ALWAYS raises on POST /import (does NOT
+    # replay). Then the receiver's state still reflects first_archive,
+    # not second_archive — probe shows divergence.
+    def _flaky(request: httpx.Request) -> httpx.Response:
+        if (
+            request.method == "POST"
+            and request.url.path == "/v0/checkpoints/import"
+        ):
+            raise httpx.ConnectError("simulated transport failure (no replay)")
+        response = receiver_client.request(
+            request.method,
+            request.url.raw_path.decode("ascii"),
+            headers=dict(request.headers),
+            content=request.content,
+        )
+        return httpx.Response(
+            response.status_code,
+            headers=dict(response.headers),
+            content=response.content,
+        )
+
+    flaky_http = httpx.Client(
+        transport=httpx.MockTransport(_flaky), base_url="http://unused"
+    )
+    sc = StoreClient(
+        "http://unused",
+        EXPERIMENT_ID,
+        bearer=f"admin:{ADMIN_TOKEN}",
+        client=flaky_http,
+    )
+    with pytest.raises(ExperimentIdConflict):
+        sc.import_checkpoint(io.BytesIO(second_archive))
+    sc.close()
+
+
+def test_import_recovery_probe_indeterminate_when_readback_fails(
+    store: InMemoryStore,
+) -> None:
+    """Transport blip on POST + probe also fails → IndeterminateImport."""
+    sender_client, _admin = _make_admin_worker_client(store)
+    archive_bytes = sender_client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    ).content
+
+    # Transport raises on every request — POST + probe both fail.
+    def _all_fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated total transport failure")
+
+    flaky_http = httpx.Client(
+        transport=httpx.MockTransport(_all_fail), base_url="http://unused"
+    )
+    sc = StoreClient(
+        "http://unused",
+        EXPERIMENT_ID,
+        bearer=f"admin:{ADMIN_TOKEN}",
+        client=flaky_http,
+    )
+    with pytest.raises(IndeterminateImport):
+        sc.import_checkpoint(io.BytesIO(archive_bytes))
+    sc.close()
 
 

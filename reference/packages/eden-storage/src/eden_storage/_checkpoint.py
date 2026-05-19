@@ -636,6 +636,14 @@ def _commit_import(
             ),
         )
         store._apply_commit(tx)
+        # Reseed the live store's default event-id counter past the
+        # imported max so the next emitted event does not collide on
+        # the UNIQUE constraint. The reseed is a no-op when the caller
+        # supplied a custom ``event_id_factory`` (their responsibility)
+        # and when the imported events don't use the ``evt-NNNNNN``
+        # format. Runs inside the same atomic context as the commit so
+        # a concurrent emit can't slip between commit and reseed.
+        store._reseed_default_event_counter()
 
     return ImportResult(
         experiment_id=target_id,
@@ -718,11 +726,38 @@ def _validate_bundle_cross_references(
     catches stale references; the test-fixture posture skips because
     the IUT under test does not (yet) bind a git substrate.
     """
-    from eden_checkpoint.repo_bundle import verify_commits_reachable
+    from eden_checkpoint.repo_bundle import (
+        list_bundle_refs,
+        verify_commits_reachable,
+    )
 
     if not bundle_path.is_file() or bundle_path.stat().st_size == 0:
         return  # zero-byte placeholder; skip per docstring
 
+    # Item 1: every variant.branch (when set) MUST resolve to a commit
+    # in the bundle via `git rev-parse refs/heads/<branch>`. We check
+    # the cheap surface first — list-heads gives us the ref → sha map
+    # without needing a working repo.
+    bundle_refs = list_bundle_refs(bundle_path)
+    missing_branches: list[tuple[str, str]] = []
+    for variant in variants:
+        branch = variant.branch
+        if not branch:
+            continue
+        expected_ref = f"refs/heads/{branch}"
+        if expected_ref not in bundle_refs:
+            missing_branches.append((expected_ref, f"variant {variant.variant_id} branch"))
+    if missing_branches:
+        ref, label = missing_branches[0]
+        raise CheckpointInvalid(
+            f"chapter 10 §12 cross-reference violation: {label} "
+            f"ref={ref} is not present in the bundle "
+            f"({len(missing_branches)} missing branch ref(s) total)"
+        )
+
+    # Items 2-4: per-SHA reachability check. The fetch-into-scratch
+    # cost only pays off if at least one SHA needs verifying; skip
+    # the scratch repo when the referenced set is empty.
     referenced: list[tuple[str, str]] = []  # (sha, "label") for error messages
     for variant in variants:
         if variant.commit_sha is not None:

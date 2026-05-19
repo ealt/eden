@@ -140,20 +140,20 @@ Both are conforming. From a consumer's perspective, the archive bytes reflect a 
 
 ## 7. Content-addressed artifacts
 
-Every unique artifact referenced by an `artifacts_uri` field on an idea or variant MUST be stored at `artifacts/sha256/<hex>` where `<hex>` is the lowercase hexadecimal SHA-256 of the artifact's byte content (64 characters).
+The content-addressed scheme described in this section is **deferred from v0** at the normative-MUST level. v0 conforming implementations carry `artifacts_uri` values verbatim through the archive's JSONL files; the receiving deployment is responsible for resolving them (typically by side-loading the artifact bytes out-of-band, or by accepting that deployment-local URIs are inert on the receiver until an operator-supplied substrate connects them). The scheme below is the **target shape** that a future protocol revision — `v1+checkpoints+artifacts` — will make MUST-strength; v0 implementations MAY emit content-addressed artifacts following this layout, and a conforming reader MUST tolerate the layout when present, but a v0 exporter that ships verbatim deployment-local URIs is conforming.
 
-The exporter MUST rewrite every `artifacts_uri` value in the JSONL files (`ideas.jsonl`, `variants.jsonl`, `submissions.jsonl`) to the URI form `checkpoint:sha256:<hex>` matching the corresponding `artifacts/sha256/<hex>` file. The original deployment-local URI (e.g., `file:///var/lib/eden/...`) MUST NOT appear in the archive — it would not resolve in the receiving deployment.
+The deferral acknowledges the substrate-coupling cost: a fully content-addressed import requires the receiving deployment to plumb an artifact backend (file://, s3://, …) through the wire layer's import handler, parallel to the git-bundle substrate plumbing in §6. That work belongs alongside the Phase 13d `Backend` abstraction. See the issue linked from the v0 conformance level entry in [`09-conformance.md`](09-conformance.md) §4.
 
-Two ideas or variants referencing artifacts with identical byte content MUST share a single `artifacts/sha256/<hex>` entry (dedup within the archive).
+**Target shape (informative for v0; MUST for `v1+checkpoints+artifacts`).** Every unique artifact referenced by an `artifacts_uri` field on an idea or variant is stored at `artifacts/sha256/<hex>` where `<hex>` is the lowercase hexadecimal SHA-256 of the artifact's byte content (64 characters). The exporter rewrites every `artifacts_uri` value in the JSONL files (`ideas.jsonl`, `variants.jsonl`, `submissions.jsonl`) to the URI form `checkpoint:sha256:<hex>` matching the corresponding `artifacts/sha256/<hex>` file. Two ideas or variants referencing artifacts with identical byte content share a single `artifacts/sha256/<hex>` entry (dedup within the archive).
 
-On import, the receiving Store:
+On import in the future-revision contract, the receiving Store:
 
 1. Materializes each `artifacts/sha256/<hex>` into its own artifact backend, generating a deployment-local URI (`file://`, `s3://`, etc.).
 2. Walks every `checkpoint:sha256:<hex>` reference in the JSONL data and rewrites it to the matching deployment-local URI.
 
-The rewrites MUST be applied within the same transaction that creates the protocol-owned rows; an import either commits fully or rolls back fully ([`08-storage.md`](08-storage.md) §6).
+The rewrites are applied within the same transaction that creates the protocol-owned rows; an import either commits fully or rolls back fully ([`08-storage.md`](08-storage.md) §6). A missing artifact reference (a `checkpoint:sha256:<hex>` URI in the JSONL with no matching file under `artifacts/sha256/`) causes the importer to reject the entire checkpoint with `eden://error/checkpoint-invalid`. NO partial state may be committed.
 
-A missing artifact reference (a `checkpoint:sha256:<hex>` URI in the JSONL with no matching file under `artifacts/sha256/`) MUST cause the importer to reject the entire checkpoint with `eden://error/checkpoint-invalid`. NO partial state may be committed.
+**v0 behavior.** When the exporter emits `artifacts_uri` values verbatim (the deferred path), the archive's `artifacts/` directory MAY be empty and the JSONL `artifacts_uri` strings retain whatever scheme the source deployment used. The importer accepts them verbatim into the receiving Store. The receiver's wire reads return the original (likely non-resolvable on the receiver) URIs; operator tooling that needs to surface the underlying bytes is responsible for an out-of-band materialization pass.
 
 ## 8. Worker and group portability
 

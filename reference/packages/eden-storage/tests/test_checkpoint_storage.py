@@ -462,6 +462,48 @@ def test_manifest_counts_match_payload(
     assert manifest.counts.groups == len(target.list_groups())
 
 
+def test_event_counter_reseeded_after_import(
+    make_store: Callable[..., Store], tmp_path: Path
+) -> None:
+    """Codex round-1 #3: import advances the live event-id counter past imported events.
+
+    Before this fix, the receiver's default `_event_ids` counter
+    restarted at 1 every construction; imported events with
+    `evt-NNNNNN` ids (the default factory format) collided with the
+    next emitted event's id on the UNIQUE constraint. The reseed
+    in `_commit_import` advances the counter to `max(imported) + 1`.
+
+    Regression test: populate the sender with several events
+    (driving an ideation task generates `task.created` etc.), export,
+    import into a fresh receiver, then emit ONE new event on the
+    receiver. The new event's id MUST exceed every imported id.
+    """
+    source = make_store("exp-evtreseed", seed_workers=False)
+    _populate_full_experiment(source)
+    pre_export_events = source.events()
+    assert len(pre_export_events) >= 1
+    # Note: source events use evt-NNNNNN format under the default
+    # factory; verify before we rely on that in the assertion.
+    last_imported_id = pre_export_events[-1].event_id
+    assert last_imported_id.startswith("evt-")
+    last_n = int(last_imported_id.removeprefix("evt-"))
+
+    archive = io.BytesIO()
+    source.export_checkpoint(archive, experiment_config="x")
+
+    target = make_store("exp-evtreseed", seed_workers=False)
+    archive.seek(0)
+    target.import_checkpoint(archive, extract_dir=tmp_path)
+
+    # Drive one more event on the receiver. We use create_ideation_task
+    # because that emits a `task.created` event via the default factory.
+    target.create_ideation_task("post-import-evt")
+    receiver_events = target.events()
+    new_event = receiver_events[-1]
+    new_n = int(new_event.event_id.removeprefix("evt-"))
+    assert new_n > last_n, (last_imported_id, new_event.event_id)
+
+
 # Hint for ruff that `Any` is intentionally imported for the test
 # fixture annotation surface; silences F401 in case ruff reorders.
 _: Any = None

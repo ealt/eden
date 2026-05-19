@@ -270,6 +270,41 @@ class _StoreBase:
     def _default_event_id(self) -> str:
         return f"evt-{next(self._event_ids):06d}"
 
+    def _reseed_default_event_counter(self) -> None:
+        r"""Advance the default ``_event_ids`` counter past every persisted event.
+
+        Called by :func:`eden_storage._checkpoint.import_checkpoint`
+        AFTER a successful bulk-insert so the next emitted event_id does
+        not collide with any imported ``evt-NNNNNN`` value (the
+        12a-1 / 12b factory format). Scans the persisted event log for
+        ids matching ``evt-(\d+)``; the counter restarts at
+        ``max(seen) + 1``. Foreign IUTs whose event_ids don't match the
+        pattern are ignored — the receiving counter restarts at 1
+        regardless (foreign formats don't collide with ``evt-NNNNNN``
+        emissions by construction).
+
+        No-op when the caller supplied a custom ``event_id_factory``;
+        responsibility for collision-avoidance falls on the caller in
+        that case. Bound-method identity (``is``) is unreliable here
+        because each ``self._default_event_id`` attribute access
+        creates a fresh bound-method object; we compare against the
+        underlying function via ``__func__`` so the equality holds
+        across the init-time / reseed-time access.
+        """
+        factory = self._event_id_factory
+        if getattr(factory, "__func__", None) is not _StoreBase._default_event_id:
+            return
+        max_seen = 0
+        for event in self._iter_events():
+            m = re.match(r"^evt-(\d+)$", event.event_id)
+            if m is None:
+                continue
+            n = int(m.group(1))
+            if n > max_seen:
+                max_seen = n
+        if max_seen > 0:
+            self._event_ids = itertools.count(max_seen + 1)
+
     @property
     def experiment_id(self) -> str:
         """The experiment this store is scoped to."""

@@ -1508,7 +1508,7 @@ def make_app(
         request: Request,
         as_experiment_id: str | None = Query(None),
         x_eden_experiment_id: str | None = Header(None),
-    ) -> dict[str, Any]:
+    ) -> Response:
         """Chapter 7 §14.2: import a portable-checkpoint archive.
 
         Admin-gated (literal ``admin`` principal per §13.1;
@@ -1566,10 +1566,17 @@ def make_app(
                 "credentials reissue required for imported workers: "
                 + ", ".join(imported_workers)
             )
-        return {
-            "experiment_id": result.experiment_id,
-            "warnings": warnings,
-        }
+        # Chapter 7 §14.2 mandates 201 Created on a successful import
+        # (a new experiment row is materialized). FastAPI's default
+        # would be 200; an explicit JSONResponse sets the spec-pinned
+        # status without losing the problem+json envelope wiring above.
+        return JSONResponse(
+            status_code=201,
+            content={
+                "experiment_id": result.experiment_id,
+                "warnings": warnings,
+            },
+        )
 
     @app.exception_handler(CheckpointError)
     async def _checkpoint_error_handler(

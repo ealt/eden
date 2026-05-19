@@ -40,7 +40,7 @@ def test_terminated_state_round_trips(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert import_resp.status_code == 200, import_resp.text
+    assert import_resp.status_code == 201, import_resp.text
 
     received_state = _seed.read_experiment_state(receiver_wire_client)
     assert received_state["state"] == "terminated"
@@ -64,7 +64,7 @@ def test_imported_terminated_experiment_rejects_create_task(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert import_resp.status_code == 200, import_resp.text
+    assert import_resp.status_code == 201, import_resp.text
 
     # Attempt to create a task on the now-terminated receiver.
     resp = receiver_wire_client.post(

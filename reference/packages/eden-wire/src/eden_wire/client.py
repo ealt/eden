@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from eden_checkpoint import ExperimentIdConflict
 from eden_contracts import (
     DispatchMode,
     EvaluationTask,
@@ -59,11 +60,24 @@ from .errors import raise_for_envelope
 
 __all__ = [
     "IndeterminateDispatchModeUpdate",
+    "IndeterminateImport",
     "IndeterminateIntegration",
     "IndeterminateReassign",
     "IndeterminateTermination",
     "StoreClient",
 ]
+
+
+class IndeterminateImport(RuntimeError):
+    """An ``import_checkpoint`` call's outcome cannot be determined.
+
+    Raised by :meth:`StoreClient.import_checkpoint` when a transport-
+    indeterminate failure cannot be resolved by the
+    chapter-10 §10 ``read_experiment`` recovery probe (read-back
+    itself fails, or the experiment does not exist). The caller MUST
+    NOT assume the server has not committed; operator intervention is
+    required.
+    """
 
 
 class IndeterminateIntegration(RuntimeError):
@@ -1088,6 +1102,8 @@ class StoreClient:
         which the client surfaces unchanged.
         """
         # Read all bytes — the FastAPI request handler does the same.
+        # We need the bytes twice: once for the POST + once to parse the
+        # manifest's exported_at for the recovery-probe ladder.
         if hasattr(stream, "read"):
             data = stream.read()
         else:
@@ -1103,20 +1119,153 @@ class StoreClient:
         headers = {
             k: v for k, v in self._headers.items() if k != "X-Eden-Experiment-Id"
         }
-        resp = self._client.request(
-            "POST",
-            url,
-            content=data,
-            params=params,
-            headers={**headers, "Content-Type": "application/x-eden-checkpoint+tar"},
-            timeout=self._timeout,
-        )
+        try:
+            resp = self._client.request(
+                "POST",
+                url,
+                content=data,
+                params=params,
+                headers={**headers, "Content-Type": "application/x-eden-checkpoint+tar"},
+                timeout=self._timeout,
+            )
+        except httpx.TransportError as exc:
+            return self._import_recovery_probe(
+                data, as_experiment_id=as_experiment_id, original=exc
+            )
         if 400 <= resp.status_code < 600:
             body = self._maybe_json(resp)
             if isinstance(body, dict) and "type" in body:
                 raise_for_envelope(body)
             resp.raise_for_status()
         return resp.json()
+
+    def _import_recovery_probe(
+        self,
+        archive_bytes: bytes,
+        *,
+        as_experiment_id: str | None,
+        original: BaseException,
+    ) -> dict[str, Any]:
+        """Read-back ladder for ``import_checkpoint`` transport-indeterminacy.
+
+        Per chapter 10 §10, a client whose import call lost its 201
+        response probes ``read_experiment(target_id)`` and compares
+        ``imported_from.checkpoint_exported_at`` against the manifest's
+        ``exported_at``. Three outcomes:
+
+        1. **Confirmed success.** The receiving experiment exists with
+           ``imported_from.checkpoint_exported_at`` matching the local
+           manifest's ``exported_at``: the import already committed;
+           the missing 201 was a transport blip. Return a synthesized
+           response.
+        2. **Confirmed divergence.** The receiving experiment exists
+           but ``imported_from`` is absent or mismatched: a different
+           import won the race (or the receiver was non-empty before
+           our call). Raise the ``ExperimentIdConflict`` the server
+           would have returned.
+        3. **Indeterminate.** The read-back itself fails (transport
+           error, NotFound on the target id): we cannot determine
+           whether our POST landed. Raise :class:`IndeterminateImport`;
+           operator intervention is required.
+        """
+        # Parse the local manifest to know what `exported_at` to match.
+        import io as _io
+        import tempfile
+
+        from eden_checkpoint import (  # local import — avoid cyclical
+            extract_checkpoint,
+        )
+        from eden_storage.errors import (
+            AlreadyExists,
+            InvalidPrecondition,
+        )
+        from eden_storage.errors import (
+            NotFound as _NotFound,
+        )
+
+        local_exported_at: str | None = None
+        local_format_version: str | None = None
+        try:
+            buf = _io.BytesIO(archive_bytes)
+            with tempfile.TemporaryDirectory(prefix="eden-import-probe-") as td:
+                reader = extract_checkpoint(buf, Path(td))
+                local_exported_at = reader.manifest.exported_at
+                local_format_version = reader.manifest.checkpoint_format_version
+                target_id = as_experiment_id or reader.manifest.experiment_id
+        except Exception as parse_exc:
+            # If we can't even parse the archive, we can't probe. Treat
+            # as indeterminate — the caller's archive may have been
+            # corrupted at the same moment the transport failed.
+            raise IndeterminateImport(
+                f"import_checkpoint transport failed "
+                f"({type(original).__name__}) and the local archive "
+                f"could not be parsed for recovery-probe: {parse_exc}"
+            ) from original
+
+        # Probe the receiving server. We bypass the StoreClient's
+        # default base path (which is scoped to the StoreClient's own
+        # experiment_id, not the target_id) and hit the absolute path.
+        probe_url = f"{self._base_url}/v0/experiments/{target_id}"
+        probe_headers = {
+            k: v for k, v in self._headers.items() if k != "X-Eden-Experiment-Id"
+        }
+        probe_headers["X-Eden-Experiment-Id"] = target_id
+        try:
+            probe = self._client.request(
+                "GET", probe_url, headers=probe_headers, timeout=self._timeout
+            )
+        except httpx.TransportError:
+            raise IndeterminateImport(
+                f"import_checkpoint transport failed "
+                f"({type(original).__name__}) and the recovery-probe "
+                f"GET /v0/experiments/{target_id} also failed; "
+                "server-side outcome unknown"
+            ) from original
+        if probe.status_code == 404:
+            raise IndeterminateImport(
+                f"import_checkpoint transport failed "
+                f"({type(original).__name__}) and the recovery-probe "
+                f"shows experiment {target_id!r} does not exist on the "
+                "receiver; server-side outcome unknown (the request may "
+                "still be in flight)"
+            ) from original
+        if 400 <= probe.status_code < 600:
+            body = self._maybe_json(probe)
+            if isinstance(body, dict) and "type" in body:
+                try:
+                    raise_for_envelope(body)
+                except (AlreadyExists, InvalidPrecondition, _NotFound) as e:
+                    raise IndeterminateImport(
+                        f"import_checkpoint transport failed "
+                        f"({type(original).__name__}); read-back probe "
+                        f"surfaced {type(e).__name__}: {e}"
+                    ) from original
+            probe.raise_for_status()
+        body = probe.json()
+        imported = body.get("imported_from")
+        if (
+            isinstance(imported, dict)
+            and imported.get("checkpoint_exported_at") == local_exported_at
+            and imported.get("checkpoint_format_version") == local_format_version
+        ):
+            # Confirmed success: our request landed; the 201 was lost.
+            return {
+                "experiment_id": target_id,
+                "warnings": ["recovered from transport-indeterminate import"],
+            }
+        # The experiment exists but with no matching provenance — either
+        # `imported_from is None` (native) or a different import won.
+        # Surface as ExperimentIdConflict to match the server-side
+        # response shape when a second client tries to claim the same
+        # id.
+        raise ExperimentIdConflict(
+            f"import_checkpoint transport failed "
+            f"({type(original).__name__}); read-back of experiment "
+            f"{target_id!r} shows it exists with non-matching "
+            f"imported_from={imported!r} (expected exported_at="
+            f"{local_exported_at!r}). The target experiment id is taken "
+            "by a different import."
+        ) from original
 
     def _try_read_task(self, task_id: str) -> Task | None:
         for _ in range(self._read_back_attempts):

@@ -71,7 +71,7 @@ def test_imported_from_matches_source_manifest(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
     received = _seed.read_experiment(receiver_wire_client)
     imported = received.get("imported_from")
@@ -102,7 +102,7 @@ def test_double_import_returns_conflict(
         archive,
         as_experiment_id=receiver_wire_client.experiment_id,
     )
-    assert first.status_code == 200, first.text
+    assert first.status_code == 201, first.text
 
     second = _seed.import_checkpoint(
         receiver_wire_client,
