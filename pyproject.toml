@@ -18,6 +18,7 @@ members = [
     "reference/packages/eden-storage",
     "reference/packages/eden-wire",
     "reference/services/_common",
+    "reference/services/control-plane",
     "reference/services/evaluator",
     "reference/services/executor",
     "reference/services/orchestrator",
@@ -31,6 +32,7 @@ eden-checkpoint = { workspace = true }
 eden-conformance = { workspace = true }
 eden-contracts = { workspace = true }
 eden-control-plane = { workspace = true }
+eden-control-plane-server = { workspace = true }
 eden-dispatch = { workspace = true }
 eden-evaluator-host = { workspace = true }
 eden-git = { workspace = true }
@@ -55,6 +57,7 @@ dev = [
     "eden-conformance",
     "eden-contracts",
     "eden-control-plane",
+    "eden-control-plane-server",
     "eden-dispatch",
     "eden-evaluator-host",
     "eden-git",
@@ -98,6 +101,15 @@ convention = "google"
 # standard FastAPI pattern for Body/Header/Query defaults.
 "reference/packages/eden-wire/src/eden_wire/server.py" = ["D", "B008"]
 "reference/packages/eden-wire/src/eden_wire/client.py" = ["D102"]
+# Control-plane backends — methods are documented in the Store Protocol
+# (store.py); re-docstringing them on each concrete impl is noise.
+"reference/packages/eden-control-plane/src/eden_control_plane/memory.py" = ["D102"]
+"reference/packages/eden-control-plane/src/eden_control_plane/postgres.py" = ["D102"]
+"reference/packages/eden-control-plane/src/eden_control_plane/client.py" = ["D102"]
+# Control-plane server route handlers — handler bodies are short
+# facades over the Store Protocol; route docstrings would just restate
+# the URL. B008 is the standard FastAPI Body/Path/Query default.
+"reference/services/control-plane/src/eden_control_plane_server/app.py" = ["D", "B008"]
 # Web-UI routes/CLI/helpers are thin FastAPI handlers; route docstrings
 # would just restate the URL. B008 is the standard FastAPI Form/Body default.
 "reference/services/web-ui/src/eden_web_ui/routes/*.py" = ["D", "B008"]
@@ -113,6 +125,7 @@ include = [
     "reference/packages/eden-storage",
     "reference/packages/eden-wire",
     "reference/services/_common",
+    "reference/services/control-plane",
     "reference/services/evaluator",
     "reference/services/executor",
     "reference/services/orchestrator",
@@ -135,6 +148,7 @@ testpaths = [
     "reference/packages/eden-storage/tests",
     "reference/packages/eden-wire/tests",
     "reference/services/_common/tests",
+    "reference/services/control-plane/tests",
     "reference/services/evaluator/tests",
     "reference/services/executor/tests",
     "reference/services/orchestrator/tests",

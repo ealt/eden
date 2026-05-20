@@ -13,6 +13,7 @@ from .errors import (
     LeaseNotHeld,
     raise_for_control_plane_envelope,
 )
+from .memory import InMemoryControlPlaneStore
 from .models import (
     ExperimentLease,
     LastKnownState,
@@ -24,10 +25,14 @@ from .models import (
     RegisteredExperiment,
     RegisterExperimentRequest,
 )
+from .postgres import PostgresControlPlaneStore
+from .store import ControlPlaneStore
 
 __all__ = [
     "ControlPlaneClient",
+    "ControlPlaneStore",
     "ExperimentLease",
+    "InMemoryControlPlaneStore",
     "LastKnownState",
     "LeaseAcquireRequest",
     "LeaseError",
@@ -39,6 +44,7 @@ __all__ = [
     "LeaseRenewRequest",
     "ListExperimentsResponse",
     "ListLeasesResponse",
+    "PostgresControlPlaneStore",
     "RegisterExperimentRequest",
     "RegisteredExperiment",
     "raise_for_control_plane_envelope",
