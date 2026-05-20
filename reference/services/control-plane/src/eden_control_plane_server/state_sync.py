@@ -218,15 +218,21 @@ class StateSyncPoller:
                 state=state,
             )
             return None
-        self.warnings.record_success(experiment_id)
+        # Codex round 3 MAJOR: record_success MUST run only after the
+        # store-side write commits. Otherwise a sequence of read-success +
+        # store-write-fail resets the counter and suppresses the §3.4
+        # stale-warning even though `last_known_state` is increasingly
+        # stale.
         try:
             self._store.update_last_known_state(experiment_id, state)
-        except Exception:  # noqa: BLE001 — store update is best-effort
+        except Exception:  # noqa: BLE001 — treat as a sync failure
+            self.warnings.record_failure(experiment_id)
             log.warning(
                 "state_sync_store_update_failed",
                 experiment_id=experiment_id,
             )
             return None
+        self.warnings.record_success(experiment_id)
         return state
 
     # ------------------------------------------------------------------

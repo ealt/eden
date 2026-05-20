@@ -23,6 +23,7 @@ from eden_service_common import (
     wait_for_task_store,
 )
 from eden_wire import StoreClient
+from eden_wire.errors import Unauthorized
 
 from .control_plane_bootstrap import (
     bootstrap_control_plane_worker,
@@ -503,18 +504,25 @@ def _run_multi_experiment(
     admin_token = _resolve_control_plane_admin_token(args)
     credentials_dir = resolve_credentials_dir(args)
 
-    # B1 (codex round 1) + NEW-1 (codex round 2): bootstrap the
-    # deployment-scoped worker credential when an admin token is
-    # available OR a previously-persisted token exists. The
-    # auth-disabled posture (no admin token AND no persisted
-    # credential — typical for test / in-process / local-dev
-    # deployments where the control-plane server runs with
-    # `admin_token=None`) skips the bootstrap entirely and uses
-    # an unauthenticated ControlPlaneClient. The control plane's
-    # auth-disabled posture does not gate any lease op, so this
-    # path works end-to-end without bootstrap; production
-    # deployments always have an admin token so they take the
-    # bootstrap branch.
+    # B1 (codex round 1) + NEW-1 (codex round 2) + REGRESSION (round 3):
+    # the orchestrator's control-plane connection has three startup
+    # postures:
+    #   (a) Admin token OR persisted credential available → bootstrap
+    #       the deployment-scoped worker credential and use the
+    #       worker bearer for every lease op.
+    #   (b) No admin token AND no persisted credential, AND the
+    #       control plane is auth-DISABLED (server started with
+    #       admin_token=None — test / in-process / local-dev): no
+    #       bootstrap, no bearer; the server has no auth gate and
+    #       every lease op passes through. The probe below proves
+    #       this is the actual state before falling back.
+    #   (c) No admin token AND no persisted credential, AND the
+    #       control plane is auth-ENABLED (production-shaped
+    #       deployment that's missing config): bootstrap CANNOT
+    #       succeed; raise an explicit RuntimeError so the operator
+    #       sees the misconfiguration at startup rather than
+    #       silently running unauthenticated and tripping a 401 at
+    #       the first lease op.
     from .control_plane_bootstrap import (
         credential_path as _cp_credential_path,
     )
@@ -547,12 +555,32 @@ def _run_multi_experiment(
                 "ensure_control_plane_orchestrators_membership_failed"
             )
     else:
+        # Probe the control plane to differentiate posture (b) from
+        # (c). An unauthenticated whoami against an auth-DISABLED
+        # control plane returns the (header-defaulted) worker_id;
+        # against an auth-ENABLED control plane it returns 401
+        # `eden://error/unauthorized`. Raise on 401 so production
+        # misconfigs fail loud at startup rather than at the first
+        # lease op.
+        with ControlPlaneClient(args.control_plane_url) as _probe:
+            try:
+                _probe.whoami()
+            except Unauthorized as exc:
+                msg = (
+                    "control-plane server is auth-enabled but no admin "
+                    "token and no persisted credential are available. "
+                    "Set --control-plane-admin-token, "
+                    "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
+                    "let the orchestrator bootstrap its deployment-scoped "
+                    "worker credential."
+                )
+                raise RuntimeError(msg) from exc
         log.warning(
             "control_plane_bootstrap_skipped_auth_disabled",
             reason=(
-                "no admin token and no persisted credential; running "
-                "unauthenticated. Set --control-plane-admin-token or "
-                "--admin-token to enable bootstrap."
+                "no admin token and no persisted credential; control "
+                "plane responded to whoami without auth, so running "
+                "unauthenticated."
             ),
             worker_id=args.worker_id,
         )
