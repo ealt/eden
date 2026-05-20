@@ -83,6 +83,120 @@ def _list_recent_variants(store: Any, *, limit: int = 20) -> list[Any]:
     return items[-limit:]
 
 
+def _check_success_draft_gates(
+    repo: Any,
+    *,
+    commit_sha: str,
+    parents: tuple[str, ...] | list[str],
+    branch: str,
+) -> str | None:
+    """Run the §3.3 / §C pre-submit gates for a ``status="success"`` draft.
+
+    Returns the first failure's user-facing error string, or ``None``
+    when every gate passes. The caller wraps the message in
+    ``errors.add(0, "commit_sha", ...)`` and renders the draft form.
+
+    Gates run in spec order (M-2 refactor; see
+    [`docs/audits/2026-05-20-code-quality-audit.md`][audit] §3.3):
+
+    1. Commit exists locally (push-then-fetch confirmation).
+    2. Commit descends from every declared parent.
+    3. Commit tree is resolvable (fail-closed on transient git failures).
+    4. Commit tree is non-identical to every parent tree (§3.3 non-no-op
+       invariant; the Web UI does the full tree check since the host has
+       full git access).
+    5. ``refs/heads/<branch>`` does not yet exist (Phase 1 collision guard).
+
+    [audit]: ../../../../../../docs/audits/2026-05-20-code-quality-audit.md
+    """
+    if not repo.commit_exists(commit_sha):
+        return (
+            f"commit {commit_sha!r} not found in the bare repo; did you push it?"
+        )
+    for parent in parents:
+        if not repo.is_ancestor(parent, commit_sha):
+            return (
+                f"commit {commit_sha!r} does not descend from declared parent {parent!r}"
+            )
+    try:
+        variant_tree = repo.commit_tree_sha(commit_sha)
+        parent_trees = [repo.commit_tree_sha(p) for p in parents]
+    except Exception as exc:  # noqa: BLE001 — git-shaped
+        # Fail-closed: a transient git read failure must not allow a
+        # no-op variant past this gate, since the task-store-server's
+        # SHA-equality fast path won't catch the empty-commit-on-parent
+        # case in the default deployment.
+        return (
+            f"failed to resolve commit tree for the §3.3 non-no-op "
+            f"check: {exc.__class__.__name__}. Refusing submit; "
+            "retry once the local git state is healthy."
+        )
+    if all(t == variant_tree for t in parent_trees):
+        return (
+            f"commit {commit_sha!r} has the same git tree as every parent; "
+            "refusing to submit a no-op variant (spec/v0/03-roles.md §3.3)"
+        )
+    if repo.ref_exists(f"refs/heads/{branch}"):
+        return (
+            f"branch refs/heads/{branch} already exists; "
+            "reclaim or pick a different idea slug"
+        )
+    return None
+
+
+def _build_starting_variant(
+    *,
+    variant_id: str,
+    experiment_id: str,
+    idea_id: str,
+    parent_commits: tuple[str, ...] | list[str],
+    branch: str,
+    started_at: str,
+    description: str | None,
+) -> Variant:
+    """Construct the Phase-1 ``Variant(status="starting")`` row."""
+    kwargs: dict[str, Any] = {
+        "variant_id": variant_id,
+        "experiment_id": experiment_id,
+        "idea_id": idea_id,
+        "status": "starting",
+        "parent_commits": list(parent_commits),
+        "branch": branch,
+        "started_at": started_at,
+    }
+    if description is not None:
+        kwargs["description"] = description
+    return Variant(**kwargs)
+
+
+def _phase2_write_work_ref(
+    repo: Any, *, branch: str, commit_sha: str
+) -> str | None:
+    """Create the local ``work/<branch>`` ref and (if origin set) push it.
+
+    On any failure: roll back the local ref so we don't leave a local-
+    only ``work/*`` the orchestrator can never integrate, and return a
+    user-facing banner string. Returns ``None`` on success.
+
+    The next host startup's ``fetch_all_heads --prune`` is the backstop
+    if the rollback ``delete_ref`` itself fails.
+    """
+    try:
+        repo.create_ref(f"refs/heads/{branch}", commit_sha)
+    except Exception as exc:  # noqa: BLE001 — git/transport-shaped
+        return f"repo error: {exc.__class__.__name__}"
+    if _repo_has_origin(repo):
+        try:
+            repo.push_ref(f"refs/heads/{branch}")
+        except Exception as exc:  # noqa: BLE001
+            with contextlib.suppress(Exception):
+                repo.delete_ref(
+                    f"refs/heads/{branch}", expected_old_sha=commit_sha
+                )
+            return f"push error: {exc.__class__.__name__}"
+    return None
+
+
 @router.get("/", response_class=HTMLResponse, response_model=None)
 async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
@@ -278,116 +392,22 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
 
     if draft.status == "success":
         assert draft.commit_sha is not None
-        # §C reachability: commit must exist and descend from every parent.
-        # Fetch from origin first so a freshly-pushed executor commit is
-        # visible — the local clone otherwise only refreshes at startup
-        # (Phase 10d follow-up B). Same posture as the integrator's
-        # per-integrate fetch.
+        # §C reachability + §3.3 non-no-op + Phase-1 ref-collision gates.
+        # See `_check_success_draft_gates`. Fetch from origin first so a
+        # freshly-pushed executor commit is visible — fetch failure
+        # doesn't block submit; the commit-exists gate surfaces a clear
+        # error if the commit really isn't local.
         if _repo_has_origin(repo):
-            # Fetch failure shouldn't block submit — fall through to
-            # commit_exists, which will surface a clear error if the
-            # commit really isn't local.
             with contextlib.suppress(Exception):
                 repo.fetch_all_heads()
-        if not repo.commit_exists(draft.commit_sha):
-            errors.add(
-                0,
-                "commit_sha",
-                f"commit {draft.commit_sha!r} not found in the bare repo; did you push it?",
-            )
-            return _render_draft(
-                request,
-                session=session,
-                task_id=task_id,
-                idea=idea,
-                variant_id=variant_id,
-                form_state=form_state,
-                errors=errors,
-                status_code=400,
-            )
-        for parent in idea.parent_commits:
-            if not repo.is_ancestor(parent, draft.commit_sha):
-                errors.add(
-                    0,
-                    "commit_sha",
-                    f"commit {draft.commit_sha!r} does not descend from declared parent {parent!r}",
-                )
-                return _render_draft(
-                    request,
-                    session=session,
-                    task_id=task_id,
-                    idea=idea,
-                    variant_id=variant_id,
-                    form_state=form_state,
-                    errors=errors,
-                    status_code=400,
-                )
-        # spec/v0/03-roles.md §3.3 non-no-op invariant: refuse to
-        # accept a variant whose tree is identical to every parent's
-        # tree. The reference task-store-server enforces the SHA-
-        # equality fast path unconditionally; the Web UI executor
-        # has full git access to the bare repo so it performs the
-        # full tree-identity check here, matching the executor host's
-        # pre-submit posture (`_is_no_op_variant`). Fail-closed: if
-        # any tree-of-commit lookup raises, refuse the submission
-        # rather than skipping the check — a transient git read
-        # failure must not allow a no-op variant past this gate, since
-        # the task-store-server's SHA-equality fast path won't catch
-        # the empty-commit-on-parent case in the default deployment.
-        try:
-            variant_tree = repo.commit_tree_sha(draft.commit_sha)
-            parent_trees = [
-                repo.commit_tree_sha(p) for p in idea.parent_commits
-            ]
-        except Exception as exc:  # noqa: BLE001 — git-shaped
-            errors.add(
-                0,
-                "commit_sha",
-                (
-                    f"failed to resolve commit tree for the §3.3 non-no-op "
-                    f"check: {exc.__class__.__name__}. Refusing submit; "
-                    "retry once the local git state is healthy."
-                ),
-            )
-            return _render_draft(
-                request,
-                session=session,
-                task_id=task_id,
-                idea=idea,
-                variant_id=variant_id,
-                form_state=form_state,
-                errors=errors,
-                status_code=400,
-            )
-        if all(t == variant_tree for t in parent_trees):
-            errors.add(
-                0,
-                "commit_sha",
-                (
-                    f"commit {draft.commit_sha!r} has the same git tree as every parent; "
-                    "refusing to submit a no-op variant (spec/v0/03-roles.md §3.3)"
-                ),
-            )
-            return _render_draft(
-                request,
-                session=session,
-                task_id=task_id,
-                idea=idea,
-                variant_id=variant_id,
-                form_state=form_state,
-                errors=errors,
-                status_code=400,
-            )
-        # Pre-Phase-1 ref-collision guard.
-        if repo.ref_exists(f"refs/heads/{branch}"):
-            errors.add(
-                0,
-                "commit_sha",
-                (
-                    f"branch refs/heads/{branch} already exists; "
-                    "reclaim or pick a different idea slug"
-                ),
-            )
+        gate_error = _check_success_draft_gates(
+            repo,
+            commit_sha=draft.commit_sha,
+            parents=idea.parent_commits,
+            branch=branch,
+        )
+        if gate_error is not None:
+            errors.add(0, "commit_sha", gate_error)
             return _render_draft(
                 request,
                 session=session,
@@ -403,18 +423,15 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     started_at = _iso(now())
 
     # Phase 1: create_variant as starting.
-    variant_kwargs: dict[str, Any] = {
-        "variant_id": variant_id,
-        "experiment_id": request.app.state.experiment_id,
-        "idea_id": idea.idea_id,
-        "status": "starting",
-        "parent_commits": list(idea.parent_commits),
-        "branch": branch,
-        "started_at": started_at,
-    }
-    if draft.description is not None:
-        variant_kwargs["description"] = draft.description
-    variant = Variant(**variant_kwargs)
+    variant = _build_starting_variant(
+        variant_id=variant_id,
+        experiment_id=request.app.state.experiment_id,
+        idea_id=idea.idea_id,
+        parent_commits=idea.parent_commits,
+        branch=branch,
+        started_at=started_at,
+        description=draft.description,
+    )
     try:
         store.create_variant(variant)
     except DispatchError as exc:
@@ -438,46 +455,23 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
             recovery_kind="transport",
         )
 
-    # Phase 2: create_ref locally (status=success only). Phase 10d
-    # follow-up B §D.7: when origin is configured, also push_ref so
-    # the orchestrator's clone can fetch the work/* commit. Push
-    # failure rolls back the local ref + classifies as orphan.
+    # Phase 2: create_ref locally + push to origin (status=success only).
+    # Phase 10d follow-up B §D.7. See `_phase2_write_work_ref`.
     if draft.status == "success":
         assert draft.commit_sha is not None
-        try:
-            repo.create_ref(f"refs/heads/{branch}", draft.commit_sha)
-        except Exception as exc:  # noqa: BLE001 — git/transport-shaped
+        ref_error = _phase2_write_work_ref(
+            repo, branch=branch, commit_sha=draft.commit_sha
+        )
+        if ref_error is not None:
             return _render_orphaned(
                 request,
                 task_id=task_id,
                 variant_id=variant_id,
                 commit_sha=draft.commit_sha,
                 branch=branch,
-                banner=f"repo error: {exc.__class__.__name__}",
+                banner=ref_error,
                 recovery_kind="auto",
             )
-        if _repo_has_origin(repo):
-            try:
-                repo.push_ref(f"refs/heads/{branch}")
-            except Exception as exc:  # noqa: BLE001
-                # Roll back local ref so we don't leave a local-only
-                # work/* the orchestrator can never integrate. The
-                # next host startup's fetch_all_heads --prune is the
-                # backstop if delete_ref itself fails here.
-                with contextlib.suppress(Exception):
-                    repo.delete_ref(
-                        f"refs/heads/{branch}",
-                        expected_old_sha=draft.commit_sha,
-                    )
-                return _render_orphaned(
-                    request,
-                    task_id=task_id,
-                    variant_id=variant_id,
-                    commit_sha=draft.commit_sha,
-                    branch=branch,
-                    banner=f"push error: {exc.__class__.__name__}",
-                    recovery_kind="auto",
-                )
 
     # Phase 3: submit, with retry-before-orphan + read-back.
     submission = VariantSubmission(
