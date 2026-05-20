@@ -62,7 +62,13 @@ class RegisteredExperiment(BaseModel):
     config_uri: ConfigUriStr
     created_at: DateTimeStr
     last_known_state: LastKnownState
-    lease: ExperimentLease | None = None
+    # Codex round 7 MINOR: `lease` is REQUIRED-but-nullable per
+    # chapter 11 §4.4. Removing the default makes Pydantic reject
+    # a wire payload that omits the key entirely — distinguishing
+    # "present and null" (compliant) from "absent" (non-compliant).
+    # See `_dump_registry_entry` on the server side: it always
+    # emits the key with an explicit `null` when no active lease.
+    lease: ExperimentLease | None
     warnings: list[str] | None = None
     """OPTIONAL — operator-visible state-sync warnings per §3.4.
 

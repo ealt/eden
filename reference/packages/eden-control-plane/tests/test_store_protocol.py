@@ -56,7 +56,10 @@ def test_register_experiment_creates_entry(
     make_store: Callable[..., ControlPlaneStore],
 ) -> None:
     store = make_store()
-    entry = store.register_experiment("exp-1", "https://example.test/c.yaml")
+    entry, created = store.register_experiment(
+        "exp-1", "https://example.test/c.yaml"
+    )
+    assert created is True
     assert entry.experiment_id == "exp-1"
     assert entry.config_uri == "https://example.test/c.yaml"
     assert entry.last_known_state == "running"
@@ -67,8 +70,16 @@ def test_register_experiment_idempotent_on_same_uri(
     make_store: Callable[..., ControlPlaneStore],
 ) -> None:
     store = make_store()
-    a = store.register_experiment("exp-1", "https://example.test/c.yaml")
-    b = store.register_experiment("exp-1", "https://example.test/c.yaml")
+    a, a_created = store.register_experiment(
+        "exp-1", "https://example.test/c.yaml"
+    )
+    b, b_created = store.register_experiment(
+        "exp-1", "https://example.test/c.yaml"
+    )
+    # Codex round 7 MAJOR: first-call → created=True, idempotent
+    # replay → created=False.
+    assert a_created is True
+    assert b_created is False
     assert a.created_at == b.created_at
 
 

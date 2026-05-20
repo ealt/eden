@@ -262,7 +262,9 @@ class PostgresControlPlaneStore:
 
     def register_experiment(
         self, experiment_id: str, config_uri: str
-    ) -> RegisteredExperiment:
+    ) -> tuple[RegisteredExperiment, bool]:
+        # Atomic insert-or-observe under `SERIALIZABLE` so concurrent
+        # callers observe exactly one `created=True`.
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
                 "SELECT experiment_id, config_uri, created_at, last_known_state "
@@ -278,7 +280,7 @@ class PostgresControlPlaneStore:
                         f"requested {config_uri!r})"
                     )
                 lease = self._lease_for_experiment(cur, experiment_id)
-                return self._row_to_entry(existing, lease)
+                return self._row_to_entry(existing, lease), False
             cur.execute(
                 "INSERT INTO control_plane_experiments "
                 "(experiment_id, config_uri, created_at, last_known_state) "
@@ -288,7 +290,7 @@ class PostgresControlPlaneStore:
             )
             row = cur.fetchone()
             assert row is not None
-            return self._row_to_entry(row, None)
+            return self._row_to_entry(row, None), True
 
     def unregister_experiment(self, experiment_id: str) -> None:
         with self._atomic(), self._conn.cursor() as cur:

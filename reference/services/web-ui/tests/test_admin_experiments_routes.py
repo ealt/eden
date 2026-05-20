@@ -67,7 +67,13 @@ class _StoreBackedClient:
         return self._store.read_experiment_metadata(experiment_id)
 
     def register_experiment(self, experiment_id: str, config_uri: str):  # noqa: ANN201
-        return self._store.register_experiment(experiment_id, config_uri)
+        # ControlPlaneClient returns just `RegisteredExperiment`; the
+        # store-side Protocol now returns `(entry, created)` to support
+        # the 201/200 atomic decision. Adapt by unpacking the tuple.
+        entry, _created = self._store.register_experiment(
+            experiment_id, config_uri
+        )
+        return entry
 
     def unregister_experiment(self, experiment_id: str) -> None:
         self._store.unregister_experiment(experiment_id)

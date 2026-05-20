@@ -46,6 +46,41 @@ def test_register_experiment_creates_201(client_noauth: TestClient) -> None:
     body = r.json()
     assert body["experiment_id"] == "exp-1"
     assert body["last_known_state"] == "running"
+    # Codex round 7 MINOR: §4.4 requires `lease` present-and-null.
+    assert "lease" in body
+    assert body["lease"] is None
+
+
+def test_register_experiment_concurrent_callers_get_one_201(
+    client_noauth: TestClient,
+) -> None:
+    """Codex round 7 MAJOR: atomicity of the 201-vs-200 decision.
+
+    Under two concurrent `POST /v0/control/experiments` calls with
+    the same `(experiment_id, config_uri)`, exactly ONE caller
+    observes `201 created` and the rest observe `200 replay`. The
+    store-side `register_experiment` Protocol returns
+    `(entry, created)` from inside the single lock / SERIALIZABLE
+    transaction so the route's status decision cannot race the
+    insert.
+    """
+    import threading
+
+    payload = {"experiment_id": "exp-cc", "config_uri": "https://x.test/c.yaml"}
+    results: list[int] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        r = client_noauth.post("/v0/control/experiments", json=payload)
+        results.append(r.status_code)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == [200] * 7 + [201]
 
 
 def test_register_experiment_idempotent_same_uri(
@@ -260,7 +295,9 @@ def test_register_worker_returns_token(client_noauth: TestClient) -> None:
     r = client_noauth.post(
         "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
     )
-    assert r.status_code == 201
+    # Codex round 7 MAJOR: chapter 07 §15.3 verbatim-mirrors §6.1
+    # (200 on first-create + 200 on idempotent replay).
+    assert r.status_code == 200
     body = r.json()
     assert body["worker_id"] == "auto-orchestrator-1"
     assert "registration_token" in body
@@ -275,8 +312,11 @@ def test_register_worker_idempotent_no_new_token(
     r2 = client_noauth.post(
         "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
     )
-    assert r1.status_code == 201
-    assert r2.status_code == 201
+    # §15.3 verbatim-mirror of §6.1: 200 on both calls; the absence
+    # of `registration_token` on the replay is what distinguishes
+    # the two outcomes, not the status code.
+    assert r1.status_code == 200
+    assert r2.status_code == 200
     assert "registration_token" in r1.json()
     assert "registration_token" not in r2.json()
 
@@ -309,7 +349,9 @@ def test_register_group_and_membership(client_noauth: TestClient) -> None:
         "/v0/control/groups",
         json={"group_id": "orchestrators", "members": ["auto-orchestrator-1"]},
     )
-    assert r.status_code == 201
+    # Codex round 7 MAJOR: §15.3 verbatim-mirrors §6.1 — 200 on
+    # first-create.
+    assert r.status_code == 200
     add = client_noauth.post(
         "/v0/control/groups/orchestrators/members",
         json={"worker_id": "auto-orchestrator-1"},

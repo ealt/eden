@@ -49,6 +49,19 @@ def test_registered_experiment_accepts_lease_null() -> None:
     assert entry.warnings is None
 
 
+def test_registered_experiment_rejects_missing_lease_key() -> None:
+    """Codex round 7 MINOR: `lease` is REQUIRED-but-nullable per §4.4.
+
+    A wire payload that omits the `lease` key entirely MUST be
+    rejected — the spec MUST is "present and null" when no active
+    lease. Distinct from `"lease": null` (compliant) which the
+    prior test accepts.
+    """
+    payload = {k: v for k, v in REGISTRY_PAYLOAD.items() if k != "lease"}
+    with pytest.raises(ValidationError):
+        RegisteredExperiment.model_validate(payload)
+
+
 def test_registered_experiment_with_lease_and_warnings() -> None:
     payload = {
         **REGISTRY_PAYLOAD,

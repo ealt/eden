@@ -29,11 +29,14 @@ def test_register_worker_mints_token_once(
     contract verbatim at the deployment scope.
     """
     r1 = control_plane_client.register_worker("auto-orchestrator-1")
-    assert r1.status_code == 201
+    # Codex round 7: chapter 07 §15.3 verbatim-mirrors §6.1 — 200
+    # on both first-create and idempotent replay; the presence of
+    # `registration_token` is what distinguishes the two.
+    assert r1.status_code == 200
     body1 = r1.json()
     assert "registration_token" in body1
     r2 = control_plane_client.register_worker("auto-orchestrator-1")
-    assert r2.status_code == 201
+    assert r2.status_code == 200
     # The wire response includes registration_token only on first
     # registration; idempotent re-register MUST NOT mint a new one.
     assert "registration_token" not in r2.json()
@@ -79,7 +82,9 @@ def test_register_group_with_initial_members(
     r = control_plane_client.register_group(
         "orchestrators", members=["auto-orchestrator-1"]
     )
-    assert r.status_code == 201
+    # Codex round 7 MAJOR: §15.3 verbatim-mirrors §6.1 — 200 on
+    # first-create.
+    assert r.status_code == 200
     body = r.json()
     assert body["group_id"] == "orchestrators"
     assert "auto-orchestrator-1" in body["members"]

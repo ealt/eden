@@ -240,20 +240,16 @@ def make_app(
         request: Request, body: RegisterExperimentRequest = Body(...)
     ) -> Response:
         _enforce_admin(request)
-        # Codex round 6 MAJOR: chapter 07 §15 (and chapter 11 §2.2)
-        # requires 201 on first registration vs 200 on idempotent
-        # re-registration. The store's `register_experiment` is
-        # idempotent at the row level but returns the entry either
-        # way; detect "did the row already exist" via a probe BEFORE
-        # the call so we can pick the wire status correctly. Probe
-        # via try/except to keep the create path single-statement.
-        try:
-            store.read_experiment_metadata(body.experiment_id)
-            existed = True
-        except NotFound:
-            existed = False
-        entry = store.register_experiment(body.experiment_id, body.config_uri)
-        return _registry_response(entry, status=200 if existed else 201)
+        # Codex round 6 MAJOR + round 7 atomicity follow-up: chapter
+        # 07 §15 mandates 201 on first registration vs 200 on
+        # idempotent replay. The `register_experiment` Protocol now
+        # returns `(entry, created)` from inside the store-side
+        # critical section — under concurrent callers, exactly one
+        # observes `created=True` and the rest observe `False`.
+        entry, created = store.register_experiment(
+            body.experiment_id, body.config_uri
+        )
+        return _registry_response(entry, status=201 if created else 200)
 
     @app.delete(f"{base}/experiments/{{experiment_id}}")
     def unregister_experiment(
@@ -428,11 +424,15 @@ def make_app(
         labels = body.get("labels")
         if labels is not None and not isinstance(labels, dict):
             raise BadRequest("'labels' MUST be an object when present")
+        # Codex round 7 MAJOR: chapter 07 §15.3 verbatim-mirrors
+        # §6.1; §6.1 returns 200 on both first-create and idempotent
+        # replay (the `registration_token` is what distinguishes the
+        # two — present on first create, absent on replay).
         worker, token = store.register_worker(worker_id, labels=labels)
         out: dict[str, Any] = _dump(worker)
         if token is not None:
             out["registration_token"] = token
-        return JSONResponse(content=out, status_code=201)
+        return JSONResponse(content=out)
 
     @app.post(f"{base}/workers/{{worker_id}}/reissue-credential")
     def reissue_credential(
@@ -481,8 +481,11 @@ def make_app(
         members = body.get("members")
         if members is not None and not isinstance(members, list):
             raise BadRequest("'members' MUST be an array when present")
+        # Codex round 7 MAJOR: chapter 07 §15.3 verbatim-mirrors
+        # §6.1's idempotency contract — returns 200 on both
+        # first-create and idempotent replay.
         group = store.register_group(group_id, members=members)
-        return JSONResponse(content=_dump(group), status_code=201)
+        return JSONResponse(content=_dump(group))
 
     @app.post(f"{base}/groups/{{group_id}}/members")
     def add_to_group(

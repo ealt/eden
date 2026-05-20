@@ -30,8 +30,14 @@ def test_register_experiment_idempotent_on_same_uri(
     """
     r1 = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
     assert r1.status_code == 201
+    # Codex round 7 MINOR: §4.4 requires `lease` to be present and
+    # null on fresh-registration responses (never absent).
+    assert "lease" in r1.json()
+    assert r1.json()["lease"] is None
     r2 = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
     assert r2.status_code == 200
+    assert "lease" in r2.json()
+    assert r2.json()["lease"] is None
     assert r1.json()["created_at"] == r2.json()["created_at"]
 
 
@@ -98,6 +104,11 @@ def test_list_experiments_enumerates_registry(
     assert r.status_code == 200
     entries = r.json()["experiments"]
     assert sorted(e["experiment_id"] for e in entries) == ["exp-a", "exp-b"]
+    # Codex round 7 MINOR: §4.4 requires `lease` to be present and
+    # null on every entry that has no active lease.
+    for entry in entries:
+        assert "lease" in entry
+        assert entry["lease"] is None
 
 
 def test_read_experiment_metadata_returns_one(
@@ -113,6 +124,10 @@ def test_read_experiment_metadata_returns_one(
     assert r.status_code == 200
     body = r.json()
     assert body["experiment_id"] == "exp-a"
+    # Codex round 7 MINOR: §4.4 requires `lease` to be present and
+    # null on read responses for an experiment with no active lease.
+    assert "lease" in body
+    assert body["lease"] is None
     assert body["config_uri"] == "file:///etc/a.yaml"
     missing = control_plane_client.read_experiment_metadata("missing")
     assert missing.status_code == 404

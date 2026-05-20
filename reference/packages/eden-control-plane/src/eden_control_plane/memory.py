@@ -134,7 +134,9 @@ class InMemoryControlPlaneStore:
 
     def register_experiment(
         self, experiment_id: str, config_uri: str
-    ) -> RegisteredExperiment:
+    ) -> tuple[RegisteredExperiment, bool]:
+        # Atomic insert-or-observe inside the single store lock so
+        # concurrent callers observe exactly one `created=True`.
         with self._lock:
             existing = self._experiments.get(experiment_id)
             if existing is not None:
@@ -145,7 +147,7 @@ class InMemoryControlPlaneStore:
                         f"{existing['config_uri']!r}, requested "
                         f"{config_uri!r})"
                     )
-                return self._build_entry(existing)
+                return self._build_entry(existing), False
             row: dict[str, Any] = {
                 "experiment_id": experiment_id,
                 "config_uri": config_uri,
@@ -153,7 +155,7 @@ class InMemoryControlPlaneStore:
                 "last_known_state": "running",
             }
             self._experiments[experiment_id] = row
-            return self._build_entry(row)
+            return self._build_entry(row), True
 
     def unregister_experiment(self, experiment_id: str) -> None:
         with self._lock:

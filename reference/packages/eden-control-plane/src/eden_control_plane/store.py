@@ -78,7 +78,7 @@ class ControlPlaneStore(Protocol):
 
     def register_experiment(
         self, experiment_id: str, config_uri: str
-    ) -> RegisteredExperiment:
+    ) -> tuple[RegisteredExperiment, bool]:
         """Create or return the registry entry for `experiment_id`.
 
         Idempotent on (experiment_id, config_uri): a second call with
@@ -86,6 +86,16 @@ class ControlPlaneStore(Protocol):
         with a DIFFERENT `config_uri` MUST raise `AlreadyExists`.
         New entries have `created_at = now`, `last_known_state =
         "running"`, `lease = None`.
+
+        Returns `(entry, created)` where `created` is `True` when a
+        fresh row was inserted by this call, and `False` when this
+        call observed an existing row with the same `config_uri`.
+        The atomicity of the inserted-vs-observed decision is
+        load-bearing: chapter 07 §15 mandates `201` on first-create
+        vs `200` on idempotent replay, so two concurrent callers
+        that race against the same `(experiment_id, config_uri)`
+        MUST observe exactly one `created=True` and one
+        `created=False` result (no double-create, no double-replay).
         """
         ...
 
