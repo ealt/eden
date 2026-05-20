@@ -1,22 +1,34 @@
-# control-plane (placeholder)
+# control-plane
 
-This directory is a placeholder for the future control-plane service.
-Phase 12 of the roadmap will populate it; see
-[`docs/roadmap.md`](../../../docs/roadmap.md) "Phase 12 —
-Multi-experiment (leases, control plane, switcher)".
+Reference FastAPI server hosting the EDEN control plane
+(spec/v0/11-control-plane.md). Exposes the 19 chapter-07 §15
+endpoints under `/v0/control/...`.
 
-Phase 12's scope:
+## Running
 
-- Control plane service + lease data model.
-- Multi-replica orchestrator; lease-holder fail-over chaos test.
-- Cross-experiment views in the shared ideator.
-- Experiment switcher in the Web UI.
-- Multi-experiment conformance scenarios.
+```text
+python3 -m eden_control_plane_server \
+    --store-url :memory: \
+    --port 0 \
+    [--admin-token <token>] \
+    [--lease-duration-seconds 30]
+```
 
-Until Phase 12, each experiment runs as its own self-contained
-Compose stack provisioned by
-[`reference/scripts/setup-experiment/setup-experiment.sh`](../../scripts/setup-experiment/setup-experiment.sh);
-there is no cross-experiment coordination layer.
+`--store-url` accepts `:memory:` (ephemeral; tests / single-replica
+deployments) or `postgresql://…` (the production-shaped backend per
+chapter 11 §4 / plan §3.4 Option A).
 
-This service is intentionally NOT a `pyproject.toml` workspace
-member; it stays out of the build until there is something to build.
+On startup the server announces `EDEN_CONTROL_PLANE_LISTENING host=…
+port=…` on stdout, mirroring the task-store-server convention.
+
+## Scope
+
+This service implements the deployment-level coordination layer
+(experiment registry, leases, deployment-scoped worker/group
+registry) introduced in chapter 11. Per-experiment task/idea/variant
+data continues to live in the task-store-server; the control plane
+maintains only the cross-experiment metadata.
+
+The chapter 11 §3 state-sync poller will be added in wave 4 alongside
+the orchestrator integration; wave 3 ships the registry, lease ops,
+and the deployment-scoped worker/group registry only.

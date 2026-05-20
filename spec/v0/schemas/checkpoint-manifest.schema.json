@@ -26,7 +26,7 @@
     "experiment_id": {
       "type": "string",
       "minLength": 1,
-      "description": "The source experiment's id. The receiving deployment uses this verbatim unless an as_experiment_id override is supplied at import time (spec/v0/07-wire-protocol.md §15.2)."
+      "description": "The source experiment's id. The receiving deployment uses this verbatim unless an as_experiment_id override is supplied at import time (spec/v0/07-wire-protocol.md §14.2)."
     },
     "exported_at": {
       "type": "string",

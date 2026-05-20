@@ -21,7 +21,7 @@
       "description": "Wall-clock time at which the experiment was created. Used by deployment-supplied termination policies (e.g. max_wall_time) and not constrained beyond ISO-8601 UTC."
     },
     "imported_from": {
-      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md §10). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md §15.2). Recovery probe: a client that lost the import 201 response queries this field and matches checkpoint_exported_at against the local manifest's exported_at.",
+      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md §10). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md §14.2). Recovery probe: a client that lost the import 201 response queries this field and matches checkpoint_exported_at against the local manifest's exported_at.",
       "oneOf": [
         {"type": "null"},
         {

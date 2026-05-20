@@ -6,22 +6,35 @@ import argparse
 import importlib
 import re
 
+from eden_control_plane import ControlPlaneClient
 from eden_dispatch import IdeationPolicy, TerminationPolicy
 from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
+    bootstrap_worker_credential,
     configure_logging,
     get_logger,
     install_stop_handlers,
     parse_log_level,
     resolve_admin_token,
+    resolve_credentials_dir,
     resolve_worker_bearer,
     wait_for_task_store,
 )
 from eden_wire import StoreClient
+from eden_wire.errors import Unauthorized
 
+from .control_plane_bootstrap import (
+    bootstrap_control_plane_worker,
+    ensure_orchestrators_group_membership,
+)
+from .lease_manager import DuplicateWorkerInstance, LeaseManager
 from .loop import integrator_identity, run_orchestrator_loop
+from .multi_loop import (
+    make_runtime_factory,
+    run_multi_experiment_loop,
+)
 
 _AUTHOR_RE = re.compile(r"^(?P<name>.+?)\s+<(?P<email>[^>]+)>$")
 
@@ -181,6 +194,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=30.0,
         help="Max seconds to wait for the task-store to become ready.",
     )
+    parser.add_argument(
+        "--control-plane-url",
+        default=None,
+        help=(
+            "Optional control-plane base URL (e.g. 'http://control-plane:8081'). "
+            "When set, the orchestrator subscribes to the chapter-11 §2 "
+            "experiment registry and runs the §5 multi-experiment loop: "
+            "acquires/renews a lease per registered experiment, drives "
+            "decisions only for experiments whose lease this replica "
+            "holds, and applies the §5.3 partition self-fence. When "
+            "unset, the orchestrator falls back to the single-experiment "
+            "mode (requires --experiment-id) for backward compat with "
+            "pre-12c Compose deployments."
+        ),
+    )
+    parser.add_argument(
+        "--lease-duration-seconds",
+        type=int,
+        default=30,
+        help=(
+            "Lease duration in seconds (chapter 11 §4.3 default: 30). "
+            "Only meaningful when --control-plane-url is set."
+        ),
+    )
+    parser.add_argument(
+        "--control-plane-admin-token",
+        default=None,
+        help=(
+            "Optional admin token for control-plane bootstrap "
+            "(deployment-scoped --worker-id registration). Defaults to "
+            "$EDEN_CONTROL_PLANE_ADMIN_TOKEN or, when that is unset, "
+            "the per-experiment admin token (which the deployment MAY "
+            "share with the control plane). When neither is available, "
+            "the orchestrator skips its own deployment-scoped "
+            "registration and assumes setup-experiment seeded the "
+            "registry."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -298,13 +349,50 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging(
         service="orchestrator",
-        experiment_id=args.experiment_id,
+        experiment_id=args.experiment_id or "<multi>",
         level=parse_log_level(args.log_level),
     )
     log = get_logger(__name__)
 
     stop = StopFlag()
     install_stop_handlers(stop)
+
+    ideation_policy = _resolve_ideation_policy(args.ideation_policy)
+    termination_policy = _resolve_termination_policy(args.termination_policy)
+    admin_token = resolve_admin_token(args)
+
+    if args.control_plane_url is not None:
+        return _run_multi_experiment(
+            args=args,
+            ideation_policy=ideation_policy,
+            termination_policy=termination_policy,
+            stop=stop,
+            log=log,
+        )
+    return _run_single_experiment(
+        args=args,
+        ideation_policy=ideation_policy,
+        termination_policy=termination_policy,
+        admin_token=admin_token,
+        stop=stop,
+        log=log,
+    )
+
+
+def _run_single_experiment(
+    *,
+    args,  # noqa: ANN001 — argparse Namespace
+    ideation_policy: IdeationPolicy,
+    termination_policy: TerminationPolicy,
+    admin_token: str | None,
+    stop: StopFlag,
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> int:
+    """Pre-12c single-experiment driver: one task-store, one experiment loop."""
+    if not args.experiment_id:
+        raise SystemExit(
+            "--experiment-id is required when --control-plane-url is not set"
+        )
 
     log.info("waiting_for_task_store", url=args.task_store_url)
     wait_for_task_store(
@@ -317,11 +405,9 @@ def main(argv: list[str] | None = None) -> int:
         args, worker_id=args.worker_id, labels={"role": "orchestrator"}
     )
 
-    ideation_policy = _resolve_ideation_policy(args.ideation_policy)
-    termination_policy = _resolve_termination_policy(args.termination_policy)
-    admin_token = resolve_admin_token(args)
     log.info(
         "starting",
+        mode="single-experiment",
         ideation_policy=args.ideation_policy,
         termination_policy=args.termination_policy,
         repo=args.repo_path,
@@ -389,6 +475,273 @@ def main(argv: list[str] | None = None) -> int:
         )
     log.info("orchestrator exited")
     return 0
+
+
+def _run_multi_experiment(
+    *,
+    args,  # noqa: ANN001 — argparse Namespace
+    ideation_policy: IdeationPolicy,
+    termination_policy: TerminationPolicy,
+    stop: StopFlag,
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> int:
+    """Chapter 11 §5 multi-experiment driver.
+
+    Subscribes to the control plane, runs the §5 loop:
+      1. Bootstrap a deployment-scoped worker credential (chapter 11
+         §6) so subsequent lease ops authenticate as a worker in
+         the deployment-scoped `orchestrators` group (the chapter 07
+         §15.2 lease ops are worker-gated; the admin bearer would
+         be rejected with 403).
+      2. §5.2 startup duplicate-`worker_id` probe (under the worker
+         bearer; the probe's `list_active_leases` is either-auth).
+      3. Acquire/renew leases via `LeaseManager`.
+      4. Per-experiment iteration via the `multi_loop` driver.
+      5. On shutdown: release all leases (§5.5 final ordering;
+         per-experiment drain release happens during the loop body
+         when each experiment's drain completes).
+    """
+    admin_token = _resolve_control_plane_admin_token(args)
+    credentials_dir = resolve_credentials_dir(args)
+
+    # B1 (codex round 1) + NEW-1 (round 2) + REGRESSION (round 3)
+    # + MINOR (round 4): the orchestrator's control-plane connection
+    # has three startup postures, decided by an UNAUTHENTICATED whoami
+    # probe FIRST (before consulting persisted credentials):
+    #   (a) Probe returns 200 → control plane is auth-DISABLED
+    #       (server started with admin_token=None — test / in-process
+    #       / local-dev). No bootstrap, no bearer; the server has no
+    #       auth gate and every lease op passes through. A leftover
+    #       persisted credential MUST NOT trigger bootstrap here:
+    #       auth-disabled whoami returns the default worker_id (not
+    #       ours), `bootstrap_control_plane_worker` would observe the
+    #       mismatch and try to reissue, which requires the admin
+    #       token we do not have — a spurious startup failure.
+    #   (b) Probe returns 401 AND we have admin_token OR persisted
+    #       credential → bootstrap the deployment-scoped worker
+    #       credential and use the worker bearer for every lease op.
+    #   (c) Probe returns 401 AND no admin_token AND no persisted
+    #       credential → bootstrap CANNOT succeed; raise an explicit
+    #       RuntimeError so the operator sees the misconfiguration at
+    #       startup rather than silently running unauthenticated and
+    #       tripping a 401 at the first lease op.
+    from .control_plane_bootstrap import (
+        credential_path as _cp_credential_path,
+    )
+    from .control_plane_bootstrap import read_token as _cp_read_token
+
+    persisted_token = _cp_read_token(
+        _cp_credential_path(credentials_dir, args.worker_id)
+    )
+    cp_bearer: str | None
+    with ControlPlaneClient(args.control_plane_url) as _probe:
+        try:
+            _probe.whoami()
+            control_plane_auth_enabled = False
+        except Unauthorized:
+            control_plane_auth_enabled = True
+    if not control_plane_auth_enabled:
+        # Posture (a): auth-disabled. Skip bootstrap regardless of any
+        # leftover persisted credential.
+        log.info(
+            "control_plane_bootstrap_skipped_auth_disabled",
+            worker_id=args.worker_id,
+            persisted_token_present=persisted_token is not None,
+        )
+        cp_bearer = None
+    elif admin_token is not None or persisted_token is not None:
+        # Posture (b): auth-enabled, credentials available.
+        cp_credential = bootstrap_control_plane_worker(
+            control_plane_url=args.control_plane_url,
+            worker_id=args.worker_id,
+            credentials_dir=credentials_dir,
+            admin_token=admin_token,
+            labels={"role": "orchestrator"},
+        )
+        cp_bearer = cp_credential.bearer
+        # Join the deployment-scoped `orchestrators` group so the
+        # chapter 07 §15.2 lease ops admit this worker. Admin-gated;
+        # skipped (with warning) when admin_token is unavailable.
+        try:
+            ensure_orchestrators_group_membership(
+                control_plane_url=args.control_plane_url,
+                worker_id=args.worker_id,
+                admin_token=admin_token,
+            )
+        except Exception:  # noqa: BLE001 — defensive at startup
+            log.exception(
+                "ensure_control_plane_orchestrators_membership_failed"
+            )
+    else:
+        # Posture (c): auth-enabled, no credentials. Fail loud.
+        msg = (
+            "control-plane server is auth-enabled but no admin "
+            "token and no persisted credential are available. "
+            "Set --control-plane-admin-token, "
+            "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
+            "let the orchestrator bootstrap its deployment-scoped "
+            "worker credential."
+        )
+        raise RuntimeError(msg)
+
+    cp_client = ControlPlaneClient(args.control_plane_url, bearer=cp_bearer)
+
+    manager = LeaseManager(
+        cp_client,
+        worker_id=args.worker_id,
+        lease_duration_seconds=args.lease_duration_seconds,
+    )
+    log.info(
+        "starting",
+        mode="multi-experiment",
+        control_plane_url=args.control_plane_url,
+        worker_id=args.worker_id,
+        holder_instance=manager.holder_instance,
+        lease_duration_seconds=args.lease_duration_seconds,
+    )
+    try:
+        manager.startup_probe()
+    except DuplicateWorkerInstance as exc:
+        log.error("startup_duplicate_worker_id", error=str(exc))
+        return 2
+
+    # Single bare-repo deployment: the integrator binds once at startup
+    # and is shared across all per-experiment runtimes. Per chapter 11
+    # design decision 11, v0 has one task-store-server (and one
+    # canonical bare repo) deployment-wide; deployments that need
+    # per-experiment repos will need a different `build_integrator`
+    # closure.
+    repo = _ensure_repo(
+        log=log,
+        repo_path=args.repo_path,
+        gitea_url=args.gitea_url,
+        credential_helper=args.credential_helper,
+    )
+    author = _parse_author(args.integrator_author)
+
+    def _build_integrator(_experiment_id: str, store) -> Integrator:  # noqa: ANN001
+        return Integrator(store=store, repo=repo, author=author)
+
+    # B2: per-experiment task-store credential bootstrap. Chapter 11 §6
+    # requires K+1 credentials for a replica holding K leases — one
+    # deployment-scoped (above) + one per per-experiment task-store-
+    # server. Each closure call bootstraps + caches the credential for
+    # the named experiment.
+    task_store_admin_token = resolve_admin_token(args)
+    per_experiment_cache: dict[str, str | None] = {}
+    # Auth-mode posture for the (deployment-wide) task-store-server.
+    # `None` = unprobed; `True/False` = enabled/disabled. Probed once
+    # lazily on the first `_resolve_per_experiment_bearer` call so
+    # auth-disabled deployments (no admin token, no persisted creds)
+    # are still supported without surfacing bootstrap failures.
+    task_store_auth_state: dict[str, bool] = {}
+
+    def _resolve_per_experiment_bearer(experiment_id: str) -> str | None:
+        # Codex round 4 MAJOR 1: must NOT swallow bootstrap failures
+        # when auth is enabled — doing so silently constructs an
+        # unauthenticated StoreClient that 401s on every op, and the
+        # orchestrator blackholes the lease until expiry. Two paths:
+        #   - Auth-disabled task-store: return None (the StoreClient
+        #     is unauthenticated; ops pass through).
+        #   - Auth-enabled task-store: bootstrap MUST succeed.
+        #     Re-raise on failure so `multi_loop`'s factory-exception
+        #     branch calls `manager.release_for(experiment_id)` and
+        #     another replica can attempt.
+        if experiment_id in per_experiment_cache:
+            return per_experiment_cache[experiment_id]
+        if "auth_enabled" not in task_store_auth_state:
+            with StoreClient(
+                args.task_store_url, experiment_id
+            ) as probe:
+                try:
+                    probe.whoami()
+                    task_store_auth_state["auth_enabled"] = False
+                except Unauthorized:
+                    task_store_auth_state["auth_enabled"] = True
+        if not task_store_auth_state["auth_enabled"]:
+            per_experiment_cache[experiment_id] = None
+            return None
+        # B2 (codex round 2): `bootstrap_worker_credential` persists
+        # to `<credentials_dir>/<worker_id>.token` — a single path
+        # regardless of experiment_id. Without per-experiment
+        # isolation, bootstrapping experiment B overwrites A's
+        # task-store token on disk. Use a per-experiment subdir so
+        # each experiment_id gets its own credential file:
+        # `<credentials_dir>/task-store/<experiment_id>/<worker_id>.token`.
+        per_experiment_credentials_dir = (
+            credentials_dir / "task-store" / experiment_id
+        )
+        credential = bootstrap_worker_credential(
+            base_url=args.task_store_url,
+            experiment_id=experiment_id,
+            worker_id=args.worker_id,
+            credentials_dir=per_experiment_credentials_dir,
+            admin_token=task_store_admin_token,
+            labels={"role": "orchestrator"},
+        )
+        bearer = f"{credential.worker_id}:{credential.token}"
+        per_experiment_cache[experiment_id] = bearer
+        return bearer
+
+    factory = make_runtime_factory(
+        task_store_url=args.task_store_url,
+        worker_bearer_provider=_resolve_per_experiment_bearer,
+        build_integrator=_build_integrator,
+        ideation_task_prefix=args.ideation_task_prefix,
+        execution_task_prefix=args.execution_task_prefix,
+        evaluation_task_prefix=args.evaluation_task_prefix,
+    )
+
+    try:
+        run_multi_experiment_loop(
+            manager=manager,
+            factory=factory,
+            terminated_by=args.worker_id,
+            ideation_policy=ideation_policy,
+            termination_policy=termination_policy,
+            poll_interval=args.poll_interval,
+            stop=stop,
+        )
+    finally:
+        # §5.5: release all held leases as the final shutdown step.
+        # The per-experiment drain release happens DURING the loop
+        # body when each experiment's drain completes; this catches
+        # any leases that were still active at shutdown.
+        try:
+            manager.release_all()
+        except Exception:  # noqa: BLE001 — best-effort
+            log.exception("manager_release_all_failed")
+        cp_client.close()
+
+    log.info("orchestrator exited")
+    return 0
+
+
+def _resolve_control_plane_admin_token(args) -> str | None:  # noqa: ANN001
+    """Resolve the admin token used by the control-plane bootstrap.
+
+    Priority:
+      1. `--control-plane-admin-token` flag (or
+         `$EDEN_CONTROL_PLANE_ADMIN_TOKEN` env var).
+      2. `--admin-token` (the deployment-wide admin token shared with
+         the task-store-server). Many deployments will share a
+         single admin secret across both services; this fallback
+         lets them pass `--admin-token` once.
+      3. `None` — auth-disabled posture (test / in-process only).
+
+    The orchestrator uses this admin token ONLY for one-shot
+    bootstrap (register / reissue) of its deployment-scoped worker
+    credential. Subsequent lease ops authenticate as the worker
+    bearer returned by `bootstrap_control_plane_worker`.
+    """
+    import os
+
+    token = args.control_plane_admin_token or os.environ.get(
+        "EDEN_CONTROL_PLANE_ADMIN_TOKEN"
+    )
+    if not token:
+        token = resolve_admin_token(args)
+    return token or None
 
 
 def _ensure_orchestrators_membership(

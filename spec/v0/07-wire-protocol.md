@@ -24,6 +24,8 @@ Every normative path segment below `/v0/` begins with `experiments/{experiment_i
 
 **Exception: portable-checkpoint endpoints.** Paths under `/v0/checkpoints/` (currently only `POST /v0/checkpoints/import` per §14.2) are not experiment-scoped at the URL level — the experiment_id appears in the uploaded checkpoint manifest's `experiment_id` field ([`10-checkpoints.md`](10-checkpoints.md) §5), not in the URL. On these endpoints the `X-Eden-Experiment-Id` header is OPTIONAL; when present, it MUST equal the manifest's `experiment_id` after applying any `as_experiment_id` override. A mismatch MUST be rejected with `eden://error/experiment-id-mismatch` (HTTP 400). When the header is absent the server proceeds with the experiment id derived from the manifest + override.
 
+**Exception: control-plane endpoints.** Paths under `/v0/control/` (§15) are deployment-rooted, not experiment-rooted. Control-plane operations target the deployment-level experiment registry, leases, and deployment-scoped worker / group registry ([`11-control-plane.md`](11-control-plane.md) §2, §4, §6). The experiment id, when relevant, appears in the path or body of the operation rather than in `/v0/experiments/{experiment_id}/...`. The `X-Eden-Experiment-Id` header is OPTIONAL on `/v0/control/` endpoints; when present it has no protocol meaning at this surface and is ignored.
+
 ## 2. Task operations (chapter 4)
 
 The following endpoints bind the task-store operations in [`04-task-protocol.md`](04-task-protocol.md) §§1–5 and [`08-storage.md`](08-storage.md) §1.1. Each endpoint inherits the normative semantics of the underlying operation; this section lists only the wire shape. The `Auth` column carries the §13.3 classification (`admin` / `worker` / `either`).
@@ -330,6 +332,10 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/spec-version-mismatch` | 409 | the checkpoint manifest's `spec_version` does not match the importer's spec version ([`10-checkpoints.md`](10-checkpoints.md) §13) |
 | `eden://error/unsupported-checkpoint-version` | 409 | the checkpoint manifest's `checkpoint_format_version` is not recognized by the importer ([`10-checkpoints.md`](10-checkpoints.md) §13) |
 | `eden://error/checkpoint-in-progress` | 409 | OPTIONAL — an exporter that rejects concurrent state-mutating operations during a live export ([`10-checkpoints.md`](10-checkpoints.md) §6) MAY use this code; servers that serialize instead MUST NOT emit it |
+| `eden://error/lease-held-by-other` | 409 | `acquire_lease` against an experiment whose lease is still active ([`11-control-plane.md`](11-control-plane.md) §4.5) |
+| `eden://error/lease-not-held` | 410 | `renew_lease` / `release_lease` against a `lease_id` that has been replaced by a fresh acquisition ([`11-control-plane.md`](11-control-plane.md) §4.5) |
+| `eden://error/lease-expired` | 410 | `renew_lease` against a lease whose `expires_at < now` and which has not yet been replaced — distinct from `lease-not-held` because the lease still nominally belongs to the caller ([`11-control-plane.md`](11-control-plane.md) §4.5) |
+| `eden://error/lease-instance-mismatch` | 409 | `renew_lease` / `release_lease` whose body `holder_instance` does not match the lease's stored `holder_instance` ([`11-control-plane.md`](11-control-plane.md) §4.7) |
 
 A server MUST NOT emit a `type` outside this vocabulary for a v0 endpoint. Implementations MAY add custom error types at non-`/v0/` paths (e.g. `/_reference/...`) using the same envelope. The pre-12a-1 `eden://error/wrong-token` is **removed**: per-claim tokens no longer exist.
 
@@ -406,6 +412,8 @@ Summary of the v0 classifications:
 - **worker-gated, `orchestrators` group required** — `accept`, `reject`, `integrate_variant`, and `create_task(kind="execution")` per [`03-roles.md`](03-roles.md) §6.
 - **worker-gated, `admins` group required** — `reassign_task`, `update_dispatch_mode`, `create_task(kind="ideation")`, `create_task(kind="evaluation")` ([`02-data-model.md`](02-data-model.md) §7.5; [`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2). Note that `create_task(kind="ideation")` and `create_task(kind="evaluation")` admit `orchestrators` in addition to `admins` per the per-kind authority in §2.1.
 - **either** — every read endpoint: `list_tasks` / `read_task` / `read_submission`, `list_ideas` / `read_idea`, `list_variants` / `read_variant`, `list_workers` / `read_worker`, `list_groups` / `read_group`, `read_range` / `subscribe`.
+
+The §15 control-plane endpoints follow the same classification framework with their own per-endpoint `Auth` column. The deployment-scoped `orchestrators` group used by §15.2 lease ops is a distinct registry from any per-experiment `orchestrators` group — per [`11-control-plane.md`](11-control-plane.md) §6 — so membership in one does NOT imply membership in the other.
 
 The [`04-task-protocol.md`](04-task-protocol.md) §3.3 requirement that the binding verify the credential before invoking the Store is satisfied by this dispatcher. The group-gate adds a [`03-roles.md`](03-roles.md) §6 + [`02-data-model.md`](02-data-model.md) §7.5 layer on top: a worker may be authenticated but still 403 on an `accept` if it is not a member of `orchestrators`.
 
@@ -491,7 +499,91 @@ The companion `GET /v0/experiments/{E}/state` (§2.9) remains worker-accessible 
 
 **Authority:** **either-auth** — any registered worker MAY read, parallel to the §2.9 `GET /state` companion read. The recovery-probe flow (admin bearer after a dropped import 201) and the orchestrator's per-iteration policy view (worker bearer reading `created_at`) both legitimately need this surface; restricting it to one principal class would block the other. The `imported_from` field is informational provenance (it does not carry secret material), so the broader read surface does not widen attack surface beyond the existing `GET /state` posture. See the §14 introduction above.
 
-## 15. Implementation latitude
+## 15. Control-plane operations
+
+These endpoints bind the chapter 11 control-plane operations. Implementations that claim the `v1+multi-experiment` conformance level ([`09-conformance.md`](09-conformance.md) §4) MUST expose them; other implementations MAY omit them.
+
+The control-plane endpoint root is `/v0/control/`. Per §1.3, paths under this root are NOT experiment-scoped at the URL level: the experiment id (when relevant) appears in the path segment for per-experiment registry / lease operations, NOT in `/v0/experiments/{experiment_id}/...`. The `X-Eden-Experiment-Id` header is OPTIONAL on this path family and has no protocol meaning at this surface when present.
+
+The control plane MAY be deployed as a separate HTTP service (the reference impl's choice) or co-hosted with the task-store-server at the same base URL. A conforming control-plane implementation exposes the full `/v0/control/` surface; partial coverage is non-conforming.
+
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `register_experiment` | `POST` | `/v0/control/experiments` | admin |
+| `unregister_experiment` | `DELETE` | `/v0/control/experiments/{E}` | admin |
+| `list_experiments` | `GET` | `/v0/control/experiments` | either |
+| `read_experiment_metadata` | `GET` | `/v0/control/experiments/{E}` | either |
+| `acquire_lease` | `POST` | `/v0/control/experiments/{E}/leases` | worker (group-gated: `orchestrators`) |
+| `renew_lease` | `POST` | `/v0/control/leases/{L}/renew` | worker (group-gated: `orchestrators`) |
+| `release_lease` | `POST` | `/v0/control/leases/{L}/release` | worker (group-gated: `orchestrators`) |
+| `list_active_leases` | `GET` | `/v0/control/leases` | either (with `?holder=<id>` filter) |
+| `register_control_worker` | `POST` | `/v0/control/workers` | admin |
+| `reissue_control_credential` | `POST` | `/v0/control/workers/{W}/reissue-credential` | admin |
+| `list_control_workers` | `GET` | `/v0/control/workers` | admin |
+| `read_control_worker` | `GET` | `/v0/control/workers/{W}` | admin |
+| `register_control_group` | `POST` | `/v0/control/groups` | admin |
+| `add_to_control_group` | `POST` | `/v0/control/groups/{G}/members` | admin |
+| `remove_from_control_group` | `DELETE` | `/v0/control/groups/{G}/members/{W}` | admin |
+| `list_control_groups` | `GET` | `/v0/control/groups` | admin |
+| `read_control_group` | `GET` | `/v0/control/groups/{G}` | admin |
+| `delete_control_group` | `DELETE` | `/v0/control/groups/{G}` | admin |
+| `verify_control_credential` | `GET` | `/v0/control/whoami` | worker |
+
+The deployment-scoped registry endpoints (`register_control_worker` and below) mirror the per-experiment §6 / §7 shapes; their grammar, idempotency, error vocabulary, and authorization rules are normative in [`11-control-plane.md`](11-control-plane.md) §6 by reference to chapter 02 §6 / §7 and §6 / §7 of this chapter. This chapter pins only the URL shapes and the authority column.
+
+### 15.1 Experiment registry
+
+`POST /v0/control/experiments` body:
+
+```json
+{
+  "experiment_id": "<id>",
+  "config_uri": "<uri>"
+}
+```
+
+Returns 201 with the new registry entry on first registration; 200 with the existing entry on idempotent re-registration of the same `experiment_id` + `config_uri`; 409 `eden://error/already-exists` when the existing entry has a different `config_uri`. Per [`11-control-plane.md`](11-control-plane.md) §2.2.
+
+`DELETE /v0/control/experiments/{E}` returns 204 on success; 409 `eden://error/invalid-precondition` when `last_known_state != "terminated"` OR an active lease exists. Per [`11-control-plane.md`](11-control-plane.md) §2.2.
+
+`GET /v0/control/experiments` returns 200 with `{"experiments": [<entry>, ...]}`. `GET /v0/control/experiments/{E}` returns 200 with one entry; 404 `eden://error/not-found` when the experiment id is not registered. Either response MAY carry a `warnings` array surfacing state-sync degradation per [`11-control-plane.md`](11-control-plane.md) §3.4.
+
+### 15.2 Lease operations
+
+`POST /v0/control/experiments/{E}/leases` body:
+
+```json
+{
+  "holder": "<worker_id>",
+  "holder_instance": "<uuid>"
+}
+```
+
+Caller MUST be authenticated as `holder` (no impersonation) AND be a member of the deployment-scoped `orchestrators` group. Returns 201 with the new lease on success; 409 `eden://error/lease-held-by-other` when an active lease exists; 404 `eden://error/not-found` when the experiment is not registered. Per [`11-control-plane.md`](11-control-plane.md) §4.5.
+
+`POST /v0/control/leases/{L}/renew` and `POST /v0/control/leases/{L}/release` body:
+
+```json
+{
+  "holder_instance": "<uuid>"
+}
+```
+
+Caller MUST be the lease's current `holder`. `renew_lease` returns 200 with the renewed lease (including the new `expires_at`); 410 `eden://error/lease-not-held` if the lease has been replaced; 410 `eden://error/lease-expired` if the lease has lapsed but not yet been replaced; 409 `eden://error/lease-instance-mismatch` on `holder_instance` mismatch. `release_lease` returns 200 on success (and idempotently on already-released lease); 409 `eden://error/lease-instance-mismatch` on mismatch. Per [`11-control-plane.md`](11-control-plane.md) §4.5, §4.7.
+
+`GET /v0/control/leases?holder=<worker_id>` returns 200 with `{"leases": [<lease>, ...]}` containing every active lease (`expires_at >= now`) whose `holder` equals the query parameter. The caller MUST be authenticated as `<worker_id>` OR be the admin principal. Used by the orchestrator's startup-fence probe per [`11-control-plane.md`](11-control-plane.md) §5.2. Per [`11-control-plane.md`](11-control-plane.md) §4.5.
+
+### 15.3 Deployment-scoped registry
+
+The `/v0/control/workers/...`, `/v0/control/groups/...`, and `/v0/control/whoami` endpoints mirror the chapter 02 §6 / §7 and §6 / §7 of this chapter shapes verbatim. The wire payloads, idempotency contracts, grammar enforcement, and the closed §9 error vocabulary are unchanged from the per-experiment shapes; the only differences are:
+
+- The URL roots are `/v0/control/...`, not `/v0/experiments/{E}/...`.
+- The registry is deployment-scoped (`worker_id` unique across the deployment, not within an experiment) and is **distinct from** the per-experiment registries hosted by the task-store-server. A `worker_id` of `auto-orchestrator-1` registered against the control plane is unrelated to a same-named worker registered against any per-experiment task-store-server. The two credential domains are independent.
+- The reserved-group identifiers (`admins`, `orchestrators`) apply at the deployment scope; the per-experiment groups are independent.
+
+`GET /v0/control/whoami` returns 200 with `{"worker_id": "<id>"}` for the authenticated worker, mirroring §6.4. Used by the orchestrator's startup credential verification.
+
+## 16. Implementation latitude
 
 The binding leaves to implementations:
 

@@ -63,6 +63,18 @@ _IMPL_OPTIONAL_TYPES: frozenset[str] = frozenset(
         "eden://error/experiment-id-conflict",
         "eden://error/spec-version-mismatch",
         "eden://error/unsupported-checkpoint-version",
+        # spec/v0/07-wire-protocol.md §9 + spec/v0/11-control-plane.md
+        # §4.5: the v1+multi-experiment conformance level (chapter 9
+        # §4) adds these four wire types. MANDATORY for impls that
+        # claim that level (the lease ops emit them on the documented
+        # failure paths), but an impl claiming only v1 / v1+roles /
+        # v1+roles+integrator / v1+checkpoints MAY omit the chapter-11
+        # surface entirely — in which case these types never surface.
+        # Same impl-optional posture as the checkpoint types above.
+        "eden://error/lease-held-by-other",
+        "eden://error/lease-not-held",
+        "eden://error/lease-expired",
+        "eden://error/lease-instance-mismatch",
     }
 )
 

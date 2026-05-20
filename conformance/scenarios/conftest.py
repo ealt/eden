@@ -86,3 +86,62 @@ def receiver_wire_client(
 def sender_wire_client(wire_client: WireClient) -> WireClient:
     """Symmetric alias for the default ``wire_client`` (the sender)."""
     return wire_client
+
+
+# ---------------------------------------------------------------------
+# Wave 6 (v1+multi-experiment): control-plane subprocess fixtures
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def control_plane_base_url(iut: IutHandle) -> str:
+    """The IUT's chapter 07 §15 control-plane base URL.
+
+    Sourced from the active `iut` fixture's
+    `IutHandle.control_plane_base_url`. Scenarios that bind to this
+    fixture exercise the IUT under test (per chapter 9 §6's
+    IUT-contract restriction), NOT a suite-managed subprocess.
+    IUTs that don't expose the chapter 11 surface leave the field
+    `None`, and the v1+multi-experiment scenarios skip via this
+    fixture's `pytest.skip` branch — the chapter 11 level is
+    parallel to v1+roles+integrator and v1+checkpoints, and IUTs
+    MAY opt out per chapter 9 §4.
+    """
+    if iut.control_plane_base_url is None:
+        pytest.skip(
+            "IUT does not expose the chapter 07 §15 control-plane surface; "
+            "skipping v1+multi-experiment scenarios"
+        )
+    return iut.control_plane_base_url
+
+
+@pytest.fixture
+def control_plane_client(
+    iut: IutHandle,
+    control_plane_base_url: str,
+    session_observed_problem_types: set[str],
+) -> Iterator:  # type: ignore[type-arg]
+    """A `ControlPlaneWireClient` bound to the IUT's control-plane URL.
+
+    Thin httpx wrapper from `conformance.harness.control_plane_client`
+    that returns raw `httpx.Response` objects — scenarios assert on
+    status codes + problem+json `type` strings so the suite stays
+    IUT-agnostic per chapter 9 §6 (no Python exception classes from
+    reference packages).
+
+    Propagates `IutHandle.extra_headers` so auth-enabled non-reference
+    IUTs that surface a session bearer / custom auth header through
+    that field can drive the chapter-11 surface under the same auth
+    posture as the chapter-2/4/5/7/8 scenarios.
+    """
+    from conformance.harness.control_plane_client import ControlPlaneWireClient
+
+    client = ControlPlaneWireClient(
+        base_url=control_plane_base_url,
+        extra_headers=iut.extra_headers,
+        observed_problem_types=session_observed_problem_types,
+    )
+    try:
+        yield client
+    finally:
+        client.close()

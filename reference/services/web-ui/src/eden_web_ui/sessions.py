@@ -23,10 +23,17 @@ SESSION_COOKIE_NAME = "eden_web_ui_session"
 
 @dataclass(frozen=True)
 class Session:
-    """Decoded session-cookie contents."""
+    """Decoded session-cookie contents.
+
+    ``selected_experiment_id`` (12c wave 5) — the experiment the
+    operator has selected via the cross-experiment switcher. When
+    ``None`` (default for pre-12c sessions and the no-control-plane
+    posture), routes use the deployment's default experiment.
+    """
 
     worker_id: str
     csrf: str
+    selected_experiment_id: str | None = None
 
 
 class SessionCodec:
@@ -37,9 +44,13 @@ class SessionCodec:
 
     def encode(self, session: Session) -> str:
         """Sign + url-encode ``session`` to a cookie-safe string."""
-        return self._serializer.dumps(
-            {"worker_id": session.worker_id, "csrf": session.csrf}
-        )
+        payload: dict[str, str] = {
+            "worker_id": session.worker_id,
+            "csrf": session.csrf,
+        }
+        if session.selected_experiment_id is not None:
+            payload["selected_experiment_id"] = session.selected_experiment_id
+        return self._serializer.dumps(payload)
 
     def decode(self, raw: str) -> Session | None:
         """Verify ``raw`` and return the decoded session, or ``None`` on bad signature/shape."""
@@ -53,7 +64,14 @@ class SessionCodec:
         csrf = data.get("csrf")
         if not isinstance(worker_id, str) or not isinstance(csrf, str):
             return None
-        return Session(worker_id=worker_id, csrf=csrf)
+        selected = data.get("selected_experiment_id")
+        if selected is not None and not isinstance(selected, str):
+            return None
+        return Session(
+            worker_id=worker_id,
+            csrf=csrf,
+            selected_experiment_id=selected,
+        )
 
 
 def new_csrf_token() -> str:

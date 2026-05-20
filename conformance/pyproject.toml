@@ -13,6 +13,12 @@ requires-python = ">=3.12"
 # (~30 MB of Python packages) and conformance is never imported by
 # any production service.
 dependencies = [
+    # `eden-control-plane-server` is needed at the workspace level so
+    # `uv sync` installs the package that the reference adapter spawns
+    # via `python -m eden_control_plane_server` (subprocess args, NOT a
+    # Python import — the conformance suite stays IUT-agnostic per
+    # chapter 9 §6 / the CI import-guard).
+    "eden-control-plane-server",
     "httpx>=0.27,<1",
     "pytest>=8.0",
     "pytest-ordering>=0.6",

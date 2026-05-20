@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin experiments{% endblock %}
+{% block main %}
+<h1>experiments (cross-experiment dashboard)</h1>
+
+<p class="lead">
+    Deployment-wide view from the control plane
+    (<a href="/admin/">back to admin</a>).
+</p>
+
+{% for level, message in outcomes %}
+<div class="banner banner-{{ level }}">{{ message }}</div>
+{% endfor %}
+
+{% if transport_error %}
+<div class="banner banner-error">{{ transport_error }}</div>
+{% endif %}
+
+<section>
+    <h2>register a new experiment</h2>
+    <form method="post" action="/admin/experiments/register">
+        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+        <p>
+            <label>experiment_id
+                <input type="text" name="experiment_id" required maxlength="64"
+                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
+                       title="lowercase alphanumeric, hyphen, underscore; first char non-hyphen; max 64 chars">
+            </label>
+        </p>
+        <p>
+            <label>config_uri (must be a real URI; deployment-resolvable)
+                <input type="text" name="config_uri" required size="60"
+                       placeholder="file:///etc/eden/exp-1/config.yaml">
+            </label>
+        </p>
+        <p>
+            <button type="submit">register</button>
+        </p>
+    </form>
+</section>
+
+<section>
+    <h2>registered experiments ({{ rows | length }})</h2>
+    {% if rows %}
+    <table class="experiments-table">
+        <thead>
+            <tr>
+                <th>experiment_id</th>
+                <th>last_known_state</th>
+                <th>lease holder</th>
+                <th>lease expires_at</th>
+                <th>warnings</th>
+                <th>actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+            <tr {% if r.is_selected %}class="selected"{% endif %}>
+                <td><code>{{ r.experiment_id }}</code>{% if r.is_selected %} ★{% endif %}</td>
+                <td>{{ r.last_known_state }}</td>
+                <td>
+                    {% if r.lease %}
+                    <code>{{ r.lease.holder }}</code>
+                    <br><small>instance: <code>{{ r.lease.holder_instance[:8] }}…</code></small>
+                    {% else %}
+                    <em>none</em>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if r.lease %}
+                    <code>{{ r.lease.expires_at }}</code>
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td>
+                    {% for w in r.warnings %}
+                    <div class="warn">{{ w }}</div>
+                    {% endfor %}
+                </td>
+                <td>
+                    {% if not r.is_selected %}
+                    <form method="post"
+                          action="/admin/experiments/{{ r.experiment_id }}/select"
+                          style="display: inline">
+                        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+                        <button type="submit">select</button>
+                    </form>
+                    {% endif %}
+                    <form method="post"
+                          action="/admin/experiments/{{ r.experiment_id }}/unregister"
+                          onsubmit="return confirm('unregister {{ r.experiment_id }}?')"
+                          style="display: inline">
+                        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+                        <button type="submit" {% if r.last_known_state != 'terminated' or r.lease %}disabled{% endif %}>
+                            unregister
+                        </button>
+                    </form>
+                    {# Force-release deferred to a future spec amendment per #}
+                    {# chapter 11 §9; wait for natural lease expiry. #}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p><em>No experiments registered.</em></p>
+    {% endif %}
+</section>
+
+{% if session.selected_experiment_id %}
+<p class="lead">
+    Currently selected experiment for this session:
+    <code>{{ session.selected_experiment_id }}</code>.
+    Per-experiment route swapping is not yet wired; the existing
+    routes operate against the deployment default
+    (<code>{{ experiment_id }}</code>) regardless of the selection.
+</p>
+{% endif %}
+
+{% endblock %}

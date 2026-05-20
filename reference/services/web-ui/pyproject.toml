@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "eden-contracts",
+    "eden-control-plane",
     "eden-dispatch",
     "eden-git",
     "eden-service-common",

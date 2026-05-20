@@ -12,6 +12,8 @@ members = [
     "eden-checkpoint",
     "eden-conformance",
     "eden-contracts",
+    "eden-control-plane",
+    "eden-control-plane-server",
     "eden-dispatch",
     "eden-evaluator-host",
     "eden-executor-host",
@@ -312,6 +314,8 @@ dev = [
     { name = "eden-checkpoint" },
     { name = "eden-conformance" },
     { name = "eden-contracts" },
+    { name = "eden-control-plane" },
+    { name = "eden-control-plane-server" },
     { name = "eden-dispatch" },
     { name = "eden-evaluator-host" },
     { name = "eden-executor-host" },
@@ -338,6 +342,8 @@ dev = [
     { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-conformance", editable = "conformance" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-control-plane", editable = "reference/packages/eden-control-plane" },
+    { name = "eden-control-plane-server", editable = "reference/services/control-plane" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-evaluator-host", editable = "reference/services/evaluator" },
     { name = "eden-executor-host", editable = "reference/services/executor" },
@@ -378,6 +384,7 @@ version = "0.0.1"
 source = { editable = "conformance" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "eden-control-plane-server" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-json-report" },
@@ -388,6 +395,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
+    { name = "eden-control-plane-server", editable = "reference/services/control-plane" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-json-report", specifier = ">=1.5" },
@@ -408,6 +416,60 @@ dependencies = [
 requires-dist = [
     { name = "pydantic", specifier = ">=2.9,<3" },
     { name = "rfc3986-validator", specifier = ">=0.1.1" },
+]
+
+[[package]]
+name = "eden-control-plane"
+version = "0.0.1"
+source = { editable = "reference/packages/eden-control-plane" }
+dependencies = [
+    { name = "argon2-cffi" },
+    { name = "eden-contracts" },
+    { name = "eden-storage" },
+    { name = "eden-wire" },
+    { name = "httpx" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic" },
+    { name = "rfc3986-validator" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "argon2-cffi", specifier = ">=23.1" },
+    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-storage", editable = "reference/packages/eden-storage" },
+    { name = "eden-wire", editable = "reference/packages/eden-wire" },
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2.9,<3" },
+    { name = "rfc3986-validator", specifier = ">=0.1.1" },
+]
+
+[[package]]
+name = "eden-control-plane-server"
+version = "0.0.1"
+source = { editable = "reference/services/control-plane" }
+dependencies = [
+    { name = "eden-contracts" },
+    { name = "eden-control-plane" },
+    { name = "eden-storage" },
+    { name = "eden-wire" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-control-plane", editable = "reference/packages/eden-control-plane" },
+    { name = "eden-storage", editable = "reference/packages/eden-storage" },
+    { name = "eden-wire", editable = "reference/packages/eden-wire" },
+    { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "pydantic", specifier = ">=2.9,<3" },
+    { name = "uvicorn", specifier = ">=0.30,<1" },
 ]
 
 [[package]]
@@ -517,6 +579,7 @@ version = "0.0.1"
 source = { editable = "reference/services/orchestrator" }
 dependencies = [
     { name = "eden-contracts" },
+    { name = "eden-control-plane" },
     { name = "eden-dispatch" },
     { name = "eden-git" },
     { name = "eden-service-common" },
@@ -527,6 +590,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-control-plane", editable = "reference/packages/eden-control-plane" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-git", editable = "reference/packages/eden-git" },
     { name = "eden-service-common", editable = "reference/services/_common" },
@@ -609,6 +673,7 @@ version = "0.0.1"
 source = { editable = "reference/services/web-ui" }
 dependencies = [
     { name = "eden-contracts" },
+    { name = "eden-control-plane" },
     { name = "eden-dispatch" },
     { name = "eden-git" },
     { name = "eden-service-common" },
@@ -625,6 +690,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-control-plane", editable = "reference/packages/eden-control-plane" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-git", editable = "reference/packages/eden-git" },
     { name = "eden-service-common", editable = "reference/services/_common" },
