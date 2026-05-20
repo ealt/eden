@@ -96,19 +96,8 @@
                             unregister
                         </button>
                     </form>
-                    {% if r.lease %}
-                    <details>
-                        <summary>force-release lease</summary>
-                        <form method="post"
-                              action="/admin/experiments/{{ r.experiment_id }}/release-lease"
-                              onsubmit="return confirm('force-release lease {{ r.lease.lease_id }}?')">
-                            <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
-                            <input type="hidden" name="lease_id" value="{{ r.lease.lease_id }}">
-                            <input type="hidden" name="holder_instance" value="{{ r.lease.holder_instance }}">
-                            <button type="submit">force-release</button>
-                        </form>
-                    </details>
-                    {% endif %}
+                    {# Force-release deferred to a future spec amendment per #}
+                    {# chapter 11 §9; wait for natural lease expiry. #}
                 </td>
             </tr>
         {% endfor %}

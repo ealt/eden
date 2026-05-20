@@ -71,7 +71,7 @@ The `acquire_lease` op (§4.5) MUST trigger a one-shot state refresh for the tar
 
 The pull-based sync mechanism produces eventually-consistent `last_known_state` with a staleness window bounded by the polling interval (default 30s). For operator-facing display this is acceptable; for the `unregister_experiment` precondition (§2.2) it MAY require an operator to wait one polling interval after termination before unregistering.
 
-When the per-experiment consecutive-failure counter exceeds a deployment-configured threshold (default: 10), the control plane MUST surface an operator-visible warning in `read_experiment_metadata`'s response via a `warnings` array. Typical entry shape: `"state-sync-stale: last successful read at <timestamp>"`. The warning is informational; the registry entry remains queryable and the existing `last_known_state` is returned unchanged.
+When the per-experiment consecutive-failure counter reaches a deployment-configured threshold (default: 10) — i.e. once `consecutive_failures >= threshold` — the control plane MUST surface an operator-visible warning in `read_experiment_metadata`'s response via a `warnings` array. Typical entry shape: `"state-sync-stale: last successful read at <timestamp>"`. The warning is informational; the registry entry remains queryable and the existing `last_known_state` is returned unchanged.
 
 The control plane does NOT terminate the lease, fail subsequent reads, or unregister the experiment on persistent sync failure. The task-store-server's outage is a deployment incident; the control plane's role is to surface it, not to escalate.
 

@@ -23,11 +23,21 @@ class IutHandle:
     chapter-7 HTTP. The handle is flat by design: every secret a
     scenario needs is observable through the wire binding, so the
     handle does not expose callbacks for fetching tokens mid-scenario.
+
+    `control_plane_base_url` is OPTIONAL; populated by IUTs that
+    expose the chapter 07 §15 surface for the v1+multi-experiment
+    conformance level. The reference adapter sets it after
+    spawning its own control-plane subprocess; non-reference IUTs
+    that bundle the control plane behind the same base_url MAY
+    surface it as the same value as `base_url`; IUTs that don't
+    support v1+multi-experiment leave it `None` and the
+    multi-experiment scenarios skip.
     """
 
     base_url: str
     experiment_id: str
     extra_headers: Mapping[str, str] = field(default_factory=dict)
+    control_plane_base_url: str | None = None
 
 
 @runtime_checkable

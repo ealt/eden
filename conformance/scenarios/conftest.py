@@ -94,36 +94,33 @@ def sender_wire_client(wire_client: WireClient) -> WireClient:
 
 
 @pytest.fixture
-def control_plane_handle() -> Iterator:  # type: ignore[type-arg]
-    """Spawn the EDEN control-plane-server reference subprocess.
+def control_plane_base_url(iut: IutHandle) -> str:
+    """The IUT's chapter 07 §15 control-plane base URL.
 
-    The v1+multi-experiment scenarios drive the chapter 11 surface
-    directly; they don't require the task-store-server, so the
-    fixture is independent of `iut` / `wire_client`.
-
-    Single-tenant per scenario: each test gets a fresh `:memory:`
-    backing store + fresh port. The fixture is reference-specific;
-    a future non-reference IUT that exposes /v0/control/ would
-    point at its own base URL via a different fixture pass.
+    Sourced from the active `iut` fixture's
+    `IutHandle.control_plane_base_url`. Scenarios that bind to this
+    fixture exercise the IUT under test (per chapter 9 §6's
+    IUT-contract restriction), NOT a suite-managed subprocess.
+    IUTs that don't expose the chapter 11 surface leave the field
+    `None`, and the v1+multi-experiment scenarios skip via this
+    fixture's `pytest.skip` branch — the chapter 11 level is
+    parallel to v1+roles+integrator and v1+checkpoints, and IUTs
+    MAY opt out per chapter 9 §4.
     """
-    from conformance.adapters.reference.control_plane_adapter import (
-        ControlPlaneSubprocess,
-    )
-
-    cp = ControlPlaneSubprocess()
-    handle = cp.start()
-    try:
-        yield handle
-    finally:
-        cp.stop()
+    if iut.control_plane_base_url is None:
+        pytest.skip(
+            "IUT does not expose the chapter 07 §15 control-plane surface; "
+            "skipping v1+multi-experiment scenarios"
+        )
+    return iut.control_plane_base_url
 
 
 @pytest.fixture
 def control_plane_client(
-    control_plane_handle,  # noqa: ANN001 — ControlPlaneHandle from helper
+    control_plane_base_url: str,
     session_observed_problem_types: set[str],
 ) -> Iterator:  # type: ignore[type-arg]
-    """A `ControlPlaneWireClient` bound to the spawned subprocess.
+    """A `ControlPlaneWireClient` bound to the IUT's control-plane URL.
 
     Thin httpx wrapper from `conformance.harness.control_plane_client`
     that returns raw `httpx.Response` objects — scenarios assert on
@@ -134,7 +131,7 @@ def control_plane_client(
     from conformance.harness.control_plane_client import ControlPlaneWireClient
 
     client = ControlPlaneWireClient(
-        base_url=control_plane_handle.base_url,
+        base_url=control_plane_base_url,
         observed_problem_types=session_observed_problem_types,
     )
     try:

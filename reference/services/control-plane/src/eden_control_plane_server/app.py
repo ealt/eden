@@ -255,12 +255,19 @@ def make_app(
     def list_experiments(request: Request) -> Response:
         _get_principal(request)
         entries = store.list_experiments()
-        body = {
-            "experiments": [
-                _dump(e) for e in entries
-            ],
-        }
-        return JSONResponse(content=body)
+        # §3.4: inject stale-state warnings per entry so the cross-
+        # experiment dashboard can render them in the same single
+        # round trip. The shape mirrors read_experiment_metadata's
+        # injection — same `warnings` field on each entry.
+        out: list[dict[str, Any]] = []
+        for entry in entries:
+            payload = _dump(entry)
+            if state_poller is not None:
+                warnings = state_poller.warnings.warnings_for(entry.experiment_id)
+                if warnings:
+                    payload["warnings"] = list(warnings)
+            out.append(payload)
+        return JSONResponse(content={"experiments": out})
 
     @app.get(f"{base}/experiments/{{experiment_id}}")
     def read_experiment_metadata(

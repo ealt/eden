@@ -72,9 +72,6 @@ class _StoreBackedClient:
     def unregister_experiment(self, experiment_id: str) -> None:
         self._store.unregister_experiment(experiment_id)
 
-    def release_lease(self, lease_id: str, holder_instance: str) -> None:
-        self._store.release_lease(lease_id, holder_instance)
-
 
 @pytest.fixture
 def cp_client(cp_store: InMemoryControlPlaneStore) -> ControlPlaneClient:
@@ -307,10 +304,16 @@ def test_select_records_experiment_in_session(
     assert session.selected_experiment_id == "exp-a"
 
 
-def test_release_lease_round_trips(
+def test_force_release_route_is_404(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
+    """Force-release was removed (chapter 11 §9 defers to a future amendment).
+
+    The route MUST NOT be registered; a POST to the prior path
+    returns 405 (no handler accepts POST) or 404. Either way, the
+    operator cannot bypass natural lease expiration via the UI.
+    """
     cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
     lease = cp_store.acquire_lease(
         "exp-a", "auto-orchestrator-x", "uuid-1", lease_duration_seconds=30
@@ -325,33 +328,11 @@ def test_release_lease_round_trips(
         },
         follow_redirects=False,
     )
-    assert r.status_code == 303
-    assert "released=ok" in r.headers["location"]
-    # Lease is gone from the store.
+    assert r.status_code in {404, 405}
+    # And the lease is STILL active in the store — UI cannot
+    # bypass the natural expiration path.
     refreshed = cp_store.read_experiment_metadata("exp-a")
-    assert refreshed.lease is None
-
-
-def test_release_lease_with_wrong_instance_returns_mismatch(
-    signed_in_client: TestClient,
-    cp_store: InMemoryControlPlaneStore,
-) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
-    lease = cp_store.acquire_lease(
-        "exp-a", "auto-orchestrator-x", "uuid-1", lease_duration_seconds=30
-    )
-    csrf = _csrf_token(signed_in_client)
-    r = signed_in_client.post(
-        "/admin/experiments/exp-a/release-lease",
-        data={
-            "csrf_token": csrf,
-            "lease_id": lease.lease_id,
-            "holder_instance": "uuid-OTHER",
-        },
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    assert "instance-mismatch" in r.headers["location"]
+    assert refreshed.lease is not None
 
 
 # ---------------------------------------------------------------------

@@ -14,6 +14,9 @@ import threading
 import time
 from pathlib import Path
 
+from conformance.adapters.reference.control_plane_adapter import (
+    ControlPlaneSubprocess,
+)
 from conformance.harness.adapter import IutAdapter, IutHandle
 
 
@@ -28,6 +31,14 @@ class ReferenceAdapter(IutAdapter):
     by the wire's unit tests. With auth off, the server reads
     ``X-Eden-Worker-Id`` from the request header to derive the
     authenticated worker_id (server.py: ``_worker_id_from_request``).
+
+    12c wave 6: also spawns ``python -m eden_control_plane_server`` so
+    a conforming reference IUT exposes both the chapter 07 §1-§14 and
+    the §15 surfaces. The control-plane URL flows out through
+    ``IutHandle.control_plane_base_url`` so the v1+multi-experiment
+    scenarios route their wire calls at the IUT (not at a separate
+    suite-managed subprocess — the IUT contract per chapter 9 §6 is
+    what's under test).
     """
 
     _PORT_ANNOUNCE_TIMEOUT = 15.0
@@ -38,6 +49,7 @@ class ReferenceAdapter(IutAdapter):
         self._proc: subprocess.Popen[str] | None = None
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
+        self._control_plane: ControlPlaneSubprocess | None = None
 
     def start(
         self,
@@ -70,6 +82,8 @@ class ReferenceAdapter(IutAdapter):
         try:
             port = self._read_port_announcement()
             self._start_stderr_drain()
+            self._control_plane = ControlPlaneSubprocess()
+            cp_handle = self._control_plane.start()
         except BaseException:
             self.stop()
             raise
@@ -77,22 +91,25 @@ class ReferenceAdapter(IutAdapter):
             base_url=f"http://127.0.0.1:{port}",
             experiment_id=experiment_id,
             extra_headers={},
+            control_plane_base_url=cp_handle.base_url,
         )
 
     def stop(self) -> None:
         proc = self._proc
-        if proc is None:
-            return
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=self._STOP_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2.0)
-        if self._stderr_thread is not None:
-            self._stderr_thread.join(timeout=1.0)
-        self._proc = None
+        if proc is not None:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=self._STOP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+            if self._stderr_thread is not None:
+                self._stderr_thread.join(timeout=1.0)
+            self._proc = None
+        if self._control_plane is not None:
+            self._control_plane.stop()
+            self._control_plane = None
 
     @property
     def stderr_log(self) -> str:

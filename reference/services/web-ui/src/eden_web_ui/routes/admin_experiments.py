@@ -23,10 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eden_control_plane import (
-    ControlPlaneClient,
-    LeaseError,
-)
+from eden_control_plane import ControlPlaneClient
 from eden_storage.errors import (
     AlreadyExists,
     InvalidPrecondition,
@@ -72,16 +69,6 @@ _UNREGISTER_OUTCOMES: dict[str, tuple[str, str]] = {
     "transport": ("error", "transport failure; refresh and verify"),
 }
 
-_RELEASE_OUTCOMES: dict[str, tuple[str, str]] = {
-    "ok": ("ok", "lease released"),
-    "instance-mismatch": (
-        "error",
-        "lease holder_instance does not match the value you supplied — "
-        "the lease was likely already replaced",
-    ),
-    "transport": ("error", "transport failure; refresh and verify"),
-}
-
 _SELECT_OUTCOMES: dict[str, tuple[str, str]] = {
     "ok": ("ok", "experiment selected"),
     "missing-experiment-id": ("error", "experiment_id is required"),
@@ -120,7 +107,6 @@ async def dashboard(
     request: Request,
     registered: str | None = None,
     unregistered: str | None = None,
-    released: str | None = None,
     selected: str | None = None,
 ) -> Response:
     """Cross-experiment dashboard.
@@ -159,7 +145,6 @@ async def dashboard(
     for key, label in (
         (registered, _REGISTER_OUTCOMES),
         (unregistered, _UNREGISTER_OUTCOMES),
-        (released, _RELEASE_OUTCOMES),
         (selected, _SELECT_OUTCOMES),
     ):
         result = _outcome(label, key)
@@ -253,48 +238,14 @@ async def unregister(
     )
 
 
-@router.post("/{experiment_id}/release-lease", response_model=None)
-async def release_lease(
-    request: Request,
-    experiment_id: str,
-    csrf_token: str = Form(default=""),
-    lease_id: str = Form(default=""),
-    holder_instance: str = Form(default=""),
-) -> Response:
-    """Force-release a wedged lease.
-
-    The operator must supply both `lease_id` and `holder_instance`
-    from the dashboard row — the control plane's holder-instance
-    fence (§4.7) gates the release. When the wedged orchestrator's
-    `holder_instance` is unknown (typical wedged-process case),
-    the operator's choice is to wait for the natural expiration OR
-    delete the lease row out-of-band; the UI surface is intentionally
-    NARROW so an operator can't accidentally steal a lease.
-    """
-    session_or_redirect = _require_session(request)
-    if isinstance(session_or_redirect, RedirectResponse):
-        return session_or_redirect
-    session = session_or_redirect
-    if not csrf_ok(session, csrf_token):
-        return htmx_aware_redirect(
-            request, "/admin/experiments/?released=transport"
-        )
-    if not lease_id or not holder_instance:
-        return htmx_aware_redirect(
-            request, "/admin/experiments/?released=transport"
-        )
-    cp = _control_plane(request)
-    try:
-        cp.release_lease(lease_id, holder_instance)
-    except LeaseError:
-        return htmx_aware_redirect(
-            request, "/admin/experiments/?released=instance-mismatch"
-        )
-    except Exception:  # noqa: BLE001 — transport
-        return htmx_aware_redirect(
-            request, "/admin/experiments/?released=transport"
-        )
-    return htmx_aware_redirect(request, "/admin/experiments/?released=ok")
+# Force-release was previously exposed here; removed per codex
+# round-1 finding M6. Chapter 11 §9 explicitly defers admin-driven
+# force-release to a future spec amendment, and the web-ui's admin
+# bearer would have been rejected by the worker-gated
+# `release_lease` endpoint anyway. Operators must wait for natural
+# lease expiration (default `lease_duration_seconds`, 30s). A
+# future amendment will introduce a real admin force-release
+# endpoint with explicit safeguards; tracked at issue #104.
 
 
 @router.post("/{experiment_id}/select", response_model=None)

@@ -110,6 +110,20 @@ def run_multi_experiment_loop(
                 _close_runtime(runtimes.pop(experiment_id))
 
         for experiment_id in held:
+            # B3: §5.1 ownership revalidation immediately before
+            # each per-experiment iteration. `manager.refresh()`
+            # ran once at the top of the outer loop; if iteration
+            # N blocked, iterations N+1..K could run past the
+            # lease's `expires_at`. Re-asking the manager whether
+            # we still hold the lease is O(1) and catches
+            # mid-batch drops (transport-failure self-fence,
+            # lease-not-held from a concurrent take-over).
+            if not manager.is_held(experiment_id):
+                log.info(
+                    "lease_lost_before_iteration_skip",
+                    experiment_id=experiment_id,
+                )
+                continue
             runtime = runtimes.get(experiment_id)
             if runtime is None:
                 try:
@@ -231,7 +245,7 @@ def _experiment_is_drained_terminated(store: Store) -> bool:
 def make_runtime_factory(
     *,
     task_store_url: str,
-    worker_bearer: str | None,
+    worker_bearer_provider: Callable[[str], str | None],
     build_integrator: Callable[[str, Store], Integrator],
     ideation_task_prefix: str,
     execution_task_prefix: str,
@@ -246,6 +260,16 @@ def make_runtime_factory(
     per chapter 11 design decision 11 ("one multi-experiment
     task-store-server in v0").
 
+    `worker_bearer_provider(experiment_id)` is a callable that returns
+    the §13.1 bearer for the per-experiment task-store-server.
+    Chapter 11 §6 requires a separate task-store credential per
+    experiment the orchestrator holds a lease for; the CLI's
+    `_resolve_per_experiment_bearer` closure runs
+    `bootstrap_worker_credential` (eden-service-common) on first
+    access and caches the result. Returning `None` is permitted in
+    the auth-disabled test posture; the resulting StoreClient is
+    then unauthenticated.
+
     `build_integrator` is a callable the CLI supplies so per-experiment
     integrators bind to the right repo (single-repo deployments pass a
     closure that returns the same Integrator each time; multi-repo
@@ -253,8 +277,9 @@ def make_runtime_factory(
     """
 
     def _factory(experiment_id: str) -> ExperimentRuntime:
+        bearer = worker_bearer_provider(experiment_id)
         client = StoreClient(
-            task_store_url, experiment_id, bearer=worker_bearer
+            task_store_url, experiment_id, bearer=bearer
         )
         integrator = build_integrator(experiment_id, client)
         return ExperimentRuntime(
