@@ -384,6 +384,8 @@ version = "0.0.1"
 source = { editable = "conformance" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "eden-control-plane" },
+    { name = "eden-control-plane-server" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-json-report" },
@@ -394,6 +396,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
+    { name = "eden-control-plane", editable = "reference/packages/eden-control-plane" },
+    { name = "eden-control-plane-server", editable = "reference/services/control-plane" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-json-report", specifier = ">=1.5" },

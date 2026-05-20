@@ -86,3 +86,49 @@ def receiver_wire_client(
 def sender_wire_client(wire_client: WireClient) -> WireClient:
     """Symmetric alias for the default ``wire_client`` (the sender)."""
     return wire_client
+
+
+# ---------------------------------------------------------------------
+# Wave 6 (v1+multi-experiment): control-plane subprocess fixtures
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def control_plane_handle() -> Iterator:  # type: ignore[type-arg]
+    """Spawn the EDEN control-plane-server reference subprocess.
+
+    The v1+multi-experiment scenarios drive the chapter 11 surface
+    directly; they don't require the task-store-server, so the
+    fixture is independent of `iut` / `wire_client`.
+
+    Single-tenant per scenario: each test gets a fresh `:memory:`
+    backing store + fresh port. Skipped when the suite is run
+    against a non-reference adapter (the IUT contract is the
+    chapter-7 binding; a non-reference IUT that exposes /v0/control/
+    can pass v1+multi-experiment by configuring its own
+    base URL via `--control-plane-base-url` in a future amendment).
+    """
+    from conformance.adapters.reference.control_plane_adapter import (
+        ControlPlaneSubprocess,
+    )
+
+    cp = ControlPlaneSubprocess()
+    handle = cp.start()
+    try:
+        yield handle
+    finally:
+        cp.stop()
+
+
+@pytest.fixture
+def control_plane_client(
+    control_plane_handle,  # noqa: ANN001 — ControlPlaneHandle from helper
+) -> Iterator:  # type: ignore[type-arg]
+    """A `ControlPlaneClient` bound to the spawned subprocess."""
+    from eden_control_plane import ControlPlaneClient
+
+    client = ControlPlaneClient(control_plane_handle.base_url)
+    try:
+        yield client
+    finally:
+        client.close()
