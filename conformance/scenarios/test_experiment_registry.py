@@ -10,8 +10,7 @@ active lease; list / read enumeration.
 from __future__ import annotations
 
 import pytest
-from eden_control_plane import ControlPlaneClient
-from eden_storage.errors import AlreadyExists, InvalidPrecondition, NotFound
+from conformance.harness.control_plane_client import ControlPlaneWireClient
 
 pytestmark = pytest.mark.conformance
 
@@ -19,7 +18,7 @@ CONFORMANCE_GROUP = "Experiment registry"
 
 
 def test_register_experiment_idempotent_on_same_uri(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §2.2 — repeat register MUST be idempotent.
 
@@ -27,54 +26,63 @@ def test_register_experiment_idempotent_on_same_uri(
     identical arguments MUST return the existing entry without
     creating a duplicate.
     """
-    a = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
-    b = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
-    assert a.experiment_id == b.experiment_id
-    assert a.created_at == b.created_at
+    r1 = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    assert r1.status_code == 201
+    r2 = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    assert r2.status_code == 201
+    assert r1.json()["created_at"] == r2.json()["created_at"]
 
 
 def test_register_experiment_409_on_differing_uri(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §2.2 — differing config_uri MUST 409.
 
     Per §2.2: idempotent on (experiment_id, config_uri); a second
-    call with a DIFFERENT `config_uri` MUST raise `AlreadyExists`.
+    call with a DIFFERENT `config_uri` MUST raise 409 already-exists.
     """
-    control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
-    with pytest.raises(AlreadyExists):
+    assert (
         control_plane_client.register_experiment(
-            "exp-a", "file:///etc/different.yaml"
-        )
+            "exp-a", "file:///etc/a.yaml"
+        ).status_code
+        == 201
+    )
+    r = control_plane_client.register_experiment(
+        "exp-a", "file:///etc/different.yaml"
+    )
+    assert r.status_code == 409
+    assert r.json()["type"] == "eden://error/already-exists"
 
 
 def test_unregister_blocked_while_running(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §2.2 — unregister gated on terminated state.
 
     Per §2.2: `unregister_experiment` MUST reject with
-    `InvalidPrecondition` when `last_known_state != "terminated"`.
+    invalid-precondition when `last_known_state != "terminated"`.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
-    with pytest.raises(InvalidPrecondition):
-        control_plane_client.unregister_experiment("exp-a")
+    r = control_plane_client.unregister_experiment("exp-a")
+    assert r.status_code == 409
+    assert r.json()["type"] == "eden://error/invalid-precondition"
 
 
 def test_unregister_unknown_raises_not_found(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §2.2 — unknown experiment MUST 404.
 
-    `unregister_experiment` against an unregistered id MUST raise
-    `NotFound`.
+    `unregister_experiment` against an unregistered id MUST return
+    404 not-found.
     """
-    with pytest.raises(NotFound):
-        control_plane_client.unregister_experiment("never-registered")
+    r = control_plane_client.unregister_experiment("never-registered")
+    assert r.status_code == 404
+    assert r.json()["type"] == "eden://error/not-found"
 
 
 def test_list_experiments_enumerates_registry(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §2.2 — list_experiments returns every entry.
 
@@ -84,12 +92,14 @@ def test_list_experiments_enumerates_registry(
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
     control_plane_client.register_experiment("exp-b", "file:///etc/b.yaml")
-    entries = control_plane_client.list_experiments()
-    assert sorted(e.experiment_id for e in entries) == ["exp-a", "exp-b"]
+    r = control_plane_client.list_experiments()
+    assert r.status_code == 200
+    entries = r.json()["experiments"]
+    assert sorted(e["experiment_id"] for e in entries) == ["exp-a", "exp-b"]
 
 
 def test_read_experiment_metadata_returns_one(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §2.2 — read_experiment_metadata returns one entry.
 
@@ -97,8 +107,11 @@ def test_read_experiment_metadata_returns_one(
     registry entry; 404 on unknown.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
-    entry = control_plane_client.read_experiment_metadata("exp-a")
-    assert entry.experiment_id == "exp-a"
-    assert entry.config_uri == "file:///etc/a.yaml"
-    with pytest.raises(NotFound):
-        control_plane_client.read_experiment_metadata("missing")
+    r = control_plane_client.read_experiment_metadata("exp-a")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["experiment_id"] == "exp-a"
+    assert body["config_uri"] == "file:///etc/a.yaml"
+    missing = control_plane_client.read_experiment_metadata("missing")
+    assert missing.status_code == 404
+    assert missing.json()["type"] == "eden://error/not-found"

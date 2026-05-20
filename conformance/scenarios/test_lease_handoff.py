@@ -15,7 +15,7 @@ without the timing dependence.
 from __future__ import annotations
 
 import pytest
-from eden_control_plane import ControlPlaneClient, LeaseNotHeld
+from conformance.harness.control_plane_client import ControlPlaneWireClient
 
 pytestmark = pytest.mark.conformance
 
@@ -23,7 +23,7 @@ CONFORMANCE_GROUP = "Lease hand-off"
 
 
 def test_handoff_via_release_then_acquire(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §4.4 — hand-off makes the old lease unrenewable.
 
@@ -37,14 +37,17 @@ def test_handoff_via_release_then_acquire(
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
     a_lease = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-a"
-    )
+    ).json()
     # Replica A releases (or, in the §5.4 expiry path, lapses).
-    control_plane_client.release_lease(a_lease.lease_id, "uuid-a")
+    control_plane_client.release_lease(a_lease["lease_id"], "uuid-a")
     # Replica B acquires.
-    b_lease = control_plane_client.acquire_lease(
+    b_resp = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-2", "uuid-b"
     )
-    assert b_lease.lease_id != a_lease.lease_id
+    assert b_resp.status_code == 201
+    b_lease = b_resp.json()
+    assert b_lease["lease_id"] != a_lease["lease_id"]
     # Replica A's subsequent renew on its old lease_id MUST fail.
-    with pytest.raises(LeaseNotHeld):
-        control_plane_client.renew_lease(a_lease.lease_id, "uuid-a")
+    r = control_plane_client.renew_lease(a_lease["lease_id"], "uuid-a")
+    assert r.status_code == 410
+    assert r.json()["type"] == "eden://error/lease-not-held"

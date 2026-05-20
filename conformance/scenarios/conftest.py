@@ -102,11 +102,9 @@ def control_plane_handle() -> Iterator:  # type: ignore[type-arg]
     fixture is independent of `iut` / `wire_client`.
 
     Single-tenant per scenario: each test gets a fresh `:memory:`
-    backing store + fresh port. Skipped when the suite is run
-    against a non-reference adapter (the IUT contract is the
-    chapter-7 binding; a non-reference IUT that exposes /v0/control/
-    can pass v1+multi-experiment by configuring its own
-    base URL via `--control-plane-base-url` in a future amendment).
+    backing store + fresh port. The fixture is reference-specific;
+    a future non-reference IUT that exposes /v0/control/ would
+    point at its own base URL via a different fixture pass.
     """
     from conformance.adapters.reference.control_plane_adapter import (
         ControlPlaneSubprocess,
@@ -123,11 +121,22 @@ def control_plane_handle() -> Iterator:  # type: ignore[type-arg]
 @pytest.fixture
 def control_plane_client(
     control_plane_handle,  # noqa: ANN001 — ControlPlaneHandle from helper
+    session_observed_problem_types: set[str],
 ) -> Iterator:  # type: ignore[type-arg]
-    """A `ControlPlaneClient` bound to the spawned subprocess."""
-    from eden_control_plane import ControlPlaneClient
+    """A `ControlPlaneWireClient` bound to the spawned subprocess.
 
-    client = ControlPlaneClient(control_plane_handle.base_url)
+    Thin httpx wrapper from `conformance.harness.control_plane_client`
+    that returns raw `httpx.Response` objects — scenarios assert on
+    status codes + problem+json `type` strings so the suite stays
+    IUT-agnostic per chapter 9 §6 (no Python exception classes from
+    reference packages).
+    """
+    from conformance.harness.control_plane_client import ControlPlaneWireClient
+
+    client = ControlPlaneWireClient(
+        base_url=control_plane_handle.base_url,
+        observed_problem_types=session_observed_problem_types,
+    )
     try:
         yield client
     finally:

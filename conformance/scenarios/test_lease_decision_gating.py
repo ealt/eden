@@ -19,7 +19,7 @@ assertion to the compose smoke.
 from __future__ import annotations
 
 import pytest
-from eden_control_plane import ControlPlaneClient
+from conformance.harness.control_plane_client import ControlPlaneWireClient
 
 pytestmark = pytest.mark.conformance
 
@@ -27,7 +27,7 @@ CONFORMANCE_GROUP = "Lease decision gating"
 
 
 def test_non_holder_observable_via_lease_query(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §5.1 — wire-observable lease ownership.
 
@@ -51,12 +51,12 @@ def test_non_holder_observable_via_lease_query(
     )
     # Replica B observes that it does NOT hold the lease — the §5.1
     # gate the replica MUST self-enforce against.
-    held_by_b = control_plane_client.list_active_leases("auto-orchestrator-b")
-    assert held_by_b == []
+    r_b = control_plane_client.list_active_leases("auto-orchestrator-b")
+    assert r_b.json()["leases"] == []
     # Per `read_experiment_metadata` the holder is replica A.
-    entry = control_plane_client.read_experiment_metadata("exp-a")
-    assert entry.lease is not None
-    assert entry.lease.holder == "auto-orchestrator-a"
+    entry = control_plane_client.read_experiment_metadata("exp-a").json()
+    assert entry["lease"] is not None
+    assert entry["lease"]["holder"] == "auto-orchestrator-a"
 
 
 @pytest.mark.skip(

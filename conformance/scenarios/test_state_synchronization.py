@@ -19,7 +19,7 @@ in-process tests at
 from __future__ import annotations
 
 import pytest
-from eden_control_plane import ControlPlaneClient
+from conformance.harness.control_plane_client import ControlPlaneWireClient
 
 pytestmark = pytest.mark.conformance
 
@@ -27,7 +27,7 @@ CONFORMANCE_GROUP = "State synchronization"
 
 
 def test_register_experiment_starts_running(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §3.2 — fresh registry entry is `running`.
 
@@ -36,10 +36,11 @@ def test_register_experiment_starts_running(
     transitions from the task-store-server. With no poller bound,
     the initial value is observable but no transition is asserted.
     """
-    entry = control_plane_client.register_experiment(
+    r = control_plane_client.register_experiment(
         "exp-a", "file:///etc/a.yaml"
     )
-    assert entry.last_known_state == "running"
+    assert r.status_code == 201
+    assert r.json()["last_known_state"] == "running"
 
 
 @pytest.mark.skip(

@@ -15,7 +15,7 @@ deployment; deferred to the compose smoke.
 from __future__ import annotations
 
 import pytest
-from eden_control_plane import ControlPlaneClient, LeaseHeldByOther
+from conformance.harness.control_plane_client import ControlPlaneWireClient
 
 pytestmark = pytest.mark.conformance
 
@@ -23,7 +23,7 @@ CONFORMANCE_GROUP = "Multi-experiment dispatch"
 
 
 def test_two_experiments_independent_lease_state(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §4.4 — each experiment has its own lease.
 
@@ -36,19 +36,22 @@ def test_two_experiments_independent_lease_state(
     control_plane_client.register_experiment("exp-2", "file:///etc/2.yaml")
     # Same replica can hold both — that's the steady-state for a
     # single-replica deployment.
-    lease_1 = control_plane_client.acquire_lease(
+    r1 = control_plane_client.acquire_lease(
         "exp-1", "auto-orchestrator-x", "uuid-x"
     )
-    lease_2 = control_plane_client.acquire_lease(
+    r2 = control_plane_client.acquire_lease(
         "exp-2", "auto-orchestrator-x", "uuid-x"
     )
-    assert lease_1.experiment_id == "exp-1"
-    assert lease_2.experiment_id == "exp-2"
-    assert lease_1.lease_id != lease_2.lease_id
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    body1, body2 = r1.json(), r2.json()
+    assert body1["experiment_id"] == "exp-1"
+    assert body2["experiment_id"] == "exp-2"
+    assert body1["lease_id"] != body2["lease_id"]
 
 
 def test_per_experiment_isolation_under_contention(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §4.4 — per-experiment lease isolation.
 
@@ -58,17 +61,22 @@ def test_per_experiment_isolation_under_contention(
     """
     control_plane_client.register_experiment("exp-1", "file:///etc/1.yaml")
     control_plane_client.register_experiment("exp-2", "file:///etc/2.yaml")
-    control_plane_client.acquire_lease("exp-1", "auto-orchestrator-a", "uuid-a")
-    control_plane_client.acquire_lease("exp-2", "auto-orchestrator-b", "uuid-b")
-    with pytest.raises(LeaseHeldByOther):
-        control_plane_client.acquire_lease(
-            "exp-1", "auto-orchestrator-b", "uuid-b"
-        )
+    control_plane_client.acquire_lease(
+        "exp-1", "auto-orchestrator-a", "uuid-a"
+    )
+    control_plane_client.acquire_lease(
+        "exp-2", "auto-orchestrator-b", "uuid-b"
+    )
+    r_cross = control_plane_client.acquire_lease(
+        "exp-1", "auto-orchestrator-b", "uuid-b"
+    )
+    assert r_cross.status_code == 409
+    assert r_cross.json()["type"] == "eden://error/lease-held-by-other"
     # Replica B's exp-2 lease unaffected — observable via the
     # `lease.holder` field on read_experiment_metadata.
-    entry_2 = control_plane_client.read_experiment_metadata("exp-2")
-    assert entry_2.lease is not None
-    assert entry_2.lease.holder == "auto-orchestrator-b"
+    entry_2 = control_plane_client.read_experiment_metadata("exp-2").json()
+    assert entry_2["lease"] is not None
+    assert entry_2["lease"]["holder"] == "auto-orchestrator-b"
 
 
 @pytest.mark.skip(

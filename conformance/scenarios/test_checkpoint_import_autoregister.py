@@ -26,7 +26,7 @@ is asserted by the in-process tests on the import endpoint.
 from __future__ import annotations
 
 import pytest
-from eden_control_plane import ControlPlaneClient
+from conformance.harness.control_plane_client import ControlPlaneWireClient
 
 pytestmark = pytest.mark.conformance
 
@@ -34,7 +34,7 @@ CONFORMANCE_GROUP = "Checkpoint import auto-register"
 
 
 def test_explicit_register_after_partial_import(
-    control_plane_client: ControlPlaneClient,
+    control_plane_client: ControlPlaneWireClient,
 ) -> None:
     """spec/v0/11-control-plane.md §7 — operator recovery via register_experiment.
 
@@ -50,13 +50,14 @@ def test_explicit_register_after_partial_import(
     # Simulate the partial-success state: experiment exists in the
     # task-store-server (out-of-band; not modeled here) but NOT in
     # the control plane. The operator's recovery call:
-    entry = control_plane_client.register_experiment(
+    r = control_plane_client.register_experiment(
         "exp-imported", "file:///etc/imported.yaml"
     )
-    assert entry.experiment_id == "exp-imported"
+    assert r.status_code == 201
+    assert r.json()["experiment_id"] == "exp-imported"
     # And the post-recovery state is visible to list_experiments.
-    listed = control_plane_client.list_experiments()
-    assert "exp-imported" in [e.experiment_id for e in listed]
+    listed = control_plane_client.list_experiments().json()["experiments"]
+    assert "exp-imported" in [e["experiment_id"] for e in listed]
 
 
 @pytest.mark.skip(
