@@ -12,6 +12,7 @@ members = [
     "conformance",
     "reference/packages/eden-checkpoint",
     "reference/packages/eden-contracts",
+    "reference/packages/eden-control-plane",
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
     "reference/packages/eden-storage",
@@ -29,6 +30,7 @@ members = [
 eden-checkpoint = { workspace = true }
 eden-conformance = { workspace = true }
 eden-contracts = { workspace = true }
+eden-control-plane = { workspace = true }
 eden-dispatch = { workspace = true }
 eden-evaluator-host = { workspace = true }
 eden-git = { workspace = true }
@@ -52,6 +54,7 @@ dev = [
     "eden-checkpoint",
     "eden-conformance",
     "eden-contracts",
+    "eden-control-plane",
     "eden-dispatch",
     "eden-evaluator-host",
     "eden-git",
@@ -104,6 +107,7 @@ convention = "google"
 include = [
     "reference/packages/eden-checkpoint",
     "reference/packages/eden-contracts",
+    "reference/packages/eden-control-plane",
     "reference/packages/eden-dispatch",
     "reference/packages/eden-git",
     "reference/packages/eden-storage",
@@ -125,6 +129,7 @@ reportMissingTypeStubs = "none"
 testpaths = [
     "reference/packages/eden-checkpoint/tests",
     "reference/packages/eden-contracts/tests",
+    "reference/packages/eden-control-plane/tests",
     "reference/packages/eden-dispatch/tests",
     "reference/packages/eden-git/tests",
     "reference/packages/eden-storage/tests",

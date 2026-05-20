@@ -18,7 +18,9 @@
     "holder": {
       "type": "string",
       "minLength": 1,
-      "description": "The deployment-scoped worker_id of the orchestrator replica holding the lease (spec/v0/11-control-plane.md §6). Distinct from any per-experiment worker_id."
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "description": "The deployment-scoped worker_id of the orchestrator replica holding the lease (spec/v0/11-control-plane.md §6). Matches the chapter 02 §6.1 identifier grammar. Distinct from any per-experiment worker_id."
     },
     "holder_instance": {
       "type": "string",

@@ -1,0 +1,21 @@
+[project]
+name = "eden-control-plane"
+version = "0.0.1"
+description = "Pydantic models + HTTP client for the EDEN control plane (spec/v0/11-control-plane.md)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "eden-contracts",
+    "eden-wire",
+    "httpx>=0.27,<1",
+    "pydantic>=2.9,<3",
+    "rfc3986-validator>=0.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eden_control_plane"]
