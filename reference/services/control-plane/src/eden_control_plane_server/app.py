@@ -240,8 +240,20 @@ def make_app(
         request: Request, body: RegisterExperimentRequest = Body(...)
     ) -> Response:
         _enforce_admin(request)
+        # Codex round 6 MAJOR: chapter 07 §15 (and chapter 11 §2.2)
+        # requires 201 on first registration vs 200 on idempotent
+        # re-registration. The store's `register_experiment` is
+        # idempotent at the row level but returns the entry either
+        # way; detect "did the row already exist" via a probe BEFORE
+        # the call so we can pick the wire status correctly. Probe
+        # via try/except to keep the create path single-statement.
+        try:
+            store.read_experiment_metadata(body.experiment_id)
+            existed = True
+        except NotFound:
+            existed = False
         entry = store.register_experiment(body.experiment_id, body.config_uri)
-        return _ok(entry, status=201)
+        return _registry_response(entry, status=200 if existed else 201)
 
     @app.delete(f"{base}/experiments/{{experiment_id}}")
     def unregister_experiment(
@@ -261,7 +273,7 @@ def make_app(
         # injection — same `warnings` field on each entry.
         out: list[dict[str, Any]] = []
         for entry in entries:
-            payload = _dump(entry)
+            payload = _dump_registry_entry(entry)
             if state_poller is not None:
                 warnings = state_poller.warnings.warnings_for(entry.experiment_id)
                 if warnings:
@@ -275,15 +287,14 @@ def make_app(
     ) -> Response:
         _get_principal(request)
         entry = store.read_experiment_metadata(experiment_id)
+        body = _dump_registry_entry(entry)
         # §3.4: inject stale-state warning when the poller's
         # consecutive-failure counter has crossed the threshold.
         if state_poller is not None:
             warnings = state_poller.warnings.warnings_for(experiment_id)
             if warnings:
-                body = entry.model_dump(mode="json", exclude_none=True)
                 body["warnings"] = list(warnings)
-                return JSONResponse(content=body)
-        return _ok(entry)
+        return JSONResponse(content=body)
 
     # ------------------------------------------------------------------
     # §15.2 Lease operations
@@ -524,6 +535,31 @@ def make_app(
 def _dump(model: Any) -> dict[str, Any]:
     """Serialize a Pydantic model via JSON-mode dump excluding None fields."""
     return model.model_dump(mode="json", exclude_none=True)
+
+
+def _dump_registry_entry(entry: Any) -> dict[str, Any]:
+    """Serialize a `RegisteredExperiment` with explicit `lease: null`.
+
+    Codex round 6 BLOCKER: the chapter 11 §4.4 amended rule says
+    `RegisteredExperiment.lease` MUST be `null` when no active lease
+    exists. The default `exclude_none=True` projection omits the key
+    entirely, which is a different wire shape from "present and
+    null" — third-party clients that key-check on `lease` (rather
+    than `.get("lease")`) would behave differently between the two
+    shapes. Keep `lease` always present; only drop the optional
+    `warnings` field when absent.
+    """
+    body = entry.model_dump(mode="json", exclude_none=True)
+    if "lease" not in body:
+        body["lease"] = None
+    return body
+
+
+def _registry_response(entry: Any, *, status: int = 200) -> JSONResponse:
+    """Build a JSON response from a `RegisteredExperiment`."""
+    return JSONResponse(
+        content=_dump_registry_entry(entry), status_code=status
+    )
 
 
 def _ok(model: Any, *, status: int = 200) -> JSONResponse:

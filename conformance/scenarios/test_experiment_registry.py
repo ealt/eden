@@ -24,12 +24,14 @@ def test_register_experiment_idempotent_on_same_uri(
 
     A second `register_experiment(experiment_id, config_uri)` with
     identical arguments MUST return the existing entry without
-    creating a duplicate.
+    creating a duplicate. Per `spec/v0/07-wire-protocol.md` §15
+    the wire status MUST be 201 on first create, 200 on idempotent
+    replay.
     """
     r1 = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
     assert r1.status_code == 201
     r2 = control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
-    assert r2.status_code == 201
+    assert r2.status_code == 200
     assert r1.json()["created_at"] == r2.json()["created_at"]
 
 

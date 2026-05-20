@@ -54,8 +54,10 @@ def test_register_experiment_idempotent_same_uri(
     payload = {"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"}
     r1 = client_noauth.post("/v0/control/experiments", json=payload)
     r2 = client_noauth.post("/v0/control/experiments", json=payload)
+    # Codex round 6 MAJOR: per chapter 07 §15 / chapter 11 §2.2,
+    # first registration → 201; idempotent re-registration → 200.
     assert r1.status_code == 201
-    assert r2.status_code == 201
+    assert r2.status_code == 200
     assert r1.json()["created_at"] == r2.json()["created_at"]
 
 

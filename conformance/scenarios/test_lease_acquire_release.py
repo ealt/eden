@@ -102,16 +102,20 @@ def test_released_lease_disappears_from_registry_entry(
     ).json()
     # Pre-release: registry entry surfaces the active lease.
     pre = control_plane_client.read_experiment_metadata("exp-a").json()
-    assert pre.get("lease") is not None
+    assert pre["lease"] is not None
     assert pre["lease"]["lease_id"] == lease["lease_id"]
     # Release.
     control_plane_client.release_lease(lease["lease_id"], "uuid-1")
-    # Post-release: lease field MUST be absent OR null (the wire
-    # contract uses exclude_none, so `lease=None` surfaces as the
-    # key being omitted entirely).
+    # Post-release: the chapter 11 §4.4 amended rule says `lease`
+    # MUST be `null` when no active lease — the field MUST be
+    # present, with value `null`. Round-6 BLOCKER tightened this
+    # from "absent OR null" to "present and null" so third-party
+    # clients that key-check on `lease` behave identically.
     post = control_plane_client.read_experiment_metadata("exp-a").json()
-    assert post.get("lease") is None
+    assert "lease" in post
+    assert post["lease"] is None
     # And the same posture via list_experiments.
     listed = control_plane_client.list_experiments().json()
     entry = next(e for e in listed["experiments"] if e["experiment_id"] == "exp-a")
-    assert entry.get("lease") is None
+    assert "lease" in entry
+    assert entry["lease"] is None
