@@ -503,31 +503,62 @@ def _run_multi_experiment(
     admin_token = _resolve_control_plane_admin_token(args)
     credentials_dir = resolve_credentials_dir(args)
 
-    # B1: bootstrap the deployment-scoped worker credential. First
-    # run requires the admin token; subsequent restarts re-use the
-    # persisted token at <credentials-dir>/control-plane/<W>.token.
-    cp_credential = bootstrap_control_plane_worker(
-        control_plane_url=args.control_plane_url,
-        worker_id=args.worker_id,
-        credentials_dir=credentials_dir,
-        admin_token=admin_token,
-        labels={"role": "orchestrator"},
+    # B1 (codex round 1) + NEW-1 (codex round 2): bootstrap the
+    # deployment-scoped worker credential when an admin token is
+    # available OR a previously-persisted token exists. The
+    # auth-disabled posture (no admin token AND no persisted
+    # credential — typical for test / in-process / local-dev
+    # deployments where the control-plane server runs with
+    # `admin_token=None`) skips the bootstrap entirely and uses
+    # an unauthenticated ControlPlaneClient. The control plane's
+    # auth-disabled posture does not gate any lease op, so this
+    # path works end-to-end without bootstrap; production
+    # deployments always have an admin token so they take the
+    # bootstrap branch.
+    from .control_plane_bootstrap import (
+        credential_path as _cp_credential_path,
     )
-    # Join the deployment-scoped `orchestrators` group so the
-    # chapter 07 §15.2 lease ops admit this worker. Admin-gated;
-    # skipped (with warning) when admin_token is unavailable.
-    try:
-        ensure_orchestrators_group_membership(
+    from .control_plane_bootstrap import read_token as _cp_read_token
+
+    persisted_token = _cp_read_token(
+        _cp_credential_path(credentials_dir, args.worker_id)
+    )
+    cp_bearer: str | None
+    if admin_token is not None or persisted_token is not None:
+        cp_credential = bootstrap_control_plane_worker(
             control_plane_url=args.control_plane_url,
             worker_id=args.worker_id,
+            credentials_dir=credentials_dir,
             admin_token=admin_token,
+            labels={"role": "orchestrator"},
         )
-    except Exception:  # noqa: BLE001 — defensive at startup
-        log.exception("ensure_control_plane_orchestrators_membership_failed")
+        cp_bearer = cp_credential.bearer
+        # Join the deployment-scoped `orchestrators` group so the
+        # chapter 07 §15.2 lease ops admit this worker. Admin-gated;
+        # skipped (with warning) when admin_token is unavailable.
+        try:
+            ensure_orchestrators_group_membership(
+                control_plane_url=args.control_plane_url,
+                worker_id=args.worker_id,
+                admin_token=admin_token,
+            )
+        except Exception:  # noqa: BLE001 — defensive at startup
+            log.exception(
+                "ensure_control_plane_orchestrators_membership_failed"
+            )
+    else:
+        log.warning(
+            "control_plane_bootstrap_skipped_auth_disabled",
+            reason=(
+                "no admin token and no persisted credential; running "
+                "unauthenticated. Set --control-plane-admin-token or "
+                "--admin-token to enable bootstrap."
+            ),
+            worker_id=args.worker_id,
+        )
+        cp_bearer = None
 
-    cp_client = ControlPlaneClient(
-        args.control_plane_url, bearer=cp_credential.bearer
-    )
+    cp_client = ControlPlaneClient(args.control_plane_url, bearer=cp_bearer)
 
     manager = LeaseManager(
         cp_client,
@@ -576,12 +607,22 @@ def _run_multi_experiment(
     def _resolve_per_experiment_bearer(experiment_id: str) -> str | None:
         if experiment_id in per_experiment_cache:
             return per_experiment_cache[experiment_id]
+        # B2 (codex round 2): `bootstrap_worker_credential` persists
+        # to `<credentials_dir>/<worker_id>.token` — a single path
+        # regardless of experiment_id. Without per-experiment
+        # isolation, bootstrapping experiment B overwrites A's
+        # task-store token on disk. Use a per-experiment subdir so
+        # each experiment_id gets its own credential file:
+        # `<credentials_dir>/task-store/<experiment_id>/<worker_id>.token`.
+        per_experiment_credentials_dir = (
+            credentials_dir / "task-store" / experiment_id
+        )
         try:
             credential = bootstrap_worker_credential(
                 base_url=args.task_store_url,
                 experiment_id=experiment_id,
                 worker_id=args.worker_id,
-                credentials_dir=credentials_dir,
+                credentials_dir=per_experiment_credentials_dir,
                 admin_token=task_store_admin_token,
                 labels={"role": "orchestrator"},
             )

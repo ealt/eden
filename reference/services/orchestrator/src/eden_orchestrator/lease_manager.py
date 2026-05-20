@@ -154,8 +154,27 @@ class LeaseManager:
         return sorted(self._held.keys())
 
     def is_held(self, experiment_id: str) -> bool:
-        """Return True iff the manager currently holds a lease for `experiment_id`."""
-        return experiment_id in self._held
+        """Return True iff the manager holds an ACTIVE lease for `experiment_id`.
+
+        Active = present in the held-set AND wall-clock `expires_at`
+        has not passed. The per-iteration recheck in
+        `multi_loop._run_one_experiment` calls this immediately
+        before driving a per-experiment iteration; the expiry-aware
+        path is load-bearing under §5.1 — if iteration N-1 blocked
+        long enough that lease N's `expires_at` is now in the past,
+        another replica may have already acquired it, and running
+        N's iteration would violate the chapter 11 §5.1 lease-
+        ownership invariant.
+        """
+        snap = self._held.get(experiment_id)
+        if snap is None:
+            return False
+        try:
+            expires_at = _parse_lease_timestamp(snap.lease.expires_at)
+        except ValueError:
+            # Defensive: corrupt timestamp → treat as not-held.
+            return False
+        return expires_at >= self._now()
 
     def lease_for(self, experiment_id: str) -> ExperimentLease | None:
         """Return the lease for `experiment_id` if held, else None."""
@@ -390,6 +409,20 @@ class LeaseManager:
     def _force_partition_marker(self, when: datetime) -> None:
         """Test helper: pin `last_successful_control_plane_call`."""
         self._last_successful_control_plane_call = when
+
+
+def _parse_lease_timestamp(text: str) -> datetime:
+    """Parse a chapter 11 §4.2 lease timestamp (RFC 3339 UTC with trailing Z).
+
+    `ExperimentLease.expires_at` is a string in the
+    `YYYY-MM-DDThh:mm:ss[.fff]Z` shape (mirrors
+    `spec/v0/schemas/lease.schema.json`'s pattern). Python's
+    `datetime.fromisoformat` accepts that shape directly in 3.11+;
+    the wrapper exists so callers raise a typed `ValueError` on
+    malformed input rather than dealing with `fromisoformat`'s
+    error vocabulary.
+    """
+    return datetime.fromisoformat(text)
 
 
 def utcnow() -> datetime:

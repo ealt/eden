@@ -117,6 +117,7 @@ def control_plane_base_url(iut: IutHandle) -> str:
 
 @pytest.fixture
 def control_plane_client(
+    iut: IutHandle,
     control_plane_base_url: str,
     session_observed_problem_types: set[str],
 ) -> Iterator:  # type: ignore[type-arg]
@@ -127,11 +128,17 @@ def control_plane_client(
     status codes + problem+json `type` strings so the suite stays
     IUT-agnostic per chapter 9 §6 (no Python exception classes from
     reference packages).
+
+    Propagates `IutHandle.extra_headers` so auth-enabled non-reference
+    IUTs that surface a session bearer / custom auth header through
+    that field can drive the chapter-11 surface under the same auth
+    posture as the chapter-2/4/5/7/8 scenarios.
     """
     from conformance.harness.control_plane_client import ControlPlaneWireClient
 
     client = ControlPlaneWireClient(
         base_url=control_plane_base_url,
+        extra_headers=iut.extra_headers,
         observed_problem_types=session_observed_problem_types,
     )
     try:

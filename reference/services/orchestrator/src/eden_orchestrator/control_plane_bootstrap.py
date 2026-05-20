@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -57,22 +58,44 @@ class ControlPlaneCredential:
         return f"{self.worker_id}:{self.token}"
 
 
-def _credential_path(credentials_dir: Path, worker_id: str) -> Path:
+def credential_path(credentials_dir: Path, worker_id: str) -> Path:
+    """Return the on-disk path for the deployment-scoped credential."""
     return credentials_dir / "control-plane" / f"{worker_id}.token"
 
 
-def _read_token(path: Path) -> str | None:
+def read_token(path: Path) -> str | None:
+    """Return the persisted token at `path`, or None when absent."""
     try:
         return path.read_text(encoding="utf-8").strip() or None
     except FileNotFoundError:
         return None
 
 
+# Internal aliases retained for backward compat with existing call sites.
+_credential_path = credential_path
+_read_token = read_token
+
+
 def _write_token(path: Path, token: str) -> None:
+    """Persist `token` to `path` atomically with mode 0600.
+
+    Mirrors `eden_service_common.auth._write_token`: write to a
+    `<path>.<random>.tmp` file then `os.replace` so a crash
+    mid-write doesn't leave a half-written file. Random suffix is
+    load-bearing under concurrent writers.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token + "\n", encoding="utf-8")
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
+    suffix = secrets.token_hex(8)
+    tmp = path.with_suffix(f"{path.suffix}.{suffix}.tmp")
+    try:
+        tmp.write_text(token + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        os.replace(tmp, path)
+    finally:
+        # Best-effort cleanup if the replace never ran (write_text
+        # raised, chmod raised). The path may already be gone.
+        with contextlib.suppress(FileNotFoundError):
+            tmp.unlink()
 
 
 @contextmanager

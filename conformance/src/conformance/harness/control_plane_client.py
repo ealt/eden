@@ -23,6 +23,7 @@ class ControlPlaneWireClient:
         *,
         base_url: str,
         bearer: str | None = None,
+        extra_headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         observed_problem_types: set[str] | None = None,
     ) -> None:
@@ -32,6 +33,14 @@ class ControlPlaneWireClient:
         }
         if bearer is not None:
             headers["Authorization"] = f"Bearer {bearer}"
+        if extra_headers:
+            # `extra_headers` comes from the IUT adapter's
+            # `IutHandle.extra_headers` — auth-enabled IUTs use it
+            # to pass session bearers / custom auth headers. Merge
+            # AFTER the bearer so a header-based Authorization in
+            # `extra_headers` takes precedence (matches WireClient's
+            # auth-propagation posture).
+            headers.update(extra_headers)
         self.base_url = base_url.rstrip("/")
         self._base = f"{self.base_url}/v0/control"
         self.observed_problem_types: set[str] = (

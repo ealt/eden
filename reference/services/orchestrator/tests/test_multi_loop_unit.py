@@ -39,14 +39,23 @@ def _lease_payload(
     lease_id: str = "lease-001",
     holder_instance: str = "uuid-aaaa",
 ) -> dict[str, Any]:
+    # Use a wall-clock-future expires_at so the codex-round-2-introduced
+    # expiry-aware `LeaseManager.is_held()` treats the seeded lease as
+    # active. The fixed-timestamp shape from earlier waves would now
+    # mark every seeded lease as expired, masking the iteration logic
+    # under test.
+    from datetime import UTC, datetime, timedelta
+
+    acquired = datetime.now(UTC)
+    expires = acquired + timedelta(seconds=300)
     return {
         "lease_id": lease_id,
         "experiment_id": experiment_id,
         "holder": WORKER_ID,
         "holder_instance": holder_instance,
-        "acquired_at": "2026-05-19T12:00:00.000Z",
-        "expires_at": "2026-05-19T12:00:30.000Z",
-        "renewed_at": "2026-05-19T12:00:00.000Z",
+        "acquired_at": acquired.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "renewed_at": acquired.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
     }
 
 
