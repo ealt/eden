@@ -577,6 +577,7 @@ version = "0.0.1"
 source = { editable = "reference/services/orchestrator" }
 dependencies = [
     { name = "eden-contracts" },
+    { name = "eden-control-plane" },
     { name = "eden-dispatch" },
     { name = "eden-git" },
     { name = "eden-service-common" },
@@ -587,6 +588,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
+    { name = "eden-control-plane", editable = "reference/packages/eden-control-plane" },
     { name = "eden-dispatch", editable = "reference/packages/eden-dispatch" },
     { name = "eden-git", editable = "reference/packages/eden-git" },
     { name = "eden-service-common", editable = "reference/services/_common" },

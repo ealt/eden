@@ -6,6 +6,7 @@ import argparse
 import importlib
 import re
 
+from eden_control_plane import ControlPlaneClient
 from eden_dispatch import IdeationPolicy, TerminationPolicy
 from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
@@ -21,7 +22,12 @@ from eden_service_common import (
 )
 from eden_wire import StoreClient
 
+from .lease_manager import DuplicateWorkerInstance, LeaseManager
 from .loop import integrator_identity, run_orchestrator_loop
+from .multi_loop import (
+    make_runtime_factory,
+    run_multi_experiment_loop,
+)
 
 _AUTHOR_RE = re.compile(r"^(?P<name>.+?)\s+<(?P<email>[^>]+)>$")
 
@@ -181,6 +187,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=30.0,
         help="Max seconds to wait for the task-store to become ready.",
     )
+    parser.add_argument(
+        "--control-plane-url",
+        default=None,
+        help=(
+            "Optional control-plane base URL (e.g. 'http://control-plane:8081'). "
+            "When set, the orchestrator subscribes to the chapter-11 §2 "
+            "experiment registry and runs the §5 multi-experiment loop: "
+            "acquires/renews a lease per registered experiment, drives "
+            "decisions only for experiments whose lease this replica "
+            "holds, and applies the §5.3 partition self-fence. When "
+            "unset, the orchestrator falls back to the single-experiment "
+            "mode (requires --experiment-id) for backward compat with "
+            "pre-12c Compose deployments."
+        ),
+    )
+    parser.add_argument(
+        "--lease-duration-seconds",
+        type=int,
+        default=30,
+        help=(
+            "Lease duration in seconds (chapter 11 §4.3 default: 30). "
+            "Only meaningful when --control-plane-url is set."
+        ),
+    )
+    parser.add_argument(
+        "--control-plane-admin-token",
+        default=None,
+        help=(
+            "Optional admin token for control-plane bootstrap "
+            "(deployment-scoped --worker-id registration). Defaults to "
+            "$EDEN_CONTROL_PLANE_ADMIN_TOKEN or, when that is unset, "
+            "the per-experiment admin token (which the deployment MAY "
+            "share with the control plane). When neither is available, "
+            "the orchestrator skips its own deployment-scoped "
+            "registration and assumes setup-experiment seeded the "
+            "registry."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -298,13 +342,50 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging(
         service="orchestrator",
-        experiment_id=args.experiment_id,
+        experiment_id=args.experiment_id or "<multi>",
         level=parse_log_level(args.log_level),
     )
     log = get_logger(__name__)
 
     stop = StopFlag()
     install_stop_handlers(stop)
+
+    ideation_policy = _resolve_ideation_policy(args.ideation_policy)
+    termination_policy = _resolve_termination_policy(args.termination_policy)
+    admin_token = resolve_admin_token(args)
+
+    if args.control_plane_url is not None:
+        return _run_multi_experiment(
+            args=args,
+            ideation_policy=ideation_policy,
+            termination_policy=termination_policy,
+            stop=stop,
+            log=log,
+        )
+    return _run_single_experiment(
+        args=args,
+        ideation_policy=ideation_policy,
+        termination_policy=termination_policy,
+        admin_token=admin_token,
+        stop=stop,
+        log=log,
+    )
+
+
+def _run_single_experiment(
+    *,
+    args,  # noqa: ANN001 — argparse Namespace
+    ideation_policy: IdeationPolicy,
+    termination_policy: TerminationPolicy,
+    admin_token: str | None,
+    stop: StopFlag,
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> int:
+    """Pre-12c single-experiment driver: one task-store, one experiment loop."""
+    if not args.experiment_id:
+        raise SystemExit(
+            "--experiment-id is required when --control-plane-url is not set"
+        )
 
     log.info("waiting_for_task_store", url=args.task_store_url)
     wait_for_task_store(
@@ -317,11 +398,9 @@ def main(argv: list[str] | None = None) -> int:
         args, worker_id=args.worker_id, labels={"role": "orchestrator"}
     )
 
-    ideation_policy = _resolve_ideation_policy(args.ideation_policy)
-    termination_policy = _resolve_termination_policy(args.termination_policy)
-    admin_token = resolve_admin_token(args)
     log.info(
         "starting",
+        mode="single-experiment",
         ideation_policy=args.ideation_policy,
         termination_policy=args.termination_policy,
         repo=args.repo_path,
@@ -389,6 +468,138 @@ def main(argv: list[str] | None = None) -> int:
         )
     log.info("orchestrator exited")
     return 0
+
+
+def _run_multi_experiment(
+    *,
+    args,  # noqa: ANN001 — argparse Namespace
+    ideation_policy: IdeationPolicy,
+    termination_policy: TerminationPolicy,
+    stop: StopFlag,
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> int:
+    """Chapter 11 §5 multi-experiment driver.
+
+    Subscribes to the control plane, runs the §5 loop:
+      1. §5.2 startup duplicate-`worker_id` probe.
+      2. Acquire/renew leases via `LeaseManager`.
+      3. Per-experiment iteration via the `multi_loop` driver.
+      4. On shutdown: release all leases (§5.5 final ordering;
+         per-experiment drain release happens during the loop body
+         when each experiment's drain completes).
+
+    The orchestrator does NOT pre-register itself against the
+    deployment-scoped registry — `setup-experiment.sh` (wave 7) seeds
+    that. When the lease ops 403 because the worker is not registered,
+    the manager logs and skips — the operator's recovery is
+    out-of-band.
+    """
+    cp_bearer = _resolve_control_plane_bearer(args)
+    cp_client = ControlPlaneClient(args.control_plane_url, bearer=cp_bearer)
+
+    manager = LeaseManager(
+        cp_client,
+        worker_id=args.worker_id,
+        lease_duration_seconds=args.lease_duration_seconds,
+    )
+    log.info(
+        "starting",
+        mode="multi-experiment",
+        control_plane_url=args.control_plane_url,
+        worker_id=args.worker_id,
+        holder_instance=manager.holder_instance,
+        lease_duration_seconds=args.lease_duration_seconds,
+    )
+    try:
+        manager.startup_probe()
+    except DuplicateWorkerInstance as exc:
+        log.error("startup_duplicate_worker_id", error=str(exc))
+        return 2
+
+    # Single bare-repo deployment: the integrator binds once at startup
+    # and is shared across all per-experiment runtimes. Per chapter 11
+    # design decision 11, v0 has one task-store-server (and one
+    # canonical bare repo) deployment-wide; deployments that need
+    # per-experiment repos will need a different `build_integrator`
+    # closure.
+    repo = _ensure_repo(
+        log=log,
+        repo_path=args.repo_path,
+        gitea_url=args.gitea_url,
+        credential_helper=args.credential_helper,
+    )
+    author = _parse_author(args.integrator_author)
+
+    def _build_integrator(_experiment_id: str, store) -> Integrator:  # noqa: ANN001
+        return Integrator(store=store, repo=repo, author=author)
+
+    worker_bearer = resolve_worker_bearer(
+        args, worker_id=args.worker_id, labels={"role": "orchestrator"}
+    )
+    factory = make_runtime_factory(
+        task_store_url=args.task_store_url,
+        worker_bearer=worker_bearer,
+        build_integrator=_build_integrator,
+        ideation_task_prefix=args.ideation_task_prefix,
+        execution_task_prefix=args.execution_task_prefix,
+        evaluation_task_prefix=args.evaluation_task_prefix,
+    )
+
+    try:
+        run_multi_experiment_loop(
+            manager=manager,
+            factory=factory,
+            terminated_by=args.worker_id,
+            ideation_policy=ideation_policy,
+            termination_policy=termination_policy,
+            poll_interval=args.poll_interval,
+            stop=stop,
+        )
+    finally:
+        # §5.5: release all held leases as the final shutdown step.
+        # The per-experiment drain release happens DURING the loop
+        # body when each experiment's drain completes; this catches
+        # any leases that were still active at shutdown.
+        try:
+            manager.release_all()
+        except Exception:  # noqa: BLE001 — best-effort
+            log.exception("manager_release_all_failed")
+        cp_client.close()
+
+    log.info("orchestrator exited")
+    return 0
+
+
+def _resolve_control_plane_bearer(args) -> str | None:  # noqa: ANN001
+    """Resolve the bearer the orchestrator uses against the control plane.
+
+    Priority:
+      1. `--control-plane-admin-token` flag (or
+         `$EDEN_CONTROL_PLANE_ADMIN_TOKEN` env var).
+      2. `--admin-token` (the deployment-wide admin token shared with
+         the task-store-server). Many deployments will share a single
+         admin secret across both services; this fallback lets them
+         pass `--admin-token` once.
+      3. `None` — auth-disabled posture (test / in-process only).
+
+    Returns the bearer in `<principal>:<secret>` form per
+    `07-wire-protocol.md` §13.1. The orchestrator uses the admin
+    principal for control-plane ops because the deployment-scoped
+    worker registration is itself admin-gated. A future amendment
+    MAY surface a worker bearer once the orchestrator has registered
+    itself; v0 stays admin-gated to avoid a chicken-and-egg.
+    """
+    import os
+
+    token = (
+        args.control_plane_admin_token
+        or os.environ.get("EDEN_CONTROL_PLANE_ADMIN_TOKEN")
+    )
+    if not token:
+        token = resolve_admin_token(args)
+    if not token:
+        return None
+    return f"admin:{token}"
 
 
 def _ensure_orchestrators_membership(
