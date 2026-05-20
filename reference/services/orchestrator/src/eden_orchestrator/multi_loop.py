@@ -129,10 +129,20 @@ def run_multi_experiment_loop(
                 try:
                     runtime = factory(experiment_id)
                 except Exception:  # noqa: BLE001 — config / wire setup
+                    # Codex round 4 MAJOR: factory failure means we
+                    # cannot do task-store work for this experiment
+                    # this iteration (typically: per-experiment
+                    # credential bootstrap failed, store-side config
+                    # uri unreachable, etc.). Holding the lease
+                    # through renew cadence would blackhole the
+                    # experiment until lease expiry; release it so
+                    # another replica can attempt. The next refresh
+                    # MAY re-acquire if the transient cleared.
                     log.exception(
                         "per_experiment_runtime_setup_failed",
                         experiment_id=experiment_id,
                     )
+                    manager.release_for(experiment_id)
                     continue
                 runtimes[experiment_id] = runtime
             try:

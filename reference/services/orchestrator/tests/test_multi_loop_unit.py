@@ -446,3 +446,61 @@ def test_loop_skips_experiment_we_dont_hold_lease_for(
     assert factory_calls == []
     assert patched_iteration == []
     assert manager.held_experiments() == []
+
+
+def test_factory_failure_releases_lease(
+    patched_iteration: list[FakeStore],
+) -> None:
+    """Codex round 4 MAJOR 1: factory failure → release lease, not blackhole.
+
+    When the per-experiment runtime factory raises (typically: the
+    per-experiment task-store credential bootstrap failed), the
+    orchestrator MUST release the lease so another replica can
+    attempt — NOT silently hold the lease through the renew cadence
+    while being unable to do any task-store work.
+    """
+    release_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v0/control/experiments" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"experiments": [_registry_payload("exp-1")]},
+            )
+        if request.method == "POST" and path.endswith("/leases"):
+            return httpx.Response(
+                201, json=_lease_payload(experiment_id="exp-1")
+            )
+        if request.method == "POST" and "/release" in path:
+            release_calls.append(path)
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"type": "eden://error/not-found"})
+
+    transport = httpx.MockTransport(handler)
+    inner = httpx.Client(transport=transport, base_url=BASE_URL)
+    cp = ControlPlaneClient(BASE_URL, bearer="admin:T", client=inner)
+    manager = LeaseManager(
+        cp, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
+    )
+
+    def factory(_experiment_id: str) -> ExperimentRuntime:
+        raise RuntimeError("per-experiment bootstrap failed")
+
+    stop = _stop_after_n_iterations(1)
+
+    run_multi_experiment_loop(
+        manager=manager,
+        factory=factory,
+        terminated_by=WORKER_ID,
+        ideation_policy=lambda *_a, **_kw: 0,
+        termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
+        poll_interval=0.0,
+        stop=stop,
+    )
+
+    # The lease was released (NOT held to expiry) AND not added to
+    # the drained-terminated skip set.
+    assert manager.held_experiments() == []
+    assert "exp-1" not in manager.drained_terminated()
+    assert len(release_calls) == 1

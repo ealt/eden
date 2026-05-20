@@ -378,6 +378,40 @@ class LeaseManager:
             )
 
     # ------------------------------------------------------------------
+    # Per-iteration release (chapter 11 §5.1 — bounded blackhole)
+    # ------------------------------------------------------------------
+
+    def release_for(self, experiment_id: str) -> None:
+        """Release `experiment_id`'s lease without marking it drained.
+
+        Codex round 4 MAJOR. Distinct from `mark_drained_terminated`:
+        this path is for cases where the orchestrator currently holds
+        a lease but discovered it cannot actually do task-store work
+        for the experiment (e.g. per-experiment credential bootstrap
+        failed in `multi_loop.run_multi_experiment_loop`'s factory
+        call). Holding the lease through the renew cadence would
+        blackhole the experiment until lease expiry; releasing it
+        immediately lets another replica attempt.
+
+        The experiment is NOT added to `_drained_terminated`, so the
+        next `refresh()` MAY re-acquire — by then the transient
+        failure may be resolved (operator dropped a fresh credential,
+        admin token came online, etc.). Transport / lease errors
+        during release are logged but not re-raised.
+        """
+        snap = self._held.pop(experiment_id, None)
+        if snap is None:
+            return
+        try:
+            self._client.release_lease(snap.lease_id, self._holder_instance)
+        except Exception:  # noqa: BLE001 — best-effort
+            log.warning(
+                "release_for_failed",
+                experiment_id=experiment_id,
+                lease_id=snap.lease_id,
+            )
+
+    # ------------------------------------------------------------------
     # Shutdown (chapter 11 §5.5 second half — graceful release)
     # ------------------------------------------------------------------
 

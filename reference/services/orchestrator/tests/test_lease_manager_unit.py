@@ -461,6 +461,81 @@ def test_mark_drained_terminated_tolerates_release_failure() -> None:
     assert EXPERIMENT in manager.drained_terminated()
 
 
+def test_release_for_releases_without_marking_drained() -> None:
+    """Codex round 4 MAJOR: release_for releases but does NOT skip re-acquire.
+
+    Distinct from `mark_drained_terminated`: the experiment is dropped
+    from the held set + the lease is released, but the
+    `_drained_terminated` skip set is left untouched so the next
+    `refresh()` MAY re-acquire (e.g. once a transient per-experiment
+    bootstrap failure clears).
+    """
+    recorder = _RouteRecorder()
+    recorder.on(
+        "POST",
+        "/v0/control/leases/lease-001/release",
+        httpx.Response(200, json={}),
+    )
+    client = _make_client(recorder)
+    manager = LeaseManager(
+        client, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
+    )
+    from eden_control_plane import ExperimentLease
+    from eden_orchestrator.lease_manager import LeaseSnapshot
+
+    manager._held[EXPERIMENT] = LeaseSnapshot(  # noqa: SLF001
+        lease=ExperimentLease.model_validate(_lease_payload()),
+    )
+
+    manager.release_for(EXPERIMENT)
+
+    assert manager.held_experiments() == []
+    # Crucial difference vs mark_drained_terminated: NOT in skip set.
+    assert EXPERIMENT not in manager.drained_terminated()
+    release_calls = [
+        (method, path)
+        for method, path in recorder.calls
+        if "/release" in path
+    ]
+    assert len(release_calls) == 1
+
+
+def test_release_for_tolerates_release_failure() -> None:
+    """release_for must not propagate transport / lease errors."""
+    recorder = _RouteRecorder()
+    recorder.on(
+        "POST",
+        "/v0/control/leases/lease-001/release",
+        _problem("eden://error/lease-instance-mismatch", 409),
+    )
+    client = _make_client(recorder)
+    manager = LeaseManager(
+        client, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
+    )
+    from eden_control_plane import ExperimentLease
+    from eden_orchestrator.lease_manager import LeaseSnapshot
+
+    manager._held[EXPERIMENT] = LeaseSnapshot(  # noqa: SLF001
+        lease=ExperimentLease.model_validate(_lease_payload()),
+    )
+
+    manager.release_for(EXPERIMENT)  # must not raise
+
+    assert manager.held_experiments() == []
+    assert EXPERIMENT not in manager.drained_terminated()
+
+
+def test_release_for_noop_when_not_held() -> None:
+    """release_for on an unheld experiment is a no-op (no wire call)."""
+    recorder = _RouteRecorder()
+    client = _make_client(recorder)
+    manager = LeaseManager(
+        client, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
+    )
+    manager.release_for("never-held")
+    assert recorder.calls == []
+
+
 def test_release_all_clears_held_set() -> None:
     """Graceful shutdown calls release_lease for every held lease."""
     release_calls: list[str] = []

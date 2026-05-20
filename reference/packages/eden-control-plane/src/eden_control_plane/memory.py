@@ -107,7 +107,15 @@ class InMemoryControlPlaneStore:
         return ExperimentLease.model_validate(row)
 
     def _build_entry(self, row: dict[str, Any]) -> RegisteredExperiment:
-        lease_row = self._leases.get(row["experiment_id"])
+        # Codex round 4 MAJOR: only attach a lease when it is still
+        # active (`expires_at >= now`). Surfacing an expired-but-not-
+        # garbage-collected lease row in `RegisteredExperiment.lease`
+        # would let the web-ui (and any other client) treat the
+        # experiment as actively-leased — disabling unregister, hiding
+        # acquire/release affordances — even though the store-side
+        # operations would happily succeed. Mirrors the §2.1
+        # "current lease" semantics.
+        lease_row = self._active_lease_for(row["experiment_id"])
         lease = self._build_lease(lease_row) if lease_row is not None else None
         return RegisteredExperiment.model_validate({**row, "lease": lease})
 

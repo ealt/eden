@@ -237,14 +237,19 @@ class PostgresControlPlaneStore:
     def _lease_for_experiment(
         self, cur: psycopg.Cursor[Any], experiment_id: str
     ) -> ExperimentLease | None:
+        # Codex round 4 MAJOR: filter on `expires_at >= now` so an
+        # expired-but-not-garbage-collected row never surfaces in
+        # `RegisteredExperiment.lease`. See memory.py `_build_entry`
+        # for the matching invariant — both backends MUST behave
+        # identically per chapter 11 §2.1.
         cur.execute(
             """
             SELECT lease_id, experiment_id, holder, holder_instance,
                    acquired_at, expires_at, renewed_at
               FROM control_plane_leases
-             WHERE experiment_id = %s
+             WHERE experiment_id = %s AND expires_at >= %s
             """,
-            (experiment_id,),
+            (experiment_id, self._now()),
         )
         row = cur.fetchone()
         if row is None:

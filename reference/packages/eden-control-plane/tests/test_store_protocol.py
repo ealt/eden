@@ -294,6 +294,37 @@ def test_acquire_over_expired_succeeds(
     assert second.holder == "auto-orchestrator-2"
 
 
+def test_expired_lease_not_surfaced_in_registered_experiment(
+    make_store: Callable[..., ControlPlaneStore],
+) -> None:
+    """Codex round 4 MAJOR: `RegisteredExperiment.lease` filters expired.
+
+    A lease row whose `expires_at < now` MUST NOT appear in
+    `RegisteredExperiment.lease` via `read_experiment` / `list_experiments`.
+    Surfacing it would let clients (the web-ui's per-experiment view,
+    the orchestrator's lease-aware planning, etc.) treat the experiment
+    as actively-leased even though store-side operations would happily
+    proceed.
+    """
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.register_experiment("exp-1", "https://example.test/c.yaml")
+    store.acquire_lease(
+        "exp-1", "auto-orchestrator-1", "uuid-1", lease_duration_seconds=10
+    )
+    # Pre-expiry: lease IS surfaced.
+    entry = store.read_experiment_metadata("exp-1")
+    assert entry.lease is not None
+    assert entry.lease.holder == "auto-orchestrator-1"
+    # Post-expiry: lease is NOT surfaced.
+    clock.advance(11)
+    entry_after = store.read_experiment_metadata("exp-1")
+    assert entry_after.lease is None
+    # And list_experiments has the same posture.
+    listed = store.list_experiments()
+    assert listed[0].lease is None
+
+
 def test_list_active_leases_filters_by_holder_and_active(
     make_store: Callable[..., ControlPlaneStore],
 ) -> None:

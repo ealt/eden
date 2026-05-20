@@ -504,25 +504,27 @@ def _run_multi_experiment(
     admin_token = _resolve_control_plane_admin_token(args)
     credentials_dir = resolve_credentials_dir(args)
 
-    # B1 (codex round 1) + NEW-1 (codex round 2) + REGRESSION (round 3):
-    # the orchestrator's control-plane connection has three startup
-    # postures:
-    #   (a) Admin token OR persisted credential available → bootstrap
-    #       the deployment-scoped worker credential and use the
-    #       worker bearer for every lease op.
-    #   (b) No admin token AND no persisted credential, AND the
-    #       control plane is auth-DISABLED (server started with
-    #       admin_token=None — test / in-process / local-dev): no
-    #       bootstrap, no bearer; the server has no auth gate and
-    #       every lease op passes through. The probe below proves
-    #       this is the actual state before falling back.
-    #   (c) No admin token AND no persisted credential, AND the
-    #       control plane is auth-ENABLED (production-shaped
-    #       deployment that's missing config): bootstrap CANNOT
-    #       succeed; raise an explicit RuntimeError so the operator
-    #       sees the misconfiguration at startup rather than
-    #       silently running unauthenticated and tripping a 401 at
-    #       the first lease op.
+    # B1 (codex round 1) + NEW-1 (round 2) + REGRESSION (round 3)
+    # + MINOR (round 4): the orchestrator's control-plane connection
+    # has three startup postures, decided by an UNAUTHENTICATED whoami
+    # probe FIRST (before consulting persisted credentials):
+    #   (a) Probe returns 200 → control plane is auth-DISABLED
+    #       (server started with admin_token=None — test / in-process
+    #       / local-dev). No bootstrap, no bearer; the server has no
+    #       auth gate and every lease op passes through. A leftover
+    #       persisted credential MUST NOT trigger bootstrap here:
+    #       auth-disabled whoami returns the default worker_id (not
+    #       ours), `bootstrap_control_plane_worker` would observe the
+    #       mismatch and try to reissue, which requires the admin
+    #       token we do not have — a spurious startup failure.
+    #   (b) Probe returns 401 AND we have admin_token OR persisted
+    #       credential → bootstrap the deployment-scoped worker
+    #       credential and use the worker bearer for every lease op.
+    #   (c) Probe returns 401 AND no admin_token AND no persisted
+    #       credential → bootstrap CANNOT succeed; raise an explicit
+    #       RuntimeError so the operator sees the misconfiguration at
+    #       startup rather than silently running unauthenticated and
+    #       tripping a 401 at the first lease op.
     from .control_plane_bootstrap import (
         credential_path as _cp_credential_path,
     )
@@ -532,7 +534,23 @@ def _run_multi_experiment(
         _cp_credential_path(credentials_dir, args.worker_id)
     )
     cp_bearer: str | None
-    if admin_token is not None or persisted_token is not None:
+    with ControlPlaneClient(args.control_plane_url) as _probe:
+        try:
+            _probe.whoami()
+            control_plane_auth_enabled = False
+        except Unauthorized:
+            control_plane_auth_enabled = True
+    if not control_plane_auth_enabled:
+        # Posture (a): auth-disabled. Skip bootstrap regardless of any
+        # leftover persisted credential.
+        log.info(
+            "control_plane_bootstrap_skipped_auth_disabled",
+            worker_id=args.worker_id,
+            persisted_token_present=persisted_token is not None,
+        )
+        cp_bearer = None
+    elif admin_token is not None or persisted_token is not None:
+        # Posture (b): auth-enabled, credentials available.
         cp_credential = bootstrap_control_plane_worker(
             control_plane_url=args.control_plane_url,
             worker_id=args.worker_id,
@@ -555,36 +573,16 @@ def _run_multi_experiment(
                 "ensure_control_plane_orchestrators_membership_failed"
             )
     else:
-        # Probe the control plane to differentiate posture (b) from
-        # (c). An unauthenticated whoami against an auth-DISABLED
-        # control plane returns the (header-defaulted) worker_id;
-        # against an auth-ENABLED control plane it returns 401
-        # `eden://error/unauthorized`. Raise on 401 so production
-        # misconfigs fail loud at startup rather than at the first
-        # lease op.
-        with ControlPlaneClient(args.control_plane_url) as _probe:
-            try:
-                _probe.whoami()
-            except Unauthorized as exc:
-                msg = (
-                    "control-plane server is auth-enabled but no admin "
-                    "token and no persisted credential are available. "
-                    "Set --control-plane-admin-token, "
-                    "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
-                    "let the orchestrator bootstrap its deployment-scoped "
-                    "worker credential."
-                )
-                raise RuntimeError(msg) from exc
-        log.warning(
-            "control_plane_bootstrap_skipped_auth_disabled",
-            reason=(
-                "no admin token and no persisted credential; control "
-                "plane responded to whoami without auth, so running "
-                "unauthenticated."
-            ),
-            worker_id=args.worker_id,
+        # Posture (c): auth-enabled, no credentials. Fail loud.
+        msg = (
+            "control-plane server is auth-enabled but no admin "
+            "token and no persisted credential are available. "
+            "Set --control-plane-admin-token, "
+            "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
+            "let the orchestrator bootstrap its deployment-scoped "
+            "worker credential."
         )
-        cp_bearer = None
+        raise RuntimeError(msg)
 
     cp_client = ControlPlaneClient(args.control_plane_url, bearer=cp_bearer)
 
@@ -630,11 +628,39 @@ def _run_multi_experiment(
     # server. Each closure call bootstraps + caches the credential for
     # the named experiment.
     task_store_admin_token = resolve_admin_token(args)
-    per_experiment_cache: dict[str, str] = {}
+    per_experiment_cache: dict[str, str | None] = {}
+    # Auth-mode posture for the (deployment-wide) task-store-server.
+    # `None` = unprobed; `True/False` = enabled/disabled. Probed once
+    # lazily on the first `_resolve_per_experiment_bearer` call so
+    # auth-disabled deployments (no admin token, no persisted creds)
+    # are still supported without surfacing bootstrap failures.
+    task_store_auth_state: dict[str, bool] = {}
 
     def _resolve_per_experiment_bearer(experiment_id: str) -> str | None:
+        # Codex round 4 MAJOR 1: must NOT swallow bootstrap failures
+        # when auth is enabled — doing so silently constructs an
+        # unauthenticated StoreClient that 401s on every op, and the
+        # orchestrator blackholes the lease until expiry. Two paths:
+        #   - Auth-disabled task-store: return None (the StoreClient
+        #     is unauthenticated; ops pass through).
+        #   - Auth-enabled task-store: bootstrap MUST succeed.
+        #     Re-raise on failure so `multi_loop`'s factory-exception
+        #     branch calls `manager.release_for(experiment_id)` and
+        #     another replica can attempt.
         if experiment_id in per_experiment_cache:
             return per_experiment_cache[experiment_id]
+        if "auth_enabled" not in task_store_auth_state:
+            with StoreClient(
+                args.task_store_url, experiment_id
+            ) as probe:
+                try:
+                    probe.whoami()
+                    task_store_auth_state["auth_enabled"] = False
+                except Unauthorized:
+                    task_store_auth_state["auth_enabled"] = True
+        if not task_store_auth_state["auth_enabled"]:
+            per_experiment_cache[experiment_id] = None
+            return None
         # B2 (codex round 2): `bootstrap_worker_credential` persists
         # to `<credentials_dir>/<worker_id>.token` — a single path
         # regardless of experiment_id. Without per-experiment
@@ -645,21 +671,14 @@ def _run_multi_experiment(
         per_experiment_credentials_dir = (
             credentials_dir / "task-store" / experiment_id
         )
-        try:
-            credential = bootstrap_worker_credential(
-                base_url=args.task_store_url,
-                experiment_id=experiment_id,
-                worker_id=args.worker_id,
-                credentials_dir=per_experiment_credentials_dir,
-                admin_token=task_store_admin_token,
-                labels={"role": "orchestrator"},
-            )
-        except Exception:  # noqa: BLE001 — surface to operator
-            log.exception(
-                "per_experiment_credential_bootstrap_failed",
-                experiment_id=experiment_id,
-            )
-            return None
+        credential = bootstrap_worker_credential(
+            base_url=args.task_store_url,
+            experiment_id=experiment_id,
+            worker_id=args.worker_id,
+            credentials_dir=per_experiment_credentials_dir,
+            admin_token=task_store_admin_token,
+            labels={"role": "orchestrator"},
+        )
         bearer = f"{credential.worker_id}:{credential.token}"
         per_experiment_cache[experiment_id] = bearer
         return bearer
