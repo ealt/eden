@@ -14,6 +14,7 @@ import uvicorn
 from eden_service_common import configure_logging, get_logger, parse_log_level
 
 from .app import build_store, make_app
+from .state_sync import StateSyncPoller, make_task_store_reader
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,6 +56,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=30,
         help="Lease duration (chapter 11 §4.3 default: 30s).",
+    )
+    parser.add_argument(
+        "--task-store-url",
+        default=None,
+        help=(
+            "Optional task-store-server base URL (e.g. "
+            "'http://task-store-server:8080'). When set, the control "
+            "plane starts the chapter 11 §3 state-sync poller that "
+            "mirrors per-experiment `experiment.state` into the "
+            "registry's `last_known_state` projection. When unset, "
+            "the poller is disabled and `last_known_state` is "
+            "whatever the most recent register / update call wrote."
+        ),
+    )
+    parser.add_argument(
+        "--state-sync-interval-seconds",
+        type=float,
+        default=30.0,
+        help=(
+            "State-sync polling interval (chapter 11 §3.2 default: 30s)."
+        ),
+    )
+    parser.add_argument(
+        "--state-sync-failure-threshold",
+        type=int,
+        default=10,
+        help=(
+            "Consecutive read-failure count before chapter 11 §3.4 "
+            "stale-warning kicks in on `read_experiment_metadata` "
+            "responses (default: 10)."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -106,11 +138,35 @@ def main(argv: list[str] | None = None) -> int:
     log = get_logger(__name__)
     admin_token = args.admin_token or os.environ.get("EDEN_ADMIN_TOKEN")
     store = build_store(args.store_url)
+
+    poller: StateSyncPoller | None = None
+    if args.task_store_url is not None:
+        admin_bearer = f"admin:{admin_token}" if admin_token else None
+        poller = StateSyncPoller(
+            store,
+            state_reader=make_task_store_reader(
+                args.task_store_url, admin_bearer=admin_bearer
+            ),
+            interval_seconds=args.state_sync_interval_seconds,
+            failure_threshold=args.state_sync_failure_threshold,
+        )
+
     app = make_app(
         store,
         admin_token=admin_token,
         lease_duration_seconds=args.lease_duration_seconds,
+        state_poller=poller,
     )
+
+    if poller is not None:
+        @app.on_event("startup")
+        async def _start_poller() -> None:
+            poller.start()
+
+        @app.on_event("shutdown")
+        async def _stop_poller() -> None:
+            poller.stop()
+
     log.info(
         "control_plane_starting",
         extra={
@@ -119,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             "port": args.port,
             "auth_enabled": admin_token is not None,
             "lease_duration_seconds": args.lease_duration_seconds,
+            "state_sync_enabled": poller is not None,
         },
     )
     config = uvicorn.Config(

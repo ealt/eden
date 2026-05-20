@@ -50,6 +50,7 @@ from .auth import (
     require_admin,
     require_worker,
 )
+from .state_sync import StateSyncPoller
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ def make_app(
     *,
     admin_token: str | None = None,
     lease_duration_seconds: int = 30,
+    state_poller: StateSyncPoller | None = None,
 ) -> FastAPI:
     """Build the FastAPI app exposing chapter-07 §15 over `store`.
 
@@ -134,6 +136,13 @@ def make_app(
     `lease_duration_seconds` (default 30) is the deployment-wide
     chapter 11 §4.3 lease duration; every acquire/renew sets
     `expires_at = now + lease_duration_seconds`.
+
+    `state_poller`, when non-`None`, is consulted by the
+    `read_experiment_metadata` route to surface chapter 11 §3.4
+    stale-state warnings, and by `acquire_lease` to trigger the §3.3
+    on-demand state refresh. Production wires this up via
+    `cli.main`; tests can pass a fake reader or omit the poller
+    entirely.
     """
     app = FastAPI(title="EDEN control plane", version="0")
 
@@ -259,6 +268,14 @@ def make_app(
     ) -> Response:
         _get_principal(request)
         entry = store.read_experiment_metadata(experiment_id)
+        # §3.4: inject stale-state warning when the poller's
+        # consecutive-failure counter has crossed the threshold.
+        if state_poller is not None:
+            warnings = state_poller.warnings.warnings_for(experiment_id)
+            if warnings:
+                body = entry.model_dump(mode="json", exclude_none=True)
+                body["warnings"] = list(warnings)
+                return JSONResponse(content=body)
         return _ok(entry)
 
     # ------------------------------------------------------------------
@@ -290,6 +307,15 @@ def make_app(
             body.holder_instance,
             lease_duration_seconds=lease_duration_seconds,
         )
+        # §3.3 on-demand state refresh: a freshly-leased experiment
+        # MUST have up-to-date `last_known_state` regardless of the
+        # polling cadence. Failure here is logged but not surfaced —
+        # the next polling tick will reconcile.
+        if state_poller is not None:
+            try:
+                state_poller.refresh_one(experiment_id)
+            except Exception:  # noqa: BLE001 — defensive
+                log.warning("acquire_lease_refresh_failed")
         return _ok(lease, status=201)
 
     @app.post(f"{base}/leases/{{lease_id}}/renew")

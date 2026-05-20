@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from eden_contracts import ExperimentConfig
+from eden_control_plane import ControlPlaneClient
 from eden_git import GitRepo
 from eden_storage import Store
 from eden_storage.errors import NotFound as StorageNotFound
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import admin as admin_routes
+from .routes import admin_experiments as admin_experiments_routes
 from .routes import admin_groups as admin_groups_routes
 from .routes import admin_workers as admin_workers_routes
 from .routes import artifacts as artifacts_routes
@@ -58,6 +60,7 @@ def make_app(
     clone_url: str | None = None,
     base_commit_sha: str | None = None,
     admin_store: Store | None = None,
+    control_plane: ControlPlaneClient | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -84,6 +87,7 @@ def make_app(
     templates.env.globals["experiment_id"] = experiment_id
     templates.env.globals["executor_enabled"] = repo is not None
     templates.env.globals["admin_enabled"] = admin_store is not None
+    templates.env.globals["control_plane_enabled"] = control_plane is not None
 
     app.state.store = store
     app.state.admin_store = admin_store
@@ -99,6 +103,7 @@ def make_app(
     app.state.repo = repo
     app.state.clone_url = clone_url
     app.state.base_commit_sha = base_commit_sha
+    app.state.control_plane = control_plane
 
     app.include_router(index_routes.router)
     app.include_router(auth_routes.router)
@@ -108,6 +113,8 @@ def make_app(
     app.include_router(admin_workers_routes.router)
     app.include_router(admin_groups_routes.router)
     app.include_router(artifacts_routes.router)
+    if control_plane is not None:
+        app.include_router(admin_experiments_routes.router)
     if repo is not None:
         app.include_router(executor_routes.router)
 

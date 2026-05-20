@@ -18,6 +18,9 @@
             {% endif %}
             <a href="/evaluator/">evaluator</a>
             <a href="/admin/">admin</a>
+            {% if control_plane_enabled %}
+            <a href="/admin/experiments/">experiments</a>
+            {% endif %}
         </nav>
         {% if session %}
         <form action="/signout" method="post" class="signout-form">

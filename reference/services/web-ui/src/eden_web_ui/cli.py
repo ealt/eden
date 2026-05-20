@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import signal
 import sys
 import threading
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+from eden_control_plane import ControlPlaneClient
 from eden_git import GitRepo
 from eden_service_common import (
     add_common_arguments,
@@ -31,6 +33,22 @@ from eden_wire import StoreClient
 from eden_wire.errors import Unauthorized
 
 from .app import make_app
+
+
+def _build_control_plane_client(
+    args: argparse.Namespace, *, admin_token: str | None
+) -> ControlPlaneClient | None:
+    """Construct the optional ControlPlaneClient from CLI flags."""
+    url = args.control_plane_url
+    if url is None:
+        return None
+    cp_token = (
+        args.control_plane_admin_token
+        or os.environ.get("EDEN_CONTROL_PLANE_ADMIN_TOKEN")
+        or admin_token
+    )
+    bearer = f"admin:{cp_token}" if cp_token else None
+    return ControlPlaneClient(url, bearer=bearer)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -139,6 +157,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(EDEN_BASE_COMMIT_SHA). Surfaced on the ideator page as a "
             "click-to-copy hint for the parent_commits field. Purely "
             "informational — affects only template rendering."
+        ),
+    )
+    parser.add_argument(
+        "--control-plane-url",
+        default=None,
+        help=(
+            "Optional control-plane base URL (e.g. "
+            "'http://control-plane:8081'). When set, the web-ui exposes "
+            "the cross-experiment admin views at /admin/experiments/ "
+            "(chapter 11 §2 / §3 / §4) and a top-nav 'experiments' "
+            "link. When unset, the cross-experiment surface is hidden "
+            "and the web-ui operates against the single experiment "
+            "named by --experiment-id."
+        ),
+    )
+    parser.add_argument(
+        "--control-plane-admin-token",
+        default=None,
+        help=(
+            "Optional admin token for control-plane operations. "
+            "Defaults to $EDEN_CONTROL_PLANE_ADMIN_TOKEN, then to "
+            "--admin-token / $EDEN_ADMIN_TOKEN (many deployments share "
+            "a single admin secret across the two services)."
         ),
     )
     return parser.parse_args(argv)
@@ -267,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
                 admin_store.close()
             return 1
 
+    control_plane = _build_control_plane_client(args, admin_token=admin_token)
+
     app = make_app(
         store=store,
         admin_store=admin_store,
@@ -280,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         repo=repo,
         clone_url=args.clone_url,
         base_commit_sha=args.base_commit_sha,
+        control_plane=control_plane,
     )
     uv_config = uvicorn.Config(
         app,
