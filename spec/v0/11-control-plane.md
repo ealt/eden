@@ -112,7 +112,9 @@ The control plane is the source of truth for lease timestamps. A renewal respons
 
 ### 4.4 Active vs. expired
 
-A lease is **active** when `expires_at >= now` (the control plane's `now`). A lease is **expired** when `expires_at < now`. An expired lease occupies the registry entry's `lease` field until acquired by another replica; the control plane does NOT delete expired leases unilaterally.
+A lease is **active** when `expires_at >= now` (the control plane's `now`). A lease is **expired** when `expires_at < now`.
+
+The registry entry's `lease` field (§2.1, [`02-data-model.md`](02-data-model.md) §2.6) exposes the **currently-active lease only**: when no active lease exists for the experiment, the field MUST be `null` regardless of whether an expired lease row is still stored. The control plane does NOT delete expired lease rows unilaterally — the `acquire_lease` op (§4.5) atomically replaces an expired row with a fresh one — but expired rows MUST NOT surface through `read_experiment_metadata` / `list_experiments`. This rule keeps clients (the web-ui, the orchestrator's planning, third-party tooling) from treating an experiment as actively-leased while store-side operations would happily proceed against it.
 
 The "at most one active lease per experiment" invariant is the load-bearing contract: at every wall-clock instant, an experiment has zero or one active lease. The control plane MUST serialize concurrent `acquire_lease` calls against the same experiment such that exactly one wins.
 

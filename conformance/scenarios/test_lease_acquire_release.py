@@ -79,3 +79,39 @@ def test_release_idempotent_on_unknown_lease(
     """
     r = control_plane_client.release_lease("lease-does-not-exist", "uuid-1")
     assert r.status_code == 200
+
+
+def test_released_lease_disappears_from_registry_entry(
+    control_plane_client: ControlPlaneWireClient,
+) -> None:
+    """spec/v0/11-control-plane.md §4.4 — `lease` field reflects active-only.
+
+    Per §4.4: the registry entry's `lease` field exposes only the
+    currently-active lease. After `release_lease`, the entry's
+    `lease` MUST be `null`. (The expired-but-not-replaced shape of
+    the same rule is not wire-observable without a sub-second
+    `lease_duration` knob — chapter 9 §6 IUT contract fixes the
+    duration at deployment startup — so this scenario asserts the
+    release-driven projection only; the expired-driven projection
+    is unit-tested in the reference impl's storage Protocol
+    conformance.)
+    """
+    control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    lease = control_plane_client.acquire_lease(
+        "exp-a", "auto-orchestrator-1", "uuid-1"
+    ).json()
+    # Pre-release: registry entry surfaces the active lease.
+    pre = control_plane_client.read_experiment_metadata("exp-a").json()
+    assert pre.get("lease") is not None
+    assert pre["lease"]["lease_id"] == lease["lease_id"]
+    # Release.
+    control_plane_client.release_lease(lease["lease_id"], "uuid-1")
+    # Post-release: lease field MUST be absent OR null (the wire
+    # contract uses exclude_none, so `lease=None` surfaces as the
+    # key being omitted entirely).
+    post = control_plane_client.read_experiment_metadata("exp-a").json()
+    assert post.get("lease") is None
+    # And the same posture via list_experiments.
+    listed = control_plane_client.list_experiments().json()
+    entry = next(e for e in listed["experiments"] if e["experiment_id"] == "exp-a")
+    assert entry.get("lease") is None
