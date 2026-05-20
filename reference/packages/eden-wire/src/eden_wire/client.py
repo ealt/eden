@@ -50,10 +50,9 @@ from eden_contracts import (
 )
 from eden_storage.errors import InvalidPrecondition, NotFound
 from eden_storage.submissions import (
-    EvaluationSubmission,
-    IdeaSubmission,
     Submission,
-    VariantSubmission,
+    submission_from_payload,
+    submission_to_payload,
 )
 
 from .errors import raise_for_envelope
@@ -1316,55 +1315,12 @@ def _task_targets_equal(a: TaskTarget | None, b: TaskTarget | None) -> bool:
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, IdeaSubmission):
-        return {
-            "kind": "ideation",
-            "status": submission.status,
-            "idea_ids": list(submission.idea_ids),
-        }
-    if isinstance(submission, VariantSubmission):
-        body: dict[str, Any] = {
-            "kind": "execution",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.commit_sha is not None:
-            body["commit_sha"] = submission.commit_sha
-        return body
-    if isinstance(submission, EvaluationSubmission):
-        body = {
-            "kind": "evaluation",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.evaluation is not None:
-            body["evaluation"] = submission.evaluation
-        if submission.artifacts_uri is not None:
-            body["artifacts_uri"] = submission.artifacts_uri
-        return body
-    raise ValueError(f"unknown submission type: {type(submission).__name__}")
+    kind, payload = submission_to_payload(submission)
+    return {"kind": kind, **payload}
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "ideation":
-        return IdeaSubmission(
-            status=payload["status"],
-            idea_ids=tuple(payload.get("idea_ids", ())),
-        )
-    if kind == "execution":
-        return VariantSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            commit_sha=payload.get("commit_sha"),
-        )
-    if kind == "evaluation":
-        return EvaluationSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            evaluation=payload.get("evaluation"),
-            artifacts_uri=payload.get("artifacts_uri"),
-        )
-    raise ValueError(f"unknown submission kind: {kind!r}")
+    return submission_from_payload(kind, payload)
 
 
 def _now() -> str:

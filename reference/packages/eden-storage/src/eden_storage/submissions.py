@@ -62,6 +62,78 @@ class EvaluationSubmission:
 Submission = IdeaSubmission | VariantSubmission | EvaluationSubmission
 
 
+def submission_to_payload(submission: Submission) -> tuple[str, dict[str, Any]]:
+    """Return ``(kind, payload)`` for one submission.
+
+    Canonical de/serialization helper shared by every binding that has
+    to round-trip a submission to/from a JSON-shaped representation —
+    the SQL backends (sqlite + postgres), the wire endpoints
+    (client + server), and the checkpoint JSONL writer. Each binding
+    keeps the ``kind`` discriminator in a different place: SQL backends
+    store it in a separate column; the wire payload inlines it into the
+    JSON body; the checkpoint row inlines it too. Returning ``kind``
+    separately lets each caller choose where to put it without
+    repeating the field-mapping conditional five times.
+
+    ``payload`` contains only the spec-normative fields per role with
+    ``None`` values omitted — matches the on-the-wire shape.
+    """
+    if isinstance(submission, IdeaSubmission):
+        return "ideation", {
+            "status": submission.status,
+            "idea_ids": list(submission.idea_ids),
+        }
+    if isinstance(submission, VariantSubmission):
+        payload: dict[str, Any] = {
+            "status": submission.status,
+            "variant_id": submission.variant_id,
+        }
+        if submission.commit_sha is not None:
+            payload["commit_sha"] = submission.commit_sha
+        return "execution", payload
+    if isinstance(submission, EvaluationSubmission):
+        payload = {
+            "status": submission.status,
+            "variant_id": submission.variant_id,
+        }
+        if submission.evaluation is not None:
+            payload["evaluation"] = submission.evaluation
+        if submission.artifacts_uri is not None:
+            payload["artifacts_uri"] = submission.artifacts_uri
+        return "evaluation", payload
+    raise TypeError(f"unknown submission type {type(submission).__name__}")
+
+
+def submission_from_payload(kind: str, payload: dict[str, Any]) -> Submission:
+    """Inverse of :func:`submission_to_payload`.
+
+    ``status`` defaults to ``"success"`` when absent (matches the
+    checkpoint reader's leniency; storage + wire callers always supply
+    the field). ``variant_id`` is required for execution and
+    evaluation kinds — raises ``KeyError`` if absent so backends can
+    surface the schema violation cleanly.
+    """
+    if kind == "ideation":
+        return IdeaSubmission(
+            status=payload.get("status", "success"),
+            idea_ids=tuple(payload.get("idea_ids") or ()),
+        )
+    if kind == "execution":
+        return VariantSubmission(
+            status=payload.get("status", "success"),
+            variant_id=payload["variant_id"],
+            commit_sha=payload.get("commit_sha"),
+        )
+    if kind == "evaluation":
+        return EvaluationSubmission(
+            status=payload.get("status", "success"),
+            variant_id=payload["variant_id"],
+            evaluation=payload.get("evaluation"),
+            artifacts_uri=payload.get("artifacts_uri"),
+        )
+    raise ValueError(f"unknown submission kind {kind!r}")
+
+
 def submissions_equivalent(a: Submission, b: Submission) -> bool:
     """Content equivalence per ``spec/v0/04-task-protocol.md`` §4.2.
 

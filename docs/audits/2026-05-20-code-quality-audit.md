@@ -3,6 +3,14 @@
 **Scope**: every Python source file under `reference/` at `main` HEAD (commit
 `e8cc233`, post-Phase 12b). Audit-only; no source changes in this commit.
 
+> **Post-rebase note (2026-05-20)** — Phase A merged onto post-Phase-12c
+> main (`ff3d4a9`). Re-running the metrics confirmed every Phase A finding
+> still applies. 12c added two new files: `eden-control-plane/postgres.py`
+> (737 SLOC, MI 26.14 — within budget but the largest 12c-new surface)
+> and `eden-control-plane/memory.py` (MI 31.79). Neither introduces a
+> new function with CC ≥ 10. The Tier-1 gate added in Phase C will
+> guard both files going forward.
+
 **Why this audit exists**: EDEN has stacked ~14 substantive chunks since
 Phase 12 started (12a-1 through 12c). Recent research on long-horizon
 LLM-driven coding ("SlopCodeBench") flags two quality-decay modes that

@@ -230,6 +230,92 @@ def _deep[M: BaseModel](model: M) -> M:
     return model.model_copy(deep=True)
 
 
+# ----------------------------------------------------------------------
+# Helpers for the §3.3 non-no-op variant check (used by
+# `_StoreBase._validate_non_no_op_variant`). Split out so each gate of
+# the rule reads as a named predicate.
+# ----------------------------------------------------------------------
+
+
+def _no_op_check_inputs(
+    task: Task,
+    submission: Submission,
+    get_idea: Callable[[str], Idea | None],
+) -> tuple[str, list[str]] | None:
+    """Return ``(commit_sha, parent_commits)`` when the §3.3 check should run.
+
+    Returns ``None`` (silently skip the check) when the submission
+    shape, idea attachment, or parent list rules out a no-op tree
+    comparison.
+    """
+    if not isinstance(submission, VariantSubmission):
+        return None
+    if submission.status != "success":
+        return None
+    if submission.commit_sha is None:
+        return None
+    assert isinstance(task, ExecutionTask)
+    idea = get_idea(task.payload.idea_id)
+    if idea is None or not idea.parent_commits:
+        return None
+    return submission.commit_sha, list(idea.parent_commits)
+
+
+def _all_parents_equal_sha(sha: str, parents: list[str]) -> bool:
+    """True when ``sha`` is byte-equal to every parent (Layer 1 fast path)."""
+    return all(p == sha for p in parents)
+
+
+def _resolve_trees(
+    resolver: Callable[[str], str | None],
+    sha: str,
+    parents: list[str],
+) -> tuple[str, list[str]] | None:
+    """Run the tree resolver against ``sha`` + every parent.
+
+    Returns ``(submission_tree, parent_trees)`` when every resolver
+    call yields a non-``None`` tree. Returns ``None`` when the
+    resolver raises or returns ``None`` for any SHA — Layer 2 is
+    silently disabled for this submission in that case (Layer 1's
+    fast path still applies).
+    """
+    try:
+        sub_tree = resolver(sha)
+    except Exception:  # noqa: BLE001 — resolver is binding-supplied; contain errors
+        return None
+    if sub_tree is None:
+        return None
+    parent_trees: list[str] = []
+    for p in parents:
+        try:
+            t = resolver(p)
+        except Exception:  # noqa: BLE001
+            return None
+        if t is None:
+            return None
+        parent_trees.append(t)
+    return sub_tree, parent_trees
+
+
+def _sha_equality_message(task_id: str, sha: str) -> str:
+    return (
+        f"execution submission for task {task_id!r} has "
+        f"commit_sha={sha!r} equal to every parent_commit; the "
+        "variant tree is identical to the parent tree (no-op). "
+        "spec/v0/03-roles.md §3.3 non-no-op invariant."
+    )
+
+
+def _tree_identity_message(task_id: str, sha: str, sub_tree: str) -> str:
+    return (
+        f"execution submission for task {task_id!r} has "
+        f"commit_sha={sha!r} whose tree {sub_tree!r} is identical "
+        "to the tree of every parent_commit; the variant "
+        "contributes no change. spec/v0/03-roles.md §3.3 "
+        "non-no-op invariant."
+    )
+
+
 class _StoreBase:
     """Shared transaction/validation/event logic for every store backend.
 
@@ -1875,55 +1961,24 @@ class _StoreBase:
            this submission (e.g. fixture SHAs absent from a real repo);
            the SHA-equality fast path still applies.
         """
-        if not isinstance(submission, VariantSubmission):
+        check = _no_op_check_inputs(task, submission, self._get_idea)
+        if check is None:
             return
-        if submission.status != "success":
-            return
-        if submission.commit_sha is None:
-            return
-        assert isinstance(task, ExecutionTask)
-        idea = self._get_idea(task.payload.idea_id)
-        if idea is None or not idea.parent_commits:
-            return
+        sha, parents = check
 
-        sha = submission.commit_sha
-        parents = list(idea.parent_commits)
+        if _all_parents_equal_sha(sha, parents):
+            raise NoOpVariant(_sha_equality_message(task.task_id, sha))
 
-        # Layer 1 — SHA-equality fast path.
-        if all(p == sha for p in parents):
-            raise NoOpVariant(
-                f"execution submission for task {task.task_id!r} has "
-                f"commit_sha={sha!r} equal to every parent_commit; the "
-                "variant tree is identical to the parent tree (no-op). "
-                "spec/v0/03-roles.md §3.3 non-no-op invariant."
-            )
-
-        # Layer 2 — tree-resolver check (only when wired).
         resolver = self._tree_resolver
         if resolver is None:
             return
-        try:
-            sub_tree = resolver(sha)
-        except Exception:  # noqa: BLE001 — resolver is binding-supplied; contain errors
+        trees = _resolve_trees(resolver, sha, parents)
+        if trees is None:
             return
-        if sub_tree is None:
-            return
-        parent_trees: list[str] = []
-        for p in parents:
-            try:
-                t = resolver(p)
-            except Exception:  # noqa: BLE001
-                return
-            if t is None:
-                return
-            parent_trees.append(t)
+        sub_tree, parent_trees = trees
         if all(t == sub_tree for t in parent_trees):
             raise NoOpVariant(
-                f"execution submission for task {task.task_id!r} has "
-                f"commit_sha={sha!r} whose tree {sub_tree!r} is identical "
-                "to the tree of every parent_commit; the variant "
-                "contributes no change. spec/v0/03-roles.md §3.3 "
-                "non-no-op invariant."
+                _tree_identity_message(task.task_id, sha, sub_tree)
             )
 
     def _validate_submission_ref_binding(

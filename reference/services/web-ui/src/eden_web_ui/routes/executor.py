@@ -22,7 +22,6 @@ variant_id is generated server-side at claim time and stored in
 from __future__ import annotations
 
 import contextlib
-import time
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
@@ -30,16 +29,12 @@ from typing import Any
 
 from eden_contracts import Idea, Variant
 from eden_storage import (
-    ConflictingResubmission,
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
     NoOpVariant,
-    NotClaimed,
     VariantSubmission,
-    WrongClaimant,
 )
-from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -50,6 +45,7 @@ from ._helpers import (
     is_htmx_request,
     read_idea_content,
 )
+from ._submit_readback import submit_with_readback, wire_error_banner
 
 router = APIRouter(prefix="/executor")
 
@@ -97,7 +93,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
         pending = store.list_tasks(kind="execution", state="pending")
         recent = _list_recent_variants(store)
     except DispatchError as exc:
-        return _render_error(request, _wire_error_banner(exc))
+        return _render_error(request, wire_error_banner(exc))
     except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
         return _render_error(
             request, f"task-store transport failure: {exc.__class__.__name__}"
@@ -183,7 +179,7 @@ async def claim(
     try:
         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
     except (IllegalTransition, InvalidPrecondition) as exc:
-        banner = _wire_error_banner(exc)
+        banner = wire_error_banner(exc)
         return RedirectResponse(
             url=f"/executor/?banner={banner}", status_code=303
         )
@@ -212,7 +208,7 @@ async def draft_form(
         task = store.read_task(task_id)
         idea: Idea = store.read_idea(task.payload.idea_id)
     except DispatchError as exc:
-        return _render_error(request, _wire_error_banner(exc))
+        return _render_error(request, wire_error_banner(exc))
     return _render_draft(
         request,
         session=session,
@@ -251,7 +247,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         task = store.read_task(task_id)
         idea = store.read_idea(task.payload.idea_id)
     except DispatchError as exc:
-        return _render_error(request, _wire_error_banner(exc))
+        return _render_error(request, wire_error_banner(exc))
 
     status_raw = str(form.get("status") or "")
     commit_sha_raw = str(form.get("commit_sha") or "")
@@ -424,7 +420,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     except DispatchError as exc:
         return _render_error(
             request,
-            f"create_variant failed for {variant_id}: {_wire_error_banner(exc)}",
+            f"create_variant failed for {variant_id}: {wire_error_banner(exc)}",
         )
     except Exception as exc:  # noqa: BLE001 — transport-shaped
         # The variant may or may not have committed on the server. The
@@ -490,7 +486,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         commit_sha=draft.commit_sha if draft.status == "success" else None,
     )
     try:
-        outcome, banner = _retry_submit_with_readback(
+        outcome, banner = submit_with_readback(
             store=store, task_id=task_id, token=token, submission=submission
         )
     except NoOpVariant:
@@ -516,7 +512,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
             variant_id=variant_id,
             commit_sha=None,
         )
-        outcome, banner = _retry_submit_with_readback(
+        outcome, banner = submit_with_readback(
             store=store,
             task_id=task_id,
             token=token,
@@ -563,145 +559,6 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         banner=banner or "submit failed",
         recovery_kind=outcome,
     )
-
-
-_RETRY_DELAYS_S = (0.05, 0.2, 0.5)
-
-
-def _retry_submit_with_readback(
-    *,
-    store: Any,
-    task_id: str,
-    token: str,
-    submission: VariantSubmission,
-) -> tuple[str, str | None]:
-    """Submit with retry, then reconcile via committed-state read-back.
-
-    Returns one of:
-
-    - ``("ok", None)`` — the submit committed (either the first
-      attempt returned cleanly, or a retry, or the read-back
-      confirmed a prior committed equivalent submission).
-    - ``("auto", banner)`` — orphan page; auto-recovers via reclaim.
-      Used for retry exhaustion where the read-back showed the
-      claim is still ours, where it shows a different claim, or
-      where the task has been reclaimed back to ``pending``;
-      and for the ``NotClaimed`` short-circuit (the prior reclaim
-      already errored our variant).
-    - ``("conflict", banner)`` — orphan page; a different
-      submission won the race (``ConflictingResubmission`` short-
-      circuit, or the read-back saw a non-equivalent committed
-      payload).
-    - ``("transport", banner)`` — orphan page; an
-      implementation-illegal store state was observed during
-      read-back (``read_submission`` returned ``None`` for a
-      ``submitted`` / ``completed`` / ``failed`` task) or the
-      read-back probe itself failed.
-
-    Exception classification (per
-    ``feedback_retry_readback_test_mocks.md`` rule 1):
-
-    - ``NotClaimed`` and ``ConflictingResubmission`` are definitive
-      short-circuits. ``NotClaimed`` only fires when
-      ``task.state == "claimed"`` with a non-matching token, which
-      a successful prior submit never produces (submit preserves
-      our token). ``ConflictingResubmission`` is the spec-defined
-      "different payload won" signal.
-    - ``IllegalTransition`` is **not** a definitive short-circuit:
-      it falls through to read-back. The store raises it when
-      ``task.state ∉ {"claimed", "submitted"}`` at call time,
-      which after a transport-indeterminate first attempt may
-      mean ``pending`` (we lost), ``completed``/``failed`` (we
-      won and the orchestrator already terminalized), or
-      ``submitted`` by another worker (conflict). Read-back
-      disambiguates.
-    - Other exceptions are retried with backoff; on exhaustion,
-      read-back resolves.
-    """
-    last_exc: BaseException | None = None
-    needs_readback = False
-    for delay in _RETRY_DELAYS_S:
-        try:
-            store.submit(task_id, token, submission)
-            return "ok", None
-        except (NotClaimed, WrongClaimant, IllegalTransition) as exc:
-            # 12a-1 atomic claim-match outcomes (NotClaimed,
-            # WrongClaimant) plus the residual IllegalTransition
-            # branch all share the same recovery shape: read-back
-            # resolves to one of state==pending (we lost), state in
-            # {completed, failed, submitted} with our equivalent
-            # prior (we won, response lost), or state with non-
-            # equivalent prior (conflict).
-            last_exc = exc
-            needs_readback = True
-            break
-        except ConflictingResubmission as exc:
-            return "conflict", _wire_error_banner(exc)
-        except NoOpVariant:
-            # Definitive: the variant tree matches every parent's
-            # tree. Re-raise so the caller can run the §3.3 cleanup
-            # path (delete remote/local refs, resubmit `status="error"`)
-            # — analogous to the executor host's `NoOpVariant`
-            # fallback. Treating this as a generic `conflict` orphan
-            # would leak the Phase 1 variant + Phase 2 work/* ref the
-            # caller has already created.
-            raise
-        except Exception as exc:  # noqa: BLE001 — transport-shaped
-            last_exc = exc
-            time.sleep(delay)
-
-    if not needs_readback and last_exc is None:
-        # All retries returned cleanly is impossible (we'd return
-        # "ok" inside the loop). Defensive.
-        return "transport", "submit returned without exception or commit"
-
-    return _readback(
-        store=store, task_id=task_id, token=token, submission=submission, last_exc=last_exc
-    )
-
-
-def _readback(
-    *,
-    store: Any,
-    task_id: str,
-    token: str,
-    submission: VariantSubmission,
-    last_exc: BaseException | None,
-) -> tuple[str, str | None]:
-    last_name = last_exc.__class__.__name__ if last_exc else "unknown"
-    try:
-        task = store.read_task(task_id)
-    except Exception as exc:  # noqa: BLE001
-        return (
-            "transport",
-            f"transport failure after retries; read-back failed: {exc.__class__.__name__}",
-        )
-    state = task.state
-    if state == "claimed":
-        if task.claim is not None and task.claim.worker_id == token:
-            return ("auto", f"transport failure after retries: {last_name}")
-        return "auto", "eden://error/not-claimed"
-    if state in {"submitted", "completed", "failed"}:
-        try:
-            prior = store.read_submission(task_id)
-        except Exception as exc:  # noqa: BLE001
-            return (
-                "transport",
-                (
-                    "transport failure after retries; "
-                    f"read-submission failed: {exc.__class__.__name__}"
-                ),
-            )
-        if prior is None:
-            return (
-                "transport",
-                "store invariant violation: submission missing for terminal/submitted task",
-            )
-        if submissions_equivalent(prior, submission):
-            return "ok", None
-        return "conflict", "eden://error/conflicting-resubmission"
-    # state == "pending"
-    return ("auto", f"transport failure after retries; task reclaimed: {last_name}")
 
 
 def _render_draft(
@@ -818,17 +675,3 @@ def _iso(dt: Any) -> str:
     return s
 
 
-_ERROR_NAMES: dict[type, str] = {
-    NotClaimed: "eden://error/not-claimed",
-    IllegalTransition: "eden://error/illegal-transition",
-    ConflictingResubmission: "eden://error/conflicting-resubmission",
-    InvalidPrecondition: "eden://error/invalid-precondition",
-    NoOpVariant: "eden://error/no-op-variant",
-}
-
-
-def _wire_error_banner(exc: BaseException) -> str:
-    name = _ERROR_NAMES.get(type(exc))
-    if name is None:
-        return f"unexpected error: {exc.__class__.__name__}"
-    return name

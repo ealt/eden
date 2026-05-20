@@ -279,3 +279,17 @@ def resolve_worker_bearer(
         labels=labels,
     )
     return credential.bearer
+
+
+def credential_secret(bearer: str | None) -> str | None:
+    """Extract the secret half of a §13.1 ``<principal>:<secret>`` bearer.
+
+    Used by worker hosts that thread ``EDEN_WORKER_CREDENTIAL`` (the
+    secret only — not the principal) into spawned children's
+    environment so user code can rebuild the bearer with its own
+    ``EDEN_WORKER_ID``. Returns ``None`` when ``bearer`` is ``None``
+    or doesn't contain ``:``.
+    """
+    if bearer is None or ":" not in bearer:
+        return None
+    return bearer.split(":", 1)[1]

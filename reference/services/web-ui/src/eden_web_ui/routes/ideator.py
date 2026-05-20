@@ -36,6 +36,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from ..artifacts import write_idea_artifact
 from ..forms import IdeaDraft, parse_idea_rows
 from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
+from ._submit_readback import wire_error_banner
 
 router = APIRouter(prefix="/ideator")
 
@@ -144,7 +145,7 @@ async def claim(
     try:
         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
     except (IllegalTransition, InvalidPrecondition) as exc:
-        banner = _wire_error_banner(exc)
+        banner = wire_error_banner(exc)
         return RedirectResponse(url=f"/ideator/?banner={banner}", status_code=303)
     _CLAIMS[_claim_key(session.csrf, task_id)] = result.worker_id
     return RedirectResponse(url=f"/ideator/{task_id}/draft", status_code=303)
@@ -296,7 +297,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         try:
             store.submit(task_id, token, IdeaSubmission(status="error"))
         except DispatchError as exc:
-            return _render_error(request, _wire_error_banner(exc))
+            return _render_error(request, wire_error_banner(exc))
         _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
         _DRAFT_BUFFERS.pop(_claim_key(session.csrf, task_id), None)
         return _render_submitted(request, task_id, status="error", idea_ids=())
@@ -366,7 +367,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         except DispatchError as exc:
             return _render_error(
                 request,
-                f"create_idea failed for {idea_id}: {_wire_error_banner(exc)}",
+                f"create_idea failed for {idea_id}: {wire_error_banner(exc)}",
             )
         idea_ids.append(idea_id)
 
@@ -377,7 +378,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         except DispatchError as exc:
             return _render_error(
                 request,
-                f"mark_idea_ready failed for {idea_id}: {_wire_error_banner(exc)}",
+                f"mark_idea_ready failed for {idea_id}: {wire_error_banner(exc)}",
             )
 
     # Phase 3: submit, with retry-before-orphan.
@@ -447,7 +448,7 @@ def _retry_submit(
             ConflictingResubmission,
             InvalidPrecondition,
         ) as exc:
-            return False, _wire_error_banner(exc)
+            return False, wire_error_banner(exc)
         except IllegalTransition as exc:
             last_exc = exc
             needs_readback = True
@@ -691,16 +692,3 @@ def _bad_request(message: str) -> HTMLResponse:
     return HTMLResponse(content=message, status_code=400)
 
 
-_ERROR_NAMES: dict[type, str] = {
-    NotClaimed: "eden://error/not-claimed",
-    IllegalTransition: "eden://error/illegal-transition",
-    ConflictingResubmission: "eden://error/conflicting-resubmission",
-    InvalidPrecondition: "eden://error/invalid-precondition",
-}
-
-
-def _wire_error_banner(exc: BaseException) -> str:
-    name = _ERROR_NAMES.get(type(exc))
-    if name is None:
-        return f"unexpected error: {exc.__class__.__name__}"
-    return name

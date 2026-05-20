@@ -6,13 +6,14 @@ import argparse
 import socket
 from pathlib import Path
 
-from eden_git import GitRepo
 from eden_service_common import (
     StopFlag,
     add_common_arguments,
     add_exec_arguments,
     add_substrate_arguments,
     configure_logging,
+    credential_secret,
+    ensure_repo_clone,
     get_logger,
     install_stop_handlers,
     load_experiment_config,
@@ -116,43 +117,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def _credential_secret(bearer: str | None) -> str | None:
-    """Extract the secret half of a §13.1 ``<principal>:<secret>`` bearer.
-
-    Used to thread ``EDEN_WORKER_CREDENTIAL`` (the secret only — not
-    the principal) into spawned children's environments so user code
-    can rebuild the bearer with its own ``EDEN_WORKER_ID``. Returns
-    ``None`` when ``bearer`` is ``None`` or doesn't contain ``:``.
-    """
-    if bearer is None or ":" not in bearer:
-        return None
-    return bearer.split(":", 1)[1]
-
-
-def _ensure_repo_clone(
-    *,
-    log,  # noqa: ANN001 — _CtxAdapter, not exposed
-    repo_path: str,
-    forgejo_url: str | None,
-    credential_helper: str | None,
-) -> None:
-    """Materialize the evaluator's local clone per Phase 10d follow-up B §D.5."""
-    if forgejo_url is None:
-        return
-    path = Path(repo_path)
-    if (path / "HEAD").is_file():
-        log.info("fetching_remote_heads", url=forgejo_url)
-        GitRepo(path).fetch_all_heads()
-        return
-    log.info("cloning_from_remote", url=forgejo_url, dest=str(path))
-    GitRepo.clone_from(
-        url=forgejo_url,
-        dest=path,
-        bare=True,
-        credential_helper=credential_helper,
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_evaluator_host``."""
     args = parse_args(argv)
@@ -179,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "subprocess":
         # parse_args validated repo_path is set in subprocess mode.
         assert args.repo_path is not None
-        _ensure_repo_clone(
+        ensure_repo_clone(
             log=log,
             repo_path=args.repo_path,
             forgejo_url=args.forgejo_url,
@@ -257,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
                 exec_binds=tuple(exec_args.binds),
                 cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
                 host_id=host_id,
-                worker_credential=_credential_secret(bearer),
+                worker_credential=credential_secret(bearer),
             )
             run_evaluator_subprocess_loop(
                 store=client,

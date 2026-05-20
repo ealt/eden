@@ -54,10 +54,9 @@ from ._base import (
 )
 from .errors import InvalidPrecondition
 from .submissions import (
-    EvaluationSubmission,
-    IdeaSubmission,
     Submission,
-    VariantSubmission,
+    submission_from_payload,
+    submission_to_payload,
 )
 
 
@@ -376,54 +375,12 @@ def _scalar(conn: Any, query: str) -> Any:
 
 def _submission_to_row(submission: Submission) -> tuple[str, str]:
     """Return ``(kind, json_data)`` for a submission. Mirrors sqlite.py."""
-    if isinstance(submission, IdeaSubmission):
-        payload: dict[str, Any] = {
-            "status": submission.status,
-            "idea_ids": list(submission.idea_ids),
-        }
-        return ("ideation", json.dumps(payload))
-    if isinstance(submission, VariantSubmission):
-        payload = {
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.commit_sha is not None:
-            payload["commit_sha"] = submission.commit_sha
-        return ("execution", json.dumps(payload))
-    if isinstance(submission, EvaluationSubmission):
-        payload = {
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.evaluation is not None:
-            payload["evaluation"] = submission.evaluation
-        if submission.artifacts_uri is not None:
-            payload["artifacts_uri"] = submission.artifacts_uri
-        return ("evaluation", json.dumps(payload))
-    raise TypeError(f"unknown submission type {type(submission).__name__}")
+    kind, payload = submission_to_payload(submission)
+    return kind, json.dumps(payload)
 
 
 def _submission_from_row(kind: str, data: str) -> Submission:
-    payload = json.loads(data)
-    if kind == "ideation":
-        return IdeaSubmission(
-            status=payload["status"],
-            idea_ids=tuple(payload.get("idea_ids") or ()),
-        )
-    if kind == "execution":
-        return VariantSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            commit_sha=payload.get("commit_sha"),
-        )
-    if kind == "evaluation":
-        return EvaluationSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            evaluation=payload.get("evaluation"),
-            artifacts_uri=payload.get("artifacts_uri"),
-        )
-    raise ValueError(f"unknown submission kind {kind!r}")
+    return submission_from_payload(kind, json.loads(data))
 
 
 class PostgresStore(_StoreBase):

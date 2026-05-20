@@ -75,10 +75,9 @@ from eden_contracts import (
 
 from ._base import _DEFAULT_DISPATCH_MODE, _Tx
 from .submissions import (
-    EvaluationSubmission,
-    IdeaSubmission,
     Submission,
-    VariantSubmission,
+    submission_from_payload,
+    submission_to_payload,
 )
 
 if TYPE_CHECKING:
@@ -163,36 +162,8 @@ def _submission_to_jsonl(task_id: str, submission: Submission) -> dict[str, Any]
     ``kind`` discriminator plus the role-specific fields, flat at the
     top level of the row.
     """
-    if isinstance(submission, IdeaSubmission):
-        return {
-            "task_id": task_id,
-            "kind": "ideation",
-            "status": submission.status,
-            "idea_ids": list(submission.idea_ids),
-        }
-    if isinstance(submission, VariantSubmission):
-        row: dict[str, Any] = {
-            "task_id": task_id,
-            "kind": "execution",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.commit_sha is not None:
-            row["commit_sha"] = submission.commit_sha
-        return row
-    if isinstance(submission, EvaluationSubmission):
-        row = {
-            "task_id": task_id,
-            "kind": "evaluation",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.evaluation is not None:
-            row["evaluation"] = submission.evaluation
-        if submission.artifacts_uri is not None:
-            row["artifacts_uri"] = submission.artifacts_uri
-        return row
-    raise TypeError(f"unknown submission type {type(submission).__name__}")
+    kind, payload = submission_to_payload(submission)
+    return {"task_id": task_id, "kind": kind, **payload}
 
 
 def _submission_from_jsonl(row: dict[str, Any]) -> tuple[str, Submission]:
@@ -202,25 +173,13 @@ def _submission_from_jsonl(row: dict[str, Any]) -> tuple[str, Submission]:
         kind = row["kind"]
     except KeyError as exc:
         raise CheckpointInvalid(f"submission row missing required field: {exc}") from exc
-    if kind == "ideation":
-        return task_id, IdeaSubmission(
-            status=row.get("status", "success"),
-            idea_ids=tuple(row.get("idea_ids") or ()),
-        )
-    if kind == "execution":
-        return task_id, VariantSubmission(
-            status=row.get("status", "success"),
-            variant_id=row["variant_id"],
-            commit_sha=row.get("commit_sha"),
-        )
-    if kind == "evaluation":
-        return task_id, EvaluationSubmission(
-            status=row.get("status", "success"),
-            variant_id=row["variant_id"],
-            evaluation=row.get("evaluation"),
-            artifacts_uri=row.get("artifacts_uri"),
-        )
-    raise CheckpointInvalid(f"unknown submission kind {kind!r}")
+    try:
+        submission = submission_from_payload(kind, row)
+    except ValueError as exc:
+        raise CheckpointInvalid(str(exc)) from exc
+    except KeyError as exc:
+        raise CheckpointInvalid(f"submission row missing required field: {exc}") from exc
+    return task_id, submission
 
 
 def _event_to_jsonl(event: Event) -> dict[str, Any]:
