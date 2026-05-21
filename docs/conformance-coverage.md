@@ -76,19 +76,19 @@ The auto-generator's line-coverage (above) counts a row as "covered" if any cite
 
 After the per-claim pass below, effective coverage by chapter:
 
-| Chapter | MUST/MUST-NOT rows audited | `(scenario)` | `(consequence)` | `(schema)` | `(restatement)` | `(impl-only)` | `(uncovered)` | Effective coverage |
-|---|---|---|---|---|---|---|---|---|
-| `02-data-model.md` | 36 | 14 | 1 | 17 | 3 | 5 | 0 | 89% |
-| `03-roles.md` | 28 | 17 | 5 | 2 | 2 | 2 | 0 | 86% |
-| `04-task-protocol.md` | 40 | 37 | 2 | 0 | 0 | 1 | 0 | 98% |
-| `05-event-protocol.md` | 24 | 16 | 3 | 1 | 0 | 4 | 0 | 83% |
-| `06-integrator.md` | 24 | 7 | 14 | 0 | 1 | 2 | 0 | 88% |
-| `07-wire-protocol.md` | 27 | 22 | 0 | 0 | 1 | 4 | 0 | 81% |
-| `08-storage.md` | 25 | 0 | 0 | 0 | 25 | 0 | 0 | 100% (restatement; canonical homes covered) |
-| `09-conformance.md` | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 100% (meta — describes the conformance contract itself) |
-| **Aggregate** | **205** | **113** | **25** | **20** | **33** | **18** | **0** | **88%** |
+| Chapter | MUST/MUST-NOT rows audited | Effective (`scenario` + `consequence` + `schema`) | Effective coverage |
+|---|---|---|---|
+| `02-data-model.md` | 46 | 36 | 78% |
+| `03-roles.md` | 29 | 26 | 90% |
+| `04-task-protocol.md` | 40 | 39 | 98% |
+| `05-event-protocol.md` | 23 | 17 | 74% |
+| `06-integrator.md` | 27 | 23 | 85% |
+| `07-wire-protocol.md` | 28 | 23 | 82% |
+| `08-storage.md` | 25 | 25 (restatement) | 100% (canonical homes covered) |
+| `09-conformance.md` | 1 | 1 (restatement) | 100% (meta — describes the conformance contract itself) |
+| **Aggregate** | **219** | **190** | **87%** |
 
-The aggregate effective coverage is **88%** (`(scenario)` + `(consequence)` + `(schema)` over the 205 MUST/MUST-NOT rows in scope). There are zero `(uncovered)` rows after the round-2 retagging — the previously-named chapter-04 §9.1 / §9.3 rows are `(consequence)` and `(impl-only)` respectively, with overlap on the §1.3 atomicity regression. The 33 `(restatement)` rows and 18 `(impl-only)` rows are softer gaps; the `(restatement)` set would close mechanically with cross-chapter ancestor walk or multi-citation in scenario docstrings.
+The aggregate effective coverage is **87%** (`(scenario)` + `(consequence)` + `(schema)` — plus `(restatement)` for chapters 08 + 09 where the canonical homes are wire-covered — over the 219 MUST/MUST-NOT rows in scope). There are zero `(uncovered)` rows after the round-2 retagging — the previously-named chapter-04 §9.1 / §9.3 rows are `(consequence)` and `(impl-only)` respectively, with overlap on the §1.3 atomicity regression. The remaining `(restatement)` and `(impl-only)` rows are softer gaps; the `(restatement)` set would close mechanically with cross-chapter ancestor walk or multi-citation in scenario docstrings. Per-tag breakdowns appear in each per-chapter section below.
 
 ### Chapter 02 — `02-data-model.md`
 
@@ -145,9 +145,9 @@ Chapter 02 defines entity shapes. Most MUSTs are schema-enforced; the runtime/be
 | §10 | 382 | MUST | evaluation/schema conformance for persisted metrics | `(restatement)` | Same as §9.2; covered by `Evaluator submission` group. |
 | §10 | 383 | MUST NOT | workers MUST NOT set `variant_commit_sha` directly | `(scenario)` | `integrate_variant` is the only path writing this field, and is `orchestrators`-group-gated; `test_integrator_atomicity.py` plus the `eden://error/forbidden` checks on other-role bearers cover the negative claim. |
 
-**Per-tag counts (after adding §5.1 lines 221 + 226; retagging §1.1 line 13 and §2.3 line 69; `(meta)` excluded):** `(scenario)` 14 · `(consequence)` 1 (one row also has `(schema)`) · `(schema)` 17 · `(restatement)` 3 · `(impl-only)` 5 · `(uncovered)` 0.
+**Per-tag counts (46 audited MUST/MUST-NOT rows; `(meta)` rows excluded):** `(scenario)` 21 · `(consequence)` 2 (one row is `(schema)` + `(consequence)`) · `(schema)` 14 · `(restatement)` 3 · `(impl-only)` 7 · `(uncovered)` 0.
 
-**Effective coverage**: 32 / 36 ≈ **89%**. The 5 `(impl-only)` rows are soft gaps where the rule is documentational or negative (artifact-store scheme documentation, removed-field interpretation, no-default-groups, reserved-group-name repurposing, store-broad identifier uniqueness, experiment-config forward-compat tolerance); none are load-bearing wire behavior.
+**Effective coverage**: 36 / 46 ≈ **78%**. The 7 `(impl-only)` rows are soft gaps where the rule is documentational or negative (store-broad identifier uniqueness, artifact-store scheme documentation, removed-field interpretation, objective-expression rejection, experiment-config forward-compat tolerance, no-default-groups, reserved-group-name repurposing); none are load-bearing wire behavior.
 
 ### Chapter 03 — `03-roles.md`
 
@@ -189,9 +189,9 @@ Per-role contracts. Many "worker MUST NOT write to X" rows are wire-projected as
 | §6.5 | (259-265) | MUST | manual mode delegates to admin/orchestrators callers via the same wire ops | `(scenario)` | Manual-mode coverage via `Dispatch mode` group. |
 | §6.6 | (270-274) | MUST | control-plane-bound deployment: every decision MUST be lease-gated | `(restatement)` | Canonical home [`11-control-plane.md`](../spec/v0/11-control-plane.md) §5.1; covered by `Lease decision gating` scenario group at `v1+multi-experiment` level. |
 
-**Per-tag counts (MUST/MUST-NOT rows; `(meta)` and `(list-header)` excluded):** `(scenario)` 17 · `(consequence)` 5 · `(schema)` 2 · `(restatement)` 2 · `(impl-only)` 2 · `(uncovered)` 0.
+**Per-tag counts (29 audited MUST/MUST-NOT rows; `(meta)` + `(list-header)` excluded):** `(scenario)` 17 · `(consequence)` 5 · `(schema)` 2 · `(restatement)` 2 · `(impl-only)` 2 · `(uncovered)` 0.
 
-**Effective coverage**: 24 / 28 ≈ **86%**. No real gaps; the previously-named gap on §3.3 line 97 closed via PR #70's `test_worker_branch_uniqueness.py`.
+**Effective coverage**: 24 / 29 ≈ **83%** (counting `(restatement)` rows raises to 26 / 29 ≈ 90% since both restatements point at chapters whose canonical homes are wire-covered). No real gaps; the previously-named gap on §3.3 line 97 closed via PR #70's `test_worker_branch_uniqueness.py`.
 
 ### Chapter 04 — `04-task-protocol.md` (re-line-numbered)
 
@@ -258,26 +258,26 @@ Event envelope + per-type payloads + delivery guarantees. Envelope shapes are sc
 | §2 | 33 | MUST | atomic state change + event append (transactional invariant) | `(consequence)` | Per ch09 §3; same regression test as §04 §1.3. |
 | §2 | 35 | MUST NOT | state change MUST NOT be observable before its event is durable | `(consequence)` | Same. |
 | §2.2 | (45-55) | MUST | composite transitions MUST commit together | `(scenario)` | `test_composite_commits.py` group covers the six composite transitions enumerated in §2.2 (dispatch / execute-terminal / evaluate-terminal / reclaim-with-variant / retry-exhausted eval-error / variant integration / reassign-claimed). |
-| §3.1 | (73-95) | MUST | task events: per-type required `data` fields | `(scenario)` + `(schema)` | `event.schema.json` `if/then` dispatch on `type` enforces shape; `test_event_payloads.py::test_task_event_required_fields_present` adds wire assertions. |
+| §3.1 | (73-95) | MUST | task events: per-type required `data` fields | `(scenario)` + `(schema)` | `event.schema.json` `if/then` dispatch on `type` enforces shape; six task-event tests in `test_event_payloads.py` (`test_task_created_carries_task_id_and_kind`, `test_task_claimed_carries_worker_id`, `test_task_submitted_carries_task_id`, `test_task_completed_carries_task_id`, `test_task_failed_carries_reason`, `test_task_reclaimed_carries_cause`) add wire assertions. |
 | §3.1 | 97 | MUST | subscribers MUST tolerate additional fields beyond required | `(impl-only)` | Forward-compat tolerance; no wire scenario probes a subscriber consuming an over-specified payload. |
-| §3.2 | (99-113) | MUST | idea events: per-type required fields | `(scenario)` + `(schema)` | Same — event.schema.json + `test_event_payloads.py::test_idea_event_*`. |
-| §3.3 | (115-134) | MUST | variant events: per-type required fields | `(scenario)` + `(schema)` | Same — `test_event_payloads.py::test_variant_event_*`. |
+| §3.2 | (99-113) | MUST | idea events: per-type required fields | `(scenario)` + `(schema)` | `event.schema.json` + four idea-event tests in `test_event_payloads.py` (`test_idea_drafted_carries_idea_id`, `test_idea_ready_carries_idea_id`, `test_idea_dispatched_carries_task_id`, `test_idea_completed_carries_task_id`). |
+| §3.3 | (115-134) | MUST | variant events: per-type required fields | `(scenario)` + `(schema)` | `event.schema.json` + five variant-event tests in `test_event_payloads.py` (`test_variant_started_carries_idea_id`, `test_variant_succeeded_carries_commit_sha`, `test_variant_errored_carries_variant_id`, `test_variant_eval_errored_carries_variant_id`, `test_variant_integrated_carries_variant_commit_sha`). |
 | §3.4 | (136-159) | MUST | experiment events: `dispatch_mode_changed`, `terminated`, `policy_error` | `(scenario)` + `(schema)` | `Dispatch mode` + `Termination decision` + emit_policy_error groups assert payload shape and cardinality. |
 | §3.5 | 163 | MUST, MUST NOT | subscriber w/ registered types MUST reconstruct lifecycle history; impl MUST NOT expose unmarked transition | `(scenario)` | `test_event_delivery.py::test_replay_repeatable` + `test_replay_from_cursor_zero_returns_all_events` exercise the lifecycle-reconstruction half via cursor=0 replay. |
 | §3.5 | 165 | MUST | subscriber needing entity content MUST `read_task` etc. by the id the event carries | `(impl-only)` | Subscriber-side guidance; not testable from wire. |
 | §3.6 | 171 | MUST NOT | non-registered events MUST NOT be required by conforming subscriber | `(impl-only)` | Subscriber-side. |
 | §3.6 | 173 | MUST NOT | non-registered event MUST NOT carry a registered `type` with non-conforming payload | `(consequence)` | Wire-side "free-form append" endpoint doesn't exist in the chapter-7 binding (events emit via protocol state changes); chapter 09 §6 wire-only IUT can't probe this. |
 | §4.1 | 181 | MUST | per-experiment total order | `(scenario)` | `test_event_delivery.py::test_total_order_per_experiment`. |
-| §4.2 | 185 | MUST | causal order respected; composite-commit events MAY appear in any order relative to each other | `(scenario)` | `test_composite_commits.py` group + `test_event_delivery.py::test_causal_predecessors_precede_successors`. |
+| §4.2 | 185 | MUST | causal order respected; composite-commit events MAY appear in any order relative to each other | `(scenario)` | `test_composite_commits.py` group asserts that composite-commit events for the same transition appear together in any order; chapter-7 binding's serialized event log preserves causal predecessors implicitly through the §4.1 total-order tests. |
 | §4.3 | 189 | MUST | at-least-once delivery | `(scenario)` | `test_event_delivery.py::test_subscribe_at_least_once_via_reconnect`. |
 | §4.3 | 191 | MUST NOT | implementations MUST NOT offer weaker than at-least-once | `(consequence)` | Same scenario proves at-least-once positively; a "weaker" implementation would fail it. Wire-projectable only via a negative-witness scenario that the suite does not author. |
 | §4.4 | 195 | MUST | replayability from first event for experiment lifetime | `(scenario)` | `test_event_delivery.py::test_replay_from_cursor_zero_returns_all_events`. |
 | §4.4 | 197 | MUST NOT | MUST NOT silently drop events during active lifetime | `(consequence)` | Same replay tests exercise post-event-acknowledge persistence; "silently drop during lifetime" is wire-projectable via replay-after-restart but no scenario does this explicitly. |
 | §4.5 | 201 | MUST, MUST NOT | acknowledged append durable through crash; ack'd event MUST NOT later disappear | `(restatement)` | Canonical home `08-storage.md` §3.1; covered by `test_experiment_durability.py` placeholder (per ch09 §5 `Experiment durability` group is a deferred scenario-authoring slot). |
 
-**Per-tag counts (after adding §3.1 line 97 and §4.3 line 191; excluding `(meta)`):** `(scenario)` 16 · `(consequence)` 3 · `(schema)` 1 · `(restatement)` 0 · `(impl-only)` 4 · `(uncovered)` 0.
+**Per-tag counts (23 audited MUST/MUST-NOT rows; excluding `(meta)`):** `(scenario)` 13 · `(consequence)` 3 · `(schema)` 1 · `(restatement)` 1 (§4.5 ack'd-event-durability → ch08 §3.1) · `(impl-only)` 5 · `(uncovered)` 0.
 
-**Effective coverage**: 20 / 24 ≈ **83%**. The four `(impl-only)` rows are subscriber-side rules (`occurred_at` not for ordering; non-registered types not required; subscriber-MUST-read-by-id; over-spec'd payload tolerance), which a wire-only IUT contract cannot probe.
+**Effective coverage**: 17 / 23 ≈ **74%**. The five `(impl-only)` rows are subscriber-side rules (`occurred_at` not for ordering; envelope shadowing not constructed; non-registered types not required; subscriber-MUST-read-by-id; over-spec'd payload tolerance), which a wire-only IUT contract cannot probe.
 
 ### Chapter 06 — `06-integrator.md`
 
@@ -314,9 +314,9 @@ Chapter 09 §6 explicitly defers chapter-06's git-side artifact MUSTs (squash sh
 | §5.2 | 183 | MUST | implementations MUST ensure ref durability before considering integration complete | `(impl-only)` | Storage-side durability; no wire test. |
 | §5.3 | (187-190) | MUST | repeat integration idempotent: same-SHA no-op; different-SHA corrupt | `(scenario)` | `test_integrate_idempotency.py::test_same_value_idempotency` + `::test_different_sha_returns_409`. |
 
-**Per-tag counts (excluding `(list-header)`):** `(scenario)` 7 · `(consequence)` 14 · `(schema)` 0 · `(restatement)` 1 · `(impl-only)` 2 · `(uncovered)` 0.
+**Per-tag counts (27 audited MUST/MUST-NOT rows; `(list-header)` excluded):** `(scenario)` 6 · `(consequence)` 17 · `(schema)` 0 · `(restatement)` 1 · `(impl-only)` 3 (§4.2 consumer-tolerance, §5.1 schema-revalidation, §5.2 ref-durability) · `(uncovered)` 0.
 
-**Effective coverage**: 21 / 24 ≈ **88%** (counting `(consequence)` as covered, per chapter 09 §4 v1+roles+integrator scope explicitly deferring git-side artifacts to a future binding). The 14 `(consequence)` rows are all "git-side artifact, not on the chapter-7 wire surface" — they are uncovered by design of the level.
+**Effective coverage**: 23 / 27 ≈ **85%** (counting `(scenario)` + `(consequence)`, per chapter 09 §4 v1+roles+integrator scope explicitly deferring git-side artifacts to a future binding). The 17 `(consequence)` rows are all "git-side artifact, not on the chapter-7 wire surface" — they are uncovered by design of the level.
 
 ### Chapter 07 — `07-wire-protocol.md`
 
@@ -324,10 +324,10 @@ HTTP binding for chapters 4 / 5 / 6 / 8. Most MUSTs are URL shapes, error vocabu
 
 | § | Line | Keyword(s) | Claim summary | Tag | Notes |
 |---|---|---|---|---|---|
-| §1.1 | 13 | MUST, MUST NOT | accept HTTP/1.1 over TCP; application/json (or problem+json); 204 MUST NOT carry body | `(scenario)` | `test_status_codes.py::test_integrate_success_response_body_is_empty` (per `Status codes` group's chapter-7 §1.1 empty-body assertion) + `test_problem_json.py::test_problem_json_content_type`. |
+| §1.1 | 13 | MUST, MUST NOT | accept HTTP/1.1 over TCP; application/json (or problem+json); 204 MUST NOT carry body | `(scenario)` | `test_status_codes.py::test_integrate_success_response_body_is_empty` (per `Status codes` group's chapter-7 §1.1 empty-body assertion) + the four `test_problem_json.py::test_problem_json_*` per-status tests (400 / 403 / 404 / 409) assert the `application/problem+json` content type on non-2xx responses. |
 | §1.2 | 17 | MUST NOT | clients MUST NOT rely on `/_reference/` endpoints | `(impl-only)` | Client-side rule; wire scenarios don't probe non-reliance. |
 | §1.3 | 23 | MUST | every request MUST send `X-Eden-Experiment-Id` matching path | `(scenario)` | `test_experiment_id_header.py::test_header_disagrees_returns_400`. |
-| §1.3 | 25 | MUST | checkpoint endpoints: header optional, MUST equal manifest id when present | `(scenario)` | `test_checkpoint_preconditions.py::test_header_mismatch_rejected` (at `v1+checkpoints` level). |
+| §1.3 | 25 | MUST | checkpoint endpoints: header optional, MUST equal manifest id when present | `(scenario)` | `test_checkpoint_preconditions.py::test_header_mismatch_returns_400` (at `v1+checkpoints` level). |
 | §2 | (52-57) | MUST | per-op authority gating: `create_task` admin/orchestrators; `accept`/`reject` orchestrators; `reassign`/`update_dispatch_mode`/`terminate` admins; `claim`/`submit` registered worker | `(scenario)` | `test_worker_auth_enabled.py::test_admin_bearer_on_worker_gated_endpoint_returns_403` + `::test_worker_bearer_on_admin_gated_endpoint_returns_403`; per-op group-gate enforcement covered by `Reassignment` / `Dispatch mode` / `Termination decision` / `Checkpoint authority` non-`<group>` tests. |
 | §2.1 | (67-71) | MUST | per-kind `create_task` authority (ideation/execution/evaluation: admins ∪ orchestrators); outside-group caller 403 | `(scenario)` | `test_worker_auth_enabled.py::test_create_task_stamps_created_by_from_principal` + `::test_create_task_rejects_spoofed_created_by`. |
 | §2.3 | 80 | MUST, MUST NOT | claim binding: target-eligibility ladder atomic with claim write; `worker_id` from bearer not body | `(scenario)` | `test_claim_eligibility.py` group + `test_worker_auth.py::test_two_clients_disagreeing_on_worker_id_rejected`. |
@@ -353,9 +353,9 @@ HTTP binding for chapters 4 / 5 / 6 / 8. Most MUSTs are URL shapes, error vocabu
 | §14 | (433-500) | MUST | checkpoint endpoints (admin-gated; either-auth read) | `(scenario)` | `Checkpoint authority` + `Checkpoint round-trip` + `Recovery probe` groups at `v1+checkpoints` level. |
 | §15 | (502-583) | MUST | control-plane endpoints (deployment-rooted; lease ops; deployment-scoped registry) | `(scenario)` | All ten `v1+multi-experiment` scenario groups cite §15 sub-sections. |
 
-**Per-tag counts (after adding §2 / §2.1 / §2.3 / §2.5 / §4 authority rows):** `(scenario)` 22 · `(consequence)` 0 · `(schema)` 0 · `(restatement)` 1 (§10.2 integrate same-value idempotency) · `(impl-only)` 4 (§1.2, §2.10, §10.3, §13.5) · `(uncovered)` 0.
+**Per-tag counts (28 audited MUST/MUST-NOT rows, including the round-2 §2 / §2.1 / §2.3 / §2.5 / §4 authority rows):** `(scenario)` 23 · `(consequence)` 0 · `(schema)` 0 · `(restatement)` 1 (§10.2 integrate same-value idempotency) · `(impl-only)` 4 (§1.2, §2.10, §10.3, §13.5) · `(uncovered)` 0.
 
-**Effective coverage**: 22 / 27 ≈ **81%**. The four `(impl-only)` rows are client-side / log-discipline / unprobed-endpoint rules a wire scenario cannot reach from a server-as-IUT perspective. The previously-named gap on §1.1 line 13 was closed via PR #70 (now covered by `test_status_codes.py::test_integrate_success_response_body_is_empty`).
+**Effective coverage**: 23 / 28 ≈ **82%**. The four `(impl-only)` rows are client-side / log-discipline / unprobed-endpoint rules a wire scenario cannot reach from a server-as-IUT perspective. The previously-named gap on §1.1 line 13 was closed via PR #70 (now covered by `test_status_codes.py::test_integrate_success_response_body_is_empty`).
 
 ### Chapter 08 — `08-storage.md`
 
@@ -368,7 +368,7 @@ Chapter 08 is the storage-side restatement of the behavioral contracts in chapte
 | §1.2 | 30 | MUST | linearizable claim | `(restatement)` | `04-task-protocol.md` §3.1; `test_claim_atomicity.py`. |
 | §1.3 | 36 | MUST | atomic claim-match on submit | `(restatement)` | `04-task-protocol.md` §4.1; `test_claim_ownership.py::test_submit_by_wrong_worker_rejected`. |
 | §1.4 | 42 | MUST | idempotent resubmit | `(restatement)` | `04-task-protocol.md` §4.2; `test_submit_idempotency.py` group. |
-| §1.5 | 46 | MUST | terminal immutability | `(restatement)` | `04-task-protocol.md` §4.4; `test_task_lifecycle.py::test_terminal_*_rejects_writes`. |
+| §1.5 | 46 | MUST | terminal immutability | `(restatement)` | `04-task-protocol.md` §4.4; `test_task_lifecycle.py::test_terminal_completed_rejects_writes` + `::test_terminal_failed_rejects_writes`. |
 | §1.6 | 50 | MUST, MUST NOT | per-task serialization; MUST NOT expose state without event | `(restatement)` | `04-task-protocol.md` §9.1, §1.3; `test_atomicity.py`. |
 | §1.7 | 54 | MUST | ideas + variants supported ops | `(restatement)` | `07-wire-protocol.md` §§3-4; every per-role scenario exercises create/read/list/update. |
 | §1.7 | 61 | MUST | idea + variant writes MUST commit atomically with events | `(restatement)` | `05-event-protocol.md` §2.2; `test_composite_commits.py` group. |
