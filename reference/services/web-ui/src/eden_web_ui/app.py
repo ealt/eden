@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import admin as admin_routes
+from .routes import admin_artifacts as admin_artifacts_routes
 from .routes import admin_experiments as admin_experiments_routes
 from .routes import admin_groups as admin_groups_routes
 from .routes import admin_workers as admin_workers_routes
@@ -112,6 +113,7 @@ def make_app(
     app.include_router(admin_routes.router)
     app.include_router(admin_workers_routes.router)
     app.include_router(admin_groups_routes.router)
+    app.include_router(admin_artifacts_routes.router)
     app.include_router(artifacts_routes.router)
     if control_plane is not None:
         app.include_router(admin_experiments_routes.router)

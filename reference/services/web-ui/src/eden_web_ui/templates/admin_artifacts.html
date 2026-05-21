@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin artifacts{% endblock %}
+{% block main %}
+<h1>artifacts</h1>
+
+<p class="lead">
+    Read-only directory listing of <code>{{ artifacts_dir }}</code>
+    (the configured <code>--artifacts-dir</code>). Each entry links
+    to the existing <code>/artifacts?uri=&hellip;</code> serving route.
+</p>
+
+{% if not entries %}
+<div class="banner banner-warn">
+    no artifact files found.
+    scripted-mode deployments produce no artifact files; this is
+    the expected empty state. Subprocess-mode workers (ideator /
+    executor / evaluator with a <code>*_command</code> configured)
+    write real bytes here.
+</div>
+{% else %}
+<section>
+    <h2>files ({{ entries | length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>path</th>
+                <th>size (bytes)</th>
+                <th>mtime (UTC)</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for e in entries %}
+            <tr>
+                <td><a href="/artifacts?uri={{ e.serve_uri | urlencode }}"><code>{{ e.rel_path }}</code></a></td>
+                <td>{{ e.size }}</td>
+                <td>{{ e.mtime }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+{% endblock %}
