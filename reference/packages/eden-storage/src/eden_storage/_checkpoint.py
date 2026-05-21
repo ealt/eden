@@ -468,6 +468,153 @@ def import_checkpoint(
     return result
 
 
+@dataclass(frozen=True)
+class _ParsedArchive:
+    """Typed payload of a checkpoint archive, ready for atomic commit.
+
+    Populated by :func:`_parse_archive` before any store-modifying work
+    so a malformed row raises ``CheckpointInvalid`` outside the atomic
+    transaction.
+    """
+
+    target_id: str
+    experiment_row: dict[str, Any]
+    experiment_config: Any
+    bundle_path: Path
+    artifact_digests: tuple[str, ...]
+    tasks: list[Task]
+    ideas: list[Idea]
+    variants: list[Variant]
+    submissions: list[tuple[str, Submission]]
+    events: list[Event]
+    workers: list[Worker]
+    groups: list[Group]
+
+
+def _parse_archive(
+    reader: CheckpointReader, *, target_id: str, source_id: str
+) -> _ParsedArchive:
+    """Read + rewrite + type-validate every archive row.
+
+    Any structural failure raises ``CheckpointInvalid`` here, BEFORE
+    the caller opens the atomic transaction — so a malformed archive
+    cannot partially commit.
+    """
+    experiment_row = reader.read_experiment()
+    experiment_config = reader.read_experiment_config()
+    bundle_path = reader.read_repo_bundle_path()
+    artifact_digests = tuple(reader.iter_artifact_digests())
+
+    tasks_rows = list(reader.iter_jsonl("tasks"))
+    ideas_rows = list(reader.iter_jsonl("ideas"))
+    variants_rows = list(reader.iter_jsonl("variants"))
+    submissions_rows = list(reader.iter_jsonl("submissions"))
+    events_rows = list(reader.iter_jsonl("events"))
+    workers_rows = list(reader.iter_jsonl("workers"))
+    groups_rows = list(reader.iter_jsonl("groups"))
+
+    # Rewrite each experiment_id reference inside the rows to the target
+    # id (handles the `as_experiment_id` override case). The
+    # `02-data-model.md` invariants want every row's `experiment_id`
+    # to agree with the experiment scope.
+    if target_id != source_id:
+        _rewrite_experiment_id(tasks_rows, source_id, target_id)
+        _rewrite_experiment_id(ideas_rows, source_id, target_id)
+        _rewrite_experiment_id(variants_rows, source_id, target_id)
+        _rewrite_experiment_id(events_rows, source_id, target_id)
+        _rewrite_experiment_id(workers_rows, source_id, target_id)
+        _rewrite_experiment_id(groups_rows, source_id, target_id)
+
+    return _ParsedArchive(
+        target_id=target_id,
+        experiment_row=experiment_row,
+        experiment_config=experiment_config,
+        bundle_path=bundle_path,
+        artifact_digests=artifact_digests,
+        tasks=[_validate_task(row) for row in tasks_rows],
+        ideas=[_validate_idea(row) for row in ideas_rows],
+        variants=[_validate_variant(row) for row in variants_rows],
+        submissions=[_submission_from_jsonl(row) for row in submissions_rows],
+        events=[_event_from_jsonl(row) for row in events_rows],
+        workers=[_validate_worker(row) for row in workers_rows],
+        groups=[_validate_group(row) for row in groups_rows],
+    )
+
+
+def _apply_archive_commit(
+    store: _StoreBase,
+    parsed: _ParsedArchive,
+    manifest: CheckpointManifest,
+) -> None:
+    """Atomic commit of a parsed + cross-ref-validated archive.
+
+    Empty-check, _Tx population, _apply_commit, and event-counter
+    reseed all run inside a single ``_atomic_operation`` so a
+    concurrent emit cannot slip between commit and reseed.
+    """
+    with store._atomic_operation():
+        if not _is_store_empty(store):
+            raise ExperimentIdConflict(
+                f"target store for experiment {parsed.target_id!r} already has "
+                "Store-managed state; import would silently merge"
+            )
+
+        # Stage every row + the experiment-side fields into a single _Tx
+        # so the commit is atomic.
+        tx = _Tx()
+        for task in parsed.tasks:
+            tx.tasks[task.task_id] = task
+        for idea in parsed.ideas:
+            tx.ideas[idea.idea_id] = idea
+        for variant in parsed.variants:
+            tx.variants[variant.variant_id] = variant
+        for task_id, submission in parsed.submissions:
+            tx.submissions[task_id] = submission
+        for worker in parsed.workers:
+            tx.workers[worker.worker_id] = worker
+            # `register_worker` would mint a real credential; here we
+            # synthesize a sentinel so the row inserts cleanly and any
+            # subsequent `verify_worker_credential` returns False until
+            # `reissue_credential` runs.
+            tx.worker_credentials[worker.worker_id] = (
+                _IMPORT_PLACEHOLDER_CREDENTIAL_HASH_PREFIX
+                + secrets.token_hex(16)
+            )
+        for group in parsed.groups:
+            tx.groups[group.group_id] = group
+        # Events are inserted verbatim. Their event_ids retain the
+        # source's values; the receiving backend's default event-id
+        # factory may collide on subsequent appends — that's a wave-4
+        # concern, since the wire layer can advance the factory's
+        # counter from the imported max if needed.
+        tx.events.extend(parsed.events)
+        # Apply the experiment's dispatch_mode if it deviates from
+        # default.
+        dispatch_mode = parsed.experiment_row.get("dispatch_mode")
+        if dispatch_mode and dispatch_mode != _DEFAULT_DISPATCH_MODE:
+            tx.dispatch_mode = dict(dispatch_mode)
+        # Apply the experiment's state.
+        state = parsed.experiment_row.get("state")
+        if state and state != "running":
+            tx.experiment_state = state
+        # Record import provenance.
+        tx.imported_from_update = (
+            ImportProvenance(
+                checkpoint_exported_at=manifest.exported_at,
+                checkpoint_format_version=manifest.checkpoint_format_version,
+            ),
+        )
+        store._apply_commit(tx)
+        # Reseed the live store's default event-id counter past the
+        # imported max so the next emitted event does not collide on
+        # the UNIQUE constraint. The reseed is a no-op when the caller
+        # supplied a custom ``event_id_factory`` (their responsibility)
+        # and when the imported events don't use the ``evt-NNNNNN``
+        # format. Runs inside the same atomic context as the commit so
+        # a concurrent emit can't slip between commit and reseed.
+        store._reseed_default_event_counter()
+
+
 def _commit_import(
     store: _StoreBase,
     reader: CheckpointReader,
@@ -490,44 +637,9 @@ def _commit_import(
             f"as_experiment_id={as_experiment_id!r})"
         )
 
-    # Parse archive payload eagerly so any structural failure surfaces
-    # before we open the atomic transaction.
-    experiment_row = reader.read_experiment()
-    experiment_config = reader.read_experiment_config()
-    bundle_path = reader.read_repo_bundle_path()
-    artifact_digests = tuple(reader.iter_artifact_digests())
-
-    tasks_rows = list(reader.iter_jsonl("tasks"))
-    ideas_rows = list(reader.iter_jsonl("ideas"))
-    variants_rows = list(reader.iter_jsonl("variants"))
-    submissions_rows = list(reader.iter_jsonl("submissions"))
-    events_rows = list(reader.iter_jsonl("events"))
-    workers_rows = list(reader.iter_jsonl("workers"))
-    groups_rows = list(reader.iter_jsonl("groups"))
-
-    # Rewrite each experiment_id reference inside the rows to the target
-    # id (handles the `as_experiment_id` override case). The
-    # `02-data-model.md` invariants want every row's `experiment_id`
-    # to agree with the experiment scope.
-    source_id = manifest.experiment_id
-    if target_id != source_id:
-        _rewrite_experiment_id(tasks_rows, source_id, target_id)
-        _rewrite_experiment_id(ideas_rows, source_id, target_id)
-        _rewrite_experiment_id(variants_rows, source_id, target_id)
-        _rewrite_experiment_id(events_rows, source_id, target_id)
-        _rewrite_experiment_id(workers_rows, source_id, target_id)
-        _rewrite_experiment_id(groups_rows, source_id, target_id)
-
-    # Build typed objects up-front so a malformed row raises BEFORE we
-    # open the transaction. Any validation failure is `CheckpointInvalid`
-    # rather than a half-committed import.
-    tasks = [_validate_task(row) for row in tasks_rows]
-    ideas = [_validate_idea(row) for row in ideas_rows]
-    variants = [_validate_variant(row) for row in variants_rows]
-    submissions = [_submission_from_jsonl(row) for row in submissions_rows]
-    events = [_event_from_jsonl(row) for row in events_rows]
-    workers = [_validate_worker(row) for row in workers_rows]
-    groups = [_validate_group(row) for row in groups_rows]
+    parsed = _parse_archive(
+        reader, target_id=target_id, source_id=manifest.experiment_id
+    )
 
     # Cross-reference validation per chapter 10 §12 — runs BEFORE the
     # atomic transaction so a malformed archive cannot partially
@@ -536,79 +648,19 @@ def _commit_import(
     # without `--repo-path`) emits a zero-byte placeholder; the check
     # is meaningful only when the bundle ships real history.
     _validate_bundle_cross_references(
-        bundle_path=bundle_path,
+        bundle_path=parsed.bundle_path,
         extract_root=extract_root,
-        variants=variants,
-        ideas=ideas,
+        variants=parsed.variants,
+        ideas=parsed.ideas,
     )
 
-    with store._atomic_operation():
-        if not _is_store_empty(store):
-            raise ExperimentIdConflict(
-                f"target store for experiment {target_id!r} already has "
-                "Store-managed state; import would silently merge"
-            )
-
-        # Stage every row + the experiment-side fields into a single _Tx
-        # so the commit is atomic.
-        tx = _Tx()
-        for task in tasks:
-            tx.tasks[task.task_id] = task
-        for idea in ideas:
-            tx.ideas[idea.idea_id] = idea
-        for variant in variants:
-            tx.variants[variant.variant_id] = variant
-        for task_id, submission in submissions:
-            tx.submissions[task_id] = submission
-        for worker in workers:
-            tx.workers[worker.worker_id] = worker
-            # `register_worker` would mint a real credential; here we
-            # synthesize a sentinel so the row inserts cleanly and any
-            # subsequent `verify_worker_credential` returns False until
-            # `reissue_credential` runs.
-            tx.worker_credentials[worker.worker_id] = (
-                _IMPORT_PLACEHOLDER_CREDENTIAL_HASH_PREFIX
-                + secrets.token_hex(16)
-            )
-        for group in groups:
-            tx.groups[group.group_id] = group
-        # Events are inserted verbatim. Their event_ids retain the
-        # source's values; the receiving backend's default event-id
-        # factory may collide on subsequent appends — that's a wave-4
-        # concern, since the wire layer can advance the factory's
-        # counter from the imported max if needed.
-        tx.events.extend(events)
-        # Apply the experiment's dispatch_mode if it deviates from
-        # default.
-        dispatch_mode = experiment_row.get("dispatch_mode")
-        if dispatch_mode and dispatch_mode != _DEFAULT_DISPATCH_MODE:
-            tx.dispatch_mode = dict(dispatch_mode)
-        # Apply the experiment's state.
-        state = experiment_row.get("state")
-        if state and state != "running":
-            tx.experiment_state = state
-        # Record import provenance.
-        tx.imported_from_update = (
-            ImportProvenance(
-                checkpoint_exported_at=manifest.exported_at,
-                checkpoint_format_version=manifest.checkpoint_format_version,
-            ),
-        )
-        store._apply_commit(tx)
-        # Reseed the live store's default event-id counter past the
-        # imported max so the next emitted event does not collide on
-        # the UNIQUE constraint. The reseed is a no-op when the caller
-        # supplied a custom ``event_id_factory`` (their responsibility)
-        # and when the imported events don't use the ``evt-NNNNNN``
-        # format. Runs inside the same atomic context as the commit so
-        # a concurrent emit can't slip between commit and reseed.
-        store._reseed_default_event_counter()
+    _apply_archive_commit(store, parsed, manifest)
 
     return ImportResult(
-        experiment_id=target_id,
-        experiment_config=experiment_config,
-        repo_bundle_path=bundle_path,
-        artifact_digests=tuple(sorted(artifact_digests)),
+        experiment_id=parsed.target_id,
+        experiment_config=parsed.experiment_config,
+        repo_bundle_path=parsed.bundle_path,
+        artifact_digests=tuple(sorted(parsed.artifact_digests)),
         manifest=manifest,
         extract_root=extract_root,
     )
