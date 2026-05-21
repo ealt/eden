@@ -1,0 +1,402 @@
+diff --git a/docs/user-guide.md b/docs/user-guide.md
+index 062c444..f974322 100644
+--- a/docs/user-guide.md
++++ b/docs/user-guide.md
+@@ -52,15 +52,14 @@ Every experiment is driven by a YAML config validated against [`spec/v0/schemas/
+ | Field | Type | Required | Notes |
+ |---|---|---|---|
+ | `parallel_variants` | integer ≥ 1 | yes | Max variants in flight simultaneously. |
+-| `max_variants` | integer ≥ 1 | yes | Hard ceiling on variants attempted. |
+-| `max_wall_time` | string `^[1-9][0-9]*[smhd]$` | yes | Hard wall-time ceiling, e.g. `10m`, `4h`. |
+ | `evaluation_schema` | map | yes | Field name → one of `"integer"`, `"real"`, `"text"`. Reserved names (`variant_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at`) are forbidden. |
+ | `objective.expr` | string | yes | Scalar expression over `evaluation_schema` fields. |
+ | `objective.direction` | `"maximize"` \| `"minimize"` | yes | |
+-| `convergence_window` | integer ≥ 1 | no | Terminate if the objective hasn't improved in this many variants. |
+-| `target_condition` | string | no | Termination predicate over evaluation. |
++| `dispatch_mode.<key>` | `"auto"` \| `"manual"` | no | Per-key gate on the orchestrator's five decision types (`termination` defaults to `"manual"`; the four operational keys default to `"auto"`). See [`02-data-model.md`](../spec/v0/02-data-model.md) §2.4. |
+ | `ideation_command` / `execution_command` / `evaluation_command` | string | no (impl-specific) | Shell commands to invoke for [subprocess mode](#3-worker-host-modes). Travel under additional-properties; the spec defers role-bindings to a future chapter. |
+ 
++The pre-12a-3 termination fields (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) are **removed** from the normative schema. Termination is now a deployment-supplied policy callable per [`03-roles.md`](../spec/v0/03-roles.md) §6.2 decision-type 0 — see [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md) for the operator playbook. Configs that still carry the old fields validate (they round-trip under the schema's permissive additional-properties posture) but the orchestrator ignores them.
++
+ Concrete example — the repo's fixture at [`tests/fixtures/experiment/.eden/config.yaml`](../tests/fixtures/experiment/.eden/config.yaml):
+ 
+ ```yaml
+@@ -68,8 +67,6 @@ parallel_variants: 1
+ evaluation_command: "python3 ${EDEN_EXPERIMENT_DIR}/evaluation.py"
+ execution_command: "python3 ${EDEN_EXPERIMENT_DIR}/execution.py"
+ ideation_command: "python3 ${EDEN_EXPERIMENT_DIR}/ideation.py"
+-max_variants: 20
+-max_wall_time: "10m"
+ evaluation_schema:
+   score: real
+ objective:
+diff --git a/reference/packages/eden-dispatch/src/eden_dispatch/driver.py b/reference/packages/eden-dispatch/src/eden_dispatch/driver.py
+index 6089ca3..78fe7c0 100644
+--- a/reference/packages/eden-dispatch/src/eden_dispatch/driver.py
++++ b/reference/packages/eden-dispatch/src/eden_dispatch/driver.py
+@@ -273,15 +273,18 @@ def _terminate_if_directed(
+ def _emit_policy_error_best_effort(
+     store: Store, *, error_type: str, error_message: str
+ ) -> None:
+-    """Append ``experiment.policy_error`` if the Store supports it; else log only.
+-
+-    ``StoreClient`` (the wire-binding-backed Store) currently raises
+-    :class:`NotImplementedError` from this method — the wire endpoint
+-    lands in a follow-up to wave 4. In-process Stores (memory / sqlite
+-    / postgres) append the event normally. Catching the
+-    ``NotImplementedError`` here keeps the orchestrator service
+-    operational against a remote task-store; the operator-visibility
+-    cost is documented in the policy-error spec note.
++    """Append ``experiment.policy_error`` for the §6.2 fault-tolerance MUST.
++
++    All three backends — in-process Stores (memory / sqlite /
++    postgres) and the wire-bound ``StoreClient`` — implement
++    ``emit_policy_error``; the wire path posts to
++    ``POST /v0/experiments/{E}/policy-errors`` (chapter 07
++    §2.9-adjacent endpoint added in 12a-3 wave 7). The "best-effort"
++    naming is preserved because a transient transport failure on the
++    emit path still degrades to log-only: a single failed
++    fault-observability emit MUST NOT cascade into a stuck
++    orchestrator iteration, per the chapter 03 §6.2 fault-tolerance
++    posture.
+     """
+     try:
+         store.emit_policy_error(
+diff --git a/reference/packages/eden-storage/src/eden_storage/_postgres_schema.py b/reference/packages/eden-storage/src/eden_storage/_postgres_schema.py
+index f5dd7a0..d06c8f2 100644
+--- a/reference/packages/eden-storage/src/eden_storage/_postgres_schema.py
++++ b/reference/packages/eden-storage/src/eden_storage/_postgres_schema.py
+@@ -150,18 +150,22 @@ def _apply_v4(cur: Any) -> None:
+ 
+ 
+ # 12a-3: parallels the SQLite v5 migration. Adds `state` and
+-# `created_at` to the experiment row and rewrites the persisted
+-# `dispatch_mode` to include the new `termination: "manual"` key.
+-# Pre-12a-3 rows pick up the 1970 sentinel for `created_at`;
+-# deployments that care can rewrite the row out-of-band.
++# `created_at` to the experiment row and patches the persisted
++# `dispatch_mode` to include the new `termination: "manual"` key
++# WITHOUT clobbering any forward-compat keys persisted under the
++# `02-data-model.md` §2.4 unknown-keys-tolerated rule. The
++# Postgres ``jsonb || jsonb`` operator is RFC 7396-merge-equivalent:
++# right-hand-side keys win, others are preserved. Cast through
++# `jsonb` (the column is `text` per the chunk-10b parity decision)
++# and back. Skip rows that already carry a `termination` key so
++# pre-set values aren't downgraded to the default.
+ _V5_STATEMENTS: list[str] = [
+     "ALTER TABLE experiment ADD COLUMN state text NOT NULL DEFAULT 'running'",
+     "ALTER TABLE experiment ADD COLUMN created_at text NOT NULL "
+     "DEFAULT '1970-01-01T00:00:00Z'",
+     "UPDATE experiment SET dispatch_mode = "
+-    "'{\"termination\":\"manual\",\"ideation_creation\":\"auto\","
+-    "\"execution_dispatch\":\"auto\",\"evaluation_dispatch\":\"auto\","
+-    "\"integration\":\"auto\"}'",
++    "(dispatch_mode::jsonb || '{\"termination\":\"manual\"}'::jsonb)::text "
++    "WHERE (dispatch_mode::jsonb ->> 'termination') IS NULL",
+ ]
+ 
+ 
+diff --git a/reference/packages/eden-storage/src/eden_storage/_schema.py b/reference/packages/eden-storage/src/eden_storage/_schema.py
+index 6e1110e..eec6891 100644
+--- a/reference/packages/eden-storage/src/eden_storage/_schema.py
++++ b/reference/packages/eden-storage/src/eden_storage/_schema.py
+@@ -179,22 +179,27 @@ def _apply_v4(conn: sqlite3.Connection) -> None:
+ # extra plumbing. Pre-12a-3 rows pick up `state='running'` (every
+ # unterminated experiment) and a sentinel `created_at` that signals
+ # "we don't actually know" — deployments that care can rewrite the
+-# row out-of-band. The `dispatch_mode` default is also rewritten to
+-# include the new `termination: "manual"` key; existing rows are
+-# UPDATEd in place so the merged 5-key shape is what reads see.
++# row out-of-band. The `dispatch_mode` field is patched in place:
++# any unknown extension keys persisted under `02-data-model.md` §2.4
++# forward-compatibility are preserved, and the new `termination` key
++# is added only when missing (using `json_patch`, an RFC 7396 merge
++# that keys-in-target win over keys-in-source). A naive
++# whole-column REWRITE would silently clobber forward-compat keys,
++# violating the §2.4 tolerance contract.
+ _V5_STATEMENTS: list[str] = [
+     "ALTER TABLE experiment ADD COLUMN state text NOT NULL DEFAULT 'running'",
+     "ALTER TABLE experiment ADD COLUMN created_at text NOT NULL "
+     "DEFAULT '1970-01-01T00:00:00Z'",
+-    # Update the dispatch_mode DEFAULT for future inserts and rewrite
+-    # the existing rows in place so reads see the 5-key shape.
+-    # SQLite does not support ALTER COLUMN DEFAULT directly; the
+-    # existing default carries through (DEFAULT only applies to new
+-    # rows, and there is exactly one experiment row per database).
++    # `json_patch(target, source)` returns the source merged ON TOP
++    # of target — meaning keys present in both are taken from
++    # `source`. To preserve target's existing values for the four
++    # operational keys while ADDING the new `termination` key only
++    # when missing, we patch in only `{"termination": "manual"}`.
++    # Existing `termination` values (if a deployment somehow already
++    # set one) and all other keys round-trip unchanged.
+     "UPDATE experiment SET dispatch_mode = "
+-    "'{\"termination\":\"manual\",\"ideation_creation\":\"auto\","
+-    "\"execution_dispatch\":\"auto\",\"evaluation_dispatch\":\"auto\","
+-    "\"integration\":\"auto\"}'",
++    "json_patch(dispatch_mode, '{\"termination\":\"manual\"}') "
++    "WHERE json_extract(dispatch_mode, '$.termination') IS NULL",
+ ]
+ 
+ 
+diff --git a/reference/packages/eden-wire/src/eden_wire/client.py b/reference/packages/eden-wire/src/eden_wire/client.py
+index 9dd96f9..ac27d71 100644
+--- a/reference/packages/eden-wire/src/eden_wire/client.py
++++ b/reference/packages/eden-wire/src/eden_wire/client.py
+@@ -904,26 +904,35 @@ class StoreClient:
+     def emit_policy_error(
+         self,
+         *,
+-        policy_kind: str,  # noqa: ARG002 — wire endpoint not yet wired
+-        error_type: str,  # noqa: ARG002 — wire endpoint not yet wired
+-        error_message: str,  # noqa: ARG002 — wire endpoint not yet wired
++        policy_kind: str,
++        error_type: str,
++        error_message: str,
+     ) -> None:
+-        """Not yet wired through HTTP — orchestrator service uses in-process Store path.
+-
+-        The ``experiment.policy_error`` event is registered per
+-        [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
+-        §3.4 but is fault-output, not state-change, and the policy-driven
+-        emit path runs inside the orchestrator service today
+-        (`reference/services/orchestrator/`). A future chapter-7 binding
+-        for emit will land alongside Phase 12c control-plane work; until
+-        then, callers that exercise the StoreClient path catch this
+-        :class:`NotImplementedError` and fall back to a structured log.
++        """Append an ``experiment.policy_error`` event over the wire.
++
++        Posts to ``POST /v0/experiments/{E}/policy-errors`` (the
++        12a-3 wave-7 follow-up endpoint added to satisfy the
++        ``03-roles.md`` §6.2 decision-type 0 fault-tolerance MUST
++        through the wire-bound orchestrator service). Authority:
++        ``orchestrators`` — caller's bearer MUST be a member of that
++        group per chapter 07 §13.3. The route returns 204 on success.
++
++        No read-back ladder is needed: the event is exempt from the
++        ``05-event-protocol.md`` §2 transactional invariant (no state
++        mutation pairs with it), so a transport-indeterminate failure
++        is an at-most-once observability gap, not a state-correctness
++        risk. The driver layer catches generic ``Exception`` and
++        degrades to a structured log so a single failed emit cannot
++        cascade into a stuck orchestrator iteration.
+         """
+-        raise NotImplementedError(
+-            "StoreClient.emit_policy_error has no wire endpoint in v0; "
+-            "the orchestrator's in-process Store path handles event "
+-            "emission. See 05-event-protocol.md §3.4."
+-        )
++        path = f"{self._base}/policy-errors"
++        body = {
++            "policy_kind": policy_kind,
++            "error_type": error_type,
++            "error_message": error_message,
++        }
++        resp = self._request("POST", path, json=body)
++        resp.raise_for_status()
+ 
+     def terminate_experiment(
+         self, *, reason: str, terminated_by: str  # noqa: ARG002 — server stamps it
+diff --git a/reference/packages/eden-wire/src/eden_wire/models.py b/reference/packages/eden-wire/src/eden_wire/models.py
+index e1e0fa8..99cb6d4 100644
+--- a/reference/packages/eden-wire/src/eden_wire/models.py
++++ b/reference/packages/eden-wire/src/eden_wire/models.py
+@@ -258,6 +258,28 @@ class ExperimentStateResponse(_WireBase):
+     state: Literal["running", "terminated"]
+ 
+ 
++class PolicyErrorRequest(_WireBase):
++    """Body for ``POST /v0/experiments/{E}/policy-errors`` (12a-3 wave 7).
++
++    The orchestrator posts here when a termination-policy callable
++    raises, so the registered ``experiment.policy_error`` event
++    ([`05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
++    §3.4) lands in the event log per chapter 03 §6.2 decision-type 0's
++    fault-tolerance subsection. The event is exempt from the §2
++    transactional invariant: there is no protocol-owned state mutation
++    pairs with it; this is a single-event append.
++
++    Three fields per the registered schema: ``policy_kind`` (v0
++    defines ``"termination"``; future decision types MAY add new
++    values), ``error_type`` (the exception class name), and
++    ``error_message`` (the exception's ``str()`` representation).
++    """
++
++    policy_kind: Annotated[str, Field(min_length=1)]
++    error_type: Annotated[str, Field(min_length=1)]
++    error_message: str
++
++
+ __all__ = [
+     "AddGroupMemberRequest",
+     "ClaimRequest",
+@@ -267,6 +289,7 @@ __all__ = [
+     "EventsResponse",
+     "ExperimentStateResponse",
+     "IntegrateRequest",
++    "PolicyErrorRequest",
+     "ReassignRequest",
+     "ReclaimRequest",
+     "RegisterGroupRequest",
+diff --git a/reference/packages/eden-wire/src/eden_wire/server.py b/reference/packages/eden-wire/src/eden_wire/server.py
+index c7d4ae7..6c8dad0 100644
+--- a/reference/packages/eden-wire/src/eden_wire/server.py
++++ b/reference/packages/eden-wire/src/eden_wire/server.py
+@@ -69,6 +69,7 @@ from .models import (
+     EventsResponse,
+     ExperimentStateResponse,
+     IntegrateRequest,
++    PolicyErrorRequest,
+     ReassignRequest,
+     ReclaimRequest,
+     RegisterGroupRequest,
+@@ -1072,6 +1073,48 @@ def make_app(
+         )
+         return experiment.model_dump(mode="json", exclude_none=True)
+ 
++    @app.post(f"{base}/policy-errors")
++    async def _emit_policy_error(
++        request: Request,
++        experiment_id: str,
++        body: PolicyErrorRequest,
++        x_eden_experiment_id: str | None = Header(None),
++    ) -> Response:
++        """12a-3 wave-7 follow-up: emit ``experiment.policy_error``.
++
++        Per [`03-roles.md`](../../../../spec/v0/03-roles.md) §6.2
++        decision-type 0 fault-tolerance, when a termination policy
++        raises the orchestrator MUST emit a registered
++        ``experiment.policy_error`` event so operators see the
++        failure in the event log. The orchestrator service runs
++        against ``StoreClient`` (wire-bound), so the event needs a
++        wire endpoint to land in the per-experiment log.
++
++        Authority: ``orchestrators`` — the orchestrator instance is
++        the only caller that produces these events. The endpoint is
++        NOT exposed to ``admins`` to keep the event surface from
++        becoming a manual log-spam vector.
++
++        The event is exempt from the
++        [`05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
++        §2 transactional invariant: no protocol-owned state mutation
++        pairs with it. The route delegates to
++        ``Store.emit_policy_error`` for the actual single-event
++        append; 204 on success.
++        """
++        _check_experiment(
++            experiment_id,
++            x_eden_experiment_id,
++            f"/v0/experiments/{experiment_id}/policy-errors",
++        )
++        _enforce_in_any_group(request, ("orchestrators",))
++        store.emit_policy_error(
++            policy_kind=body.policy_kind,
++            error_type=body.error_type,
++            error_message=body.error_message,
++        )
++        return Response(status_code=204)
++
+     @app.get(f"{base}/state")
+     async def _read_experiment_state(
+         request: Request,
+diff --git a/reference/packages/eden-wire/tests/test_lifecycle_wire.py b/reference/packages/eden-wire/tests/test_lifecycle_wire.py
+index 8009009..fa1669b 100644
+--- a/reference/packages/eden-wire/tests/test_lifecycle_wire.py
++++ b/reference/packages/eden-wire/tests/test_lifecycle_wire.py
+@@ -279,6 +279,70 @@ class TestExperimentStateEndpoint:
+         assert resp.json() == {"state": "terminated"}
+ 
+ 
++# ----------------------------------------------------------------------
++# POST /policy-errors — §6.2 decision-type 0 fault-tolerance
++# ----------------------------------------------------------------------
++
++
++class TestPolicyErrorEndpoint:
++    def test_orchestrator_emits_policy_error(self, store: InMemoryStore) -> None:
++        """Orchestrators-group caller appends experiment.policy_error."""
++        app = make_app(store, admin_token=ADMIN_TOKEN)
++        client = TestClient(app)
++        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
++        pre_events = len(store.events())
++        resp = client.post(
++            f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
++            headers=_worker_headers("orch-1", orch_token),
++            json={
++                "policy_kind": "termination",
++                "error_type": "ValueError",
++                "error_message": "policy callable raised: bad config",
++            },
++        )
++        assert resp.status_code == 204, resp.text
++        new_events = store.events()[pre_events:]
++        policy_errors = [
++            e for e in new_events if e.type == "experiment.policy_error"
++        ]
++        assert len(policy_errors) == 1
++        assert policy_errors[0].data["policy_kind"] == "termination"
++        assert policy_errors[0].data["error_type"] == "ValueError"
++        assert policy_errors[0].data["error_message"].startswith(
++            "policy callable raised"
++        )
++
++    def test_non_orchestrators_caller_rejected(self, store: InMemoryStore) -> None:
++        app = make_app(store, admin_token=ADMIN_TOKEN)
++        client = TestClient(app)
++        # Admin group membership is NOT sufficient — the endpoint is
++        # gated specifically on the orchestrators group.
++        admin_token = _bootstrap_admins_member(client, "admin-eric")
++        resp = client.post(
++            f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
++            headers=_worker_headers("admin-eric", admin_token),
++            json={
++                "policy_kind": "termination",
++                "error_type": "X",
++                "error_message": "y",
++            },
++        )
++        assert resp.status_code == 403
++        assert resp.json()["type"] == "eden://error/forbidden"
++
++    def test_missing_required_field_rejected(self, store: InMemoryStore) -> None:
++        app = make_app(store, admin_token=ADMIN_TOKEN)
++        client = TestClient(app)
++        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
++        resp = client.post(
++            f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
++            headers=_worker_headers("orch-1", orch_token),
++            json={"policy_kind": "termination", "error_type": ""},
++        )
++        # Missing `error_message` (or empty `error_type`) → 400.
++        assert resp.status_code == 400
++
++
+ # ----------------------------------------------------------------------
+ # Lifecycle-bound knock-on: terminated-experiment guards via wire
+ # ----------------------------------------------------------------------
+diff --git a/reference/services/evaluator/tests/test_evaluator_subprocess_env.py b/reference/services/evaluator/tests/test_evaluator_subprocess_env.py
+index ac920d5..c5def97 100644
+--- a/reference/services/evaluator/tests/test_evaluator_subprocess_env.py
++++ b/reference/services/evaluator/tests/test_evaluator_subprocess_env.py
+@@ -31,7 +31,7 @@ def _clear_substrate_env(monkeypatch: pytest.MonkeyPatch) -> None:
+ def test_substrate_flags_parsed(tmp_path: Path) -> None:
+     cfg = tmp_path / "config.yaml"
+     cfg.write_text(
+-        "parallel_variants: 1\nmax_variants: 1\nmax_wall_time: 1h\n"
++        "parallel_variants: 1\n"
+         "evaluation_schema:\n  score: real\n"
+         "objective:\n  expr: score\n  direction: maximize\n"
+         "evaluation_command: 'true'\n"
+diff --git a/reference/services/ideator/tests/test_ideator_subprocess_env.py b/reference/services/ideator/tests/test_ideator_subprocess_env.py
+index 1024d22..2102ba6 100644
+--- a/reference/services/ideator/tests/test_ideator_subprocess_env.py
++++ b/reference/services/ideator/tests/test_ideator_subprocess_env.py
+@@ -62,7 +62,7 @@ def test_scripted_mode_substrate_flags_optional() -> None:
+ 
+ def test_subprocess_mode_substrate_flags_parsed(tmp_path: Path) -> None:
+     cfg = tmp_path / "config.yaml"
+-    cfg.write_text("parallel_variants: 1\nmax_variants: 1\nmax_wall_time: 1h\n"
++    cfg.write_text("parallel_variants: 1\n"
+                    "evaluation_schema:\n  score: real\n"
+                    "objective:\n  expr: score\n  direction: maximize\n"
+                    "ideation_command: 'true'\n")
