@@ -271,6 +271,116 @@ async def add_row(task_id: str, request: Request):
     )
 
 
+def _submit_idea_error_status(
+    *,
+    store: Any,
+    request: Request,
+    session: Any,
+    task_id: str,
+    token: str,
+) -> HTMLResponse | RedirectResponse:
+    """Submit the ``status="error"`` ideation outcome.
+
+    The operator clicked the explicit "give up" button rather than
+    drafting any ideas. ``IdeaSubmission(status="error")`` carries no
+    ``idea_ids`` per spec §3.2 / §4.4.
+    """
+    try:
+        store.submit(task_id, token, IdeaSubmission(status="error"))
+    except DispatchError as exc:
+        return _render_error(request, wire_error_banner(exc))
+    _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+    _DRAFT_BUFFERS.pop(_claim_key(session.csrf, task_id), None)
+    return _render_submitted(request, task_id, status="error", idea_ids=())
+
+
+def _render_idea_form_errors(
+    *,
+    request: Request,
+    session: Any,
+    store: Any,
+    config: Any,
+    task_id: str,
+    errors: Any,
+    form_state: list[dict[str, str]],
+    slugs: list[str],
+) -> HTMLResponse:
+    """Re-render the idea draft form with form-level errors.
+
+    Also buffers the typed state into ``_DRAFT_BUFFERS`` so a
+    navigation-away + return-to-GET-/draft re-hydrates the form
+    (regression guard for issue #2).
+    """
+    _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
+    ctx: dict[str, Any] = {
+        "session": session,
+        "task_id": task_id,
+        "objective": config.objective,
+        "evaluation_schema": config.evaluation_schema.root,
+        "errors": errors,
+        "form_state": form_state,
+        "row_indices": list(range(max(1, len(slugs) or 1))),
+    }
+    ctx.update(_hint_context(request, store))
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "ideator_claim.html",
+        ctx,
+        status_code=400,
+    )
+
+
+def _persist_idea_drafts(
+    *,
+    store: Any,
+    request: Request,
+    drafts: list[Any],
+) -> tuple[list[str], HTMLResponse | None]:
+    """Phase 1+2: write artifacts, create ideas as drafting, flip to ready.
+
+    Returns ``(idea_ids, None)`` on success or ``([], error_response)``
+    on the first ``DispatchError`` from either phase. The Phase-1 / Phase-2
+    split is preserved internally so a failure in mark-ready doesn't
+    leave already-created drafting ideas dangling — recovery for those
+    is the orchestrator's ttl→reclaim→idea→error path.
+    """
+    idea_ids: list[str] = []
+    artifacts_dir = request.app.state.artifacts_dir
+    now: Callable[[], Any] = request.app.state.now
+
+    for draft in drafts:
+        idea_id = uuid.uuid4().hex
+        artifacts_uri = write_idea_artifact(
+            artifacts_dir, idea_id, draft.content
+        )
+        idea = _make_idea(
+            idea_id=idea_id,
+            experiment_id=request.app.state.experiment_id,
+            draft=draft,
+            artifacts_uri=artifacts_uri,
+            now_iso=_iso(now()),
+        )
+        try:
+            store.create_idea(idea)
+        except DispatchError as exc:
+            return [], _render_error(
+                request,
+                f"create_idea failed for {idea_id}: {wire_error_banner(exc)}",
+            )
+        idea_ids.append(idea_id)
+
+    for idea_id in idea_ids:
+        try:
+            store.mark_idea_ready(idea_id)
+        except DispatchError as exc:
+            return [], _render_error(
+                request,
+                f"mark_idea_ready failed for {idea_id}: {wire_error_banner(exc)}",
+            )
+
+    return idea_ids, None
+
+
 @router.post("/{task_id}/submit", response_model=None)
 async def submit_idea(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
@@ -294,13 +404,10 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     config = request.app.state.experiment_config
 
     if status == "error":
-        try:
-            store.submit(task_id, token, IdeaSubmission(status="error"))
-        except DispatchError as exc:
-            return _render_error(request, wire_error_banner(exc))
-        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
-        _DRAFT_BUFFERS.pop(_claim_key(session.csrf, task_id), None)
-        return _render_submitted(request, task_id, status="error", idea_ids=())
+        return _submit_idea_error_status(
+            store=store, request=request, session=session,
+            task_id=task_id, token=token,
+        )
 
     slugs = [str(v) for v in form.getlist("slug")]
     priorities = [str(v) for v in form.getlist("priority")]
@@ -325,61 +432,16 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             intended_executor_kinds=intended_kinds,
             intended_executor_ids=intended_ids,
         )
-        # Buffer typed state so a navigation away + return to GET
-        # /draft re-hydrates the form (regression guard for issue #2).
-        _DRAFT_BUFFERS[_claim_key(session.csrf, task_id)] = form_state
-        ctx: dict[str, Any] = {
-            "session": session,
-            "task_id": task_id,
-            "objective": config.objective,
-            "evaluation_schema": config.evaluation_schema.root,
-            "errors": errors,
-            "form_state": form_state,
-            "row_indices": list(range(max(1, len(slugs) or 1))),
-        }
-        ctx.update(_hint_context(request, store))
-        return request.app.state.templates.TemplateResponse(
-            request,
-            "ideator_claim.html",
-            ctx,
-            status_code=400,
+        return _render_idea_form_errors(
+            request=request, session=session, store=store, config=config,
+            task_id=task_id, errors=errors, form_state=form_state, slugs=slugs,
         )
 
-    idea_ids: list[str] = []
-    artifacts_dir = request.app.state.artifacts_dir
-    now: Callable[[], Any] = request.app.state.now
-
-    # Phase 1: write artifacts + create ideas as drafting.
-    for draft in drafts:
-        idea_id = uuid.uuid4().hex
-        artifacts_uri = write_idea_artifact(
-            artifacts_dir, idea_id, draft.content
-        )
-        idea = _make_idea(
-            idea_id=idea_id,
-            experiment_id=request.app.state.experiment_id,
-            draft=draft,
-            artifacts_uri=artifacts_uri,
-            now_iso=_iso(now()),
-        )
-        try:
-            store.create_idea(idea)
-        except DispatchError as exc:
-            return _render_error(
-                request,
-                f"create_idea failed for {idea_id}: {wire_error_banner(exc)}",
-            )
-        idea_ids.append(idea_id)
-
-    # Phase 2: flip to ready.
-    for idea_id in idea_ids:
-        try:
-            store.mark_idea_ready(idea_id)
-        except DispatchError as exc:
-            return _render_error(
-                request,
-                f"mark_idea_ready failed for {idea_id}: {wire_error_banner(exc)}",
-            )
+    idea_ids, persist_error = _persist_idea_drafts(
+        store=store, request=request, drafts=drafts,
+    )
+    if persist_error is not None:
+        return persist_error
 
     # Phase 3: submit, with retry-before-orphan.
     submission = IdeaSubmission(status="success", idea_ids=tuple(idea_ids))

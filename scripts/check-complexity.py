@@ -70,6 +70,8 @@ _EXCLUDE_PATH_FRAGMENTS = (
 
 @dataclass
 class Violation:
+    """One threshold breach (or an allowed-via-slop-allow breach)."""
+
     kind: str  # "file_sloc" | "file_mi" | "function_cc" | "function_len"
     path: str
     name: str  # function name (or "" for file-level)
@@ -82,6 +84,8 @@ class Violation:
 
 @dataclass
 class FunctionInfo:
+    """Per-function metadata + measured CC for the gate."""
+
     name: str
     line: int  # def's lineno
     end_line: int
@@ -92,6 +96,8 @@ class FunctionInfo:
 
 @dataclass
 class FileInfo:
+    """Per-file metadata + measured SLOC/MI for the gate."""
+
     path: Path
     rel: str
     sloc: int = 0
@@ -108,9 +114,7 @@ def _should_skip(path: Path) -> bool:
         return True
     # Top-level conformance/ + test scripts. Already covered by
     # fragments but be defensive against future layout changes.
-    if not spath.startswith(str(TARGET_DIR)):
-        return True
-    return False
+    return not spath.startswith(str(TARGET_DIR))
 
 
 def _file_slop_allow(src_lines: list[str]) -> tuple[bool, str]:
@@ -387,6 +391,7 @@ def collect_violations(files: list[FileInfo]) -> list[Violation]:
 
 
 def render_table(violations: list[Violation], header: str) -> str:
+    """Pretty-print a list of violations under a section header."""
     if not violations:
         return ""
     lines = [header, "-" * len(header)]
@@ -403,6 +408,7 @@ def render_table(violations: list[Violation], header: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point — exit 0 if clean, 1 if any blocking violation."""
     parser = argparse.ArgumentParser(
         prog="check-complexity",
         description=__doc__.split("\n\n", 1)[0],  # type: ignore[union-attr]

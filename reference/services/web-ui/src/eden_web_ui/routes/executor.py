@@ -169,6 +169,177 @@ def _build_starting_variant(
     return Variant(**kwargs)
 
 
+def _phase1_create_starting_variant(
+    *,
+    store: Any,
+    request: Request,
+    task_id: str,
+    variant_id: str,
+    idea: Idea,
+    draft: Any,
+    branch: str,
+    started_at: str,
+) -> HTMLResponse | None:
+    """Phase 1: ``store.create_variant(status="starting")``.
+
+    Returns ``None`` on success. On ``DispatchError`` renders the
+    error banner; on any other exception (transport-shaped) renders
+    the orphan page — the variant may or may not have committed on
+    the server, and the TTL→reclaim→variant→error recovery is the
+    same either way.
+    """
+    variant = _build_starting_variant(
+        variant_id=variant_id,
+        experiment_id=request.app.state.experiment_id,
+        idea_id=idea.idea_id,
+        parent_commits=idea.parent_commits,
+        branch=branch,
+        started_at=started_at,
+        description=draft.description,
+    )
+    try:
+        store.create_variant(variant)
+    except DispatchError as exc:
+        return _render_error(
+            request,
+            f"create_variant failed for {variant_id}: {wire_error_banner(exc)}",
+        )
+    except Exception as exc:  # noqa: BLE001 — transport-shaped
+        return _render_orphaned(
+            request,
+            task_id=task_id,
+            variant_id=variant_id,
+            commit_sha=draft.commit_sha,
+            branch=branch if draft.status == "success" else None,
+            banner=f"create_variant transport failure: {exc.__class__.__name__}",
+            recovery_kind="transport",
+        )
+    return None
+
+
+def _phase3_submit_with_readback(
+    *,
+    request: Request,
+    store: Any,
+    repo: Any,
+    session: Any,
+    task_id: str,
+    token: str,
+    variant_id: str,
+    draft: Any,
+    branch: str,
+) -> HTMLResponse | RedirectResponse:
+    """Phase 3: ``store.submit`` with retry-before-orphan + read-back.
+
+    On ``NoOpVariant`` from the server-side §3.3 fast path, delegate to
+    :func:`_handle_noop_variant_fallback` which runs the chapter-06 §3.4
+    compensating-delete ladder and resubmits as ``status="error"``.
+    """
+    submission = VariantSubmission(
+        status=draft.status,
+        variant_id=variant_id,
+        commit_sha=draft.commit_sha if draft.status == "success" else None,
+    )
+    try:
+        outcome, banner = submit_with_readback(
+            store=store, task_id=task_id, token=token, submission=submission
+        )
+    except NoOpVariant:
+        return _handle_noop_variant_fallback(
+            request=request,
+            store=store,
+            repo=repo,
+            session=session,
+            task_id=task_id,
+            token=token,
+            variant_id=variant_id,
+            draft=draft,
+            branch=branch,
+        )
+    if outcome == "ok":
+        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+        return _render_submitted(
+            request,
+            task_id=task_id,
+            variant_id=variant_id,
+            commit_sha=draft.commit_sha,
+            branch=branch if draft.status == "success" else None,
+            status=draft.status,
+        )
+    return _render_orphaned(
+        request,
+        task_id=task_id,
+        variant_id=variant_id,
+        commit_sha=draft.commit_sha,
+        branch=branch if draft.status == "success" else None,
+        banner=banner or "submit failed",
+        recovery_kind=outcome,
+    )
+
+
+def _handle_noop_variant_fallback(
+    *,
+    request: Request,
+    store: Any,
+    repo: Any,
+    session: Any,
+    task_id: str,
+    token: str,
+    variant_id: str,
+    draft: Any,
+    branch: str,
+) -> HTMLResponse | RedirectResponse:
+    """Server-side NoOpVariant rejection: roll back refs + resubmit as error.
+
+    The local pre-submit ``_check_success_draft_gates`` missed (e.g. a
+    transient git read failure in ``commit_tree_sha``). The variant is
+    now in ``starting`` and the ``work/*`` ref has been created locally
+    and possibly pushed to origin. Delete remote-first per chapter-06
+    §3.4 compensating-delete order, then resubmit as ``status="error"``
+    so the variant terminalizes cleanly. Mirrors the executor host's
+    ``NoOpVariant`` fallback in ``subprocess_mode``.
+    """
+    if draft.status == "success" and _repo_has_origin(repo):
+        with contextlib.suppress(Exception):
+            repo.delete_remote_ref(f"refs/heads/{branch}")
+    if draft.status == "success":
+        with contextlib.suppress(Exception):
+            repo.delete_ref(
+                f"refs/heads/{branch}", expected_old_sha=draft.commit_sha
+            )
+    error_submission = VariantSubmission(
+        status="error", variant_id=variant_id, commit_sha=None,
+    )
+    outcome, banner = submit_with_readback(
+        store=store,
+        task_id=task_id,
+        token=token,
+        submission=error_submission,
+    )
+    if outcome == "ok":
+        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+        return _render_submitted(
+            request,
+            task_id=task_id,
+            variant_id=variant_id,
+            commit_sha=None,
+            branch=None,
+            status="error",
+        )
+    return _render_orphaned(
+        request,
+        task_id=task_id,
+        variant_id=variant_id,
+        commit_sha=draft.commit_sha,
+        branch=branch if draft.status == "success" else None,
+        banner=(
+            "server rejected as no-op; "
+            f"follow-up error-submit also failed: {banner or outcome}"
+        ),
+        recovery_kind=outcome,
+    )
+
+
 def _phase2_write_work_ref(
     repo: Any, *, branch: str, commit_sha: str
 ) -> str | None:
@@ -422,38 +593,19 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     now: Callable[[], Any] = request.app.state.now
     started_at = _iso(now())
 
-    # Phase 1: create_variant as starting.
-    variant = _build_starting_variant(
+    # Phase 1: create_variant as starting. See `_phase1_create_starting_variant`.
+    phase1_error = _phase1_create_starting_variant(
+        store=store,
+        request=request,
+        task_id=task_id,
         variant_id=variant_id,
-        experiment_id=request.app.state.experiment_id,
-        idea_id=idea.idea_id,
-        parent_commits=idea.parent_commits,
+        idea=idea,
+        draft=draft,
         branch=branch,
         started_at=started_at,
-        description=draft.description,
     )
-    try:
-        store.create_variant(variant)
-    except DispatchError as exc:
-        return _render_error(
-            request,
-            f"create_variant failed for {variant_id}: {wire_error_banner(exc)}",
-        )
-    except Exception as exc:  # noqa: BLE001 — transport-shaped
-        # The variant may or may not have committed on the server. The
-        # orphan recovery for a stranded `starting` variant is the same
-        # whether the server saw the request or not (TTL → reclaim →
-        # variant → error), so render the orphan page with an
-        # indeterminate banner rather than crashing.
-        return _render_orphaned(
-            request,
-            task_id=task_id,
-            variant_id=variant_id,
-            commit_sha=draft.commit_sha,
-            branch=branch if draft.status == "success" else None,
-            banner=f"create_variant transport failure: {exc.__class__.__name__}",
-            recovery_kind="transport",
-        )
+    if phase1_error is not None:
+        return phase1_error
 
     # Phase 2: create_ref locally + push to origin (status=success only).
     # Phase 10d follow-up B §D.7. See `_phase2_write_work_ref`.
@@ -473,85 +625,19 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
                 recovery_kind="auto",
             )
 
-    # Phase 3: submit, with retry-before-orphan + read-back.
-    submission = VariantSubmission(
-        status=draft.status,
-        variant_id=variant_id,
-        commit_sha=draft.commit_sha if draft.status == "success" else None,
-    )
-    try:
-        outcome, banner = submit_with_readback(
-            store=store, task_id=task_id, token=token, submission=submission
-        )
-    except NoOpVariant:
-        # Server-side no-op rejection after the local pre-submit check
-        # missed (e.g. transient git read failure in `commit_tree_sha`).
-        # The variant is now in `starting`, and a `work/*` ref has been
-        # created locally (Phase 2 above) and possibly pushed to origin.
-        # Roll back the refs (remote first per the chapter-06 §3.4
-        # compensating-delete order) and re-submit as `status="error"`
-        # so the variant terminalizes cleanly. Mirrors the executor
-        # host's `NoOpVariant` fallback in subprocess_mode.
-        if draft.status == "success" and _repo_has_origin(repo):
-            with contextlib.suppress(Exception):
-                repo.delete_remote_ref(f"refs/heads/{branch}")
-        if draft.status == "success":
-            with contextlib.suppress(Exception):
-                repo.delete_ref(
-                    f"refs/heads/{branch}",
-                    expected_old_sha=draft.commit_sha,
-                )
-        error_submission = VariantSubmission(
-            status="error",
-            variant_id=variant_id,
-            commit_sha=None,
-        )
-        outcome, banner = submit_with_readback(
-            store=store,
-            task_id=task_id,
-            token=token,
-            submission=error_submission,
-        )
-        if outcome == "ok":
-            _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
-            return _render_submitted(
-                request,
-                task_id=task_id,
-                variant_id=variant_id,
-                commit_sha=None,
-                branch=None,
-                status="error",
-            )
-        return _render_orphaned(
-            request,
-            task_id=task_id,
-            variant_id=variant_id,
-            commit_sha=draft.commit_sha,
-            branch=branch if draft.status == "success" else None,
-            banner=(
-                "server rejected as no-op; "
-                f"follow-up error-submit also failed: {banner or outcome}"
-            ),
-            recovery_kind=outcome,
-        )
-    if outcome == "ok":
-        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
-        return _render_submitted(
-            request,
-            task_id=task_id,
-            variant_id=variant_id,
-            commit_sha=draft.commit_sha,
-            branch=branch if draft.status == "success" else None,
-            status=draft.status,
-        )
-    return _render_orphaned(
-        request,
+    # Phase 3: submit, with retry-before-orphan + read-back. See
+    # `_phase3_submit_with_readback` (handles the NoOpVariant fallback
+    # via `_handle_noop_variant_fallback`).
+    return _phase3_submit_with_readback(
+        request=request,
+        store=store,
+        repo=repo,
+        session=session,
         task_id=task_id,
+        token=token,
         variant_id=variant_id,
-        commit_sha=draft.commit_sha,
-        branch=branch if draft.status == "success" else None,
-        banner=banner or "submit failed",
-        recovery_kind=outcome,
+        draft=draft,
+        branch=branch,
     )
 
 

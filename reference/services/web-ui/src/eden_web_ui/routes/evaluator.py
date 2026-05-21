@@ -263,8 +263,83 @@ async def draft_form(
     )
 
 
+def _collect_metric_inputs(form: Any, evaluation_schema: Any) -> dict[str, str]:
+    """Collect every submitted ``metric.*`` form field.
+
+    Defaults declared schema keys to ``""`` so the parser sees blanks
+    for the omit-on-empty branch. Reads back unknown ``metric.*`` keys
+    too so the parser can reject them (a hand-crafted POST is the only
+    way they appear; the template only emits inputs for declared
+    metrics).
+    """
+    metric_inputs: dict[str, str] = {name: "" for name in evaluation_schema.root}
+    for raw_key in form:
+        if not isinstance(raw_key, str) or not raw_key.startswith("metric."):
+            continue
+        name = raw_key[len("metric."):]
+        metric_inputs[name] = str(form.get(raw_key) or "")
+    return metric_inputs
+
+
+def _finalize_evaluator_submit(
+    *,
+    request: Request,
+    session: Any,
+    task_id: str,
+    variant: Variant,
+    idea: Idea,
+    variant_id: str,
+    draft: Any,
+    submission: EvaluationSubmission,
+    form_state: dict[str, Any],
+    errors: Any,
+    outcome: str,
+    banner: str | None,
+) -> HTMLResponse | RedirectResponse:
+    """Render the appropriate response for a submit_with_readback outcome.
+
+    ``ok`` → submitted page. ``invalid-precondition`` → redraft with
+    wire-error banner (fixable; spec lets the operator correct metrics
+    and resubmit). Otherwise → orphan page.
+    """
+    if outcome == "ok":
+        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
+        return _render_submitted(
+            request,
+            task_id=task_id,
+            variant_id=variant_id,
+            status=draft.status,
+            evaluation=submission.evaluation,
+            artifacts_uri=draft.artifacts_uri,
+        )
+    if outcome == "invalid-precondition":
+        if errors is None:
+            from ..forms import FormErrors
+
+            errors = FormErrors()
+        errors.add_overall(banner or "eden://error/invalid-precondition")
+        return _render_draft(
+            request,
+            session=session,
+            task_id=task_id,
+            variant=variant,
+            idea=idea,
+            form_state=form_state,
+            errors=errors,
+            status_code=400,
+        )
+    return _render_orphaned(
+        request,
+        task_id=task_id,
+        variant_id=variant_id,
+        status=draft.status,
+        banner=banner or "submit failed",
+        recovery_kind=outcome,
+    )
+
+
 @router.post("/{task_id}/submit", response_model=None)
-async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
+async def submit(
     task_id: str,
     request: Request,
 ) -> HTMLResponse | RedirectResponse:
@@ -300,17 +375,7 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
 
     status_raw = str(form.get("status") or "")
     artifacts_uri_raw = str(form.get("artifacts_uri") or "")
-    # Collect every submitted `metric.*` field so the parser can
-    # reject unknown metric keys (a hand-crafted POST is the only
-    # way they appear; the template only emits inputs for declared
-    # metrics). Default declared schema keys to "" so the parser
-    # also sees blanks for the omit-on-empty branch.
-    metric_inputs: dict[str, str] = {name: "" for name in evaluation_schema.root}
-    for raw_key in form:
-        if not isinstance(raw_key, str) or not raw_key.startswith("metric."):
-            continue
-        name = raw_key[len("metric."):]
-        metric_inputs[name] = str(form.get(raw_key) or "")
+    metric_inputs = _collect_metric_inputs(form, evaluation_schema)
 
     draft, errors = parse_evaluate_form(
         evaluation_schema=evaluation_schema,
@@ -349,42 +414,19 @@ async def submit(  # noqa: PLR0911 — many distinct outcome arms by design
         submission=submission,
         extra_catches=((InvalidPrecondition, "invalid-precondition"),),
     )
-
-    if outcome == "ok":
-        _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
-        return _render_submitted(
-            request,
-            task_id=task_id,
-            variant_id=variant_id,
-            status=draft.status,
-            evaluation=submission.evaluation,
-            artifacts_uri=draft.artifacts_uri,
-        )
-    if outcome == "invalid-precondition":
-        # Fixable: re-render the form with a wire-error banner so
-        # the operator can correct the metrics and resubmit.
-        if errors is None:
-            from ..forms import FormErrors
-
-            errors = FormErrors()
-        errors.add_overall(banner or "eden://error/invalid-precondition")
-        return _render_draft(
-            request,
-            session=session,
-            task_id=task_id,
-            variant=variant,
-            idea=idea,
-            form_state=form_state,
-            errors=errors,
-            status_code=400,
-        )
-    return _render_orphaned(
-        request,
+    return _finalize_evaluator_submit(
+        request=request,
+        session=session,
         task_id=task_id,
+        variant=variant,
+        idea=idea,
         variant_id=variant_id,
-        status=draft.status,
-        banner=banner or "submit failed",
-        recovery_kind=outcome,
+        draft=draft,
+        submission=submission,
+        form_state=form_state,
+        errors=errors,
+        outcome=outcome,
+        banner=banner,
     )
 
 
