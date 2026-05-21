@@ -3,7 +3,7 @@
 Driven against a local ``file://`` URL "remote" — sufficient because
 git's transport abstraction makes file:// share the same ref-update
 code path as http://. HTTP transport is exercised end-to-end by the
-compose smokes against a real Gitea container.
+compose smokes against a real Forgejo container.
 
 The credential-helper roundtrip test spins up a tiny in-process
 ``http.server`` so the auth flow goes through real Basic-auth

@@ -52,7 +52,7 @@ def build_tree_resolver(repo_path: str | Path) -> Callable[[str], str | None]:
     ``_validate_non_no_op_variant`` runs inside the per-operation
     Store transaction (holding the SQLite / Postgres write lock), so
     a network fetch here would block every other task-store request
-    behind one submit on a slow / unreachable Gitea. Population of
+    behind one submit on a slow / unreachable Forgejo. Population of
     the local clone is the responsibility of a separate refresh path
     (operator-driven or a future background helper) — this resolver
     is the server-side, defense-in-depth backstop; the canonical

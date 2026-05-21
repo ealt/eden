@@ -9,7 +9,7 @@
 #   down [--purge]
 #       Stop containers and remove all volumes (always; that's the point
 #       of this script — it's not a "stop" command). With --purge, also
-#       removes the per-experiment .env, gitea credential helpers,
+#       removes the per-experiment .env, forgejo credential helpers,
 #       experiment-config.yaml, and the manual-CLI scratch state at
 #       /tmp/eden-manual. Use --purge unless you specifically want to
 #       re-run setup-experiment with the same secrets.
@@ -18,7 +18,7 @@
 #       experiment under a different name / different seed".
 #   status
 #       Snapshot of the current stack: containers, experiment-id,
-#       seed SHA, gitea contents (top level), task counts.
+#       seed SHA, forgejo contents (top level), task counts.
 #
 # Always runs against the same compose dir under
 # `reference/compose/`. Use `EDEN_MANUAL_WORK_ROOT` to override the
@@ -37,7 +37,7 @@ CHECKPOINTS_DIR="${COMPOSE_DIR}/checkpoints"
 
 # Authoritative state-bearing volumes (the four that contain
 # experiment data; everything else is derivative).
-GITEA_VOLUME="eden-reference_eden-gitea-data"
+FORGEJO_VOLUME="eden-reference_eden-forgejo-data"
 POSTGRES_VOLUME="eden-reference_eden-postgres-data"
 ARTIFACTS_VOLUME="eden-artifacts-data"
 
@@ -49,7 +49,7 @@ ORPHAN_VOLUMES=(
 
 NON_WORKER_SERVICES=(
     postgres
-    gitea
+    forgejo
     blob-init
     task-store-server
     orchestrator
@@ -195,13 +195,13 @@ cmd_down() {
         echo "--- purging per-experiment files ---" >&2
         rm -f "$ENV_FILE" \
               "${COMPOSE_DIR}/experiment-config.yaml" \
-              "${COMPOSE_DIR}"/.gitea-creds-*/credential-helper.sh
+              "${COMPOSE_DIR}"/.forgejo-creds-*/credential-helper.sh
         # rmdir empty per-experiment dirs (best-effort).
-        # .gitea-creds-<id>/ holds the per-experiment HTTP credential helper.
+        # .forgejo-creds-<id>/ holds the per-experiment HTTP credential helper.
         # .cidfiles-<id>/ holds DooD container-id files (setup-experiment
         # creates these even in host-exec mode). Both are empty/harmless
         # but accumulate one per experiment-id.
-        for d in "${COMPOSE_DIR}"/.gitea-creds-*/ "${COMPOSE_DIR}"/.cidfiles-*/; do
+        for d in "${COMPOSE_DIR}"/.forgejo-creds-*/ "${COMPOSE_DIR}"/.cidfiles-*/; do
             [[ -d "$d" ]] && rm -rf "$d" || true
         done
         rm -rf "$WORK_ROOT"
@@ -276,19 +276,19 @@ cmd_checkpoint() {
             pg_dump --clean --if-exists -U "$pg_user" -d "$pg_db") \
         > "${ckpt_dir}/postgres.sql"
 
-    # Stop gitea briefly for a consistent on-disk snapshot. Gitea's own
-    # `gitea dump` would be cleaner but requires running as the right
+    # Stop forgejo briefly for a consistent on-disk snapshot. Forgejo's own
+    # `forgejo dump` would be cleaner but requires running as the right
     # user and produces a different format; volume tar is portable.
-    echo "--- snapshotting gitea volume (brief stop) ---" >&2
+    echo "--- snapshotting forgejo volume (brief stop) ---" >&2
     (cd "$COMPOSE_DIR" && \
-        docker compose --env-file "$ENV_FILE" stop gitea >/dev/null)
+        docker compose --env-file "$ENV_FILE" stop forgejo >/dev/null)
     docker run --rm \
-        -v "${GITEA_VOLUME}:/data:ro" \
+        -v "${FORGEJO_VOLUME}:/data:ro" \
         -v "${ckpt_dir}:/backup" \
         alpine:3.20 \
-        tar czf /backup/gitea.tar.gz -C / data
+        tar czf /backup/forgejo.tar.gz -C / data
     (cd "$COMPOSE_DIR" && \
-        docker compose --env-file "$ENV_FILE" start gitea >/dev/null)
+        docker compose --env-file "$ENV_FILE" start forgejo >/dev/null)
 
     echo "--- snapshotting artifacts volume ---" >&2
     docker run --rm \
@@ -297,13 +297,13 @@ cmd_checkpoint() {
         alpine:3.20 \
         tar czf /backup/artifacts.tar.gz -C / data
 
-    echo "--- copying .env + experiment-config + gitea creds ---" >&2
+    echo "--- copying .env + experiment-config + forgejo creds ---" >&2
     cp "$ENV_FILE" "${ckpt_dir}/env"
     if [[ -f "${COMPOSE_DIR}/experiment-config.yaml" ]]; then
         cp "${COMPOSE_DIR}/experiment-config.yaml" "${ckpt_dir}/experiment-config.yaml"
     fi
-    if [[ -d "${COMPOSE_DIR}/.gitea-creds-${exp_id}" ]]; then
-        cp -R "${COMPOSE_DIR}/.gitea-creds-${exp_id}" "${ckpt_dir}/gitea-creds"
+    if [[ -d "${COMPOSE_DIR}/.forgejo-creds-${exp_id}" ]]; then
+        cp -R "${COMPOSE_DIR}/.forgejo-creds-${exp_id}" "${ckpt_dir}/forgejo-creds"
     fi
 
     cat > "${ckpt_dir}/metadata.json" <<EOF
@@ -335,7 +335,7 @@ cmd_restore() {
     local ckpt_dir="${CHECKPOINTS_DIR}/${name}"
     [[ -d "$ckpt_dir" ]] || die "checkpoint not found: ${ckpt_dir}"
     [[ -f "${ckpt_dir}/postgres.sql" ]] || die "checkpoint missing postgres.sql"
-    [[ -f "${ckpt_dir}/gitea.tar.gz" ]] || die "checkpoint missing gitea.tar.gz"
+    [[ -f "${ckpt_dir}/forgejo.tar.gz" ]] || die "checkpoint missing forgejo.tar.gz"
     [[ -f "${ckpt_dir}/artifacts.tar.gz" ]] || die "checkpoint missing artifacts.tar.gz"
     [[ -f "${ckpt_dir}/env" ]] || die "checkpoint missing env"
 
@@ -345,7 +345,7 @@ cmd_restore() {
 
     # Wipe any volumes left over (compose down -v should have caught
     # them; this is belt-and-braces).
-    for vol in "$GITEA_VOLUME" "$POSTGRES_VOLUME" "$ARTIFACTS_VOLUME" "${ORPHAN_VOLUMES[@]}"; do
+    for vol in "$FORGEJO_VOLUME" "$POSTGRES_VOLUME" "$ARTIFACTS_VOLUME" "${ORPHAN_VOLUMES[@]}"; do
         if docker volume inspect "$vol" >/dev/null 2>&1; then
             echo "--- removing stale volume $vol ---" >&2
             docker volume rm "$vol" >/dev/null
@@ -353,25 +353,25 @@ cmd_restore() {
     done
     rm -rf "$WORK_ROOT"
 
-    echo "--- restoring .env + config + gitea creds ---" >&2
+    echo "--- restoring .env + config + forgejo creds ---" >&2
     cp "${ckpt_dir}/env" "$ENV_FILE"
     if [[ -f "${ckpt_dir}/experiment-config.yaml" ]]; then
         cp "${ckpt_dir}/experiment-config.yaml" "${COMPOSE_DIR}/experiment-config.yaml"
     fi
     local exp_id; exp_id="$(current_experiment_id)"
-    if [[ -d "${ckpt_dir}/gitea-creds" ]]; then
-        rm -rf "${COMPOSE_DIR}/.gitea-creds-${exp_id}"
-        cp -R "${ckpt_dir}/gitea-creds" "${COMPOSE_DIR}/.gitea-creds-${exp_id}"
+    if [[ -d "${ckpt_dir}/forgejo-creds" ]]; then
+        rm -rf "${COMPOSE_DIR}/.forgejo-creds-${exp_id}"
+        cp -R "${ckpt_dir}/forgejo-creds" "${COMPOSE_DIR}/.forgejo-creds-${exp_id}"
     fi
 
     echo "--- materializing volumes from snapshot ---" >&2
-    docker volume create "$GITEA_VOLUME"     >/dev/null
+    docker volume create "$FORGEJO_VOLUME"     >/dev/null
     docker volume create "$ARTIFACTS_VOLUME" >/dev/null
     docker run --rm \
-        -v "${GITEA_VOLUME}:/data" \
+        -v "${FORGEJO_VOLUME}:/data" \
         -v "${ckpt_dir}:/backup:ro" \
         alpine:3.20 \
-        sh -c 'cd / && tar xzf /backup/gitea.tar.gz'
+        sh -c 'cd / && tar xzf /backup/forgejo.tar.gz'
     docker run --rm \
         -v "${ARTIFACTS_VOLUME}:/data" \
         -v "${ckpt_dir}:/backup:ro" \

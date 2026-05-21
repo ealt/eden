@@ -24,35 +24,35 @@ services:
       retries: 10
       start_period: 10s
 
-  gitea:
-    image: gitea/gitea:1.22.6-rootless
-    container_name: eden-gitea
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:11-rootless
+    container_name: eden-forgejo
     restart: unless-stopped
     environment:
-      GITEA__server__DOMAIN: localhost
-      GITEA__server__ROOT_URL: http://localhost:${GITEA_HOST_PORT:-3001}/
-      GITEA__server__HTTP_PORT: "3000"
+      FORGEJO__server__DOMAIN: localhost
+      FORGEJO__server__ROOT_URL: http://localhost:${FORGEJO_HOST_PORT:-3001}/
+      FORGEJO__server__HTTP_PORT: "3000"
       # SSH_PORT is the *advertised* port (shown in clone URLs); it must
       # match the host-side mapping so SSH clones work. SSH_LISTEN_PORT
-      # is what Gitea binds inside the container, kept fixed at 2222
+      # is what Forgejo binds inside the container, kept fixed at 2222
       # so the published mapping below stays valid even when a user
-      # overrides GITEA_SSH_HOST_PORT to dodge a host collision.
-      GITEA__server__SSH_PORT: "${GITEA_SSH_HOST_PORT:-2222}"
-      GITEA__server__SSH_LISTEN_PORT: "2222"
-      GITEA__database__DB_TYPE: sqlite3
-      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
-      GITEA__security__INSTALL_LOCK: "true"
-      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
-      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
-      GITEA__service__DISABLE_REGISTRATION: "true"
-      GITEA__evaluation__ENABLED: "false"
-      GITEA__log__LEVEL: Warn
+      # overrides FORGEJO_SSH_HOST_PORT to dodge a host collision.
+      FORGEJO__server__SSH_PORT: "${FORGEJO_SSH_HOST_PORT:-2222}"
+      FORGEJO__server__SSH_LISTEN_PORT: "2222"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__database__PATH: /var/lib/forgejo/data/forgejo.db
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__security__SECRET_KEY: ${FORGEJO_SECRET_KEY:?FORGEJO_SECRET_KEY must be set}
+      FORGEJO__security__INTERNAL_TOKEN: ${FORGEJO_INTERNAL_TOKEN:?FORGEJO_INTERNAL_TOKEN must be set}
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__evaluation__ENABLED: "false"
+      FORGEJO__log__LEVEL: Warn
     ports:
-      - "${GITEA_HOST_PORT:-3001}:3000"
-      - "${GITEA_SSH_HOST_PORT:-2222}:2222"
+      - "${FORGEJO_HOST_PORT:-3001}:3000"
+      - "${FORGEJO_SSH_HOST_PORT:-2222}:2222"
     volumes:
       # Durable substrate (Phase 12a-1g) — see postgres above.
-      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/gitea:/var/lib/gitea
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo:/var/lib/forgejo
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
       interval: 5s
@@ -67,10 +67,10 @@ services:
   # Note: a one-shot `blob-init` busybox service was removed in
   # Phase 12a-1g alongside the `eden-blob-data` named volume. Its
   # original purpose was to materialize the unmounted top-level
-  # volume at compose-up time and to give postgres/gitea a
+  # volume at compose-up time and to give postgres/forgejo a
   # `service_completed_successfully` dependency for --wait. With
   # bind-mounts (substrate dirs created by setup-experiment) the
-  # first need is gone; postgres/gitea no longer need that
+  # first need is gone; postgres/forgejo no longer need that
   # dependency either.
 
   eden-repo-init:
@@ -202,8 +202,8 @@ services:
       - ${EDEN_ORCHESTRATOR_WORKER_ID:-orchestrator}
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       # 12a-2 wave 4: --ideation-tasks retired. The orchestrator now
@@ -246,13 +246,13 @@ services:
     volumes:
       # Durable substrates (Phase 12a-1g) under the per-experiment
       # data root. The per-host bare clone survives restart so the
-      # orchestrator does not re-clone from Gitea on every boot, and
+      # orchestrator does not re-clone from Forgejo on every boot, and
       # the per-host credentials survive so the worker's per-worker
       # bearer is reused instead of re-bootstrapped via the admin
       # token. See chapter 01 §13.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/orchestrator-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/orchestrator:/var/lib/eden/credentials
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   ideator-host:
     image: eden-reference:dev
@@ -308,8 +308,8 @@ services:
       - executor-1
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --log-level
@@ -318,7 +318,7 @@ services:
       # Durable substrates (Phase 12a-1g).
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/executor-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/executor:/var/lib/eden/credentials
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   evaluator-host:
     image: eden-reference:dev
@@ -381,12 +381,12 @@ services:
       - /var/lib/eden/artifacts
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --clone-url
-      - ${GITEA_CLONE_URL_HOST:-http://localhost:${GITEA_HOST_PORT:-3001}/eden/${EDEN_EXPERIMENT_ID:?}.git}
+      - ${FORGEJO_CLONE_URL_HOST:-http://localhost:${FORGEJO_HOST_PORT:-3001}/eden/${EDEN_EXPERIMENT_ID:?}.git}
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id
@@ -405,7 +405,7 @@ services:
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/web-ui:/var/lib/eden/credentials
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
     ports:
       - "${WEB_UI_HOST_PORT:-8090}:8090"
     healthcheck:

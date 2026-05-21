@@ -571,7 +571,7 @@ don't supply `submission_id`.
 - The integrator (12a-2 may touch indirectly via reassignment; 12a-3
   changes via termination policy).
 - Reference deployment shape (still Compose; still per-experiment
-  postgres / gitea).
+  postgres / forgejo).
 
 ## 4. Scope
 

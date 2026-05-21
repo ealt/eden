@@ -1,12 +1,12 @@
 # EDEN reference Compose stack
 
 A Docker Compose stack that runs the EDEN reference implementation
-end-to-end locally: third-party infrastructure (Postgres, Gitea) plus
+end-to-end locally: third-party infrastructure (Postgres, Forgejo) plus
 the six EDEN services (`task-store-server`, `orchestrator`,
 `ideator-host`, `executor-host`, `evaluator-host`, `web-ui`), plus a
 one-shot `eden-repo-init` setup service.
 
-Durable substrate state (postgres data, gitea data, artifacts,
+Durable substrate state (postgres data, forgejo data, artifacts,
 per-host bare clones, per-host worker credentials) lives as host
 bind-mounts under `${EDEN_EXPERIMENT_DATA_ROOT}/<subdir>/` (default
 `$HOME/.eden/experiments/$EDEN_EXPERIMENT_ID/`) per Phase 12a-1g.
@@ -19,7 +19,7 @@ See [`../../docs/operations/experiment-data-durability.md`](../../docs/operation
 | Service     | Image                                | Purpose                                             |
 | ----------- | ------------------------------------ | --------------------------------------------------- |
 | `postgres`  | `postgres:16.6-alpine`               | Durable backend for the EDEN task store (`PostgresStore`) |
-| `gitea`     | `gitea/gitea:1.22.6-rootless`        | Git remote for `work/*` and `variant/*` branches |
+| `forgejo`     | `codeberg.org/forgejo/forgejo:11-rootless`        | Git remote for `work/*` and `variant/*` branches |
 
 ### EDEN reference services (10b)
 
@@ -49,9 +49,9 @@ and [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md) §13.
 | Substrate subdirectory                          | Mounted by                | Substrate role                                       |
 | ----------------------------------------------- | ------------------------- | ---------------------------------------------------- |
 | `<DATA_ROOT>/postgres/`                         | `postgres`                | task-store-server's `PostgresStore` backend          |
-| `<DATA_ROOT>/gitea/`                            | `gitea`                   | git remote for `work/*` and `variant/*` refs         |
-| `<DATA_ROOT>/orchestrator-repo/`                | `orchestrator`            | per-host bare clone of the Gitea repo                |
-| `<DATA_ROOT>/executor-repo/`                    | `executor-host`           | per-host bare clone of the Gitea repo                |
+| `<DATA_ROOT>/forgejo/`                            | `forgejo`                   | git remote for `work/*` and `variant/*` refs         |
+| `<DATA_ROOT>/orchestrator-repo/`                | `orchestrator`            | per-host bare clone of the Forgejo repo                |
+| `<DATA_ROOT>/executor-repo/`                    | `executor-host`           | per-host bare clone of the Forgejo repo                |
 | `<DATA_ROOT>/evaluator-repo/`                   | `evaluator-host` (subprocess overlay) | per-host bare clone for subprocess evaluator |
 | `<DATA_ROOT>/web-ui-repo/`                      | `web-ui`                  | per-host bare clone for the web-ui executor module   |
 | `<DATA_ROOT>/artifacts/`                        | `web-ui`, `ideator-host`, `executor-host` (ro) | Artifact store / idea markdown   |
@@ -67,17 +67,17 @@ the chapter-01 §13 durability invariant:
 | `eden-repo-init-staging` | `eden-repo-init`                    | bootstrap-only; setup-experiment `docker volume rm`s on reseed |
 | `eden-worktrees`         | `executor-host`/`evaluator-host` (subprocess overlay) | per-task scratch worktrees; per-host startup `git worktree remove --force` already assumes they don't survive restart |
 
-**Postgres backs the EDEN task store, not Gitea.** Gitea uses its
-own embedded SQLite. Pointing Gitea at our Postgres would couple the
+**Postgres backs the EDEN task store, not Forgejo.** Forgejo uses its
+own embedded SQLite. Pointing Forgejo at our Postgres would couple the
 git host's recovery story to the task store schema; production
 deployments must be free to swap either component independently.
 
-**Gitea is the workers' canonical git remote.** Each worker keeps a
+**Forgejo is the workers' canonical git remote.** Each worker keeps a
 per-host bare clone under `${EDEN_EXPERIMENT_DATA_ROOT}/<service>-repo/`
-and fetches from / pushes to Gitea over plain HTTP using a generated
-credential helper (see `setup-experiment.sh` — the Gitea password is
+and fetches from / pushes to Forgejo over plain HTTP using a generated
+credential helper (see `setup-experiment.sh` — the Forgejo password is
 preserved in `.env` across re-runs). The integrator publishes
-`variant/*` refs back to Gitea per chapter 6 §3.4 (Phase 10d
+`variant/*` refs back to Forgejo per chapter 6 §3.4 (Phase 10d
 follow-up B landed this).
 
 **The web-ui executor module overlaps with `executor-host`.**
@@ -113,7 +113,7 @@ experiment) and then exits 0.
 
 **Re-running setup-experiment is safe.** Existing secrets
 (`POSTGRES_PASSWORD`, `EDEN_ADMIN_TOKEN`, `EDEN_SESSION_SECRET`,
-`GITEA_*`) are preserved across re-runs. To pick up a config
+`FORGEJO_*`) are preserved across re-runs. To pick up a config
 change, re-run setup-experiment and then `docker compose
 --env-file .env up -d` (which detects config drift and recreates
 affected services). `restart` is **not** sufficient — it doesn't
@@ -124,12 +124,12 @@ pick up changes to `command:`, env files, or `configs:`.
 | Service    | Host endpoint                  | Default credentials                            |
 | ---------- | ------------------------------ | ---------------------------------------------- |
 | Postgres   | `localhost:5433`               | user `eden` / db `eden` / password from `.env` |
-| Gitea HTTP | `http://localhost:3001/`       | user `eden` / password from `.env` (`GITEA_REMOTE_PASSWORD`) — provisioned by setup-experiment |
-| Gitea SSH  | `ssh://git@localhost:2222`     | (same gitea credential; HTTP-Basic is the default workers use) |
+| Forgejo HTTP | `http://localhost:3001/`       | user `eden` / password from `.env` (`FORGEJO_REMOTE_PASSWORD`) — provisioned by setup-experiment |
+| Forgejo SSH  | `ssh://git@localhost:2222`     | (same forgejo credential; HTTP-Basic is the default workers use) |
 | Web UI     | `http://localhost:8090/`       | sign in with any worker_id                     |
 
 Defaults intentionally avoid the well-known ports (5432, 3000, 22)
-to sidestep collisions with locally-running Postgres or Gitea
+to sidestep collisions with locally-running Postgres or Forgejo
 instances. Override via `.env`.
 
 ## Operations
@@ -146,7 +146,7 @@ instances. Override via `.env`.
 
 `down -v` removes the ephemeral named volumes (`eden-repo-init-staging`,
 `eden-worktrees`) — these are scratch state and safe to lose.
-The durable substrates (Postgres data, Gitea data, artifacts, per-host
+The durable substrates (Postgres data, Forgejo data, artifacts, per-host
 clones, per-host credentials) live as host bind-mounts under
 `${EDEN_EXPERIMENT_DATA_ROOT}` and are **not** affected by `down -v`.
 To wipe the experiment entirely, `rm -rf "$EDEN_EXPERIMENT_DATA_ROOT"`
@@ -156,17 +156,17 @@ after the stack is down. See
 ## Troubleshooting
 
 - **Port collision on 5433/3001/2222.** A developer with their own
-  Postgres on 5433 (or Gitea on 3001) will see `bind: address
-  already in use`. Override `POSTGRES_HOST_PORT`, `GITEA_HOST_PORT`,
-  or `GITEA_SSH_HOST_PORT` in `.env`.
+  Postgres on 5433 (or Forgejo on 3001) will see `bind: address
+  already in use`. Override `POSTGRES_HOST_PORT`, `FORGEJO_HOST_PORT`,
+  or `FORGEJO_SSH_HOST_PORT` in `.env`.
 - **`compose up` errors with `POSTGRES_PASSWORD must be set`.** You
   haven't copied `.env.example` to `.env` (or you've deleted a
   required variable). The Compose file uses `${VAR:?msg}` syntax to
   fail fast rather than silently fall back to a weak default.
-- **Gitea healthcheck fails on first boot.** Cold-boot of the
+- **Forgejo healthcheck fails on first boot.** Cold-boot of the
   rootless image takes 15-25 seconds; the healthcheck has a 30s
   `start_period` to absorb this. If it consistently fails, check
-  `docker compose logs gitea` for an obvious config error.
+  `docker compose logs forgejo` for an obvious config error.
 - **`docker compose down -v` doesn't reclaim the data.** The
   project name is pinned to `eden-reference` (set via the top-level
   `name:` field in `compose.yaml`); volumes are prefixed with that
@@ -182,9 +182,9 @@ for any deployment that handles real data.
 
 ## What's not here yet
 
-- Workers integrate with Gitea as their actual git remote (deferred
-  to a follow-up sub-chunk after 10d; see "Gitea is idle" above).
-- An admin user / API token for Gitea — created when Gitea actually
+- Workers integrate with Forgejo as their actual git remote (deferred
+  to a follow-up sub-chunk after 10d; see "Forgejo is idle" above).
+- An admin user / API token for Forgejo — created when Forgejo actually
   starts being consumed.
 - LLM-backed worker hosts — added in 10d.
 - A comprehensive end-to-end Compose integration test (with Web UI

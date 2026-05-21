@@ -272,7 +272,7 @@ class TestErrorSubmission:
 
 class TestFetchBeforeCommitExists:
     """Issue #53: ``submit`` must call ``repo.fetch_all_heads()`` before
-    ``repo.commit_exists(...)`` so a SHA the user just pushed to gitea
+    ``repo.commit_exists(...)`` so a SHA the user just pushed to forgejo
     is visible in the web-ui's local clone.
 
     Mirrors the integrator's per-integrate fetch (Phase 10d follow-up B).

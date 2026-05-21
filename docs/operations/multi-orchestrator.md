@@ -91,7 +91,7 @@ bash reference/compose/healthcheck/smoke-multi-orchestrator.sh
 
 The overlay creates two volumes specific to `orchestrator-2`:
 
-- `eden-orchestrator-2-repo` — its private bare clone of the Gitea-hosted
+- `eden-orchestrator-2-repo` — its private bare clone of the Forgejo-hosted
   repo. Per-replica clones is the design posture (the wire is the only
   synchronization point); no shared git state between replicas.
 - `eden-orchestrator-2-credentials` — its per-worker bootstrap credential

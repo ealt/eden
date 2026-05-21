@@ -40,8 +40,8 @@ services:
       - orchestrator-2
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --poll-interval
@@ -59,7 +59,7 @@ services:
       # design posture; the wire is the only synchronization point.
       - eden-orchestrator-2-repo:/var/lib/eden/repo
       - eden-orchestrator-2-credentials:/var/lib/eden/credentials
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
 volumes:
   eden-orchestrator-2-repo:

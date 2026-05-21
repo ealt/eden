@@ -89,20 +89,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "Bare git repo that the Integrator writes variant/* refs into. "
-            "When --gitea-url is also set, this path becomes the local "
-            "bare clone of the Gitea-hosted repo (created at startup if "
+            "When --forgejo-url is also set, this path becomes the local "
+            "bare clone of the Forgejo-hosted repo (created at startup if "
             "it doesn't already exist)."
         ),
     )
     parser.add_argument(
-        "--gitea-url",
+        "--forgejo-url",
+        "--forgejo-url",
+        dest="forgejo_url",
         default=None,
         help=(
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, the integrator clones --repo-path "
             "from this URL at startup, fetches all heads + reconciles "
             "remote orphan variant/* refs, and publishes new variant/* refs "
-            "back to this remote."
+            "back to this remote. --forgejo-url is a deprecated alias."
         ),
     )
     parser.add_argument(
@@ -111,7 +113,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Optional path to a git credential-helper script "
             "(see Phase 10d follow-up B §D.3). Used to provide HTTP "
-            "Basic auth to --gitea-url."
+            "Basic auth to --forgejo-url."
         ),
     )
     parser.add_argument(
@@ -313,31 +315,31 @@ def _ensure_repo(
     *,
     log,  # noqa: ANN001 — _CtxAdapter, not exposed
     repo_path: str,
-    gitea_url: str | None,
+    forgejo_url: str | None,
     credential_helper: str | None,
 ) -> GitRepo:
     """Materialize the integrator's local repo per Phase 10d follow-up B §D.5.
 
-    When ``gitea_url`` is set:
-      - if ``repo_path`` is not yet a git repo, clone --bare from gitea;
+    When ``forgejo_url`` is set:
+      - if ``repo_path`` is not yet a git repo, clone --bare from the remote;
       - otherwise, fetch_all_heads to refresh + prune.
 
-    When ``gitea_url`` is None, return a plain ``GitRepo(repo_path)``
+    When ``forgejo_url`` is None, return a plain ``GitRepo(repo_path)``
     over the existing local bare repo (chunk-10d behavior, no remote).
     """
     from pathlib import Path
 
     path = Path(repo_path)
-    if gitea_url is None:
+    if forgejo_url is None:
         return GitRepo(path)
     if (path / "HEAD").is_file() or (path / ".git" / "HEAD").is_file():
-        log.info("fetching_remote_heads", url=gitea_url)
+        log.info("fetching_remote_heads", url=forgejo_url)
         repo = GitRepo(path)
         repo.fetch_all_heads()
         return repo
-    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    log.info("cloning_from_remote", url=forgejo_url, dest=str(path))
     return GitRepo.clone_from(
-        url=gitea_url,
+        url=forgejo_url,
         dest=path,
         bare=True,
         credential_helper=credential_helper,
@@ -422,7 +424,7 @@ def _run_single_experiment(
         repo = _ensure_repo(
             log=log,
             repo_path=args.repo_path,
-            gitea_url=args.gitea_url,
+            forgejo_url=args.forgejo_url,
             credential_helper=args.credential_helper,
         )
         integrator = Integrator(
@@ -430,7 +432,7 @@ def _run_single_experiment(
             repo=repo,
             author=_parse_author(args.integrator_author),
         )
-        if args.gitea_url is not None:
+        if args.forgejo_url is not None:
             # §D.7c: store-authoritative reconciliation of remote
             # orphan variant/* refs at startup.
             try:
@@ -614,7 +616,7 @@ def _run_multi_experiment(
     repo = _ensure_repo(
         log=log,
         repo_path=args.repo_path,
-        gitea_url=args.gitea_url,
+        forgejo_url=args.forgejo_url,
         credential_helper=args.credential_helper,
     )
     author = _parse_author(args.integrator_author)

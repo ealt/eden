@@ -254,37 +254,37 @@ cleanup of leftover worktrees uses path-scoped
 subdir; the repo-global `git worktree prune` is **not** used. This
 makes cross-host races impossible by construction.
 
-## 7. Gitea-as-remote reference deployment
+## 7. Forgejo-as-remote reference deployment
 
 The Phase 10d follow-up B reference deployment has every worker
 host (orchestrator integrator, executor host, evaluator host,
-web-ui executor module) treat **Gitea** as the central git
+web-ui executor module) treat **Forgejo** as the central git
 remote — workers stop touching a shared bare-repo volume and
-instead clone a private bare copy from Gitea over HTTP, fetch on
+instead clone a private bare copy from Forgejo over HTTP, fetch on
 subsequent starts, push their `work/*` and `variant/*` refs back,
-and rely on Gitea's CAS for chapter 6 §3.4 atomicity.
+and rely on Forgejo's CAS for chapter 6 §3.4 atomicity.
 
 ### 7.1 Auth — HTTP Basic via per-experiment credential helper
 
-The reference Gitea is exposed on plain HTTP inside the compose
+The reference Forgejo is exposed on plain HTTP inside the compose
 network (no TLS). That matches the reference soft-isolation
 posture (the trust boundary is the compose network, not the
-wire). A hardened deployment substitutes a TLS-fronted Gitea
-behind the same `--gitea-url` flag — the wrapping code is opaque
+wire). A hardened deployment substitutes a TLS-fronted Forgejo
+behind the same `--forgejo-url` flag — the wrapping code is opaque
 to the URL scheme.
 
 setup-experiment provisions an admin `eden` user with a
 per-experiment password, a repo `eden/<experiment-id>.git`
 (idempotent), and a credential-helper script at
-`reference/compose/.gitea-creds-<experiment-id>/credential-helper.sh`
+`reference/compose/.forgejo-creds-<experiment-id>/credential-helper.sh`
 that prints `username=eden\npassword=<generated>` for matching
 URLs. The script is mounted RO into every worker container at
 `/etc/eden/credential-helper.sh` and configured as the local
 clone's `credential.helper`. The seed commit is pushed by a
-one-shot `eden-repo-init --push-to <gitea-url>` invocation.
+one-shot `eden-repo-init --push-to <forgejo-url>` invocation.
 
 The credential-helper script lives on the host filesystem
-(mode 0755). The eden user's Gitea password is therefore visible
+(mode 0755). The eden user's Forgejo password is therefore visible
 to anyone with read access to the host — same soft boundary as
 the DooD socket mount documented in §8.
 
@@ -303,7 +303,7 @@ the DooD socket mount documented in §8.
 publish-then-commit-then-rollback ladder:
 
 1. local `create_ref` — CAS-guarded local ref write.
-2. remote `push_ref` — publish to Gitea with
+2. remote `push_ref` — publish to Forgejo with
    `--force-with-lease`. Three branches:
    - `RefRefused`: definite remote rejection. Step 4b only.
    - `GitTransportError`: ambiguous; disambiguate by an
@@ -325,7 +325,7 @@ consumers.
 ### 7.4 Startup remote-orphan reconciliation
 
 `Integrator.reconcile_remote_orphans()` runs at orchestrator
-startup. It walks `refs/heads/variant/*` on Gitea via `ls-remote`,
+startup. It walks `refs/heads/variant/*` on Forgejo via `ls-remote`,
 recovers the `variant_id` from each commit's
 `.eden/variants/<variant_id>/evaluation.json` tree path
 (spec-authoritative — chapter 6 §3.2), and for each calls
@@ -345,7 +345,7 @@ This is the backstop for the §7.3 "step 4a failed" case and the
 Each worker host's startup:
 
 1. If `/var/lib/eden/repo` is not yet a git repo, `clone --bare`
-   from Gitea via `--gitea-url`.
+   from Forgejo via `--forgejo-url`.
 2. Otherwise,
    `git fetch --prune origin '+refs/heads/*:refs/heads/*'` to
    refresh ALL local heads + delete any local heads no longer
@@ -487,7 +487,7 @@ at a time:
 
 | Substrate | Env var(s) | Read shape |
 |---|---|---|
-| Git (local bare clone) | `EDEN_REPO_DIR` | `git log` / `git show` / tree walk against the worker host's bare clone of the central repo (Phase 10d follow-up B Gitea-as-remote). Sees `refs/heads/work/*` and `refs/heads/variant/*` plus the evaluation manifest at the variant tip. |
+| Git (local bare clone) | `EDEN_REPO_DIR` | `git log` / `git show` / tree walk against the worker host's bare clone of the central repo (Phase 10d follow-up B Forgejo-as-remote). Sees `refs/heads/work/*` and `refs/heads/variant/*` plus the evaluation manifest at the variant tip. |
 | Artifact server (HTTP) | `EDEN_ARTIFACT_URL` + `EDEN_ARTIFACT_PATH_ROOT` | `GET ${EDEN_ARTIFACT_URL}<relative-path>` with the §13.1 bearer (`${EDEN_WORKER_ID}:${EDEN_WORKER_CREDENTIAL}`) against the task-store-server's reference-only `/_reference/experiments/<id>/artifacts/<path>` route. Returns bytes ≤ 1 MiB; larger files 413. |
 | Postgres event log | `EDEN_READONLY_STORE_URL` | Direct Postgres connection as the `eden_readonly` role. SELECT on `experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`; column-projection SELECT on `worker(worker_id, data)` (the JSON `data` payload carries `labels`, `registered_at`, `registered_by`, etc.). `SELECT * FROM worker` fails because the `credential_hash` column is intentionally excluded. |
 
@@ -509,7 +509,7 @@ laptop driving an LLM against a server-hosted compose stack)
 substitutes its own values:
 
 - `EDEN_REPO_DIR` is replaced by an operator-controlled
-  clone of the Gitea repo (today's shared `eden` HTTP-Basic
+  clone of the Forgejo repo (today's shared `eden` HTTP-Basic
   password; Phase 13e moves to per-worker tokens with branch
   ACLs).
 - `EDEN_ARTIFACT_URL` is substituted with the operator's

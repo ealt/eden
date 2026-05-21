@@ -2,14 +2,14 @@
 
 ## 1. Context
 
-A manual EDEN experiment running on the reference Compose stack was wiped overnight when Docker Desktop rebuilt its embedded Linux VM during an automatic update. The substrates were doing their job: Postgres fsync'd writes (WAL + `synchronous=FULL`), Gitea fsync'd its sqlite DB + git packs, the artifact store wrote atomic-rename files. The substrates' *disk* — the Docker Desktop VM's storage backing the named volumes — was less durable than the substrates assumed.
+A manual EDEN experiment running on the reference Compose stack was wiped overnight when Docker Desktop rebuilt its embedded Linux VM during an automatic update. The substrates were doing their job: Postgres fsync'd writes (WAL + `synchronous=FULL`), Forgejo fsync'd its sqlite DB + git packs, the artifact store wrote atomic-rename files. The substrates' *disk* — the Docker Desktop VM's storage backing the named volumes — was less durable than the substrates assumed.
 
 The failure mode is structural, not a bug:
 
-- All EDEN substrate state lives in Docker named volumes (`eden-postgres-data`, `eden-gitea-data`, `eden-artifacts-data`, per-host `eden-*-repo` and `eden-*-credentials` volumes).
+- All EDEN substrate state lives in Docker named volumes (`eden-postgres-data`, `eden-forgejo-data`, `eden-artifacts-data`, per-host `eden-*-repo` and `eden-*-credentials` volumes).
 - Docker named volumes are stored inside the Docker engine's storage area. On Linux that's typically `/var/lib/docker/volumes/` on the host filesystem; on Docker Desktop (macOS / Windows) it's a virtual disk inside the embedded VM (`Docker.raw` on macOS).
 - The embedded VM's disk is opaque to the operator. It is replaced wholesale by Docker Desktop updates, by `Reset to factory defaults`, by `Clean / Purge data`, and by the user's own `docker volume rm`. None of these are "disk failure" events the substrate could defend against — they are administrative deletions of the substrate's whole storage surface.
-- The operator's mental model — "Postgres persists my data; Gitea persists my repo; therefore the experiment is durable" — is *correct* per the protocol, but breaks because the substrates' physical storage is not a persistent host filesystem.
+- The operator's mental model — "Postgres persists my data; Forgejo persists my repo; therefore the experiment is durable" — is *correct* per the protocol, but breaks because the substrates' physical storage is not a persistent host filesystem.
 
 The operator articulated the requirement this way:
 
@@ -25,7 +25,7 @@ The chunk is intentionally narrow. It does not:
 - Ship `backup-experiment.sh` / `restore-experiment.sh` tooling. Durability comes from the substrate; operators rely on normal filesystem-level backup hygiene of their `~/.eden/` directory for protection against disk failure.
 - Add `checkpoint` / `restore` commands. Those are Phase 12b's portable-checkpoints concern (cross-implementation portability, not local durability).
 - Author conformance scenarios for the durability invariant. Deferred per operator decision; chapter 9 §5 lists the group as a placeholder.
-- Touch managed-substrate work (Phase 13c managed Postgres / 13d S3-GCS / 13e Gitea hardening). Those are the cloud-deployment path; out of scope here.
+- Touch managed-substrate work (Phase 13c managed Postgres / 13d S3-GCS / 13e Forgejo hardening). Those are the cloud-deployment path; out of scope here.
 - Touch the Helm chart (Phase 13a). Helm uses PVCs already; the natural durability model under Kubernetes is unchanged.
 
 ## 2. Decisions captured before drafting
@@ -89,7 +89,7 @@ The reference Compose deployment switches every **durable substrate-data** volum
 | Volume name (today) | New bind-mount target | Substrate | Declared in |
 |---|---|---|---|
 | `eden-postgres-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/postgres/` | task-store | `compose.yaml` |
-| `eden-gitea-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/gitea/` | git remote (workers' canonical git surface) | `compose.yaml` |
+| `eden-forgejo-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/forgejo/` | git remote (workers' canonical git surface) | `compose.yaml` |
 | `eden-artifacts-data` | `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` | artifact store (web-ui's `--artifacts-dir`) | `compose.yaml` |
 | `eden-orchestrator-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo/` | per-host bare clone (orchestrator) | `compose.yaml` |
 | `eden-executor-repo` | `${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo/` | per-host bare clone (executor) | `compose.yaml` |
@@ -111,14 +111,14 @@ The reference Compose deployment switches every **durable substrate-data** volum
 
 **Per-experiment bootstrap directories (NOT under `${EDEN_EXPERIMENT_DATA_ROOT}` — classified explicitly):**
 
-setup-experiment.sh creates two per-experiment directories that sit in the source tree (`reference/compose/.gitea-creds-${EXPERIMENT_ID}/`, `reference/compose/.cidfiles-${EXPERIMENT_ID}/`) and bind-mounts them into the worker hosts. They hold:
+setup-experiment.sh creates two per-experiment directories that sit in the source tree (`reference/compose/.forgejo-creds-${EXPERIMENT_ID}/`, `reference/compose/.cidfiles-${EXPERIMENT_ID}/`) and bind-mounts them into the worker hosts. They hold:
 
-- `gitea-creds-<id>/credential-helper.sh` — the per-experiment Gitea HTTP-Basic password embedded as a shell `case` block.
+- `forgejo-creds-<id>/credential-helper.sh` — the per-experiment Forgejo HTTP-Basic password embedded as a shell `case` block.
 - `.cidfiles-<id>/` — per-spawn container-id files for the docker-exec wrap's SIGKILL-escalation path.
 
-Neither is protocol-owned state. Both are regenerated deterministically by setup-experiment: the gitea password is preserved across re-runs via `read_env_key` from `.env`; the cidfiles dir is per-spawn ephemeral and recreated empty. Losing either is recoverable by re-running setup-experiment.
+Neither is protocol-owned state. Both are regenerated deterministically by setup-experiment: the forgejo password is preserved across re-runs via `read_env_key` from `.env`; the cidfiles dir is per-spawn ephemeral and recreated empty. Losing either is recoverable by re-running setup-experiment.
 
-**Classification: these stay under `reference/compose/` and are NOT migrated under `${EDEN_EXPERIMENT_DATA_ROOT}`.** Two reasons: (1) the cidfile dir is load-bearing for the DooD wrap design, which requires the host-side AND container-side paths to be identical (so `docker run --cidfile <path>` resolves on the daemon side to a path that exists on the worker host's filesystem — see AGENTS.md's "Three load-bearing wiring traps" pitfall). Moving the cidfile path requires touching every place that path is computed and propagated. (2) The gitea-creds dir contains only regenerable bootstrap config; it doesn't satisfy "protocol-owned state that must survive substrate restart." A re-run of setup-experiment regenerates it.
+**Classification: these stay under `reference/compose/` and are NOT migrated under `${EDEN_EXPERIMENT_DATA_ROOT}`.** Two reasons: (1) the cidfile dir is load-bearing for the DooD wrap design, which requires the host-side AND container-side paths to be identical (so `docker run --cidfile <path>` resolves on the daemon side to a path that exists on the worker host's filesystem — see AGENTS.md's "Three load-bearing wiring traps" pitfall). Moving the cidfile path requires touching every place that path is computed and propagated. (2) The forgejo-creds dir contains only regenerable bootstrap config; it doesn't satisfy "protocol-owned state that must survive substrate restart." A re-run of setup-experiment regenerates it.
 
 Document both in the operator doc as bootstrap-only directories not part of the durable substrate. If the source-tree-pollution becomes operationally unpleasant, a future chunk can relocate them under `${EDEN_EXPERIMENT_DATA_ROOT}/bootstrap/` — out of scope here; not load-bearing for durability.
 
@@ -136,7 +136,7 @@ The `${EDEN_EXPERIMENT_DATA_ROOT}` env var is populated by setup-experiment.sh (
 
 Two reservations:
 
-- **`eden-blob-data` is dead.** [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) at L78-84 declares a `blob-init` busybox service that mounts it; no other service in the file references it. The blob-init service exists as a `compose up --wait` ergonomics fix (forces postgres/gitea to wait on a `service_completed_successfully` dependency, so `--wait` doesn't fail on infrastructure that exits early). The volume itself holds no protocol-owned state — confirm via a one-grep `grep -rn 'eden-blob-data\|/var/lib/eden/blobs' reference/` before deleting. If the grep returns only the blob-init service, the volume can be removed entirely. If a real consumer surfaces, convert it to a bind-mount and keep `blob-init` for the `--wait` ergonomics.
+- **`eden-blob-data` is dead.** [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) at L78-84 declares a `blob-init` busybox service that mounts it; no other service in the file references it. The blob-init service exists as a `compose up --wait` ergonomics fix (forces postgres/forgejo to wait on a `service_completed_successfully` dependency, so `--wait` doesn't fail on infrastructure that exits early). The volume itself holds no protocol-owned state — confirm via a one-grep `grep -rn 'eden-blob-data\|/var/lib/eden/blobs' reference/` before deleting. If the grep returns only the blob-init service, the volume can be removed entirely. If a real consumer surfaces, convert it to a bind-mount and keep `blob-init` for the `--wait` ergonomics.
 
 - **`eden-repo-init-staging` and `eden-worktrees` stay named volumes by design.** Both hold scratch state (bootstrap-staging and per-task worktrees, respectively) and existing code already assumes they don't survive — setup-experiment.sh L445 `docker volume rm`s the staging volume on re-seed; worker hosts run `git worktree remove --force` at startup. Declaring them as durable bind-mounts would conflict with those discard semantics. Document the classification in a comment block at the top of the compose.yaml `volumes:` section so the durable-vs-ephemeral boundary is auditable.
 
@@ -150,7 +150,7 @@ Two additions to [`reference/scripts/setup-experiment/setup-experiment.sh`](../.
 
    ```text
    ${DATA_ROOT}/postgres/
-   ${DATA_ROOT}/gitea/
+   ${DATA_ROOT}/forgejo/
    ${DATA_ROOT}/artifacts/
    ${DATA_ROOT}/orchestrator-repo/
    ${DATA_ROOT}/executor-repo/
@@ -163,7 +163,7 @@ Two additions to [`reference/scripts/setup-experiment/setup-experiment.sh`](../.
    ${DATA_ROOT}/credentials/web-ui/
    ```
 
-   Permissions: see §8.1 below — there are multiple container uids (postgres=70, gitea-rootless=1000, eden:1000). The current cidfile dir uses `chmod 0777` (acknowledged in setup-experiment.sh L240-243) as a known-pragmatic shortcut for the multi-uid problem. Same posture here — `chmod 0777` on each newly-created subdirectory, with an explanatory comment. Local-dev only; production deployments use Phase 13's managed substrates.
+   Permissions: see §8.1 below — there are multiple container uids (postgres=70, forgejo-rootless=1000, eden:1000). The current cidfile dir uses `chmod 0777` (acknowledged in setup-experiment.sh L240-243) as a known-pragmatic shortcut for the multi-uid problem. Same posture here — `chmod 0777` on each newly-created subdirectory, with an explanatory comment. Local-dev only; production deployments use Phase 13's managed substrates.
 
 3. **`--data-root` idempotency.** Re-running setup-experiment on an already-configured experiment preserves the existing `EDEN_EXPERIMENT_DATA_ROOT` from `.env` (same `read_env_key` pattern the script uses for secrets). Operator can change it explicitly with `--data-root`; otherwise the prior root sticks. If a passed `--data-root` differs from the existing one in `.env` and any of the substrate subdirs are non-empty, the script aborts with an instruction to migrate manually — never silently relocates substrate data.
 
@@ -179,17 +179,17 @@ PR #80 introduces `docs/operations/` with a README, `dispatch-mode.md`, `multi-o
   ```bash
   docker compose --env-file .env stop
   ROOT=~/.eden/experiments/$EXPERIMENT_ID
-  mkdir -p "$ROOT"/{postgres,gitea,artifacts,orchestrator-repo,executor-repo,evaluator-repo,web-ui-repo,credentials/{orchestrator,ideator,executor,evaluator,web-ui}}
+  mkdir -p "$ROOT"/{postgres,forgejo,artifacts,orchestrator-repo,executor-repo,evaluator-repo,web-ui-repo,credentials/{orchestrator,ideator,executor,evaluator,web-ui}}
   chmod -R 0777 "$ROOT"
   # Repeat for each substrate. Example for postgres:
   docker run --rm -v eden-postgres-data:/from -v "$ROOT/postgres":/to alpine cp -a /from/. /to/
-  # ... etc for gitea, artifacts, each *-repo, each */credentials/*
+  # ... etc for forgejo, artifacts, each *-repo, each */credentials/*
   # Update setup-experiment-generated .env to set EDEN_EXPERIMENT_DATA_ROOT=$ROOT
   # (Or re-run setup-experiment.sh --data-root "$ROOT" — preserves secrets)
   docker compose --env-file .env up -d --wait
   ```
 
-- **Pointer to Phase 13.** For production-grade durability (managed Postgres / S3-GCS / hardened Gitea), reference the Phase 13c/d/e roadmap.
+- **Pointer to Phase 13.** For production-grade durability (managed Postgres / S3-GCS / hardened Forgejo), reference the Phase 13c/d/e roadmap.
 
 ### D.6 Roadmap + AGENTS.md
 
@@ -308,7 +308,7 @@ done
 docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml down   # NO -v
 
 # 4. Verify the substrate tree is still populated on the host filesystem.
-ls "$ROOT/postgres" "$ROOT/gitea" "$ROOT/artifacts"
+ls "$ROOT/postgres" "$ROOT/forgejo" "$ROOT/artifacts"
 
 # 5. Bring the stack back up against the same data root + env file.
 docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
@@ -357,8 +357,8 @@ If any smoke fails, do NOT push. Diagnose locally first. Per the AGENTS.md "Comm
 The four substrate containers run as different uids:
 
 - **`postgres:16.6-alpine`** — docker-entrypoint starts as root, then `chown`s `/var/lib/postgresql/data` to the postgres user (uid 70 in alpine) and switches via `gosu`. With a bind-mount, if the host directory is owned by the operator (uid 501 on macOS, 1000 on Linux) and has restrictive permissions, the entrypoint's `chown` will succeed (it's running as root inside the container) but the data the container writes will be 70:70-owned on the host. That's tolerable; the operator will see weird ownership but the container works.
-- **`gitea/gitea:1.22.6-rootless`** — runs as the `git` user (uid 1000). Cannot chown its own data dir (rootless). The bind-mount source MUST already be writable by uid 1000 OR be world-writable.
-- **`eden-reference:dev`** — runs as `eden:1000` per `reference/compose/Dockerfile` L25 + L67. Same situation as gitea.
+- **`codeberg.org/forgejo/forgejo:11-rootless`** — runs as the `git` user (uid 1000). Cannot chown its own data dir (rootless). The bind-mount source MUST already be writable by uid 1000 OR be world-writable.
+- **`eden-reference:dev`** — runs as `eden:1000` per `reference/compose/Dockerfile` L25 + L67. Same situation as forgejo.
 - **`busybox` blob-init service** — runs as root by default; not a concern (and the service may be removed entirely if `eden-blob-data` is dead).
 
 The pragmatic shape used in setup-experiment for the cidfile dir (`chmod 0777`, L240-243) is the proven cross-platform recipe for this multi-uid problem in the reference local-dev deployment. Same posture here: `chmod 0777` each substrate subdirectory, document the local-dev security tradeoff, point Phase 13 at the production-grade managed-substrate path.
@@ -379,7 +379,7 @@ grep -rn 'eden-blob-data\|/var/lib/eden/blobs' reference/ docs/ spec/ tests/
 
 If the only hits are the blob-init service in compose.yaml + the volume declaration, it is safely removable. If anything else references it (a test fixture, a documented op, an overlay file), the volume converts to a bind-mount and `blob-init` either retains for the `--wait` ergonomics or moves to another `service_completed_successfully` dependency target (postgres → eden-repo-init's exit, for example).
 
-The `blob-init` service's stated purpose (compose.yaml L72-77 comment) is "ensure eden-blob-data exists at compose-up time" because "compose does NOT create an unmounted top-level volume." With bind-mounts the parent directory is created by setup-experiment, so there's no analogous problem — the `blob-init` service can be removed alongside the volume. The `--wait` ergonomics it provides (postgres + gitea depending on blob-init's `service_completed_successfully`) can be preserved by switching those `depends_on` entries to depend on each other or removed if no longer needed; this is a follow-up audit during impl.
+The `blob-init` service's stated purpose (compose.yaml L72-77 comment) is "ensure eden-blob-data exists at compose-up time" because "compose does NOT create an unmounted top-level volume." With bind-mounts the parent directory is created by setup-experiment, so there's no analogous problem — the `blob-init` service can be removed alongside the volume. The `--wait` ergonomics it provides (postgres + forgejo depending on blob-init's `service_completed_successfully`) can be preserved by switching those `depends_on` entries to depend on each other or removed if no longer needed; this is a follow-up audit during impl.
 
 ### 8.4 Path-with-spaces / shell-special-character risk in `EDEN_EXPERIMENT_DATA_ROOT`
 
@@ -424,7 +424,7 @@ The compose.subprocess.yaml mounts `eden-worktrees:/var/lib/eden/worktrees` on b
 ## 9. Risks / things to watch
 
 - **`chmod 0777` security pushback.** Codex-review may flag the world-writable substrate directories. The cidfile-dir precedent already accepted this posture for local-dev (setup-experiment.sh L240-243). The plan documents the tradeoff explicitly and points Phase 13 at the production-grade alternative. If review pushes back hard, the fallback is `chown` to a documented per-platform uid list — more correct but less portable. Hold the line on `chmod 0777` unless review surfaces a deployment scenario where it breaks (e.g., a corporate-managed macOS that disallows world-writable directories).
-- **Smoke regression from the bind-mount switch.** Postgres / gitea / eden services have different uid postures, and a bind-mount that "works on my Mac" may break on the CI Linux runner. The plan's smoke gate (run all four smoke scripts before push — `smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `e2e.sh`) is the catch.
+- **Smoke regression from the bind-mount switch.** Postgres / forgejo / eden services have different uid postures, and a bind-mount that "works on my Mac" may break on the CI Linux runner. The plan's smoke gate (run all four smoke scripts before push — `smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `e2e.sh`) is the catch.
 - **`$HOME` expansion in compose.yaml.** Compose does NOT shell-expand `$HOME`; the env var must be pre-resolved by setup-experiment.sh into an absolute path. If an operator hand-edits `.env` to put `$HOME` literally, compose interpolation will write a substrate to a directory literally named `$HOME`. Setup-experiment writes the resolved abs path, so the default path works; the operator-hand-edited case is operator error and gets a one-line note in the operator doc.
 - **Migration friction for in-flight experiments.** EDEN is pre-user-deployment-base, so the operator's articulated requirement is to ship the new durability shape now and document migration as a one-shot recipe. If a real user-deployment had emerged in the meantime, this calculus would change. Verify with operator at codex-review time that no production experiment depends on the named-volume shape.
 - **Spec invariant interpreted as a control-plane mandate.** The earlier draft of §13 spoke of "until an authorized operator explicitly terminates it"; that framing was retired in favor of anchoring lifetime to chapter 01 §1's existing termination conditions (codex round 0 / round 1). The current §13 reads "until the experiment reaches a terminal state per its configured termination conditions (§1) or is otherwise discarded by an authorized operator" — the operator-discard clause is informational (handles non-spec deletion paths like operator-decided shutdown) and does NOT name a control-plane operation, so it doesn't beg a future Phase 12 chapter to be co-shipped.
@@ -450,7 +450,7 @@ The plan PR and impl PR are separate surfaces per the chunk shape; operator merg
 - **Conformance scenarios for the durability invariant.** A "stop-stack / kill-volume-mount / start-stack / replay" harness against any conforming IUT could codify the aggregate-durability MUST. Deferred per operator decision; chapter 9 §5 placeholder row is forward-compatible with this followup.
 - **Backup-experiment.sh / restore-experiment.sh.** Out of scope per operator's "no backup tooling" decision.
 - **Time-Machine / encrypted-home integration.** Documented in the operator doc as "use `--data-root` to relocate the substrate tree to your backup-protected location"; no codified tooling.
-- **Phase 13c managed Postgres** / **Phase 13d S3-GCS blob backend** / **Phase 13e Gitea hardening** — the production-grade durability path. The spec invariant introduced here is what those phases are required to satisfy; they don't depend on this chunk shipping first, but this chunk's invariant retroactively constrains their design.
+- **Phase 13c managed Postgres** / **Phase 13d S3-GCS blob backend** / **Phase 13e Forgejo hardening** — the production-grade durability path. The spec invariant introduced here is what those phases are required to satisfy; they don't depend on this chunk shipping first, but this chunk's invariant retroactively constrains their design.
 - **Helm chart bind-mount audit.** Phase 13a's chart uses PVCs (the natural k8s durability binding); no audit needed unless a PVC-vs-emptyDir mistake surfaces. If a future audit finds an `emptyDir` mount holding protocol-owned state, that's a 13a fix-it triggered by this chunk's invariant — out of scope here.
 - **Removal of the `blob-init` service.** If §8.3's audit confirms `eden-blob-data` is dead, removing the service is in scope; if it isn't, the cleanup is its own followup. The plan handles either branch.
 - **CI codification of the kill-and-restart smoke.** Out of scope per operator's deferred-conformance decision. Natural followup if the manual check proves useful operationally.

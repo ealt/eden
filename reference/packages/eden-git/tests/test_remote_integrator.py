@@ -180,7 +180,7 @@ def test_integrate_fetches_work_branch_pushed_after_startup(
     fetch_all_heads misses any work/* ref that an executor
     pushes AFTER orchestrator startup. Integrator.integrate's
     chapter-6 §2 reachability check would then fail with
-    'branch does not exist' even though the ref is on Gitea. The
+    'branch does not exist' even though the ref is on Forgejo. The
     integrator must fetch variant.branch before §2 checks.
     """
     # Build the test scenario: integrator has a private clone, but

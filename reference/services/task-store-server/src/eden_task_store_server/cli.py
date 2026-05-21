@@ -80,7 +80,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "bare repo. The resolver is intentionally I/O-free: it "
             "does not fetch from any remote (a fetch inside the per-"
             "operation Store transaction would block every other "
-            "task-store request behind a slow / unreachable Gitea). "
+            "task-store request behind a slow / unreachable Forgejo). "
             "Operators who want the deeper check should pre-populate "
             "the bare repo via setup-experiment or external tooling; "
             "the executor's pre-submit `_is_no_op_variant` check is "

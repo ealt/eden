@@ -160,7 +160,7 @@ After 13a + 13b + 13c the reference k8s deployment runs:
 - Compose ships an unconsumed `blob-init` busybox service +
   `eden-blob-data` named volume
   ([`reference/compose/compose.yaml`](../../reference/compose/compose.yaml)
-  lines 72-84, 385) — created so postgres + gitea's
+  lines 72-84, 385) — created so postgres + forgejo's
   `depends_on: blob-init` succeeds. Per
   the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g)
   this is a Phase-13-tracked placeholder; nothing currently
@@ -293,7 +293,7 @@ requirement at the deployment-config level.
 | [`reference/services/ideator/`](../../reference/services/ideator/) | Adds `--blob-backend` per §3.4.1; the `rationale`-shape branch in `subprocess_mode.py` line 250 calls the new `Backend.upload`-based `write_idea_artifact`. |
 | [`reference/services/executor/`](../../reference/services/executor/) | Adds `--blob-backend` (and `--blob-fallback-*` flags for §3.6 composite mode); `_rationale_path_from_uri` (line 493) gains fetch-to-temp dispatch by URI scheme per §3.4.3. The `rationale_path` written into `EDEN_TASK_JSON` (line 392) is unchanged in shape. |
 | [`reference/services/evaluator/`](../../reference/services/evaluator/) | Per §3.4.2: NO functional change in v0. The CLI does NOT add `--blob-backend`; the host stays a passthrough on the evaluator's `artifacts_uri` field. The pod receives blob-auth wiring at the chart layer per §5.3 so role-side direct upload works. |
-| [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | `blob-init` + `eden-blob-data` volume removed; `eden-artifacts-data` stays as the web-ui's bind. The `depends_on: blob-init` lines on postgres + gitea become unnecessary and are removed. |
+| [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | `blob-init` + `eden-blob-data` volume removed; `eden-artifacts-data` stays as the web-ui's bind. The `depends_on: blob-init` lines on postgres + forgejo become unnecessary and are removed. |
 | [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | The `chown eden:eden /var/lib/eden/blobs` line (added during the prior §20 inline fix (file since deleted; see CHANGELOG.md Phase 12a-1g)) is removed; nothing mounts at that path anymore. |
 | [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml) | Adds `blob.backend`, `blob.file.*`, `blob.s3.*`, `blob.gcs.*`, and the new `blob.migration.fileFallback.*` block per §3.6. The legacy `storage.artifactsSize` becomes effective only when `blob.backend=file`. |
 | [`reference/helm/eden/templates/web-ui-statefulset.yaml`](../../reference/helm/eden/templates/web-ui-statefulset.yaml) | The artifacts PVC `volumeClaimTemplates` entry becomes conditional on `blob.backend=file` OR `blob.migration.fileFallback.enabled=true` (per §3.6). When migration-mode is active, the Pod's `volumeMounts` entry is `readOnly: true`. The CLI args block adds the per-backend flags plus `--blob-fallback-*` when migration-mode is active. |
@@ -1299,7 +1299,7 @@ volume + the latent `/blob` vs `/blobs` Dockerfile typo
   385).
 - The `depends_on: blob-init: condition:
   service_completed_successfully` lines on `postgres`
-  (line 14-16) and `gitea` (line 38-40).
+  (line 14-16) and `forgejo` (line 38-40).
 - The `chown eden:eden /var/lib/eden/blobs` line in
   [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile)
   (added by the §20 inline fix; no longer needed).
@@ -1736,8 +1736,8 @@ Docs:
 
 ### 4.2 Cross-references to followups
 
-- **Gitea auth + per-branch ACLs + native PR review** —
-  13e. Independent of blob backend; touches Gitea.
+- **Forgejo auth + per-branch ACLs + native PR review** —
+  13e. Independent of blob backend; touches Forgejo.
 - **Multi-region / cross-region replication** — future
   amendment; provider-side concern.
 - **Backend-side encryption key management** — future
@@ -1835,7 +1835,7 @@ Docs:
 
 | File | Change |
 |---|---|
-| `reference/compose/compose.yaml` | Remove `blob-init` service (lines 72-84); remove `eden-blob-data` volume (line 385); remove `depends_on: blob-init: condition: service_completed_successfully` from `postgres` (lines 14-16) and `gitea` (lines 38-40). Keep `eden-artifacts-data` and the web-ui's bind. |
+| `reference/compose/compose.yaml` | Remove `blob-init` service (lines 72-84); remove `eden-blob-data` volume (line 385); remove `depends_on: blob-init: condition: service_completed_successfully` from `postgres` (lines 14-16) and `forgejo` (lines 38-40). Keep `eden-artifacts-data` and the web-ui's bind. |
 | `reference/compose/Dockerfile` | Remove the `chown eden:eden /var/lib/eden/blobs` line (line 62, added by §20's inline fix). The `chown` for `/var/lib/eden/artifacts` STAYS — that volume's mount is the LocalFsBackend's root. |
 | `reference/compose/compose.blob-s3.yaml` (new) | Opt-in overlay setting `BLOB_BACKEND=s3` env vars on web-ui + worker-host services. |
 | `reference/compose/compose.blob-gcs.yaml` (new) | Sibling for GCS. |
@@ -2332,6 +2332,6 @@ keeps `LocalFsBackend` by default; operators MAY override
 to S3/GCS via the new env vars + opt-in overlays.
 the prior `MANUAL_UI_ISSUES.md` §20 (resolved by Phase 12a-1g) is
 resolved (the unconsumed `blob-init` + `eden-blob-data`
-plumbing is gone). 13e (Gitea auth + ACLs + native PR
+plumbing is gone). 13e (Forgejo auth + ACLs + native PR
 review) is the remaining 13-series substrate chunk; it
 is independent of 13d and proceeds in parallel.

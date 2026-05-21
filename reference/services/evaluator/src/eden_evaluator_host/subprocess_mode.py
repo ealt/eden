@@ -154,7 +154,7 @@ def _handle_one(
     claim = store.claim(task.task_id, worker_id)
 
     # Phase 10d follow-up B §D.8: when the local repo has an origin
-    # remote (Gitea cutover), fetch the executor's work/* branch
+    # remote (Forgejo cutover), fetch the executor's work/* branch
     # so the worker commit is present locally before we worktree-add.
     # Per chapter 3 §4.4, infrastructure failures here map to
     # evaluation_error (NOT error) so the variant stays at `success` and

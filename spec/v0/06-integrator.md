@@ -193,7 +193,7 @@ If the integrator is invoked twice for the same variant (replay of a `variant.su
 
 The protocol leaves to implementations:
 
-- The git host (local bare repo, Gitea, GitHub, etc.) and the transport used to write `variant/*` refs.
+- The git host (local bare repo, Forgejo, GitHub, etc.) and the transport used to write `variant/*` refs.
 - The retention policy for `work/*` branches after integration.
 - The exact author/committer identity stamped on the integrator's commits.
 - The mechanism of atomicity in §3.4 — outbox, store-level transaction, compensating writes.

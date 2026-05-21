@@ -4,7 +4,7 @@
 **Origin:** prompted by manual-UI session 2026-05-04 (@ericalt).
 **Relation to current implementation:** the reference impl ships an
 ``eden-experiment checkpoint`` / ``restore`` pair that uses
-postgres-dump + gitea-volume-tar. That format is *not* portable across
+postgres-dump + forgejo-volume-tar. That format is *not* portable across
 implementations. This doc proposes the portable format that should
 replace it for spec-conforming export/import.
 
@@ -38,7 +38,7 @@ implementation-free.
 
 ## Non-goals
 
-- **Secret portability.** Bearer tokens, postgres passwords, gitea
+- **Secret portability.** Bearer tokens, postgres passwords, forgejo
   credentials, session secrets — all deployment-specific. Not in the
   checkpoint. The receiving deployment supplies its own.
 - **Worker identity carry-over** (until the worker-id spec lands per
@@ -162,7 +162,7 @@ anything else live alongside.
 
 A bundle is universally importable with ``git fetch <bundle>`` or
 ``git clone <bundle>`` from any git client. No git-host-specific
-metadata is involved (gitea repos, GitHub repos, plain bare repos —
+metadata is involved (forgejo repos, GitHub repos, plain bare repos —
 all interchangeable).
 
 ## Round-trip semantics: what counts as "same state"
@@ -199,7 +199,7 @@ ongoing operations. Two acceptable strategies:
 
 1. **Quiesce and dump** — pause the orchestrator and any workers,
    take the snapshot, resume. Simple; minor downtime. The reference
-   impl's current implementation does this implicitly (gitea is
+   impl's current implementation does this implicitly (forgejo is
    stopped briefly during volume tar).
 2. **Transactional snapshot** — take a serializable transaction across
    the store, then read the git repo state at the same logical point

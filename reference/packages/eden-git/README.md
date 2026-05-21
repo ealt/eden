@@ -2,7 +2,7 @@
 
 Reference git primitives for the EDEN integrator role (spec/v0 chapter 6). Wraps the `git` CLI as subprocesses and exposes the porcelain and plumbing operations the reference integrator needs to shape `variant/*` commits.
 
-This package is a thin subprocess wrapper around the local `git` binary — the conformance contract is defined in [`spec/v0/06-integrator.md`](../../../spec/v0/06-integrator.md), not here. A conforming integrator that talks to Gitea, GitHub, or an in-memory fake is equally valid; this package is simply the local-repo reference.
+This package is a thin subprocess wrapper around the local `git` binary — the conformance contract is defined in [`spec/v0/06-integrator.md`](../../../spec/v0/06-integrator.md), not here. A conforming integrator that talks to Forgejo, GitHub, or an in-memory fake is equally valid; this package is simply the local-repo reference.
 
 ## Surface
 
