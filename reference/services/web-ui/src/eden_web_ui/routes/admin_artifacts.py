@@ -87,7 +87,14 @@ def _walk_artifacts(base: Path) -> list[_ArtifactEntry]:
                     rel_path=rel,
                     size=stat.st_size,
                     mtime=_format_mtime(stat.st_mtime),
-                    serve_uri=f"file://{resolved}",
+                    # ``Path.as_uri()`` percent-encodes path bytes that
+                    # are reserved in a URI (``?``, ``#``, ``%``, …).
+                    # ``f"file://{resolved}"`` is wrong for those: a
+                    # filename like ``a?b.txt`` would round-trip
+                    # through the template's ``urlencode`` and the
+                    # serving route's ``urlparse`` as path ``a`` +
+                    # query ``b.txt``, returning 404.
+                    serve_uri=resolved.as_uri(),
                 )
             )
     out.sort(key=lambda e: e.rel_path)

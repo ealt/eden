@@ -10,6 +10,7 @@ walk, and path-containment (symlink-escape + ``..``-escape).
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -44,10 +45,11 @@ class TestAdminArtifactsPopulated:
         assert "idea-demo.md" in resp.text
         # File size in bytes appears verbatim.
         assert str(target.stat().st_size) in resp.text
-        # The serve link points at /artifacts?uri=file://<resolved>.
-        # Jinja's ``urlencode`` filter leaves "/" unescaped (safe="/"),
-        # matching ``urllib.parse.quote``'s default.
-        expected_uri = quote(f"file://{target.resolve()}", safe="/")
+        # The serve link is a real RFC-8089 file URI produced by
+        # ``Path.as_uri()`` (percent-encodes reserved chars in the
+        # path), then re-encoded by Jinja's ``urlencode`` filter for
+        # safe inclusion in the querystring.
+        expected_uri = quote(target.resolve().as_uri(), safe="/")
         assert f"/artifacts?uri={expected_uri}" in resp.text
 
     def test_recursive_walk_at_depth_gt_one(
@@ -75,6 +77,47 @@ class TestAdminArtifactsPopulated:
         )
         assert resp.status_code == 200
         assert resp.text == "served-bytes"
+
+    def test_rendered_link_round_trips_for_reserved_chars(
+        self,
+        signed_in_client: TestClient,
+        artifacts_dir: Path,
+    ) -> None:
+        """Filenames containing URI-reserved chars (``?`` / ``#``)
+        must produce links that round-trip to the serving route.
+
+        Codex round-0 finding: ``serve_uri = f"file://{resolved}"``
+        wasn't a valid file URI for these chars — the listing
+        rendered a clickable link that 404'd when followed because
+        ``urlparse`` split the path at the unescaped ``?``. The fix
+        is ``Path.as_uri()`` (percent-encodes reserved bytes).
+        """
+        for name, payload in (
+            ("a?b.txt", "with-question"),
+            ("c#d.txt", "with-hash"),
+            ("e f.txt", "with-space"),
+        ):
+            target = artifacts_dir / name
+            target.write_text(payload)
+            resp = signed_in_client.get("/admin/artifacts/")
+            assert resp.status_code == 200
+            match = re.search(
+                r'href="(/artifacts\?uri=[^"]+)">\s*<code>'
+                + re.escape(name)
+                + r"</code>",
+                resp.text,
+            )
+            assert match is not None, (
+                f"no listing link found for {name}; response was: {resp.text}"
+            )
+            follow = signed_in_client.get(
+                match.group(1), follow_redirects=False
+            )
+            assert follow.status_code == 200, (
+                f"following the rendered link for {name} returned "
+                f"{follow.status_code}"
+            )
+            assert follow.text == payload
 
 
 class TestAdminArtifactsContainment:
