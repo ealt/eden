@@ -153,7 +153,77 @@ def _handle_one(
         return
     claim = store.claim(task.task_id, worker_id)
 
-    # Phase 10d follow-up B §D.8: when the local repo has an origin
+    wt = _prepare_eval_workspace(
+        store=store,
+        task=task,
+        variant=variant,
+        config=config,
+        host_subdir=host_subdir,
+        claim_token=claim.worker_id,
+    )
+    if wt is None:
+        return
+
+    try:
+        outcome = _run_eval_subprocess_with_cleanup(
+            wt=wt,
+            task=task,
+            variant=variant,
+            evaluation_schema=evaluation_schema,
+            objective=objective,
+            config=config,
+            worker_id=worker_id,
+        )
+    finally:
+        wt.remove()
+
+    submission = _outcome_to_submission(
+        outcome=outcome,
+        variant_id=variant_id,
+        store=store,
+    )
+    _submit_with_readback(
+        store=store,
+        task_id=task.task_id,
+        token=claim.worker_id,
+        submission=submission,
+    )
+
+
+def _submit_eval_error(
+    *, store: Store, task_id: str, claim_token: str, variant_id: str
+) -> None:
+    """Submit ``EvaluationSubmission(status="evaluation_error", ...)``."""
+    _submit_with_readback(
+        store=store,
+        task_id=task_id,
+        token=claim_token,
+        submission=EvaluationSubmission(
+            status="evaluation_error",
+            variant_id=variant_id,
+            evaluation=None,
+            artifacts_uri=None,
+        ),
+    )
+
+
+def _prepare_eval_workspace(
+    *,
+    store: Store,
+    task: EvaluationTask,
+    variant: Any,
+    config: EvaluatorSubprocessConfig,
+    host_subdir: Path,
+    claim_token: str,
+) -> TaskWorktree | None:
+    """Fetch the variant branch (if any) and materialize the worktree.
+
+    Returns the created ``TaskWorktree`` on success, or ``None`` after
+    submitting ``evaluation_error`` when fetch or worktree-create fails.
+    Per chapter 3 §4.4, infrastructure failures here map to
+    ``evaluation_error`` (NOT ``error``) so the variant stays at
+    ``success`` and can be re-evaluated later.
+    """
     # remote (Forgejo cutover), fetch the executor's work/* branch
     # so the worker commit is present locally before we worktree-add.
     # Per chapter 3 §4.4, infrastructure failures here map to
@@ -170,18 +240,13 @@ def _handle_one(
                 "evaluator_fetch_failed",
                 extra={"task_id": task.task_id, "branch": variant.branch},
             )
-            _submit_with_readback(
+            _submit_eval_error(
                 store=store,
                 task_id=task.task_id,
-                token=claim.worker_id,
-                submission=EvaluationSubmission(
-                    status="evaluation_error",
-                    variant_id=variant_id,
-                    evaluation=None,
-                    artifacts_uri=None,
-                ),
+                claim_token=claim_token,
+                variant_id=variant.variant_id,
             )
-            return
+            return None
 
     wt = TaskWorktree(
         repo_path=config.repo_path,
@@ -195,19 +260,27 @@ def _handle_one(
             "evaluator_worktree_create_failed",
             extra={"task_id": task.task_id},
         )
-        _submit_with_readback(
+        _submit_eval_error(
             store=store,
             task_id=task.task_id,
-            token=claim.worker_id,
-            submission=EvaluationSubmission(
-                status="evaluation_error",
-                variant_id=variant_id,
-                evaluation=None,
-                artifacts_uri=None,
-            ),
+            claim_token=claim_token,
+            variant_id=variant.variant_id,
         )
-        return
+        return None
+    return wt
 
+
+def _run_eval_subprocess_with_cleanup(
+    *,
+    wt: TaskWorktree,
+    task: EvaluationTask,
+    variant: Any,
+    evaluation_schema: dict,
+    objective: dict,
+    config: EvaluatorSubprocessConfig,
+    worker_id: str,
+) -> dict[str, Any]:
+    """Run the subprocess and normalize unexpected failures to ``evaluation_error``."""
     try:
         outcome = _run_subprocess(
             wt_path=wt.path,
@@ -224,8 +297,6 @@ def _handle_one(
             extra={"task_id": task.task_id},
         )
         outcome = {"status": "evaluation_error"}
-    finally:
-        wt.remove()
 
     if outcome.get("description"):
         log.info(
@@ -236,17 +307,7 @@ def _handle_one(
                 "description": outcome["description"],
             },
         )
-    submission = _outcome_to_submission(
-        outcome=outcome,
-        variant_id=variant_id,
-        store=store,
-    )
-    _submit_with_readback(
-        store=store,
-        task_id=task.task_id,
-        token=claim.worker_id,
-        submission=submission,
-    )
+    return outcome
 
 
 def _outcome_to_submission(
