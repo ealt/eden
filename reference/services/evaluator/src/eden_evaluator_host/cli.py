@@ -117,6 +117,83 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _run_subprocess_mode(
+    args: argparse.Namespace,
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter
+    client: StoreClient,
+    bearer: str | None,
+    config,  # noqa: ANN001 — ExperimentConfig
+    stop: StopFlag,
+) -> None:
+    """Drive the subprocess-mode evaluator loop end-to-end."""
+    command = require_command(config, "evaluation_command")
+    env: dict[str, str] = {}
+    if args.evaluation_env_file:
+        user_env = parse_env_file(args.evaluation_env_file)
+        # Codex round-3: strip reserved substrate keys from
+        # the user env BEFORE merging so a user file can't
+        # reintroduce keys the host suppressed or selectively
+        # configured.
+        env.update(strip_reserved_substrate_keys(dict(user_env)))
+    try:
+        exec_args = resolve_exec_args(args)
+    except ValueError as exc:
+        raise SystemExit(f"eden-evaluator-host: {exc}") from exc
+    host_id = socket.gethostname()
+    if exec_args.mode == "docker":
+        reap_orphaned_containers(role="evaluator", host=host_id)
+    # 12a-1f substrate access: thread the four substrate env
+    # vars (EDEN_REPO_DIR / EDEN_ARTIFACT_URL /
+    # EDEN_ARTIFACT_PATH_ROOT / EDEN_READONLY_STORE_URL) into
+    # the spawned child. Suppressed under --exec-mode docker
+    # per §6.4 / §8.9 (sibling containers can't resolve
+    # compose-internal hostnames).
+    substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
+    substrate = substrate_args_for_exec_mode(substrate, exec_mode=exec_args.mode)
+    if exec_args.mode == "docker" and (
+        args.repo_path is not None
+        or args.artifact_url is not None
+        or args.readonly_store_url is not None
+    ):
+        log.warning(
+            "substrate_access_disabled_in_exec_mode_docker",
+            extra={
+                "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+            },
+        )
+    env.update(substrate.to_env())
+    # parse_args validates these are set in subprocess mode;
+    # asserts narrow types for pyright + surface a clear
+    # internal-bug message if the invariant ever breaks.
+    assert args.experiment_dir is not None
+    assert args.repo_path is not None
+    sub_config = EvaluatorSubprocessConfig(
+        command=command,
+        experiment_dir=Path(args.experiment_dir).resolve(),
+        env=env,
+        repo_path=Path(args.repo_path).resolve(),
+        worktrees_root=Path(args.worktrees_dir),
+        task_deadline=args.evaluation_task_deadline,
+        shutdown_deadline=args.evaluation_shutdown_deadline,
+        exec_mode=exec_args.mode,
+        exec_image=exec_args.image,
+        exec_volumes=tuple(exec_args.volumes),
+        exec_binds=tuple(exec_args.binds),
+        cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
+        host_id=host_id,
+        worker_credential=credential_secret(bearer),
+    )
+    run_evaluator_subprocess_loop(
+        store=client,
+        worker_id=args.worker_id,
+        experiment_config=config,
+        config=sub_config,
+        poll_interval=args.poll_interval,
+        stop=stop,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_evaluator_host``."""
     args = parse_args(argv)
@@ -164,72 +241,8 @@ def main(argv: list[str] | None = None) -> int:
                 stop=stop,
             )
         else:
-            command = require_command(config, "evaluation_command")
-            env: dict[str, str] = {}
-            if args.evaluation_env_file:
-                user_env = parse_env_file(args.evaluation_env_file)
-                # Codex round-3: strip reserved substrate keys from
-                # the user env BEFORE merging so a user file can't
-                # reintroduce keys the host suppressed or selectively
-                # configured.
-                env.update(strip_reserved_substrate_keys(dict(user_env)))
-            try:
-                exec_args = resolve_exec_args(args)
-            except ValueError as exc:
-                raise SystemExit(f"eden-evaluator-host: {exc}") from exc
-            host_id = socket.gethostname()
-            if exec_args.mode == "docker":
-                reap_orphaned_containers(role="evaluator", host=host_id)
-            # 12a-1f substrate access: thread the four substrate env
-            # vars (EDEN_REPO_DIR / EDEN_ARTIFACT_URL /
-            # EDEN_ARTIFACT_PATH_ROOT / EDEN_READONLY_STORE_URL) into
-            # the spawned child. Suppressed under --exec-mode docker
-            # per §6.4 / §8.9 (sibling containers can't resolve
-            # compose-internal hostnames).
-            substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
-            substrate = substrate_args_for_exec_mode(
-                substrate, exec_mode=exec_args.mode
-            )
-            if exec_args.mode == "docker" and (
-                args.repo_path is not None
-                or args.artifact_url is not None
-                or args.readonly_store_url is not None
-            ):
-                log.warning(
-                    "substrate_access_disabled_in_exec_mode_docker",
-                    extra={
-                        "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
-                    },
-                )
-            env.update(substrate.to_env())
-            # parse_args validates these are set in subprocess mode;
-            # asserts narrow types for pyright + surface a clear
-            # internal-bug message if the invariant ever breaks.
-            assert args.experiment_dir is not None
-            assert args.repo_path is not None
-            sub_config = EvaluatorSubprocessConfig(
-                command=command,
-                experiment_dir=Path(args.experiment_dir).resolve(),
-                env=env,
-                repo_path=Path(args.repo_path).resolve(),
-                worktrees_root=Path(args.worktrees_dir),
-                task_deadline=args.evaluation_task_deadline,
-                shutdown_deadline=args.evaluation_shutdown_deadline,
-                exec_mode=exec_args.mode,
-                exec_image=exec_args.image,
-                exec_volumes=tuple(exec_args.volumes),
-                exec_binds=tuple(exec_args.binds),
-                cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
-                host_id=host_id,
-                worker_credential=credential_secret(bearer),
-            )
-            run_evaluator_subprocess_loop(
-                store=client,
-                worker_id=args.worker_id,
-                experiment_config=config,
-                config=sub_config,
-                poll_interval=args.poll_interval,
-                stop=stop,
+            _run_subprocess_mode(
+                args, log=log, client=client, bearer=bearer, config=config, stop=stop
             )
     log.info("evaluator host exited")
     return 0
