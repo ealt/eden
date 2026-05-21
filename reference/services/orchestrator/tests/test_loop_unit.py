@@ -228,6 +228,47 @@ def test_loop_picks_up_mode_changes_between_iterations(
     assert len(store.list_tasks(kind="ideation")) == 2
 
 
+def test_loop_never_exits_when_max_quiescent_iterations_zero(
+    store: InMemoryStore,
+) -> None:
+    """Phase 13a Decision 9: max_quiescent_iterations=0 disables the quiescence exit.
+
+    The loop must run through arbitrarily many zero-progress iterations
+    without taking the quiescence-exit branch; the only termination
+    signal is the ``stop`` flag (analogous to SIGTERM under Kubernetes).
+    The test uses an ideation policy that returns 0 every iteration so
+    every iteration is no-progress; the stop flag fires after 100
+    iterations.
+    """
+    stop = StopFlag()
+    iteration = [0]
+
+    def zero_progress_policy(state: ExperimentStateView) -> int:
+        iteration[0] += 1
+        if iteration[0] >= 100:
+            stop.set()
+        return 0
+
+    run_orchestrator_loop(
+        store=store,
+        integrator=_NoopIntegrator(),  # type: ignore[arg-type]
+        ideation_policy=zero_progress_policy,
+        termination_policy=never_terminate,
+        terminated_by="orchestrator",
+        ideation_task_prefix="ideation-",
+        execution_task_prefix="execution-",
+        evaluation_task_prefix="evaluate-",
+        poll_interval=0.0,
+        max_quiescent_iterations=0,  # NEVER exit on quiescence
+        stop=stop,
+    )
+    # The loop only exited because the stop flag fired, not because the
+    # quiescence counter reached any threshold.
+    assert iteration[0] == 100
+    # No tasks were ever created (zero-progress policy).
+    assert store.list_tasks(kind="ideation") == []
+
+
 # ----------------------------------------------------------------------
 # _ensure_orchestrators_membership
 # ----------------------------------------------------------------------
@@ -339,6 +380,53 @@ def test_ensure_orchestrators_membership_recovers_from_race(
         ("orchestrators", "orch-1"),
         ("orchestrators", "orch-1"),
     ]
+
+
+# ----------------------------------------------------------------------
+# --max-quiescent-iterations argparse validator (Phase 13a Decision 9)
+# ----------------------------------------------------------------------
+
+
+def test_quiescent_iterations_accepts_zero_sentinel() -> None:
+    """Phase 13a: 0 is the 'never exit on quiescence' Kubernetes sentinel."""
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    assert _quiescent_iterations("0") == 0
+
+
+def test_quiescent_iterations_accepts_two_or_more() -> None:
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    assert _quiescent_iterations("2") == 2
+    assert _quiescent_iterations("30") == 30
+
+
+def test_quiescent_iterations_rejects_one() -> None:
+    """1 is still rejected: single-iter exit risks tripping mid-submit."""
+    import argparse
+
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    with pytest.raises(argparse.ArgumentTypeError, match="must be 0"):
+        _quiescent_iterations("1")
+
+
+def test_quiescent_iterations_rejects_negative() -> None:
+    import argparse
+
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    with pytest.raises(argparse.ArgumentTypeError, match="must be 0"):
+        _quiescent_iterations("-3")
+
+
+def test_quiescent_iterations_rejects_non_integer() -> None:
+    import argparse
+
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    with pytest.raises(argparse.ArgumentTypeError, match="must be an integer"):
+        _quiescent_iterations("forever")
 
 
 # Hold a reference to silence ruff on the unused maintain_pending import

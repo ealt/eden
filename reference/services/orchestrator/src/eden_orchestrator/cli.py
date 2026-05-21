@@ -40,20 +40,37 @@ _AUTHOR_RE = re.compile(r"^(?P<name>.+?)\s+<(?P<email>[^>]+)>$")
 
 
 def _quiescent_iterations(raw: str) -> int:
-    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
+    """Argparse type for ``--max-quiescent-iterations``.
+
+    Accepts:
+
+    - ``0`` — sentinel meaning "never exit on quiescence; run until SIGTERM".
+      Required for Kubernetes deployments (Phase 13a Decision 9): a
+      Deployment's ``restartPolicy: Always`` would restart on any exit
+      including the quiescence exit, producing pointless CrashLoopBackOff
+      churn. The orchestrator instead runs forever and Kubernetes terminates
+      it via pod shutdown (SIGTERM honored by the existing ``StopFlag``
+      handler).
+    - Any integer ``>= 2`` — standard quiescence-exit lifecycle. The Compose
+      default is 30 (30s of stall tolerance at the 1.0s poll interval).
+
+    ``1`` is rejected: a single no-progress iteration could fire while a
+    worker is mid-submit, ending the orchestrator before the submission is
+    integrated.
+    """
     try:
         value = int(raw)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
             f"--max-quiescent-iterations must be an integer, not {raw!r}"
         ) from exc
-    if value < 2:
-        raise argparse.ArgumentTypeError(
-            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
-            "of 0 or 1 risks the orchestrator exiting while a worker is "
-            "mid-submit."
-        )
-    return value
+    if value == 0 or value >= 2:
+        return value
+    raise argparse.ArgumentTypeError(
+        f"--max-quiescent-iterations must be 0 (the 'never exit' "
+        f"Kubernetes sentinel) or >= 2 (got {value}); 1 risks the "
+        "orchestrator exiting while a worker is mid-submit."
+    )
 
 
 def _parse_author(value: str | None) -> Identity:
@@ -185,7 +202,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=3,
         help=(
             "Exit after N consecutive no-progress iterations (default: 3). "
-            "Must be >=2 — N=1 risks exiting while a worker is mid-submit."
+            "Must be 0 or >=2. N=0 is the Kubernetes 'never exit' sentinel "
+            "(see Phase 13a Decision 9): the orchestrator runs until "
+            "SIGTERM; useful when running under a Deployment whose "
+            "restartPolicy is Always. N=1 is rejected because a single "
+            "no-progress iteration could fire while a worker is mid-submit."
         ),
     )
     parser.add_argument(

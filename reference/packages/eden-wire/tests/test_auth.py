@@ -782,3 +782,46 @@ def test_storeclient_verify_wrong_worker_id_response_raises(
         )
         with pytest.raises(RuntimeError, match="returned worker_id="):
             client.verify_worker_credential("eric", "any-token")
+
+
+# ----------------------------------------------------------------------
+# /healthz — Phase 13a Kubernetes probe surface
+# ----------------------------------------------------------------------
+
+
+def test_healthz_returns_200_without_auth(store: InMemoryStore) -> None:
+    """/healthz bypasses the auth middleware so k8s probes work.
+
+    The Helm chart's readiness + liveness probes target this path; if
+    auth gates it, the probe would 401 and the pod would never become
+    Ready (the kubelet has no credentials to inject). See Phase 13a
+    readiness-probe wiring on the task-store-server Deployment.
+    """
+    app = make_app(store, admin_token=ADMIN_TOKEN)
+    client = TestClient(app)
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_healthz_returns_200_when_auth_disabled(store: InMemoryStore) -> None:
+    """/healthz works in the test posture (admin_token=None) too."""
+    app = make_app(store, admin_token=None)
+    client = TestClient(app)
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_v0_paths_still_require_auth_when_healthz_skipped(
+    store: InMemoryStore,
+) -> None:
+    """Skipping /healthz from auth must not bleed into /v0/ paths.
+
+    Regression guard: the auth middleware's skip_paths is a per-path
+    set; /v0/ requests without a bearer must still return 401.
+    """
+    app = make_app(store, admin_token=ADMIN_TOKEN)
+    client = TestClient(app)
+    resp = client.get(_events_url())
+    assert resp.status_code == 401

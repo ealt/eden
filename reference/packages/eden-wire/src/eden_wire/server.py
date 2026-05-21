@@ -381,7 +381,30 @@ def make_app(
     checkpoint_config_text: str = checkpoint_experiment_config or ""
 
     if admin_token is not None:
-        install_auth_middleware(app, admin_token=admin_token, store=store)
+        # /healthz bypasses auth — Kubernetes liveness / readiness probes
+        # need an unauthenticated endpoint that's cheap and stable. The
+        # /_reference/ surface is already auth-bypassed by convention;
+        # /healthz is a sibling of that with the same posture (defined
+        # below). See Phase 13a Decision 2 / readiness-probe wiring.
+        install_auth_middleware(
+            app,
+            admin_token=admin_token,
+            store=store,
+            skip_paths={"/healthz"},
+        )
+
+    @app.get("/healthz", include_in_schema=False)
+    async def _healthz() -> dict[str, str]:
+        """Unauthenticated liveness probe.
+
+        Returns 200 with a trivial JSON body when the FastAPI event loop
+        is up. Does NOT touch the Store — a probe should not hold a DB
+        transaction or block on the lock the request handlers compete
+        for. Phase 13a's Helm chart uses this as the readiness probe;
+        the Compose stack continues to use an authenticated GET against
+        an experiment-scoped endpoint as its compose-level healthcheck.
+        """
+        return {"status": "ok"}
 
     def _enforce_worker(request: Request) -> None:
         """Worker-gated route guard (§13.3).

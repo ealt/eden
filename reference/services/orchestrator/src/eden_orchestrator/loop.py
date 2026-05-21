@@ -112,6 +112,14 @@ def run_orchestrator_loop(
     quiescence counter — no special-case exit path is needed because
     integration drain is exact-finite, so the post-terminate loop
     naturally quiesces.
+
+    ``max_quiescent_iterations == 0`` is the "never exit on quiescence"
+    sentinel introduced in Phase 13a (Decision 9). Under a Kubernetes
+    Deployment, ``restartPolicy: Always`` would restart on the quiescence
+    exit, producing pointless CrashLoopBackOff churn. The loop instead runs
+    forever and Kubernetes terminates it via pod shutdown (SIGTERM sets
+    the ``stop`` flag). The quiescence counter is still incremented for
+    observability but the termination branch is skipped.
     """
     ideation_factory = make_id_factory(ideation_task_prefix)
     implement_factory = make_id_factory(execution_task_prefix)
@@ -143,7 +151,12 @@ def run_orchestrator_loop(
             quiescent = 0
         else:
             quiescent += 1
-            if quiescent >= max_quiescent_iterations:
+            # max_quiescent_iterations == 0 disables the quiescence-exit
+            # branch entirely (Phase 13a Decision 9 / Kubernetes posture).
+            if (
+                max_quiescent_iterations > 0
+                and quiescent >= max_quiescent_iterations
+            ):
                 log.info("quiescent", iterations=quiescent)
                 return
         if stop.wait(poll_interval):
