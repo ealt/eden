@@ -210,7 +210,7 @@ This section refreshes the original chapter-04 pilot against the current spec (s
 | §3.3 | 81 | MUST | binding MUST authenticate caller as the supplied `worker_id` before invoking Store | `(scenario)` | `test_worker_auth.py::test_two_clients_share_a_claim_via_worker_identity` + `test_worker_auth_enabled.py` group. |
 | §3.4 | 85 | MUST | claim attempt MUST be rejected against non-pending task | `(scenario)` | `test_claim_ownership.py::test_no_reclaim_while_claimed` + `test_task_lifecycle.py::test_claim_rejected_when_not_pending`. |
 | §3.5 | 89 | MUST | claim MUST satisfy `Task.target` (multi-step ladder, atomic) | `(scenario)` | `test_claim_eligibility.py` group (worker / group / null target × member / non-member). |
-| §3.5 | 91 | MUST | step 0: terminated experiments reject claim | `(scenario)` | `test_claim_eligibility.py::test_create_task_rejected_after_terminate` (plus `test_experiment_lifecycle.py`). |
+| §3.5 | 91 | MUST | step 0: terminated experiments reject claim | `(scenario)` | `test_experiment_lifecycle.py::test_create_task_rejected_after_terminate` + `::test_claim_rejected_after_terminate` cover the terminated-experiment guard at the create-task and claim entry points. |
 | §3.5 | 93 | MUST | step 2: `WorkerNotRegistered` | `(scenario)` | `test_claim_eligibility.py::test_unregistered_claim_returns_worker_not_registered`. |
 | §3.5 | 99 | MUST | failed target eligibility step MUST raise `WorkerNotEligible` | `(scenario)` | `test_claim_eligibility.py::test_group_target_non_member_returns_worker_not_eligible`. |
 | §4.1 | 122 | MUST | submit MUST atomically write `task.submitted_by = worker_id` | `(scenario)` | `test_attribution_persistence.py::test_task_submitted_by_persists_across_completed`. |
@@ -224,7 +224,7 @@ This section refreshes the original chapter-04 pilot against the current spec (s
 | §4.3 | 153 | MUST | terminal transition: exactly one event AND MUST clear claim | `(scenario)` | Two MUSTs in one row; both covered (event-count assertions in submit_idempotency; cleared-claim observable via post-terminal-rejects-resubmit). |
 | §4.4 | 157 | MUST | post-terminal writes rejected | `(scenario)` | `test_submit_idempotency.py::test_resubmit_after_terminal_rejected` + `test_task_lifecycle.py::test_terminal_completed_rejects_writes`. |
 | §5.1 | 169 | MAY, MUST NOT | submitted reclaim only by operator; auto-reclaim MUST NOT apply | `(scenario)` | `test_reclamation.py::test_reclaim_expired_against_submitted_rejected`. |
-| §5.1 | 171 | MUST NOT | terminal task MUST NOT be reclaimed | `(scenario)` | `test_reclamation.py::test_terminal_rejects_reclaim`. |
+| §5.1 | 171 | MUST NOT | terminal task MUST NOT be reclaimed | `(scenario)` | `test_task_lifecycle.py::test_terminal_rejects_reclaim`. |
 | §5.3 | 185 | MUST, MUST NOT | worker MUST discontinue and MUST NOT submit on claim clearing | `(scenario)` | `test_reclamation.py::test_reclaim_operator_from_claimed` (renamed to claim-cleared semantics post-12a-1) — covers the wire-observable consequence. Worker-side "MUST discontinue" half remains wire-untestable. |
 | §5.4 | 189 | MUST | orchestrator MUST reconcile role-owned objects on reclaim | `(scenario)` | `test_reclamation.py::test_execution_reclaim_sets_starting_variant_to_error`. |
 | §5.4 | 191 | MUST | execution-task reclaim transitions starting variant to `"error"` atomically | `(scenario)` | Same test — composite commit assertion. |
