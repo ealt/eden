@@ -1,4 +1,4 @@
-# Phase C disposition list — per-violator refactor / slop-allow proposals
+# Phase C disposition list — per-violator refactor / slop-allow recommendations
 
 **Companion to**: [`2026-05-20-code-quality-audit.md`](2026-05-20-code-quality-audit.md)
 
@@ -289,8 +289,8 @@ LOW + 2 MEDIUM scope. Comparable in size to a typical Phase chunk.
 
 ## §8 Decisions needed from operator
 
-1. **Approve / reject each refactor proposal in §1 (F-1, F-2, F-3, F-4)**. F-2 was already approved (M-1). F-1, F-3, F-4 are the new larger-scope items.
-2. **Approve / reject each refactor proposal in §3 (C-1 through C-8)**. C-1 was already approved (M-2). The other six are mechanical follow-ons.
+1. **Approve / reject each refactor recommendation in §1 (F-1, F-2, F-3, F-4)**. F-2 was already approved (M-1). F-1, F-3, F-4 are the new larger-scope items.
+2. **Approve / reject each refactor recommendation in §3 (C-1 through C-8)**. C-1 was already approved (M-2). The other six are mechanical follow-ons.
 3. **Approve / reject the §4 length-violator refactors (L-G through L-V minus L-V).** These are 15-ish function refactors with mostly the same shape (phase decomposition / runtime-build extraction).
 4. **Approve / reject the 4 slop-allow candidates (L-A, L-B, L-C, L-V)**. The argparse trio has a CC=1 case for exception; L-V (graph traversal) is the closest to "refactoring would make it worse."
 5. **Confirm the safeguard plan**: Tier-1 gate ships only AFTER all approved refactors land + the 4 (or fewer) slop-allow annotations are added with operator-blessed justifications. Tier 2-4 ship alongside.
