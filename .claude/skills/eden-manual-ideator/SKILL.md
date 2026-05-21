@@ -10,7 +10,7 @@ description: 'Drive the EDEN ideator role end-to-end from the terminal. Trigger 
 The user is running an EDEN reference Compose stack with no automated
 ideator-host and wants to play the ideator role from the terminal.
 Trigger phrases above. The Compose stack must be up (`docker compose
---env-file .env ps` should show postgres / gitea / task-store-server /
+--env-file .env ps` should show postgres / forgejo / task-store-server /
 orchestrator / web-ui all healthy).
 
 ## What "ideator" means

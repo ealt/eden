@@ -201,7 +201,7 @@ EDEN maintains three branch namespaces in the experiment's git repo:
 | **work branch** | A branch in the `work/*` namespace; the executor's tip commit lives here. |
 | **variant branch** | A branch in the `variant/*` namespace; the integrator-produced squash commit. |
 | **evaluation manifest** | A JSON file at `.eden/variants/<variant_id>/evaluation.json` in the `variant/*` commit's tree, containing the evaluator's evaluation. Spec-authoritative path. |
-| **bare repo** | The git repository hosted on the workers' git remote of record (Gitea in the reference deployment). |
+| **bare repo** | The git repository hosted on the workers' git remote of record (Forgejo in the reference deployment). |
 
 ## 7. Protocol / spec terms
 
@@ -236,10 +236,10 @@ EDEN maintains three branch namespaces in the experiment's git repo:
 | **attribution fields** | `submitted_by` (on tasks), `executed_by` / `evaluated_by` (on variants), and `created_by` (on ideas / tasks / groups) — the `worker_id` recorded with the artifact and preserved across terminal transitions ([`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) §3.1, §5.1, §9). |
 | **iteration** (orchestrator) | One pass through the orchestrator's loop body (finalize submitted, dispatch execution, dispatch evaluation, finalize submitted, integrate successful). |
 | **quiescence** | Heuristic in the current orchestrator: N consecutive iterations with no progress → exit. Not spec-defined. |
-| **checkpoint** | Snapshot of an experiment's state for save/restore. The **portable checkpoint format** is the spec-defined archive (tar of a directory tree with a `manifest.json`, JSONL files per object kind, a `git bundle`, and content-addressed `artifacts/sha256/<hex>` files) per [`spec/v0/10-checkpoints.md`](../spec/v0/10-checkpoints.md). Implementations that claim the `v1+checkpoints` conformance level emit and consume this format. Verbs: **export** / **import**. The pre-12b native postgres-dump + gitea-tar format is retired. |
+| **checkpoint** | Snapshot of an experiment's state for save/restore. The **portable checkpoint format** is the spec-defined archive (tar of a directory tree with a `manifest.json`, JSONL files per object kind, a `git bundle`, and content-addressed `artifacts/sha256/<hex>` files) per [`spec/v0/10-checkpoints.md`](../spec/v0/10-checkpoints.md). Implementations that claim the `v1+checkpoints` conformance level emit and consume this format. Verbs: **export** / **import**. The pre-12b native postgres-dump + forgejo-tar format is retired. |
 | **`checkpoint:sha256:<hex>` URI** | Content-addressed scheme used only inside a portable-checkpoint archive: each `<hex>` is the lowercase SHA-256 of an artifact's bytes; the corresponding bytes live at `artifacts/sha256/<hex>` in the archive ([`spec/v0/10-checkpoints.md`](../spec/v0/10-checkpoints.md) §7). On import, the receiving Store rewrites each occurrence to its deployment-local URI (`file://`, `s3://`, …). Not a wire-resolvable scheme outside the archive. |
 | **import provenance** | The `Experiment.imported_from` field carrying `{checkpoint_exported_at, checkpoint_format_version}` set at import time; recovery-probe anchor for the lost-201 case in [`spec/v0/10-checkpoints.md`](../spec/v0/10-checkpoints.md) §10. Absent on natively-created experiments. |
-| **manifest** (in setup-experiment context) | A `.env` + `experiment-config.yaml` + gitea credential helper produced for one experiment. Different from "evaluation manifest" above. |
+| **manifest** (in setup-experiment context) | A `.env` + `experiment-config.yaml` + forgejo credential helper produced for one experiment. Different from "evaluation manifest" above. |
 
 ## 9. Build / packaging vocabulary
 

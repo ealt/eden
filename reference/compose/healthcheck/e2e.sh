@@ -42,7 +42,7 @@ ENV_FILE="$(mktemp)"
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-e2e-XXXXXX)"
 EXPERIMENT_ID="e2e-exp"
 
-# Stage 1's wait-list — deliberately omits gitea (deferred 10d
+# Stage 1's wait-list — deliberately omits forgejo (deferred 10d
 # follow-up, not consumed by this drill) and ideator-host (the whole
 # point of staging is to keep ideator-host away from the tasks the
 # UI claims). The legacy `blob-init` service was removed in
@@ -103,7 +103,7 @@ sed -i.bak \
     "$ENV_FILE"
 rm -f "${ENV_FILE}.bak"
 
-echo "--- stage 1: bring up everything except gitea + ideator-host ---"
+echo "--- stage 1: bring up everything except forgejo + ideator-host ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \
     --wait-timeout 120 \
     "${STAGE1_SERVICES[@]}"
@@ -254,7 +254,7 @@ docker compose -f compose.yaml --env-file "$ENV_FILE" stop --timeout 10
 # Iterate every container compose still knows about. With
 # eden-repo-init removed by `compose run --rm`, this naturally covers
 # postgres, task-store-server, orchestrator, ideator-host,
-# executor-host, evaluator-host, and web-ui. (Gitea was never
+# executor-host, evaluator-host, and web-ui. (Forgejo was never
 # brought up so it does not appear here — codex round-1 fix.)
 #
 # Use process substitution + while-read instead of `mapfile` so this

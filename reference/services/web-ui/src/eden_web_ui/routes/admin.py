@@ -1038,14 +1038,14 @@ async def work_refs_index(request: Request) -> HTMLResponse | RedirectResponse:
         )
     store = request.app.state.store
     # Phase 10d follow-up B §D.7c read-before-display: fetch from
-    # the remote so the operator's view of work/* matches Gitea.
+    # the remote so the operator's view of work/* matches Forgejo.
     # No-op when origin is not configured (legacy local-only mode).
     if _repo_has_origin(repo):
         try:
             repo.fetch_all_heads()
         except Exception:  # noqa: BLE001 — git or transport
             return _read_failure_response(
-                request, "could not fetch from gitea"
+                request, "could not fetch from forgejo"
             )
     try:
         groups = _classify_work_refs(repo, store)
@@ -1222,7 +1222,7 @@ def _repo_has_origin(repo: Any) -> bool:
 
     Phase 10d follow-up B: gates the read-before-display fetch and
     the remote-delete on the work-refs admin page. Pre-cutover (no
-    --gitea-url) deployments skip the new code paths entirely.
+    --forgejo-url) deployments skip the new code paths entirely.
     """
     try:
         result = repo._run(["remote"], check=False)

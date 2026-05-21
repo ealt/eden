@@ -24,7 +24,7 @@ name: eden-reference
 services:
   ideator-host:
     # 12a-1f: subprocess-mode ideator gains the same --repo-path /
-    # --gitea-url / --credential-helper triple that executor +
+    # --forgejo-url / --credential-helper triple that executor +
     # evaluator already use, plus the substrate-access env vars
     # threaded into the spawned *_command. Scripted-mode (base
     # compose.yaml) doesn't get these — see plan §D.1 / §5.8.
@@ -55,8 +55,8 @@ services:
       - /var/lib/eden/artifacts
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --ideation-env-file
@@ -84,9 +84,9 @@ services:
       # bind-mount cleanly here (no name-collision with a base-stack
       # volume at the same target). Pattern mirrors 12a-1g's
       # per-host-repo bind-mount discipline. Clone-on-startup
-      # populates it from Gitea on first run; subsequent starts fetch.
+      # populates it from Forgejo on first run; subsequent starts fetch.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/ideator-repo:/var/lib/eden/repo
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   executor-host:
     command:
@@ -103,8 +103,8 @@ services:
       - executor-1
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --mode
@@ -125,7 +125,7 @@ services:
       - source: eden-execute-env
         target: /etc/eden/execute.env
     volumes:
-      # Phase 12a-1g: the per-host bare clone, gitea credentials,
+      # Phase 12a-1g: the per-host bare clone, forgejo credentials,
       # and credentials volume are already declared in compose.yaml's
       # executor-host service (now as bind-mounts under the data
       # root). Compose merges service-level `volumes:` additively —
@@ -171,8 +171,8 @@ services:
       - /etc/eden/experiment-dir
       - --repo-path
       - /var/lib/eden/repo
-      - --gitea-url
-      - ${GITEA_REMOTE_URL:?}
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --worktrees-dir
@@ -193,7 +193,7 @@ services:
       # per-task worktrees, so the overlay declares it here as a
       # bind-mount under the data root.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/evaluator-repo:/var/lib/eden/repo
-      - ${EDEN_GITEA_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       - eden-worktrees:/var/lib/eden/worktrees
       # 12a-1f: evaluator subprocess reads idea content artifacts
       # via EDEN_ARTIFACT_URL or directly from this mount (host-side

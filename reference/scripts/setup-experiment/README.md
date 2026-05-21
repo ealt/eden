@@ -2,8 +2,8 @@
 
 Bootstrap an EDEN reference Compose stack for a given experiment
 config. Reads a YAML config, generates (or preserves) the secrets the
-stack needs, runs the one-shot bare-repo init service, and writes
-everything into `reference/compose/.env` +
+stack needs, provisions Forgejo, runs the one-shot bare-repo init
+service, and writes everything into `reference/compose/.env` +
 `reference/compose/experiment-config.yaml` so `docker compose up -d
 --wait` brings the stack online.
 
@@ -12,7 +12,7 @@ everything into `reference/compose/.env` +
 ```bash
 bash reference/scripts/setup-experiment/setup-experiment.sh <config.yaml> \
     [--experiment-id <id>] \
-    [--shared-token <T>] \
+    [--admin-token <T>] \
     [--postgres-password <P>] \
     [--env-file <path>]
 ```
@@ -26,20 +26,24 @@ docker compose --env-file .env up -d --wait
 
 ## What it does
 
-1. Generates or preserves: `POSTGRES_PASSWORD`, `EDEN_SHARED_TOKEN`,
-   `EDEN_SESSION_SECRET`, `GITEA_SECRET_KEY`, `GITEA_INTERNAL_TOKEN`,
+1. Generates or preserves: `POSTGRES_PASSWORD`, `EDEN_ADMIN_TOKEN`,
+   `EDEN_SESSION_SECRET`, `FORGEJO_SECRET_KEY`, `FORGEJO_INTERNAL_TOKEN`,
    default ports, and `EDEN_IDEATION_TASKS`. Re-runs preserve any
-   existing values from `.env`.
+   existing values from `.env` (including legacy `FORGEJO_*` keys, which
+   are migrated forward).
 2. Copies `<config.yaml>` to `reference/compose/experiment-config.yaml`
    so Compose mounts it into the task-store-server, evaluator-host,
    and web-ui via `configs:`.
 3. Builds the shared `eden-reference:dev` image.
-4. Runs `docker compose run --rm --no-deps eden-repo-init` — a
-   one-shot service that initializes (or re-uses) the bare repo on
-   the `eden-bare-repo` volume and prints the seed commit SHA.
-5. Writes the seed SHA into `.env` as `EDEN_BASE_COMMIT_SHA` so the
+4. Brings up Forgejo, provisions the `eden` admin user and
+   `eden/<experiment-id>` repo, and writes a per-experiment credential
+   helper under `.forgejo-creds-<experiment-id>/`.
+5. Runs `docker compose run --rm --no-deps eden-repo-init` with
+   `--push-to` the in-network Forgejo remote — seeds the repo and prints
+   the commit SHA.
+6. Writes the seed SHA into `.env` as `EDEN_BASE_COMMIT_SHA` so the
    ideator-host can thread it into `--base-commit-sha`.
-6. Prints a "next steps" message.
+7. Prints a "next steps" message.
 
 ## Idempotency
 
@@ -47,8 +51,7 @@ Re-running on an already-configured stack is safe:
 
 - Secrets generated on a prior run are preserved (read back from the
   existing `.env`).
-- The bare repo is not re-seeded — `eden-repo-init` short-circuits
-  on a previously-seeded volume and re-prints the existing SHA.
+- Forgejo user/repo provisioning is idempotent.
 - The experiment-config file is overwritten with the latest
   `<config.yaml>` contents.
 
@@ -59,15 +62,5 @@ cd reference/compose
 docker compose --env-file .env down -v
 ```
 
-`-v` wipes the Postgres / bare-repo / artifacts volumes too. After
-`down -v` you must re-run setup-experiment before `compose up` to
-re-seed the bare repo.
-
-## Out of scope
-
-Documented limits inherited from the chunk-10b/c roadmap-delta:
-
-- Workers do not push/pull from Gitea; they share a Compose volume
-  for the bare repo. Gitea is idle.
-- No control-plane registration (Phase 12).
-- No experiment-specific executor image (10d).
+`-v` wipes the Postgres / Forgejo / artifacts volumes too. After
+`down -v` you must re-run setup-experiment before `compose up`.

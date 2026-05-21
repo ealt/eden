@@ -248,14 +248,14 @@ def exec_app(
     )
 
 
-GITEA_CLONE_URL_FIXTURE = "http://localhost:3001/eden/exp-web-ui.git"
+FORGEJO_CLONE_URL_FIXTURE = "http://localhost:3001/eden/exp-web-ui.git"
 
 
 @pytest.fixture
 def exec_app_with_clone_url(
     store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
 ) -> FastAPI:
-    """``exec_app`` plus a ``clone_url`` so the gitea instructions render."""
+    """``exec_app`` plus a ``clone_url`` so the forgejo instructions render."""
     return make_app(
         store=store,
         experiment_id=EXPERIMENT_ID,
@@ -267,7 +267,7 @@ def exec_app_with_clone_url(
         secure_cookies=False,
         now=_now,
         repo=bare_repo,
-        clone_url=GITEA_CLONE_URL_FIXTURE,
+        clone_url=FORGEJO_CLONE_URL_FIXTURE,
     )
 
 

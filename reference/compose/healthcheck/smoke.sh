@@ -41,8 +41,8 @@ cleanup() {
     rm -f "$ENV_FILE"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
     # Phase 12a-1g hotfix: substrate bind-mount subdirs (postgres,
-    # gitea, *-repo) contain files written by containers as uids the
-    # host runner doesn't match (postgres=70, gitea/eden=1000), inside
+    # forgejo, *-repo) contain files written by containers as uids the
+    # host runner doesn't match (postgres=70, forgejo/eden=1000), inside
     # subdirectories the containers created with the container's
     # umask (mode 0755 — NOT world-writable). The host's `rm -rf` then
     # fails with EACCES on every file under those subdirs. Delete
@@ -101,12 +101,12 @@ test -n "$EDEN_BASE_COMMIT_SHA" || {
     exit 1
 }
 
-echo "--- asserting seeded ref published to gitea ---"
-# Phase 10d follow-up B: the seed lives on Gitea, not on a shared
-# bare-repo volume. Probe via `git ls-remote` against the gitea
-# container (Gitea was brought up by setup-experiment).
-GITEA_REMOTE_PASSWORD="$(grep -E '^GITEA_REMOTE_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
-test -n "$GITEA_REMOTE_PASSWORD"
+echo "--- asserting seeded ref published to forgejo ---"
+# Phase 10d follow-up B: the seed lives on Forgejo, not on a shared
+# bare-repo volume. Probe via `git ls-remote` against the forgejo
+# container (Forgejo was brought up by setup-experiment).
+FORGEJO_REMOTE_PASSWORD="$(grep -E '^FORGEJO_REMOTE_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$FORGEJO_REMOTE_PASSWORD"
 EDEN_EXPERIMENT_ID="$(grep -E '^EDEN_EXPERIMENT_ID=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_EXPERIMENT_ID"
 SEEDED_SHA="$(
@@ -114,11 +114,11 @@ SEEDED_SHA="$(
         run --rm --no-deps \
         --entrypoint sh \
         eden-repo-init \
-        -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git refs/heads/main | awk '{print \$1}'"
+        -c "git ls-remote http://eden:${FORGEJO_REMOTE_PASSWORD}@forgejo:3000/eden/${EDEN_EXPERIMENT_ID}.git refs/heads/main | awk '{print \$1}'"
 )"
 SEEDED_SHA="$(echo "$SEEDED_SHA" | tr -d '[:space:]')"
 test "$SEEDED_SHA" = "$EDEN_BASE_COMMIT_SHA" || {
-    echo "gitea seed mismatch: $SEEDED_SHA != $EDEN_BASE_COMMIT_SHA" >&2
+    echo "forgejo seed mismatch: $SEEDED_SHA != $EDEN_BASE_COMMIT_SHA" >&2
     exit 1
 }
 
@@ -134,7 +134,7 @@ echo "--- asserting expected substrate bind-mounts exist ---"
 # substrate subdir unconditionally (regardless of which overlay is
 # layered on later), so the existence assertion covers ALL of them
 # even though scripted-mode skips evaluator-repo at runtime.
-for sub in postgres gitea orchestrator-repo web-ui-repo executor-repo \
+for sub in postgres forgejo orchestrator-repo web-ui-repo executor-repo \
            evaluator-repo artifacts \
            credentials/orchestrator credentials/ideator \
            credentials/executor credentials/evaluator credentials/web-ui; do
@@ -154,9 +154,9 @@ PG_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2-)"
 docker compose -f compose.yaml --env-file "$ENV_FILE" exec -T postgres \
     pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null
 
-echo "--- asserting Gitea API responds ---"
-GITEA_PORT="$(grep -E '^GITEA_HOST_PORT=' "$ENV_FILE" | cut -d= -f2-)"
-curl -fsS "http://localhost:${GITEA_PORT}/api/v1/version" | jq -e '.version' >/dev/null
+echo "--- asserting Forgejo API responds ---"
+FORGEJO_PORT="$(grep -E '^FORGEJO_HOST_PORT=' "$ENV_FILE" | cut -d= -f2-)"
+curl -fsS "http://localhost:${FORGEJO_PORT}/api/v1/version" | jq -e '.version' >/dev/null
 
 echo "--- waiting for orchestrator to exit on quiescence ---"
 deadline=$((SECONDS + 180))
@@ -290,20 +290,20 @@ test "$IDEATION_COMPLETED" -ge 3 || {
     exit 1
 }
 
-echo "--- asserting variant/* refs published to gitea ---"
+echo "--- asserting variant/* refs published to forgejo ---"
 # Phase 10d follow-up B §D.6: variant/* refs must be visible on the
-# Gitea remote after integration. Each `variant.integrated` event
+# Forgejo remote after integration. Each `variant.integrated` event
 # corresponds to a published ref.
 VARIANT_REMOTE_REFS="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
         run --rm --no-deps \
         --entrypoint sh \
         eden-repo-init \
-        -c "git ls-remote http://eden:${GITEA_REMOTE_PASSWORD}@gitea:3000/eden/${EDEN_EXPERIMENT_ID}.git 'refs/heads/variant/*' | wc -l" \
+        -c "git ls-remote http://eden:${FORGEJO_REMOTE_PASSWORD}@forgejo:3000/eden/${EDEN_EXPERIMENT_ID}.git 'refs/heads/variant/*' | wc -l" \
         | tr -d '[:space:]'
 )"
 test "$VARIANT_REMOTE_REFS" -ge 3 || {
-    echo "expected >= 3 variant/* refs on gitea; got $VARIANT_REMOTE_REFS" >&2
+    echo "expected >= 3 variant/* refs on forgejo; got $VARIANT_REMOTE_REFS" >&2
     exit 1
 }
 

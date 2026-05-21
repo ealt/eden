@@ -7,7 +7,7 @@ This package defines the [`Store`][store-protocol] structural interface — the 
 - **`InMemoryStore`** (lives in [`eden-dispatch`](../eden-dispatch/), re-exported from here for convenience) — single-process, non-durable, suitable for tests and the Phase 5 dispatch loop.
 - **`SqliteStore`** — single-process, SQLite-backed, **durable** across process restarts. The smallest backend that satisfies chapter 8 §3 (durability, read-after-write, crash recovery).
 
-Both backends pass the same conformance scenarios ([`tests/`](tests/)); adding a third backend (Postgres, Gitea-adjacent, …) is a matter of implementing the Protocol and running the suite.
+Both backends pass the same conformance scenarios ([`tests/`](tests/)); adding a third backend (Postgres, Forgejo-adjacent, …) is a matter of implementing the Protocol and running the suite.
 
 [store-protocol]: src/eden_storage/protocol.py
 

@@ -115,7 +115,7 @@ def make_implement_fn(
         branch_short = f"work/{idea.slug}-{variant_id}"
         repo.create_ref(f"refs/heads/{branch_short}", commit_sha)
         # Phase 10d follow-up B: when the local repo has an origin
-        # remote (Gitea cutover), publish the work/* ref so the
+        # remote (Forgejo cutover), publish the work/* ref so the
         # orchestrator's clone can fetch it. Push failure rolls back
         # the local ref + maps to ExecutionOutcome(status="error") —
         # mirrors the production subprocess flow per chapter 3 §3.3.

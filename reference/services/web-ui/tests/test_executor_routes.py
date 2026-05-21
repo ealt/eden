@@ -11,7 +11,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 from conftest import (
-    GITEA_CLONE_URL_FIXTURE,
+    FORGEJO_CLONE_URL_FIXTURE,
     get_csrf,
     seed_implement_task,
 )
@@ -279,7 +279,7 @@ class TestRepoExposure:
 
 
 class TestCloneUrlInstructions:
-    """Issue #54: instructions must point at the gitea remote, not the
+    """Issue #54: instructions must point at the forgejo remote, not the
     container-internal bare-repo path. When ``clone_url`` is configured
     (the production / Compose path), the rendered instructions show the
     clone URL and do NOT reference the in-container bare-repo path as
@@ -315,7 +315,7 @@ class TestCloneUrlInstructions:
             f"/executor/{task_id}/draft"
         )
         assert resp.status_code == 200
-        assert GITEA_CLONE_URL_FIXTURE in resp.text
+        assert FORGEJO_CLONE_URL_FIXTURE in resp.text
         assert "git clone" in resp.text
         assert "git push origin" in resp.text
 

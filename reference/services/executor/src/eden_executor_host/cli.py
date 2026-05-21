@@ -50,19 +50,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "Bare git repo the executor writes work/* refs into. "
-            "When --gitea-url is also set, this path becomes the local "
-            "bare clone of the Gitea-hosted repo (created at startup if "
+            "When --forgejo-url is also set, this path becomes the local "
+            "bare clone of the Forgejo-hosted repo (created at startup if "
             "it doesn't already exist)."
         ),
     )
     parser.add_argument(
-        "--gitea-url",
+        "--forgejo-url",
+        "--forgejo-url",
+        dest="forgejo_url",
         default=None,
         help=(
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, the executor clones --repo-path "
             "from this URL at startup, fetches all heads, and pushes "
-            "work/* refs back after each successful submit."
+            "work/* refs back after each successful submit. "
+            "--forgejo-url is a deprecated alias."
         ),
     )
     parser.add_argument(
@@ -70,7 +73,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Optional path to a git credential-helper script for "
-            "HTTP Basic auth against --gitea-url."
+            "HTTP Basic auth against --forgejo-url."
         ),
     )
     parser.add_argument(
@@ -114,26 +117,26 @@ def _ensure_repo_clone(
     *,
     log,  # noqa: ANN001 — _CtxAdapter, not exposed
     repo_path: str,
-    gitea_url: str | None,
+    forgejo_url: str | None,
     credential_helper: str | None,
 ) -> None:
     """Materialize the executor's local clone per Phase 10d follow-up B §D.5.
 
-    No-op when ``gitea_url`` is None (chunk-10d behavior — the
+    No-op when ``forgejo_url`` is None (chunk-10d behavior — the
     operator pre-populates ``repo_path`` via setup-experiment).
     Otherwise: clone bare at first run, fetch_all_heads on subsequent
     starts so the local clone reflects the remote.
     """
-    if gitea_url is None:
+    if forgejo_url is None:
         return
     path = Path(repo_path)
     if (path / "HEAD").is_file():
-        log.info("fetching_remote_heads", url=gitea_url)
+        log.info("fetching_remote_heads", url=forgejo_url)
         GitRepo(path).fetch_all_heads()
         return
-    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    log.info("cloning_from_remote", url=forgejo_url, dest=str(path))
     GitRepo.clone_from(
-        url=gitea_url,
+        url=forgejo_url,
         dest=path,
         bare=True,
         credential_helper=credential_helper,
@@ -165,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_repo_clone(
         log=log,
         repo_path=args.repo_path,
-        gitea_url=args.gitea_url,
+        forgejo_url=args.forgejo_url,
         credential_helper=args.credential_helper,
     )
     with StoreClient(

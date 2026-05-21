@@ -7,8 +7,8 @@ shipped per-worker bearer auth, the per-experiment worker registry,
 RBAC at claim time, and the
 [`bootstrap_worker_credential`](../../reference/services/_common/src/eden_service_common/auth.py)
 helper. Phase 10d follow-up B
-([`docs/archive/eden-phase-10d-followup-b-gitea-remote.md`](../archive/eden-phase-10d-followup-b-gitea-remote.md))
-shipped per-host Gitea-as-remote clones for the orchestrator,
+([`docs/archive/eden-phase-10d-followup-b-forgejo-remote.md`](../archive/eden-phase-10d-followup-b-forgejo-remote.md))
+shipped per-host Forgejo-as-remote clones for the orchestrator,
 executor, evaluator, and web-ui — but **not** the ideator host
 (the scripted ideator doesn't need git access; an agentic ideator
 does).
@@ -24,7 +24,7 @@ hundreds of fine-grained wire calls. The chunk is sequenced
 ahead of the longer-horizon Phase-13 substrate plans
 ([13c](eden-phase-13c-managed-postgres.md) /
 [13d](eden-phase-13d-blob-backend.md) /
-[13e](eden-phase-13e-gitea-hardening.md)); those plans will
+[13e](eden-phase-13e-forgejo-hardening.md)); those plans will
 replace the tactical pieces this chunk lands as they mature.
 
 **Naming.** Pre-draft check against
@@ -106,7 +106,7 @@ substrates:
 
 | Substrate | What it backs | Read shape for the agent |
 |---|---|---|
-| Git (Gitea) | All branches + the evaluation manifest at the variant tip | `git log` / `git show` against a local bare clone |
+| Git (Forgejo) | All branches + the evaluation manifest at the variant tip | `git log` / `git show` against a local bare clone |
 | Artifact store | Inline content: idea content markdown, evaluator artifacts (`file://` URIs today) | HTTP GET against a thin route on the task-store-server |
 | Postgres event log | Tasks, ideas, variants, events, workers, groups | SELECT against a read-only Postgres role |
 
@@ -124,11 +124,11 @@ would be a separate chunk).
 ### 1.4 Out-of-scope (deferred)
 
 - **Executor-agent substrate access.** Operator decision.
-- **Per-worker Gitea tokens with branch ACLs.** Today the
-  Gitea repo has a single shared `eden` HTTP-Basic credential
+- **Per-worker Forgejo tokens with branch ACLs.** Today the
+  Forgejo repo has a single shared `eden` HTTP-Basic credential
   (Phase 10d-followup-B); per-worker identities + branch
   protection live in
-  [Phase 13e](eden-phase-13e-gitea-hardening.md).
+  [Phase 13e](eden-phase-13e-forgejo-hardening.md).
 - **Managed Postgres.** Phase 10b-10c's in-stack Postgres is
   the read substrate here; [Phase 13c](eden-phase-13c-managed-postgres.md)
   switches to an operator-managed instance and ports the
@@ -213,7 +213,7 @@ Operationally:
 
 | Substrate | What it exposes | Who reads it |
 |---|---|---|
-| Git (Gitea HTTP + local bare clone) | All refs (`refs/heads/variant/*`, `refs/heads/work/*`), commit tree, evaluation manifest | Any subprocess that calls `git log` / `git show` against `$EDEN_REPO_DIR` |
+| Git (Forgejo HTTP + local bare clone) | All refs (`refs/heads/variant/*`, `refs/heads/work/*`), commit tree, evaluation manifest | Any subprocess that calls `git log` / `git show` against `$EDEN_REPO_DIR` |
 | Artifact server (HTTP route) | Files under `<artifacts-dir>` (idea content, evaluator-supplied bytes) | Any subprocess that GETs `${EDEN_ARTIFACT_URL}<relative-path>` with the §13.1 bearer |
 | Postgres readonly role | SELECT on the eden schema's tables (`experiment`, `task`, `submission`, `idea`, `variant`, `event`, `worker_group`, `group_membership`, `schema_version`) plus column-projection on `worker(worker_id, data)` | Any subprocess that connects to `$EDEN_READONLY_STORE_URL` |
 
@@ -226,7 +226,7 @@ mediate the join.
 
 Today (post-10d-followup-B):
 
-| Host | `--repo-path` | `--gitea-url` | `--credential-helper` | Per-host volume |
+| Host | `--repo-path` | `--forgejo-url` | `--credential-helper` | Per-host volume |
 |---|---|---|---|---|
 | orchestrator | yes | yes | yes | `eden-orchestrator-repo` |
 | executor | yes | yes | yes | `eden-executor-repo` |
@@ -245,7 +245,7 @@ three are passed). The startup logic mirrors the
 executor/evaluator pattern:
 
 1. If `--repo-path` is not yet a git repo, `clone --bare`
-   from `--gitea-url` using `--credential-helper`.
+   from `--forgejo-url` using `--credential-helper`.
 2. Otherwise, `git fetch --prune origin
    '+refs/heads/*:refs/heads/*'` to refresh ALL local heads.
 3. Enter the normal ideator poll loop.
@@ -266,7 +266,7 @@ clone. The subprocess can read it with `git -C $EDEN_REPO_DIR
 log` etc. Cross-host concern: the path is meaningful only
 inside the worker-host container; the bind-mount from compose
 makes it stable across `compose up` cycles. Off-host operators
-(agent on a developer laptop) get their own gitea credentials
+(agent on a developer laptop) get their own forgejo credentials
 plus URL via 13e and clone independently — the binding doc
 notes this explicitly.
 
@@ -838,7 +838,7 @@ operator's docs note the limitation.
 
 **Why not provision via setup-experiment.sh directly?** The
 setup-experiment script does NOT currently bring postgres
-up; it brings only gitea up synchronously. Adding a
+up; it brings only forgejo up synchronously. Adding a
 postgres-up + provision step would mean either (a)
 duplicating the postgres-bring-up logic in shell, or (b)
 running an additional `compose run --rm psql` after a
@@ -888,7 +888,7 @@ substrates' off-host stories:
 
 | Substrate | On-host (compose-internal) | Off-host (cross-machine) |
 |---|---|---|
-| Git | bind-mount path `/var/lib/eden/repo`, no auth | `git clone http://gitea:3000/eden/<id>.git` with shared `eden` Basic auth (today; Phase 13e adds per-worker tokens). Operator-supplied gitea URL + creds. |
+| Git | bind-mount path `/var/lib/eden/repo`, no auth | `git clone http://forgejo:3000/eden/<id>.git` with shared `eden` Basic auth (today; Phase 13e adds per-worker tokens). Operator-supplied forgejo URL + creds. |
 | Artifact server | `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/` with `EDEN_WORKER_CREDENTIAL` bearer | Same URL (if operator exposes the port externally) or operator's chosen reverse-proxy hostname; same bearer. |
 | Postgres readonly | `postgresql://eden_readonly:…@postgres:5432/eden` | Same DSN but operator-substituted hostname; same readonly role + password. |
 
@@ -944,7 +944,7 @@ unchanged. Specifically:
 
 In:
 
-- `eden_ideator_host` gains `--repo-path`, `--gitea-url`,
+- `eden_ideator_host` gains `--repo-path`, `--forgejo-url`,
   `--credential-helper` CLI flags + clone-on-startup logic
   mirroring executor/evaluator.
 - `eden-wire` gains the `/_reference/experiments/{experiment_id}/artifacts/{path:path}`
@@ -976,7 +976,7 @@ In:
 
 Out:
 
-- See §1.4 above (executor-agent access; per-worker Gitea
+- See §1.4 above (executor-agent access; per-worker Forgejo
   tokens; managed Postgres; full blob backend; spec
   amendments).
 - Conformance scenarios. The new surface is reference-only
@@ -1027,7 +1027,7 @@ Out:
 
 | File | Change |
 |---|---|
-| `reference/services/ideator/src/eden_ideator_host/cli.py` | New `--repo-path`, `--gitea-url`, `--credential-helper` flags (clone-on-startup + fetch-on-restart wiring, mirror executor/evaluator). Calls `add_substrate_arguments(parser)` (§5.7) to register `--artifact-url`, `--artifact-path-root`, `--readonly-store-url`. In `main()`, resolves the four substrate values (from flags or `EDEN_*` env fallbacks) and builds the `env` dict that gets passed to `build_subprocess_config(..., env=...)`. The resolved values land in the spawned `*_command`'s environment via the existing env-threading mechanism the chunk-10d ideator already uses for `EDEN_WORKER_ID` / `EDEN_WORKER_CREDENTIAL`. |
+| `reference/services/ideator/src/eden_ideator_host/cli.py` | New `--repo-path`, `--forgejo-url`, `--credential-helper` flags (clone-on-startup + fetch-on-restart wiring, mirror executor/evaluator). Calls `add_substrate_arguments(parser)` (§5.7) to register `--artifact-url`, `--artifact-path-root`, `--readonly-store-url`. In `main()`, resolves the four substrate values (from flags or `EDEN_*` env fallbacks) and builds the `env` dict that gets passed to `build_subprocess_config(..., env=...)`. The resolved values land in the spawned `*_command`'s environment via the existing env-threading mechanism the chunk-10d ideator already uses for `EDEN_WORKER_ID` / `EDEN_WORKER_CREDENTIAL`. |
 | `reference/services/ideator/src/eden_ideator_host/host.py` | Pass `repo_dir` into `build_subprocess_config` (so `EDEN_REPO_DIR` is one of the env keys forwarded to the child). |
 | `reference/services/ideator/src/eden_ideator_host/subprocess_mode.py` | Subprocess env-var threading: `env["EDEN_REPO_DIR"] = ...` / `env["EDEN_ARTIFACT_URL"] = ...` / `env["EDEN_ARTIFACT_PATH_ROOT"] = ...` / `env["EDEN_READONLY_STORE_URL"] = ...` — same overlay pattern the existing chunk-10d threading uses (host-owned reserved keys overlay on top of `--ideation-env-file` so a user file can't redirect the protocol surface). |
 | `reference/services/ideator/tests/test_ideator_repo_init.py` | **NEW**: clone-on-startup + fetch-on-restart, mirroring evaluator's test if one exists. |
@@ -1053,7 +1053,7 @@ Out:
 | File | Change |
 |---|---|
 | `reference/compose/compose.yaml` | (a) Add `EDEN_READONLY_PASSWORD` env var to task-store-server. (b) Mount `eden-artifacts-data:/var/lib/eden/artifacts:ro` on task-store-server. (c) Add `--artifacts-dir /var/lib/eden/artifacts` + `--readonly-password ${EDEN_READONLY_PASSWORD}` to task-store-server CLI. (d) Declare new `eden-ideator-repo` named volume (subprocess.yaml mounts it; base never does). **NO changes to ideator-host's CLI / volume mounts here** — the substrate access (repo, artifacts, readonly DSN) is subprocess-mode-only per §D.1. |
-| `reference/compose/compose.subprocess.yaml` | **Sole home** for substrate access on ideator + evaluator services. Ideator block: add `--repo-path /var/lib/eden/repo`, `--gitea-url ${GITEA_REMOTE_URL}`, `--credential-helper /etc/eden/credential-helper.sh`; mount `eden-ideator-repo:/var/lib/eden/repo` + `${EDEN_GITEA_CREDS_DIR_HOST}/credential-helper.sh:/etc/eden/credential-helper.sh:ro`. Both ideator + evaluator blocks: set `EDEN_REPO_DIR=/var/lib/eden/repo`, `EDEN_ARTIFACT_URL=http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID}/artifacts/`, `EDEN_ARTIFACT_PATH_ROOT=/var/lib/eden/artifacts`, `EDEN_READONLY_STORE_URL=${EDEN_READONLY_STORE_URL}`. |
+| `reference/compose/compose.subprocess.yaml` | **Sole home** for substrate access on ideator + evaluator services. Ideator block: add `--repo-path /var/lib/eden/repo`, `--forgejo-url ${FORGEJO_REMOTE_URL}`, `--credential-helper /etc/eden/credential-helper.sh`; mount `eden-ideator-repo:/var/lib/eden/repo` + `${EDEN_FORGEJO_CREDS_DIR_HOST}/credential-helper.sh:/etc/eden/credential-helper.sh:ro`. Both ideator + evaluator blocks: set `EDEN_REPO_DIR=/var/lib/eden/repo`, `EDEN_ARTIFACT_URL=http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID}/artifacts/`, `EDEN_ARTIFACT_PATH_ROOT=/var/lib/eden/artifacts`, `EDEN_READONLY_STORE_URL=${EDEN_READONLY_STORE_URL}`. |
 | `reference/compose/compose.docker-exec.yaml` | **No changes.** DooD-mode substrate forwarding is out-of-scope per §8.9; sibling containers can't resolve the compose-internal hostnames without separate `--network` plumbing. |
 | `reference/scripts/setup-experiment/setup-experiment.sh` | (a) Generate + preserve `EDEN_READONLY_PASSWORD`. (b) Compute + write `EDEN_READONLY_STORE_URL` to `.env`. (c) Write `EDEN_ARTIFACT_URL` (in-network compose default) + `EDEN_ARTIFACT_PATH_ROOT` to `.env`. |
 | `reference/compose/healthcheck/smoke.sh` | **Unchanged** — see §6.6: the scripted ideator the base smoke runs doesn't write real artifacts, so the route-smoke would have nothing to fetch. |
@@ -1225,13 +1225,13 @@ trust-boundary tests are the gate:
 ### 6.3 Ideator clone-on-startup
 
 - First-run: no `--repo-path` dir → host clones bare from
-  `--gitea-url` using `--credential-helper`. Bare repo
+  `--forgejo-url` using `--credential-helper`. Bare repo
   exists after startup; has the seed commit.
 - Restart: `--repo-path` already exists → host runs
   `git fetch --prune origin '+refs/heads/*:refs/heads/*'`.
   Verified by pre-creating a stale local branch the remote
   doesn't have; after startup the stale branch is gone.
-- `--gitea-url` unreachable at startup → host exits
+- `--forgejo-url` unreachable at startup → host exits
   non-zero (mirrors executor/evaluator posture so compose's
   `restart: on-failure` retries).
 
@@ -1516,7 +1516,7 @@ network. Off-host operators need to:
 - Substitute `EDEN_ARTIFACT_URL` to a hostname the agent's
   network can reach.
 - Substitute `EDEN_READONLY_STORE_URL` similarly.
-- Provide their own Gitea credentials + URL for off-host
+- Provide their own Forgejo credentials + URL for off-host
   git clones (Phase 13e formalizes per-worker tokens).
 
 The binding doc has a "Cross-machine setup" §; the
@@ -1639,11 +1639,11 @@ binding doc explicitly note the host-mode-only scope.
 Operators who need DooD-mode substrate access wait for
 the follow-up.
 
-### 8.10 Cross-machine agent connecting via the gitea remote URL
+### 8.10 Cross-machine agent connecting via the forgejo remote URL
 
 The on-host agent uses `EDEN_REPO_DIR` (local bare clone).
-The off-host agent connects to Gitea over HTTP via the
-operator's gitea hostname. Today's shared `eden` HTTP-Basic
+The off-host agent connects to Forgejo over HTTP via the
+operator's forgejo hostname. Today's shared `eden` HTTP-Basic
 credential (Phase 10d-followup-B) works for both: the
 in-stack helper script and the off-host operator-supplied
 credentials both speak the same auth. Phase 13e replaces
@@ -1738,7 +1738,7 @@ around step 2 and come back green around step 8.
 - **DooD-mode substrate env-var forwarding.** §8.9.
   Sub-chunk after 12a-1f lands (the wrap needs
   `--network` plumbing and its own integration test).
-- **Per-worker Gitea tokens with branch ACLs.** Phase 13e.
+- **Per-worker Forgejo tokens with branch ACLs.** Phase 13e.
 - **Managed Postgres + readonly role through chart Secret.**
   Phase 13c.
 - **`Backend` Protocol + `LocalFsBackend` / `S3Backend` /

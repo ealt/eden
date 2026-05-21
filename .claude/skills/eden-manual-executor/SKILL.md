@@ -16,7 +16,7 @@ Trigger phrases above.
 The executor takes one `execution` task (which references an idea),
 realizes the idea as a git commit on top of `idea.parent_commits`,
 pushes that commit + the canonical `work/<slug>-<variant_id>` ref to
-gitea, and records the variant.
+forgejo, and records the variant.
 
 Everything below runs from the terminal. Don't ask the user to open the
 web UI.
@@ -67,7 +67,7 @@ for the life of this claim.
 $EDEN checkout <task-id>
 ```
 
-Clones gitea (with creds embedded) into `/tmp/eden-manual/<task-id>` and
+Clones forgejo (with creds embedded) into `/tmp/eden-manual/<task-id>` and
 checks out `idea.parent_commits[0]` in detached HEAD. Surface the
 workdir path.
 
@@ -116,7 +116,7 @@ This:
    in the store. NOTE: `commit_sha` is NOT set at create_variant
    time — it's written atomically when the orchestrator accepts
    the submit (per spec ch03 §3.2 step 1).
-5. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to gitea.
+5. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to forgejo.
 6. Submits the execution task with `status=success` and the
    `commit_sha` in the payload.
 
@@ -139,7 +139,7 @@ task_id — the user can play evaluator next via `/eden-manual-evaluator`.
   manual executor is human judgment. Wait for "done".
 - **Use `idea.slug` as the local branch name.** It matches the
   canonical work-branch shape and avoids confusion when looking at
-  gitea.
+  forgejo.
 - **Errors after `claim` but before `execution-submit`** leave the task
   claimed. The orchestrator's expired-claim sweeper recovers it
   automatically when `--ttl-seconds` is set; without TTL, use

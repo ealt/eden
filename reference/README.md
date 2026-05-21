@@ -6,7 +6,7 @@ This directory contains one complete implementation of the EDEN protocol. It is 
 
 ## Status
 
-Through **Phase 10 chunk 10a**: the [`compose/`](compose/) directory ships a Docker Compose stack that stands up the third-party infrastructure the reference services will consume — Postgres (`postgres:16.6-alpine`, reserved for `PostgresStore` in 10b), Gitea (`gitea/gitea:1.22.6-rootless`, headless via `INSTALL_LOCK=true` + `DISABLE_REGISTRATION=true`), and a one-shot `blob-init` busybox that mounts `eden-blob-data` so Compose actually creates the volume. EDEN services themselves are not yet dockerized; that lands in 10b alongside the `PostgresStore` binding.
+Through **Phase 10 chunk 10e**: the [`compose/`](compose/) directory ships a Docker Compose stack — Postgres (`postgres:16.6-alpine`), Forgejo (`codeberg.org/forgejo/forgejo:11-rootless`), blob volume, and six EDEN services dockerized behind the Phase 8a wire binding.
 
 Through **Phase 9** (chunks 9a–9e shipped): the reference Web UI hosts the ideator / executor / evaluator modules end-to-end plus an `/admin/*` observability + operator-reclaim surface. A human can sign in, claim a plan / implement / evaluation task, drive it through a browser, submit, and reclaim a stranded claim. Executor-side, the user does git work in their own checkout, pushes their tip commit to the bare repo, then enters the resulting `commit_sha`; the UI verifies §3.3 reachability, creates the variant in `starting`, writes the canonical `work/<slug>-<variant_id>` ref, and submits with retry-before-orphan + committed-state read-back. Evaluator-side, the user inspects the variant out-of-band, then types metrics into a form generated from the experiment's `evaluation_schema`; the UI parses each metric per its declared `MetricType` and submits with retry-before-orphan + read-back where `IllegalTransition` falls through to read-back so a "we won, response lost" sequence classifies as success rather than orphan. Admin-side, the operator browses tasks / variants / events, drives a `Store.reclaim(task_id, "operator")` per [`spec/v0/04-task-protocol.md`](../spec/v0/04-task-protocol.md) §5.1, and (when `--repo-path` is set) garbage-collects orphaned `work/*` refs via CAS-guarded `repo.delete_ref(expected_old_sha=…)`. Submissions round-trip through `eden_wire.StoreClient`. The executor module is gated on `--repo-path`; ideator- and evaluator-only deployments stay supported by omitting it.
 
@@ -44,7 +44,7 @@ Through **Phase 9** (chunks 9a–9e shipped): the reference Web UI hosts the ide
 
 | Path | Purpose | Lands in |
 |---|---|---|
-| [`compose/`](compose/) | Docker Compose stack — Phase 10a stands up the third-party infrastructure (Postgres, Gitea, blob volume); EDEN services dockerized in 10b | Phase 10 chunk 10a |
+| [`compose/`](compose/) | Docker Compose stack — Postgres, Forgejo, blob volume, EDEN services | Phase 10 |
 
 ## Relationship to the protocol spec
 

@@ -875,7 +875,7 @@ The Postgres tables that hold protocol state, per
 - `schema_version` — bootstrap migration state.
 
 A backup that captures all seven tables can fully restore an
-EDEN deployment (modulo Gitea, which has its own backup story
+EDEN deployment (modulo Forgejo, which has its own backup story
 in 13e).
 
 #### 3.7.2 Provider-side backup
@@ -1063,7 +1063,7 @@ runbook step-by-step:
    Note that an alternative shape — leaving workers running
    and capturing `pg_dump` against an active state — is NOT
    safe: `pg_dump --format=custom` produces an internally
-   consistent snapshot of the SQL state but the Gitea-side
+   consistent snapshot of the SQL state but the Forgejo-side
    git refs the workers may push during the dump are NOT
    captured, breaking the chapter-6 §3.4 atomicity invariant
    on restore. The drain is mandatory.
@@ -1477,8 +1477,8 @@ Docs:
 
 - **S3/GCS blob backend** — 13d. Independent of Postgres
   storage; touches the artifacts PVC.
-- **Gitea auth + per-branch ACLs + native PR review** —
-  13e. Independent of Postgres storage; touches Gitea.
+- **Forgejo auth + per-branch ACLs + native PR review** —
+  13e. Independent of Postgres storage; touches Forgejo.
 - **Multi-replica `task-store-server` + connection pooler** —
   future amendment. Becomes load-bearing when chart adds HA
   for the wire layer; out of scope for the 13-series.
@@ -1810,7 +1810,7 @@ pre-populate the key.
 **Chart upgrade trap.** 13a's chart did NOT populate
 `EDEN_STORE_URL` in its existingSecret contract — 13a's
 secret.yaml carried postgresPassword + adminToken +
-giteaAdminPassword + giteaRemotePassword + webUiSessionSecret
+forgejoAdminPassword + forgejoRemotePassword + webUiSessionSecret
 (13a §3.2 / §3.3) and built the DSN at chart-template time
 from `postgresPassword`. 13c moves the DSN composition into
 the Secret value itself, which means a 13a operator using
@@ -2135,6 +2135,6 @@ production-grade EDEN deployment running the full Phase-12
 protocol with provider-managed durability + backup + failover.
 The embedded `StatefulSet` path stays for greenfield clusters
 and test environments. The Compose deployment is unchanged.
-13d (S3/GCS blob backend) and 13e (Gitea auth + ACLs + PR
+13d (S3/GCS blob backend) and 13e (Forgejo auth + ACLs + PR
 review) extend the chart along orthogonal axes — neither
 depends on 13c.

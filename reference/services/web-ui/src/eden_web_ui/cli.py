@@ -119,14 +119,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--gitea-url",
+        "--forgejo-url",
+        "--forgejo-url",
+        dest="forgejo_url",
         default=None,
         help=(
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, --repo-path becomes the local "
-            "bare clone of the Gitea-hosted repo (created at startup) "
-            "and the executor module pushes work/* refs to gitea "
-            "after every successful submit."
+            "bare clone of the Forgejo-hosted repo (created at startup) "
+            "and the executor module pushes work/* refs to the remote "
+            "after every successful submit. --forgejo-url is a deprecated alias."
         ),
     )
     parser.add_argument(
@@ -134,7 +136,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Optional path to a git credential-helper script for "
-            "HTTP Basic auth against --gitea-url."
+            "HTTP Basic auth against --forgejo-url."
         ),
     )
     parser.add_argument(
@@ -144,7 +146,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Optional host-accessible URL of the central git remote "
             "to surface in the executor UI (e.g., "
             "http://localhost:3001/eden/<exp-id>.git when running in "
-            "Compose). Distinct from --gitea-url, which is the "
+            "Compose). Distinct from --forgejo-url, which is the "
             "in-network URL the web-ui itself uses. Purely "
             "informational — affects only template rendering."
         ),
@@ -236,16 +238,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     repo: GitRepo | None = None
     if args.repo_path is not None:
-        # Phase 10d follow-up B: when --gitea-url is set, materialize
+        # Phase 10d follow-up B: when --forgejo-url is set, materialize
         # the local clone (or fetch on subsequent starts).
-        if args.gitea_url is not None:
+        if args.forgejo_url is not None:
             head = args.repo_path / "HEAD"
             if head.is_file():
                 repo = GitRepo(str(args.repo_path))
                 repo.fetch_all_heads()
             else:
                 repo = GitRepo.clone_from(
-                    url=args.gitea_url,
+                    url=args.forgejo_url,
                     dest=args.repo_path,
                     bare=True,
                     credential_helper=args.credential_helper,

@@ -105,7 +105,7 @@ anything.
 created with `status="starting"` BEFORE any observable repo write)
 constrains the design — the host-side `Store.create_variant` call
 MUST run before the Job is created, since the Job pod's git push
-to Gitea is itself an observable repo write. The Job pod's wrapper
+to Forgejo is itself an observable repo write. The Job pod's wrapper
 performs the push only after the user command produces a commit;
 the variant exists in `starting` for the duration. This is the
 same ordering the existing `--mode subprocess` flow follows, just
@@ -215,7 +215,7 @@ These are the load-bearing design calls; §3 unpacks each.
    never talks to the task-store-server.** The Job pod's
    ServiceAccount has *no* network access to the task-store-server
    (gated by NetworkPolicy if the operator opts in); it talks
-   only to Gitea (to clone + push) and writes the outcome to
+   only to Forgejo (to clone + push) and writes the outcome to
    stdout. This keeps the chapter 3 submit-side discipline
    (claim-TTL, retry-before-orphan, committed-state read-back)
    on the host, where it already is. See §3.4 for the per-task
@@ -225,7 +225,7 @@ These are the load-bearing design calls; §3 unpacks each.
    does the clone.** Each Job pod gets an EmptyDir volume
    `/var/lib/eden/work` that holds the bare repo + worktree.
    An `initContainer` running `eden-runtime:dev` clones the
-   bare repo from Gitea (using the credential helper mounted
+   bare repo from Forgejo (using the credential helper mounted
    from the chart's `git-credential-helper-configmap` per 13a
    §3.3a), then `git worktree add --detach` at
    `idea.parent_commits[0]`. The main container starts with
@@ -275,7 +275,7 @@ These are the load-bearing design calls; §3 unpacks each.
    - `git` ≥ 2.20 on `PATH`.
    - `python3` ≥ 3.8 on `PATH` (used by the wrapper for
      outcome JSON parsing — POSIX shell has no JSON parser).
-   - `ca-certificates` (so `git push` to a TLS-fronted Gitea
+   - `ca-certificates` (so `git push` to a TLS-fronted Forgejo
      works).
    - SHOULD: `eden:1000` user matching the executor-host's
      identity, so commits the user command produces are
@@ -464,7 +464,7 @@ executor:
       tag: ""                 # required when mode=k8sJob (e.g., 0.1.0)
       pullPolicy: IfNotPresent
       pullSecrets: []
-    # The init container that clones from Gitea + creates the
+    # The init container that clones from Forgejo + creates the
     # worktree always uses the chart-level image (eden-runtime:dev);
     # operators do NOT override the init image.
     activeDeadlineSeconds: 600  # k8s kills the Job after this many seconds; mirrors --execution-task-deadline
@@ -595,8 +595,8 @@ For each pending execution task that the host claims:
    - `spec.template.spec.nodeSelector + tolerations`: from
      `--job-template-config`.
    - `spec.template.spec.initContainers[0]`: runs
-     `eden-runtime:dev` with the Gitea credential helper mounted;
-     clones bare from `--gitea-url`, `git worktree add --detach
+     `eden-runtime:dev` with the Forgejo credential helper mounted;
+     clones bare from `--forgejo-url`, `git worktree add --detach
      <wt> <parent_commits[0]>`, writes `.eden/task.json` per
      §3.5.
    - `spec.template.spec.containers[0]`: runs the user
@@ -620,7 +620,7 @@ For each pending execution task that the host claims:
      line as JSON. Validate shape: `status` ∈ {success, error};
      if `success`, `commit_sha` is a valid hex SHA. Validate
      reachability via the host's local clone (`fetch_ref(branch)`
-     against Gitea, then `repo.is_ancestor(parent, commit_sha)`
+     against Forgejo, then `repo.is_ancestor(parent, commit_sha)`
      for every parent — same shape as
      `subprocess_mode._validate_commit`). On reachability
      failure, treat as `error`. On parse failure (no sentinel
@@ -655,7 +655,7 @@ no new binary needed):
 
 ```bash
 set -euo pipefail
-git clone --bare "${EDEN_GITEA_URL}" /var/lib/eden/work/repo.git
+git clone --bare "${EDEN_FORGEJO_URL}" /var/lib/eden/work/repo.git
 cd /var/lib/eden/work/repo.git
 git fetch --prune origin '+refs/heads/*:refs/heads/*'
 git worktree add --detach /var/lib/eden/work/wt "${EDEN_PARENT_COMMIT}"
@@ -704,7 +704,7 @@ if [ -f "${EDEN_WORKTREE}/.eden/outcome.json" ]; then
 else
   outcome='{"status":"error","reason":"missing outcome.json"}'
 fi
-# If outcome status is success, push the work/* ref to Gitea.
+# If outcome status is success, push the work/* ref to Forgejo.
 status=$(printf '%s' "${outcome}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
 commit_sha=$(printf '%s' "${outcome}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit_sha",""))')
 if [ "${status}" = "success" ] && [ -n "${commit_sha}" ]; then
@@ -905,7 +905,7 @@ Tests:
   followup if operators ask.
 - **NetworkPolicy templates.** The Job pod's network
   egress is namespace-default (any); a 13-followup may
-  add a NetworkPolicy template that allows only Gitea
+  add a NetworkPolicy template that allows only Forgejo
   traffic. Deferred — k8s NetworkPolicy needs a CNI plugin
   that supports it (Calico, Cilium), which is non-portable.
 
@@ -952,7 +952,7 @@ Tests:
 | File | Change |
 |---|---|
 | `reference/services/executor/src/eden_executor_host/cli.py` | Extend `--mode` to accept `k8s-job`. Add the nine `--job-*` flags. Argparse-time validation: when `--mode k8s-job`, require `--job-namespace` + `--job-image-repository` + `--job-image-tag`. Add a top-level branch in `main()` that, when `args.mode == "k8s-job"`, calls `run_executor_k8s_job_loop(...)` from the new module. |
-| `reference/services/executor/src/eden_executor_host/k8s_job_mode.py` (new) | Per-task Job create/watch/read flow per §3.4. Public entry point `run_executor_k8s_job_loop(*, store, worker_id, repo_path, gitea_url, credential_helper, k8s_config, poll_interval, image_pull_deadline_seconds, stop)`. Internal helpers: `_build_job_manifest`, `_watch_job_terminal`, `_select_outcome_pod`, `_read_outcome_from_pod_logs`, `_check_image_pull_stuck`, `_handle_one`, `_orphan_reap`. Mirrors the structure of `subprocess_mode.py` but the inner work is k8s-API-bound. |
+| `reference/services/executor/src/eden_executor_host/k8s_job_mode.py` (new) | Per-task Job create/watch/read flow per §3.4. Public entry point `run_executor_k8s_job_loop(*, store, worker_id, repo_path, forgejo_url, credential_helper, k8s_config, poll_interval, image_pull_deadline_seconds, stop)`. Internal helpers: `_build_job_manifest`, `_watch_job_terminal`, `_select_outcome_pod`, `_read_outcome_from_pod_logs`, `_check_image_pull_stuck`, `_handle_one`, `_orphan_reap`. Mirrors the structure of `subprocess_mode.py` but the inner work is k8s-API-bound. |
 | `reference/services/executor/pyproject.toml` | Add `kubernetes>=29.0.0,<30` to `[project].dependencies`. (The official client; pinned major to avoid surprise breaks.) |
 | `reference/services/executor/tests/test_k8s_job_mode.py` (new) | Unit tests against a fake `kubernetes.client` mocked via `unittest.mock`. Coverage: happy-path success outcome, parse-failure outcome → error, missing-sentinel-line outcome → error, Job timeout (activeDeadline) → error, reachability failure → error, orphan reap on host startup, host SIGTERM mid-task → Job deleted, claim-TTL expiry → sweeper recovers, image-pull-stuck-past-deadline → host gives up early per §8.2, duplicate-Pod selection rule §8.10 (one pod Succeeded + one Failed → success; two pods Succeeded with same SHA → success; two pods Succeeded with different SHA → error; only Failed pods → error; phase-Unknown after settle → error). |
 | `reference/services/_common/src/eden_service_common/k8s.py` (new) | Tiny module exposing `make_k8s_clients()` (in-cluster config via `kubernetes.config.load_incluster_config`; falls back to `load_kube_config` for `pytest.mark.e2e` tests run from a kind context). Returns `(BatchV1Api, CoreV1Api)`. Avoids spreading the kubernetes-client import across multiple modules. |
@@ -1281,7 +1281,7 @@ containment. Documented in `worker-host-k8s-job.md` §"Security
 boundary".
 
 A 13-followup may add a NetworkPolicy template that confines
-Jobs to Gitea egress only, narrowing the blast radius. Out of
+Jobs to Forgejo egress only, narrowing the blast radius. Out of
 scope here; NetworkPolicy needs cluster CNI support.
 
 ### 8.10 Node-disruption + duplicate-Pod semantics
@@ -1347,7 +1347,7 @@ precisely:
        failed (the canonical "duplicate-Pod ran but at
        least one finished cleanly" case); read the
        succeeded Pod's log AND verify the commit_sha is
-       reachable on the current Gitea ref tip (§3.4 step
+       reachable on the current Forgejo ref tip (§3.4 step
        6 reachability). If reachable, treat as success.
      |A| > 1 → at least two Pods both reported Succeeded
        independently; this is the anomaly the k8s docs
@@ -1552,7 +1552,7 @@ A reviewer going from PR 1 to PR 6 should expect:
   k8s `pods/log` streaming; needs Web UI to gain `pods/log`
   RBAC. Operator-requested followup.
 - **NetworkPolicy template.** Confines the Job pod's egress
-  to Gitea + (optionally) the operator's experiment
+  to Forgejo + (optionally) the operator's experiment
   external services. Needs cluster CNI support; deferred.
 - **Static `eden-execute-wrapper` binary** for
   experiment images without Python. Tracked as a §8.7

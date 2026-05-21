@@ -84,7 +84,7 @@ def _repo_has_origin(repo: GitRepo) -> bool:
     """Return True if the executor's repo has an origin remote.
 
     Used to gate ``push_ref`` after ``create_ref`` so existing local-
-    only test paths (no Gitea, no clone) skip the push entirely.
+    only test paths (no Forgejo, no clone) skip the push entirely.
     """
     try:
         result = repo._run(["remote"], check=False)

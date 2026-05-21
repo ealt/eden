@@ -171,7 +171,7 @@ class Integrator:
 
         # Step 2: publish to remote (if origin is configured).
         # Phase 10d follow-up B §D.6: when the integrator's repo has
-        # an `origin` remote (the Gitea cutover), publish the ref
+        # an `origin` remote (the Forgejo cutover), publish the ref
         # there before committing the store-side variant state. Skip
         # the push for repos with no origin (the local-only test
         # path stays a single-step integration).
@@ -547,7 +547,7 @@ class Integrator:
         try:
             remote_refs = self._repo.ls_remote("refs/heads/variant/*")
         except GitTransportError:
-            # Gitea unreachable at startup — caller exits non-zero
+            # Forgejo unreachable at startup — caller exits non-zero
             # and compose's restart loop retries. Don't raise here
             # because we don't want to block startup if the only
             # transient is reconciliation; the next startup tries

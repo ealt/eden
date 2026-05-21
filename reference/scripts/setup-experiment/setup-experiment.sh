@@ -10,7 +10,7 @@ set -euo pipefail
 #
 # Idempotent: re-running on an already-configured stack preserves
 # existing secrets (POSTGRES_PASSWORD, EDEN_ADMIN_TOKEN,
-# EDEN_SESSION_SECRET, GITEA_*) and re-runs the seed step (which
+# EDEN_SESSION_SECRET, FORGEJO_*) and re-runs the seed step (which
 # itself short-circuits on a previously-seeded repo).
 #
 # Usage:
@@ -41,7 +41,7 @@ repo via a one-shot `compose run --rm --no-deps eden-repo-init`
 call. Operator's next step is `docker compose up -d --wait`.
 
 --data-root specifies the host-side parent directory under which
-every durable substrate (postgres data, gitea data, artifacts,
+every durable substrate (postgres data, forgejo data, artifacts,
 per-host bare clones, per-host worker credentials) is bind-mounted
 (Phase 12a-1g, chapter 01 §13). Default:
 `$HOME/.eden/experiments/<experiment-id>`. The substrate tree
@@ -182,18 +182,18 @@ EDEN_ADMIN_TOKEN="${ARG_ADMIN_TOKEN:-${EXISTING_ADMIN_TOKEN:-$(gen_hex 32)}}"
 EXISTING_SESSION_SECRET="$(read_env_key EDEN_SESSION_SECRET "$ENV_FILE")"
 EDEN_SESSION_SECRET="${EXISTING_SESSION_SECRET:-$(gen_hex 32)}"
 
-EXISTING_GITEA_SECRET_KEY="$(read_env_key GITEA_SECRET_KEY "$ENV_FILE")"
-GITEA_SECRET_KEY="${EXISTING_GITEA_SECRET_KEY:-$(gen_hex 32)}"
+EXISTING_FORGEJO_SECRET_KEY="$(read_env_key FORGEJO_SECRET_KEY "$ENV_FILE")"
+FORGEJO_SECRET_KEY="${EXISTING_FORGEJO_SECRET_KEY:-$(gen_hex 32)}"
 
-EXISTING_GITEA_INTERNAL_TOKEN="$(read_env_key GITEA_INTERNAL_TOKEN "$ENV_FILE")"
-GITEA_INTERNAL_TOKEN="${EXISTING_GITEA_INTERNAL_TOKEN:-$(gen_hex 32)}"
+EXISTING_FORGEJO_INTERNAL_TOKEN="$(read_env_key FORGEJO_INTERNAL_TOKEN "$ENV_FILE")"
+FORGEJO_INTERNAL_TOKEN="${EXISTING_FORGEJO_INTERNAL_TOKEN:-$(gen_hex 32)}"
 
-# Phase 10d follow-up B: per-experiment Gitea password for the eden
+# Phase 10d follow-up B: per-experiment Forgejo password for the eden
 # user. Workers use this via HTTP Basic auth (the credential-helper
-# script is generated from a template after Gitea is up). Preserved
+# script is generated from a template after Forgejo is up). Preserved
 # across re-runs.
-EXISTING_GITEA_REMOTE_PASSWORD="$(read_env_key GITEA_REMOTE_PASSWORD "$ENV_FILE")"
-GITEA_REMOTE_PASSWORD="${EXISTING_GITEA_REMOTE_PASSWORD:-$(gen_hex 32)}"
+EXISTING_FORGEJO_REMOTE_PASSWORD="$(read_env_key FORGEJO_REMOTE_PASSWORD "$ENV_FILE")"
+FORGEJO_REMOTE_PASSWORD="${EXISTING_FORGEJO_REMOTE_PASSWORD:-$(gen_hex 32)}"
 
 # Phase 12a-1f: per-experiment password for the eden_readonly
 # Postgres role. The task-store-server provisions the role at
@@ -206,11 +206,11 @@ EDEN_READONLY_PASSWORD="${EXISTING_READONLY_PASSWORD:-$(gen_hex 32)}"
 EXISTING_PG_HOST_PORT="$(read_env_key POSTGRES_HOST_PORT "$ENV_FILE")"
 POSTGRES_HOST_PORT="${EXISTING_PG_HOST_PORT:-5433}"
 
-EXISTING_GITEA_HOST_PORT="$(read_env_key GITEA_HOST_PORT "$ENV_FILE")"
-GITEA_HOST_PORT="${EXISTING_GITEA_HOST_PORT:-3001}"
+EXISTING_FORGEJO_HOST_PORT="$(read_env_key FORGEJO_HOST_PORT "$ENV_FILE")"
+FORGEJO_HOST_PORT="${EXISTING_FORGEJO_HOST_PORT:-3001}"
 
-EXISTING_GITEA_SSH_HOST_PORT="$(read_env_key GITEA_SSH_HOST_PORT "$ENV_FILE")"
-GITEA_SSH_HOST_PORT="${EXISTING_GITEA_SSH_HOST_PORT:-2222}"
+EXISTING_FORGEJO_SSH_HOST_PORT="$(read_env_key FORGEJO_SSH_HOST_PORT "$ENV_FILE")"
+FORGEJO_SSH_HOST_PORT="${EXISTING_FORGEJO_SSH_HOST_PORT:-2222}"
 
 EXISTING_WEB_UI_HOST_PORT="$(read_env_key WEB_UI_HOST_PORT "$ENV_FILE")"
 WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
@@ -264,7 +264,7 @@ EDEN_IDEAS_PER_IDEATION="${ARG_IDEAS_PER_IDEATION:-${EXISTING_IDEAS_PER_IDEATION
 
 # --- Phase 12a-1g: substrate data root resolution ---
 # The data root is the parent directory under which every durable
-# substrate (postgres, gitea, artifacts, per-host bare clones,
+# substrate (postgres, forgejo, artifacts, per-host bare clones,
 # per-host worker credentials) is bind-mounted. See chapter 01 §13
 # + docs/operations/experiment-data-durability.md.
 #
@@ -300,13 +300,13 @@ EDEN_EXPERIMENT_DATA_ROOT="$(cd "$DATA_ROOT_INPUT" && pwd)"
 # different data root AND that prior root has substantive substrate
 # data (not just empty subdirs setup-experiment created), abort. The
 # probe checks postgres' `PG_VERSION` sentinel (always present after
-# postgres initdb) and gitea's `conf/` directory (created when the
-# gitea container first boots). Either is sufficient evidence the
+# postgres initdb) and forgejo's `conf/` directory (created when the
+# forgejo container first boots). Either is sufficient evidence the
 # operator has actually run the stack, not just bootstrapped the
 # tree. Empty subdirs from an aborted setup don't trip this.
 if [[ -n "$EXISTING_DATA_ROOT" && "$EXISTING_DATA_ROOT" != "$EDEN_EXPERIMENT_DATA_ROOT" ]]; then
     if [[ -f "$EXISTING_DATA_ROOT/postgres/PG_VERSION" \
-        || -d "$EXISTING_DATA_ROOT/gitea/conf" ]]; then
+        || -d "$EXISTING_DATA_ROOT/forgejo/conf" ]]; then
         echo "refusing to silently relocate the data root:" >&2
         echo "  existing: $EXISTING_DATA_ROOT (has substrate data)" >&2
         echo "  new:      $EDEN_EXPERIMENT_DATA_ROOT" >&2
@@ -319,13 +319,13 @@ fi
 
 # Create the substrate subdirectory tree. chmod 0777 matches the
 # cidfile-dir precedent above: the four substrate containers run as
-# different uids (postgres=70, gitea-rootless=1000, eden=1000) and
+# different uids (postgres=70, forgejo-rootless=1000, eden=1000) and
 # Docker Desktop's uid mapping layer makes a single chown choice
 # fragile. World-writable is acceptable for local-dev; production
 # durability lives in Phase 13's managed substrates.
 mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/gitea" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/forgejo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo" \
@@ -340,7 +340,7 @@ mkdir -p \
 if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/gitea" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/forgejo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo" \
@@ -360,7 +360,7 @@ then
     echo "warning: chmod 0777 on substrate dirs under" >&2
     echo "         $EDEN_EXPERIMENT_DATA_ROOT" >&2
     echo "         partially failed. Containers running as non-root" >&2
-    echo "         uids (postgres=70, gitea=1000, eden=1000) may fail" >&2
+    echo "         uids (postgres=70, forgejo=1000, eden=1000) may fail" >&2
     echo "         to write. Adjust permissions manually or use a" >&2
     echo "         --data-root on a more permissive filesystem." >&2
 fi
@@ -461,10 +461,10 @@ POSTGRES_DB=eden
 POSTGRES_USER=eden
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT}
-GITEA_SECRET_KEY=${GITEA_SECRET_KEY}
-GITEA_INTERNAL_TOKEN=${GITEA_INTERNAL_TOKEN}
-GITEA_HOST_PORT=${GITEA_HOST_PORT}
-GITEA_SSH_HOST_PORT=${GITEA_SSH_HOST_PORT}
+FORGEJO_SECRET_KEY=${FORGEJO_SECRET_KEY}
+FORGEJO_INTERNAL_TOKEN=${FORGEJO_INTERNAL_TOKEN}
+FORGEJO_HOST_PORT=${FORGEJO_HOST_PORT}
+FORGEJO_SSH_HOST_PORT=${FORGEJO_SSH_HOST_PORT}
 
 # --- 10b/c reference services ---
 EDEN_EXPERIMENT_ID=${EXPERIMENT_ID}
@@ -475,7 +475,7 @@ WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 
 # --- 12a-1g substrate data root ---
 # Host-side parent dir under which every durable substrate
-# (postgres, gitea, artifacts, *-repo, credentials/*) is
+# (postgres, forgejo, artifacts, *-repo, credentials/*) is
 # bind-mounted. See chapter 01 §13 + docs/operations/
 # experiment-data-durability.md. Override via setup-experiment.sh
 # --data-root <path>.
@@ -502,13 +502,13 @@ EDEN_EXEC_IMAGE=${EDEN_EXEC_IMAGE}
 EDEN_DOCKER_GID=${EDEN_DOCKER_GID}
 EDEN_CIDFILES_DIR_HOST=${EDEN_CIDFILES_DIR_HOST}
 
-# --- 10d follow-up B: Gitea-as-remote ---
-# The workers' git remote is the in-network Gitea container. Workers
+# --- 10d follow-up B: Forgejo-as-remote ---
+# The workers' git remote is the in-network Forgejo container. Workers
 # clone bare on first run and fetch/push thereafter; the integrator
-# publishes variant/* refs back to Gitea per chapter 6 §3.4.
-GITEA_REMOTE_PASSWORD=${GITEA_REMOTE_PASSWORD}
-GITEA_REMOTE_URL=http://gitea:3000/eden/${EXPERIMENT_ID}.git
-EDEN_GITEA_CREDS_DIR_HOST=${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}
+# publishes variant/* refs back to Forgejo per chapter 6 §3.4.
+FORGEJO_REMOTE_PASSWORD=${FORGEJO_REMOTE_PASSWORD}
+FORGEJO_REMOTE_URL=http://forgejo:3000/eden/${EXPERIMENT_ID}.git
+EDEN_FORGEJO_CREDS_DIR_HOST=${COMPOSE_DIR}/.forgejo-creds-${EXPERIMENT_ID}
 
 # --- 12a-1f substrate access (ideator + evaluator subprocesses) ---
 # The task-store-server provisions the eden_readonly Postgres role
@@ -537,36 +537,36 @@ mv "$ENV_TMP" "$ENV_FILE"
 echo "--- building eden-reference:dev ---" >&2
 (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" build eden-repo-init >&2)
 
-# --- Phase 10d follow-up B: bring Gitea up + provision ---
-echo "--- bringing up gitea synchronously ---" >&2
-(cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" up -d --wait gitea >&2)
+# --- Phase 10d follow-up B: bring Forgejo up + provision ---
+echo "--- bringing up forgejo synchronously ---" >&2
+(cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" up -d --wait forgejo >&2)
 
-# Idempotent admin-user create. `gitea admin user create` exits
+# Idempotent admin-user create. `forgejo admin user create` exits
 # non-zero if the user exists; the change-password fallback handles
 # the re-run case.
-echo "--- provisioning gitea eden user ---" >&2
+echo "--- provisioning forgejo eden user ---" >&2
 if ! docker compose -f "${COMPOSE_DIR}/compose.yaml" --env-file "$ENV_FILE" \
-        exec -T gitea gitea admin user create \
+        exec -T forgejo forgejo admin user create \
             --username eden \
-            --password "$GITEA_REMOTE_PASSWORD" \
+            --password "$FORGEJO_REMOTE_PASSWORD" \
             --email eden@invalid \
             --admin \
             --must-change-password=false \
         >&2 2>&1
 then
     docker compose -f "${COMPOSE_DIR}/compose.yaml" --env-file "$ENV_FILE" \
-        exec -T gitea gitea admin user change-password \
+        exec -T forgejo forgejo admin user change-password \
             --username eden \
-            --password "$GITEA_REMOTE_PASSWORD" \
+            --password "$FORGEJO_REMOTE_PASSWORD" \
             --must-change-password=false >&2
 fi
 
-echo "--- creating gitea repo eden/${EXPERIMENT_ID} ---" >&2
+echo "--- creating forgejo repo eden/${EXPERIMENT_ID} ---" >&2
 # 201 on first create, 409 on re-run; both are acceptable.
 http_status=$(
     curl -fsS -o /dev/null -w '%{http_code}' \
-        -u "eden:${GITEA_REMOTE_PASSWORD}" \
-        -X POST "http://localhost:${GITEA_HOST_PORT}/api/v1/user/repos" \
+        -u "eden:${FORGEJO_REMOTE_PASSWORD}" \
+        -X POST "http://localhost:${FORGEJO_HOST_PORT}/api/v1/user/repos" \
         -H "Content-Type: application/json" \
         -d "{\"name\":\"${EXPERIMENT_ID}\",\"private\":true,\"auto_init\":false}" \
         || true
@@ -574,16 +574,16 @@ http_status=$(
 case "$http_status" in
     201|409) ;;
     *)
-        echo "gitea repo create failed (http=$http_status)" >&2
+        echo "forgejo repo create failed (http=$http_status)" >&2
         exit 1
         ;;
 esac
 
 # --- Generate the credential-helper script ---
 echo "--- writing credential-helper script ---" >&2
-mkdir -p "${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}"
-chmod 0755 "${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}"
-HELPER_PATH="${COMPOSE_DIR}/.gitea-creds-${EXPERIMENT_ID}/credential-helper.sh"
+mkdir -p "${COMPOSE_DIR}/.forgejo-creds-${EXPERIMENT_ID}"
+chmod 0755 "${COMPOSE_DIR}/.forgejo-creds-${EXPERIMENT_ID}"
+HELPER_PATH="${COMPOSE_DIR}/.forgejo-creds-${EXPERIMENT_ID}/credential-helper.sh"
 cat >"$HELPER_PATH" <<HELPER
 #!/bin/sh
 # Generated by setup-experiment.sh — do not edit. Regenerate by
@@ -592,7 +592,7 @@ case "\$1" in
   get)
     cat <<'EOF_INNER'
 username=eden
-password=__GITEA_REMOTE_PASSWORD__
+password=__FORGEJO_REMOTE_PASSWORD__
 EOF_INNER
     ;;
 esac
@@ -600,17 +600,17 @@ HELPER
 # Substitute the password into the heredoc (we use a sentinel so the
 # heredoc doesn't expand variables in its body — keeps shell-special
 # characters in the password from breaking the helper).
-sed -i.bak "s|__GITEA_REMOTE_PASSWORD__|${GITEA_REMOTE_PASSWORD}|" "$HELPER_PATH"
+sed -i.bak "s|__FORGEJO_REMOTE_PASSWORD__|${FORGEJO_REMOTE_PASSWORD}|" "$HELPER_PATH"
 rm -f "${HELPER_PATH}.bak"
 chmod 0755 "$HELPER_PATH"
 
-# --- Seed the bare-repo volume + push to Gitea ---
-echo "--- seeding bare-repo volume + pushing seed to gitea ---" >&2
+# --- Seed the bare-repo volume + push to Forgejo ---
+echo "--- seeding bare-repo volume + pushing seed to forgejo ---" >&2
 # eden-repo-init's --push-to flag uses the credential helper at
 # /etc/eden/credential-helper.sh (bind-mounted via the run command
 # below). The `--no-deps` ensures we don't accidentally start
 # unrelated services for the seed step.
-GITEA_REMOTE_URL_SHELL="http://gitea:3000/eden/${EXPERIMENT_ID}.git"
+FORGEJO_REMOTE_URL_SHELL="http://forgejo:3000/eden/${EXPERIMENT_ID}.git"
 SEED_FROM_ABS=""
 SEED_FROM_MOUNT_ARGS=()
 SEED_FROM_PYTHON_ARGS=()
@@ -639,7 +639,7 @@ SEED_OUTPUT="$(cd "$COMPOSE_DIR" && \
         eden-repo-init \
         python -m eden_service_common.repo_init \
             --repo-path /var/lib/eden/repo \
-            --push-to "${GITEA_REMOTE_URL_SHELL}" \
+            --push-to "${FORGEJO_REMOTE_URL_SHELL}" \
             --credential-helper /etc/eden/credential-helper.sh \
             ${SEED_FROM_PYTHON_ARGS[@]+"${SEED_FROM_PYTHON_ARGS[@]}"})"
 SEED_SHA="$(echo "$SEED_OUTPUT" | sed -nE 's/^EDEN_REPO_(SEEDED|ALREADY_SEEDED) sha=([0-9a-f]{40})$/\2/p' | head -n1)"

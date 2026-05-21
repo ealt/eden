@@ -92,8 +92,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Bare git repo (subprocess mode only). When "
-            "--gitea-url is also set, this becomes the local bare "
-            "clone of the Gitea-hosted repo (cloned at startup if "
+            "--forgejo-url is also set, this becomes the local bare "
+            "clone of the Forgejo-hosted repo (cloned at startup if "
             "absent, otherwise fetched). The path is also threaded "
             "to the spawned *_command's env as EDEN_REPO_DIR so "
             "agentic ideators can `git log` / `git show` against "
@@ -101,7 +101,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--gitea-url",
+        "--forgejo-url",
         default=None,
         help=(
             "Optional HTTP(S) URL of the central git remote. Pair "
@@ -113,7 +113,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Path to a git credential-helper script for HTTP Basic "
-            "auth against --gitea-url."
+            "auth against --forgejo-url."
         ),
     )
     parser.add_argument("--ideation-startup-deadline", type=float, default=30.0)
@@ -159,25 +159,25 @@ def _ensure_repo_clone(
     *,
     log,  # noqa: ANN001 — _CtxAdapter, not exposed
     repo_path: str,
-    gitea_url: str | None,
+    forgejo_url: str | None,
     credential_helper: str | None,
 ) -> None:
     """Materialize the ideator's local clone per Phase 10d follow-up B §D.5.
 
     Mirrors the executor / evaluator clone-on-startup pattern. No-op
-    when ``gitea_url`` is ``None`` (the chunk-10d posture). Otherwise:
+    when ``forgejo_url`` is ``None`` (the chunk-10d posture). Otherwise:
     clone --bare at first run, fetch_all_heads on subsequent starts.
     """
-    if gitea_url is None:
+    if forgejo_url is None:
         return
     path = Path(repo_path)
     if (path / "HEAD").is_file():
-        log.info("fetching_remote_heads", url=gitea_url)
+        log.info("fetching_remote_heads", url=forgejo_url)
         GitRepo(path).fetch_all_heads()
         return
-    log.info("cloning_from_remote", url=gitea_url, dest=str(path))
+    log.info("cloning_from_remote", url=forgejo_url, dest=str(path))
     GitRepo.clone_from(
-        url=gitea_url,
+        url=forgejo_url,
         dest=path,
         bare=True,
         credential_helper=credential_helper,
@@ -212,12 +212,12 @@ def main(argv: list[str] | None = None) -> int:
     log.info("starting", worker_id=args.worker_id, mode=args.mode)
     # 12a-1f: clone-on-startup wiring for the git substrate. Only
     # runs in subprocess mode (scripted ideator never reads git);
-    # the helper itself is also a no-op when --gitea-url is not set.
+    # the helper itself is also a no-op when --forgejo-url is not set.
     if args.mode == "subprocess" and args.repo_path is not None:
         _ensure_repo_clone(
             log=log,
             repo_path=args.repo_path,
-            gitea_url=args.gitea_url,
+            forgejo_url=args.forgejo_url,
             credential_helper=args.credential_helper,
         )
     with StoreClient(

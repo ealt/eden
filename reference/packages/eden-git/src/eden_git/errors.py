@@ -43,7 +43,7 @@ class RefRefused(GitError):
 class GitTransportError(GitError):
     """A remote git operation failed at the transport layer.
 
-    Possible causes: Gitea unreachable, DNS failure, TCP refused, TLS
+        Possible causes: Forgejo unreachable, DNS failure, TCP refused, TLS
     handshake error. The remote's state is INDETERMINATE — the request
     may have been received and applied before the response was lost.
     Callers driving ``variant/*`` writes (per chapter 6 §3.4) MUST run a

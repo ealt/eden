@@ -56,7 +56,7 @@ def test_scripted_mode_substrate_flags_optional() -> None:
     assert args.artifact_path_root is None
     assert args.readonly_store_url is None
     assert args.repo_path is None
-    assert args.gitea_url is None
+    assert args.forgejo_url is None
     assert args.credential_helper is None
 
 
@@ -78,8 +78,8 @@ def test_subprocess_mode_substrate_flags_parsed(tmp_path: Path) -> None:
             str(tmp_path / "art"),
             "--repo-path",
             "/var/lib/eden/repo",
-            "--gitea-url",
-            "http://gitea/eden/exp.git",
+            "--forgejo-url",
+            "http://forgejo/eden/exp.git",
             "--credential-helper",
             "/etc/eden/helper.sh",
             "--artifact-url",
@@ -92,7 +92,7 @@ def test_subprocess_mode_substrate_flags_parsed(tmp_path: Path) -> None:
     )
     assert args.mode == "subprocess"
     assert args.repo_path == "/var/lib/eden/repo"
-    assert args.gitea_url == "http://gitea/eden/exp.git"
+    assert args.forgejo_url == "http://forgejo/eden/exp.git"
     assert args.credential_helper == "/etc/eden/helper.sh"
     assert args.artifact_url == "http://server/artifacts/"
     assert args.artifact_path_root == "/var/lib/eden/artifacts"

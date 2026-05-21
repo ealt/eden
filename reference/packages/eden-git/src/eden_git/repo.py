@@ -603,14 +603,14 @@ class GitRepo:
         """Clone ``url`` to ``dest``; return a ``GitRepo`` over the result.
 
         Used at worker-host startup to materialize a private clone of
-        the Gitea-hosted repo per Phase 10d follow-up B §D.5.
+        the Forgejo-hosted repo per Phase 10d follow-up B §D.5.
 
         ``credential_helper``, when set, is passed via
         ``-c credential.helper=<value>`` for the clone itself AND
         persisted as repo-local config so subsequent fetch/push from
         the cloned repo pick it up automatically without re-passing.
 
-        Network failures (Gitea unreachable, DNS failure) raise
+        Network failures (Forgejo unreachable, DNS failure) raise
         :class:`GitTransportError`; other failures (target dir not
         empty, ref-format problems) raise :class:`GitError`.
         """

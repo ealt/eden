@@ -26,13 +26,13 @@ Subcommands:
 - `down [--purge]`
 - `reset <config> --experiment-id <id> [--seed-from <dir>] [--with-workers] [--port <n>]`
 - `status`
-- `checkpoint <name> [--force]` — snapshot postgres + gitea + artifacts + .env
+- `checkpoint <name> [--force]` — snapshot postgres + forgejo + artifacts + .env
 - `restore <name>` — load a checkpoint into a fresh stack (requires `down` first)
 - `list-checkpoints`
 
 `up` always wipes the orphan staging volume first (issue #8 workaround
 baked in). `down` always removes compose volumes; with `--purge` also
-removes per-experiment files (`.env`, gitea creds, manual-CLI scratch
+removes per-experiment files (`.env`, forgejo creds, manual-CLI scratch
 state under `/tmp/eden-manual`). `reset` = `down --purge` + `up`.
 
 ## Workflow: spin up a new experiment
@@ -84,13 +84,13 @@ Surface the resulting status output (experiment id, seed SHA, web-ui
 URL). If `--seed-from` was used, *verify the seed*:
 
 ```bash
-PASS=$(grep '^GITEA_REMOTE_PASSWORD=' /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose/.env | cut -d= -f2)
+PASS=$(grep '^FORGEJO_REMOTE_PASSWORD=' /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose/.env | cut -d= -f2)
 curl -fsS -u "eden:$PASS" \
   http://localhost:3001/api/v1/repos/eden/<experiment-id>/contents \
   | python3 -m json.tool
 ```
 
-Confirm to the user that the gitea repo has the expected files.
+Confirm to the user that the forgejo repo has the expected files.
 
 ### Phase 4: Hand-off
 
@@ -111,8 +111,8 @@ If the user says "tear down" or "wipe":
 ## Workflow: checkpoint / restore
 
 **Why this exists.** The full authoritative state of an experiment lives
-in three docker volumes (postgres, gitea, artifacts) plus
-`reference/compose/.env` and the gitea credential helper. `checkpoint`
+in three docker volumes (postgres, forgejo, artifacts) plus
+`reference/compose/.env` and the forgejo credential helper. `checkpoint`
 snapshots all five into a directory; `restore` materializes them into a
 fresh stack. Useful for: branching off a known-good state, rolling back
 a buggy iteration, copying state between machines.
@@ -123,18 +123,18 @@ a buggy iteration, copying state between machines.
 $EDEN_EXP checkpoint <name>
 ```
 
-Stack must be running (need `pg_dump`). Gitea is briefly stopped
+Stack must be running (need `pg_dump`). Forgejo is briefly stopped
 (seconds) for a consistent on-disk snapshot. Output goes to
 `reference/compose/checkpoints/<name>/`.
 
 The checkpoint includes:
 
 - `postgres.sql` — pg_dump of the eden database
-- `gitea.tar.gz` — full gitea data dir (repos + auth + tokens)
+- `forgejo.tar.gz` — full forgejo data dir (repos + auth + tokens)
 - `artifacts.tar.gz` — artifacts volume
 - `env` — copy of `.env` (carries secrets and experiment-id)
 - `experiment-config.yaml`
-- `gitea-creds/` — per-experiment credential helper
+- `forgejo-creds/` — per-experiment credential helper
 - `metadata.json`
 
 ### List checkpoints
@@ -152,7 +152,7 @@ $EDEN_EXP restore <name>
 
 This wipes the volumes (if any leftover), materializes them from the
 snapshot, replays the postgres dump, and brings up the non-worker
-services. Worker repo clones are rebuilt automatically from gitea on
+services. Worker repo clones are rebuilt automatically from forgejo on
 service start.
 
 ### When to checkpoint
@@ -167,7 +167,7 @@ service start.
 - The manual-CLI scratch state (`/tmp/eden-manual/`) — operator's local
   claim cache. Reproducible from postgres state if needed.
 - Worker repo clones (`eden-{orchestrator,executor,evaluator,web-ui}-repo`).
-  These are derivative; rebuilt from gitea on next service start.
+  These are derivative; rebuilt from forgejo on next service start.
 - In-memory state on running services (web-ui session cookies, etc.).
   Lost on container restart by design.
 
@@ -190,7 +190,7 @@ $EDEN_EXP reset <config> --experiment-id <id> [--seed-from <dir>]
   user this when they specify a git repo — they may have uncommitted
   changes that will get included.
 - **Verify after `up --seed-from`.** A wrong seed is silent (you get
-  files but the wrong files). The gitea contents check catches this.
+  files but the wrong files). The forgejo contents check catches this.
 - **Re-running `up` against a different `--seed-from` only works if
   `down` ran first.** The script enforces this with the
   "stack already running" guard, but the user may not realize that

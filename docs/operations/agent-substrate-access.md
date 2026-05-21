@@ -5,7 +5,7 @@ ideator** or **agentic evaluator** that uses the three read-side
 substrates Phase 12a-1f opens to subprocess workers:
 
 - **Git** — the experiment's central repo, exposed as a local
-  bare clone or over Gitea HTTP.
+  bare clone or over Forgejo HTTP.
 - **Artifact server** — idea content + evaluator artifacts,
   served as bytes over a thin HTTP route on the task-store-server.
 - **Postgres event log** — the experiment's state, exposed via a
@@ -159,7 +159,7 @@ client on a developer laptop) substitutes its own values.
 
 | Substrate | On-host (compose) | Off-host (substitute) |
 |---|---|---|
-| Git | `EDEN_REPO_DIR=/var/lib/eden/repo` (bind-mount) | Clone `http://<your-gitea-host>:<port>/eden/<id>.git` with operator-supplied credentials; set `EDEN_REPO_DIR` to that clone. Per-worker Gitea tokens with branch ACLs are Phase 13e. |
+| Git | `EDEN_REPO_DIR=/var/lib/eden/repo` (bind-mount) | Clone `http://<your-forgejo-host>:<port>/eden/<id>.git` with operator-supplied credentials; set `EDEN_REPO_DIR` to that clone. Per-worker Forgejo tokens with branch ACLs are Phase 13e. |
 | Artifact server | `EDEN_ARTIFACT_URL=http://task-store-server:8080/_reference/experiments/<id>/artifacts/` | Substitute `<your-reverse-proxy>/_reference/...`. The `EDEN_WORKER_CREDENTIAL` bearer is unchanged. |
 | Postgres | `EDEN_READONLY_STORE_URL=postgresql://eden_readonly:<pwd>@postgres:5432/eden` | Substitute `<your-postgres-host>`. The `eden_readonly` role + password are unchanged. |
 

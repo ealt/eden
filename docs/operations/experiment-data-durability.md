@@ -9,7 +9,7 @@ After running `setup-experiment.sh`, every durable substrate is a **host bind-mo
 ```text
 $EDEN_EXPERIMENT_DATA_ROOT/
 ├── postgres/              # task-store-server's PostgresStore data
-├── gitea/                 # Gitea's data (sqlite DB, git packs, …)
+├── forgejo/                 # Forgejo's data (sqlite DB, git packs, …)
 ├── artifacts/             # web-ui --artifacts-dir (idea markdown, …)
 ├── orchestrator-repo/     # orchestrator's per-host bare clone
 ├── executor-repo/         # executor-host's per-host bare clone
@@ -65,7 +65,7 @@ Rules of thumb:
 - The path is resolved to an absolute path by `setup-experiment.sh` and written into the generated `.env` as `EDEN_EXPERIMENT_DATA_ROOT`. Compose does NOT shell-expand `$HOME` or `~` in `.env` values, so the script must do the expansion; do not hand-edit `.env` to put `$HOME` or `~` literally.
 - Paths containing `:` are rejected (Compose uses `:` as the volume-mount delimiter; a colon in the source half would silently mis-split the mount declaration).
 - Spaces in the path are fine (`cd "$path" && pwd`-style quoting handles them).
-- Keep the path short. Each substrate creates files inside it (`postgres/base/.../<oid>`, `gitea/git/repositories/.../...`) and a very deep parent prefix can push individual files past `PATH_MAX`. The default `~/.eden/experiments/<id>` is well under any practical limit.
+- Keep the path short. Each substrate creates files inside it (`postgres/base/.../<oid>`, `forgejo/git/repositories/.../...`) and a very deep parent prefix can push individual files past `PATH_MAX`. The default `~/.eden/experiments/<id>` is well under any practical limit.
 
 ## Re-running setup-experiment
 
@@ -75,24 +75,24 @@ Rules of thumb:
 - The substrate subdirectory tree is created if missing, and chmod'd to 0777 (local-dev permissions; see "Permissions" below).
 - Secrets (`POSTGRES_PASSWORD`, `EDEN_ADMIN_TOKEN`, `EDEN_SESSION_SECRET`, etc.) are preserved.
 
-If you re-run with `--data-root <different-path>` and the existing data root has substrate data (postgres/ or gitea/ non-empty), the script **aborts** rather than silently relocating. To intentionally change the data root, either:
+If you re-run with `--data-root <different-path>` and the existing data root has substrate data (postgres/ or forgejo/ non-empty), the script **aborts** rather than silently relocating. To intentionally change the data root, either:
 
 - Empty the existing data root first (`rm -rf "$OLD_ROOT"`) — destroys the experiment.
 - Or migrate manually (see "Migration recipes" below).
 
 ## Permissions
 
-setup-experiment.sh creates the substrate subdirectories with `chmod 0777`. This is the proven cross-platform recipe for the multi-uid problem the reference Compose stack has: Postgres runs as uid 70, Gitea-rootless as uid 1000, eden services as uid 1000, and Docker Desktop's uid-mapping layer makes a single `chown` choice fragile. World-writable is acceptable for the reference local-dev deployment; production-grade durability lives in Phase 13's managed substrates (managed Postgres, S3/GCS, hardened Gitea), which avoid the local filesystem entirely.
+setup-experiment.sh creates the substrate subdirectories with `chmod 0777`. This is the proven cross-platform recipe for the multi-uid problem the reference Compose stack has: Postgres runs as uid 70, Forgejo-rootless as uid 1000, eden services as uid 1000, and Docker Desktop's uid-mapping layer makes a single `chown` choice fragile. World-writable is acceptable for the reference local-dev deployment; production-grade durability lives in Phase 13's managed substrates (managed Postgres, S3/GCS, hardened Forgejo), which avoid the local filesystem entirely.
 
 ## Migration recipes
 
 ### From the legacy named-volume layout (pre-12a-1g)
 
-Operators with a Compose experiment already running on Docker named volumes (`eden-postgres-data`, `eden-gitea-data`, etc., backed by the Docker storage area) migrate as follows. The recipe runs once; after it completes the operator is on the bind-mount layout and future restarts are durable.
+Operators with a Compose experiment already running on Docker named volumes (`eden-postgres-data`, `eden-forgejo-data`, etc., backed by the Docker storage area) migrate as follows. The recipe runs once; after it completes the operator is on the bind-mount layout and future restarts are durable.
 
 **Volume-naming discipline (read this first).** Compose auto-prefixes top-level named volumes with the project name (default `eden-reference`, configurable via `name:` at the top of `compose.yaml` OR via `COMPOSE_PROJECT_NAME`). So the legacy stack had two shapes of volume name:
 
-- **Project-prefixed:** `eden-reference_eden-postgres-data`, `eden-reference_eden-gitea-data`, `eden-reference_eden-orchestrator-repo`, `eden-reference_eden-web-ui-repo`, and every `eden-reference_eden-*-credentials`.
+- **Project-prefixed:** `eden-reference_eden-postgres-data`, `eden-reference_eden-forgejo-data`, `eden-reference_eden-orchestrator-repo`, `eden-reference_eden-web-ui-repo`, and every `eden-reference_eden-*-credentials`.
 - **Literal-`name:` pinned** (the chunk-10d-followup-A wrap needed exact names for DooD volume forwarding): `eden-artifacts-data`, `eden-executor-repo`, `eden-evaluator-repo`.
 
 If your stack ran with a non-default `COMPOSE_PROJECT_NAME`, replace `eden-reference` below with your project name everywhere it appears. Confirm the actual names via `docker volume ls | grep eden` before starting the copy.
@@ -107,7 +107,7 @@ cd reference/compose
 docker compose --env-file .env stop
 
 # Create the bind-mount tree.
-mkdir -p "$ROOT"/{postgres,gitea,artifacts,orchestrator-repo,executor-repo,evaluator-repo,web-ui-repo,credentials/{orchestrator,ideator,executor,evaluator,web-ui}}
+mkdir -p "$ROOT"/{postgres,forgejo,artifacts,orchestrator-repo,executor-repo,evaluator-repo,web-ui-repo,credentials/{orchestrator,ideator,executor,evaluator,web-ui}}
 chmod -R 0777 "$ROOT"
 
 # Copy each substrate from its named volume into the new bind-mount.
@@ -115,7 +115,7 @@ chmod -R 0777 "$ROOT"
 # behavior; volumes pinned with `name:` (eden-artifacts-data,
 # eden-executor-repo, eden-evaluator-repo) drop the prefix.
 docker run --rm -v eden-reference_eden-postgres-data:/from -v "$ROOT/postgres":/to       alpine cp -a /from/. /to/
-docker run --rm -v eden-reference_eden-gitea-data:/from    -v "$ROOT/gitea":/to          alpine cp -a /from/. /to/
+docker run --rm -v eden-reference_eden-forgejo-data:/from    -v "$ROOT/forgejo":/to          alpine cp -a /from/. /to/
 docker run --rm -v eden-artifacts-data:/from               -v "$ROOT/artifacts":/to      alpine cp -a /from/. /to/
 docker run --rm -v eden-reference_eden-orchestrator-repo:/from -v "$ROOT/orchestrator-repo":/to alpine cp -a /from/. /to/
 docker run --rm -v eden-executor-repo:/from                -v "$ROOT/executor-repo":/to  alpine cp -a /from/. /to/
@@ -142,7 +142,7 @@ docker compose --env-file .env up -d --wait
 # Once verified, delete the legacy named volumes.
 docker volume rm \
     eden-reference_eden-postgres-data \
-    eden-reference_eden-gitea-data \
+    eden-reference_eden-forgejo-data \
     eden-artifacts-data \
     eden-reference_eden-orchestrator-repo \
     eden-executor-repo eden-evaluator-repo \
@@ -156,7 +156,7 @@ docker volume rm \
 
 ### Moving an experiment to a new data root
 
-The relocation guard in setup-experiment.sh refuses to silently abandon a populated `/OLD/ROOT` (it checks for `postgres/PG_VERSION` and `gitea/conf` sentinels). To migrate cleanly:
+The relocation guard in setup-experiment.sh refuses to silently abandon a populated `/OLD/ROOT` (it checks for `postgres/PG_VERSION` and `forgejo/conf` sentinels). To migrate cleanly:
 
 ```bash
 # Stop the stack first so nothing is writing to /OLD/ROOT while we copy.
@@ -212,7 +212,7 @@ done
 docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml down
 
 # 4. Verify substrate tree is still populated on the host filesystem.
-ls "$ROOT/postgres" "$ROOT/gitea" "$ROOT/artifacts"
+ls "$ROOT/postgres" "$ROOT/forgejo" "$ROOT/artifacts"
 
 # 5. Bring the stack back up against the same data root + env file.
 docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
@@ -235,6 +235,6 @@ The reference Compose deployment is a local-development tool. Production EDEN de
 - **Phase 13a** — Helm chart with PersistentVolumeClaims for substrate storage (Kubernetes-native durability).
 - **Phase 13c** — Managed Postgres backing the task store (cloud-provider SLA).
 - **Phase 13d** — S3 / GCS backing the artifact store (cloud-provider durability).
-- **Phase 13e** — Hardened Gitea deployment.
+- **Phase 13e** — Hardened Forgejo deployment.
 
 Each Phase-13 chunk satisfies the chapter-01 §13 durability invariant via its own substrate binding. The reference Compose deployment's bind-mount choice is appropriate for local-dev; it is not the only valid binding.

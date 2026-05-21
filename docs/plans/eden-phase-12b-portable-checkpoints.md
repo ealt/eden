@@ -26,7 +26,7 @@ produces an executable contract.
   `commit_sha` etc.); the new wire URL prefix
   `checkpoint:sha256:<hex>` echoes existing conventions without
   introducing a competing scheme. <!-- rename-discipline:cite -->
-- "Native checkpoint" is the historical postgres-dump+gitea-tar
+- "Native checkpoint" is the historical postgres-dump+forgejo-tar
   pair; "portable checkpoint" is the new format. The existing
   `eden-experiment checkpoint` / `restore` commands at
   [`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment)
@@ -35,13 +35,13 @@ produces an executable contract.
 ## 1. Context
 
 Today the reference impl supports a "checkpoint" workflow that
-bundles `pg_dump` output + a `gitea` data-volume tar + an
+bundles `pg_dump` output + a `forgejo` data-volume tar + an
 `artifacts` data-volume tar
 ([`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment)
 lines 244-318). It's deployment-portable in the trivial sense
 (operator can carry the file to another host running the same
 deployment), but it is NOT spec-portable — a third-party
-implementation that doesn't run postgres + gitea cannot consume
+implementation that doesn't run postgres + forgejo cannot consume
 the file. A user starting an experiment on impl A and handing the
 checkpoint to a user on impl B has no path forward.
 
@@ -61,7 +61,7 @@ working scenario.
   `Store.import_checkpoint` Protocol methods + corresponding
   backends + e2e smoke that exports from the SQLite-backed stack
   and imports into the Postgres-backed stack.
-- The native postgres-dump/gitea-tar checkpoint is **removed** in
+- The native postgres-dump/forgejo-tar checkpoint is **removed** in
   the same chunk: greenfield posture (no external users), and
   keeping two checkpoint mechanisms in the script doubles the test
   surface for no benefit.
@@ -85,7 +85,7 @@ working scenario.
 | [`spec/v0/08-storage.md`](../../spec/v0/08-storage.md) §1 | `Store` ops + atomicity guarantees | Add `export_checkpoint` / `import_checkpoint` to the Store Protocol; restate atomicity for export ("snapshot-consistent"). |
 | [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md) §3 conformance levels | Three levels: v1, v1+roles, v1+roles+integrator | Add a fourth level: `v1+checkpoints`. The level adds the two new endpoints + round-trip equivalence assertions. |
 | New chapter (proposed §10) | n/a | "Portable checkpoint format" — full normative spec for layout, manifest, addressing, atomicity, round-trip semantics. |
-| [`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment) lines 244-318 | Native postgres+gitea-tar checkpoint | Removed. Replaced with portable-format export. |
+| [`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment) lines 244-318 | Native postgres+forgejo-tar checkpoint | Removed. Replaced with portable-format export. |
 
 Reconciliation rule: chapter 10 is the canonical spec for the
 checkpoint format; chapters 02 / 07 / 08 / 09 cross-reference it
@@ -103,7 +103,7 @@ a recognized URI scheme; the script command names (`checkpoint`,
 These are the load-bearing design calls; §3 unpacks each.
 
 1. **The portable checkpoint format is the only checkpoint format
-   in v0.** The existing native postgres+gitea-tar checkpoint is
+   in v0.** The existing native postgres+forgejo-tar checkpoint is
    removed in this chunk. Greenfield: no transition period, no
    compat shim. The script's `checkpoint` / `restore` commands
    produce / consume the new format directly.
@@ -774,7 +774,7 @@ Code (reference impl):
   validation. Used by both the Store backends and the script.
 - `reference/scripts/manual-ui/eden-experiment` rewrites the
   `checkpoint` and `restore` commands to use the new format. The
-  postgres-dump and gitea-tar code is removed.
+  postgres-dump and forgejo-tar code is removed.
 
 Conformance:
 
@@ -833,7 +833,7 @@ Compose / smokes:
 
 ### 4.4 Non-goals
 
-- Backward compatibility with the native postgres-dump+gitea-tar
+- Backward compatibility with the native postgres-dump+forgejo-tar
   format. Removed in this chunk.
 - A Python-language-specific format. The format is JSON + tar +
   git-bundle, all language-agnostic; the reference impl is in
@@ -901,7 +901,7 @@ Compose / smokes:
 
 | File | Change |
 |---|---|
-| `reference/scripts/manual-ui/eden-experiment` | Rewrite `checkpoint` and `restore` commands. Remove postgres-dump / gitea-tar code (lines 244-318 + the corresponding `restore` code). New implementation calls the wire endpoint via `curl` (or via a thin Python helper that imports `eden_wire.client`). |
+| `reference/scripts/manual-ui/eden-experiment` | Rewrite `checkpoint` and `restore` commands. Remove postgres-dump / forgejo-tar code (lines 244-318 + the corresponding `restore` code). New implementation calls the wire endpoint via `curl` (or via a thin Python helper that imports `eden_wire.client`). |
 | `reference/compose/healthcheck/smoke-checkpoint.sh` (new) | The cross-backend smoke test from §4.1. |
 
 ## 6. Test design
@@ -1168,7 +1168,7 @@ either bump major OR include a default value in the manifest's
 
 ### 7.6 Removing the native checkpoint without a transition
 
-12b removes the postgres-dump+gitea-tar code in the same chunk
+12b removes the postgres-dump+forgejo-tar code in the same chunk
 that adds the portable format. An operator running an experiment
 mid-upgrade:
 
@@ -1364,7 +1364,7 @@ Recommended PR shape (in order):
 
 6. **Native-format removal PR.** Rewrite `eden-experiment
    checkpoint` / `restore` to use the new format; remove the
-   postgres-dump and gitea-tar code paths.
+   postgres-dump and forgejo-tar code paths.
 
 7. **Conformance PR.** New scenarios under
    `test_checkpoint_*.py`.

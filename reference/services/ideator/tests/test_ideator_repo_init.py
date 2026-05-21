@@ -2,12 +2,12 @@
 
 Covers ``_ensure_repo_clone`` behavior:
 
-- ``gitea_url=None`` → no-op (chunk-10d posture preserved).
-- ``gitea_url`` set, repo absent → calls ``GitRepo.clone_from`` once.
-- ``gitea_url`` set, repo present (``HEAD`` file exists) → calls
+- ``forgejo_url=None`` → no-op (chunk-10d posture preserved).
+- ``forgejo_url`` set, repo absent → calls ``GitRepo.clone_from`` once.
+- ``forgejo_url`` set, repo present (``HEAD`` file exists) → calls
   ``GitRepo.fetch_all_heads`` instead of re-cloning.
 
-End-to-end coverage (real Gitea clone) lives in the
+End-to-end coverage (real Forgejo clone) lives in the
 ``compose-smoke-subprocess`` smoke.
 """
 
@@ -27,7 +27,7 @@ def log() -> logging.LoggerAdapter:
     return logging.LoggerAdapter(base, {})
 
 
-def test_no_gitea_url_is_no_op(
+def test_no_forgejo_url_is_no_op(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo_path = tmp_path / "repo"
@@ -43,7 +43,7 @@ def test_no_gitea_url_is_no_op(
     ideator_cli._ensure_repo_clone(
         log=logging.getLogger(__name__),
         repo_path=str(repo_path),
-        gitea_url=None,
+        forgejo_url=None,
         credential_helper=None,
     )
     clone.assert_not_called()
@@ -60,11 +60,11 @@ def test_first_run_clones_bare(
     ideator_cli._ensure_repo_clone(
         log=logging.getLogger(__name__),
         repo_path=str(repo_path),
-        gitea_url="http://gitea/eden/exp.git",
+        forgejo_url="http://forgejo/eden/exp.git",
         credential_helper="/etc/eden/helper.sh",
     )
     clone.assert_called_once_with(
-        url="http://gitea/eden/exp.git",
+        url="http://forgejo/eden/exp.git",
         dest=repo_path,
         bare=True,
         credential_helper="/etc/eden/helper.sh",
@@ -90,7 +90,7 @@ def test_restart_fetches_all_heads(
     ideator_cli._ensure_repo_clone(
         log=logging.getLogger(__name__),
         repo_path=str(repo_path),
-        gitea_url="http://gitea/eden/exp.git",
+        forgejo_url="http://forgejo/eden/exp.git",
         credential_helper="/etc/eden/helper.sh",
     )
     # fetch_all_heads called on the existing bare repo.

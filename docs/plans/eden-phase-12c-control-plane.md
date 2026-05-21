@@ -44,7 +44,7 @@ push beyond that:
 1. **Multiple experiments.** A research team wants to run
    experiments A, B, C concurrently. Today, that means three
    independent deployments (three Compose stacks, three Postgres
-   schemas, three Gitea instances). The operational overhead is
+   schemas, three Forgejo instances). The operational overhead is
    linear in experiment count.
 
 2. **Multi-replica orchestrator with HA.** A single orchestrator

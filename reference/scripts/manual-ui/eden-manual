@@ -4,7 +4,7 @@
 Drives the ideator / executor / evaluator roles end-to-end against
 the EDEN reference Compose stack via the task-store-server wire (no
 web-UI session cookies required). Reads ``reference/compose/.env`` for
-the admin token, experiment id, gitea creds, and host ports.
+the admin token, experiment id, forgejo creds, and host ports.
 
 Post-12a-1 auth: admin operations use ``admin:$EDEN_ADMIN_TOKEN``;
 worker-gated operations (claim / submit / create_idea /
@@ -18,12 +18,12 @@ Subcommands:
     list-tasks [--kind ...] [--state ...]
     show <task-id>                    — full task context
     list-commits                      — base + integrated variant SHAs
-    creds                             — gitea URL with creds embedded
+    creds                             — forgejo URL with creds embedded
 
     claim <task-id> [--worker-id W] [--ttl-seconds N]
                                       — claim a task; persists the
                                         worker_id in /tmp/eden-manual/.claims.json
-    checkout <task-id> [--dest D]     — clone gitea + check out the
+    checkout <task-id> [--dest D]     — clone forgejo + check out the
                                         right ref
     push <workdir> [--branch B] [--message M]
                                       — git add -A + commit + push
@@ -74,8 +74,8 @@ def _load_env() -> dict[str, str]:
     required = (
         "EDEN_EXPERIMENT_ID",
         "EDEN_ADMIN_TOKEN",
-        "GITEA_HOST_PORT",
-        "GITEA_REMOTE_PASSWORD",
+        "FORGEJO_HOST_PORT",
+        "FORGEJO_REMOTE_PASSWORD",
     )
     missing = [k for k in required if k not in env]
     if missing:
@@ -247,13 +247,13 @@ def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-# --------------------------------------------------------------- gitea / git
+# --------------------------------------------------------------- forgejo / git
 
-def _gitea_clone_url(env: dict[str, str], *, with_creds: bool = True) -> str:
-    port = env["GITEA_HOST_PORT"]
+def _forgejo_clone_url(env: dict[str, str], *, with_creds: bool = True) -> str:
+    port = env["FORGEJO_HOST_PORT"]
     exp = _exp(env)
     if with_creds:
-        pw = urllib.parse.quote(env["GITEA_REMOTE_PASSWORD"], safe="")
+        pw = urllib.parse.quote(env["FORGEJO_REMOTE_PASSWORD"], safe="")
         return f"http://eden:{pw}@localhost:{port}/eden/{exp}.git"
     return f"http://localhost:{port}/eden/{exp}.git"
 
@@ -382,7 +382,7 @@ def cmd_list_commits(env: dict[str, str], args: argparse.Namespace) -> None:
 
 
 def cmd_creds(env: dict[str, str], args: argparse.Namespace) -> None:
-    print(_gitea_clone_url(env, with_creds=True))
+    print(_forgejo_clone_url(env, with_creds=True))
 
 
 # --------------------------------------------------------------- claim / checkout / push
@@ -448,7 +448,7 @@ def cmd_checkout(env: dict[str, str], args: argparse.Namespace) -> None:
     if dest.exists() and not (dest / ".git").is_dir():
         sys.exit(f"error: {dest} exists but is not a git checkout; refusing to clobber")
     if not dest.exists():
-        _git("clone", _gitea_clone_url(env), str(dest))
+        _git("clone", _forgejo_clone_url(env), str(dest))
     _git("fetch", "origin", cwd=dest)
     _git("checkout", target_sha, cwd=dest)
     print(json.dumps({
@@ -590,7 +590,7 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         sys.exit("error: --sha required for status=success")
     sha = args.sha.strip()
 
-    # Reachability check against the workdir (cloned from gitea).
+    # Reachability check against the workdir (cloned from forgejo).
     workdir = Path(args.workdir) if args.workdir else _workdir_for(args.task_id)
     if not (workdir / ".git").is_dir():
         sys.exit(
@@ -653,7 +653,7 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         variant["description"] = args.description
     _wire(env, f"/v0/experiments/{_exp(env)}/variants", method="POST", body=variant, bearer=bearer)
 
-    # Phase 2: push the canonical work branch directly to gitea.
+    # Phase 2: push the canonical work branch directly to forgejo.
     # `<sha>:refs/heads/<branch>` creates the named ref on origin.
     push_target = f"{sha}:refs/heads/{branch}"
     _git("push", "origin", push_target, cwd=workdir)
