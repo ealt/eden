@@ -315,11 +315,12 @@ def main() -> int:
             excerpt = e["text"].replace("|", "\\|")
             citing = e["citing"]
             if citing:
-                # Truncate long lists for readability.
-                if len(citing) > 4:
-                    cell = ", ".join(f"`{c}`" for c in citing[:3]) + f", *+{len(citing)-3} more*"
-                else:
-                    cell = ", ".join(f"`{c}`" for c in citing)
+                # Enumerate all citations. The per-claim audit above
+                # depends on every cited test name being verifiable; a
+                # ``*+N more*`` truncation hides which scenarios cover
+                # each line and was flagged in PR #112's codex-review
+                # as functionally equivalent to wildcard placeholders.
+                cell = ", ".join(f"`{c}`" for c in citing)
             else:
                 cell = ""
             out.append(
