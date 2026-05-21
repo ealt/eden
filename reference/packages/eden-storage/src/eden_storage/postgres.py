@@ -89,13 +89,6 @@ any future credential-bearing column added to a new table).
 """
 
 
-# slop-allow: 12a-1f provisioner dispatches to four extracted helpers
-# (_ensure_role_attrs / _scrub_role_memberships / _revoke_all_privileges
-# / _grant_readonly_safe_set — audit L-H). The remaining 106 lines are
-# almost entirely a docstring grounding the 4-step REVOKE-then-GRANT
-# sequence in spec / plan §D.3.a + the transaction-wrapper boilerplate
-# that owns the advisory lock and the BEGIN/COMMIT envelope. Shrinking
-# either would lose audit-grounded context.
 def ensure_readonly_role(
     conn: Any,
     *,
@@ -105,37 +98,34 @@ def ensure_readonly_role(
     """Idempotently provision the 12a-1f readonly Postgres role.
 
     Creates or rotates the role's password, then runs an explicit
-    REVOKE-then-GRANT sequence against the LIVE connection's
-    database + schema (resolved via ``current_database()`` /
-    ``current_schema()`` — NOT a hard-coded ``eden``/``public``):
+    REVOKE-then-GRANT sequence against the LIVE connection's database
+    + schema (resolved via ``current_database()`` /
+    ``current_schema()`` — NOT a hard-coded ``eden`` / ``public``):
 
     1. ``CREATE ROLE`` if absent, else ``ALTER ROLE`` to rotate the
        password.
-    2. REVOKE every prior privilege on tables, schema, and
-       database (including any prior ``ALTER DEFAULT PRIVILEGES``).
+    2. REVOKE every prior privilege on tables, schema, and database
+       (including any prior ``ALTER DEFAULT PRIVILEGES``).
     3. GRANT exactly the safe-set per
        ``docs/plans/eden-phase-12a-1f-substrate-access.md`` §D.3.a:
-       table-level SELECT on the non-worker tables;
-       column-level SELECT on ``worker(worker_id, data)``
-       excluding ``credential_hash``.
+       table-level SELECT on the non-worker tables; column-level
+       SELECT on ``worker(worker_id, data)`` excluding
+       ``credential_hash``.
 
     Deliberately does NOT install ``ALTER DEFAULT PRIVILEGES`` —
     a blanket grant for any future table would re-expose
     credential-bearing columns if a schema bump adds one. Every
     schema bump that adds a new table must extend
-    :data:`_READONLY_GRANT_TABLES` and add a test asserting the
-    new table is reachable from the readonly role.
+    :data:`_READONLY_GRANT_TABLES` and add a test asserting the new
+    table is reachable from the readonly role.
 
     Args:
         conn: A psycopg ``Connection`` with sufficient privilege
-            (``CREATEROLE`` plus owner-or-superuser on the tables
-            being granted) — typically the same connection the
-            task-store-server uses, since the deployment's
-            ``eden`` user owns everything.
+            (``CREATEROLE`` plus owner-or-superuser on the granted
+            tables) — typically the task-store-server's connection.
         username: The role name (default ``eden_readonly``).
-        password: The plaintext password. Re-running with a
-            different password rotates the role's password
-            via ``ALTER ROLE``.
+        password: The plaintext password. Re-running with a different
+            password rotates via ``ALTER ROLE``.
     """
     from psycopg import sql
 
@@ -146,29 +136,41 @@ def ensure_readonly_role(
             "ensure_readonly_role: current_schema() returned NULL; "
             "no schema on search_path?"
         )
+    _provision_readonly_role_in_txn(
+        conn,
+        username=username,
+        password=password,
+        role_ident=sql.Identifier(username),
+        schema_ident=sql.Identifier(schema_name),
+        db_ident=sql.Identifier(db_name),
+        schema_name=schema_name,
+    )
 
-    role_ident = sql.Identifier(username)
-    schema_ident = sql.Identifier(schema_name)
-    db_ident = sql.Identifier(db_name)
 
-    # Wrap the entire provision in a single transaction so a
-    # mid-sequence failure (e.g. a GRANT against a table the role
-    # doesn't yet own) rolls back password rotation + earlier
-    # revokes cleanly. Codex round-1 finding on atomicity. Acquire
-    # a transaction-scoped advisory lock so concurrent provisioners
-    # against the same database serialize (Codex round-1 finding
-    # on the CREATE ROLE race); the lock-key is derived from a
-    # stable hashtext of the helper's role name + an arbitrary
-    # 12a-1f-specific magic so it can't collide with other
-    # advisory-lock users in the same database.
+def _provision_readonly_role_in_txn(
+    conn: Any,
+    *,
+    username: str,
+    password: str,
+    role_ident: Any,
+    schema_ident: Any,
+    db_ident: Any,
+    schema_name: str,
+) -> None:
+    """Run the 4-step provision sequence inside a single transaction.
+
+    Wraps the four extracted phase helpers in an atomic envelope so a
+    mid-sequence failure (e.g. a GRANT against a still-migrating
+    table) rolls back password rotation + earlier revokes cleanly
+    (Codex round-1 finding on atomicity). A transaction-scoped
+    advisory lock keyed by ``hashtext('eden_readonly_role:12a-1f')``
+    serializes concurrent provisioners against the same database
+    (Codex round-1 finding on the CREATE ROLE race).
+    """
     with conn.cursor() as cur0:
         cur0.execute("BEGIN")
     try:
         with conn.cursor() as cur:
-            # Advisory lock keyed by `hashtext('eden_readonly_role')`
-            # — bigint per Postgres' pg_advisory_xact_lock contract.
-            # A concurrent provisioner waits here until our COMMIT
-            # / ROLLBACK releases the lock.
             cur.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 ("eden_readonly_role:12a-1f",),
@@ -191,11 +193,8 @@ def ensure_readonly_role(
                 schema_name=schema_name,
             )
     except BaseException:
-        # Roll back the entire provision sequence so a mid-flow
-        # failure (failed GRANT against a still-being-migrated
-        # table, etc.) leaves the database in the pre-call state.
-        # Codex round-1 finding on atomicity. Open a fresh cursor;
-        # the one above is dead after the exception.
+        # Open a fresh cursor; the one above is dead after the
+        # exception.
         with conn.cursor() as cur2:
             cur2.execute("ROLLBACK")
         raise

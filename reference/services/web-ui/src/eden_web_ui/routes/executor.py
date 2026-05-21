@@ -506,13 +506,6 @@ async def draft_form(
     )
 
 
-# slop-allow: spec §3.3 Phase-1 / Phase-2 / Phase-3 + NoOpVariant
-# fallback + readback-outcome dispatch — each phase already extracted
-# to a named helper (_check_success_draft_gates, _build_starting_variant,
-# _phase2_write_work_ref, submit_with_readback, _handle_noop_rejection).
-# The remaining length is the per-phase dispatch ladder mirroring the
-# spec. Further extraction would force a typed phase-state envelope
-# without gain (audit M-2 + C-7/C-8 follow-ons).
 @router.post("/{task_id}/submit", response_model=None)
 async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by design
     task_id: str,
@@ -541,19 +534,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     except DispatchError as exc:
         return _render_error(request, wire_error_banner(exc))
 
-    status_raw = str(form.get("status") or "")
-    commit_sha_raw = str(form.get("commit_sha") or "")
-    description_raw = str(form.get("description") or "")
-    draft, errors = parse_implement_form(
-        status_raw=status_raw,
-        commit_sha_raw=commit_sha_raw,
-        description_raw=description_raw,
-    )
-    form_state = {
-        "status": status_raw or "success",
-        "commit_sha": commit_sha_raw,
-        "description": description_raw,
-    }
+    draft, errors, form_state = _parse_submit_form(form)
     if draft is None:
         return _render_draft(
             request,
@@ -569,38 +550,25 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     branch = _branch_name(idea.slug, variant_id)
 
     if draft.status == "success":
-        assert draft.commit_sha is not None
-        # §C reachability + §3.3 non-no-op + Phase-1 ref-collision gates.
-        # See `_check_success_draft_gates`. Fetch from origin first so a
-        # freshly-pushed executor commit is visible — fetch failure
-        # doesn't block submit; the commit-exists gate surfaces a clear
-        # error if the commit really isn't local.
-        if _repo_has_origin(repo):
-            with contextlib.suppress(Exception):
-                repo.fetch_all_heads()
-        gate_error = _check_success_draft_gates(
-            repo,
-            commit_sha=draft.commit_sha,
-            parents=idea.parent_commits,
+        gate_response = _run_success_draft_gates(
+            request,
+            session=session,
+            repo=repo,
+            task_id=task_id,
+            idea=idea,
+            variant_id=variant_id,
+            draft=draft,
             branch=branch,
+            errors=errors,
+            form_state=form_state,
         )
-        if gate_error is not None:
-            errors.add(0, "commit_sha", gate_error)
-            return _render_draft(
-                request,
-                session=session,
-                task_id=task_id,
-                idea=idea,
-                variant_id=variant_id,
-                form_state=form_state,
-                errors=errors,
-                status_code=400,
-            )
+        if gate_response is not None:
+            return gate_response
 
     now: Callable[[], Any] = request.app.state.now
     started_at = _iso(now())
 
-    # Phase 1: create_variant as starting. See `_phase1_create_starting_variant`.
+    # Phase 1: create_variant as starting.
     phase1_error = _phase1_create_starting_variant(
         store=store,
         request=request,
@@ -615,26 +583,19 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         return phase1_error
 
     # Phase 2: create_ref locally + push to origin (status=success only).
-    # Phase 10d follow-up B §D.7. See `_phase2_write_work_ref`.
     if draft.status == "success":
-        assert draft.commit_sha is not None
-        ref_error = _phase2_write_work_ref(
-            repo, branch=branch, commit_sha=draft.commit_sha
+        phase2_response = _phase2_publish_work_ref_or_orphan(
+            request,
+            repo=repo,
+            task_id=task_id,
+            variant_id=variant_id,
+            draft=draft,
+            branch=branch,
         )
-        if ref_error is not None:
-            return _render_orphaned(
-                request,
-                task_id=task_id,
-                variant_id=variant_id,
-                commit_sha=draft.commit_sha,
-                branch=branch,
-                banner=ref_error,
-                recovery_kind="auto",
-            )
+        if phase2_response is not None:
+            return phase2_response
 
-    # Phase 3: submit, with retry-before-orphan + read-back. See
-    # `_phase3_submit_with_readback` (handles the NoOpVariant fallback
-    # via `_handle_noop_variant_fallback`).
+    # Phase 3: submit, with retry-before-orphan + read-back.
     return _phase3_submit_with_readback(
         request=request,
         store=store,
@@ -645,6 +606,103 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         variant_id=variant_id,
         draft=draft,
         branch=branch,
+    )
+
+
+def _phase2_publish_work_ref_or_orphan(
+    request: Request,
+    *,
+    repo: Any,
+    task_id: str,
+    variant_id: str,
+    draft: Any,
+    branch: str,
+) -> HTMLResponse | None:
+    """Phase 2: create the local ``work/*`` ref and push to origin if configured.
+
+    Returns the orphan-render response on git/transport failure, or
+    ``None`` when the ref-write + push (if any) succeeded.
+    Phase 10d follow-up B §D.7.
+    """
+    assert draft.commit_sha is not None
+    ref_error = _phase2_write_work_ref(
+        repo, branch=branch, commit_sha=draft.commit_sha
+    )
+    if ref_error is None:
+        return None
+    return _render_orphaned(
+        request,
+        task_id=task_id,
+        variant_id=variant_id,
+        commit_sha=draft.commit_sha,
+        branch=branch,
+        banner=ref_error,
+        recovery_kind="auto",
+    )
+
+
+def _parse_submit_form(form: Any) -> tuple[Any, Any, dict[str, str]]:
+    """Parse the implement-form fields. Returns ``(draft, errors, form_state)``."""
+    status_raw = str(form.get("status") or "")
+    commit_sha_raw = str(form.get("commit_sha") or "")
+    description_raw = str(form.get("description") or "")
+    draft, errors = parse_implement_form(
+        status_raw=status_raw,
+        commit_sha_raw=commit_sha_raw,
+        description_raw=description_raw,
+    )
+    form_state = {
+        "status": status_raw or "success",
+        "commit_sha": commit_sha_raw,
+        "description": description_raw,
+    }
+    return draft, errors, form_state
+
+
+def _run_success_draft_gates(
+    request: Request,
+    *,
+    session: Any,
+    repo: Any,
+    task_id: str,
+    idea: Idea,
+    variant_id: str,
+    draft: Any,
+    branch: str,
+    errors: Any,
+    form_state: dict[str, str],
+) -> HTMLResponse | None:
+    """§C reachability + §3.3 non-no-op + Phase-1 ref-collision gates.
+
+    Fetch from origin first so a freshly-pushed executor commit is
+    visible — fetch failure doesn't block submit; the commit-exists
+    gate surfaces a clear error if the commit really isn't local.
+
+    Returns the draft re-render response on gate failure, or ``None``
+    when all gates pass.
+    """
+    assert draft.commit_sha is not None
+    if _repo_has_origin(repo):
+        with contextlib.suppress(Exception):
+            repo.fetch_all_heads()
+    gate_error = _check_success_draft_gates(
+        repo,
+        commit_sha=draft.commit_sha,
+        parents=idea.parent_commits,
+        branch=branch,
+    )
+    if gate_error is None:
+        return None
+    errors.add(0, "commit_sha", gate_error)
+    return _render_draft(
+        request,
+        session=session,
+        task_id=task_id,
+        idea=idea,
+        variant_id=variant_id,
+        form_state=form_state,
+        errors=errors,
+        status_code=400,
     )
 
 

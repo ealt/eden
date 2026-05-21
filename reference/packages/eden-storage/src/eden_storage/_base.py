@@ -1,9 +1,4 @@
-# slop-allow-file: _StoreBase aggregates 105 backend-agnostic Store
-# methods so every backend (memory, sqlite, postgres) inherits the same
-# state-machine + composite-commit + terminal-immutability semantics.
-# Mixin split into _ops/<noun>.py is approved in concept (audit F-1)
-# but deferred to a follow-up chunk because every backend subclass
-# would move; ~3000 lines moved across 15 files. Behavior preserved.
+# slop-allow-file: F-1 _StoreBase mixin split deferred to issue #114
 
 """Backend-agnostic transition logic shared by every ``Store`` backend.
 
@@ -1238,12 +1233,6 @@ class _StoreBase:
 
             self._apply_commit(tx)
 
-    # slop-allow: spec §2.7 / §3.6 task-reassign ladder runs four
-    # state-specific branches (pending, claimed, submitted, terminal)
-    # with different composite-commit shapes; the same-target
-    # idempotency check is keyed off the pre-update state. Per-state
-    # extraction deferred (audit L-O; lands inside the F-1 _TaskOps
-    # mixin split).
     def reassign_task(
         self,
         task_id: str,
@@ -1282,90 +1271,93 @@ class _StoreBase:
                     "(04-task-protocol.md §6.1)"
                 )
             # No-op idempotency: same target shape → emit nothing.
-            current_target = task.target
-            if self._targets_equal(current_target, new_target) and task.state == "pending":
+            if (
+                self._targets_equal(task.target, new_target)
+                and task.state == "pending"
+            ):
                 return _deep(task)
 
             now = self._ts()
             tx = _Tx()
-            # `target=None` removes the field; `_validated_update`'s
-            # None-as-absent convention handles that. The state itself
-            # always lands at "pending" after a reassign — either it
-            # was already pending (no transition) or the composite
-            # reclaim-then-reassign path took it from claimed→pending.
-            updated_kwargs: dict[str, Any] = {
-                "target": new_target,
-                "state": "pending",
-                "claim": None,
-                "updated_at": now,
-            }
-            tx.tasks[task_id] = _validated_update(task, **updated_kwargs)
+            tx.tasks[task_id] = _validated_update(
+                task,
+                target=new_target,
+                state="pending",
+                claim=None,
+                updated_at=now,
+            )
 
             if task.state == "claimed":
-                # Composite-commit: reclaim first, then reassign.
-                # Order in the event log mirrors the causal order; both
-                # land in the same `read_range` slice and no
-                # intermediate state is observable.
-                tx.events.append(
-                    self._event(
-                        "task.reclaimed",
-                        {"task_id": task_id, "cause": "operator"},
-                    )
-                )
-                # Per `reclaim`: an execution task whose claimant's
-                # in-flight variant is still `starting` transitions
-                # that variant to `error` atomically (`05-event-protocol.md`
-                # §2.2). The reassign-on-claimed path inherits this so
-                # an operator who reassigns to a different executor
-                # doesn't leave an orphaned `starting` variant.
-                if task.kind == "execution":
-                    variant = self._find_starting_variant_for_implement_task(task)
-                    if variant is not None:
-                        tx.variants[variant.variant_id] = _validated_update(
-                            variant, status="error", completed_at=now
-                        )
-                        tx.events.append(
-                            self._event(
-                                "variant.errored",
-                                {"variant_id": variant.variant_id},
-                            )
-                        )
-                # A submission MUST NOT survive the reclaim half of the
-                # composite (a claimed task can't yet have a recorded
-                # submission, but be defensive in case the state model
-                # ever permits it).
-                if self._get_submission(task_id) is not None:
-                    tx.task_deletes_submission.add(task_id)
-
-            new_target_payload: TaskTarget | None
-            if new_target is None:
-                new_target_payload = None
-            else:
-                # Re-dump through the model so the event payload's
-                # shape is identical to the wire schema.
-                new_target_payload = TaskTarget.model_validate(
-                    new_target.model_dump(mode="json", exclude_none=True)
-                )
+                self._stage_reassign_reclaim(tx, task, now)
 
             tx.events.append(
                 self._event(
                     "task.reassigned",
-                    {
-                        "task_id": task_id,
-                        "new_target": (
-                            None
-                            if new_target_payload is None
-                            else new_target_payload.model_dump(
-                                mode="json", exclude_none=True
-                            )
-                        ),
-                        "reason": reason,
-                        "reassigned_by": reassigned_by,
-                    },
+                    self._reassign_event_payload(
+                        task_id, new_target, reason, reassigned_by
+                    ),
                 )
             )
             self._apply_commit(tx)
             return _deep(tx.tasks[task_id])
+
+    def _stage_reassign_reclaim(self, tx: _Tx, task: Task, now: str) -> None:
+        """Stage the claimed→pending composite for a reassign on a claimed task.
+
+        Reclaim first, then reassign. Order in the event log mirrors
+        the causal order; both land in the same ``read_range`` slice
+        and no intermediate state is observable. Per ``reclaim``: an
+        execution task whose claimant's in-flight variant is still
+        ``starting`` transitions that variant to ``error`` atomically
+        (``05-event-protocol.md`` §2.2).
+        """
+        tx.events.append(
+            self._event(
+                "task.reclaimed",
+                {"task_id": task.task_id, "cause": "operator"},
+            )
+        )
+        if task.kind == "execution":
+            variant = self._find_starting_variant_for_implement_task(task)
+            if variant is not None:
+                tx.variants[variant.variant_id] = _validated_update(
+                    variant, status="error", completed_at=now
+                )
+                tx.events.append(
+                    self._event(
+                        "variant.errored",
+                        {"variant_id": variant.variant_id},
+                    )
+                )
+        # A submission MUST NOT survive the reclaim half (a claimed task
+        # can't yet have a recorded submission, but be defensive).
+        if self._get_submission(task.task_id) is not None:
+            tx.task_deletes_submission.add(task.task_id)
+
+    @staticmethod
+    def _reassign_event_payload(
+        task_id: str,
+        new_target: TaskTarget | None,
+        reason: str,
+        reassigned_by: str,
+    ) -> dict[str, Any]:
+        """Build the ``task.reassigned`` event payload.
+
+        Re-dumps ``new_target`` through the model so the event payload's
+        shape is identical to the wire schema (``05-event-protocol.md``
+        §3.1).
+        """
+        target_dump: dict[str, Any] | None = None
+        if new_target is not None:
+            target_dump = TaskTarget.model_validate(
+                new_target.model_dump(mode="json", exclude_none=True)
+            ).model_dump(mode="json", exclude_none=True)
+        return {
+            "task_id": task_id,
+            "new_target": target_dump,
+            "reason": reason,
+            "reassigned_by": reassigned_by,
+        }
 
     @staticmethod
     def _targets_equal(
