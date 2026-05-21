@@ -15,15 +15,27 @@ Output: docs/conformance-coverage.md.
 
 Run: python3 scripts/conformance-coverage.py
 
-WARNING: this script OVERWRITES docs/conformance-coverage.md. The
-output ships with manual prose sections above the auto-generated
-tables ("How to read the gap list", "Per-claim assertion-coverage
-pilot — chapter 04"). Those sections are NOT regenerated; if you
-re-run this script, the prose layers must be re-spliced. The simplest
-discipline: keep both prose sections at the top of the rendered file,
-generate into a temp file, and merge by hand. A future cleanup could
-move the prose layers into this script as static templates if the
-overwrite cost becomes a real friction.
+## Manual prose preservation
+
+The output ships with hand-written prose sections between the auto-gen
+summary and the auto-gen "Uncovered MUST / MUST NOT lines (priority)"
+section. The auto-gen sections this script controls are:
+
+- Header + intro + "## Summary" stats block (lines 1 through the end of
+  the "split lines into individual claims" sentence).
+- "## Uncovered MUST / MUST NOT lines (priority)" through EOF.
+
+The manual section (between the two) carries the per-claim audit tables,
+methodology refinements, real-gaps list, and tag taxonomy — content that
+this generator does not produce. To preserve it across re-runs, the
+script reads the existing file, locates the manual block by its
+bracketing headings, and re-inserts it verbatim between freshly
+regenerated auto-gen sections.
+
+If the manual block is missing (first run, or file deleted), the
+script writes a placeholder pointer in its place. Hand-authored prose
+should be added between "Line-coverage is a lower bound..." and
+"## Uncovered MUST / MUST NOT lines (priority)".
 """
 
 from __future__ import annotations
@@ -79,12 +91,29 @@ def parse_chapter(path: Path) -> list[dict]:
 
 
 def _trim_paragraph(line: str, max_len: int = 220) -> str:
-    """Single-line excerpt for the matrix cell."""
+    """Single-line excerpt for the matrix cell.
+
+    Scrubs patterns that would lint badly in the output:
+
+    - Strips spec-internal anchor links like ``[§5.1](#51-fields)`` →
+      ``§5.1`` (MD051 — the ``#51-fields`` anchor exists in the spec doc,
+      not in this output, so the link is unresolvable here).
+    - Escapes angle-bracketed placeholders like ``<error detail>`` so
+      they don't trip markdownlint's MD033 inline-HTML rule when an
+      excerpt happens to carry one in a code-like fragment.
+    """
     line = line.strip()
     # Strip leading list bullet / table pipes for readability.
     line = re.sub(r"^[-*|]\s*", "", line)
     line = re.sub(r"\s+\|.*$", "", line)
-    line = re.sub(r"`[^`]+`", lambda m: m.group(0), line)  # keep code spans
+    # Replace markdown anchor-only links ([text](#anchor)) with just the
+    # text; the anchor wouldn't resolve in this output file.
+    line = re.sub(r"\[([^\]]+)\]\(#[^)]+\)", r"\1", line)
+    # Escape stray ``<…>`` placeholder fragments (e.g. ``<error detail>``
+    # in a quoted error template) so they don't render as HTML. Limited
+    # to inside backtick spans is too fragile; do a blanket escape on
+    # any non-link ``<…>`` token.
+    line = re.sub(r"<([^>`]+)>", r"&lt;\1&gt;", line)
     if len(line) > max_len:
         line = line[: max_len - 1] + "…"
     return line
@@ -121,10 +150,50 @@ def parse_scenarios() -> dict[tuple[str, str], list[str]]:
     return cov
 
 
+MANUAL_BLOCK_ANCHOR_BEFORE = (
+    "Line-coverage is a lower bound on assertion-coverage: many lines "
+    "carry multiple distinct claims (e.g. a row that says \"MUST X and "
+    "MUST NOT Y\" counts as one line). A future pass should split lines "
+    "into individual claims before classifying gap level."
+)
+MANUAL_BLOCK_ANCHOR_AFTER = "## Uncovered MUST / MUST NOT lines (priority)"
+MANUAL_BLOCK_PLACEHOLDER = (
+    "<!-- Manual prose block: per-claim audit, methodology, real gaps "
+    "list. Add hand-written content here; this generator preserves it "
+    "across re-runs by locating the two bracketing anchors above and "
+    "below. -->"
+)
+
+
+def extract_manual_block(path: Path) -> str | None:
+    """Return the hand-written prose between the two anchor headings.
+
+    Returns ``None`` if the file doesn't exist or the anchors aren't
+    present (first run, or the file was wiped). Callers fall back to
+    a placeholder in that case.
+    """
+    if not path.exists():
+        return None
+    text = path.read_text()
+    before_idx = text.find(MANUAL_BLOCK_ANCHOR_BEFORE)
+    after_idx = text.find(MANUAL_BLOCK_ANCHOR_AFTER)
+    if before_idx == -1 or after_idx == -1 or after_idx <= before_idx:
+        return None
+    block_start = before_idx + len(MANUAL_BLOCK_ANCHOR_BEFORE)
+    block = text[block_start:after_idx]
+    # The captured slice begins right after the anchor sentence (so before
+    # the trailing newline of that sentence's paragraph) and ends right
+    # before "## Uncovered". Strip surrounding whitespace; the renderer
+    # adds the framing newlines.
+    return block.strip("\n")
+
+
 def main() -> int:
     """Build the matrix and write it to ``docs/conformance-coverage.md``."""
     chapters = sorted(SPEC_DIR.glob("*.md"))
     chapters = [c for c in chapters if c.name != "README.md"]
+
+    manual_block = extract_manual_block(OUT)
 
     coverage = parse_scenarios()
     rows_by_chapter: dict[str, list[dict]] = defaultdict(list)
@@ -192,16 +261,18 @@ def main() -> int:
         f"**{len(uncovered_must)}**"
     )
     out.append("")
-    out.append(
-        "Line-coverage is a lower bound on assertion-coverage: many lines "
-        "carry multiple distinct claims (e.g. a row that says \"MUST X and "
-        "MUST NOT Y\" counts as one line). A future pass should split lines "
-        "into individual claims before classifying gap level."
-    )
+    out.append(MANUAL_BLOCK_ANCHOR_BEFORE)
+    out.append("")
+
+    # --- Manual prose block (preserved across re-runs) ---
+    if manual_block is not None:
+        out.append(manual_block)
+    else:
+        out.append(MANUAL_BLOCK_PLACEHOLDER)
     out.append("")
 
     # --- Top of matrix: uncovered MUSTs grouped by chapter ---
-    out.append("## Uncovered MUST / MUST NOT lines (priority)")
+    out.append(MANUAL_BLOCK_ANCHOR_AFTER)
     out.append("")
     if not uncovered_must:
         out.append("None.")
