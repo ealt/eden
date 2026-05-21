@@ -252,7 +252,12 @@ class LeaseManager:
         transport failure. The self-fence is the catch-all for
         sustained transport failure.
         """
-        # ---- Phase 1: renew held leases ----
+        self._renew_held_leases()
+        self._acquire_unleased_experiments()
+        self._self_fence_check()
+
+    def _renew_held_leases(self) -> None:
+        """Phase 1 of refresh: renew each held lease via the control plane."""
         for experiment_id in list(self._held.keys()):
             snap = self._held[experiment_id]
             try:
@@ -286,13 +291,14 @@ class LeaseManager:
             snap.last_successful_renew = self._now()
             self._last_successful_control_plane_call = self._now()
 
-        # ---- Phase 2: acquire unleased experiments ----
+    def _acquire_unleased_experiments(self) -> None:
+        """Phase 2 of refresh: acquire any experiment not held and not drained."""
         try:
             experiments = self._client.list_experiments()
             self._last_successful_control_plane_call = self._now()
         except Exception:  # noqa: BLE001 — transport / network
             log.warning("list_experiments_transport_failure")
-            experiments = []
+            return
         for entry in experiments:
             experiment_id = entry.experiment_id
             if experiment_id in self._held:
@@ -329,14 +335,12 @@ class LeaseManager:
                 lease_id=lease.lease_id,
             )
 
-        # ---- Phase 3: §5.3 self-fence ----
+    def _self_fence_check(self) -> None:
+        """Phase 3 of refresh: drop all held leases if §5.3 self-fence triggers."""
         partition_seconds = (
             self._now() - self._last_successful_control_plane_call
         ).total_seconds()
-        if (
-            self._held
-            and partition_seconds >= self._lease_duration_seconds
-        ):
+        if self._held and partition_seconds >= self._lease_duration_seconds:
             log.warning(
                 "self_fence_triggered",
                 partition_seconds=partition_seconds,

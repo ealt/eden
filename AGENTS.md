@@ -172,6 +172,53 @@ These are the recurring traps that have shown up across chunks 9c / 9d / 10d / 1
 
 + **Multi-tenant lifecycle in deployment substrates: per-experiment bootstrap belongs OUTSIDE the chart/template owner, not inside.** Chunk 13a's round-1 review caught this: the first cut had `templates/repo-init-job.yaml` as a chart-managed Job. That works for a single-experiment deployment but breaks the moment you want to run multiple experiments against the same release — the helm release "owns" the repo-init Job from experiment 1 forever, and re-running setup against the same release for experiment 2 either no-ops (Job already exists) or replaces the experiment-1 record. The right shape mirrors Compose's `setup-experiment.sh`: the bootstrap Job lives at `bootstrap/repo-init-job.yaml.tmpl` (outside `templates/`), is rendered by `setup-experiment-helm.sh` with the per-experiment values, and is `kubectl apply`-ed directly — so each experiment gets its own Job lifecycle, independent of the helm release lifecycle. Same posture is likely correct for any future per-experiment artifact (per-experiment ConfigMaps holding the experiment YAML, per-experiment ad-hoc seed Jobs, etc.) on substrates that have a separate notion of release-managed resources. Rule of thumb when planning a multi-tenant substrate chunk: enumerate every artifact whose lifecycle is per-experiment (NOT per-release), and route each through an out-of-tree template + setup script rather than `templates/` — the chart should describe the steady-state deployment, not the per-experiment bootstraps.
 
+## Slop prevention
+
+Phase A of the code-quality audit (see [`docs/audits/2026-05-20-code-quality-audit.md`](docs/audits/2026-05-20-code-quality-audit.md)) found 67 IMPL functions at CC ≥ 10, 8 at CC ≥ 20, 4 files over 800 SLOC, and 5 near-identical cross-file duplicate blocks — none of which were caught by `ruff` / `pyright` / `pytest` / `codex-review`. The Phase C refactors address the existing violators; this section is the durable discipline that prevents the next round.
+
+### Thresholds (the "stop and think" line)
+
+A change crosses one of these lines, **stop and ask whether the right answer is a refactor, not the addition**:
+
+| Dimension | Threshold | Tool |
+|---|---|---|
+| Function cyclomatic complexity | > 20 | `radon cc -s -n D reference/` |
+| Function length | > 100 lines | `radon raw` / inspection |
+| File SLOC | > 800 | `radon raw reference/` |
+| File maintainability index | < 20 | `radon mi reference/` |
+
+These are not arbitrary. CC > 20 means > 20 distinct branches a reviewer must hold simultaneously; > 100-line functions are reliably where new branches get bolted on without anyone reading the whole; > 800-SLOC files were the audit's "accidental accumulation" canaries (`routes/admin.py` grew from ~400 → 1,239 SLOC across four chunks with no signal). The audit walks each in §1-§4.
+
+### The `# slop-allow:` escape hatch
+
+A few shapes are over-threshold for legitimate reasons and refactoring would make them worse (argparse `parse_args` builders at CC=1; graph-traversal closures that need shared visited/worklist state). When that's the case, the violator carries a `# slop-allow: <one-line justification>` annotation on the function or file:
+
+```python
+def parse_args() -> argparse.Namespace:  # slop-allow: argparse builder is CC=1 — one add_argument per flag with no branching; splitting fragments a flat flag manifest without reducing logic.
+    parser = argparse.ArgumentParser(...)
+    ...
+```
+
+Rules:
+
+1. **A real justification is required.** "It's long because there are a lot of flags" is not a justification. "Splitting fragments a flat metadata manifest with no logic to reduce (CC=1)" is. The justification must explain *why refactoring would make this worse*, not just *why the violator exists*.
+2. **Operator review in the PR.** Adding a `# slop-allow:` is a request for an explicit exception — call it out in the PR description so the reviewer can challenge the justification rather than missing it in the diff.
+3. **Narrow scope.** The annotation is per-function or per-file, not module-wide; it has to be re-justified on any subsequent change that materially extends the violator.
+
+### Mechanical enforcement (Tier-1 CI gate)
+
+The thresholds above are enforced (or will be, by a later slice of the audit chunk) by `scripts/check-complexity-thresholds.py`, run in CI. The gate scans for new violators introduced by a PR; existing violators are listed in the disposition doc at [`docs/audits/2026-05-20-phase-c-disposition.md`](docs/audits/2026-05-20-phase-c-disposition.md) (each one carrying either a refactor recommendation or an approved `# slop-allow:` annotation).
+
+CI failure means one of three things, in order of likelihood:
+
+1. **The right answer is a refactor** — usually a `_build_runtime(args)` helper for a service `main()`, a phase decomposition for a `_handle_one`, or a per-row helper for a `parse_*_rows` body. See the canonical extraction shapes in [`docs/audits/2026-05-20-phase-c-disposition.md`](docs/audits/2026-05-20-phase-c-disposition.md) §4.3.
+2. **The right answer is a `# slop-allow:` annotation** — rare; argparse builders and tight graph traversals are the established categories. Treat any other category with suspicion and surface it in the PR.
+3. **The threshold is wrong** — possible but unlikely; if you're considering this, propose it in the PR description rather than silently bumping the numbers in the gate script.
+
+### Codex-review structural-erosion pass
+
+The `codex-review` skill treats structural erosion (CC creep, length creep, file accumulation, cross-file duplication, verbosity-without-value) as a separate review axis from correctness. Even when a change is spec-correct and integration-correct, it can erode the codebase — flag those concerns explicitly. This is the "Phase A would have caught this earlier" backstop for slop that landed despite passing every other gate.
+
 ## Naming discipline
 
 EDEN's vocabulary is verb-noun-coherent and role-symmetric. Before introducing or renaming any identifier — class, function, JSON enum value, CLI flag, env var, spec heading, doc cross-reference — read [`docs/glossary.md`](docs/glossary.md) and validate the proposed name against the canonical patterns there.

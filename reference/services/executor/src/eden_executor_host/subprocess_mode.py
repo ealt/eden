@@ -485,38 +485,13 @@ def _is_no_op_variant(
     return True
 
 
-def _run_subprocess(
+def _build_subprocess_env(
     *,
-    wt_path: Path,
-    task: ExecutionTask,
-    idea: Idea,
-    variant_id: str,
-    branch: str,
     config: ExecutorSubprocessConfig,
+    wt_path: Path,
     worker_id: str,
-) -> dict[str, Any]:
-    """Run ``execution_command`` and parse outcome.json.
-
-    Returns a dict with at least ``status``. Missing/malformed outcome
-    files are normalized to ``status="error"``.
-    """
-    eden_dir = wt_path / ".eden"
-    eden_dir.mkdir(parents=True, exist_ok=True)
-    task_json = eden_dir / "task.json"
-    output_json = eden_dir / "outcome.json"
-    content_path = _content_path_from_uri(idea.artifacts_uri)
-    brief = {
-        "task_id": task.task_id,
-        "variant_id": variant_id,
-        "idea_id": idea.idea_id,
-        "idea_slug": idea.slug,
-        "parent_commits": list(idea.parent_commits),
-        "branch": branch,
-        "content_path": content_path,
-        "output_path": ".eden/outcome.json",
-    }
-    task_json.write_text(json.dumps(brief, sort_keys=True), encoding="utf-8")
-
+) -> dict[str, str]:
+    """Build the per-task subprocess env dict (forwarded to the child)."""
     env = dict(config.env)
     env["EDEN_TASK_JSON"] = ".eden/task.json"
     env["EDEN_OUTPUT"] = ".eden/outcome.json"
@@ -527,42 +502,68 @@ def _run_subprocess(
     env["EDEN_WORKER_ID"] = worker_id
     if config.worker_credential is not None:
         env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
+    return env
 
-    command = config.command
-    post_kill = None
-    cleanups: list = []
-    if config.exec_mode == "docker":
-        assert config.exec_image is not None
-        assert config.cidfile_dir is not None
-        cidfile = make_cidfile_path(
-            cidfile_dir=config.cidfile_dir, role="executor"
-        )
-        command = wrap_command(
-            original_command=config.command,
-            image=config.exec_image,
-            cwd_target=str(wt_path),
-            cidfile=cidfile,
-            role="executor",
-            task_id=task.task_id,
-            host_id=config.host_id,
-            volumes=list(config.exec_volumes),
-            binds=list(config.exec_binds),
-            env_keys=list(env.keys()),
-            # Per-task executor subprocess does NOT read stdin —
-            # leaving `-i` set would make docker run exit early on
-            # the worker host's closed stdin.
-            attach_stdin=False,
-        )
-        pk, cu = make_cidfile_callbacks(cidfile)
-        post_kill = pk
-        cleanups = [cu]
 
+def _maybe_wrap_for_docker(
+    *,
+    config: ExecutorSubprocessConfig,
+    task_id: str,
+    wt_path: Path,
+    env: Mapping[str, str],
+) -> tuple[str, Any, list]:
+    """Wrap ``config.command`` in a docker-run sibling-container spawn.
+
+    Active when ``exec_mode == "docker"``. Returns
+    ``(command, post_kill, cleanups)``.
+    """
+    if config.exec_mode != "docker":
+        return config.command, None, []
+    assert config.exec_image is not None
+    assert config.cidfile_dir is not None
+    cidfile = make_cidfile_path(cidfile_dir=config.cidfile_dir, role="executor")
+    command = wrap_command(
+        original_command=config.command,
+        image=config.exec_image,
+        cwd_target=str(wt_path),
+        cidfile=cidfile,
+        role="executor",
+        task_id=task_id,
+        host_id=config.host_id,
+        volumes=list(config.exec_volumes),
+        binds=list(config.exec_binds),
+        env_keys=list(env.keys()),
+        # Per-task executor subprocess does NOT read stdin —
+        # leaving `-i` set would make docker run exit early on
+        # the worker host's closed stdin.
+        attach_stdin=False,
+    )
+    pk, cu = make_cidfile_callbacks(cidfile)
+    return command, pk, [cu]
+
+
+def _run_and_capture(
+    *,
+    command: str,
+    wt_path: Path,
+    env: Mapping[str, str],
+    task_id: str,
+    config: ExecutorSubprocessConfig,
+    output_json: Path,
+    post_kill: Any,
+    cleanups: list,
+) -> dict[str, Any]:
+    """Spawn the executor subprocess, wait, and parse outcome.json.
+
+    Returns the parsed outcome dict on success or ``{"status": "error"}``
+    on any failure mode (timeout, nonzero exit, missing/malformed outcome).
+    """
     sub = spawn(
         command=command,
         cwd=wt_path,
         env=env,
         role="executor",
-        task_id=task.task_id,
+        task_id=task_id,
         capture_stdin=False,
         post_kill_callback=post_kill,
         cleanup_callbacks=cleanups,
@@ -574,7 +575,7 @@ def _run_subprocess(
             if remaining <= 0:
                 log.warning(
                     "executor_subprocess_timeout",
-                    extra={"task_id": task.task_id},
+                    extra={"task_id": task_id},
                 )
                 sub.terminate(shutdown_deadline=config.shutdown_deadline)
                 return {"status": "error"}
@@ -594,20 +595,20 @@ def _run_subprocess(
         if rc != 0:
             log.warning(
                 "executor_subprocess_nonzero_exit",
-                extra={"task_id": task.task_id, "exit_code": rc},
+                extra={"task_id": task_id, "exit_code": rc},
             )
             return {"status": "error"}
         if not output_json.is_file():
             log.warning(
                 "executor_subprocess_missing_outcome",
-                extra={"task_id": task.task_id},
+                extra={"task_id": task_id},
             )
             return {"status": "error"}
         parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
         if parsed is None:
             log.warning(
                 "executor_subprocess_malformed_outcome",
-                extra={"task_id": task.task_id},
+                extra={"task_id": task_id},
             )
             return {"status": "error"}
         return parsed
@@ -616,6 +617,52 @@ def _run_subprocess(
         # an explicit call so the cidfile is unlinked when the
         # subprocess exits naturally.
         sub.run_cleanups()
+
+
+def _run_subprocess(
+    *,
+    wt_path: Path,
+    task: ExecutionTask,
+    idea: Idea,
+    variant_id: str,
+    branch: str,
+    config: ExecutorSubprocessConfig,
+    worker_id: str,
+) -> dict[str, Any]:
+    """Run ``execution_command`` and parse outcome.json.
+
+    Returns a dict with at least ``status``. Missing/malformed outcome
+    files are normalized to ``status="error"``.
+    """
+    eden_dir = wt_path / ".eden"
+    eden_dir.mkdir(parents=True, exist_ok=True)
+    task_json = eden_dir / "task.json"
+    output_json = eden_dir / "outcome.json"
+    brief = {
+        "task_id": task.task_id,
+        "variant_id": variant_id,
+        "idea_id": idea.idea_id,
+        "idea_slug": idea.slug,
+        "parent_commits": list(idea.parent_commits),
+        "branch": branch,
+        "content_path": _content_path_from_uri(idea.artifacts_uri),
+        "output_path": ".eden/outcome.json",
+    }
+    task_json.write_text(json.dumps(brief, sort_keys=True), encoding="utf-8")
+    env = _build_subprocess_env(config=config, wt_path=wt_path, worker_id=worker_id)
+    command, post_kill, cleanups = _maybe_wrap_for_docker(
+        config=config, task_id=task.task_id, wt_path=wt_path, env=env
+    )
+    return _run_and_capture(
+        command=command,
+        wt_path=wt_path,
+        env=env,
+        task_id=task.task_id,
+        config=config,
+        output_json=output_json,
+        post_kill=post_kill,
+        cleanups=cleanups,
+    )
 
 
 def _content_path_from_uri(uri: str | None) -> str | None:
