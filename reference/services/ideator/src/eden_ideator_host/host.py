@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum, auto
 from pathlib import Path
 
 from eden_contracts import ExperimentConfig, IdeationTask
@@ -68,6 +70,25 @@ restarts without a successful task. A misconfigured ``ideation_command``
 would otherwise thrash the LLM CLI in a tight loop."""
 
 
+class _TaskOutcome(Enum):
+    """Outcome of one ``handle_ideation_task`` call inside the subprocess loop."""
+
+    OK = auto()
+    """Success: clear consecutive_failures and keep iterating."""
+    SKIP = auto()
+    """Claim race / non-pending task. Keep the subprocess; continue."""
+    LOST = auto()
+    """Subprocess crashed / protocol violation. Reset subprocess; break."""
+    UNEXPECTED = auto()
+    """Unclassified handler exception. Reset subprocess; break."""
+
+
+@dataclass
+class _IdeatorLoopState:
+    sub: IdeatorSubprocess | None = None
+    consecutive_failures: int = 0
+
+
 def run_ideator_subprocess_loop(
     *,
     store: Store,
@@ -93,88 +114,168 @@ def run_ideator_subprocess_loop(
     artifacts_dir = Path(artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    sub: IdeatorSubprocess | None = None
-    consecutive_failures = 0
+    state = _IdeatorLoopState()
     try:
         while not stop.is_set():
-            if sub is None or not sub.is_alive:
-                if sub is not None:
-                    sub.stop()
-                if consecutive_failures >= _MAX_CONSECUTIVE_RESPAWNS:
-                    log.error(
-                        "ideator_subprocess_giving_up",
-                        extra={"consecutive_failures": consecutive_failures},
-                    )
+            if state.sub is None or not state.sub.is_alive:
+                if not _respawn_subprocess(state=state, config=subprocess_config):
                     return
-                log.info("ideator_subprocess_starting")
-                try:
-                    sub = start_ideator_subprocess(subprocess_config)
-                except Exception:
-                    consecutive_failures += 1
-                    log.exception(
-                        "ideator_subprocess_startup_failed",
-                        extra={"consecutive_failures": consecutive_failures},
-                    )
+                if state.sub is None:
+                    # Startup raised; consecutive_failures already
+                    # incremented. Loop back so the ceiling check fires
+                    # before the next attempt.
                     continue
             tasks = store.list_tasks(kind="ideation", state="pending")
             if not tasks:
                 if stop.wait(poll_interval):
                     return
                 continue
-            for task in tasks:
-                if stop.is_set():
-                    return
-                assert isinstance(task, IdeationTask)
-                try:
-                    handle_ideation_task(
-                        store=store,
-                        task=task,
-                        worker_id=worker_id,
-                        ideator=sub,
-                        experiment_id=experiment_id,
-                        objective=objective,
-                        evaluation_schema=evaluation_schema,
-                        artifacts_dir=artifacts_dir,
-                    )
-                except (NotClaimed, IllegalTransition) as exc:
-                    # Another worker won the claim race or the task
-                    # is no longer pending. This is a normal
-                    # operational condition; the subprocess stays.
-                    log.info(
-                        "ideator_skip_unclaimable_task",
-                        extra={"task_id": task.task_id, "reason": exc.__class__.__name__},
-                    )
-                    continue
-                except (RuntimeError, TimeoutError) as exc:
-                    consecutive_failures += 1
-                    log.warning(
-                        "ideator_subprocess_lost",
-                        extra={
-                            "task_id": task.task_id,
-                            "error": str(exc),
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    sub.stop()
-                    sub = None
-                    break
-                except Exception:
-                    consecutive_failures += 1
-                    log.exception(
-                        "ideator_subprocess_unexpected_error",
-                        extra={
-                            "task_id": task.task_id,
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    sub.stop()
-                    sub = None
-                    break
-                else:
-                    consecutive_failures = 0
+            _drive_pending_tasks(
+                state=state,
+                stop=stop,
+                tasks=tasks,
+                store=store,
+                worker_id=worker_id,
+                experiment_id=experiment_id,
+                objective=objective,
+                evaluation_schema=evaluation_schema,
+                artifacts_dir=artifacts_dir,
+            )
     finally:
-        if sub is not None:
-            sub.stop()
+        if state.sub is not None:
+            state.sub.stop()
+
+
+def _respawn_subprocess(
+    *, state: _IdeatorLoopState, config: IdeatorSubprocessConfig
+) -> bool:
+    """Stop any dead subprocess and spawn a fresh one.
+
+    Returns False when the consecutive-failure ceiling is reached and
+    the caller should exit. On startup failure, increments
+    ``consecutive_failures`` and leaves ``state.sub`` as ``None`` so the
+    caller re-enters this branch on the next iteration.
+    """
+    if state.sub is not None:
+        state.sub.stop()
+        state.sub = None
+    if state.consecutive_failures >= _MAX_CONSECUTIVE_RESPAWNS:
+        log.error(
+            "ideator_subprocess_giving_up",
+            extra={"consecutive_failures": state.consecutive_failures},
+        )
+        return False
+    log.info("ideator_subprocess_starting")
+    try:
+        state.sub = start_ideator_subprocess(config)
+    except Exception:
+        state.consecutive_failures += 1
+        log.exception(
+            "ideator_subprocess_startup_failed",
+            extra={"consecutive_failures": state.consecutive_failures},
+        )
+    return True
+
+
+def _drive_pending_tasks(
+    *,
+    state: _IdeatorLoopState,
+    stop: StopFlag,
+    tasks: list,
+    store: Store,
+    worker_id: str,
+    experiment_id: str,
+    objective: dict,
+    evaluation_schema: dict,
+    artifacts_dir: Path,
+) -> None:
+    """Iterate the pending task batch, applying the outcome of each handler call."""
+    assert state.sub is not None
+    for task in tasks:
+        if stop.is_set():
+            return
+        assert isinstance(task, IdeationTask)
+        outcome = _handle_one_ideation_task(
+            store=store,
+            task=task,
+            worker_id=worker_id,
+            sub=state.sub,
+            experiment_id=experiment_id,
+            objective=objective,
+            evaluation_schema=evaluation_schema,
+            artifacts_dir=artifacts_dir,
+            consecutive_failures=state.consecutive_failures,
+        )
+        if outcome is _TaskOutcome.OK:
+            state.consecutive_failures = 0
+            continue
+        if outcome is _TaskOutcome.SKIP:
+            continue
+        # LOST or UNEXPECTED — reset subprocess and break out so the
+        # outer loop re-enters `_respawn_subprocess`.
+        state.consecutive_failures += 1
+        state.sub.stop()
+        state.sub = None
+        return
+
+
+def _handle_one_ideation_task(
+    *,
+    store: Store,
+    task: IdeationTask,
+    worker_id: str,
+    sub: IdeatorSubprocess,
+    experiment_id: str,
+    objective: dict,
+    evaluation_schema: dict,
+    artifacts_dir: Path,
+    consecutive_failures: int,
+) -> _TaskOutcome:
+    """Run one ideation task and classify the result.
+
+    ``consecutive_failures`` is the value BEFORE this task; the LOST /
+    UNEXPECTED log entries include the post-increment count to match the
+    pre-refactor log shape (caller increments on those outcomes).
+    """
+    try:
+        handle_ideation_task(
+            store=store,
+            task=task,
+            worker_id=worker_id,
+            ideator=sub,
+            experiment_id=experiment_id,
+            objective=objective,
+            evaluation_schema=evaluation_schema,
+            artifacts_dir=artifacts_dir,
+        )
+    except (NotClaimed, IllegalTransition) as exc:
+        # Another worker won the claim race or the task is no longer
+        # pending. Normal operational condition; subprocess stays.
+        log.info(
+            "ideator_skip_unclaimable_task",
+            extra={"task_id": task.task_id, "reason": exc.__class__.__name__},
+        )
+        return _TaskOutcome.SKIP
+    except (RuntimeError, TimeoutError) as exc:
+        log.warning(
+            "ideator_subprocess_lost",
+            extra={
+                "task_id": task.task_id,
+                "error": str(exc),
+                "consecutive_failures": consecutive_failures + 1,
+            },
+        )
+        return _TaskOutcome.LOST
+    except Exception:
+        log.exception(
+            "ideator_subprocess_unexpected_error",
+            extra={
+                "task_id": task.task_id,
+                "consecutive_failures": consecutive_failures + 1,
+            },
+        )
+        return _TaskOutcome.UNEXPECTED
+    return _TaskOutcome.OK
 
 
 def build_subprocess_config(
