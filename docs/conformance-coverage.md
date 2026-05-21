@@ -84,9 +84,9 @@ After the per-claim pass below, effective coverage by chapter:
 | `05-event-protocol.md` | 23 | 17 | 74% |
 | `06-integrator.md` | 27 | 23 | 85% |
 | `07-wire-protocol.md` | 28 | 23 | 82% |
-| `08-storage.md` | 25 | 25 (restatement) | 100% (canonical homes covered) |
+| `08-storage.md` | 27 | 27 (restatement) | 100% (canonical homes covered) |
 | `09-conformance.md` | 1 | 1 (restatement) | 100% (meta — describes the conformance contract itself) |
-| **Aggregate** | **219** | **190** | **87%** |
+| **Aggregate** | **221** | **192** | **87%** |
 
 The aggregate effective coverage is **87%** (`(scenario)` + `(consequence)` + `(schema)` — plus `(restatement)` for chapters 08 + 09 where the canonical homes are wire-covered — over the 219 MUST/MUST-NOT rows in scope). There are zero `(uncovered)` rows after the round-2 retagging — the previously-named chapter-04 §9.1 / §9.3 rows are `(consequence)` and `(impl-only)` respectively, with overlap on the §1.3 atomicity regression. The remaining `(restatement)` and `(impl-only)` rows are softer gaps; the `(restatement)` set would close mechanically with cross-chapter ancestor walk or multi-citation in scenario docstrings. Per-tag breakdowns appear in each per-chapter section below.
 
@@ -128,7 +128,7 @@ Chapter 02 defines entity shapes. Most MUSTs are schema-enforced; the runtime/be
 | §6.1 | 246 | MUST | reserved identifiers (`admin`, `system`, `internal`) MUST be rejected | `(scenario)` | `test_worker_registration.py::test_register_worker_rejects_reserved_identifier` + `test_group_resolution.py::test_register_group_rejects_reserved_identifier`. |
 | §6.2 | 263 | MUST NOT | wire-visible Worker MUST NOT carry credential | `(scenario)` | `test_worker_registration.py::test_register_worker_returns_record` asserts the response Worker shape lacks credential / hash fields. |
 | §6.3 | 267 | MUST, MUST NOT | `register_worker` idempotent on existing record; no new credential minted | `(scenario)` | `test_worker_registration.py::test_register_worker_is_idempotent` directly tests this. |
-| §6.3 | 269 | MUST | grammar violations MUST raise distinguishable typed errors | `(scenario)` | Grammar vs. reserved-identifier produce distinct wire codes (`bad-request` vs. `reserved-identifier`); the two `test_register_worker_rejects_*` scenarios assert the distinct types. |
+| §6.3 | 269 | MUST | grammar violations MUST raise distinguishable typed errors | `(scenario)` | Grammar vs. reserved-identifier produce distinct wire codes (`bad-request` vs. `reserved-identifier`); `test_worker_registration.py::test_register_worker_rejects_grammar_violation` + `::test_register_worker_rejects_reserved_identifier` assert the distinct types. |
 | §7.1 | 289 | MUST | worker / group namespaces disjoint within experiment | `(scenario)` | `test_group_resolution.py::test_register_group_rejects_id_already_used_by_worker` + `test_worker_registration.py::test_register_worker_rejects_id_already_used_by_group`. |
 | §7.1 | 294 | MUST | cross-namespace duplicate registration MUST surface as `eden://error/already-exists` | `(scenario)` | Same scenarios assert the wire `type`. |
 | §7.2 | 303 | MUST | membership resolution MUST terminate | `(scenario)` | `test_group_resolution.py::test_transitive_membership_resolves` exercises the DAG walk; `test_register_group_rejects_cycle` proves termination by rejecting cycles. |
@@ -189,9 +189,9 @@ Per-role contracts. Many "worker MUST NOT write to X" rows are wire-projected as
 | §6.5 | (259-265) | MUST | manual mode delegates to admin/orchestrators callers via the same wire ops | `(scenario)` | Manual-mode coverage via `Dispatch mode` group. |
 | §6.6 | (270-274) | MUST | control-plane-bound deployment: every decision MUST be lease-gated | `(restatement)` | Canonical home [`11-control-plane.md`](../spec/v0/11-control-plane.md) §5.1; covered by `Lease decision gating` scenario group at `v1+multi-experiment` level. |
 
-**Per-tag counts (29 audited MUST/MUST-NOT rows; `(meta)` + `(list-header)` excluded):** `(scenario)` 17 · `(consequence)` 5 · `(schema)` 2 · `(restatement)` 2 · `(impl-only)` 2 · `(uncovered)` 0.
+**Per-tag counts (29 audited MUST/MUST-NOT rows; `(meta)` + `(list-header)` excluded):** `(scenario)` 19 · `(consequence)` 6 · `(schema)` 1 · `(restatement)` 2 · `(impl-only)` 1 · `(uncovered)` 0.
 
-**Effective coverage**: 24 / 29 ≈ **83%** (counting `(restatement)` rows raises to 26 / 29 ≈ 90% since both restatements point at chapters whose canonical homes are wire-covered). No real gaps; the previously-named gap on §3.3 line 97 closed via PR #70's `test_worker_branch_uniqueness.py`.
+**Effective coverage**: 26 / 29 ≈ **90%** (`(scenario)` + `(consequence)` + `(schema)`; counting the 2 `(restatement)` rows whose canonical homes are wire-covered raises to 28 / 29). No real gaps; the previously-named gap on §3.3 line 97 closed via PR #70's `test_worker_branch_uniqueness.py`.
 
 ### Chapter 04 — `04-task-protocol.md` (re-line-numbered)
 
@@ -200,7 +200,7 @@ This section refreshes the original chapter-04 pilot against the current spec (s
 | § | Line | Keyword(s) | Claim summary | Tag | Notes |
 |---|---|---|---|---|---|
 | §1.1 | 21 | MUST NOT | Terminal `completed` / `failed` MUST NOT transition out | `(scenario)` | `test_task_lifecycle.py::test_terminal_completed_rejects_writes` + `::test_terminal_failed_rejects_writes`. |
-| §1.2 | 42 | MUST | unlisted transitions MUST be rejected; concurrent attempts MUST serialize | `(scenario)` | Multiple `test_task_lifecycle.py::test_*_rejects_*` scenarios; concurrent-serialization via `test_claim_atomicity.py`. |
+| §1.2 | 42 | MUST | unlisted transitions MUST be rejected; concurrent attempts MUST serialize | `(scenario)` | `test_task_lifecycle.py::test_terminal_completed_rejects_writes` + `::test_terminal_failed_rejects_writes` + `::test_claim_rejected_when_not_pending` + `::test_terminal_rejects_reclaim` cover the unlisted-transition cases; concurrent-serialization via `test_claim_atomicity.py`. |
 | §1.3 | 46 | MUST | every state transition MUST atomic w/ event append | `(consequence)` | Per chapter 09 §3 explicitly black-box-immune; `test_atomicity.py::test_task_state_change_visible_only_after_event_appended` self-labels as regression. |
 | §2 | 50 | MUST | task enters `pending` with required fields | `(scenario)` | `test_task_lifecycle.py::test_create_task_pending`. |
 | §2 | 55 | MUST | execution-task creation + idea `ready→dispatched` MUST be atomic | `(scenario)` | `test_composite_commits.py::test_execution_dispatch_atomic` cites §05 §2.2; cross-chapter-hidden under intra-chapter ancestor walk. |
@@ -251,8 +251,8 @@ Event envelope + per-type payloads + delivery guarantees. Envelope shapes are sc
 | § | Line | Keyword(s) | Claim summary | Tag | Notes |
 |---|---|---|---|---|---|
 | (preamble) | 3 | MUST | "this chapter specifies the event log..." | `(meta)` | Chapter-scoping. |
-| §1 | 9 | MUST | event MUST be JSON object with five envelope fields | `(scenario)` + `(schema)` | `event.schema.json` + the five `test_event_envelope.py::test_event_carries_*` per-field tests (event_id / type / occurred_at / experiment_id / data). |
-| §1 | 19 | MUST NOT | additional metadata MUST NOT shadow the five envelope keys | `(impl-only)` | Envelope-key shadowing not directly probed; the five `test_event_carries_*` tests assert presence and shape of the five keys but don't construct a violating server response. |
+| §1 | 9 | MUST | event MUST be JSON object with five envelope fields | `(scenario)` + `(schema)` | `event.schema.json` + the five per-field envelope tests in `test_event_envelope.py`: `test_event_carries_event_id`, `test_event_carries_type`, `test_event_carries_occurred_at`, `test_event_carries_experiment_id_matching`, `test_event_carries_data_object`. |
+| §1 | 19 | MUST NOT | additional metadata MUST NOT shadow the five envelope keys | `(impl-only)` | Envelope-key shadowing not directly probed; the five `test_event_carries_*` envelope tests above assert presence and shape but don't construct a server response that shadows a key. |
 | §1.1 | 23 | MUST | `event_id` MUST be unique within the log | `(scenario)` | `test_event_envelope.py::test_event_id_uniqueness`. |
 | §1.2 | 27 | MUST NOT | subscribers MUST NOT rely on `occurred_at` for ordering | `(impl-only)` | Negative consumer-side rule; wire scenarios can't probe subscriber behavior. |
 | §2 | 33 | MUST | atomic state change + event append (transactional invariant) | `(consequence)` | Per ch09 §3; same regression test as §04 §1.3. |
@@ -324,7 +324,7 @@ HTTP binding for chapters 4 / 5 / 6 / 8. Most MUSTs are URL shapes, error vocabu
 
 | § | Line | Keyword(s) | Claim summary | Tag | Notes |
 |---|---|---|---|---|---|
-| §1.1 | 13 | MUST, MUST NOT | accept HTTP/1.1 over TCP; application/json (or problem+json); 204 MUST NOT carry body | `(scenario)` | `test_status_codes.py::test_integrate_success_response_body_is_empty` (per `Status codes` group's chapter-7 §1.1 empty-body assertion) + the four `test_problem_json.py::test_problem_json_*` per-status tests (400 / 403 / 404 / 409) assert the `application/problem+json` content type on non-2xx responses. |
+| §1.1 | 13 | MUST, MUST NOT | accept HTTP/1.1 over TCP; application/json (or problem+json); 204 MUST NOT carry body | `(scenario)` | `test_status_codes.py::test_integrate_success_response_body_is_empty` covers the 204-empty-body MUST NOT; the problem+json content-type MUST is asserted by `test_problem_json.py::test_problem_json_400_bad_request` + `::test_problem_json_403_wrong_claimant` + `::test_problem_json_404_not_found` + `::test_problem_json_409_illegal_transition`. |
 | §1.2 | 17 | MUST NOT | clients MUST NOT rely on `/_reference/` endpoints | `(impl-only)` | Client-side rule; wire scenarios don't probe non-reliance. |
 | §1.3 | 23 | MUST | every request MUST send `X-Eden-Experiment-Id` matching path | `(scenario)` | `test_experiment_id_header.py::test_header_disagrees_returns_400`. |
 | §1.3 | 25 | MUST | checkpoint endpoints: header optional, MUST equal manifest id when present | `(scenario)` | `test_checkpoint_preconditions.py::test_header_mismatch_returns_400` (at `v1+checkpoints` level). |
@@ -392,9 +392,9 @@ Chapter 08 is the storage-side restatement of the behavioral contracts in chapte
 | §8 | 239 | MUST NOT | registry state MUST NOT be shared across experiments | `(restatement)` | `02-data-model.md` §6; `test_worker_registration.py` per-experiment isolation. |
 | §9 (worker registry) | (247-273) | MUST | registry ops shape + idempotent register + constant-time verify + cycle detection + durability | `(restatement)` | `02-data-model.md` §§6-7; `07-wire-protocol.md` §6; `test_worker_registration.py` + `test_worker_auth.py` + `test_group_resolution.py` groups. |
 
-**Per-tag counts (excluding `(meta)`):** `(scenario)` 0 · `(consequence)` 0 · `(schema)` 0 · `(restatement)` 25 · `(impl-only)` 0 · `(uncovered)` 0.
+**Per-tag counts (27 audited MUST/MUST-NOT rows; `(meta)` excluded):** `(scenario)` 0 · `(consequence)` 0 · `(schema)` 0 · `(restatement)` 27 · `(impl-only)` 0 · `(uncovered)` 0.
 
-**Effective coverage**: 25 / 25 ≈ **100%** as `(restatement)`; the canonical homes are all wire-asserted. Chapter 08's MUSTs surface as auto-generator gaps because the citation chain runs through the wire chapters, not the storage chapter. Fix shape: cross-chapter ancestor walk or multi-citation in scenario docstrings.
+**Effective coverage**: 27 / 27 ≈ **100%** as `(restatement)`; the canonical homes are all wire-asserted. Chapter 08's MUSTs surface as auto-generator gaps because the citation chain runs through the wire chapters, not the storage chapter. Fix shape: cross-chapter ancestor walk or multi-citation in scenario docstrings.
 
 ### Chapter 09 — `09-conformance.md`
 
