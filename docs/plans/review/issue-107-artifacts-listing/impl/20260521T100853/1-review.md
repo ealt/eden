@@ -1,0 +1,7 @@
+No findings.
+
+The fix in [admin_artifacts.py](/Users/ericalt/Documents/eden-worktrees/issue-107-artifacts-listing/reference/services/web-ui/src/eden_web_ui/routes/admin_artifacts.py:84) is the right one. `resolved.as_uri()` is the standard-library way to build a valid `file://` URI from a local path, and it closes the exact bug from round 0 because reserved path bytes are percent-encoded before the template re-encodes the whole query param.
+
+The new test in [test_admin_artifacts_routes.py](/Users/ericalt/Documents/eden-worktrees/issue-107-artifacts-listing/reference/services/web-ui/tests/test_admin_artifacts_routes.py:78) is also the right shape: it extracts the rendered href and follows it, so it exercises the real listing-template-querystring-serving-route pipeline instead of only asserting string construction. Covering `?`, `#`, and space hits the important failure modes. I also sanity-checked adjacent cases: non-ASCII characters, literal `%`, and literal `\` on POSIX all round-trip correctly through `Path.as_uri()` plus the existing `urlparse()`/`unquote()` logic. Windows-drive-letter behavior is only relevant if this service is expected to run on Windows; if that ever matters, `Path.as_uri()` is still the correct constructor on that platform too.
+
+Overall assessment: no substantive feedback remaining; ready to merge.
