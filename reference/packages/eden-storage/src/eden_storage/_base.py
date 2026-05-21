@@ -1,3 +1,10 @@
+# slop-allow-file: _StoreBase aggregates 105 backend-agnostic Store
+# methods so every backend (memory, sqlite, postgres) inherits the same
+# state-machine + composite-commit + terminal-immutability semantics.
+# Mixin split into _ops/<noun>.py is approved in concept (audit F-1)
+# but deferred to a follow-up chunk because every backend subclass
+# would move; ~3000 lines moved across 15 files. Behavior preserved.
+
 """Backend-agnostic transition logic shared by every ``Store`` backend.
 
 Every EDEN store backend — in-memory, SQLite, a future Postgres or
@@ -1231,6 +1238,12 @@ class _StoreBase:
 
             self._apply_commit(tx)
 
+    # slop-allow: spec §2.7 / §3.6 task-reassign ladder runs four
+    # state-specific branches (pending, claimed, submitted, terminal)
+    # with different composite-commit shapes; the same-target
+    # idempotency check is keyed off the pre-update state. Per-state
+    # extraction deferred (audit L-O; lands inside the F-1 _TaskOps
+    # mixin split).
     def reassign_task(
         self,
         task_id: str,

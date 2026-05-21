@@ -506,6 +506,13 @@ async def draft_form(
     )
 
 
+# slop-allow: spec §3.3 Phase-1 / Phase-2 / Phase-3 + NoOpVariant
+# fallback + readback-outcome dispatch — each phase already extracted
+# to a named helper (_check_success_draft_gates, _build_starting_variant,
+# _phase2_write_work_ref, submit_with_readback, _handle_noop_rejection).
+# The remaining length is the per-phase dispatch ladder mirroring the
+# spec. Further extraction would force a typed phase-state envelope
+# without gain (audit M-2 + C-7/C-8 follow-ons).
 @router.post("/{task_id}/submit", response_model=None)
 async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by design
     task_id: str,

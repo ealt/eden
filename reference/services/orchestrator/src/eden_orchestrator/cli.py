@@ -67,6 +67,10 @@ def _parse_author(value: str | None) -> Identity:
     return Identity(name=match.group("name"), email=match.group("email"))
 
 
+# slop-allow: argparse builder; one add_argument per CLI flag with no
+# branching (CC=1). Splitting into per-group helpers adds invocation
+# indirection without reducing logic — flat flag manifest is most
+# readable (audit L-A).
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI args for the orchestrator service."""
     parser = argparse.ArgumentParser(

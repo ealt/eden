@@ -1,3 +1,9 @@
+# slop-allow-file: StoreClient is one class with ~30 HTTP methods, each
+# carrying the 3-outcome read-back ladder mandated by AGENTS.md's
+# "wire/network writes need a read-back" pitfall. Per-resource split
+# (audit F-4) is approved in concept but deferred to a follow-up chunk
+# so this PR's blast radius stays bounded.
+
 """``StoreClient`` — a ``Store``-Protocol-compatible HTTP client.
 
 ``StoreClient`` makes the EDEN wire binding look exactly like a
@@ -1138,6 +1144,11 @@ class StoreClient:
             resp.raise_for_status()
         return resp.json()
 
+    # slop-allow: chapter 10 §11 checkpoint-import transport-recovery
+    # ladder. Probes remote experiment_id, classifies the 3 outcomes
+    # (idle / already-imported / wrong-checkpoint), each with a distinct
+    # banner. Helper extraction deferred (audit L-M; lands inside the
+    # F-4 client per-resource split).
     def _import_recovery_probe(
         self,
         archive_bytes: bytes,

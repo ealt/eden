@@ -20,9 +20,10 @@ Escape hatch — ``# slop-allow: <justification>``:
 Annotation placement:
 
 - **Function-level**: a ``# slop-allow:`` comment on the function's
-  ``def`` line (trailing) OR within 5 lines immediately before the
-  ``def``. Whitespace/blank lines / docstring don't count against the
-  5-line budget; pure comments do.
+  ``def`` line (trailing) OR anywhere in the contiguous preamble of
+  comments / decorators / docstrings / blank lines immediately above
+  the ``def``. The scan walks back until it hits a non-preamble line
+  (typically the previous function's body), capped at 30 lines.
 - **File-level**: a ``# slop-allow-file: <justification>`` comment
   anywhere in the first 30 lines of the file. Suppresses file-level
   SLOC + MI checks for that file only.
@@ -130,9 +131,12 @@ def _function_slop_allow(src_lines: list[str], def_line: int) -> tuple[bool, str
     """Look for ``# slop-allow: <justification>`` annotating the def at ``def_line``.
 
     Accepts: (a) trailing comment on the def line itself; (b) any
-    ``# slop-allow:`` comment on the 5 lines immediately preceding the
-    def (blank lines + decorators allowed in the gap; non-allow
-    comments don't shadow the annotation).
+    ``# slop-allow:`` comment in a contiguous block of comments /
+    blank lines / decorators / docstrings immediately preceding the
+    def. The scan walks back until it hits a non-decorator,
+    non-comment, non-blank, non-docstring-fragment line — typically
+    the previous function's body — so multi-line justifications work
+    naturally without a hard line budget.
     """
     # def_line is 1-indexed; src_lines is 0-indexed.
     idx = def_line - 1
@@ -140,15 +144,32 @@ def _function_slop_allow(src_lines: list[str], def_line: int) -> tuple[bool, str
         m = _ALLOW_FUNCTION_RE.search(src_lines[idx])
         if m:
             return True, m.group(1).strip()
-    # Scan up to 5 lines back, allowing intervening decorators / blanks.
-    for back in range(1, 6):
+    # Walk back through the contiguous preamble (comments, decorators,
+    # docstrings, blanks). Stop when we hit a line that's clearly the
+    # tail of the previous function's body or a non-related statement.
+    for back in range(1, 31):  # 30-line cap protects against unbounded scans
         prev = idx - back
         if prev < 0:
             break
         line = src_lines[prev]
+        stripped = line.strip()
         m = _ALLOW_FUNCTION_RE.search(line)
         if m:
             return True, m.group(1).strip()
+        # Continue past these — they don't break the preamble.
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("@"):
+            continue
+        # Docstring / triple-quoted-string fragments. Best-effort:
+        # treat any line that looks like a comment-style fragment as
+        # preamble. The 30-line cap bounds the worst case.
+        if stripped.startswith(('"""', "'''", '"', "'")):
+            continue
+        # Hit a real statement — preamble ended.
+        break
     return False, ""
 
 

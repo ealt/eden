@@ -1,3 +1,10 @@
+# slop-allow-file: make_app is a FastAPI app factory with 57 nested
+# route handlers closing over `store`. APIRouter regroup (audit F-3) is
+# approved in concept but deferred — every wire-binding test calls
+# make_app(store) and would need to move in lockstep. Sub-modules in
+# routes/<resource>.py is the right shape; the chunk would be ~1 day
+# equivalent on its own.
+
 """FastAPI server that exposes a ``Store`` over the EDEN wire protocol.
 
 :func:`make_app` takes a single ``Store`` and returns a fresh
@@ -322,6 +329,10 @@ def _is_symlink(component: str, *, dir_fd: int) -> bool:
     return stat.S_ISLNK(st.st_mode)
 
 
+# slop-allow: FastAPI app factory; 57 nested route handlers as
+# closures over `store`. CC=5 outer / per-handler CC ≤ 5. Length is a
+# metric artifact, not a complexity signal. APIRouter regroup deferred
+# (audit F-3 / L-D).
 def make_app(
     store: Store,
     *,
@@ -1660,6 +1671,11 @@ def make_app(
     # short-circuits before the route handler), so the handler does
     # its own bearer-auth check.
 
+    # slop-allow: artifacts route runs the path-traversal-safe open
+    # ladder + symlink-rejection + content-disposition header logic
+    # inline. Each step has its own error-status mapping; extracting
+    # to helpers would force a typed result envelope. Move covered by
+    # audit L-F (lands inside the F-3 server APIRouter regroup).
     @app.get(f"{ref_base}/artifacts/{{path:path}}")
     async def _serve_artifact(
         experiment_id: str,

@@ -118,6 +118,10 @@ def _json_error(exc: Exception, *, request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------
 
 
+# slop-allow: FastAPI app factory; 8 nested route handlers as closures
+# over `store`. Proportionally smaller than eden-wire's make_app (audit
+# L-E). Symmetric APIRouter regroup deferred to the same follow-up
+# chunk as F-3 so both wire-binding factories move together.
 def make_app(
     store: ControlPlaneStore,
     *,

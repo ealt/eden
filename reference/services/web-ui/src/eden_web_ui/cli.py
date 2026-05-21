@@ -53,6 +53,8 @@ def _build_control_plane_client(
     return ControlPlaneClient(url, bearer=bearer)
 
 
+# slop-allow: argparse builder; one add_argument per CLI flag with no
+# branching (CC=1). Flat flag manifest is most readable (audit L-B).
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="eden_web_ui")
     add_common_arguments(parser)

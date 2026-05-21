@@ -39,6 +39,23 @@ jobs:
       - name: Check for pre-rename EDEN vocabulary
         run: python3 scripts/check-rename-discipline.py
 
+  complexity-gate:
+    name: complexity-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install radon
+        run: python3 -m pip install 'radon==6.0.1'
+
+      - name: Run Tier-1 complexity gate
+        run: python3 scripts/check-complexity.py
+
   schema-validity:
     name: schema-validity
     runs-on: ubuntu-latest

@@ -168,6 +168,10 @@ def _read_failure_response(request: Request, message: str) -> HTMLResponse:
 # ---------------------------------------------------------------------
 
 
+# slop-allow: graph traversal closure is most readable as a single
+# function. Extraction would force a separate helper to maintain
+# (visited, worklist) state, making the recursion harder to follow,
+# not easier. 101 lines — 1 over threshold (audit L-V).
 def walk_transitive_workers(
     store: Any,
     group_id: str,
