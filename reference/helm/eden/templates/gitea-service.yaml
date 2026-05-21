@@ -1,0 +1,55 @@
+{{/*
+Gitea Service — ClusterIP for in-cluster HTTP + SSH access.
+
+The HTTP port (3000 inside the container) is the central git remote
+that orchestrator / executor-host / evaluator-host / web-ui clone +
+fetch from. SSH (2222) is exposed only on the in-cluster Service for
+parity with the Compose stack; external SSH access would require a
+LoadBalancer or NodePort, which v0 does not configure.
+
+Ingress (when enabled) exposes the HTTP port for browser access; see
+gitea-ingress.yaml.
+
+A headless governing Service is also defined for the StatefulSet's
+stable-DNS contract.
+*/}}
+{{- $giteaComponent := "gitea" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eden.componentName" (dict "context" . "component" $giteaComponent) }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $giteaComponent) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.ports.gitea }}
+      targetPort: http
+      protocol: TCP
+    - name: ssh
+      port: {{ .Values.ports.giteaSsh }}
+      targetPort: ssh
+      protocol: TCP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "context" . "component" $giteaComponent) | nindent 4 }}
+---
+{{/*
+Headless governing Service for the StatefulSet (pod-stable DNS).
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eden.componentName" (dict "context" . "component" $giteaComponent) }}-headless
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $giteaComponent) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ .Values.ports.gitea }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "context" . "component" $giteaComponent) | nindent 4 }}

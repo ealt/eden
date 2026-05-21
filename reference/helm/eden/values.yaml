@@ -1,0 +1,236 @@
+# EDEN reference Helm chart — default values.
+#
+# This file mirrors the key shape of reference/compose/.env.example so
+# operators familiar with the Compose deployment can find familiar knobs in
+# predictable places. See reference/helm/eden/README.md for the operator
+# workflow; see docs/deployment/helm.md for the full reference.
+#
+# Field naming: camelCase per Helm convention; corresponding env-var names
+# from .env.example are noted inline where the mapping isn't obvious.
+
+# -----------------------------------------------------------------------------
+# Image — REQUIRED.
+#
+# The reference Compose stack builds eden-reference:dev as a local Dockerfile
+# target (reference/compose/Dockerfile). A Kubernetes cluster cannot pull
+# that local image. Operators MUST build + push the image to a registry they
+# control and supply repository + tag here. The values.schema.json enforces
+# image.repository and image.tag as non-empty strings.
+image:
+  repository: ""                         # e.g., ghcr.io/your-org/eden-reference
+  tag: ""                                # e.g., 0.1.0
+  pullPolicy: IfNotPresent
+  pullSecrets: []                        # list of {name: <existing-pull-secret>}
+
+# -----------------------------------------------------------------------------
+# Postgres + Gitea base images (bundled stopgaps; 13c / 13e replace these).
+postgresImage:
+  repository: postgres
+  tag: "16.6-alpine"
+  pullPolicy: IfNotPresent
+
+giteaImage:
+  # Pinned to the rootless image variant the Compose stack uses
+  # (reference/compose/compose.yaml). Rootless Gitea runs as UID 1000;
+  # the StatefulSet sets fsGroup: 1000 on the PVC mount accordingly.
+  repository: gitea/gitea
+  tag: "1.22.6-rootless"
+  pullPolicy: IfNotPresent
+
+# -----------------------------------------------------------------------------
+# Per-service replica counts.
+#
+# The 12c control plane supports multi-replica orchestrators via leases.
+# Worker hosts can scale to any count (each replica claims tasks
+# independently). Task-store-server and control-plane are singletons in
+# v0 — clustering is 13c.
+replicas:
+  taskStoreServer: 1                     # singleton in v0
+  controlPlane: 1                        # singleton SPOF per 12c §3.9
+  orchestrator: 2                        # HA per 12c lease model
+  ideatorHost: 1
+  executorHost: 1
+  evaluatorHost: 1
+  webUi: 1                               # operator-singleton in v0
+
+# -----------------------------------------------------------------------------
+# Secrets.
+#
+# DEV: set values inline; the chart materializes a single Secret named
+#      <release>-eden-secrets.
+# PROD: pre-create a Secret externally (Sealed Secrets, External Secrets
+#       Operator, Vault, etc.) and set existingSecret to its name. The
+#       chart's templates use envFrom: secretRef: <existingSecret> and no
+#       secret values flow through the chart itself.
+#
+# Required keys when existingSecret is empty (each maps to an env var the
+# services consume):
+#   adminToken               -> EDEN_ADMIN_TOKEN
+#   postgresPassword         -> POSTGRES_PASSWORD (and embedded in EDEN_STORE_URL)
+#   giteaAdminPassword       -> Gitea admin user's password (used by Gitea init)
+#   giteaRemotePassword      -> GITEA_REMOTE_PASSWORD (workers' HTTP Basic
+#                               credential, fed to git-credential-helper)
+#   giteaSecretKey           -> GITEA__security__SECRET_KEY (Gitea's
+#                               cookie / CSRF / 2FA encryption key; generate
+#                               with `gitea generate secret SECRET_KEY` or
+#                               64 hex chars)
+#   giteaInternalToken       -> GITEA__security__INTERNAL_TOKEN (Gitea
+#                               inter-component auth)
+#   webUiSessionSecret       -> EDEN_SESSION_SECRET
+secrets:
+  adminToken: ""
+  postgresPassword: ""
+  giteaAdminPassword: ""
+  giteaRemotePassword: ""
+  giteaSecretKey: ""
+  giteaInternalToken: ""
+  webUiSessionSecret: ""
+  existingSecret: ""
+
+# -----------------------------------------------------------------------------
+# Storage.
+#
+# Per the substrate baseline (plan §1.0): Gitea is the central git remote;
+# the orchestrator, executor-host, evaluator-host, and web-ui each hold
+# their OWN local clone of the experiment's bare repo. So the chart mints
+# four per-service-replica clone PVCs PLUS one Gitea-side data PVC.
+storage:
+  className: ""                          # empty = cluster default StorageClass
+  postgresSize: 10Gi
+  giteaSize: 20Gi
+  orchestratorRepoSize: 5Gi              # one PVC per orchestrator replica
+  executorRepoSize: 5Gi                  # one PVC per executor-host replica
+  evaluatorRepoSize: 5Gi                 # one PVC per evaluator-host replica
+  webUiRepoSize: 5Gi                     # one PVC per web-ui replica
+  artifactsSize: 50Gi                    # web-ui artifacts PVC
+
+# -----------------------------------------------------------------------------
+# Networking.
+#
+# All EDEN services are ClusterIP by default. Web UI and Gitea optionally
+# expose Ingress resources (off by default; operators pick their own ingress
+# controller). When ingress.enabled is true, ingress.hosts.webUi /
+# ingress.hosts.gitea must be set.
+ingress:
+  enabled: false
+  className: ""                          # empty = cluster default IngressClass
+  hosts:
+    webUi: ""                            # e.g., eden-webui.example.com
+    gitea: ""                            # e.g., eden-gitea.example.com
+  annotations: {}
+  tls: []                                # list of {hosts: [...], secretName: ...}
+
+# -----------------------------------------------------------------------------
+# Compose-mirror env knobs (per 12a-1 / 12a-2 / 12a-3 / 12b / 12c).
+config:
+  leaseDurationSeconds: 30               # 12c
+  stateSyncIntervalSeconds: 30           # 12c §3.4a
+  stateSyncFailureThreshold: 10          # 12c §3.4a
+  ideationPolicyTargetPending: 3         # 12a-2
+  ideationPolicyMaxTotal: ""             # empty = unbounded
+  ideasPerIdeation: 1
+  terminationPolicy: "eden_dispatch.termination:default_termination_policy"  # 12a-3
+  # On Kubernetes (Decision 9) the orchestrator runs forever because
+  # Deployments only support restartPolicy: Always; a quiescence-exit would
+  # just produce CrashLoopBackOff. The CLI accepts 0 as a sentinel meaning
+  # "never exit on quiescence". Set to a non-zero value only if you also
+  # repackage the orchestrator as a Job (out of scope for v0).
+  maxQuiescentIterations: 0
+  pollIntervalSeconds: 1.0
+  # Worker mode. v0 13a supports only --mode scripted (the deterministic
+  # test-fixture workers). User-supplied LLM workers via subprocess + DooD
+  # are deferred to 13b (executor as k8s Job). Operators with subprocess
+  # workloads stay on the Compose stack until 13b lands.
+  workerMode: "scripted"
+  ideationPolicy: "eden_dispatch.policies:default_policy"
+
+# -----------------------------------------------------------------------------
+# Experiment identity.
+#
+# 13a's chart shape: one chart release = one experiment. Operators wanting
+# multiple experiments deploy multiple releases per the README's "Coexistence
+# with the Compose deployment" section (distinct namespaces per release).
+#
+# The Phase 12c control plane still operates correctly within this shape;
+# `setup-experiment-helm.sh` may register additional experiments via the
+# control-plane API for forward-compat, but the task-store-server itself is
+# bound to a single experiment_id in v0 (one of the 13a → 13b/c/d/e
+# extensions can introduce a multi-experiment task-store, but 13a does not).
+experiment:
+  id: ""                                 # REQUIRED (e.g., "manual-ui", "exp-1")
+  # Inline experiment-config YAML — mirrors tests/fixtures/experiment/.eden/config.yaml.
+  # The chart materializes it as a ConfigMap mounted into task-store-server,
+  # evaluator-host, and web-ui pods at /etc/eden/experiment-config.yaml.
+  # When empty, install fails (the schema enforces non-empty).
+  config: ""
+
+# -----------------------------------------------------------------------------
+# Resource requests / limits.
+#
+# The chart sets reasonable defaults but does NOT pin to specific values.
+# Operators tune per their cluster. Empty maps disable both requests and
+# limits on the corresponding container.
+resources:
+  taskStoreServer: {}
+  controlPlane: {}
+  orchestrator: {}
+  ideatorHost: {}
+  executorHost: {}
+  evaluatorHost: {}
+  webUi: {}
+  postgres: {}
+  gitea: {}
+
+# -----------------------------------------------------------------------------
+# Pod-level scheduling knobs (per-service).
+#
+# Each service accepts nodeSelector, tolerations, and affinity. 13b layers
+# GPU node selection on top of executorHost. v0 leaves these empty.
+scheduling:
+  taskStoreServer:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  controlPlane:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  orchestrator:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  ideatorHost:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  executorHost:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  evaluatorHost:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  webUi:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  postgres:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  gitea:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+# -----------------------------------------------------------------------------
+# Service ports — the in-cluster ports each service listens on. These match
+# the reference Compose stack's container ports.
+ports:
+  taskStoreServer: 8080
+  controlPlane: 8080
+  webUi: 8090
+  postgres: 5432
+  gitea: 3000
+  giteaSsh: 22

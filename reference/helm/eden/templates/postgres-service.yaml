@@ -1,0 +1,51 @@
+{{/*
+Postgres headless Service.
+
+A StatefulSet needs a headless governing Service (clusterIP: None) to give
+its pods stable DNS names like `<release>-eden-postgres-0.<service>.<namespace>.svc`.
+Other services connect to postgres via the *non*-headless Service below
+("<release>-eden-postgres") on port {{ .Values.ports.postgres }}.
+
+13c is expected to either:
+
+  - replace this Service with an ExternalName pointing at managed Postgres, or
+  - gate the StatefulSet on a `postgres.embedded` value.
+
+For now both serve cluster-local traffic.
+*/}}
+{{- $postgresComponent := "postgres" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eden.componentName" (dict "context" . "component" $postgresComponent) }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $postgresComponent) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: {{ .Values.ports.postgres }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "context" . "component" $postgresComponent) | nindent 4 }}
+---
+{{/*
+Headless governing Service for the StatefulSet (pod-stable DNS).
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eden.componentName" (dict "context" . "component" $postgresComponent) }}-headless
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $postgresComponent) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: {{ .Values.ports.postgres }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "context" . "component" $postgresComponent) | nindent 4 }}

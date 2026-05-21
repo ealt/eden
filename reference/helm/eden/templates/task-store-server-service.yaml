@@ -1,0 +1,25 @@
+{{/*
+task-store-server ClusterIP Service.
+
+In-cluster name "{{ release-name }}-eden-task-store-server" on port
+{{ .Values.ports.taskStoreServer }} (default 8080). Workers, the
+orchestrator, and the web-ui all consume this Service URL — there's no
+external ingress for the wire API in v0 (the wire is operator-internal;
+external surface goes through the web-ui).
+*/}}
+{{- $component := "task-store-server" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eden.componentName" (dict "context" . "component" $component) }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.ports.taskStoreServer }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}

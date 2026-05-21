@@ -1,0 +1,126 @@
+{{/*
+control-plane Deployment.
+
+The Phase 12c control-plane server (chapter 11): registry of
+experiments + leases + state-sync poller. Stateless from the pod's
+view; control-plane state lives in Postgres alongside the task-store's
+state (the two services use disjoint table-name prefixes — control-plane
+tables are `control_plane_*`, task-store tables are bare — so a shared
+Postgres database is fine).
+
+Wired:
+  - --store-url: same Postgres URL as task-store-server (different
+    table set, same database).
+  - --task-store-url: in-cluster Service URL of the chart's
+    task-store-server (enables chapter 11 §3 state-sync poller).
+  - --admin-token: deployment-wide admin token from the chart-managed
+    Secret; same token the task-store-server uses (operators MAY
+    issue distinct tokens by setting secrets.existingSecret and
+    keying the Secret with a separate EDEN_CONTROL_PLANE_ADMIN_TOKEN
+    — but the v0 chart shares one admin token across both).
+  - --port: container port 8080 (Service maps to ports.controlPlane).
+
+13a does not run multiple replicas of control-plane (12c §3.9 calls it
+a singleton SPOF). HA control-plane is a follow-up.
+*/}}
+{{- $component := "control-plane" -}}
+{{- $name := include "eden.componentName" (dict "context" . "component" $component) -}}
+{{- $postgresHost := include "eden.componentName" (dict "context" . "component" "postgres") -}}
+{{- $taskStoreHost := include "eden.componentName" (dict "context" . "component" "task-store-server") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.controlPlane }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "context" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "context" . "component" $component) | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.controlPlane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.controlPlane.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "eden_control_plane_server"]
+          args:
+            - "--store-url"
+            - "$(EDEN_STORE_URL)"
+            - "--task-store-url"
+            - "http://{{ $taskStoreHost }}:{{ .Values.ports.taskStoreServer }}"
+            - "--admin-token"
+            - "$(EDEN_ADMIN_TOKEN)"
+            - "--lease-duration-seconds"
+            - {{ .Values.config.leaseDurationSeconds | quote }}
+            - "--state-sync-interval-seconds"
+            - {{ .Values.config.stateSyncIntervalSeconds | quote }}
+            - "--state-sync-failure-threshold"
+            - {{ .Values.config.stateSyncFailureThreshold | quote }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ .Values.ports.controlPlane | quote }}
+            - "--log-level"
+            - "info"
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: EDEN_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: EDEN_ADMIN_TOKEN
+            - name: EDEN_STORE_URL
+              value: "postgresql://eden:$(POSTGRES_PASSWORD)@{{ $postgresHost }}:{{ .Values.ports.postgres }}/eden"
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.controlPlane }}
+              protocol: TCP
+          # No HTTP /healthz on the control-plane today (the wire-server
+          # /healthz added in Phase 13a is on the task-store-server
+          # FastAPI app, not the control-plane FastAPI app). Use a TCP
+          # readiness probe for v0; a future amendment may add a
+          # dedicated /healthz route to the control-plane app and switch
+          # this to httpGet.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          {{- with .Values.resources.controlPlane }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

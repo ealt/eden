@@ -1,0 +1,30 @@
+# CI values used by `helm lint` and `helm template` to satisfy the
+# values.schema.json's required-fields constraints (image.repository,
+# image.tag, secrets.*). The chart's production values.yaml leaves these
+# empty by design — the operator must supply them — but lint needs SOME
+# values to render against. Helm auto-discovers ci/*-values.yaml.
+#
+# These are not real credentials. Do NOT copy them into a real values file.
+image:
+  repository: ghcr.io/example/eden-reference
+  tag: "ci-lint"
+secrets:
+  adminToken: "lint-admin-token"
+  postgresPassword: "lint-postgres-password"
+  giteaAdminPassword: "lint-gitea-admin-password"
+  giteaRemotePassword: "lint-gitea-remote-password"
+  giteaSecretKey: "0000000000000000000000000000000000000000000000000000000000000000"
+  giteaInternalToken: "1111111111111111111111111111111111111111111111111111111111111111"
+  webUiSessionSecret: "lint-session-secret"
+experiment:
+  id: "ci-lint"
+  config: |
+    parallel_variants: 1
+    evaluation_command: "python3 ${EDEN_EXPERIMENT_DIR}/evaluation.py"
+    execution_command: "python3 ${EDEN_EXPERIMENT_DIR}/execution.py"
+    ideation_command: "python3 ${EDEN_EXPERIMENT_DIR}/ideation.py"
+    evaluation_schema:
+      score: real
+    objective:
+      expr: "score"
+      direction: "maximize"

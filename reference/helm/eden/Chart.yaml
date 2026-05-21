@@ -1,0 +1,21 @@
+apiVersion: v2
+name: eden
+description: |
+  EDEN reference deployment for Kubernetes — task-store-server, control-plane,
+  orchestrator, worker hosts (ideator / executor / evaluator), web-ui, plus
+  bundled Postgres and Gitea. Parallel to the reference Compose stack at
+  reference/compose/. See reference/helm/eden/README.md for the operator
+  workflow.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/eden-protocol/eden
+sources:
+  - https://github.com/eden-protocol/eden
+keywords:
+  - eden
+  - directed-evolution
+  - orchestration
+maintainers:
+  - name: EDEN reference deployment

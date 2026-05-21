@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN Helm chart values",
+  "description": "Schema for reference/helm/eden/values.yaml. Enforces required fields and shape; the chart fails install on any violation (Helm 3.x).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["image", "secrets", "replicas", "storage", "config", "experiment"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image repository. REQUIRED — the chart cannot pull eden-reference:dev from a Kubernetes cluster; operators must build + push the image to a registry they control."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image tag. REQUIRED — pinned per release."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "postgresImage": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "giteaImage": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "replicas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "taskStoreServer": { "type": "integer", "minimum": 0 },
+        "controlPlane":    { "type": "integer", "minimum": 0 },
+        "orchestrator":    { "type": "integer", "minimum": 0 },
+        "ideatorHost":     { "type": "integer", "minimum": 0 },
+        "executorHost":    { "type": "integer", "minimum": 0 },
+        "evaluatorHost":   { "type": "integer", "minimum": 0 },
+        "webUi":           { "type": "integer", "minimum": 0 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "description": "Either populate the inline credentials (DEV) or set existingSecret to the name of a pre-created Secret (PROD).",
+      "properties": {
+        "adminToken":          { "type": "string" },
+        "postgresPassword":    { "type": "string" },
+        "giteaAdminPassword":  { "type": "string" },
+        "giteaRemotePassword": { "type": "string" },
+        "giteaSecretKey":      { "type": "string" },
+        "giteaInternalToken":  { "type": "string" },
+        "webUiSessionSecret":  { "type": "string" },
+        "existingSecret":      { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "className":            { "type": "string" },
+        "postgresSize":         { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" },
+        "giteaSize":            { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" },
+        "orchestratorRepoSize": { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" },
+        "executorRepoSize":     { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" },
+        "evaluatorRepoSize":    { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" },
+        "webUiRepoSize":        { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" },
+        "artifactsSize":        { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti)$" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled":   { "type": "boolean" },
+        "className": { "type": "string" },
+        "hosts": {
+          "type": "object",
+          "properties": {
+            "webUi": { "type": "string" },
+            "gitea": { "type": "string" }
+          }
+        },
+        "annotations": { "type": "object" },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "hosts":      { "type": "array", "items": { "type": "string" } },
+              "secretName": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "leaseDurationSeconds":       { "type": "integer", "minimum": 1 },
+        "stateSyncIntervalSeconds":   { "type": "integer", "minimum": 1 },
+        "stateSyncFailureThreshold":  { "type": "integer", "minimum": 1 },
+        "ideationPolicyTargetPending":{ "type": "integer", "minimum": 0 },
+        "ideationPolicyMaxTotal":     { "type": ["string", "integer"] },
+        "ideasPerIdeation":           { "type": "integer", "minimum": 1 },
+        "terminationPolicy":          { "type": "string", "minLength": 1 },
+        "ideationPolicy":             { "type": "string", "minLength": 1 },
+        "maxQuiescentIterations":     { "type": "integer", "minimum": 0 },
+        "pollIntervalSeconds":        { "type": "number", "exclusiveMinimum": 0 },
+        "workerMode":                 { "type": "string", "enum": ["scripted"] }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "required": ["id", "config"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "description": "Primary experiment_id served by this chart release. Must match the worker-id grammar."
+        },
+        "config": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Inline experiment-config YAML. Materialized as a ConfigMap mounted at /etc/eden/experiment-config.yaml."
+        }
+      }
+    },
+    "resources":  { "type": "object" },
+    "scheduling": { "type": "object" },
+    "ports":      { "type": "object" }
+  }
+}

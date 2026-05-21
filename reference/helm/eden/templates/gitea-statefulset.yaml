@@ -1,0 +1,145 @@
+{{/*
+Gitea StatefulSet (bundled stopgap; 13e hardens auth + ACLs + PR review).
+
+Mirrors reference/compose/compose.yaml's `gitea` service:
+
+  - image: gitea/gitea:1.22.6-rootless
+  - sqlite3 backend on the same data volume (chart-internal — clustered
+    Gitea / external DB are 13e's call)
+  - INSTALL_LOCK=true so the web-install wizard is skipped; the per-
+    experiment setup-experiment-helm.sh script (wave 7) creates the
+    admin user + experiment repo via `gitea admin` / Gitea API.
+  - DISABLE_REGISTRATION=true — only the chart admin user can sign in.
+  - SECRET_KEY + INTERNAL_TOKEN come from the chart-managed Secret.
+  - HTTP on container port 3000, SSH on 2222 (Gitea's rootless image's
+    default SSH listen port).
+  - data: PVC at /var/lib/gitea.
+
+Rootless image runs as UID 1000; `fsGroup: 1000` makes the mounted PVC
+group-owned by 1000 so Gitea can write its data dir.
+*/}}
+{{- $giteaComponent := "gitea" -}}
+{{- $name := include "eden.componentName" (dict "context" . "component" $giteaComponent) -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $giteaComponent) | nindent 4 }}
+spec:
+  # v0 pins Gitea to a single replica. HA-Gitea is 13e's call.
+  replicas: 1
+  serviceName: {{ $name }}-headless
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "context" . "component" $giteaComponent) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "context" . "component" $giteaComponent) | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # Rootless Gitea expects to run as UID 1000.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      {{- with .Values.scheduling.gitea.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.gitea.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.gitea.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gitea
+          image: "{{ .Values.giteaImage.repository }}:{{ .Values.giteaImage.tag }}"
+          imagePullPolicy: {{ .Values.giteaImage.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.gitea }}
+              protocol: TCP
+            - name: ssh
+              containerPort: 2222
+              protocol: TCP
+          env:
+            # Server identity. ROOT_URL is per-deployment; ingress.hosts.gitea
+            # (when set) is the authoritative external URL. The default
+            # uses the in-cluster Service DNS so non-ingress deployments
+            # still work for kubectl-port-forward access.
+            - name: GITEA__server__DOMAIN
+              value: {{ default (printf "%s.%s.svc" $name .Release.Namespace) .Values.ingress.hosts.gitea | quote }}
+            - name: GITEA__server__ROOT_URL
+              value: {{ printf "http://%s:%d/" (default (printf "%s.%s.svc" $name .Release.Namespace) .Values.ingress.hosts.gitea) (int .Values.ports.gitea) | quote }}
+            - name: GITEA__server__HTTP_PORT
+              value: {{ .Values.ports.gitea | quote }}
+            - name: GITEA__server__SSH_PORT
+              value: "2222"
+            - name: GITEA__server__SSH_LISTEN_PORT
+              value: "2222"
+            - name: GITEA__database__DB_TYPE
+              value: "sqlite3"
+            - name: GITEA__database__PATH
+              value: "/var/lib/gitea/data/gitea.db"
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GITEA__security__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: GITEA_SECRET_KEY
+            - name: GITEA__security__INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: GITEA_INTERNAL_TOKEN
+            - name: GITEA__service__DISABLE_REGISTRATION
+              value: "true"
+            - name: GITEA__evaluation__ENABLED
+              value: "false"
+            - name: GITEA__log__LEVEL
+              value: "Warn"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/gitea
+          readinessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          {{- with .Values.resources.gitea }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "eden.componentLabels" (dict "context" . "component" $giteaComponent) | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.giteaSize }}

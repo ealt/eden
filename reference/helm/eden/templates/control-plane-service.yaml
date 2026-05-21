@@ -1,0 +1,25 @@
+{{/*
+control-plane ClusterIP Service.
+
+In-cluster name "{{ release-name }}-eden-control-plane" on port
+{{ .Values.ports.controlPlane }} (default 8080 inside the container).
+The orchestrator consumes this URL via --control-plane-url. v0 has no
+external ingress for the control plane — admin / operator ops go
+through web-ui Ingress or kubectl port-forward.
+*/}}
+{{- $component := "control-plane" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eden.componentName" (dict "context" . "component" $component) }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.ports.controlPlane }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}

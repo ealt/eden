@@ -1,0 +1,133 @@
+{{/*
+task-store-server Deployment.
+
+The chapter-7 wire surface for one experiment: workers, orchestrator,
+and web-ui all hit this Service. Stateless from the pod's view (state
+lives in Postgres), so a plain Deployment is correct — Decision 3.
+
+v0 13a is one experiment per chart release. The `--experiment-id` and
+`--experiment-config` flags are baked from .Values.experiment at install
+time; the experiment-config ConfigMap is mounted at /etc/eden/.
+
+The store URL is built from the in-cluster Postgres Service hostname plus
+the operator-supplied secret; the chart's standard pattern is to inject
+the password via env-from-secret then $()-expand into the EDEN_STORE_URL
+env, which the CLI's --store-url consumes via another $() expansion.
+
+NOTE — 13a deliberately omits --artifacts-dir. The artifact-serving
+route is needed for subprocess-mode workers (per chapter-12a-1f), which
+are deferred to 13b. v0 13a workers run only --mode scripted; the
+artifacts route returns 503 here, which is correct for scripted-only
+deployments. 13b/13d will wire substrate access through Kubernetes-
+native mechanisms (per-task Jobs / blob backend) rather than a shared
+PVC mount.
+*/}}
+{{- $component := "task-store-server" -}}
+{{- $name := include "eden.componentName" (dict "context" . "component" $component) -}}
+{{- $postgresHost := include "eden.componentName" (dict "context" . "component" "postgres") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.taskStoreServer }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "context" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "context" . "component" $component) | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.taskStoreServer.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.taskStoreServer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.taskStoreServer.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: task-store-server
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "eden_task_store_server"]
+          args:
+            - "--store-url"
+            - "$(EDEN_STORE_URL)"
+            - "--experiment-id"
+            - {{ .Values.experiment.id | quote }}
+            - "--experiment-config"
+            - "/etc/eden/experiment-config.yaml"
+            - "--admin-token"
+            - "$(EDEN_ADMIN_TOKEN)"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ .Values.ports.taskStoreServer | quote }}
+            - "--log-level"
+            - "info"
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: EDEN_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: EDEN_ADMIN_TOKEN
+            # $(POSTGRES_PASSWORD) is expanded by Kubernetes before the
+            # arg is passed to the container's process; the password
+            # never appears in the pod's args or in `kubectl describe`.
+            - name: EDEN_STORE_URL
+              value: "postgresql://eden:$(POSTGRES_PASSWORD)@{{ $postgresHost }}:{{ .Values.ports.postgres }}/eden"
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.taskStoreServer }}
+              protocol: TCP
+          volumeMounts:
+            - name: experiment-config
+              mountPath: /etc/eden
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              # `/healthz` is unauthenticated and always returns 200
+              # when the server's event loop is up (the existing wire
+              # surface exposes it for the Compose healthcheck).
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          {{- with .Values.resources.taskStoreServer }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: experiment-config
+          configMap:
+            name: {{ include "eden.fullname" . }}-experiment-config
+            items:
+              - key: experiment-config.yaml
+                path: experiment-config.yaml

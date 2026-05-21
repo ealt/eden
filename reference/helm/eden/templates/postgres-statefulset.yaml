@@ -1,0 +1,122 @@
+{{/*
+Postgres StatefulSet (bundled stopgap; 13c migrates to managed Postgres).
+
+Mirrors reference/compose/compose.yaml's `postgres` service:
+
+  - image: postgres:16.6-alpine (overridable via .Values.postgresImage)
+  - env:  POSTGRES_DB=eden, POSTGRES_USER=eden, POSTGRES_PASSWORD from
+          the chart-managed (or operator-supplied) Secret
+  - port: 5432 (named "postgres")
+  - data: PVC at /var/lib/postgresql/data
+  - probes: pg_isready -U eden -d eden
+
+A subdir under the PVC mount avoids the "lost+found"-clobber-postgres
+init failure on some StorageClasses by pointing PGDATA at a subpath
+that postgres creates fresh on first boot. (See plan §7.1 for the
+PVC reclaim-policy story.)
+*/}}
+{{- $postgresComponent := "postgres" -}}
+{{- $name := include "eden.componentName" (dict "context" . "component" $postgresComponent) -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "eden.componentLabels" (dict "context" . "component" $postgresComponent) | nindent 4 }}
+spec:
+  # v0 pins postgres to a single replica. Clustering / read replicas
+  # are 13c work (or operators move to managed Postgres altogether).
+  replicas: 1
+  serviceName: {{ $name }}-headless
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "context" . "component" $postgresComponent) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "context" . "component" $postgresComponent) | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.postgres.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.postgres.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.postgres.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgresImage.repository }}:{{ .Values.postgresImage.tag }}"
+          imagePullPolicy: {{ .Values.postgresImage.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.ports.postgres }}
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: "eden"
+            - name: POSTGRES_USER
+              value: "eden"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            # Subdir-PGDATA pattern: some StorageClass provisioners create
+            # a `lost+found` directory at the volume root that breaks
+            # postgres init. Pointing PGDATA at a subpath sidesteps the
+            # collision and is the upstream-recommended workaround.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - eden
+                - -d
+                - eden
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - eden
+                - -d
+                - eden
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with .Values.resources.postgres }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "eden.componentLabels" (dict "context" . "component" $postgresComponent) | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.postgresSize }}

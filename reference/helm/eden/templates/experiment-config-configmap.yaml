@@ -1,0 +1,24 @@
+{{/*
+Experiment-config ConfigMap.
+
+Materializes .Values.experiment.config (a YAML string) as a ConfigMap
+mounted into task-store-server, evaluator-host, and web-ui pods at
+/etc/eden/experiment-config.yaml. Mirrors the Compose stack's `configs:`
+mount of experiment-config.yaml — same path, same shape.
+
+13a's chart shape is one chart release = one experiment. The Compose
+stack's setup-experiment.sh writes this file once per `--experiment-id`;
+the Helm equivalent puts the YAML body in values so `helm install`
+brings up a fully-configured task-store-server. Future amendments may
+move per-experiment config to chart-external ConfigMaps that
+setup-experiment-helm.sh manages.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "eden.fullname" . }}-experiment-config
+  labels:
+    {{- include "eden.labels" . | nindent 4 }}
+data:
+  experiment-config.yaml: |
+{{ .Values.experiment.config | indent 4 }}
