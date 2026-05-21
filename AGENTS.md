@@ -22,9 +22,13 @@ For per-chunk completion records — what shipped, contract amendments, impl det
 
 Every shipped chunk MUST land an entry in `CHANGELOG.md` and a one-line status flip in `docs/roadmap.md`. Do NOT edit AGENTS.md to record chunk completions.
 
-For chunks that have a chunk-plan in `docs/plans/`, the final-wave "docs PR" appends to `CHANGELOG.md [Unreleased]` describing the shipped work; on merge, that entry flips to a dated chunk heading (`## Phase <id> — <title> — <YYYY-MM-DD>`) at the top of the file, and the roadmap status flip points at the plan: `- [<id>](plans/eden-phase-<id>-<slug>.md) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`.
+For chunks that have a chunk-plan in `docs/plans/`, the final-wave "docs PR" MUST:
 
-For planless chunks (hotfixes, mechanical renames, single-PR doc fix-ups) the same shape applies, except the roadmap one-liner points at the merged PR instead of a plan: `- [<id>](https://github.com/<org>/<repo>/pull/<N>) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`. Use the planless shape when no plan was authored — never invent a plan path after the fact.
+1. Commit the impl-stage codex-review iteration record under `docs/plans/review/<chunk>/impl/<timestamp>/` (the plan-stage record is committed at plan-merge; this step covers the impl-stage record produced during chunk execution). The top-level `.gitignore` drops regenerable transcripts (`*.jsonl` / `*.stderr` / `*.stdout` / `prompt.txt`); commit the remaining durable artifacts the run produced (typically `*.md` and `*.patch`, plus any session-state files the skill emits).
+2. Append the chunk-completion entry to `CHANGELOG.md [Unreleased]` describing the shipped work. On merge, that entry flips to a dated chunk heading (`## Phase <id> — <title> — <YYYY-MM-DD>`) at the top of the file.
+3. Flip the chunk's `docs/roadmap.md` status pointer to "shipped": `- [<id>](plans/eden-phase-<id>-<slug>.md) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`.
+
+For planless chunks (hotfixes, mechanical renames, single-PR doc fix-ups) the same shape applies, except the roadmap one-liner points at the merged PR instead of a plan: `- [<id>](https://github.com/<org>/<repo>/pull/<N>) — <title> — **shipped <YYYY-MM-DD>** (see [CHANGELOG](../CHANGELOG.md))`. Use the planless shape when no plan was authored — never invent a plan path after the fact. Planless chunks that go through codex-review still commit the review record under `docs/plans/review/<slug>/impl/<timestamp>/`.
 
 ## Commands
 
