@@ -67,6 +67,104 @@ class FormErrors:
         return bool(self.by_row) or bool(self.overall)
 
 
+def _validate_slug(i: int, slug: str, errors: FormErrors) -> None:
+    if not slug:
+        errors.add(i, "slug", "slug is required")
+    elif not all(c.isalnum() or c in "-_" for c in slug):
+        errors.add(i, "slug", "slug must be alphanumeric / dash / underscore")
+
+
+def _parse_priority(i: int, raw: str, errors: FormErrors) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        errors.add(i, "priority", "priority must be a number")
+        return 0.0
+
+
+def _parse_parents(i: int, parents_raw: str, errors: FormErrors) -> tuple[str, ...]:
+    parents = tuple(p.strip() for p in parents_raw.split(",") if p.strip())
+    if not parents:
+        errors.add(i, "parent_commits", "at least one parent commit SHA is required")
+        return parents
+    for parent in parents:
+        if not (len(parent) == 40 and all(c in "0123456789abcdef" for c in parent.lower())):
+            errors.add(i, "parent_commits", f"invalid SHA: {parent!r}")
+            break
+    return parents
+
+
+def _parse_intended_executor(
+    i: int,
+    kind_raw: str,
+    id_raw: str,
+    errors: FormErrors,
+) -> TaskTarget | None:
+    if kind_raw not in ("none", "worker", "group"):
+        errors.add(
+            i,
+            "intended_executor",
+            "intended_executor kind must be 'none', 'worker', or 'group'",
+        )
+        return None
+    if kind_raw == "none":
+        if id_raw:
+            # Operator typed an id but selected kind=none — surface
+            # this as an error rather than silently dropping the id,
+            # since the most likely cause is a mis-click.
+            errors.add(
+                i,
+                "intended_executor",
+                "intended_executor id supplied but kind is 'none'; "
+                "pick a kind or clear the id",
+            )
+        return None
+    if not id_raw:
+        errors.add(
+            i,
+            "intended_executor",
+            f"intended_executor id is required for kind={kind_raw!r}",
+        )
+        return None
+    if not _REGISTRY_ID_PATTERN.fullmatch(id_raw):
+        errors.add(
+            i,
+            "intended_executor",
+            "intended_executor id must match the §6.1 registry-id grammar",
+        )
+        return None
+    return TaskTarget(kind=kind_raw, id=id_raw)
+
+
+def _parse_idea_row(
+    i: int,
+    *,
+    slug: str,
+    priority_raw: str,
+    parents_raw: str,
+    content: str,
+    kind_raw: str,
+    id_raw: str,
+    errors: FormErrors,
+) -> IdeaDraft | None:
+    """Validate one non-empty idea row; return the draft when row has no errors."""
+    _validate_slug(i, slug, errors)
+    priority = _parse_priority(i, priority_raw, errors)
+    parents = _parse_parents(i, parents_raw, errors)
+    if not content:
+        errors.add(i, "content", "content markdown is required")
+    intended_executor = _parse_intended_executor(i, kind_raw, id_raw, errors)
+    if errors.by_row.get(i):
+        return None
+    return IdeaDraft(
+        slug=slug,
+        priority=priority,
+        parent_commits=parents,
+        content=content,
+        intended_executor=intended_executor,
+    )
+
+
 def parse_idea_rows(
     slugs: list[str],
     priorities: list[str],
@@ -113,75 +211,22 @@ def parse_idea_rows(
         if not slug and not parents_raw and not content:
             continue
 
-        if not slug:
-            errors.add(i, "slug", "slug is required")
-        elif not all(c.isalnum() or c in "-_" for c in slug):
-            errors.add(i, "slug", "slug must be alphanumeric / dash / underscore")
-
-        try:
-            priority = float(priority_raw)
-        except ValueError:
-            errors.add(i, "priority", "priority must be a number")
-            priority = 0.0
-
-        parents = tuple(p.strip() for p in parents_raw.split(",") if p.strip())
-        if not parents:
-            errors.add(i, "parent_commits", "at least one parent commit SHA is required")
-        else:
-            for parent in parents:
-                if not (len(parent) == 40 and all(c in "0123456789abcdef" for c in parent.lower())):
-                    errors.add(i, "parent_commits", f"invalid SHA: {parent!r}")
-                    break
-
-        if not content:
-            errors.add(i, "content", "content markdown is required")
-
-        intended_executor: TaskTarget | None = None
         kind_raw = (kinds[i] if i < len(kinds) else "").strip().lower() or "none"
         id_raw = (ids[i] if i < len(ids) else "").strip()
-        if kind_raw not in ("none", "worker", "group"):
-            errors.add(
-                i,
-                "intended_executor",
-                "intended_executor kind must be 'none', 'worker', or 'group'",
-            )
-        elif kind_raw != "none":
-            if not id_raw:
-                errors.add(
-                    i,
-                    "intended_executor",
-                    f"intended_executor id is required for kind={kind_raw!r}",
-                )
-            elif not _REGISTRY_ID_PATTERN.fullmatch(id_raw):
-                errors.add(
-                    i,
-                    "intended_executor",
-                    "intended_executor id must match the §6.1 registry-id grammar",
-                )
-            else:
-                intended_executor = TaskTarget(kind=kind_raw, id=id_raw)
-        elif id_raw:
-            # Operator typed an id but selected kind=none — surface
-            # this as an error rather than silently dropping the id,
-            # since the most likely cause is a mis-click.
-            errors.add(
-                i,
-                "intended_executor",
-                "intended_executor id supplied but kind is 'none'; "
-                "pick a kind or clear the id",
-            )
 
         parsed_count += 1
-        if not errors.by_row.get(i):
-            drafts.append(
-                IdeaDraft(
-                    slug=slug,
-                    priority=priority,
-                    parent_commits=parents,
-                    content=content,
-                    intended_executor=intended_executor,
-                )
-            )
+        draft = _parse_idea_row(
+            i,
+            slug=slug,
+            priority_raw=priority_raw,
+            parents_raw=parents_raw,
+            content=content,
+            kind_raw=kind_raw,
+            id_raw=id_raw,
+            errors=errors,
+        )
+        if draft is not None:
+            drafts.append(draft)
 
     if parsed_count == 0:
         errors.add_overall("at least one idea row must be filled in")
