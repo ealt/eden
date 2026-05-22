@@ -324,10 +324,7 @@ def _is_symlink(component: str, *, dir_fd: int) -> bool:
     return stat.S_ISLNK(st.st_mode)
 
 
-# slop-allow: FastAPI app factory; 57 nested route handlers as
-# closures over `store`. CC=5 outer / per-handler CC ≤ 5. Length is a
-# metric artifact, not a complexity signal. APIRouter regroup deferred
-# (audit F-3 / L-D).
+# slop-allow: L-D resolved by F-3 — deferred to issue #115
 def make_app(
     store: Store,
     *,
