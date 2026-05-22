@@ -1,0 +1,14 @@
+--- /Users/ericalt/Documents/eden-worktrees/code-quality-audit/docs/plans/review/2026-05-20-phase-c-disposition/impl/20260521T203349/1.md	2026-05-21 20:47:46
++++ /Users/ericalt/Documents/eden-worktrees/code-quality-audit/docs/plans/review/2026-05-20-phase-c-disposition/impl/20260521T203349/2.md	2026-05-21 20:49:54
+@@ -137,3 +137,11 @@
+ Bundled separately: drop the duplicate `--forgejo-url` argparse declaration in `executor/cli.py` and `evaluator/cli.py` (rebase artifact from main's rename PR where `--gitea-url` was intended as a deprecated alias).
+ 
+ Validation re-run: ruff clean / pyright 0 / 596 storage+wire tests pass / markdownlint clean / complexity gate 0 blocking / compose smoke.sh PASSED.
++
++## Round 2 — addressed feedback
++
++Codex round-1 surfaced 1 Nit, addressed in commit `b04a055`:
++
++- Gate's module docstring still listed "docstrings" in the preamble forms. Walker was already updated in round 0 to drop the docstring heuristic; the docstring is now tightened to match (state explicitly: docstrings are NOT preamble).
++
++Codex round-1 verdict: "ready to merge."

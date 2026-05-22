@@ -1,0 +1,5 @@
+1. Nit — [scripts/check-complexity.py](/Users/ericalt/Documents/eden-worktrees/code-quality-audit/scripts/check-complexity.py:24): the module docstring still says function-level `# slop-allow:` may appear in a preamble of “comments / decorators / docstrings / blank lines,” but the implementation now intentionally does not skip triple-quoted blocks. The fix is to update this top-of-file usage text to match the actual walker and the revised AGENTS guidance.
+
+No other findings. I spot-checked the behavior changes directly: `submission_from_payload()` is strict again, `submission_from_payload_lenient()` is only wired through the checkpoint reader, the preamble walker now accepts comment/decorator/blank preambles and rejects the removed docstring-block heuristic, and the duplicate `--forgejo-url` declarations are gone.
+
+Overall assessment: ready to merge. I did not rerun the full validation matrix myself; I relied on the brief’s reported `ruff`/`pyright`/tests/smoke results plus targeted local checks of the changed helpers.
