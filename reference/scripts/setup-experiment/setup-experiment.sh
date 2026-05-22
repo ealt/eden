@@ -545,20 +545,20 @@ echo "--- bringing up forgejo synchronously ---" >&2
 # non-zero if the user exists; the change-password fallback handles
 # the re-run case.
 echo "--- provisioning forgejo eden user ---" >&2
-if ! docker compose -f "${COMPOSE_DIR}/compose.yaml" --env-file "$ENV_FILE" \
+if ! (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
         exec -T forgejo forgejo admin user create \
             --username eden \
             --password "$FORGEJO_REMOTE_PASSWORD" \
             --email eden@invalid \
             --admin \
-            --must-change-password=false \
+            --must-change-password=false) \
         >&2 2>&1
 then
-    docker compose -f "${COMPOSE_DIR}/compose.yaml" --env-file "$ENV_FILE" \
+    (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
         exec -T forgejo forgejo admin user change-password \
             --username eden \
             --password "$FORGEJO_REMOTE_PASSWORD" \
-            --must-change-password=false >&2
+            --must-change-password=false) >&2
 fi
 
 echo "--- creating forgejo repo eden/${EXPERIMENT_ID} ---" >&2
@@ -694,8 +694,8 @@ bootstrap_curl() {
         args+=(-d "$body")
     fi
     args+=("http://localhost:8080${path}")
-    docker compose -f compose.yaml --env-file "$ENV_FILE" \
-        exec -T task-store-server curl "${args[@]}" || true
+    (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
+        exec -T task-store-server curl "${args[@]}") || true
 }
 
 echo "--- registering reserved groups + initial admin worker ---" >&2
