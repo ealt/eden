@@ -54,8 +54,11 @@ reference/compose/experiment-config.yaml
 # cleanup callbacks; the dir itself sticks around between runs.
 reference/compose/.cidfiles-*/
 
-# Phase 10d follow-up B: per-experiment Gitea credential-helper
+# Phase 10d follow-up B: per-experiment Forgejo credential-helper
 # scripts (host-side bind-mount source). Contains the per-experiment
-# Gitea password — must NOT be committed.
+# Forgejo password — must NOT be committed. Legacy `.gitea-creds-*/`
+# pattern preserved so any pre-rename experiment directories still get
+# ignored.
 reference/compose/.gitea-creds-*/
+reference/compose/.forgejo-creds-*/
 /reference/compose/checkpoints/

@@ -1,3 +1,5 @@
+# slop-allow-file: F-3 eden-wire/server.py APIRouter regroup deferred to issue #115
+
 """FastAPI server that exposes a ``Store`` over the EDEN wire protocol.
 
 :func:`make_app` takes a single ``Store`` and returns a fresh
@@ -43,10 +45,9 @@ from eden_contracts import Idea, TaskAdapter, Variant
 from eden_storage import Store
 from eden_storage.errors import NotFound, StorageError
 from eden_storage.submissions import (
-    EvaluationSubmission,
-    IdeaSubmission,
     Submission,
-    VariantSubmission,
+    submission_from_payload,
+    submission_to_payload,
 )
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -323,6 +324,7 @@ def _is_symlink(component: str, *, dir_fd: int) -> bool:
     return stat.S_ISLNK(st.st_mode)
 
 
+# slop-allow: L-D resolved by F-3 — deferred to issue #115
 def make_app(
     store: Store,
     *,
@@ -1669,170 +1671,129 @@ def make_app(
     ) -> Response:
         # 1. Auth-first. NEVER touch the filesystem before auth so
         #    timing / response-code differences on unauth requests
-        #    can't leak existence-of-files. When admin_token is
-        #    None (test / in-process posture), auth is disabled —
-        #    same posture the rest of the wire takes.
+        #    can't leak existence-of-files. When admin_token is None
+        #    (test / in-process posture), auth is disabled — same
+        #    posture the rest of the wire takes.
         if admin_token is not None:
             authenticate(
                 request.headers.get("authorization"),
                 admin_token=admin_token,
                 store=store,
             )
-
         # 2. Experiment-id mismatch guard (chapter-7 §1.3 parity).
         if experiment_id != store.experiment_id:
             raise ExperimentIdMismatch(
                 f"URL segment {experiment_id!r} does not match server's "
                 f"experiment {store.experiment_id!r}"
             )
-
         # 3. Disabled-deployment guard.
         if artifact_root is None:
             raise ArtifactServingDisabled(
                 "task-store-server started without --artifacts-dir"
             )
-
-        # 4. Descriptor-relative component walk beneath the root.
-        #    Closes the intermediate-component TOCTOU window
-        #    (an attacker who can swap an intermediate dir to a
-        #    symlink between path resolution and open cannot
-        #    sneak the walk out of the root, because each step
-        #    is anchored by the prior step's fd, not a path).
-        try:
-            fd = _open_artifact_fd(artifact_root, path)
-        except ValueError as exc:
-            raise InvalidPath(f"invalid path: {exc}") from exc
-        except _SymlinkRejected as exc:
-            # Symlink hit (terminal or intermediate). Pre-open lstat
-            # check + post-open ELOOP raised this; either way we
-            # never follow the link.
-            raise Forbidden("symlink not allowed") from exc
-        except FileNotFoundError as exc:
-            # Use eden_storage.NotFound so the existing
-            # @app.exception_handler(StorageError) maps to
-            # problem+json under eden://error/not-found (NOT
-            # FastAPI's default {"detail": ...} shape, which
-            # would bypass the wire-binding error vocabulary).
-            raise NotFound("artifact not found") from exc
-        except OSError as exc:
-            # Codex round-3: only ENOENT / ENOTDIR / ENAMETOOLONG
-            # are legitimate "path doesn't resolve to a file"
-            # cases and collapse to 404. Other OSErrors (EIO,
-            # EACCES, EMFILE, ENOSPC, etc.) are operational
-            # server faults — propagate so they surface as 5xx
-            # rather than masquerading as a missing artifact.
-            if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG):
-                raise NotFound("artifact not found") from exc
-            raise
-
-        try:
-            st = os.fstat(fd)
-
-            # 5. Regular-file check on the OPEN fd (not on the path —
-            #    re-stating the path would re-open the TOCTOU window).
-            if not stat.S_ISREG(st.st_mode):
-                raise NotFound("artifact not found")
-
-            # 6. Size cap on the open fd.
-            if st.st_size > MAX_ARTIFACT_BYTES:
-                raise ArtifactTooLarge(
-                    f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap "
-                    f"(size={st.st_size})"
-                )
-
-            # 7. Read all bytes from the open fd. The 1 MiB cap
-            #    bounds per-request memory.
-            data = os.read(fd, MAX_ARTIFACT_BYTES + 1)
-            if len(data) > MAX_ARTIFACT_BYTES:
-                # Race: file grew between fstat and read.
-                raise ArtifactTooLarge("artifact size grew during read")
-        finally:
-            os.close(fd)
-
-        # 8. Return with safe-delivery headers. Content-Disposition:
-        #    attachment forces the user-agent to treat the response
-        #    as a download (defeats stored-XSS via .html / .svg
-        #    artifacts); X-Content-Type-Options: nosniff prevents
-        #    MIME sniffing; Content-Type: application/octet-stream
-        #    is generic — the agent decodes via the artifacts_uri
-        #    domain knowledge it already has.
-        #
-        #    Codex round-2: build the filename portion of
-        #    Content-Disposition safely so attacker-controlled
-        #    artifact names with quotes, backslashes, or CR/LF
-        #    can't break header syntax or inject headers. We
-        #    EMIT BOTH `filename="<ascii-safe>"` (quoted-string,
-        #    quotes/backslashes escaped, control chars stripped)
-        #    and `filename*=UTF-8''<percent-encoded>` per RFC 6266
-        #    §4.1 (the latter is the unambiguous one; the former
-        #    is the legacy fallback). CR/LF in the raw component
-        #    is impossible here (URL path can't contain them
-        #    after FastAPI's path-decode), but we belt-and-
-        #    suspenders strip them just in case.
-        raw_name = path.rsplit("/", 1)[-1] or "artifact"
-        cd_value = _build_content_disposition(raw_name)
+        # 4-7. Open + read with all path-traversal / symlink /
+        # size-cap guards. See `_open_and_read_artifact`.
+        data = _open_and_read_artifact(artifact_root, path)
+        # 8. Return with safe-delivery headers. See
+        #    `_artifact_response_headers` for the
+        #    Content-Disposition + nosniff posture.
         return Response(
             content=data,
             media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": cd_value,
-                "X-Content-Type-Options": "nosniff",
-            },
+            headers=_artifact_response_headers(path),
         )
 
     return app
 
 
+def _open_and_read_artifact(artifact_root: Any, path: str) -> bytes:
+    """Open ``artifact_root`` + ``path`` and read at most ``MAX_ARTIFACT_BYTES``.
+
+    Closes the intermediate-component TOCTOU window via descriptor-
+    relative walks (``_open_artifact_fd``): an attacker who can swap
+    an intermediate dir to a symlink between resolution and open
+    cannot sneak the walk out of the root, because each step is
+    anchored by the prior step's fd, not a path.
+    """
+    try:
+        fd = _open_artifact_fd(artifact_root, path)
+    except ValueError as exc:
+        raise InvalidPath(f"invalid path: {exc}") from exc
+    except _SymlinkRejected as exc:
+        # Symlink hit (terminal or intermediate). Pre-open lstat
+        # check + post-open ELOOP raised this; either way we never
+        # follow the link.
+        raise Forbidden("symlink not allowed") from exc
+    except FileNotFoundError as exc:
+        # Use eden_storage.NotFound so the existing
+        # @app.exception_handler(StorageError) maps to problem+json
+        # under eden://error/not-found (NOT FastAPI's default
+        # {"detail": ...} shape, which would bypass the wire-binding
+        # error vocabulary).
+        raise NotFound("artifact not found") from exc
+    except OSError as exc:
+        # Codex round-3: only ENOENT / ENOTDIR / ENAMETOOLONG are
+        # legitimate "path doesn't resolve to a file" cases and
+        # collapse to 404. Other OSErrors (EIO, EACCES, EMFILE,
+        # ENOSPC, etc.) are operational server faults — propagate so
+        # they surface as 5xx rather than masquerading as missing.
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG):
+            raise NotFound("artifact not found") from exc
+        raise
+
+    try:
+        st = os.fstat(fd)
+        # Regular-file check on the OPEN fd (not on the path —
+        # re-stating the path would re-open the TOCTOU window).
+        if not stat.S_ISREG(st.st_mode):
+            raise NotFound("artifact not found")
+        if st.st_size > MAX_ARTIFACT_BYTES:
+            raise ArtifactTooLarge(
+                f"artifact exceeds {MAX_ARTIFACT_BYTES}-byte cap "
+                f"(size={st.st_size})"
+            )
+        # The 1 MiB cap bounds per-request memory.
+        data = os.read(fd, MAX_ARTIFACT_BYTES + 1)
+        if len(data) > MAX_ARTIFACT_BYTES:
+            # Race: file grew between fstat and read.
+            raise ArtifactTooLarge("artifact size grew during read")
+    finally:
+        os.close(fd)
+    return data
+
+
+def _artifact_response_headers(path: str) -> dict[str, str]:
+    """Build safe-delivery headers for an artifact response.
+
+    ``Content-Disposition: attachment`` forces the user-agent to
+    treat the response as a download (defeats stored-XSS via .html /
+    .svg artifacts); ``X-Content-Type-Options: nosniff`` prevents
+    MIME sniffing; ``Content-Type: application/octet-stream`` is
+    generic — the agent decodes via the artifacts_uri domain
+    knowledge it already has.
+
+    Codex round-2: ``_build_content_disposition`` emits both
+    ``filename="<ascii-safe>"`` and ``filename*=UTF-8''<percent>``
+    per RFC 6266 §4.1 so attacker-controlled artifact names with
+    quotes, backslashes, or CR/LF can't break header syntax.
+    """
+    raw_name = path.rsplit("/", 1)[-1] or "artifact"
+    return {
+        "Content-Disposition": _build_content_disposition(raw_name),
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, IdeaSubmission):
-        return {
-            "kind": "ideation",
-            "status": submission.status,
-            "idea_ids": list(submission.idea_ids),
-        }
-    if isinstance(submission, VariantSubmission):
-        body: dict[str, Any] = {
-            "kind": "execution",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.commit_sha is not None:
-            body["commit_sha"] = submission.commit_sha
-        return body
-    if isinstance(submission, EvaluationSubmission):
-        body = {
-            "kind": "evaluation",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.evaluation is not None:
-            body["evaluation"] = submission.evaluation
-        if submission.artifacts_uri is not None:
-            body["artifacts_uri"] = submission.artifacts_uri
-        return body
-    raise ValueError(f"unknown submission type: {type(submission).__name__}")
+    kind, payload = submission_to_payload(submission)
+    return {"kind": kind, **payload}
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "ideation":
-        return IdeaSubmission(
-            status=payload["status"],
-            idea_ids=tuple(payload.get("idea_ids", ())),
-        )
-    if kind == "execution":
-        return VariantSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            commit_sha=payload.get("commit_sha"),
-        )
-    if kind == "evaluation":
-        return EvaluationSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            evaluation=payload.get("evaluation"),
-            artifacts_uri=payload.get("artifacts_uri"),
-        )
-    raise HTTPException(status_code=400, detail=f"unknown task kind {kind!r}")
+    try:
+        return submission_from_payload(kind, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _worker_id_from_request(request: Request) -> str:

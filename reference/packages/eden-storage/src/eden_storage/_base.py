@@ -1,3 +1,5 @@
+# slop-allow-file: F-1 _StoreBase mixin split deferred to issue #114
+
 """Backend-agnostic transition logic shared by every ``Store`` backend.
 
 Every EDEN store backend — in-memory, SQLite, a future Postgres or
@@ -228,6 +230,92 @@ def _deep[M: BaseModel](model: M) -> M:
     ``_deep`` for uniformity.
     """
     return model.model_copy(deep=True)
+
+
+# ----------------------------------------------------------------------
+# Helpers for the §3.3 non-no-op variant check (used by
+# `_StoreBase._validate_non_no_op_variant`). Split out so each gate of
+# the rule reads as a named predicate.
+# ----------------------------------------------------------------------
+
+
+def _no_op_check_inputs(
+    task: Task,
+    submission: Submission,
+    get_idea: Callable[[str], Idea | None],
+) -> tuple[str, list[str]] | None:
+    """Return ``(commit_sha, parent_commits)`` when the §3.3 check should run.
+
+    Returns ``None`` (silently skip the check) when the submission
+    shape, idea attachment, or parent list rules out a no-op tree
+    comparison.
+    """
+    if not isinstance(submission, VariantSubmission):
+        return None
+    if submission.status != "success":
+        return None
+    if submission.commit_sha is None:
+        return None
+    assert isinstance(task, ExecutionTask)
+    idea = get_idea(task.payload.idea_id)
+    if idea is None or not idea.parent_commits:
+        return None
+    return submission.commit_sha, list(idea.parent_commits)
+
+
+def _all_parents_equal_sha(sha: str, parents: list[str]) -> bool:
+    """True when ``sha`` is byte-equal to every parent (Layer 1 fast path)."""
+    return all(p == sha for p in parents)
+
+
+def _resolve_trees(
+    resolver: Callable[[str], str | None],
+    sha: str,
+    parents: list[str],
+) -> tuple[str, list[str]] | None:
+    """Run the tree resolver against ``sha`` + every parent.
+
+    Returns ``(submission_tree, parent_trees)`` when every resolver
+    call yields a non-``None`` tree. Returns ``None`` when the
+    resolver raises or returns ``None`` for any SHA — Layer 2 is
+    silently disabled for this submission in that case (Layer 1's
+    fast path still applies).
+    """
+    try:
+        sub_tree = resolver(sha)
+    except Exception:  # noqa: BLE001 — resolver is binding-supplied; contain errors
+        return None
+    if sub_tree is None:
+        return None
+    parent_trees: list[str] = []
+    for p in parents:
+        try:
+            t = resolver(p)
+        except Exception:  # noqa: BLE001
+            return None
+        if t is None:
+            return None
+        parent_trees.append(t)
+    return sub_tree, parent_trees
+
+
+def _sha_equality_message(task_id: str, sha: str) -> str:
+    return (
+        f"execution submission for task {task_id!r} has "
+        f"commit_sha={sha!r} equal to every parent_commit; the "
+        "variant tree is identical to the parent tree (no-op). "
+        "spec/v0/03-roles.md §3.3 non-no-op invariant."
+    )
+
+
+def _tree_identity_message(task_id: str, sha: str, sub_tree: str) -> str:
+    return (
+        f"execution submission for task {task_id!r} has "
+        f"commit_sha={sha!r} whose tree {sub_tree!r} is identical "
+        "to the tree of every parent_commit; the variant "
+        "contributes no change. spec/v0/03-roles.md §3.3 "
+        "non-no-op invariant."
+    )
 
 
 class _StoreBase:
@@ -1183,90 +1271,93 @@ class _StoreBase:
                     "(04-task-protocol.md §6.1)"
                 )
             # No-op idempotency: same target shape → emit nothing.
-            current_target = task.target
-            if self._targets_equal(current_target, new_target) and task.state == "pending":
+            if (
+                self._targets_equal(task.target, new_target)
+                and task.state == "pending"
+            ):
                 return _deep(task)
 
             now = self._ts()
             tx = _Tx()
-            # `target=None` removes the field; `_validated_update`'s
-            # None-as-absent convention handles that. The state itself
-            # always lands at "pending" after a reassign — either it
-            # was already pending (no transition) or the composite
-            # reclaim-then-reassign path took it from claimed→pending.
-            updated_kwargs: dict[str, Any] = {
-                "target": new_target,
-                "state": "pending",
-                "claim": None,
-                "updated_at": now,
-            }
-            tx.tasks[task_id] = _validated_update(task, **updated_kwargs)
+            tx.tasks[task_id] = _validated_update(
+                task,
+                target=new_target,
+                state="pending",
+                claim=None,
+                updated_at=now,
+            )
 
             if task.state == "claimed":
-                # Composite-commit: reclaim first, then reassign.
-                # Order in the event log mirrors the causal order; both
-                # land in the same `read_range` slice and no
-                # intermediate state is observable.
-                tx.events.append(
-                    self._event(
-                        "task.reclaimed",
-                        {"task_id": task_id, "cause": "operator"},
-                    )
-                )
-                # Per `reclaim`: an execution task whose claimant's
-                # in-flight variant is still `starting` transitions
-                # that variant to `error` atomically (`05-event-protocol.md`
-                # §2.2). The reassign-on-claimed path inherits this so
-                # an operator who reassigns to a different executor
-                # doesn't leave an orphaned `starting` variant.
-                if task.kind == "execution":
-                    variant = self._find_starting_variant_for_implement_task(task)
-                    if variant is not None:
-                        tx.variants[variant.variant_id] = _validated_update(
-                            variant, status="error", completed_at=now
-                        )
-                        tx.events.append(
-                            self._event(
-                                "variant.errored",
-                                {"variant_id": variant.variant_id},
-                            )
-                        )
-                # A submission MUST NOT survive the reclaim half of the
-                # composite (a claimed task can't yet have a recorded
-                # submission, but be defensive in case the state model
-                # ever permits it).
-                if self._get_submission(task_id) is not None:
-                    tx.task_deletes_submission.add(task_id)
-
-            new_target_payload: TaskTarget | None
-            if new_target is None:
-                new_target_payload = None
-            else:
-                # Re-dump through the model so the event payload's
-                # shape is identical to the wire schema.
-                new_target_payload = TaskTarget.model_validate(
-                    new_target.model_dump(mode="json", exclude_none=True)
-                )
+                self._stage_reassign_reclaim(tx, task, now)
 
             tx.events.append(
                 self._event(
                     "task.reassigned",
-                    {
-                        "task_id": task_id,
-                        "new_target": (
-                            None
-                            if new_target_payload is None
-                            else new_target_payload.model_dump(
-                                mode="json", exclude_none=True
-                            )
-                        ),
-                        "reason": reason,
-                        "reassigned_by": reassigned_by,
-                    },
+                    self._reassign_event_payload(
+                        task_id, new_target, reason, reassigned_by
+                    ),
                 )
             )
             self._apply_commit(tx)
             return _deep(tx.tasks[task_id])
+
+    def _stage_reassign_reclaim(self, tx: _Tx, task: Task, now: str) -> None:
+        """Stage the claimed→pending composite for a reassign on a claimed task.
+
+        Reclaim first, then reassign. Order in the event log mirrors
+        the causal order; both land in the same ``read_range`` slice
+        and no intermediate state is observable. Per ``reclaim``: an
+        execution task whose claimant's in-flight variant is still
+        ``starting`` transitions that variant to ``error`` atomically
+        (``05-event-protocol.md`` §2.2).
+        """
+        tx.events.append(
+            self._event(
+                "task.reclaimed",
+                {"task_id": task.task_id, "cause": "operator"},
+            )
+        )
+        if task.kind == "execution":
+            variant = self._find_starting_variant_for_implement_task(task)
+            if variant is not None:
+                tx.variants[variant.variant_id] = _validated_update(
+                    variant, status="error", completed_at=now
+                )
+                tx.events.append(
+                    self._event(
+                        "variant.errored",
+                        {"variant_id": variant.variant_id},
+                    )
+                )
+        # A submission MUST NOT survive the reclaim half (a claimed task
+        # can't yet have a recorded submission, but be defensive).
+        if self._get_submission(task.task_id) is not None:
+            tx.task_deletes_submission.add(task.task_id)
+
+    @staticmethod
+    def _reassign_event_payload(
+        task_id: str,
+        new_target: TaskTarget | None,
+        reason: str,
+        reassigned_by: str,
+    ) -> dict[str, Any]:
+        """Build the ``task.reassigned`` event payload.
+
+        Re-dumps ``new_target`` through the model so the event payload's
+        shape is identical to the wire schema (``05-event-protocol.md``
+        §3.1).
+        """
+        target_dump: dict[str, Any] | None = None
+        if new_target is not None:
+            target_dump = TaskTarget.model_validate(
+                new_target.model_dump(mode="json", exclude_none=True)
+            ).model_dump(mode="json", exclude_none=True)
+        return {
+            "task_id": task_id,
+            "new_target": target_dump,
+            "reason": reason,
+            "reassigned_by": reassigned_by,
+        }
 
     @staticmethod
     def _targets_equal(
@@ -1875,55 +1966,24 @@ class _StoreBase:
            this submission (e.g. fixture SHAs absent from a real repo);
            the SHA-equality fast path still applies.
         """
-        if not isinstance(submission, VariantSubmission):
+        check = _no_op_check_inputs(task, submission, self._get_idea)
+        if check is None:
             return
-        if submission.status != "success":
-            return
-        if submission.commit_sha is None:
-            return
-        assert isinstance(task, ExecutionTask)
-        idea = self._get_idea(task.payload.idea_id)
-        if idea is None or not idea.parent_commits:
-            return
+        sha, parents = check
 
-        sha = submission.commit_sha
-        parents = list(idea.parent_commits)
+        if _all_parents_equal_sha(sha, parents):
+            raise NoOpVariant(_sha_equality_message(task.task_id, sha))
 
-        # Layer 1 — SHA-equality fast path.
-        if all(p == sha for p in parents):
-            raise NoOpVariant(
-                f"execution submission for task {task.task_id!r} has "
-                f"commit_sha={sha!r} equal to every parent_commit; the "
-                "variant tree is identical to the parent tree (no-op). "
-                "spec/v0/03-roles.md §3.3 non-no-op invariant."
-            )
-
-        # Layer 2 — tree-resolver check (only when wired).
         resolver = self._tree_resolver
         if resolver is None:
             return
-        try:
-            sub_tree = resolver(sha)
-        except Exception:  # noqa: BLE001 — resolver is binding-supplied; contain errors
+        trees = _resolve_trees(resolver, sha, parents)
+        if trees is None:
             return
-        if sub_tree is None:
-            return
-        parent_trees: list[str] = []
-        for p in parents:
-            try:
-                t = resolver(p)
-            except Exception:  # noqa: BLE001
-                return
-            if t is None:
-                return
-            parent_trees.append(t)
+        sub_tree, parent_trees = trees
         if all(t == sub_tree for t in parent_trees):
             raise NoOpVariant(
-                f"execution submission for task {task.task_id!r} has "
-                f"commit_sha={sha!r} whose tree {sub_tree!r} is identical "
-                "to the tree of every parent_commit; the variant "
-                "contributes no change. spec/v0/03-roles.md §3.3 "
-                "non-no-op invariant."
+                _tree_identity_message(task.task_id, sha, sub_tree)
             )
 
     def _validate_submission_ref_binding(

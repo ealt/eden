@@ -13,10 +13,12 @@ import os
 import signal
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import uvicorn
+from eden_contracts import ExperimentConfig
 from eden_control_plane import ControlPlaneClient
 from eden_git import GitRepo
 from eden_service_common import (
@@ -51,6 +53,8 @@ def _build_control_plane_client(
     return ControlPlaneClient(url, bearer=bearer)
 
 
+# slop-allow: argparse builder; one add_argument per CLI flag with no
+# branching (CC=1). Flat flag manifest is most readable (audit L-B).
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="eden_web_ui")
     add_common_arguments(parser)
@@ -213,14 +217,87 @@ class _ListeningAnnouncer:
         t.start()
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    configure_logging(
-        service="web-ui",
+@dataclass
+class _WebUIRuntime:
+    """Constructed runtime objects ready for :func:`make_app` + uvicorn."""
+
+    config: ExperimentConfig
+    store: StoreClient
+    admin_store: StoreClient | None
+    repo: GitRepo | None
+    control_plane: ControlPlaneClient | None
+
+
+def _materialize_repo(args: argparse.Namespace) -> GitRepo | None:
+    """Open or clone the local bare git repo when --repo-path is set."""
+    if args.repo_path is None:
+        return None
+    # Phase 10d follow-up B: when --forgejo-url is set, materialize
+    # the local clone (or fetch on subsequent starts).
+    if args.forgejo_url is not None:
+        head = args.repo_path / "HEAD"
+        if head.is_file():
+            repo = GitRepo(str(args.repo_path))
+            repo.fetch_all_heads()
+        else:
+            repo = GitRepo.clone_from(
+                url=args.forgejo_url,
+                dest=args.repo_path,
+                bare=True,
+                credential_helper=args.credential_helper,
+            )
+    else:
+        repo = GitRepo(str(args.repo_path))
+    repo.rev_parse("HEAD")
+    return repo
+
+
+def _build_admin_store(
+    args: argparse.Namespace,
+    *,
+    admin_token: str | None,
+    log: Any,
+    store: StoreClient,
+) -> StoreClient | None | int:
+    """Construct + auth-probe the optional admin StoreClient.
+
+    Returns None when no admin token is configured, the admin
+    StoreClient on success, or exit code 1 when the admin bearer is
+    rejected (after closing ``store`` to avoid a leak).
+    """
+    if admin_token is None:
+        return None
+    admin_store = StoreClient(
+        base_url=args.task_store_url,
         experiment_id=args.experiment_id,
-        level=parse_log_level(args.log_level),
+        bearer=f"admin:{admin_token}",
     )
-    log = get_logger(__name__)
+    # Validate the admin bearer at startup; a stale or wrong
+    # token would otherwise surface only when the operator
+    # tried to register a worker, as an opaque "transport"
+    # banner (plan §8.1 risk note). list_workers is either-
+    # gated, so the call succeeds with the admin bearer when
+    # the bearer parses cleanly and 401s otherwise.
+    try:
+        admin_store.list_workers()
+    except Unauthorized:
+        log.error(
+            "admin token rejected by task-store; check "
+            "--admin-token / $EDEN_ADMIN_TOKEN matches the "
+            "task-store-server's --admin-token"
+        )
+        with contextlib.suppress(Exception):
+            store.close()
+        with contextlib.suppress(Exception):
+            admin_store.close()
+        return 1
+    return admin_store
+
+
+def _build_runtime(
+    args: argparse.Namespace, log: Any
+) -> _WebUIRuntime | int:
+    """Build the web-ui's wire-side runtime; return exit code 1 on auth rejection."""
     config = load_experiment_config(args.experiment_config)
     log.info("waiting_for_task_store", url=args.task_store_url)
     # The readiness probe accepts 200/401/403 ("server is up") so the
@@ -236,25 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         token=None,
         deadline_seconds=args.startup_timeout,
     )
-    repo: GitRepo | None = None
-    if args.repo_path is not None:
-        # Phase 10d follow-up B: when --forgejo-url is set, materialize
-        # the local clone (or fetch on subsequent starts).
-        if args.forgejo_url is not None:
-            head = args.repo_path / "HEAD"
-            if head.is_file():
-                repo = GitRepo(str(args.repo_path))
-                repo.fetch_all_heads()
-            else:
-                repo = GitRepo.clone_from(
-                    url=args.forgejo_url,
-                    dest=args.repo_path,
-                    bare=True,
-                    credential_helper=args.credential_helper,
-                )
-        else:
-            repo = GitRepo(str(args.repo_path))
-        repo.rev_parse("HEAD")
+    repo = _materialize_repo(args)
     bearer = resolve_worker_bearer(
         args, worker_id=args.worker_id, labels={"role": "web-ui"}
     )
@@ -283,49 +342,48 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     admin_token = resolve_admin_token(args)
-    admin_store: StoreClient | None = None
-    if admin_token is not None:
-        admin_store = StoreClient(
-            base_url=args.task_store_url,
-            experiment_id=args.experiment_id,
-            bearer=f"admin:{admin_token}",
-        )
-        # Validate the admin bearer at startup; a stale or wrong
-        # token would otherwise surface only when the operator
-        # tried to register a worker, as an opaque "transport"
-        # banner (plan §8.1 risk note). list_workers is either-
-        # gated, so the call succeeds with the admin bearer when
-        # the bearer parses cleanly and 401s otherwise.
-        try:
-            admin_store.list_workers()
-        except Unauthorized:
-            log.error(
-                "admin token rejected by task-store; check "
-                "--admin-token / $EDEN_ADMIN_TOKEN matches the "
-                "task-store-server's --admin-token"
-            )
-            with contextlib.suppress(Exception):
-                store.close()
-            with contextlib.suppress(Exception):
-                admin_store.close()
-            return 1
+    admin_store = _build_admin_store(
+        args, admin_token=admin_token, log=log, store=store
+    )
+    if isinstance(admin_store, int):
+        return admin_store
 
     control_plane = _build_control_plane_client(args, admin_token=admin_token)
-
-    app = make_app(
+    return _WebUIRuntime(
+        config=config,
         store=store,
         admin_store=admin_store,
+        repo=repo,
+        control_plane=control_plane,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    configure_logging(
+        service="web-ui",
         experiment_id=args.experiment_id,
-        experiment_config=config,
+        level=parse_log_level(args.log_level),
+    )
+    log = get_logger(__name__)
+    runtime = _build_runtime(args, log)
+    if isinstance(runtime, int):
+        return runtime
+
+    app = make_app(
+        store=runtime.store,
+        admin_store=runtime.admin_store,
+        experiment_id=args.experiment_id,
+        experiment_config=runtime.config,
         worker_id=args.worker_id,
         session_secret=args.session_secret,
         claim_ttl_seconds=args.claim_ttl_seconds,
         artifacts_dir=args.artifacts_dir,
         secure_cookies=args.secure_cookies,
-        repo=repo,
+        repo=runtime.repo,
         clone_url=args.clone_url,
         base_commit_sha=args.base_commit_sha,
-        control_plane=control_plane,
+        control_plane=runtime.control_plane,
     )
     uv_config = uvicorn.Config(
         app,
@@ -351,8 +409,8 @@ def main(argv: list[str] | None = None) -> int:
         server.run()
     finally:
         with contextlib.suppress(Exception):
-            store.close()
-        if admin_store is not None:
+            runtime.store.close()
+        if runtime.admin_store is not None:
             with contextlib.suppress(Exception):
-                admin_store.close()
+                runtime.admin_store.close()
     return 0

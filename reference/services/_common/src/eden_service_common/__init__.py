@@ -7,6 +7,7 @@ from .auth import (
     WorkerCredential,
     bootstrap_worker_credential,
     credential_path,
+    credential_secret,
     resolve_worker_bearer,
 )
 from .cli import (
@@ -38,7 +39,7 @@ from .container_exec import (
 from .experiment_config import load_experiment_config, require_command
 from .logging import configure_logging, get_logger
 from .readiness import wait_for_task_store
-from .repo import seed_bare_repo
+from .repo import ensure_repo_clone, seed_bare_repo
 from .scripted import (
     ScriptedEvaluateFn,
     ScriptedImplementFn,
@@ -76,6 +77,8 @@ __all__ = [
     "cleanup_cidfile",
     "credential_path",
     "configure_logging",
+    "credential_secret",
+    "ensure_repo_clone",
     "get_logger",
     "install_stop_handlers",
     "kill_via_cidfile",

@@ -21,6 +21,8 @@ from eden_storage import PostgresStore, SqliteStore
 from .app import build_app, build_store, load_experiment_config, provision_readonly
 
 
+# slop-allow: argparse builder; one add_argument per CLI flag with no
+# branching (CC=1). Flat flag manifest is most readable (audit L-C).
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI args for the task-store-server."""
     parser = argparse.ArgumentParser(

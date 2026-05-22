@@ -67,6 +67,10 @@ def _parse_author(value: str | None) -> Identity:
     return Identity(name=match.group("name"), email=match.group("email"))
 
 
+# slop-allow: argparse builder; one add_argument per CLI flag with no
+# branching (CC=1). Splitting into per-group helpers adds invocation
+# indirection without reducing logic — flat flag manifest is most
+# readable (audit L-A).
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI args for the orchestrator service."""
     parser = argparse.ArgumentParser(
@@ -505,87 +509,9 @@ def _run_multi_experiment(
     """
     admin_token = _resolve_control_plane_admin_token(args)
     credentials_dir = resolve_credentials_dir(args)
-
-    # B1 (codex round 1) + NEW-1 (round 2) + REGRESSION (round 3)
-    # + MINOR (round 4): the orchestrator's control-plane connection
-    # has three startup postures, decided by an UNAUTHENTICATED whoami
-    # probe FIRST (before consulting persisted credentials):
-    #   (a) Probe returns 200 → control plane is auth-DISABLED
-    #       (server started with admin_token=None — test / in-process
-    #       / local-dev). No bootstrap, no bearer; the server has no
-    #       auth gate and every lease op passes through. A leftover
-    #       persisted credential MUST NOT trigger bootstrap here:
-    #       auth-disabled whoami returns the default worker_id (not
-    #       ours), `bootstrap_control_plane_worker` would observe the
-    #       mismatch and try to reissue, which requires the admin
-    #       token we do not have — a spurious startup failure.
-    #   (b) Probe returns 401 AND we have admin_token OR persisted
-    #       credential → bootstrap the deployment-scoped worker
-    #       credential and use the worker bearer for every lease op.
-    #   (c) Probe returns 401 AND no admin_token AND no persisted
-    #       credential → bootstrap CANNOT succeed; raise an explicit
-    #       RuntimeError so the operator sees the misconfiguration at
-    #       startup rather than silently running unauthenticated and
-    #       tripping a 401 at the first lease op.
-    from .control_plane_bootstrap import (
-        credential_path as _cp_credential_path,
+    cp_bearer = _bootstrap_control_plane(
+        args=args, log=log, credentials_dir=credentials_dir, admin_token=admin_token
     )
-    from .control_plane_bootstrap import read_token as _cp_read_token
-
-    persisted_token = _cp_read_token(
-        _cp_credential_path(credentials_dir, args.worker_id)
-    )
-    cp_bearer: str | None
-    with ControlPlaneClient(args.control_plane_url) as _probe:
-        try:
-            _probe.whoami()
-            control_plane_auth_enabled = False
-        except Unauthorized:
-            control_plane_auth_enabled = True
-    if not control_plane_auth_enabled:
-        # Posture (a): auth-disabled. Skip bootstrap regardless of any
-        # leftover persisted credential.
-        log.info(
-            "control_plane_bootstrap_skipped_auth_disabled",
-            worker_id=args.worker_id,
-            persisted_token_present=persisted_token is not None,
-        )
-        cp_bearer = None
-    elif admin_token is not None or persisted_token is not None:
-        # Posture (b): auth-enabled, credentials available.
-        cp_credential = bootstrap_control_plane_worker(
-            control_plane_url=args.control_plane_url,
-            worker_id=args.worker_id,
-            credentials_dir=credentials_dir,
-            admin_token=admin_token,
-            labels={"role": "orchestrator"},
-        )
-        cp_bearer = cp_credential.bearer
-        # Join the deployment-scoped `orchestrators` group so the
-        # chapter 07 §15.2 lease ops admit this worker. Admin-gated;
-        # skipped (with warning) when admin_token is unavailable.
-        try:
-            ensure_orchestrators_group_membership(
-                control_plane_url=args.control_plane_url,
-                worker_id=args.worker_id,
-                admin_token=admin_token,
-            )
-        except Exception:  # noqa: BLE001 — defensive at startup
-            log.exception(
-                "ensure_control_plane_orchestrators_membership_failed"
-            )
-    else:
-        # Posture (c): auth-enabled, no credentials. Fail loud.
-        msg = (
-            "control-plane server is auth-enabled but no admin "
-            "token and no persisted credential are available. "
-            "Set --control-plane-admin-token, "
-            "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
-            "let the orchestrator bootstrap its deployment-scoped "
-            "worker credential."
-        )
-        raise RuntimeError(msg)
-
     cp_client = ControlPlaneClient(args.control_plane_url, bearer=cp_bearer)
 
     manager = LeaseManager(
@@ -607,12 +533,128 @@ def _run_multi_experiment(
         log.error("startup_duplicate_worker_id", error=str(exc))
         return 2
 
-    # Single bare-repo deployment: the integrator binds once at startup
-    # and is shared across all per-experiment runtimes. Per chapter 11
-    # design decision 11, v0 has one task-store-server (and one
-    # canonical bare repo) deployment-wide; deployments that need
-    # per-experiment repos will need a different `build_integrator`
-    # closure.
+    factory = _build_runtime_factory(
+        args=args, log=log, credentials_dir=credentials_dir
+    )
+
+    try:
+        run_multi_experiment_loop(
+            manager=manager,
+            factory=factory,
+            terminated_by=args.worker_id,
+            ideation_policy=ideation_policy,
+            termination_policy=termination_policy,
+            poll_interval=args.poll_interval,
+            stop=stop,
+        )
+    finally:
+        _finalize_orchestrator(manager=manager, cp_client=cp_client, log=log)
+
+    log.info("orchestrator exited")
+    return 0
+
+
+def _bootstrap_control_plane(
+    *,
+    args,  # noqa: ANN001
+    log,  # noqa: ANN001
+    credentials_dir,  # noqa: ANN001 — Path
+    admin_token: str | None,
+) -> str | None:
+    """Resolve the deployment-scoped control-plane bearer.
+
+    Three startup postures, decided by an UNAUTHENTICATED whoami probe
+    FIRST (before consulting persisted credentials):
+      (a) Probe returns 200 → control plane is auth-DISABLED (server
+          started with ``admin_token=None`` — test / in-process / local-
+          dev). No bootstrap, no bearer; the server has no auth gate and
+          every lease op passes through. A leftover persisted credential
+          MUST NOT trigger bootstrap here: auth-disabled whoami returns
+          the default ``worker_id`` (not ours), ``bootstrap_control_plane_worker``
+          would observe the mismatch and try to reissue, which requires
+          the admin token we do not have — a spurious startup failure.
+      (b) Probe returns 401 AND we have admin_token OR persisted
+          credential → bootstrap the deployment-scoped worker credential
+          and use the worker bearer for every lease op.
+      (c) Probe returns 401 AND no admin_token AND no persisted credential
+          → bootstrap CANNOT succeed; raise an explicit RuntimeError so
+          the operator sees the misconfiguration at startup rather than
+          silently running unauthenticated and tripping a 401 at the
+          first lease op.
+    """
+    from .control_plane_bootstrap import (
+        credential_path as _cp_credential_path,
+    )
+    from .control_plane_bootstrap import read_token as _cp_read_token
+
+    persisted_token = _cp_read_token(
+        _cp_credential_path(credentials_dir, args.worker_id)
+    )
+    with ControlPlaneClient(args.control_plane_url) as _probe:
+        try:
+            _probe.whoami()
+            control_plane_auth_enabled = False
+        except Unauthorized:
+            control_plane_auth_enabled = True
+
+    if not control_plane_auth_enabled:
+        # Posture (a)
+        log.info(
+            "control_plane_bootstrap_skipped_auth_disabled",
+            worker_id=args.worker_id,
+            persisted_token_present=persisted_token is not None,
+        )
+        return None
+    if admin_token is None and persisted_token is None:
+        # Posture (c)
+        msg = (
+            "control-plane server is auth-enabled but no admin "
+            "token and no persisted credential are available. "
+            "Set --control-plane-admin-token, "
+            "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
+            "let the orchestrator bootstrap its deployment-scoped "
+            "worker credential."
+        )
+        raise RuntimeError(msg)
+
+    # Posture (b)
+    cp_credential = bootstrap_control_plane_worker(
+        control_plane_url=args.control_plane_url,
+        worker_id=args.worker_id,
+        credentials_dir=credentials_dir,
+        admin_token=admin_token,
+        labels={"role": "orchestrator"},
+    )
+    # Join the deployment-scoped `orchestrators` group so the chapter 07
+    # §15.2 lease ops admit this worker. Admin-gated; skipped (with
+    # warning) when admin_token is unavailable.
+    try:
+        ensure_orchestrators_group_membership(
+            control_plane_url=args.control_plane_url,
+            worker_id=args.worker_id,
+            admin_token=admin_token,
+        )
+    except Exception:  # noqa: BLE001 — defensive at startup
+        log.exception(
+            "ensure_control_plane_orchestrators_membership_failed"
+        )
+    return cp_credential.bearer
+
+
+def _build_runtime_factory(
+    *,
+    args,  # noqa: ANN001
+    log,  # noqa: ANN001
+    credentials_dir,  # noqa: ANN001 — Path
+):
+    """Build the per-experiment runtime factory closure.
+
+    Single bare-repo deployment: the integrator binds once at startup
+    and is shared across all per-experiment runtimes. Per chapter 11
+    design decision 11, v0 has one task-store-server (and one canonical
+    bare repo) deployment-wide; deployments that need per-experiment
+    repos will need a different ``build_integrator`` closure.
+    """
     repo = _ensure_repo(
         log=log,
         repo_path=args.repo_path,
@@ -685,7 +727,7 @@ def _run_multi_experiment(
         per_experiment_cache[experiment_id] = bearer
         return bearer
 
-    factory = make_runtime_factory(
+    return make_runtime_factory(
         task_store_url=args.task_store_url,
         worker_bearer_provider=_resolve_per_experiment_bearer,
         build_integrator=_build_integrator,
@@ -694,29 +736,24 @@ def _run_multi_experiment(
         evaluation_task_prefix=args.evaluation_task_prefix,
     )
 
-    try:
-        run_multi_experiment_loop(
-            manager=manager,
-            factory=factory,
-            terminated_by=args.worker_id,
-            ideation_policy=ideation_policy,
-            termination_policy=termination_policy,
-            poll_interval=args.poll_interval,
-            stop=stop,
-        )
-    finally:
-        # §5.5: release all held leases as the final shutdown step.
-        # The per-experiment drain release happens DURING the loop
-        # body when each experiment's drain completes; this catches
-        # any leases that were still active at shutdown.
-        try:
-            manager.release_all()
-        except Exception:  # noqa: BLE001 — best-effort
-            log.exception("manager_release_all_failed")
-        cp_client.close()
 
-    log.info("orchestrator exited")
-    return 0
+def _finalize_orchestrator(
+    *,
+    manager: LeaseManager,
+    cp_client: ControlPlaneClient,
+    log,  # noqa: ANN001
+) -> None:
+    """§5.5 final shutdown step.
+
+    Release all held leases. The per-experiment drain release happens
+    DURING the loop body when each experiment's drain completes; this
+    catches any leases that were still active at shutdown.
+    """
+    try:
+        manager.release_all()
+    except Exception:  # noqa: BLE001 — best-effort
+        log.exception("manager_release_all_failed")
+    cp_client.close()
 
 
 def _resolve_control_plane_admin_token(args) -> str | None:  # noqa: ANN001

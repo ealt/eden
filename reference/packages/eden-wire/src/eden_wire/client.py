@@ -1,3 +1,5 @@
+# slop-allow-file: F-4 eden-wire/client.py per-resource split deferred to issue #116
+
 """``StoreClient`` — a ``Store``-Protocol-compatible HTTP client.
 
 ``StoreClient`` makes the EDEN wire binding look exactly like a
@@ -50,10 +52,9 @@ from eden_contracts import (
 )
 from eden_storage.errors import InvalidPrecondition, NotFound
 from eden_storage.submissions import (
-    EvaluationSubmission,
-    IdeaSubmission,
     Submission,
-    VariantSubmission,
+    submission_from_payload,
+    submission_to_payload,
 )
 
 from .errors import raise_for_envelope
@@ -1168,26 +1169,61 @@ class StoreClient:
            whether our POST landed. Raise :class:`IndeterminateImport`;
            operator intervention is required.
         """
-        # Parse the local manifest to know what `exported_at` to match.
-        # Codex round-2 finding: don't extract the whole archive just to
-        # read manifest.json — for large checkpoints this doubles local
-        # disk/I/O on the very path that's supposed to harden a dropped-
-        # response recovery. Stream-walk the tar entries instead and
-        # consume bytes only for the manifest.
+        target_id, local_exported_at, local_format_version = (
+            self._parse_recovery_manifest(
+                archive_bytes,
+                as_experiment_id=as_experiment_id,
+                original=original,
+            )
+        )
+        body = self._fetch_recovery_probe(target_id, original=original)
+        imported = body.get("imported_from")
+        if (
+            isinstance(imported, dict)
+            and imported.get("checkpoint_exported_at") == local_exported_at
+            and imported.get("checkpoint_format_version") == local_format_version
+        ):
+            # Confirmed success: our request landed; the 201 was lost.
+            return {
+                "experiment_id": target_id,
+                "warnings": ["recovered from transport-indeterminate import"],
+            }
+        # The experiment exists but with no matching provenance — either
+        # `imported_from is None` (native) or a different import won.
+        # Surface as ExperimentIdConflict to match the server-side
+        # response shape when a second client tries to claim the same id.
+        raise ExperimentIdConflict(
+            f"import_checkpoint transport failed "
+            f"({type(original).__name__}); read-back of experiment "
+            f"{target_id!r} shows it exists with non-matching "
+            f"imported_from={imported!r} (expected exported_at="
+            f"{local_exported_at!r}). The target experiment id is taken "
+            "by a different import."
+        ) from original
+
+    @staticmethod
+    def _parse_recovery_manifest(
+        archive_bytes: bytes,
+        *,
+        as_experiment_id: str | None,
+        original: BaseException,
+    ) -> tuple[str, str, str]:
+        """Stream-walk the archive's tar entries to read ``manifest.json``.
+
+        Codex round-2 finding: don't extract the whole archive just to
+        read manifest.json — for large checkpoints this doubles local
+        disk/I/O on the very path that's supposed to harden a dropped-
+        response recovery.
+
+        Returns ``(target_id, exported_at, format_version)``. Raises
+        :class:`IndeterminateImport` from ``original`` when the archive
+        is unparseable.
+        """
         import io as _io
         import tarfile as _tarfile
 
         from eden_checkpoint import CheckpointManifest
-        from eden_storage.errors import (
-            AlreadyExists,
-            InvalidPrecondition,
-        )
-        from eden_storage.errors import (
-            NotFound as _NotFound,
-        )
 
-        local_exported_at: str | None = None
-        local_format_version: str | None = None
         try:
             buf = _io.BytesIO(archive_bytes)
             manifest_bytes: bytes | None = None
@@ -1203,9 +1239,6 @@ class StoreClient:
             if manifest_bytes is None:
                 raise ValueError("manifest.json not found in archive")
             manifest_obj = CheckpointManifest.model_validate_json(manifest_bytes)
-            local_exported_at = manifest_obj.exported_at
-            local_format_version = manifest_obj.checkpoint_format_version
-            target_id = as_experiment_id or manifest_obj.experiment_id
         except Exception as parse_exc:
             # If we can't even parse the archive, we can't probe. Treat
             # as indeterminate — the caller's archive may have been
@@ -1215,10 +1248,32 @@ class StoreClient:
                 f"({type(original).__name__}) and the local archive "
                 f"could not be parsed for recovery-probe: {parse_exc}"
             ) from original
+        target_id = as_experiment_id or manifest_obj.experiment_id
+        return (
+            target_id,
+            manifest_obj.exported_at,
+            manifest_obj.checkpoint_format_version,
+        )
 
-        # Probe the receiving server. We bypass the StoreClient's
-        # default base path (which is scoped to the StoreClient's own
-        # experiment_id, not the target_id) and hit the absolute path.
+    def _fetch_recovery_probe(
+        self, target_id: str, *, original: BaseException
+    ) -> dict[str, Any]:
+        """GET ``/v0/experiments/{target_id}`` for the recovery probe.
+
+        Bypasses the StoreClient's default base path (which is scoped
+        to the StoreClient's own experiment_id, not the target_id) and
+        hits the absolute path. Raises :class:`IndeterminateImport`
+        from ``original`` on transport error, 404, or envelope-wrapped
+        StorageError; otherwise returns the parsed JSON body.
+        """
+        from eden_storage.errors import (
+            AlreadyExists,
+            InvalidPrecondition,
+        )
+        from eden_storage.errors import (
+            NotFound as _NotFound,
+        )
+
         probe_url = f"{self._base_url}/v0/experiments/{target_id}"
         probe_headers = {
             k: v for k, v in self._headers.items() if k != "X-Eden-Experiment-Id"
@@ -1255,31 +1310,7 @@ class StoreClient:
                         f"surfaced {type(e).__name__}: {e}"
                     ) from original
             probe.raise_for_status()
-        body = probe.json()
-        imported = body.get("imported_from")
-        if (
-            isinstance(imported, dict)
-            and imported.get("checkpoint_exported_at") == local_exported_at
-            and imported.get("checkpoint_format_version") == local_format_version
-        ):
-            # Confirmed success: our request landed; the 201 was lost.
-            return {
-                "experiment_id": target_id,
-                "warnings": ["recovered from transport-indeterminate import"],
-            }
-        # The experiment exists but with no matching provenance — either
-        # `imported_from is None` (native) or a different import won.
-        # Surface as ExperimentIdConflict to match the server-side
-        # response shape when a second client tries to claim the same
-        # id.
-        raise ExperimentIdConflict(
-            f"import_checkpoint transport failed "
-            f"({type(original).__name__}); read-back of experiment "
-            f"{target_id!r} shows it exists with non-matching "
-            f"imported_from={imported!r} (expected exported_at="
-            f"{local_exported_at!r}). The target experiment id is taken "
-            "by a different import."
-        ) from original
+        return probe.json()
 
     def _try_read_task(self, task_id: str) -> Task | None:
         for _ in range(self._read_back_attempts):
@@ -1316,55 +1347,12 @@ def _task_targets_equal(a: TaskTarget | None, b: TaskTarget | None) -> bool:
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:
-    if isinstance(submission, IdeaSubmission):
-        return {
-            "kind": "ideation",
-            "status": submission.status,
-            "idea_ids": list(submission.idea_ids),
-        }
-    if isinstance(submission, VariantSubmission):
-        body: dict[str, Any] = {
-            "kind": "execution",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.commit_sha is not None:
-            body["commit_sha"] = submission.commit_sha
-        return body
-    if isinstance(submission, EvaluationSubmission):
-        body = {
-            "kind": "evaluation",
-            "status": submission.status,
-            "variant_id": submission.variant_id,
-        }
-        if submission.evaluation is not None:
-            body["evaluation"] = submission.evaluation
-        if submission.artifacts_uri is not None:
-            body["artifacts_uri"] = submission.artifacts_uri
-        return body
-    raise ValueError(f"unknown submission type: {type(submission).__name__}")
+    kind, payload = submission_to_payload(submission)
+    return {"kind": kind, **payload}
 
 
 def _submission_from_wire(kind: str, payload: dict[str, Any]) -> Submission:
-    if kind == "ideation":
-        return IdeaSubmission(
-            status=payload["status"],
-            idea_ids=tuple(payload.get("idea_ids", ())),
-        )
-    if kind == "execution":
-        return VariantSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            commit_sha=payload.get("commit_sha"),
-        )
-    if kind == "evaluation":
-        return EvaluationSubmission(
-            status=payload["status"],
-            variant_id=payload["variant_id"],
-            evaluation=payload.get("evaluation"),
-            artifacts_uri=payload.get("artifacts_uri"),
-        )
-    raise ValueError(f"unknown submission kind: {kind!r}")
+    return submission_from_payload(kind, payload)
 
 
 def _now() -> str:

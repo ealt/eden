@@ -148,6 +148,20 @@ def run_executor_subprocess_loop(
                 )
 
 
+@dataclass
+class _ExecuteContext:
+    """Per-task state threaded across phase helpers in :func:`_handle_one`."""
+
+    task: ExecutionTask
+    idea: Idea
+    variant_id: str
+    branch: str
+    repo: GitRepo
+    claim_token: str
+    config: ExecutorSubprocessConfig
+    host_subdir: Path
+
+
 def _handle_one(
     *,
     store: Store,
@@ -168,26 +182,60 @@ def _handle_one(
             extra={"task_id": task.task_id, "branch": branch},
         )
         claim = store.claim(task.task_id, worker_id)
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
+        _submit_error(store, task.task_id, claim.worker_id, variant_id)
         return
 
     claim = store.claim(task.task_id, worker_id)
-
-    # Phase 1: create_variant as starting (no commit_sha).
-    variant = Variant(
+    ctx = _ExecuteContext(
+        task=task,
+        idea=idea,
         variant_id=variant_id,
-        experiment_id=store.experiment_id,
-        idea_id=idea.idea_id,
-        status="starting",
-        parent_commits=list(idea.parent_commits),
         branch=branch,
+        repo=repo,
+        claim_token=claim.worker_id,
+        config=config,
+        host_subdir=host_subdir,
+    )
+
+    if not _create_starting_variant(store=store, ctx=ctx):
+        _submit_error(store, task.task_id, ctx.claim_token, variant_id)
+        return
+
+    commit_sha = _execute_and_validate(ctx=ctx, worker_id=worker_id)
+    if commit_sha is None:
+        _submit_error(store, task.task_id, ctx.claim_token, variant_id)
+        return
+
+    if not _publish_refs(ctx=ctx, commit_sha=commit_sha):
+        _submit_error(store, task.task_id, ctx.claim_token, variant_id)
+        return
+
+    _submit_success_or_fallback(store=store, ctx=ctx, commit_sha=commit_sha)
+
+
+def _submit_error(
+    store: Store, task_id: str, claim_token: str, variant_id: str
+) -> None:
+    """Submit ``VariantSubmission(status="error", ...)`` with read-back."""
+    _submit_with_readback(
+        store=store,
+        task_id=task_id,
+        token=claim_token,
+        submission=VariantSubmission(
+            status="error", variant_id=variant_id, commit_sha=None
+        ),
+    )
+
+
+def _create_starting_variant(*, store: Store, ctx: _ExecuteContext) -> bool:
+    """Phase 1: persist the ``starting`` variant record. Returns False on failure."""
+    variant = Variant(
+        variant_id=ctx.variant_id,
+        experiment_id=store.experiment_id,
+        idea_id=ctx.idea.idea_id,
+        status="starting",
+        parent_commits=list(ctx.idea.parent_commits),
+        branch=ctx.branch,
         started_at=_now_iso(),
     )
     try:
@@ -195,58 +243,49 @@ def _handle_one(
     except (DispatchError, InvalidPrecondition, IllegalTransition) as exc:
         log.warning(
             "executor_create_variant_failed",
-            extra={"task_id": task.task_id, "error": str(exc)},
+            extra={"task_id": ctx.task.task_id, "error": str(exc)},
         )
-        # Claim TTL will expire and the sweeper will reclaim; submit
-        # an error using our claim so we don't leak the claim window.
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
-        return
+        return False
+    return True
 
-    # Phase 2a: worktree at first parent.
-    parent = idea.parent_commits[0]
+
+def _execute_and_validate(
+    *, ctx: _ExecuteContext, worker_id: str
+) -> str | None:
+    """Phase 2a–2e: worktree + subprocess + commit validation.
+
+    Returns the validated commit SHA on success, or ``None`` if any step
+    requires the caller to submit a ``status="error"`` variant.
+    """
+    parent = ctx.idea.parent_commits[0]
     wt = TaskWorktree(
-        repo_path=config.repo_path,
-        base_dir=host_subdir,
-        task_id=task.task_id,
+        repo_path=ctx.config.repo_path,
+        base_dir=ctx.host_subdir,
+        task_id=ctx.task.task_id,
     )
     try:
         wt.create(commit=parent)
     except Exception:  # noqa: BLE001 — git-shaped
         log.exception(
             "executor_worktree_create_failed",
-            extra={"task_id": task.task_id},
+            extra={"task_id": ctx.task.task_id},
         )
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
-        return
+        return None
 
     try:
         outcome = _run_subprocess(
             wt_path=wt.path,
-            task=task,
-            idea=idea,
-            variant_id=variant_id,
-            branch=branch,
-            config=config,
+            task=ctx.task,
+            idea=ctx.idea,
+            variant_id=ctx.variant_id,
+            branch=ctx.branch,
+            config=ctx.config,
             worker_id=worker_id,
         )
     except Exception:  # noqa: BLE001
         log.exception(
             "executor_subprocess_unexpected",
-            extra={"task_id": task.task_id},
+            extra={"task_id": ctx.task.task_id},
         )
         outcome = {"status": "error"}
     finally:
@@ -256,37 +295,21 @@ def _handle_one(
         log.info(
             "executor_outcome_description",
             extra={
-                "task_id": task.task_id,
+                "task_id": ctx.task.task_id,
                 "status": outcome.get("status"),
                 "description": outcome["description"],
             },
         )
     if outcome.get("status") != "success":
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
-        return
+        return None
 
     commit_sha_raw = outcome.get("commit_sha")
-    if not _validate_commit(repo=repo, commit_sha=commit_sha_raw, idea=idea):
+    if not _validate_commit(repo=ctx.repo, commit_sha=commit_sha_raw, idea=ctx.idea):
         log.warning(
             "executor_commit_invalid",
-            extra={"task_id": task.task_id, "commit_sha": commit_sha_raw},
+            extra={"task_id": ctx.task.task_id, "commit_sha": commit_sha_raw},
         )
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
-        return
+        return None
 
     assert isinstance(commit_sha_raw, str)
     commit_sha: str = commit_sha_raw
@@ -296,137 +319,116 @@ def _handle_one(
     # enforces only the SHA-equality fast path (no `--repo-path` wired
     # in default Compose); the executor host has full git access and
     # is the conforming enforcement point for the empty-commit-on-
-    # parent case. Routes to `status="error"` rather than `success`
-    # so the variant terminalizes cleanly and the task is freed.
-    if _is_no_op_variant(repo=repo, commit_sha=commit_sha, idea=idea):
+    # parent case.
+    if _is_no_op_variant(repo=ctx.repo, commit_sha=commit_sha, idea=ctx.idea):
         log.warning(
             "executor_no_op_variant",
             extra={
-                "task_id": task.task_id,
-                "variant_id": variant_id,
+                "task_id": ctx.task.task_id,
+                "variant_id": ctx.variant_id,
                 "commit_sha": commit_sha,
             },
         )
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
-        return
+        return None
 
-    # Phase 2f: create_ref locally.
+    return commit_sha
+
+
+def _publish_refs(*, ctx: _ExecuteContext, commit_sha: str) -> bool:
+    """Phase 2f/2g: create the local ``work/*`` ref and (if origin) push it.
+
+    On push failure, rolls the local ref back so we don't leave a local-
+    only ``work/*`` the orchestrator can never integrate. Returns False
+    when the caller should route to ``status="error"``.
+    """
     try:
-        repo.create_ref(f"refs/heads/{branch}", commit_sha)
+        ctx.repo.create_ref(f"refs/heads/{ctx.branch}", commit_sha)
     except Exception:  # noqa: BLE001 — git-shaped (incl. EEXIST race)
         log.warning(
             "executor_create_ref_failed",
-            extra={"task_id": task.task_id, "branch": branch},
+            extra={"task_id": ctx.task.task_id, "branch": ctx.branch},
         )
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
-        )
-        return
+        return False
 
-    # Phase 2g (Phase 10d follow-up B §D.7): if the repo has an
-    # origin remote, publish the work/* ref so the integrator's
-    # clone can fetch it. Per chapter 3 §3.3, infrastructure failure
-    # here maps to VariantSubmission(status=error). On push failure
-    # we roll back the local ref so we don't leave a local-only
-    # work/* that the orchestrator can never integrate.
-    if _repo_has_origin(repo):
+    if not _repo_has_origin(ctx.repo):
+        return True
+
+    try:
+        ctx.repo.push_ref(f"refs/heads/{ctx.branch}")
+    except Exception:  # noqa: BLE001 — git-shaped
+        log.warning(
+            "executor_push_ref_failed",
+            extra={"task_id": ctx.task.task_id, "branch": ctx.branch},
+        )
         try:
-            repo.push_ref(f"refs/heads/{branch}")
-        except Exception:  # noqa: BLE001 — git-shaped
+            ctx.repo.delete_ref(
+                f"refs/heads/{ctx.branch}", expected_old_sha=commit_sha
+            )
+        except Exception:  # noqa: BLE001
+            # Local rollback failed — the next host startup's
+            # fetch_all_heads --prune will catch the orphan.
             log.warning(
-                "executor_push_ref_failed",
-                extra={"task_id": task.task_id, "branch": branch},
+                "executor_local_rollback_failed",
+                extra={"task_id": ctx.task.task_id, "branch": ctx.branch},
             )
-            try:
-                repo.delete_ref(
-                    f"refs/heads/{branch}", expected_old_sha=commit_sha
-                )
-            except Exception:  # noqa: BLE001
-                # Local rollback failed — the next host startup's
-                # fetch_all_heads --prune will catch the orphan.
-                log.warning(
-                    "executor_local_rollback_failed",
-                    extra={"task_id": task.task_id, "branch": branch},
-                )
-            _submit_with_readback(
-                store=store,
-                task_id=task.task_id,
-                token=claim.worker_id,
-                submission=VariantSubmission(
-                    status="error", variant_id=variant_id, commit_sha=None
-                ),
-            )
-            return
+        return False
+    return True
 
-    # Phase 3: submit success with retry-before-orphan + read-back.
-    # If the server's `NoOpVariant` enforcement fires (e.g., executor's
-    # local pre-submit check disagreed with the server because of a
-    # transient git read failure), fall back to a clean status="error"
-    # submission so the claim is freed and the variant terminalizes.
+
+def _submit_success_or_fallback(
+    *, store: Store, ctx: _ExecuteContext, commit_sha: str
+) -> None:
+    """Phase 3: submit ``status="success"``; fall back to error on ``NoOpVariant``.
+
+    If the server's ``NoOpVariant`` enforcement fires (executor's local
+    pre-submit check disagreed with the server because of a transient
+    git read failure), clean up the published refs and submit a clean
+    ``status="error"`` so the claim is freed and the variant
+    terminalizes.
+    """
     try:
         _submit_with_readback(
             store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
+            task_id=ctx.task.task_id,
+            token=ctx.claim_token,
             submission=VariantSubmission(
-                status="success", variant_id=variant_id, commit_sha=commit_sha
+                status="success", variant_id=ctx.variant_id, commit_sha=commit_sha
             ),
         )
+        return
     except NoOpVariant:
         log.warning(
             "executor_no_op_variant_server_rejected",
             extra={
-                "task_id": task.task_id,
-                "variant_id": variant_id,
+                "task_id": ctx.task.task_id,
+                "variant_id": ctx.variant_id,
                 "commit_sha": commit_sha,
             },
         )
-        # The local ref (and the remote ref if origin is configured)
-        # were created in Phase 2f/2g above. The variant is now
-        # terminalizing as `error`, so the orchestrator will never
-        # integrate this branch — clean up the refs to avoid leaking
-        # orphan `work/*` that the integrator's startup-time
-        # reconcile_remote_orphans would later have to GC. Same shape
-        # as the push-failure recovery above: remote first (so the
-        # remote-of-record matches the local view if the local delete
-        # fails), local second.
-        if _repo_has_origin(repo):
-            try:
-                repo.delete_remote_ref(f"refs/heads/{branch}")
-            except Exception:  # noqa: BLE001 — git-shaped
-                log.warning(
-                    "executor_no_op_remote_rollback_failed",
-                    extra={"task_id": task.task_id, "branch": branch},
-                )
+
+    # Clean up the refs published in Phase 2f/2g before submitting the
+    # error so the orchestrator's startup-time reconcile_remote_orphans
+    # doesn't later have to GC them. Remote first (so the remote-of-
+    # record matches the local view if the local delete fails), local
+    # second.
+    if _repo_has_origin(ctx.repo):
         try:
-            repo.delete_ref(
-                f"refs/heads/{branch}", expected_old_sha=commit_sha
-            )
+            ctx.repo.delete_remote_ref(f"refs/heads/{ctx.branch}")
         except Exception:  # noqa: BLE001 — git-shaped
             log.warning(
-                "executor_no_op_local_rollback_failed",
-                extra={"task_id": task.task_id, "branch": branch},
+                "executor_no_op_remote_rollback_failed",
+                extra={"task_id": ctx.task.task_id, "branch": ctx.branch},
             )
-        _submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=VariantSubmission(
-                status="error", variant_id=variant_id, commit_sha=None
-            ),
+    try:
+        ctx.repo.delete_ref(
+            f"refs/heads/{ctx.branch}", expected_old_sha=commit_sha
         )
+    except Exception:  # noqa: BLE001 — git-shaped
+        log.warning(
+            "executor_no_op_local_rollback_failed",
+            extra={"task_id": ctx.task.task_id, "branch": ctx.branch},
+        )
+    _submit_error(store, ctx.task.task_id, ctx.claim_token, ctx.variant_id)
 
 
 def _validate_commit(
@@ -485,38 +487,13 @@ def _is_no_op_variant(
     return True
 
 
-def _run_subprocess(
+def _build_subprocess_env(
     *,
-    wt_path: Path,
-    task: ExecutionTask,
-    idea: Idea,
-    variant_id: str,
-    branch: str,
     config: ExecutorSubprocessConfig,
+    wt_path: Path,
     worker_id: str,
-) -> dict[str, Any]:
-    """Run ``execution_command`` and parse outcome.json.
-
-    Returns a dict with at least ``status``. Missing/malformed outcome
-    files are normalized to ``status="error"``.
-    """
-    eden_dir = wt_path / ".eden"
-    eden_dir.mkdir(parents=True, exist_ok=True)
-    task_json = eden_dir / "task.json"
-    output_json = eden_dir / "outcome.json"
-    content_path = _content_path_from_uri(idea.artifacts_uri)
-    brief = {
-        "task_id": task.task_id,
-        "variant_id": variant_id,
-        "idea_id": idea.idea_id,
-        "idea_slug": idea.slug,
-        "parent_commits": list(idea.parent_commits),
-        "branch": branch,
-        "content_path": content_path,
-        "output_path": ".eden/outcome.json",
-    }
-    task_json.write_text(json.dumps(brief, sort_keys=True), encoding="utf-8")
-
+) -> dict[str, str]:
+    """Build the per-task subprocess env dict (forwarded to the child)."""
     env = dict(config.env)
     env["EDEN_TASK_JSON"] = ".eden/task.json"
     env["EDEN_OUTPUT"] = ".eden/outcome.json"
@@ -527,42 +504,68 @@ def _run_subprocess(
     env["EDEN_WORKER_ID"] = worker_id
     if config.worker_credential is not None:
         env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
+    return env
 
-    command = config.command
-    post_kill = None
-    cleanups: list = []
-    if config.exec_mode == "docker":
-        assert config.exec_image is not None
-        assert config.cidfile_dir is not None
-        cidfile = make_cidfile_path(
-            cidfile_dir=config.cidfile_dir, role="executor"
-        )
-        command = wrap_command(
-            original_command=config.command,
-            image=config.exec_image,
-            cwd_target=str(wt_path),
-            cidfile=cidfile,
-            role="executor",
-            task_id=task.task_id,
-            host_id=config.host_id,
-            volumes=list(config.exec_volumes),
-            binds=list(config.exec_binds),
-            env_keys=list(env.keys()),
-            # Per-task executor subprocess does NOT read stdin —
-            # leaving `-i` set would make docker run exit early on
-            # the worker host's closed stdin.
-            attach_stdin=False,
-        )
-        pk, cu = make_cidfile_callbacks(cidfile)
-        post_kill = pk
-        cleanups = [cu]
 
+def _maybe_wrap_for_docker(
+    *,
+    config: ExecutorSubprocessConfig,
+    task_id: str,
+    wt_path: Path,
+    env: Mapping[str, str],
+) -> tuple[str, Any, list]:
+    """Wrap ``config.command`` in a docker-run sibling-container spawn.
+
+    Active when ``exec_mode == "docker"``. Returns
+    ``(command, post_kill, cleanups)``.
+    """
+    if config.exec_mode != "docker":
+        return config.command, None, []
+    assert config.exec_image is not None
+    assert config.cidfile_dir is not None
+    cidfile = make_cidfile_path(cidfile_dir=config.cidfile_dir, role="executor")
+    command = wrap_command(
+        original_command=config.command,
+        image=config.exec_image,
+        cwd_target=str(wt_path),
+        cidfile=cidfile,
+        role="executor",
+        task_id=task_id,
+        host_id=config.host_id,
+        volumes=list(config.exec_volumes),
+        binds=list(config.exec_binds),
+        env_keys=list(env.keys()),
+        # Per-task executor subprocess does NOT read stdin —
+        # leaving `-i` set would make docker run exit early on
+        # the worker host's closed stdin.
+        attach_stdin=False,
+    )
+    pk, cu = make_cidfile_callbacks(cidfile)
+    return command, pk, [cu]
+
+
+def _run_and_capture(
+    *,
+    command: str,
+    wt_path: Path,
+    env: Mapping[str, str],
+    task_id: str,
+    config: ExecutorSubprocessConfig,
+    output_json: Path,
+    post_kill: Any,
+    cleanups: list,
+) -> dict[str, Any]:
+    """Spawn the executor subprocess, wait, and parse outcome.json.
+
+    Returns the parsed outcome dict on success or ``{"status": "error"}``
+    on any failure mode (timeout, nonzero exit, missing/malformed outcome).
+    """
     sub = spawn(
         command=command,
         cwd=wt_path,
         env=env,
         role="executor",
-        task_id=task.task_id,
+        task_id=task_id,
         capture_stdin=False,
         post_kill_callback=post_kill,
         cleanup_callbacks=cleanups,
@@ -574,7 +577,7 @@ def _run_subprocess(
             if remaining <= 0:
                 log.warning(
                     "executor_subprocess_timeout",
-                    extra={"task_id": task.task_id},
+                    extra={"task_id": task_id},
                 )
                 sub.terminate(shutdown_deadline=config.shutdown_deadline)
                 return {"status": "error"}
@@ -594,20 +597,20 @@ def _run_subprocess(
         if rc != 0:
             log.warning(
                 "executor_subprocess_nonzero_exit",
-                extra={"task_id": task.task_id, "exit_code": rc},
+                extra={"task_id": task_id, "exit_code": rc},
             )
             return {"status": "error"}
         if not output_json.is_file():
             log.warning(
                 "executor_subprocess_missing_outcome",
-                extra={"task_id": task.task_id},
+                extra={"task_id": task_id},
             )
             return {"status": "error"}
         parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
         if parsed is None:
             log.warning(
                 "executor_subprocess_malformed_outcome",
-                extra={"task_id": task.task_id},
+                extra={"task_id": task_id},
             )
             return {"status": "error"}
         return parsed
@@ -616,6 +619,52 @@ def _run_subprocess(
         # an explicit call so the cidfile is unlinked when the
         # subprocess exits naturally.
         sub.run_cleanups()
+
+
+def _run_subprocess(
+    *,
+    wt_path: Path,
+    task: ExecutionTask,
+    idea: Idea,
+    variant_id: str,
+    branch: str,
+    config: ExecutorSubprocessConfig,
+    worker_id: str,
+) -> dict[str, Any]:
+    """Run ``execution_command`` and parse outcome.json.
+
+    Returns a dict with at least ``status``. Missing/malformed outcome
+    files are normalized to ``status="error"``.
+    """
+    eden_dir = wt_path / ".eden"
+    eden_dir.mkdir(parents=True, exist_ok=True)
+    task_json = eden_dir / "task.json"
+    output_json = eden_dir / "outcome.json"
+    brief = {
+        "task_id": task.task_id,
+        "variant_id": variant_id,
+        "idea_id": idea.idea_id,
+        "idea_slug": idea.slug,
+        "parent_commits": list(idea.parent_commits),
+        "branch": branch,
+        "content_path": _content_path_from_uri(idea.artifacts_uri),
+        "output_path": ".eden/outcome.json",
+    }
+    task_json.write_text(json.dumps(brief, sort_keys=True), encoding="utf-8")
+    env = _build_subprocess_env(config=config, wt_path=wt_path, worker_id=worker_id)
+    command, post_kill, cleanups = _maybe_wrap_for_docker(
+        config=config, task_id=task.task_id, wt_path=wt_path, env=env
+    )
+    return _run_and_capture(
+        command=command,
+        wt_path=wt_path,
+        env=env,
+        task_id=task.task_id,
+        config=config,
+        output_json=output_json,
+        post_kill=post_kill,
+        cleanups=cleanups,
+    )
 
 
 def _content_path_from_uri(uri: str | None) -> str | None:

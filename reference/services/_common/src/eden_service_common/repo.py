@@ -179,3 +179,36 @@ def seed_bare_repo_from_dir(repo_path: str, src_dir: str) -> str:
             f"seed push to refs/heads/main left no ref in {repo_path!r}"
         )
     return sha
+
+
+def ensure_repo_clone(
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter, not exposed
+    repo_path: str,
+    forgejo_url: str | None,
+    credential_helper: str | None,
+) -> None:
+    """Materialize a worker host's local bare clone per Phase 10d follow-up B §D.5.
+
+    No-op when ``forgejo_url`` is None (chunk-10d behavior — the operator
+    pre-populates ``repo_path`` via setup-experiment). Otherwise:
+    clone bare at first run, ``fetch_all_heads`` on subsequent starts
+    so the local clone reflects the remote.
+
+    Shared by the executor and evaluator hosts (12c factoring — both
+    cloned the same shape verbatim in `cli.py`).
+    """
+    if forgejo_url is None:
+        return
+    path = Path(repo_path)
+    if (path / "HEAD").is_file():
+        log.info("fetching_remote_heads", url=forgejo_url)
+        GitRepo(path).fetch_all_heads()
+        return
+    log.info("cloning_from_remote", url=forgejo_url, dest=str(path))
+    GitRepo.clone_from(
+        url=forgejo_url,
+        dest=path,
+        bare=True,
+        credential_helper=credential_helper,
+    )

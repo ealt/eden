@@ -110,7 +110,6 @@ def run_orchestrator_iteration(
     normally so committed work in flight is not stranded.
     """
     mode = dispatch_mode if dispatch_mode is not None else DispatchMode()
-    progress = False
 
     # Decision-type 0 (12a-3): termination. Consulted FIRST.
     is_running = _terminate_if_directed(
@@ -119,15 +118,46 @@ def run_orchestrator_iteration(
         termination_policy=termination_policy,
         terminated_by=terminated_by,
     )
-    if not is_running.was_running_at_entry and not is_running.terminated_this_iter:
-        # Experiment was already terminated when we entered; no policy
-        # consultation, only the integration drain runs (plus finalize
-        # for in-flight work).
-        progress = is_running.terminated_this_iter
-    progress |= is_running.terminated_this_iter
+    progress = is_running.terminated_this_iter
 
-    # Finalize runs in both states (drain semantics).
-    progress |= _finalize_submitted(store, kind="ideation")
+    progress |= _run_creation_and_finalize_cycle(
+        store,
+        mode=mode,
+        is_running=is_running,
+        ideation_policy=ideation_policy,
+        ideation_task_id_factory=ideation_task_id_factory,
+        execution_task_id_factory=execution_task_id_factory,
+        evaluation_task_id_factory=evaluation_task_id_factory,
+    )
+    if mode.integration == "auto" and integrate_variant is not None:
+        progress |= _integrate_successful_variants(store, integrate_variant)
+    return progress
+
+
+def _run_creation_and_finalize_cycle(
+    store: Store,
+    *,
+    mode: DispatchMode,
+    is_running: _TerminationOutcome,
+    ideation_policy: IdeationPolicy | None,
+    ideation_task_id_factory: Callable[[], str] | None,
+    execution_task_id_factory: Callable[[], str],
+    evaluation_task_id_factory: Callable[[], str],
+) -> bool:
+    """Run the interleaved per-role finalize + create/dispatch ladder.
+
+    Finalize runs in both running and terminated states (drain semantics:
+    in-flight work completes regardless). The three creation/dispatch
+    decisions (ideation_creation / execution_dispatch / evaluation_dispatch)
+    only run when the experiment is ``running`` and the corresponding
+    dispatch-mode key is ``"auto"``.
+
+    Returns ``True`` iff any sub-step made progress this iteration. The
+    integration drain is NOT run here — chapter 03 §6.2 keeps it
+    independent of running-state so terminated experiments still drain
+    pending integrations.
+    """
+    progress = _finalize_submitted(store, kind="ideation")
     if is_running.now_running and mode.ideation_creation == "auto":
         progress |= _create_ideation_tasks(
             store,
@@ -140,8 +170,6 @@ def run_orchestrator_iteration(
     if is_running.now_running and mode.evaluation_dispatch == "auto":
         progress |= _dispatch_evaluation_tasks(store, evaluation_task_id_factory)
     progress |= _finalize_submitted(store, kind="evaluation")
-    if mode.integration == "auto" and integrate_variant is not None:
-        progress |= _integrate_successful_variants(store, integrate_variant)
     return progress
 
 

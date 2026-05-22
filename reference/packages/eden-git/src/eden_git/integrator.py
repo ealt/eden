@@ -143,20 +143,7 @@ class Integrator:
         if variant.variant_commit_sha is not None:
             return self._check_idempotent(variant, branch, branch_ref)
 
-        # Phase 10d follow-up B: when the integrator's clone has an
-        # origin remote, fetch the executor-pushed work/* branch
-        # before §2 reachability checks run. The startup-only
-        # fetch_all_heads can race against work/* refs the
-        # executor pushes AFTER orchestrator startup; the
-        # integration path must refresh local state per the long-lived-
-        # clone freshness rule (plan §D.7d). Transport / git failure
-        # falls through to the existing reachability check, which
-        # raises NotReadyForIntegration with a precise diagnostic.
-        import contextlib
-        if variant.branch is not None and _has_origin(self._repo):
-            with contextlib.suppress(Exception):
-                self._repo.fetch_ref(f"refs/heads/{variant.branch}")
-
+        self._refresh_work_branch(variant)
         self._require_integration_preconditions(variant)
         self._require_reachability(variant)
         manifest_path = _manifest_path(variant.variant_id)
@@ -170,104 +157,102 @@ class Integrator:
         self._repo.create_ref(branch_ref, commit_sha)
 
         # Step 2: publish to remote (if origin is configured).
-        # Phase 10d follow-up B §D.6: when the integrator's repo has
-        # an `origin` remote (the Forgejo cutover), publish the ref
-        # there before committing the store-side variant state. Skip
-        # the push for repos with no origin (the local-only test
-        # path stays a single-step integration).
-        published = False
-        if _has_origin(self._repo):
-            try:
-                self._repo.push_ref(branch_ref, expected_old_sha=self._repo.zero_oid())
-                published = True
-            except RefRefused as push_rejected:
-                # Definite remote rejection — only step-1's local
-                # ref exists. Roll back local; do NOT touch remote
-                # (the remote either has a different SHA on the same
-                # ref, in which case another integrator wrote a
-                # different commit and our ref does not belong, or
-                # the remote refused for a hook-level reason).
-                self._rollback_local_only(
-                    branch_ref, commit_sha, push_rejected
-                )
-                raise
-            except GitTransportError as push_transport:
-                # Transport-indeterminate: the remote may or may
-                # not have applied the ref. Disambiguate via
-                # ls-remote per §D.7d.
-                published = self._reconcile_indeterminate_push(
-                    branch_ref, commit_sha, push_transport
-                )
+        published = self._publish_to_remote(branch_ref, commit_sha)
 
         # Step 3: store integrate_variant (atomic with variant.integrated).
+        # Step 4 compensation ladder lives inside the helper.
+        self._commit_store_with_compensation(
+            variant=variant,
+            branch_ref=branch_ref,
+            commit_sha=commit_sha,
+            published=published,
+        )
+        return IntegrationResult(
+            variant_id=variant.variant_id,
+            variant_commit_sha=commit_sha,
+            branch=branch,
+            already_integrated=False,
+        )
+
+    def _refresh_work_branch(self, variant: Variant) -> None:
+        """Fetch the executor-pushed work/* branch before §2 reachability checks.
+
+        Phase 10d follow-up B: the startup-only fetch_all_heads can race
+        against work/* refs the executor pushes AFTER orchestrator startup;
+        the integration path must refresh local state per the long-lived-
+        clone freshness rule (plan §D.7d). Transport / git failure falls
+        through to the existing reachability check, which raises
+        NotReadyForIntegration with a precise diagnostic.
+        """
+        import contextlib
+
+        if variant.branch is not None and _has_origin(self._repo):
+            with contextlib.suppress(Exception):
+                self._repo.fetch_ref(f"refs/heads/{variant.branch}")
+
+    def _publish_to_remote(self, branch_ref: str, commit_sha: str) -> bool:
+        """Step 2 of §3.4: publish the local ref to origin.
+
+        Returns ``True`` if the remote definitely has the ref, ``False``
+        on the local-only / no-origin path. Raises ``RefRefused`` on
+        definite remote rejection (after rolling back the local ref).
+        """
+        if not _has_origin(self._repo):
+            return False
+        try:
+            self._repo.push_ref(branch_ref, expected_old_sha=self._repo.zero_oid())
+            return True
+        except RefRefused as push_rejected:
+            # Definite remote rejection — only step-1's local ref exists.
+            # Roll back local; do NOT touch remote (the remote either
+            # has a different SHA on the same ref, in which case another
+            # integrator wrote a different commit, or the remote refused
+            # for a hook-level reason).
+            self._rollback_local_only(branch_ref, commit_sha, push_rejected)
+            raise
+        except GitTransportError as push_transport:
+            # Transport-indeterminate: the remote may or may not have
+            # applied the ref. Disambiguate via ls-remote per §D.7d.
+            return self._reconcile_indeterminate_push(
+                branch_ref, commit_sha, push_transport
+            )
+
+    def _commit_store_with_compensation(
+        self,
+        *,
+        variant: Variant,
+        branch_ref: str,
+        commit_sha: str,
+        published: bool,
+    ) -> None:
+        """Step 3 + step 4 of §3.4: atomic store commit with full ref-rollback ladder.
+
+        On store failure, runs the §3.4 compensating-delete ladder (remote
+        first if we published, then local). Distinguishes the different-
+        SHA divergence branch (§5 same-value idempotency, sole-writer
+        §1.2 violated upstream — no safe compensation, raise
+        ``AtomicityViolation``) from other synchronous failures (run the
+        compensation).
+        """
         try:
             self._store.integrate_variant(variant.variant_id, commit_sha)
+            return
         except BaseException as store_error:
-            # Distinguish the different-SHA divergence branch of §5
-            # same-value idempotency (sole-writer §1.2 already
-            # violated; no safe compensation) from other synchronous
-            # failures (compensate the ref per §3.4). Authoritative
-            # test is a post-failure read of the variant: if it now
-            # carries a *different* variant_commit_sha, divergence is
-            # confirmed and the ref we just wrote must not be
-            # deleted — the other integrator's artifacts, whatever
-            # their state, take priority, and the situation requires
-            # operator intervention.
-            try:
-                post_failure = self._store.read_variant(variant.variant_id)
-            except BaseException:
-                post_failure = None
-            if (
-                post_failure is not None
-                and post_failure.variant_commit_sha is not None
-                and post_failure.variant_commit_sha != commit_sha
-            ):
+            if self._observed_different_sha(variant, commit_sha):
                 raise AtomicityViolation(
                     f"integrator for variant {variant.variant_id!r} observed a "
-                    f"different variant_commit_sha {post_failure.variant_commit_sha!r} "
-                    f"already recorded; §1.2 sole-writer rule violated upstream. "
-                    f"Ref {branch_ref!r} pointing at {commit_sha} has NOT been "
-                    f"compensated; operator intervention required.",
+                    f"different variant_commit_sha already recorded; §1.2 "
+                    f"sole-writer rule violated upstream. Ref {branch_ref!r} "
+                    f"pointing at {commit_sha} has NOT been compensated; "
+                    f"operator intervention required.",
                     original=store_error,
                 ) from store_error
-            # Step 4a: remote compensating delete (if we published).
-            if published:
-                try:
-                    self._repo.delete_remote_ref(
-                        branch_ref, expected_sha=commit_sha
-                    )
-                except BaseException as remote_delete_error:
-                    # Per §D.7d, this is the case where §D.7c's
-                    # startup sweep is the backstop. Annotate the
-                    # AtomicityViolation so the operator can see
-                    # both halves of the failure chain; do NOT skip
-                    # step 4b (local rollback still runs so the next
-                    # in-process retry is clean).
-                    try:
-                        self._repo.delete_ref(
-                            branch_ref, expected_old_sha=commit_sha
-                        )
-                    except BaseException as local_rollback_error:
-                        raise AtomicityViolation(
-                            f"integrator failed to commit variant "
-                            f"{variant.variant_id!r}, the remote compensating "
-                            f"delete failed, AND the local rollback "
-                            f"failed; ref {branch_ref!r} is dangling at "
-                            f"{commit_sha} both locally and remotely",
-                            original=store_error,
-                            rollback=local_rollback_error,
-                        ) from store_error
-                    raise AtomicityViolation(
-                        f"integrator failed to commit variant "
-                        f"{variant.variant_id!r} and the remote compensating "
-                        f"delete failed; remote ref {branch_ref!r} "
-                        f"dangling at {commit_sha} until the next "
-                        f"integrator-startup remote-orphan sweep "
-                        f"(§D.7c) cleans it up",
-                        original=store_error,
-                        rollback=remote_delete_error,
-                    ) from store_error
-            # Step 4b: local compensating delete.
+            self._compensate_published_remote_ref(
+                branch_ref=branch_ref,
+                commit_sha=commit_sha,
+                published=published,
+                store_error=store_error,
+            )
             try:
                 self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
             except BaseException as rollback_error:
@@ -280,12 +265,58 @@ class Integrator:
                 ) from store_error
             raise
 
-        return IntegrationResult(
-            variant_id=variant.variant_id,
-            variant_commit_sha=commit_sha,
-            branch=branch,
-            already_integrated=False,
+    def _observed_different_sha(self, variant: Variant, commit_sha: str) -> bool:
+        """Re-read the variant after step-3 failure; True iff sole-writer §1.2 is violated."""
+        try:
+            post_failure = self._store.read_variant(variant.variant_id)
+        except BaseException:
+            return False
+        return (
+            post_failure is not None
+            and post_failure.variant_commit_sha is not None
+            and post_failure.variant_commit_sha != commit_sha
         )
+
+    def _compensate_published_remote_ref(
+        self,
+        *,
+        branch_ref: str,
+        commit_sha: str,
+        published: bool,
+        store_error: BaseException,
+    ) -> None:
+        """Step 4a of §3.4: compensating delete of the published remote ref.
+
+        Per §D.7d, when the remote delete fails the §D.7c startup-sweep is
+        the backstop; raise ``AtomicityViolation`` annotated with both
+        halves so the operator sees the full chain. The local rollback
+        runs regardless (caller does step 4b after this returns).
+        """
+        if not published:
+            return
+        try:
+            self._repo.delete_remote_ref(branch_ref, expected_sha=commit_sha)
+            return
+        except BaseException as remote_delete_error:
+            try:
+                self._repo.delete_ref(branch_ref, expected_old_sha=commit_sha)
+            except BaseException as local_rollback_error:
+                raise AtomicityViolation(
+                    f"integrator failed to commit variant; the remote "
+                    f"compensating delete failed AND the local rollback "
+                    f"failed; ref {branch_ref!r} is dangling at "
+                    f"{commit_sha} both locally and remotely",
+                    original=store_error,
+                    rollback=local_rollback_error,
+                ) from store_error
+            raise AtomicityViolation(
+                f"integrator failed to commit variant and the remote "
+                f"compensating delete failed; remote ref {branch_ref!r} "
+                f"dangling at {commit_sha} until the next integrator-"
+                f"startup remote-orphan sweep (§D.7c) cleans it up",
+                original=store_error,
+                rollback=remote_delete_error,
+            ) from store_error
 
     def _rollback_local_only(
         self,

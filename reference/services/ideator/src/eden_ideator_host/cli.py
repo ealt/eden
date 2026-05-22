@@ -184,6 +184,150 @@ def _ensure_repo_clone(
     )
 
 
+def _build_subprocess_env(
+    args: argparse.Namespace,
+    exec_args,  # noqa: ANN001 — ResolvedExecArgs
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> dict[str, str]:
+    """Compose the spawned ideation_command's env per §D.0 contract.
+
+    User env file lays down the base; host-owned reserved EDEN_* keys
+    overlay on top so a user file can't redirect the protocol surface.
+    """
+    env: dict[str, str] = {}
+    if args.ideation_env_file:
+        user_env = parse_env_file(args.ideation_env_file)
+        # Codex round-3: strip reserved substrate keys from the user env
+        # BEFORE merging so a user file can NEVER reintroduce keys the
+        # host suppressed (e.g. under --exec-mode docker) or selectively
+        # configured. The host's authoritative substrate overlay is
+        # applied below.
+        env.update(strip_reserved_substrate_keys(dict(user_env)))
+    # When --exec-mode=docker, EDEN_EXPERIMENT_DIR inside the spawned
+    # child container resolves to the bind-mount target supplied via
+    # --exec-bind, NOT the host-side path. We set EDEN_EXPERIMENT_DIR
+    # to the *worker-host*-side path here; the wrap echoes it through
+    # to the child via `-e EDEN_EXPERIMENT_DIR`. The bind mount in the
+    # spawned child uses the same target path so the env var resolves
+    # consistently in both places (because the child mount target
+    # equals the worker host's path).
+    env["EDEN_EXPERIMENT_DIR"] = str(Path(args.experiment_dir).resolve())
+    # 12a-1f substrate access: thread EDEN_REPO_DIR / EDEN_ARTIFACT_URL /
+    # EDEN_ARTIFACT_PATH_ROOT / EDEN_READONLY_STORE_URL into the spawned
+    # child's env so agentic ideators can read git / artifacts / the
+    # Postgres readonly substrate without making per-query wire
+    # round-trips. Per §6.4 / §8.9 of the plan, these keys are
+    # SUPPRESSED in --exec-mode docker because sibling containers can't
+    # resolve compose-internal hostnames (no --network plumbing in
+    # wrap_command yet).
+    substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
+    substrate = substrate_args_for_exec_mode(substrate, exec_mode=exec_args.mode)
+    if exec_args.mode == "docker" and (
+        args.repo_path is not None
+        or args.artifact_url is not None
+        or args.readonly_store_url is not None
+    ):
+        log.warning(
+            "substrate_access_disabled_in_exec_mode_docker",
+            extra={
+                "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+            },
+        )
+    env.update(substrate.to_env())
+    return env
+
+
+def _build_docker_wrap_factory(
+    *,
+    args: argparse.Namespace,
+    exec_args,  # noqa: ANN001 — ResolvedExecArgs
+    command: str,
+    env_keys: list[str],
+):  # noqa: ANN201 — returns Callable[[], tuple[...]]
+    """Construct the per-spawn DooD wrap factory (docker exec-mode only)."""
+    # Reap any orphaned sibling containers from a prior crash before we
+    # spawn fresh ones.
+    host_id = socket.gethostname()
+    reap_orphaned_containers(role="ideator", host=host_id)
+
+    # Capture per-spawn closure inputs.
+    ideator_command = command
+    cwd_target = str(Path(args.experiment_dir).resolve())
+    volumes = exec_args.volumes
+    binds = exec_args.binds
+    image = exec_args.image
+    cidfile_dir = exec_args.cidfile_dir
+    assert image is not None  # guaranteed by resolve_exec_args
+
+    def _ideator_wrap_factory():
+        cidfile = make_cidfile_path(cidfile_dir=cidfile_dir, role="ideator")
+        wrapped = wrap_command(
+            original_command=ideator_command,
+            image=image,
+            cwd_target=cwd_target,
+            cidfile=cidfile,
+            role="ideator",
+            task_id=host_id,
+            host_id=host_id,
+            volumes=volumes,
+            binds=binds,
+            env_keys=env_keys,
+        )
+        post_kill, cleanup = make_cidfile_callbacks(cidfile)
+        return wrapped, post_kill, [cleanup]
+
+    return _ideator_wrap_factory
+
+
+def _run_subprocess_mode(
+    args: argparse.Namespace,
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter
+    client: StoreClient,
+    bearer: str | None,
+    stop: StopFlag,
+) -> None:
+    """Drive the subprocess-mode ideator loop end-to-end."""
+    config = load_experiment_config(args.experiment_config)
+    command = require_command(config, "ideation_command")
+    try:
+        exec_args = resolve_exec_args(args)
+    except ValueError as exc:
+        raise SystemExit(f"eden-ideator-host: {exc}") from exc
+    env = _build_subprocess_env(args, exec_args, log)
+
+    wrap_factory = None
+    if exec_args.mode == "docker":
+        wrap_factory = _build_docker_wrap_factory(
+            args=args,
+            exec_args=exec_args,
+            command=command,
+            env_keys=list(env.keys()),
+        )
+
+    subprocess_config = build_subprocess_config(
+        command=command,
+        cwd=Path(args.experiment_dir).resolve(),
+        env=env,
+        startup_deadline=args.ideation_startup_deadline,
+        task_deadline=args.ideation_task_deadline,
+        shutdown_deadline=args.ideation_shutdown_deadline,
+        wrap_factory=wrap_factory,
+        worker_id=args.worker_id,
+        worker_credential=_credential_secret(bearer),
+    )
+    run_ideator_subprocess_loop(
+        store=client,
+        worker_id=args.worker_id,
+        experiment_id=args.experiment_id,
+        experiment_config=config,
+        artifacts_dir=Path(args.artifacts_dir),
+        subprocess_config=subprocess_config,
+        poll_interval=args.poll_interval,
+        stop=stop,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_ideator_host``."""
     args = parse_args(argv)
@@ -235,123 +379,8 @@ def main(argv: list[str] | None = None) -> int:
                 stop=stop,
             )
         else:
-            config = load_experiment_config(args.experiment_config)
-            command = require_command(config, "ideation_command")
-            # User env file lays down the base; host-owned reserved
-            # EDEN_* keys overlay on top so a user file can't redirect
-            # the protocol surface (§D.0 contract).
-            env: dict[str, str] = {}
-            if args.ideation_env_file:
-                user_env = parse_env_file(args.ideation_env_file)
-                # Codex round-3: strip reserved substrate keys from
-                # the user env BEFORE merging, so a user file can
-                # NEVER reintroduce keys the host suppressed (e.g.
-                # under --exec-mode docker) or selectively
-                # configured. The host's authoritative substrate
-                # overlay is applied below.
-                env.update(strip_reserved_substrate_keys(dict(user_env)))
-            # When --exec-mode=docker, EDEN_EXPERIMENT_DIR inside the
-            # spawned child container resolves to the bind-mount
-            # target supplied via --exec-bind, NOT the host-side path.
-            # We set EDEN_EXPERIMENT_DIR to the *worker-host*-side
-            # path here; the wrap echoes it through to the child via
-            # `-e EDEN_EXPERIMENT_DIR`. The bind mount in the
-            # spawned child uses the same target path so the env var
-            # resolves consistently in both places (because the child
-            # mount target equals the worker host's path).
-            env["EDEN_EXPERIMENT_DIR"] = str(Path(args.experiment_dir).resolve())
-            try:
-                exec_args = resolve_exec_args(args)
-            except ValueError as exc:
-                parser_error_msg = str(exc)
-                raise SystemExit(f"eden-ideator-host: {parser_error_msg}") from exc
-
-            # 12a-1f substrate access: thread EDEN_REPO_DIR /
-            # EDEN_ARTIFACT_URL / EDEN_ARTIFACT_PATH_ROOT /
-            # EDEN_READONLY_STORE_URL into the spawned child's env
-            # so agentic ideators can read git / artifacts / the
-            # Postgres readonly substrate without making per-query
-            # wire round-trips. Per §6.4 / §8.9 of the plan, these
-            # keys are SUPPRESSED in --exec-mode docker because
-            # sibling containers can't resolve compose-internal
-            # hostnames (no --network plumbing in wrap_command yet).
-            substrate = resolve_substrate_args(
-                args, repo_dir=args.repo_path
-            )
-            substrate = substrate_args_for_exec_mode(
-                substrate, exec_mode=exec_args.mode
-            )
-            if exec_args.mode == "docker" and (
-                args.repo_path is not None
-                or args.artifact_url is not None
-                or args.readonly_store_url is not None
-            ):
-                log.warning(
-                    "substrate_access_disabled_in_exec_mode_docker",
-                    extra={
-                        "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
-                    },
-                )
-            env.update(substrate.to_env())
-
-            wrap_factory = None
-            if exec_args.mode == "docker":
-                # Reap any orphaned sibling containers from a prior
-                # crash before we spawn fresh ones.
-                host_id = socket.gethostname()
-                reap_orphaned_containers(role="ideator", host=host_id)
-
-                # Capture per-spawn closure inputs.
-                ideator_command = command
-                cwd_target = str(Path(args.experiment_dir).resolve())
-                env_keys = list(env.keys())
-                volumes = exec_args.volumes
-                binds = exec_args.binds
-                image = exec_args.image
-                cidfile_dir = exec_args.cidfile_dir
-                assert image is not None  # guaranteed by resolve_exec_args
-
-                def _ideator_wrap_factory():
-                    cidfile = make_cidfile_path(
-                        cidfile_dir=cidfile_dir, role="ideator"
-                    )
-                    wrapped = wrap_command(
-                        original_command=ideator_command,
-                        image=image,
-                        cwd_target=cwd_target,
-                        cidfile=cidfile,
-                        role="ideator",
-                        task_id=host_id,
-                        host_id=host_id,
-                        volumes=volumes,
-                        binds=binds,
-                        env_keys=env_keys,
-                    )
-                    post_kill, cleanup = make_cidfile_callbacks(cidfile)
-                    return wrapped, post_kill, [cleanup]
-
-                wrap_factory = _ideator_wrap_factory
-
-            subprocess_config = build_subprocess_config(
-                command=command,
-                cwd=Path(args.experiment_dir).resolve(),
-                env=env,
-                startup_deadline=args.ideation_startup_deadline,
-                task_deadline=args.ideation_task_deadline,
-                shutdown_deadline=args.ideation_shutdown_deadline,
-                wrap_factory=wrap_factory,
-                worker_id=args.worker_id,
-                worker_credential=_credential_secret(bearer),
-            )
-            run_ideator_subprocess_loop(
-                store=client,
-                worker_id=args.worker_id,
-                experiment_id=args.experiment_id,
-                experiment_config=config,
-                artifacts_dir=Path(args.artifacts_dir),
-                subprocess_config=subprocess_config,
-                poll_interval=args.poll_interval,
-                stop=stop,
+            _run_subprocess_mode(
+                args, log=log, client=client, bearer=bearer, stop=stop
             )
     log.info("ideator host exited")
     return 0

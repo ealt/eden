@@ -1,0 +1,22 @@
+--- /Users/ericalt/Documents/eden-worktrees/code-quality-audit/docs/plans/review/2026-05-20-phase-c-disposition/impl/20260521T203349/0.md	2026-05-21 20:35:02
++++ /Users/ericalt/Documents/eden-worktrees/code-quality-audit/docs/plans/review/2026-05-20-phase-c-disposition/impl/20260521T203349/1.md	2026-05-21 20:47:46
+@@ -121,3 +121,19 @@
+ 7. **Doc accuracy** — AGENTS.md "Slop prevention" subsection matches the gate's actual behavior. Disposition doc reflects the final landed disposition.
+ 
+ The chunk is intentionally bounded: F-1 / F-3 / F-4 are explicitly deferred to follow-up issues #114 / #115 / #116. Do not propose redoing those in-chunk.
++
++
++## Round 1 — addressed feedback
++
++Codex round-0 surfaced 4 findings; all addressed in commit `51c6da6`:
++
++| # | Finding | Resolution |
++|---|---|---|
++| 1 (Bug) | `submission_from_payload` defaulted `status="success"`, weakening the wire deserializer's strict-on-status contract | Split into strict `submission_from_payload` + lenient `submission_from_payload_lenient`; checkpoint reader uses lenient (legacy archives), sqlite/postgres/wire use strict (preserves pre-refactor KeyError-on-missing-status) |
++| 2 (Risk) | Gate's slop-allow preamble walker had a docstring heuristic that didn't parse triple-quoted blocks | Dropped the heuristic. Function preamble never contains a docstring in real code; the 30-line cap protects against weird inputs |
++| 3 (Risk) | AGENTS.md "Slop prevention" said `# slop-allow:` for file-level (gate uses `# slop-allow-file:`) and pointed at `scripts/check-complexity-thresholds.py` (actual file: `scripts/check-complexity.py`) | Updated AGENTS.md to describe both annotation forms with correct placement rules + correct script reference + CI job link |
++| 4 (Nit) | Disposition doc still said "awaiting operator approval / nothing applied" — misleading at PR-merge time | Reconciled status block: enumerated shipped refactors (29), kept exceptions (4), and deferred items (F-1 #114 / F-3+L-D+L-E #115 / F-4 #116) |
++
++Bundled separately: drop the duplicate `--forgejo-url` argparse declaration in `executor/cli.py` and `evaluator/cli.py` (rebase artifact from main's rename PR where `--gitea-url` was intended as a deprecated alias).
++
++Validation re-run: ruff clean / pyright 0 / 596 storage+wire tests pass / markdownlint clean / complexity gate 0 blocking / compose smoke.sh PASSED.

@@ -118,6 +118,40 @@ def _json_error(exc: Exception, *, request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------
 
 
+_PROBLEM_JSON_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    AlreadyExists,
+    InvalidPrecondition,
+    ReservedIdentifier,
+    CycleDetected,
+    LeaseError,
+    BadRequest,
+)
+
+
+def _install_problem_json_exception_handlers(app: FastAPI) -> None:
+    """Register one ``_json_error`` handler per chapter-07 §16 problem type.
+
+    Every entry in :data:`_PROBLEM_JSON_EXCEPTION_TYPES` maps to the
+    same response shape (``_json_error``); registering them in a
+    loop keeps the table compact and easy to extend.
+    """
+    async def _h(request: Request, exc: Exception) -> Response:
+        return _json_error(exc, request=request)
+
+    for exc_type in _PROBLEM_JSON_EXCEPTION_TYPES:
+        app.add_exception_handler(exc_type, _h)
+
+
+# slop-allow: FastAPI app factory; ~20 nested route handlers as closures
+# over (store, admin_token, lease_duration_seconds, state_poller, gate
+# helpers). Exception-handler block already extracted to
+# _install_problem_json_exception_handlers (~36 lines saved). Further
+# decomposition is symmetric with F-3 (eden-wire APIRouter regroup) —
+# deferred to follow-up issue #115 so both wire-binding factories move
+# together with the same Deps-object discipline. (audit L-E)
 def make_app(
     store: ControlPlaneStore,
     *,
@@ -149,43 +183,7 @@ def make_app(
     if admin_token is not None:
         _install_auth_middleware(app, admin_token=admin_token, store=store)
 
-    @app.exception_handler(Unauthorized)
-    async def _h_unauthorized(request: Request, exc: Unauthorized) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(Forbidden)
-    async def _h_forbidden(request: Request, exc: Forbidden) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(NotFound)
-    async def _h_not_found(request: Request, exc: NotFound) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(AlreadyExists)
-    async def _h_already_exists(request: Request, exc: AlreadyExists) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(InvalidPrecondition)
-    async def _h_invalid_precondition(
-        request: Request, exc: InvalidPrecondition
-    ) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(ReservedIdentifier)
-    async def _h_reserved(request: Request, exc: ReservedIdentifier) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(CycleDetected)
-    async def _h_cycle(request: Request, exc: CycleDetected) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(LeaseError)
-    async def _h_lease(request: Request, exc: LeaseError) -> Response:
-        return _json_error(exc, request=request)
-
-    @app.exception_handler(BadRequest)
-    async def _h_bad_request(request: Request, exc: BadRequest) -> Response:
-        return _json_error(exc, request=request)
+    _install_problem_json_exception_handlers(app)
 
     # The auth-disabled "test posture" still needs gate helpers that
     # return useful Principal objects. We share one impl that respects

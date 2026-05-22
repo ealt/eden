@@ -153,7 +153,77 @@ def _handle_one(
         return
     claim = store.claim(task.task_id, worker_id)
 
-    # Phase 10d follow-up B §D.8: when the local repo has an origin
+    wt = _prepare_eval_workspace(
+        store=store,
+        task=task,
+        variant=variant,
+        config=config,
+        host_subdir=host_subdir,
+        claim_token=claim.worker_id,
+    )
+    if wt is None:
+        return
+
+    try:
+        outcome = _run_eval_subprocess_with_cleanup(
+            wt=wt,
+            task=task,
+            variant=variant,
+            evaluation_schema=evaluation_schema,
+            objective=objective,
+            config=config,
+            worker_id=worker_id,
+        )
+    finally:
+        wt.remove()
+
+    submission = _outcome_to_submission(
+        outcome=outcome,
+        variant_id=variant_id,
+        store=store,
+    )
+    _submit_with_readback(
+        store=store,
+        task_id=task.task_id,
+        token=claim.worker_id,
+        submission=submission,
+    )
+
+
+def _submit_eval_error(
+    *, store: Store, task_id: str, claim_token: str, variant_id: str
+) -> None:
+    """Submit ``EvaluationSubmission(status="evaluation_error", ...)``."""
+    _submit_with_readback(
+        store=store,
+        task_id=task_id,
+        token=claim_token,
+        submission=EvaluationSubmission(
+            status="evaluation_error",
+            variant_id=variant_id,
+            evaluation=None,
+            artifacts_uri=None,
+        ),
+    )
+
+
+def _prepare_eval_workspace(
+    *,
+    store: Store,
+    task: EvaluationTask,
+    variant: Any,
+    config: EvaluatorSubprocessConfig,
+    host_subdir: Path,
+    claim_token: str,
+) -> TaskWorktree | None:
+    """Fetch the variant branch (if any) and materialize the worktree.
+
+    Returns the created ``TaskWorktree`` on success, or ``None`` after
+    submitting ``evaluation_error`` when fetch or worktree-create fails.
+    Per chapter 3 §4.4, infrastructure failures here map to
+    ``evaluation_error`` (NOT ``error``) so the variant stays at
+    ``success`` and can be re-evaluated later.
+    """
     # remote (Forgejo cutover), fetch the executor's work/* branch
     # so the worker commit is present locally before we worktree-add.
     # Per chapter 3 §4.4, infrastructure failures here map to
@@ -170,18 +240,13 @@ def _handle_one(
                 "evaluator_fetch_failed",
                 extra={"task_id": task.task_id, "branch": variant.branch},
             )
-            _submit_with_readback(
+            _submit_eval_error(
                 store=store,
                 task_id=task.task_id,
-                token=claim.worker_id,
-                submission=EvaluationSubmission(
-                    status="evaluation_error",
-                    variant_id=variant_id,
-                    evaluation=None,
-                    artifacts_uri=None,
-                ),
+                claim_token=claim_token,
+                variant_id=variant.variant_id,
             )
-            return
+            return None
 
     wt = TaskWorktree(
         repo_path=config.repo_path,
@@ -195,19 +260,27 @@ def _handle_one(
             "evaluator_worktree_create_failed",
             extra={"task_id": task.task_id},
         )
-        _submit_with_readback(
+        _submit_eval_error(
             store=store,
             task_id=task.task_id,
-            token=claim.worker_id,
-            submission=EvaluationSubmission(
-                status="evaluation_error",
-                variant_id=variant_id,
-                evaluation=None,
-                artifacts_uri=None,
-            ),
+            claim_token=claim_token,
+            variant_id=variant.variant_id,
         )
-        return
+        return None
+    return wt
 
+
+def _run_eval_subprocess_with_cleanup(
+    *,
+    wt: TaskWorktree,
+    task: EvaluationTask,
+    variant: Any,
+    evaluation_schema: dict,
+    objective: dict,
+    config: EvaluatorSubprocessConfig,
+    worker_id: str,
+) -> dict[str, Any]:
+    """Run the subprocess and normalize unexpected failures to ``evaluation_error``."""
     try:
         outcome = _run_subprocess(
             wt_path=wt.path,
@@ -224,8 +297,6 @@ def _handle_one(
             extra={"task_id": task.task_id},
         )
         outcome = {"status": "evaluation_error"}
-    finally:
-        wt.remove()
 
     if outcome.get("description"):
         log.info(
@@ -236,17 +307,7 @@ def _handle_one(
                 "description": outcome["description"],
             },
         )
-    submission = _outcome_to_submission(
-        outcome=outcome,
-        variant_id=variant_id,
-        store=store,
-    )
-    _submit_with_readback(
-        store=store,
-        task_id=task.task_id,
-        token=claim.worker_id,
-        submission=submission,
-    )
+    return outcome
 
 
 def _outcome_to_submission(
@@ -300,6 +361,134 @@ def _outcome_to_submission(
     )
 
 
+def _build_subprocess_env(
+    *,
+    config: EvaluatorSubprocessConfig,
+    wt_path: Path,
+    worker_id: str,
+) -> dict[str, str]:
+    """Build the per-task subprocess env dict (forwarded to the child)."""
+    env = dict(config.env)
+    env["EDEN_TASK_JSON"] = ".eden/eval-task.json"
+    env["EDEN_OUTPUT"] = ".eden/eval-outcome.json"
+    env["EDEN_WORKTREE"] = str(wt_path)
+    env["EDEN_EXPERIMENT_DIR"] = str(config.experiment_dir.resolve())
+    # Forward the host's worker identity + per-worker credential into
+    # the spawned child's env so user code can issue its own wire calls
+    # under the same identity (12a-1 §D.5; reference-binding doc).
+    env["EDEN_WORKER_ID"] = worker_id
+    if config.worker_credential is not None:
+        env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
+    return env
+
+
+def _maybe_wrap_for_docker(
+    *,
+    config: EvaluatorSubprocessConfig,
+    task_id: str,
+    wt_path: Path,
+    env: Mapping[str, str],
+) -> tuple[str, Any, list]:
+    """Wrap ``config.command`` in a docker-run sibling-container spawn.
+
+    Active when ``exec_mode == "docker"``. Returns
+    ``(command, post_kill, cleanups)``.
+    """
+    if config.exec_mode != "docker":
+        return config.command, None, []
+    assert config.exec_image is not None
+    assert config.cidfile_dir is not None
+    cidfile = make_cidfile_path(cidfile_dir=config.cidfile_dir, role="evaluator")
+    command = wrap_command(
+        original_command=config.command,
+        image=config.exec_image,
+        cwd_target=str(wt_path),
+        cidfile=cidfile,
+        role="evaluator",
+        task_id=task_id,
+        host_id=config.host_id,
+        volumes=list(config.exec_volumes),
+        binds=list(config.exec_binds),
+        env_keys=list(env.keys()),
+        # Per-task evaluator subprocess does NOT read stdin —
+        # same reasoning as the executor side.
+        attach_stdin=False,
+    )
+    pk, cu = make_cidfile_callbacks(cidfile)
+    return command, pk, [cu]
+
+
+def _run_and_capture(
+    *,
+    command: str,
+    wt_path: Path,
+    env: Mapping[str, str],
+    task_id: str,
+    config: EvaluatorSubprocessConfig,
+    output_json: Path,
+    post_kill: Any,
+    cleanups: list,
+) -> dict[str, Any]:
+    """Spawn the evaluator subprocess, wait, and parse eval-outcome.json.
+
+    Returns the parsed outcome dict on success or
+    ``{"status": "evaluation_error"}`` on any failure mode.
+    """
+    sub = spawn(
+        command=command,
+        cwd=wt_path,
+        env=env,
+        role="evaluator",
+        task_id=task_id,
+        capture_stdin=False,
+        post_kill_callback=post_kill,
+        cleanup_callbacks=cleanups,
+    )
+    try:
+        deadline = time.monotonic() + config.task_deadline
+        while sub.is_alive():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.warning(
+                    "evaluator_subprocess_timeout",
+                    extra={"task_id": task_id},
+                )
+                sub.terminate(shutdown_deadline=config.shutdown_deadline)
+                return {"status": "evaluation_error"}
+            try:
+                line = sub.read_line(
+                    deadline=time.monotonic() + min(remaining, 1.0)
+                )
+            except TimeoutError:
+                continue
+            if line is None:
+                break
+            log.debug("evaluator_subprocess_stdout", extra={"line": line})
+        rc = sub.popen.wait(timeout=max(0.1, config.shutdown_deadline))
+        if rc != 0:
+            log.warning(
+                "evaluator_subprocess_nonzero_exit",
+                extra={"task_id": task_id, "exit_code": rc},
+            )
+            return {"status": "evaluation_error"}
+        if not output_json.is_file():
+            log.warning(
+                "evaluator_subprocess_missing_outcome",
+                extra={"task_id": task_id},
+            )
+            return {"status": "evaluation_error"}
+        parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
+        if parsed is None:
+            log.warning(
+                "evaluator_subprocess_malformed_outcome",
+                extra={"task_id": task_id},
+            )
+            return {"status": "evaluation_error"}
+        return parsed
+    finally:
+        sub.run_cleanups()
+
+
 def _run_subprocess(
     *,
     wt_path: Path,
@@ -324,100 +513,20 @@ def _run_subprocess(
         "output_path": ".eden/eval-outcome.json",
     }
     task_json.write_text(json.dumps(brief, sort_keys=True), encoding="utf-8")
-
-    env = dict(config.env)
-    env["EDEN_TASK_JSON"] = ".eden/eval-task.json"
-    env["EDEN_OUTPUT"] = ".eden/eval-outcome.json"
-    env["EDEN_WORKTREE"] = str(wt_path)
-    env["EDEN_EXPERIMENT_DIR"] = str(config.experiment_dir.resolve())
-    # Forward the host's worker identity + per-worker credential into
-    # the spawned child's env so user code can issue its own wire calls
-    # under the same identity (12a-1 §D.5; reference-binding doc).
-    env["EDEN_WORKER_ID"] = worker_id
-    if config.worker_credential is not None:
-        env["EDEN_WORKER_CREDENTIAL"] = config.worker_credential
-
-    command = config.command
-    post_kill = None
-    cleanups: list = []
-    if config.exec_mode == "docker":
-        assert config.exec_image is not None
-        assert config.cidfile_dir is not None
-        cidfile = make_cidfile_path(
-            cidfile_dir=config.cidfile_dir, role="evaluator"
-        )
-        command = wrap_command(
-            original_command=config.command,
-            image=config.exec_image,
-            cwd_target=str(wt_path),
-            cidfile=cidfile,
-            role="evaluator",
-            task_id=task.task_id,
-            host_id=config.host_id,
-            volumes=list(config.exec_volumes),
-            binds=list(config.exec_binds),
-            env_keys=list(env.keys()),
-            # Per-task evaluator subprocess does NOT read stdin —
-            # same reasoning as the executor side.
-            attach_stdin=False,
-        )
-        pk, cu = make_cidfile_callbacks(cidfile)
-        post_kill = pk
-        cleanups = [cu]
-
-    sub = spawn(
-        command=command,
-        cwd=wt_path,
-        env=env,
-        role="evaluator",
-        task_id=task.task_id,
-        capture_stdin=False,
-        post_kill_callback=post_kill,
-        cleanup_callbacks=cleanups,
+    env = _build_subprocess_env(config=config, wt_path=wt_path, worker_id=worker_id)
+    command, post_kill, cleanups = _maybe_wrap_for_docker(
+        config=config, task_id=task.task_id, wt_path=wt_path, env=env
     )
-    try:
-        deadline = time.monotonic() + config.task_deadline
-        while sub.is_alive():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                log.warning(
-                    "evaluator_subprocess_timeout",
-                    extra={"task_id": task.task_id},
-                )
-                sub.terminate(shutdown_deadline=config.shutdown_deadline)
-                return {"status": "evaluation_error"}
-            try:
-                line = sub.read_line(
-                    deadline=time.monotonic() + min(remaining, 1.0)
-                )
-            except TimeoutError:
-                continue
-            if line is None:
-                break
-            log.debug("evaluator_subprocess_stdout", extra={"line": line})
-        rc = sub.popen.wait(timeout=max(0.1, config.shutdown_deadline))
-        if rc != 0:
-            log.warning(
-                "evaluator_subprocess_nonzero_exit",
-                extra={"task_id": task.task_id, "exit_code": rc},
-            )
-            return {"status": "evaluation_error"}
-        if not output_json.is_file():
-            log.warning(
-                "evaluator_subprocess_missing_outcome",
-                extra={"task_id": task.task_id},
-            )
-            return {"status": "evaluation_error"}
-        parsed = parse_json_line(output_json.read_text(encoding="utf-8"))
-        if parsed is None:
-            log.warning(
-                "evaluator_subprocess_malformed_outcome",
-                extra={"task_id": task.task_id},
-            )
-            return {"status": "evaluation_error"}
-        return parsed
-    finally:
-        sub.run_cleanups()
+    return _run_and_capture(
+        command=command,
+        wt_path=wt_path,
+        env=env,
+        task_id=task.task_id,
+        config=config,
+        output_json=output_json,
+        post_kill=post_kill,
+        cleanups=cleanups,
+    )
 
 
 def _submit_with_readback(
