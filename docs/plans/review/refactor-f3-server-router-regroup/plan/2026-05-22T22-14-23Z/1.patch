@@ -1,0 +1,754 @@
+--- docs/plans/review/refactor-f3-server-router-regroup/plan/2026-05-22T22-14-23Z/0.md	2026-05-22 15:14:23
++++ docs/plans/refactor-f3-server-router-regroup.md	2026-05-22 15:26:04
+@@ -267,34 +267,72 @@
+ beyond the exception object — no `store` capture — so they remain
+ the same shape they have today.
+ 
+-### Decision 5 — Route ordering preserved at `include_router` time
++### Decision 5 — Route ordering is non-load-bearing here; match current file order anyway
+ 
+-**Decision.** `make_app` calls `app.include_router(...)` in the
+-exact registration order the current monolith uses:
++**Decision.** `make_app` calls `app.include_router(...)` in an
++order that mirrors the current file's registration order as
++closely as the per-router boundaries allow. The actual current
++registration order (verified by `grep -nE '@app\.(get|post|patch|put|delete)\(' server.py`) is:
+ 
+-1. tasks
+-2. ideas
+-3. variants
+-4. dispatch_mode
+-5. experiment lifecycle (terminate / policy-errors / state /
+-   `GET /v0/experiments/{id}`)
+-6. events
+-7. workers
+-8. groups
+-9. checkpoints (`POST {base}/checkpoint` and
+-   `POST /v0/checkpoints/import`)
+-10. reference (`GET {ref_base}/tasks/{id}/validate-terminal`,
+-    `POST {ref_base}/validate/evaluation`,
+-    `GET {ref_base}/artifacts/{path:path}`)
+-
+-**Why.** FastAPI matches routes in registration order. The current
+-ordering places `GET /v0/experiments/{experiment_id}` (the
+-"read full experiment" route at line 1425) AFTER the more-specific
+-`/v0/experiments/{id}/tasks` / `/ideas` / etc. routes — this is
+-load-bearing for path-parameter resolution. The plan preserves the
+-ordering exactly so behavior is byte-identical to pre-refactor;
+-the wave-1 proof-of-shape test will assert it (see §6.2).
++1. tasks (605–820)
++2. ideas (826–888)
++3. variants (894–978)
++4. dispatch_mode (984–1065)
++5. experiment-lifecycle subset — terminate / policy-errors / state (1071, 1098, 1140)
++6. events (1168, 1181)
++7. workers (1213–1313)
++8. groups (1319–1419)
++9. **`GET /v0/experiments/{experiment_id}`** (1425) — read-full-experiment route
++10. checkpoints — export (1455) and top-level import (1515)
++11. reference — validate-terminal (1624), validate/evaluation (1640), artifacts (1666)
+ 
++**Path-segment scoping makes order non-load-bearing.** FastAPI /
++Starlette path parameters default to single-segment matching:
++`{experiment_id}` matches one path segment with no slashes. So
++`GET /v0/experiments/{experiment_id}` matches **only**
++`/v0/experiments/<id>` — it does **not** shadow
++`/v0/experiments/<id>/tasks` or any other sub-resource. Every
++existing route has a unique fully-qualified path; there is no
++ordering-dependent matching today.
++
++This was a planning mistake in the round-0 draft: the "load-bearing"
++framing implied a constraint that doesn't actually exist. Removing
++it simplifies the include order without behavioral risk.
++
++**What `make_app` does.** Match the file's registration order
++exactly, because that is what existing tests + conformance
++exercise today, and the no-behavior-change discipline says "match
++what exists unless there's a reason to change." That means
++splitting the experiment-related routes across two `include_router`
++calls — one for the lifecycle subset (terminate / policy-errors /
++state, registered between dispatch_mode and events) and one for the
++read-full-experiment route (registered between groups and
++checkpoints). See Decision 5a.
++
++### Decision 5a — Split the experiment-related routes across two routers
++
++**Decision.** The four "experiment" routes split into:
++
++- `routers/experiment_lifecycle.py` — `POST /v0/experiments/{id}/terminate`,
++  `POST /v0/experiments/{id}/policy-errors`, `GET /v0/experiments/{id}/state`.
++  Included between `dispatch_mode` and `events` (matches current
++  lines 1071–1140 position).
++- `routers/experiment_read.py` — `GET /v0/experiments/{id}`. Included
++  between `groups` and `checkpoints` (matches current line 1425
++  position).
++
++**Why.** The current file groups these four routes under a single
++"Portable checkpoints (chapter 7 §14, chapter 10)" comment, but
++`terminate`/`policy-errors`/`state` are chapter-7 §2.9
++lifecycle routes (registered at lines 1071/1098/1140 under
++"Experiment lifecycle (12a-3)"); only `GET {base}` is at line
++1425. The current code already treats them as logically separate.
++
++Two small routers (~80 + ~40 LOC) are clearer than one
++mixed-concerns router that has to be included in two pieces. They
++also let the include order match the file exactly with no
++restructuring.
++
+ **Edge case.** `POST /v0/checkpoints/import` (line 1515) is the
+ ONE route NOT under the `/v0/experiments/{id}` base — it's a
+ top-level admin endpoint. The checkpoints router (`routers/
+@@ -381,16 +419,17 @@
+ ├── _artifact_fd.py          # NEW — descriptor-walk artifact helpers
+ └── routers/                 # NEW
+     ├── __init__.py          # empty (or re-exports the build_router fns)
+-    ├── tasks.py             # 10 routes; ~250 LOC
+-    ├── ideas.py             # 4 routes; ~80 LOC
+-    ├── variants.py          # 5 routes; ~120 LOC
+-    ├── dispatch_mode.py     # 2 routes; ~110 LOC (the GET/PATCH pair w/ value-grammar walk)
+-    ├── experiment.py        # 4 routes (terminate / policy-errors / state / read-experiment); ~130 LOC
+-    ├── events.py            # 2 routes; ~60 LOC
+-    ├── workers.py           # 5 routes; ~140 LOC
+-    ├── groups.py            # 6 routes; ~150 LOC
+-    ├── checkpoints.py       # 2 routes (export + import); ~150 LOC
+-    └── reference.py         # 3 routes (validate-terminal + validate/evaluation + artifacts); ~180 LOC
++    ├── tasks.py             # 10 routes; ~250 LOC (handlers at module scope; build_router ~25 LOC)
++    ├── ideas.py             # 4 routes; ~110 LOC
++    ├── variants.py          # 5 routes; ~140 LOC
++    ├── dispatch_mode.py     # 2 routes; ~120 LOC (the GET/PATCH pair w/ value-grammar walk)
++    ├── experiment_lifecycle.py  # 3 routes (terminate / policy-errors / state); ~90 LOC
++    ├── experiment_read.py   # 1 route (GET /v0/experiments/{id}); ~40 LOC
++    ├── events.py            # 2 routes; ~80 LOC
++    ├── workers.py           # 5 routes; ~150 LOC
++    ├── groups.py            # 6 routes; ~160 LOC
++    ├── checkpoints.py       # 2 routes (export + import); ~160 LOC
++    └── reference.py         # 3 routes (validate-terminal + validate/evaluation + artifacts); ~200 LOC
+ ```
+ 
+ Total estimated SLOC (rough): `80 + 50 + 80 + 250 + 80 + 120 +
+@@ -460,8 +499,13 @@
+ 
+ ### 3.3 Router skeleton (per-module)
+ 
+-Every `routers/<name>.py` follows the same shape so reviewers can
+-read one and infer the others:
++The naive shape — nesting all handlers inside `build_router` —
++would itself recreate the L-D function-length violation (10
++handlers × ~25 LOC each = ~250 LOC `build_router` for tasks,
++above the 100-LOC gate). To keep `build_router` tiny AND each
++handler a separate measurable function for the complexity gate,
++the design uses **module-level closure factories** with a thin
++`build_router` assembler.
+ 
+ ```python
+ # eden_wire/routers/tasks.py
+@@ -481,19 +525,36 @@
+     stamp_created_by,
+ )
+ from ..errors import BadRequest
+-from ..models import ClaimRequest, ReassignRequest, ReclaimRequest, RejectRequest, SubmitRequest
++from ..models import (
++    ClaimRequest, ReassignRequest, ReclaimRequest, RejectRequest, SubmitRequest,
++)
+ 
+ 
+ def build_router(deps: RouterDeps) -> APIRouter:
+     """Return the tasks APIRouter bound to ``deps``.
+ 
+-    Mirrors the chapter-7 §2 task-lifecycle endpoints. All routes
+-    are experiment-scoped under ``/v0/experiments/{experiment_id}/tasks``.
++    Thin assembler — each handler lives in a module-level
++    closure factory below; this method only registers them.
++    Keeps ``build_router`` well under the 100-LOC gate
++    regardless of how many routes the module owns.
+     """
+     router = APIRouter(prefix="/v0/experiments/{experiment_id}/tasks")
++    router.post("")(_create_task(deps))
++    router.get("")(_list_tasks(deps))
++    router.get("/{task_id}")(_read_task(deps))
++    router.get("/{task_id}/submission")(_read_submission(deps))
++    router.post("/{task_id}/claim")(_claim(deps))
++    router.post("/{task_id}/submit")(_submit(deps))
++    router.post("/{task_id}/accept")(_accept(deps))
++    router.post("/{task_id}/reject")(_reject(deps))
++    router.post("/{task_id}/reclaim")(_reclaim(deps))
++    router.post("/{task_id}/reassign")(_reassign(deps))
++    return router
+ 
+-    @router.post("")
+-    async def create_task(
++
++def _create_task(deps: RouterDeps):
++    """Closure factory for ``POST /v0/experiments/{id}/tasks``."""
++    async def handler(
+         request: Request,
+         experiment_id: str,
+         body: dict[str, Any] = Body(...),
+@@ -501,15 +562,14 @@
+     ) -> dict[str, Any]:
+         check_experiment(deps, experiment_id, x_eden_experiment_id)
+         # ... (current _create_task body, with deps.store)
+-        # ...
++    return handler
+ 
+-    @router.get("")
+-    async def list_tasks(...):
+-        ...
+ 
+-    # ... rest of the task routes
++def _list_tasks(deps: RouterDeps):
++    async def handler(...): ...
++    return handler
+ 
+-    return router
++# ... 8 more factories, each owning one route
+ 
+ 
+ def _submission_to_wire(submission: Submission) -> dict[str, Any]:
+@@ -521,29 +581,70 @@
+     try:
+         return submission_from_payload(kind, payload)
+     except ValueError as exc:
+-        # Module-level mapping preserved.
+         raise BadRequest(str(exc)) from exc
+ ```
+ 
++**Function-LEN budget (load-bearing per the Tier-1 gate).**
++
++- `build_router(...)` — ~15–30 LOC across all router modules
++  (one `router.<method>("path")(_handler(deps))` line per route +
++  prefix declaration).
++- Each `_<route>(deps)` closure factory — ~5 LOC of wrapper + the
++  inner `handler` body. FastAPI introspects the **inner**
++  `handler`'s signature for body / query / header extraction; the
++  outer factory is a transparent closure wrapper. The complexity
++  gate measures the outer factory function AND the nested inner
++  `handler` as separate `ast.FunctionDef` nodes; each is
++  independently measured against the 100-LEN / 20-CC thresholds.
++- Inner `handler` bodies — ~15–30 LOC each (matches current per-
++  route SLOC).
++
++The wave-1 PR explicitly runs `python3 scripts/check-complexity.py`
++against the new `routers/tasks.py` AND `server.py` to confirm no
++function in either is over threshold. Subsequent waves do the same.
++
++**Why closure factories rather than method-on-class or
++`functools.partial`.**
++
++- Methods on a class (e.g., `class TasksRouter:` with `async def
++  create_task(self, ...)`) work but introduce `self` in the
++  handler signature, which FastAPI does NOT introspect for body
++  / query / header parameters — `self` is treated as an unknown
++  required parameter and the route 422s on every request. Avoid.
++- `functools.partial(handler, deps=deps)` collapses the inner
++  signature in a way that breaks FastAPI's `Body(...)` / `Header(...)`
++  / `Query(...)` defaults binding (the partial's `__signature__`
++  becomes the raw underlying function's signature, missing the
++  default-marker objects). Avoid.
++- Closure factory (the shape above) is what FastAPI's own docs
++  recommend for parameterized dependency injection without
++  `Depends(...)`. The inner `handler` retains its declared
++  signature; the closure captures `deps` via lexical scope.
++
+ Notes:
+ 
+ - `APIRouter(prefix=...)` carries the experiment-scoped path
+   prefix, so each route declares only the suffix. Routes that
+   share the prefix (tasks, ideas, variants, events, workers,
+-  groups, dispatch_mode, experiment-lifecycle) follow this shape.
++  groups, dispatch_mode, experiment-lifecycle, experiment-read)
++  follow this shape. The `checkpoints` and `reference` routers
++  have distinct prefixes (§3.4, §3.5).
+ - Per-resource module-level helpers (`_submission_to_wire`,
+   `_submission_from_wire`) co-locate with the router that uses
+   them.
+ - The `_check_experiment` helper drops the third `url` parameter
+-  (it was the path string for error envelope construction);
+-  inside the new design the URL comes from
+-  `request.url` at exception-handler time. This is a cosmetic
+-  simplification — the error envelope's `instance` field already
+-  carries `str(request.url)` via the existing exception handlers;
+-  the inline `url` was unused by the current
+-  `ExperimentIdMismatch` exception path. Verified by inspection
+-  during wave 1. (Surface in the wave-1 PR description so codex
+-  flags it explicitly.)
++  in the move to `check_experiment(deps, ...)`. The current
++  positional `url` argument is constructed inline at every
++  call site (e.g., `f"/v0/experiments/{experiment_id}/tasks"`)
++  but the resulting `ExperimentIdMismatch` exception's envelope is
++  built by `@app.exception_handler(ExperimentIdMismatch)` from
++  `str(request.url)`, not from the inline string. The inline `url`
++  is a dead parameter, verified by reading every call site (lines
++  612, 653, 667, 679, 697, 725, 749, 767, 785, 808, 833, 855, 867,
++  881, 901, 921, 935, 949, 966, 997, 1022, 1087, 1127, 1152, 1174,
++  1195, 1220, 1247, 1265, 1281, 1300, 1325, 1344, 1360, 1375, 1393,
++  1411, 1445, 1476). Drop in wave 1; call out in the PR description
++  so codex examines explicitly.
+ 
+ ### 3.4 Checkpoints router with two prefixes
+ 
+@@ -645,16 +746,19 @@
+ 
+     _install_exception_handlers(app)
+ 
+-    # Order is load-bearing per chapter-7 §1.3 path resolution; see
+-    # docs/plans/refactor-f3-server-router-regroup.md Decision 5.
++    # Include order matches the current file's registration order;
++    # see Decision 5 (path-segment scoping makes order non-load-
++    # bearing for these routes, but we match what exists for the
++    # no-behavior-change discipline).
+     app.include_router(tasks.build_router(deps))
+     app.include_router(ideas.build_router(deps))
+     app.include_router(variants.build_router(deps))
+     app.include_router(dispatch_mode.build_router(deps))
+-    app.include_router(experiment.build_router(deps))
++    app.include_router(experiment_lifecycle.build_router(deps))
+     app.include_router(events.build_router(deps))
+     app.include_router(workers.build_router(deps))
+     app.include_router(groups.build_router(deps))
++    app.include_router(experiment_read.build_router(deps))
+     app.include_router(checkpoints.build_router(deps))
+     app.include_router(reference.build_router(deps))
+ 
+@@ -672,7 +776,109 @@
+     async def _storage_error_handler(...): ...
+     # ... 8 more
+ ```
++
++### 3.7 Per-route auth matrix
++
++The current `make_app` uses a mix of: (a) the four shared
++helpers (`_enforce_worker`, `_enforce_in_any_group`,
++`_stamp_created_by`, `_check_experiment`); (b) direct calls to
++`require_admin(request)` / `require_worker(request)` /
++`authenticate(...)` from `eden_wire.auth`; (c) inline
++`if admin_token is not None` branches that gate behavior
++on whether auth is installed. The refactor MUST preserve all
++three patterns route-by-route — F-3 is not an opportunity to
++unify the auth surface (that would be a behavior change).
++
++Authoritative matrix per route. "Helper" = uses `enforce_*` /
++`require_*` from `_dependencies.py`. "Direct" = imports
++`require_admin` / `require_worker` / `authenticate` from
++`eden_wire.auth` and calls it directly. "Either-auth" = guarded
++by `if admin_token is not None: _ = request.state.principal`
++(any registered worker passes). "None-fallthrough" = behavior
++when `admin_token is None` (test posture).
++
++| Route | Current call site | Auth shape | None-fallthrough |
++|---|---:|---|---|
++| `POST /tasks` | 632, 637 | `enforce_in_any_group(admins, orchestrators)` if `kind ∈ {ideation, execution, evaluation}` else `enforce_worker`; `stamp_created_by` | bypass (anonymous body acceptance + sentinel `created_by`) |
++| `GET /tasks` | 646 | none | none |
++| `GET /tasks/{id}` | 661 | none | none |
++| `GET /tasks/{id}/submission` | 673 | none | none |
++| `POST /tasks/{id}/claim` | 702 | `enforce_worker`; `_worker_id_from_request` | sentinel `worker_id = "anonymous"` or `X-Eden-Worker-Id` header |
++| `POST /tasks/{id}/submit` | 730 | `enforce_worker`; `_worker_id_from_request` | same as above |
++| `POST /tasks/{id}/accept` | 755 | `enforce_in_any_group(orchestrators)` | bypass |
++| `POST /tasks/{id}/reject` | 773 | `enforce_in_any_group(orchestrators)` | bypass |
++| `POST /tasks/{id}/reclaim` | 790 | `enforce_worker` | bypass |
++| `POST /tasks/{id}/reassign` | 813 | `enforce_in_any_group(admins)` (returns `reassigned_by`) | sentinel `"anonymous"` |
++| `POST /ideas` | 836–837 | `enforce_worker`; `stamp_created_by` | bypass |
++| `GET /ideas` | 849 | none | none |
++| `GET /ideas/{id}` | 861 | none | none |
++| `POST /ideas/{id}/mark-ready` | 886 | `enforce_worker` | bypass |
++| `POST /variants` | 904 | `enforce_worker` | bypass |
++| `GET /variants` | 915 | none | none |
++| `GET /variants/{id}` | 929 | none | none |
++| `POST /variants/{id}/declare-evaluation-error` | 954 | `enforce_worker` | bypass |
++| `POST /variants/{id}/integrate` | 973 | `enforce_in_any_group(orchestrators)` | bypass |
++| `GET /dispatch_mode` | 1002 | **either-auth** (inline `if admin_token: _ = request.state.principal`) | bypass |
++| `PATCH /dispatch_mode` | 1027 | `enforce_in_any_group(admins)` (returns `updated_by`) | sentinel `"anonymous"` |
++| `POST /terminate` | 1092 | `enforce_in_any_group(admins)` (returns `terminated_by`) | sentinel |
++| `POST /policy-errors` | 1132 | `enforce_in_any_group(orchestrators)` | bypass |
++| `GET /state` | 1157 | **either-auth** (inline check) | bypass |
++| `GET /v0/experiments/{id}` (read-experiment) | 1450–1452 | **either-auth** (middleware already authenticated; no further gate) | bypass |
++| `GET /events` | 1168 | none | none |
++| `GET /events/subscribe` | 1181 | none | none |
++| `POST /workers` | 1229 | **direct** `require_admin(request) if admin_token is not None else None` | `principal = None` (registration with `registered_by = None`) |
++| `GET /workers` | 1253 | **either-auth** (inline check) | bypass |
++| `GET /workers/{id}` | 1260 | none | none |
++| `POST /workers/{id}/reissue-credential` | 1286 | **direct** `require_admin(request)` if `admin_token is not None` | bypass |
++| `GET /whoami` | 1308 | **direct** `require_worker(request)` if `admin_token is not None` else returns `{"worker_id": "anonymous"}` | sentinel `"anonymous"` |
++| `POST /groups` | 1331 | **direct** `require_admin(request) if admin_token is not None else None` | `principal = None` |
++| `GET /groups` | 1339 | none | none |
++| `GET /groups/{id}` | 1354 | none | none |
++| `POST /groups/{id}/members` | 1381–1382 | **direct** `require_admin(request)` if `admin_token is not None` | bypass |
++| `DELETE /groups/{id}/members/{member_id}` | 1399–1400 | **direct** `require_admin(request)` if `admin_token is not None` | bypass |
++| `DELETE /groups/{id}` | 1416–1417 | **direct** `require_admin(request)` if `admin_token is not None` | bypass |
++| `POST /checkpoint` | 1481–1482 | **direct** `require_admin(request)` if `admin_token is not None` | bypass |
++| `POST /v0/checkpoints/import` | 1539–1540 | **direct** `require_admin(request)` if `admin_token is not None` | bypass |
++| `GET /_reference/.../validate-terminal` | 1624 | none (chapter-7 §1.3 reference-route — middleware skips `/_reference/`; no inline check today) | none |
++| `POST /_reference/.../validate/evaluation` | 1640 | none (same as above) | none |
++| `GET /_reference/.../artifacts/{path:path}` | 1676–1681 | **direct** `authenticate(request.headers.get("authorization"), admin_token=admin_token, store=store)` if `admin_token is not None` | bypass (no auth) |
+ 
++**Refactor invariants from this matrix.**
++
++1. **Direct callers stay direct.** `routers/workers.py`,
++   `routers/groups.py`, `routers/checkpoints.py`,
++   `routers/reference.py` import `require_admin` /
++   `require_worker` / `authenticate` from `eden_wire.auth` and
++   call them directly with the same `if deps.admin_token is not
++   None` branches as today. They do NOT route through the four
++   helpers in `_dependencies.py`.
++2. **Either-auth stays inline.** The four either-auth sites
++   (`GET /dispatch_mode`, `GET /state`, `GET /v0/experiments/{id}`,
++   `GET /workers`) keep the inline `if deps.admin_token is not
++   None: _ = request.state.principal` check. The plan does NOT
++   introduce an `enforce_either` helper — adding one is feature-
++   creep beyond F-3's scope.
++3. **`_worker_id_from_request` semantics preserved.** The helper
++   stays at module scope in `_dependencies.py`; both the test-mode
++   `X-Eden-Worker-Id` header fallback AND the `"anonymous"`
++   sentinel are preserved.
++4. **The `whoami` route is the only direct `require_worker`
++   call.** All other worker-gated routes go through
++   `enforce_worker`. Don't unify.
++5. **`POST /tasks`'s split-by-kind authority** (lines 631–637)
++   stays inline in the tasks router — moving the per-kind branch
++   into `enforce_in_any_group` would over-specialize the helper.
++6. **`POST /workers` + `POST /groups` pass `registered_by =
++   principal.kind` / `created_by = principal.kind`** when
++   `admin_token is not None`, else `None`. This is a §13.1
++   attribution detail; preserve verbatim in each router.
++
++**Validation.** The existing
++[`test_auth.py`](../../reference/packages/eden-wire/tests/test_auth.py)
++exercises ~every gated path under both `admin_token = None` and
++`admin_token = "..."` postures. Each wave runs this test file as
++the gate; any auth-surface regression surfaces immediately.
++
+ ## 4. Resource → router mapping
+ 
+ Complete mapping from current `server.py` line ranges to
+@@ -704,10 +910,10 @@
+ | 958 | POST | `{base}/variants/{variant_id}/integrate` | `routers/variants.py` |
+ | 984 | GET | `{base}/dispatch_mode` | `routers/dispatch_mode.py` |
+ | 1007 | PATCH | `{base}/dispatch_mode` | `routers/dispatch_mode.py` |
+-| 1071 | POST | `{base}/terminate` | `routers/experiment.py` |
+-| 1098 | POST | `{base}/policy-errors` | `routers/experiment.py` |
+-| 1140 | GET | `{base}/state` | `routers/experiment.py` |
+-| 1425 | GET | `{base}` (read full experiment) | `routers/experiment.py` |
++| 1071 | POST | `{base}/terminate` | `routers/experiment_lifecycle.py` |
++| 1098 | POST | `{base}/policy-errors` | `routers/experiment_lifecycle.py` |
++| 1140 | GET | `{base}/state` | `routers/experiment_lifecycle.py` |
++| 1425 | GET | `{base}` (read full experiment) | `routers/experiment_read.py` |
+ | 1168 | GET | `{base}/events` | `routers/events.py` |
+ | 1181 | GET | `{base}/events/subscribe` | `routers/events.py` |
+ | 1213 | POST | `{base}/workers` | `routers/workers.py` |
+@@ -750,7 +956,8 @@
+ | `reference/packages/eden-wire/src/eden_wire/routers/ideas.py` (new) | 4 idea routes. |
+ | `reference/packages/eden-wire/src/eden_wire/routers/variants.py` (new) | 5 variant routes. |
+ | `reference/packages/eden-wire/src/eden_wire/routers/dispatch_mode.py` (new) | 2 dispatch_mode routes (GET + PATCH); preserves the `model_extra` walk per chapter-7 §2.8 (see §7.2 below). |
+-| `reference/packages/eden-wire/src/eden_wire/routers/experiment.py` (new) | 4 experiment-lifecycle routes (terminate / policy-errors / state / read-full-experiment). |
++| `reference/packages/eden-wire/src/eden_wire/routers/experiment_lifecycle.py` (new) | 3 routes (terminate / policy-errors / state); chapter-7 §2.9 lifecycle. Included between dispatch_mode and events to match current file order. |
++| `reference/packages/eden-wire/src/eden_wire/routers/experiment_read.py` (new) | 1 route (`GET /v0/experiments/{id}`); chapter-7 §14.3 read-full-experiment. Included between groups and checkpoints to match current file order. |
+ | `reference/packages/eden-wire/src/eden_wire/routers/events.py` (new) | 2 events routes (read-range + subscribe long-poll). |
+ | `reference/packages/eden-wire/src/eden_wire/routers/workers.py` (new) | 5 worker-registry routes (incl. whoami). |
+ | `reference/packages/eden-wire/src/eden_wire/routers/groups.py` (new) | 6 group-registry routes. |
+@@ -775,9 +982,11 @@
+ 
+ | File | Change |
+ |---|---|
+-| `reference/packages/eden-wire/tests/*.py` | **No change** per Decision 6. Each wave runs the full eden-wire test suite to assert behavior preservation. |
++| `reference/packages/eden-wire/tests/*.py` | **Mostly no change** per Decision 6. Two exceptions: see the next two rows. |
++| `reference/packages/eden-wire/tests/test_artifact_route.py` | **Retarget monkeypatches** (wave 5). The current tests at [lines 108–109](../../reference/packages/eden-wire/tests/test_artifact_route.py) and 292–296 monkeypatch `eden_wire.server._open_artifact_fd`, `srv.os.open`, `srv.os.fstat`, and `srv._FILE_FLAGS`. After wave 5 moves these symbols to `eden_wire/_artifact_fd.py`, the monkeypatch targets must update to `eden_wire._artifact_fd.<symbol>`. Mechanical change; ~6 `monkeypatch.setattr` lines and one `import eden_wire._artifact_fd as artifact_fd` add. |
++| `reference/packages/eden-wire/tests/test_reference_validate.py` (new, wave 5) | Add 2 small smoke tests for `GET /_reference/experiments/{id}/tasks/{task_id}/validate-terminal` and `POST /_reference/experiments/{id}/validate/evaluation` — the two routes in `routers/reference.py` that currently have no direct wire-level coverage. The existing schema-parity test exercises the `validate_evaluation` store method but not the wire route; one happy-path + one bad-input test per route is sufficient (~80 LOC). |
+ | `reference/services/task-store-server/tests/test_artifacts_cli.py` | **No change** — invokes `make_app(...)` at the HTTP level; signature-compatible. |
+-| `reference/services/control-plane/tests/test_server.py` | **No change** for waves 1–5. Wave 6 (L-E) extends the same tests against the regrouped control-plane app; tests stay behavioral. |
++| `reference/services/control-plane/tests/test_server.py` | **No change** for waves 1–5. Wave 6 (L-E, if undertaken) extends the same tests against the regrouped control-plane app; tests stay behavioral. |
+ | `conformance/scenarios/*.py` | **No change** — black-box conformance suite is the contract enforcer. |
+ 
+ ### 5.5 Docs
+@@ -811,11 +1020,26 @@
+ 
+ | File | Test | Why |
+ |---|---|---|
+-| `reference/packages/eden-wire/tests/test_wire_roundtrip.py` (or `test_router_ordering.py` new) | `test_get_experiment_route_does_not_shadow_sub_routes`: `GET /v0/experiments/{id}/tasks` returns the tasks list, NOT the experiment object; `GET /v0/experiments/{id}` returns the experiment object. | Decision 5 says ordering is load-bearing; a regression in `app.include_router(...)` order could silently flip this. The current test suite doesn't have a single test that asserts both paths against the same store and checks they return different payloads. |
+-| `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_multi_app_isolation`: two `make_app(store_a)` + `make_app(store_b)` instances in one process, each receives only its own experiment's events. | Per module docstring contract — Decision 2 alternative B was rejected to preserve this. Worth a regression test to ensure no per-router module-level state slips in. |
+-| `reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py` | `test_dispatch_mode_patch_rejects_extra_allow_null`: PATCH with `{"future_key": null}` body returns 400 (the `model_extra` null-collapse bug from chapter-7 §2.8 prose). | The walk over `model_extra` keys in `dispatch_mode.py` is the trickiest piece of logic in any router; if a refactor accidentally drops the `null`-pre-exclude_none walk, this surfaces it. The current test_reassign_dispatch_wire.py covers `auto`/`manual` valid values; the null edge is the regression-risk surface. |
+-| `reference/packages/eden-wire/tests/test_artifact_route.py` | (existing tests) | Already comprehensive — symlink, ENOENT, ENOTDIR, oversize, percent-encoded filenames, header injection. No changes needed; the move of artifact helpers to `_artifact_fd.py` is locked-in by these passing. |
++| `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_multi_app_isolation`: two `make_app(store_a)` + `make_app(store_b)` instances in one process, each receives only its own experiment's events. | Per module docstring contract — Decision 2 alternative B (module-level state) was rejected to preserve this. Worth a regression test to ensure no per-router module-level state slips in. |
++| `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_path_segment_scoping_no_shadow`: confirm `GET /v0/experiments/<id>/events` (a subsegment-bearing path) returns events, NOT the experiment object. Path-segment scoping is what guarantees no order-dependent shadowing (Decision 5); a future amendment that switches a route to `{experiment_id:path}` (greedy) would silently break this. The test pins the assumption. | Decision 5 + §7.1 lean on path-segment scoping. The test fails loudly if any future change introduces a greedy-path-param route that overlaps the experiment-read shape. |
++| `reference/packages/eden-wire/tests/test_artifact_route.py` | (existing tests + monkeypatch retarget per §5.4) | Already comprehensive — symlink, ENOENT, ENOTDIR, oversize, percent-encoded filenames, header injection. Wave 5 retargets `monkeypatch.setattr(srv, ...)` to `monkeypatch.setattr(artifact_fd, ...)` (mechanical, listed in §5.4). |
++| `reference/packages/eden-wire/tests/test_reference_validate.py` (new) | Wave-5 smoke for `validate-terminal` + `validate/evaluation` routes. | Per §5.4 — these two `/_reference/` routes lack wire-level direct coverage today (the store method `validate_evaluation` is exercised by schema-parity tests, but not the wire route). 1 happy-path + 1 bad-input per route. |
+ 
++**Tests already covering invariants the plan needs.** The
++following existing tests cover invariants flagged in §7; do NOT
++duplicate them:
++
++- [`test_reassign_dispatch_wire.py::test_invalid_value_on_extra_key_rejected`](../../reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py)
++  (line 331) — exercises the `dispatch_mode` PATCH with
++  `{"future_key": null}` and `{"future_key": "paused"}` to assert
++  the chapter-7 §2.8 `model_extra` null-collapse defense. This is
++  the §7.2 invariant; no new test needed. The dispatch_mode router
++  PR description should explicitly cite this test as the gate.
++- [`test_auth.py`](../../reference/packages/eden-wire/tests/test_auth.py)
++  — comprehensive auth surface coverage (admin / worker /
++  unauthenticated; per-route gating). This is the §7 / §3.7
++  invariant; no new test needed.
++
+ ### 6.3 Static-analysis gates per wave
+ 
+ | Command | Gate |
+@@ -839,21 +1063,32 @@
+ 
+ ## 7. Tricky areas
+ 
+-### 7.1 Path-parameter resolution order
++### 7.1 Path-parameter resolution order — non-issue under default scoping
+ 
+-FastAPI's route matching iterates registration order for routes
+-that share a path-parameter prefix. The current `make_app`
+-registers `GET /v0/experiments/{id}` at line 1425 — AFTER all the
+-more-specific `/v0/experiments/{id}/<sub>` routes (tasks, ideas,
+-…). The post-F-3 `app.include_router(...)` order in `make_app`
+-(Decision 5) preserves this by listing `experiment` AFTER all the
+-sub-resource routers. **Test added in §6.2 locks this in.**
++FastAPI / Starlette path parameters default to **single-segment**
++matching: `{experiment_id}` matches one segment with no slashes.
++So `GET /v0/experiments/{experiment_id}` matches **only**
++`/v0/experiments/foo` and not `/v0/experiments/foo/anything`.
++Every existing route has a unique fully-qualified path; there is
++no shadowing today.
+ 
+-If a future change adds a new sub-resource router and forgets to
+-add it BEFORE `experiment`, the `GET /v0/experiments/{id}` route
+-shadows it. The test in §6.2 catches the canonical case (tasks);
+-new resources need similar coverage when added.
++This means `app.include_router(...)` order is a stylistic choice,
++not a correctness invariant. Decision 5 chooses to match the
++current file's registration order anyway, under the no-behavior-
++change discipline. Decision 5a's split of the experiment routes
++into `experiment_lifecycle` + `experiment_read` is the
++consequence of that choice — the split exists to let the include
++order match the file exactly, not because order is technically
++required.
+ 
++**Where ordering WOULD matter (forward-looking).** If a future
++amendment introduces a route with a greedy path parameter
++(`{path:path}`, which DOES match multi-segment paths), or if two
++routes with the same method share a path-segment-equivalent
++pattern, ordering becomes load-bearing. The §6.2 regression test
++(`test_path_segment_scoping_no_shadow`) pins the current
++assumption so a future change that breaks it fails loudly.
++
+ ### 7.2 `dispatch_mode` PATCH `model_extra` walk
+ 
+ The current `_update_dispatch_mode` handler (line 1007) walks BOTH
+@@ -891,12 +1126,12 @@
+ 
+ The `install_auth_middleware` function in
+ [`eden_wire/auth.py`](../../reference/packages/eden-wire/src/eden_wire/auth.py)
+-skips `/_reference/` paths (the middleware's
+-`AUTH_BYPASS_PREFIXES`). That means the `serve_artifact` handler
+-in `routers/reference.py` MUST do its own bearer-auth via
+-`authenticate(...)` — the middleware will not have set
+-`request.state.principal`. The current handler does this; the
+-move into `routers/reference.py` must preserve it byte-for-byte.
++skips `/_reference/` paths via an inline `request.url.path.startswith("/_reference/")` check (no public `AUTH_BYPASS_PREFIXES` constant). That means
++the `serve_artifact` handler in `routers/reference.py` MUST do
++its own bearer-auth via `authenticate(...)` — the middleware
++will not have set `request.state.principal`. The current handler
++does this; the move into `routers/reference.py` must preserve it
++byte-for-byte.
+ 
+ `test_artifact_route.py` has comprehensive coverage of:
+ 
+@@ -911,14 +1146,18 @@
+ ### 7.5 The `_check_experiment` URL parameter drop
+ 
+ The current `_check_experiment(path_exp, header_exp, url)` takes a
+-third `url` argument that — verified by inspection — is unused.
+-`ExperimentIdMismatch` exceptions carry their own message; the
+-`@app.exception_handler(ExperimentIdMismatch)` constructs the
+-envelope from `request.url` directly. The plan drops the `url`
+-parameter from the new module-level
+-`check_experiment(deps, path_exp, header_exp)`.
++third positional `url` argument that — verified by reading the
++function body (lines 489–503) — is never referenced inside the
++function. The `ExperimentIdMismatch` exception's envelope is
++constructed by the `@app.exception_handler(ExperimentIdMismatch)`
++from `str(request.url)` at the handler boundary, not from the
++inline string passed in by the caller.
+ 
+-Verify in wave 1 by `grep -n "url=" reference/packages/eden-wire/src/eden_wire/server.py | grep -i check_exp` (expect zero hits — the third positional is an unused passthrough). If verification surprises (the param IS used in some unobvious way), retain it as a fourth `url: str` kwarg.
++The plan drops the `url` parameter from the new module-level
++`check_experiment(deps, path_exp, header_exp)`. Wave-1 PR
++description should call this out so codex examines the function
++body directly; the verification is read-the-function-body, not a
++grep.
+ 
+ ### 7.6 The `_problem` helper's narrow surface
+ 
+@@ -966,16 +1205,36 @@
+ service has its own `tests/test_server.py` which is the
+ behavioral gate.
+ 
+-L-E is included as wave 6 of this plan to honor the symmetric
+-intent; if the operator prefers to land L-E as a separate chunk
+-(its own PR + codex-review cycle), drop wave 6 from this plan and
+-file a follow-up issue. The default recommendation is to keep
+-wave 6 because (a) the two regroups share the same shape and a
+-reviewer reading one can validate the other, and (b) leaving
+-control-plane half-refactored re-introduces the structural slop the
+-audit explicitly called out. Surface as an explicit operator
+-decision in the wave-1 PR description.
++L-E is included as an **optional** wave 6, with a default
++recommendation to land it as a **separate chunk** (its own PR + codex-
++review cycle, its own issue tag if desired). F-3 alone is already
++substantial — 5 waves, 7 PRs, full conformance gating. Bundling
++L-E grows blast radius and review length without strengthening
++the chapter-7 acceptance gate (L-E lives in the control-plane
++service, which has its own `tests/test_server.py` gate).
+ 
++Reasons to bundle (keep wave 6 here):
++
++- The two regroups share the same `RouterDeps` shape; reviewer
++  context carries.
++- L-E's `# slop-allow:` annotations (if any) stay deferred
++  otherwise.
++
++Reasons to split:
++
++- Smaller blast radius per PR.
++- L-E can land at a different pace if F-3 conformance review is
++  slow.
++- Wave-6 is mechanically separate (different file, different
++  service, different tests); no F-3 dependency.
++
++**Recommended default: SPLIT.** Drop wave 6 from this plan and
++file a follow-up issue (or extend issue #115's scope with a
++checkbox) once F-3 waves 1–5 land. The operator decides at
++wave-1 PR review. Wave 6's contents are preserved below as a
++contingent appendix in §8 in case the operator chooses to
++bundle.
++
+ ## 8. Wave plan
+ 
+ Sequenced for incremental review pressure. Each wave is a separate
+@@ -984,21 +1243,30 @@
+ ### Wave 1 — Proof-of-shape (tasks router)
+ 
+ Smallest meaningful slice that proves the `RouterDeps` +
+-`build_router(deps)` pattern works.
++module-level-closure-factory + `build_router(deps)` pattern works.
+ 
+ - Add `_dependencies.py` with `RouterDeps` + the four auth/check
+-  helpers.
++  helpers (`check_experiment` — drops the dead `url` param per
++  §7.5; `enforce_worker`; `enforce_in_any_group`;
++  `stamp_created_by`).
+ - Add `routers/__init__.py` + `routers/tasks.py` with the 10 task
+-  routes.
++  routes wired through module-level closure factories per §3.3.
+ - Modify `server.py`: build `RouterDeps`, call
+   `app.include_router(tasks.build_router(deps))` for tasks; leave
+   every other route inline in `make_app`. The `# slop-allow:`
+   annotations stay (still needed — file is still >800 LOC, function
+   still >100).
++- **`python3 scripts/check-complexity.py`** must pass against the
++  new `routers/tasks.py` (no function over 100 LOC; no function
++  CC > 20).
+ - Tests: `uv run pytest -q reference/packages/eden-wire/tests`,
+   `uv run pytest -q reference/services/task-store-server/tests`,
+   `uv run pytest -q conformance/`. All green.
+ - PR title: `Refactor F-3 wave 1 — extract tasks APIRouter (#115)`.
++- PR description explicitly surfaces (so codex examines): (a) the
++  `_check_experiment` `url` parameter drop; (b) the closure-
++  factory pattern's `build_router` SLOC measurement; (c) the L-E
++  operator decision (bundle / split — recommended split per §7.9).
+ 
+ ### Wave 2 — ideas + variants + events
+ 
+@@ -1014,21 +1282,32 @@
+ - Tests: same.
+ - PR title: `Refactor F-3 wave 3 — extract workers/groups routers (#115)`.
+ 
+-### Wave 4 — dispatch_mode + experiment lifecycle
++### Wave 4 — dispatch_mode + experiment lifecycle + experiment-read
+ 
+-- Add `routers/dispatch_mode.py`, `routers/experiment.py`.
++- Add `routers/dispatch_mode.py`, `routers/experiment_lifecycle.py`,
++  `routers/experiment_read.py` (per §3.7 Decision 5a).
+ - Strip corresponding inline handlers.
+-- **Adds** the §6.2 regression tests (`test_get_experiment_route_does_not_shadow_sub_routes`,
+-  `test_dispatch_mode_patch_rejects_extra_allow_null`,
+-  `test_multi_app_isolation`) — these are best added when
+-  `routers/experiment.py` + `routers/dispatch_mode.py` exist.
++- The dispatch_mode router preserves the `model_extra` walk
++  verbatim per §7.2; the existing
++  [`test_invalid_value_on_extra_key_rejected`](../../reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py)
++  test (line 331) is the gate.
++- **Adds** the §6.2 regression tests:
++  `test_multi_app_isolation` (locks Decision 2's no-module-state
++  invariant) and `test_path_segment_scoping_no_shadow` (locks
++  Decision 5's path-segment-scoping invariant).
+ - Tests: same + new ones.
+-- PR title: `Refactor F-3 wave 4 — extract dispatch_mode/experiment routers (#115)`.
++- PR title: `Refactor F-3 wave 4 — extract dispatch_mode + experiment_lifecycle + experiment_read routers (#115)`.
+ 
+ ### Wave 5 — checkpoints + reference + cleanup
+ 
+ - Add `routers/checkpoints.py`, `routers/reference.py`.
+-- Move artifact helpers into `eden_wire/_artifact_fd.py`.
++- Move artifact helpers into `eden_wire/_artifact_fd.py` per §3.3
++  Decision 3.
++- **Retarget** `tests/test_artifact_route.py` monkeypatches
++  (lines 108–109, 292–296) from `eden_wire.server` to
++  `eden_wire._artifact_fd` per §5.4.
++- Add `tests/test_reference_validate.py` with 2 smoke tests for
++  `validate-terminal` + `validate/evaluation` per §5.4.
+ - `make_app` is now ~80–120 LOC.
+ - **Remove** the two `# slop-allow:` annotations
+   (`server.py:1` file-level F-3, `server.py:327` L-D function-level).
+@@ -1038,17 +1317,25 @@
+ - Run `python3 scripts/check-complexity.py` — passes clean (no new
+   violators; the F-3/L-D/L-F entries are removed).
+ - Run all compose smokes: `smoke.sh`, `smoke-subprocess.sh`.
+-- Tests: same as wave 1–4.
++- Tests: same as wave 1–4, plus the new `test_reference_validate.py`.
+ - PR title: `Refactor F-3 wave 5 — extract checkpoints/reference routers + cleanup (#115)`.
+ 
+-### Wave 6 (optional) — L-E control-plane symmetric regroup
++### Wave 6 (CONTINGENT — operator-decided at wave 1) — L-E control-plane symmetric regroup
+ 
++Per §7.9, the **recommended default is to split** L-E into a
++separate chunk (its own PR + its own codex-review cycle, optionally
++its own issue). If the operator chooses to bundle:
++
+ - Replicate the same shape for `eden_control_plane_server`:
+   `RouterDeps` + per-resource routers + `_install_exception_handlers`.
+ - Smaller surface (415 LOC, 8 handlers).
+ - Tests: `uv run pytest -q reference/services/control-plane/tests` + `uv run pytest -q conformance/`.
+ - PR title: `Refactor L-E — control-plane APIRouter regroup (#115)`.
+ 
++If split (recommended): wave 6 is skipped here; the L-E chunk
++runs through its own plan + codex-review pipeline at the
++operator's pace.
++
+ ### Wave 7 — docs + chunk completion
+ 
+ - Append `CHANGELOG.md [Unreleased]` entry consolidating the wave
+@@ -1142,15 +1429,16 @@
+ 1. **Wave 1** — `routers/tasks.py` + `_dependencies.py`. Proof-of-shape.
+ 2. **Wave 2** — `routers/ideas.py` + `routers/variants.py` + `routers/events.py`.
+ 3. **Wave 3** — `routers/workers.py` + `routers/groups.py`.
+-4. **Wave 4** — `routers/dispatch_mode.py` + `routers/experiment.py` + regression tests.
+-5. **Wave 5** — `routers/checkpoints.py` + `routers/reference.py` + `_artifact_fd.py` + slop-allow removal + compose smokes.
+-6. **Wave 6** (optional) — L-E control-plane symmetric regroup.
++4. **Wave 4** — `routers/dispatch_mode.py` + `routers/experiment_lifecycle.py` + `routers/experiment_read.py` + regression tests.
++5. **Wave 5** — `routers/checkpoints.py` + `routers/reference.py` + `_artifact_fd.py` + monkeypatch retarget + `test_reference_validate.py` + slop-allow removal + compose smokes.
++6. **Wave 6 (contingent)** — L-E control-plane symmetric regroup. Recommended default: split into a separate chunk; bundle only if the operator chooses at wave 1 review.
+ 7. **Wave 7** — docs + CHANGELOG + roadmap + audit-disposition
+    resolution annotations + impl-stage codex-review record commit.
+ 
+-Total: 6–7 PRs. Approximate effort: 1 day equivalent (the audit's
+-estimate), spread across the waves to keep each PR ≤ 500 LOC of
+-diff + behavior-preserving moves.
++Total: 5 F-3 waves + wave 7 docs (= 6 PRs default) or 7 PRs if
++L-E is bundled. Approximate effort: 1 day equivalent (the
++audit's estimate), spread across the waves to keep each PR ≤
++500 LOC of diff + behavior-preserving moves.
+ 
+ ## 11. Validation gates summary
+ 

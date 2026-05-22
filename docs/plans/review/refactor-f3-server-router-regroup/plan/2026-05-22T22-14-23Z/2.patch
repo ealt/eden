@@ -1,0 +1,142 @@
+--- docs/plans/review/refactor-f3-server-router-regroup/plan/2026-05-22T22-14-23Z/1.md	2026-05-22 15:26:20
++++ docs/plans/refactor-f3-server-router-regroup.md	2026-05-22 15:29:16
+@@ -71,19 +71,17 @@
+ | F-3 | `eden-wire/server.py` (file) | 1211 | 38.53 (MI) | This chunk — APIRouter regroup |
+ | L-D | `eden-wire/server.py:327 make_app` | 1378 | 5 | Resolved by F-3 |
+ | L-F | `eden-wire/server.py:1664 _serve_artifact` | 117 | 14 | Moves to `routers/reference.py` (or `routers/artifacts.py`) under F-3 |
+-| L-E | `control-plane/app.py:121 make_app` | 415 | 2 | Symmetric APIRouter regroup; smaller surface (8 handlers); included as a follow-on wave (§7 wave 6) |
++| L-E | `control-plane/app.py:121 make_app` | 415 | 2 | Symmetric APIRouter regroup; smaller surface (8 handlers); **recommended default: split into a separate chunk** (its own plan + codex-review cycle). Bundling into this plan as wave 6 is operator-contingent; see §7.9 for the tradeoff. |
+ 
+ L-D + L-F + the file-level F-3 annotation all live inside
+ `eden-wire/server.py`; once the regroup completes, those three
+ `# slop-allow:` annotations are removed and the
+ [`scripts/check-complexity.py`](../../scripts/check-complexity.py)
+ gate runs clean without entries for them. L-E is logically
+-separate (different file, different service) but is the same
+-shape; bundling it into this plan keeps the wire-binding refactor
+-coherent and avoids leaving a half-symmetric codebase. The
+-operator may split L-E into its own follow-on PR if blast radius
+-matters; default recommendation is to land it as wave 6 of this
+-chunk.
++separate (different file, different service) and shares the
++refactor shape; per §7.9, the recommended default is to land it
++as a separate chunk after F-3 converges, so wave 6 of this plan
++is contingent rather than default-on.
+ 
+ ### 1.3 Why now
+ 
+@@ -603,24 +601,48 @@
+ against the new `routers/tasks.py` AND `server.py` to confirm no
+ function in either is over threshold. Subsequent waves do the same.
+ 
+-**Why closure factories rather than method-on-class or
+-`functools.partial`.**
++**Why closure factories.**
+ 
+-- Methods on a class (e.g., `class TasksRouter:` with `async def
+-  create_task(self, ...)`) work but introduce `self` in the
+-  handler signature, which FastAPI does NOT introspect for body
+-  / query / header parameters — `self` is treated as an unknown
+-  required parameter and the route 422s on every request. Avoid.
+-- `functools.partial(handler, deps=deps)` collapses the inner
+-  signature in a way that breaks FastAPI's `Body(...)` / `Header(...)`
+-  / `Query(...)` defaults binding (the partial's `__signature__`
+-  becomes the raw underlying function's signature, missing the
+-  default-marker objects). Avoid.
+-- Closure factory (the shape above) is what FastAPI's own docs
+-  recommend for parameterized dependency injection without
+-  `Depends(...)`. The inner `handler` retains its declared
+-  signature; the closure captures `deps` via lexical scope.
++The chosen baseline (module-level closure factory returning the
++inner `handler`) has four properties this codebase values:
++
++1. **Module-function-shaped.** The complexity gate measures
++   `ast.FunctionDef` nodes; closure factories produce a flat list
++   of named functions at module scope (outer factory + inner
++   `handler`) that pyright and radon both inspect cleanly. No
++   class introspection, no introspection across method-resolution
++   order, no inherited-from-base side surface.
++2. **No per-router stateful objects.** Each call to `build_router(deps)`
++   produces a fresh `APIRouter` bound to those deps. Two
++   `make_app(store_a)` + `make_app(store_b)` instances in one
++   process share no per-router state — this is the same
++   guarantee the current closure-capture form gives, and what
++   the wave-4 `test_multi_app_isolation` test pins.
++3. **Matches the existing module-private style.** Today's
++   `_open_artifact_fd`, `_worker_id_from_request`, `_is_symlink`
++   are all module-level functions with leading underscores. The
++   closure-factory pattern keeps the same shape; no new
++   class-introspection vocabulary in the package.
++4. **FastAPI dependency injection is a separate, additive layer.**
++   If a future amendment wants to switch to `Depends(get_deps)`,
++   the inner `handler` signature is the natural place to add
++   `Depends(...)` parameters. The closure-factory wrapper drops
++   away cleanly. A class-based shape would require a more
++   invasive rewrite.
+ 
++Alternatives considered: a class-per-router (`class TasksRouter:
++def __init__(self, deps): ...`) would also keep `build_router`
++small (`return TasksRouter(deps).router`). It works — FastAPI
++correctly introspects bound methods (the `self` parameter is
++filtered out of `inspect.signature` for bound methods). The
++reasons to prefer closure factories are properties 1, 3, and 4
++above, not a hard FastAPI incompatibility. `functools.partial`
++was explored briefly; FastAPI's signature introspection on a
++`partial` object is fragile in older versions and untested in
++ours, so it's not the chosen baseline. If a future profile of the
++closure-factory shape shows measurable overhead (it shouldn't —
++the factories are called once at app-build), revisit.
++
+ Notes:
+ 
+ - `APIRouter(prefix=...)` carries the experiment-scoped path
+@@ -632,6 +654,21 @@
+ - Per-resource module-level helpers (`_submission_to_wire`,
+   `_submission_from_wire`) co-locate with the router that uses
+   them.
++- **Inner-handler naming.** All inner `handler` functions
++  produced by closure factories are uniformly named `handler` at
++  the Python level. This is fine for request parsing (FastAPI
++  reads `inspect.signature(...)`, not `handler.__name__`) but it
++  means Starlette's auto-generated route `name` and the OpenAPI
++  `operationId` collapse to "handler" for every route unless
++  set explicitly. **Mitigation.** Either (a) set
++  `handler.__name__ = "create_task"` (and similar) inside each
++  factory before returning — one assignment per route, mechanical
++  — or (b) pass `name="create_task"` to the `router.<method>(...)`
++  decorator. Wave 1 picks one and applies it uniformly. The repo
++  doesn't appear to consume route names today (no `request.url_for(...)`
++  callers; no OpenAPI-driven client generation), but the OpenAPI
++  spec at `/openapi.json` would otherwise list 43 endpoints all
++  named "handler" which is operator-confusing.
+ - The `_check_experiment` helper drops the third `url` parameter
+   in the move to `check_experiment(deps, ...)`. The current
+   positional `url` argument is constructed inline at every
+@@ -1006,7 +1043,7 @@
+ 
+ | Command | Scope |
+ |---|---|
+-| `uv run pytest -q reference/packages/eden-wire/tests` | 9 eden-wire test files (~4800 LOC). Covers tasks/ideas/variants/events/workers/groups/dispatch/lifecycle/checkpoints/auth/artifacts/schema-parity. |
++| `uv run pytest -q reference/packages/eden-wire/tests` | 9 eden-wire test files at HEAD (~4800 LOC) plus the new `test_reference_validate.py` added in wave 5 (~80 LOC). Covers tasks/ideas/variants/events/workers/groups/dispatch/lifecycle/checkpoints/auth/artifacts/schema-parity/reference-routes. |
+ | `uv run pytest -q reference/services/task-store-server/tests` | Service-level tests that invoke `make_app` via CLI. |
+ | `uv run pytest -q reference/services/control-plane/tests` | Only relevant at wave 6 (L-E); waves 1–5 leave control-plane untouched. |
+ | `uv run pytest -q reference/services/orchestrator/tests` | e2e tests in `test_e2e.py` / `test_subprocess_e2e.py` spawn the wire server; covers the full request/response loop. |
+@@ -1099,11 +1136,14 @@
+ 
+ When extracting into `routers/dispatch_mode.py`, the temptation is
+ to simplify by relying on `body.model_dump(exclude_none=True)` once
+-— this would silently break the null-check. The plan's test
+-addition (§6.2 `test_dispatch_mode_patch_rejects_extra_allow_null`)
+-is the regression backstop, but the dispatch_mode wave PR should
++— this would silently break the null-check. The regression backstop
++is the **existing** test [`test_invalid_value_on_extra_key_rejected`](../../reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py)
++at line 331, which exercises the `{"future_key": null}` and
++`{"future_key": "paused"}` cases. See §6.2's "Tests already
++covering invariants" subsection. The dispatch_mode wave PR should
+ keep the explicit `all_keys = {**known_fields, **body.model_extra}`
+-walk verbatim and call it out in the PR description.
++walk verbatim and call out the existing test as the gate in the PR
++description.
+ 
+ ### 7.3 Checkpoints' cross-prefix routes
+ 

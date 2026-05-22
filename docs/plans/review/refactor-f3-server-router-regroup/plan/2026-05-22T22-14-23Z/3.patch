@@ -1,0 +1,77 @@
+--- docs/plans/review/refactor-f3-server-router-regroup/plan/2026-05-22T22-14-23Z/2.md	2026-05-22 15:29:40
++++ docs/plans/refactor-f3-server-router-regroup.md	2026-05-22 15:31:01
+@@ -660,15 +660,26 @@
+   reads `inspect.signature(...)`, not `handler.__name__`) but it
+   means Starlette's auto-generated route `name` and the OpenAPI
+   `operationId` collapse to "handler" for every route unless
+-  set explicitly. **Mitigation.** Either (a) set
+-  `handler.__name__ = "create_task"` (and similar) inside each
+-  factory before returning — one assignment per route, mechanical
+-  — or (b) pass `name="create_task"` to the `router.<method>(...)`
+-  decorator. Wave 1 picks one and applies it uniformly. The repo
+-  doesn't appear to consume route names today (no `request.url_for(...)`
+-  callers; no OpenAPI-driven client generation), but the OpenAPI
+-  spec at `/openapi.json` would otherwise list 43 endpoints all
+-  named "handler" which is operator-confusing.
++  set explicitly. **Mitigation (chosen baseline): pass `name=` at
++  registration time.** Wave 1 declares route names alongside the
++  registration:
++
++  ```python
++  router.post("", name="create_task")(_create_task(deps))
++  router.get("", name="list_tasks")(_list_tasks(deps))
++  # ...
++  ```
++
++  Preferred over `handler.__name__ = "create_task"` because (a)
++  the name lives at the registration site where the route is
++  authored, alongside the path + method — easier to keep in sync
++  if the route is renamed; (b) does not mutate function objects
++  after construction, which is friendlier to static analysis;
++  (c) is the documented FastAPI surface. The repo doesn't appear
++  to consume route names today (no `request.url_for(...)` callers;
++  no OpenAPI-driven client generation), but `/openapi.json`
++  would otherwise list 43 endpoints all named "handler" which is
++  operator-confusing.
+ - The `_check_experiment` helper drops the third `url` parameter
+   in the move to `check_experiment(deps, ...)`. The current
+   positional `url` argument is constructed inline at every
+@@ -1405,11 +1416,16 @@
+    authority table; the new `test_multi_app_isolation` test
+    added in wave 4 catches single-app intra-router cross-talk.
+ 
+-2. **`app.include_router` ordering regression.** Decision 5 +
+-   §7.1 cover this; the wave-4 test added in §6.2 locks it in.
+-   Without that test, a future router insertion (e.g., a
+-   hypothetical "checkpoints alias" router added between groups
+-   and the experiment-read route) silently shadows `GET /v0/experiments/{id}`.
++2. **Path-segment-scoping assumption regression.** Decision 5 +
++   §7.1 establish that include order is non-load-bearing today
++   *because* `{experiment_id}` defaults to single-segment matching.
++   A future amendment that introduces a greedy-path route
++   (`{path:path}` overlapping `/v0/experiments/{id}`) or another
++   pattern with method+path-segment equivalence to an existing
++   route would silently introduce ordering dependence. Mitigation:
++   the wave-4 `test_path_segment_scoping_no_shadow` test pins
++   the current assumption — fails loudly if any future change
++   breaks single-segment scoping for the experiment-read route.
+ 
+ 3. **Conformance regression in error envelope shape.** Every
+    handler's error envelope flows through the app-level exception
+@@ -1429,9 +1445,13 @@
+    pyright` is a per-wave gate.
+ 
+ 5. **`dispatch_mode` PATCH null-collapse regression.** §7.2
+-   covers; wave-4 test addition is the backstop. Surface
+-   explicitly in the wave-4 PR description so codex round-0
+-   examines it.
++   covers; the existing
++   [`test_invalid_value_on_extra_key_rejected`](../../reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py)
++   (line 331) is the backstop — it asserts
++   `{"future_key": null}` returns 400, which only holds if the
++   router's `model_extra` walk runs BEFORE `exclude_none=True`.
++   Surface this test as the gate explicitly in the wave-4 PR
++   description so codex round-0 examines it.
+ 
+ 6. **`_serve_artifact`'s self-auth posture inversion.** §7.4
+    covers; `test_artifact_route.py` is the gate.
