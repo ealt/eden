@@ -1,0 +1,66 @@
+--- docs/plans/review/refactor-f4-client-per-resource/plan/2026-05-22T22-48-35Z/3.md	2026-05-22 16:17:56
++++ docs/plans/review/refactor-f4-client-per-resource/plan/2026-05-22T22-48-35Z/4.md	2026-05-22 16:22:07
+@@ -1,7 +1,21 @@
+ # Refactor F-4 — `eden-wire/client.py` per-resource client split
+ 
+-**Status.** Draft round 3 (plan-stage; awaiting operator approval before impl spawn).
++**Status.** Draft round 4 (plan-stage; awaiting operator approval before impl spawn). Codex round-3 review reported only 2 Should-fix + 1 Minor — convergence target.
+ 
++**Round-3 review incorporated** (2 Should-fix + 1 Minor):
++
++- §7.1 stale "22" counts replaced with "21 methods + 1 property"
++  in the option analysis subsection (the recount landed in the
++  preamble in round 2 but the option-comparison body still carried
++  the round-1 figure).
++- §5.4.3 `test_client.py` (eden-control-plane) explicitly verified
++  and marked REMOVED (round 2 left it as a maybe-zero placeholder;
++  the file tests `ControlPlaneClient` against `MockTransport`, no
++  StoreClient instantiation).
++- §5.4.1 wire-tests total prose: `test_schema_parity.py` →
++  `test_wire_schema_parity.py` (the round-2 fix landed in the row
++  but not in the trailing prose).
++
+ **Round-2 review incorporated** (4 Should-fix + 1 Minor):
+ 
+ - §5.3 dispatch row rewritten to match §7.1 option-B reversal —
+@@ -1356,7 +1370,7 @@
+ 
+ **Total wire-tests: ~245–255 call sites** (revised down from
+ round-0's ~250–260 after removing `test_artifact_route.py` and
+-`test_schema_parity.py`).
++`test_wire_schema_parity.py`).
+ 
+ #### 5.4.2 Services and their tests
+ 
+@@ -1390,7 +1404,7 @@
+ | `reference/packages/eden-dispatch/tests/*` (4 files) | ~30 | |
+ | `reference/packages/eden-storage/tests/*` (~12 files) | ~0 | These test the in-process Store directly; no StoreClient involvement. |
+ | `reference/packages/eden-control-plane/tests/test_store_protocol.py` | 0 | **Verified round-1**: this file tests the `ControlPlaneStore` (chapter-11 lease + dispatch state) backend conformance, NOT `StoreClient`. The file imports `from eden_control_plane import ControlPlaneStore, …`; there are no StoreClient references. Removed from the migration list. |
+-| `reference/packages/eden-control-plane/tests/test_client.py` | ~0 | **Verified round-1**: this file tests the `ControlPlaneClient`, a separate HTTP client for the control-plane service (not StoreClient). No F-4 migration needed unless this file also instantiates StoreClient (verify; spot-check suggests not). |
++| `reference/packages/eden-control-plane/tests/test_client.py` | 0 | **Verified round-3 (REMOVED)**: tests `ControlPlaneClient` against `httpx.MockTransport`; no StoreClient instantiation. |
+ | `reference/packages/eden-checkpoint/tests/*` | 0 | **Verified round-1**: no StoreClient references in this package's tests (verified by `rg StoreClient reference/packages/eden-checkpoint/tests/`). Removed from the migration list. |
+ 
+ **Total other packages: ~95–105 call sites** (revised down from
+@@ -1596,10 +1610,11 @@
+   dispatch library API — every public function in
+   `eden_dispatch` would name three concrete backend types in
+   its signature, and the narrowing has to recur at every
+-  `store.<method>` call site (22 such methods across 5 files).
++  `store.<method>` call site (21 such methods plus the `experiment_id` property, across 5 files).
+ - **(B) Keep `: Store` and provide a thicker
+   `_StoreClientBridge` in `eden_dispatch/_dispatch_store.py`
+-  with all 22 methods.** This is the integrator-bridge pattern
++  with all 21 methods (plus the `experiment_id` property).**
++  This is the integrator-bridge pattern
+   applied at a larger surface. It IS a delegation shim by every
+   meaningful definition, but it lives in the consumer package
+   (`eden_dispatch`), not on `StoreClient` itself. Same category
+@@ -1615,7 +1630,7 @@
+ unions across every public dispatch function signature — making
+ `eden_dispatch` callers aware of three storage backend types
+ they shouldn't need to know about, and forcing isinstance
+-narrowing at every call site (22+ sites). Option B keeps
++narrowing at every call site (21+ method-call sites). Option B keeps
+ dispatch's library API clean (`store: DispatchStore`, a local
+ Protocol matching `Store`'s shape) and concentrates the
+ bridge-wiring in one file. Symmetry with the integrator is the
