@@ -48,7 +48,7 @@ services:
       FORGEJO__server__SSH_PORT: "${FORGEJO_SSH_HOST_PORT:-2222}"
       FORGEJO__server__SSH_LISTEN_PORT: "2222"
       FORGEJO__database__DB_TYPE: sqlite3
-      FORGEJO__database__PATH: /var/lib/forgejo/data/forgejo.db
+      FORGEJO__database__PATH: /var/lib/gitea/data/forgejo.db
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__security__SECRET_KEY: ${FORGEJO_SECRET_KEY:?FORGEJO_SECRET_KEY must be set}
       FORGEJO__security__INTERNAL_TOKEN: ${FORGEJO_INTERNAL_TOKEN:?FORGEJO_INTERNAL_TOKEN must be set}
@@ -60,7 +60,7 @@ services:
       - "${FORGEJO_SSH_HOST_PORT:-2222}:2222"
     volumes:
       # Durable substrate (Phase 12a-1g) — see postgres above.
-      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo:/var/lib/forgejo
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo:/var/lib/gitea
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
       interval: 5s
