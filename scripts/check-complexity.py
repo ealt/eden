@@ -21,9 +21,11 @@ Annotation placement:
 
 - **Function-level**: a ``# slop-allow:`` comment on the function's
   ``def`` line (trailing) OR anywhere in the contiguous preamble of
-  comments / decorators / docstrings / blank lines immediately above
-  the ``def``. The scan walks back until it hits a non-preamble line
-  (typically the previous function's body), capped at 30 lines.
+  comments / decorators / blank lines immediately above the ``def``.
+  The scan walks back until it hits a non-preamble line (typically
+  the previous function's body), capped at 30 lines. Docstrings are
+  NOT preamble — they belong inside a function/class body, never
+  above a ``def``.
 - **File-level**: a ``# slop-allow-file: <justification>`` comment
   anywhere in the first 30 lines of the file. Suppresses file-level
   SLOC + MI checks for that file only.
