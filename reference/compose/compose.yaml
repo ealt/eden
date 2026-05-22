@@ -1,10 +1,17 @@
 name: eden-reference
 
+x-eden-logging: &eden-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16.6-alpine
     container_name: eden-postgres
     restart: unless-stopped
+    logging: *eden-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-eden}
       POSTGRES_USER: ${POSTGRES_USER:-eden}
@@ -28,6 +35,7 @@ services:
     image: codeberg.org/forgejo/forgejo:11-rootless
     container_name: eden-forgejo
     restart: unless-stopped
+    logging: *eden-logging
     environment:
       FORGEJO__server__DOMAIN: localhost
       FORGEJO__server__ROOT_URL: http://localhost:${FORGEJO_HOST_PORT:-3001}/
@@ -103,6 +111,7 @@ services:
       dockerfile: reference/compose/Dockerfile
     container_name: eden-task-store-server
     restart: unless-stopped
+    logging: *eden-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,6 +194,7 @@ services:
     # something to recover from and re-run the loop in a tight
     # restart cycle. `on-failure` lets a clean exit stick.
     restart: "on-failure"
+    logging: *eden-logging
     depends_on:
       task-store-server:
         condition: service_healthy
@@ -261,6 +271,7 @@ services:
       dockerfile: reference/compose/Dockerfile
     container_name: eden-ideator-host
     restart: unless-stopped
+    logging: *eden-logging
     depends_on:
       task-store-server:
         condition: service_healthy
@@ -291,6 +302,7 @@ services:
       dockerfile: reference/compose/Dockerfile
     container_name: eden-executor-host
     restart: unless-stopped
+    logging: *eden-logging
     depends_on:
       task-store-server:
         condition: service_healthy
@@ -327,6 +339,7 @@ services:
       dockerfile: reference/compose/Dockerfile
     container_name: eden-evaluator-host
     restart: unless-stopped
+    logging: *eden-logging
     depends_on:
       task-store-server:
         condition: service_healthy
@@ -360,6 +373,7 @@ services:
       dockerfile: reference/compose/Dockerfile
     container_name: eden-web-ui
     restart: unless-stopped
+    logging: *eden-logging
     depends_on:
       task-store-server:
         condition: service_healthy
