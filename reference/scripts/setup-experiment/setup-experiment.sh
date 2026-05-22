@@ -694,8 +694,8 @@ bootstrap_curl() {
         args+=(-d "$body")
     fi
     args+=("http://localhost:8080${path}")
-    docker compose -f compose.yaml --env-file "$ENV_FILE" \
-        exec -T task-store-server curl "${args[@]}" || true
+    (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
+        exec -T task-store-server curl "${args[@]}") || true
 }
 
 echo "--- registering reserved groups + initial admin worker ---" >&2
