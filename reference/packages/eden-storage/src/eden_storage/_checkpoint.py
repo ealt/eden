@@ -76,7 +76,7 @@ from eden_contracts import (
 from ._base import _DEFAULT_DISPATCH_MODE, _Tx
 from .submissions import (
     Submission,
-    submission_from_payload,
+    submission_from_payload_lenient,
     submission_to_payload,
 )
 
@@ -174,7 +174,7 @@ def _submission_from_jsonl(row: dict[str, Any]) -> tuple[str, Submission]:
     except KeyError as exc:
         raise CheckpointInvalid(f"submission row missing required field: {exc}") from exc
     try:
-        submission = submission_from_payload(kind, row)
+        submission = submission_from_payload_lenient(kind, row)
     except ValueError as exc:
         raise CheckpointInvalid(str(exc)) from exc
     except KeyError as exc:

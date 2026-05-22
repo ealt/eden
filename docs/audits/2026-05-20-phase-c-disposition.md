@@ -15,9 +15,32 @@ annotation with a specific justification.
 - Function CC > 20
 - Function length > 100
 
-**Status**: awaiting operator approval. Nothing in this list is applied
-yet; the previously-approved L-1 helpers in `eden_storage/submissions.py`
-are uncommitted and harmless (new functions, no caller rewires yet).
+**Status**: **shipped in PR #105** (post-rebase against post-Phase-12c
+main, then post-rename to Forgejo). The disposition table below is
+the working record from before operator scope-approval; the final
+landed disposition is:
+
+- **Refactored under threshold**: M-1, M-2, C-2, C-3, C-4, C-5, C-6,
+  C-7, C-8, L-1, L-2, L-3, L-4, L-F, L-G, L-H, L-I, L-J, L-K, L-L,
+  L-M, L-N, L-O, L-P, L-Q, L-R, L-S, L-T, L-U. Each violator's
+  function (or file) dropped below the Tier-1 threshold via the
+  recommended extraction.
+- **Operator-blessed `# slop-allow:` exceptions** (4 entries kept):
+  L-A / L-B / L-C (argparse builders, CC=1) and L-V
+  (`walk_transitive_workers`, graph traversal).
+- **Deferred to follow-up issues** (3 file-level + 2 function-level
+  under them):
+  - F-1 `_StoreBase` mixin split → issue #114
+  - F-3 `eden-wire/server.py` APIRouter regroup → issue #115
+  - F-4 `eden-wire/client.py` per-resource split → issue #116
+  - L-D `eden-wire/server.py make_app` — resolved by F-3 → issue #115
+  - L-E `control-plane/app.py make_app` — symmetric refactor → issue #115
+
+The Tier-1 gate ships green: 10 annotated violations (4 exceptions +
+3 file-level deferrals + 2 function-level under them + 1 file-level
+counted twice for both SLOC + MI), 0 blocking. See
+[`scripts/check-complexity.py`](../../scripts/check-complexity.py) +
+the `complexity-gate` CI job for the mechanism.
 
 ---
 

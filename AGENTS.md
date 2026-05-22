@@ -191,7 +191,10 @@ These are not arbitrary. CC > 20 means > 20 distinct branches a reviewer must ho
 
 ### The `# slop-allow:` escape hatch
 
-A few shapes are over-threshold for legitimate reasons and refactoring would make them worse (argparse `parse_args` builders at CC=1; graph-traversal closures that need shared visited/worklist state). When that's the case, the violator carries a `# slop-allow: <one-line justification>` annotation on the function or file:
+A few shapes are over-threshold for legitimate reasons and refactoring would make them worse (argparse `parse_args` builders at CC=1; graph-traversal closures that need shared visited/worklist state). When that's the case, the violator carries one of two annotations, depending on scope:
+
++ **Function-level** — `# slop-allow: <one-line justification>` placed on the `def` line (trailing comment) or anywhere in the contiguous preamble of comments / decorators / blanks immediately above the `def`. Suppresses function-CC + function-length checks on that one function.
++ **File-level** — `# slop-allow-file: <one-line justification>` placed anywhere in the first 30 lines of the file. Suppresses file-SLOC + file-MI checks on that one file. Does NOT suppress function-level violations inside the file — those need their own `# slop-allow:` annotation (or the function refactored under threshold).
 
 ```python
 def parse_args() -> argparse.Namespace:  # slop-allow: argparse builder is CC=1 — one add_argument per flag with no branching; splitting fragments a flat flag manifest without reducing logic.
@@ -201,13 +204,13 @@ def parse_args() -> argparse.Namespace:  # slop-allow: argparse builder is CC=1 
 
 Rules:
 
-1. **A real justification is required.** "It's long because there are a lot of flags" is not a justification. "Splitting fragments a flat metadata manifest with no logic to reduce (CC=1)" is. The justification must explain *why refactoring would make this worse*, not just *why the violator exists*.
-2. **Operator review in the PR.** Adding a `# slop-allow:` is a request for an explicit exception — call it out in the PR description so the reviewer can challenge the justification rather than missing it in the diff.
+1. **A real justification is required.** "It's long because there are a lot of flags" is not a justification. "Splitting fragments a flat metadata manifest with no logic to reduce (CC=1)" is. The justification must explain *why refactoring would make this worse*, not just *why the violator exists*. When the underlying refactor is approved-but-deferred (e.g. to a follow-up issue), cite the issue — `# slop-allow: F-3 eden-wire/server.py APIRouter regroup deferred to issue #115`.
+2. **Operator review in the PR.** Adding a `# slop-allow:` or `# slop-allow-file:` is a request for an explicit exception — call it out in the PR description so the reviewer can challenge the justification rather than missing it in the diff.
 3. **Narrow scope.** The annotation is per-function or per-file, not module-wide; it has to be re-justified on any subsequent change that materially extends the violator.
 
 ### Mechanical enforcement (Tier-1 CI gate)
 
-The thresholds above are enforced (or will be, by a later slice of the audit chunk) by `scripts/check-complexity-thresholds.py`, run in CI. The gate scans for new violators introduced by a PR; existing violators are listed in the disposition doc at [`docs/audits/2026-05-20-phase-c-disposition.md`](docs/audits/2026-05-20-phase-c-disposition.md) (each one carrying either a refactor recommendation or an approved `# slop-allow:` annotation).
+The thresholds above are enforced by [`scripts/check-complexity.py`](scripts/check-complexity.py), run in CI via the `complexity-gate` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). The gate fails loud on any unannotated violation; existing violators that pre-date the gate carry `# slop-allow:` / `# slop-allow-file:` annotations with operator-reviewed justifications, captured in the disposition doc at [`docs/audits/2026-05-20-phase-c-disposition.md`](docs/audits/2026-05-20-phase-c-disposition.md). Run locally with `python3 scripts/check-complexity.py` (or `--list` to see allowed entries, `--json` for machine-readable output).
 
 CI failure means one of three things, in order of likelihood:
 

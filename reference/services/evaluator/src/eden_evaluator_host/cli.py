@@ -76,15 +76,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--forgejo-url",
-        "--forgejo-url",
         dest="forgejo_url",
         default=None,
         help=(
             "Optional HTTP(S) URL of the central git remote (Phase 10d "
             "follow-up B). When set, the evaluator clones --repo-path "
             "from this URL at startup and fetches each variant's "
-            "work/* branch before the worktree add. "
-            "--forgejo-url is a deprecated alias."
+            "work/* branch before the worktree add."
         ),
     )
     parser.add_argument(

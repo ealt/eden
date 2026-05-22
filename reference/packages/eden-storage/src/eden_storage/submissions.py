@@ -105,33 +105,53 @@ def submission_to_payload(submission: Submission) -> tuple[str, dict[str, Any]]:
 
 
 def submission_from_payload(kind: str, payload: dict[str, Any]) -> Submission:
-    """Inverse of :func:`submission_to_payload`.
+    """Inverse of :func:`submission_to_payload` — strict.
 
-    ``status`` defaults to ``"success"`` when absent (matches the
-    checkpoint reader's leniency; storage + wire callers always supply
-    the field). ``variant_id`` is required for execution and
-    evaluation kinds — raises ``KeyError`` if absent so backends can
-    surface the schema violation cleanly.
+    Required keys: ``status`` (always), ``variant_id`` (execution +
+    evaluation). Raises ``KeyError`` on absent keys so wire + storage
+    callers surface schema violations cleanly. The pre-refactor wire
+    deserializers (server.py / client.py) raised ``KeyError`` on
+    missing ``status``; this helper preserves that contract.
+
+    Checkpoint imports want to accept legacy archives that omit
+    ``status``; they call :func:`submission_from_payload_lenient`,
+    which injects ``status="success"`` before delegating here.
     """
     if kind == "ideation":
         return IdeaSubmission(
-            status=payload.get("status", "success"),
+            status=payload["status"],
             idea_ids=tuple(payload.get("idea_ids") or ()),
         )
     if kind == "execution":
         return VariantSubmission(
-            status=payload.get("status", "success"),
+            status=payload["status"],
             variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
         )
     if kind == "evaluation":
         return EvaluationSubmission(
-            status=payload.get("status", "success"),
+            status=payload["status"],
             variant_id=payload["variant_id"],
             evaluation=payload.get("evaluation"),
             artifacts_uri=payload.get("artifacts_uri"),
         )
     raise ValueError(f"unknown submission kind {kind!r}")
+
+
+def submission_from_payload_lenient(
+    kind: str, payload: dict[str, Any]
+) -> Submission:
+    """Lenient variant of :func:`submission_from_payload`.
+
+    Defaults missing ``status`` to ``"success"``. Used by the
+    checkpoint reader so legacy archives that omit ``status`` (the
+    pre-refactor reader used ``row.get("status", "success")``) still
+    import successfully. Wire and SQL backends MUST use the strict
+    :func:`submission_from_payload` so a malformed payload surfaces.
+    """
+    if "status" not in payload:
+        payload = {"status": "success", **payload}
+    return submission_from_payload(kind, payload)
 
 
 def submissions_equivalent(a: Submission, b: Submission) -> bool:
