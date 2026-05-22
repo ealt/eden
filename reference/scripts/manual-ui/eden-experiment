@@ -50,7 +50,6 @@ ORPHAN_VOLUMES=(
 NON_WORKER_SERVICES=(
     postgres
     forgejo
-    blob-init
     task-store-server
     orchestrator
     web-ui
