@@ -39,25 +39,31 @@ This refactor is **behavior-preserving by construction**. No spec prose moves; n
 
 These decisions narrow the design surface before the per-mixin breakdown. They are codified here so codex-review and future maintainers see what was deliberate versus open to challenge.
 
-1. **Pure file-layout refactor.** No semantic change to any method body beyond the L-O `reassign_task` sub-split. The chunk's correctness story is "every existing test passes byte-identical against every backend"; if any test changes, that's a defect, not a deliverable.
+1. **Behavior-preserving refactor (not strictly byte-preserving).** The chunk's correctness story is "every existing test passes byte-identical against every backend". Three classes of necessary mechanical adjustments are NOT byte-preserving and are called out explicitly:
+   (a) the L-O `reassign_task` sub-split (§3.6) — extracts a per-state helper inside `_TaskOpsMixin`.
+   (b) `_reseed_default_event_counter` compares the bound-method `__func__` of `self._event_id_factory` against `_StoreBase._default_event_id` ([`_base.py:383`](../../reference/packages/eden-storage/src/eden_storage/_base.py)). With `_default_event_id` moving onto `_StoreCore` (§3.1), the comparison MUST change to `_StoreCore._default_event_id`. Failing to update it would silently disable the reseed (an `is not` check that's always `False` because `__func__` no longer matches), corrupting event-id continuity after checkpoint-import. The plan calls this out so codex-review can verify the impl PR updates the comparison.
+   (c) `_event_id_factory or self._default_event_id` in `__init__` ([`_base.py:342`](../../reference/packages/eden-storage/src/eden_storage/_base.py)) is fine — bound-method resolution via MRO continues to work, since `_default_event_id` is defined on `_StoreCore` and `_StoreBase` inherits it.
+   Beyond these three, no semantic change to any method body.
 
 2. **Mixin family, not delegation.** Composition via Python MRO inheritance (the disposition-doc shape) rather than delegation to attribute-held collaborator objects. Reasons: (a) the public `Store` Protocol expects ~50 methods on a single object; delegation would require boilerplate forwarding for each; (b) MRO is what the disposition doc named ("mixin order matters for MRO"); (c) mixins share the same `self`, so cross-resource reads (`_accept_execution` reads tasks + ideas + variants) work without threading collaborators through every call. Tradeoff: MRO surprises are real (see §8.1) — pyright + a one-time `mro_isinstance` assertion in `_base.py` handle this.
 
 3. **Shared `_Tx` instance per public method, single `_apply_commit` per transaction.** The composite-commit invariant (a method's stages all land atomically or none do) is preserved by keeping `_Tx` as a flat dataclass with one field per resource type, and by requiring every public method to stage everything into one `_Tx` and call `self._apply_commit(tx)` exactly once. The mixins do NOT each get their own private `_Tx` — that would break composite-commit (`_accept_execution` writes to tasks + ideas + variants in one tx; if those three lived in three separate `_Tx` instances, atomicity would be lost). This is the load-bearing invariant; see §3.2.
 
-4. **Place each method by its driving role, not by which resources it touches.** `_accept_execution` (called from `accept`) writes to tasks + ideas + variants, but it lives in `_TaskOps` because the public op is task-lifecycle. Cross-resource reads in helper methods use `self._get_idea` / `self._get_variant` (resolved via MRO from the resource-owning mixin or the core abstract base). The alternative — extract a `_Composite` mixin for cross-resource methods — would fragment the task-lifecycle code and make `accept` harder to read; rejected on readability grounds.
+4. **Place each method by its driving role, not by which resources it touches.** `_accept_execution` (called from `accept`) writes to tasks + ideas + variants, but it lives in `_TaskOps` because the public op is task-lifecycle. Cross-resource **reads** in helper methods use `self._get_idea` / `self._get_variant` (resolved via MRO from `_StoreCore`'s abstract primitives). The alternative — extract a `_Composite` mixin for cross-resource methods — would fragment the task-lifecycle code and make `accept` harder to read; rejected on readability grounds.
 
-5. **Module-level helpers (`_no_op_check_inputs`, `_resolve_trees`, `_sha_equality_message`, `_tree_identity_message`, `_all_parents_equal_sha`, `_validated_update`, `_deep`) stay module-level.** They have no `self`; they're pure functions. They move to `_ops/_helpers.py` (a non-mixin module) so each mixin imports only what it uses.
+5. **Cross-resource read-side predicates and the experiment-state guard live on `_StoreCore`, not on the resource mixin.** This is the round-0 codex correction to the original draft. `_require_running` (called from 7 task-mixin methods + claim), `_require_idea` (called from 2 task-mixin accept/reject paths + idea-mixin `mark_idea_ready`), `_require_variant` (called from 4 task-mixin accept/reject paths + variant-mixin methods), `_find_starting_variant_for_implement_task` (called from `reclaim` + `_stage_reassign_reclaim`), and the worker/group-spanning `resolve_worker_in_group` (called from `claim`) all live on `_StoreCore`. Reasons: (a) these are pure read-side predicates layered atop the existing `_get_*` abstract primitives — the same place they'd belong if they had been written that way originally; (b) placing them on noun mixins forces `_StoreCore` to grow a parallel set of non-primitive stubs just to satisfy pyright, which makes the "thin core + clean per-resource mixins" story do less work than claimed; (c) the cross-mixin call graph (§3.5) is dense enough that any other placement creates avoidable MRO coupling. `_validate_evaluation` / `validate_evaluation` is the one exception: it references `self._evaluation_schema` (an experiment-construction parameter, not a primitive) and is called only from `_ExperimentOps` + `_TaskOps`; it stays on `_ExperimentOps` and `_TaskOps` reaches it via MRO. See §3.3 for the full placement table after this correction.
 
-6. **Disposition doc lists 7 mixins; this plan proposes 7.** Idea / Variant / Task / Event / Experiment / Worker / Group. The disposition doc also floated a separate `_ValidationOps` mixin; **this plan rejects that split** and places each validation helper with its primary consumer (see §3.3). Surfacing as a deliberate divergence from the disposition doc.
+6. **Module-level helpers (`_no_op_check_inputs`, `_resolve_trees`, `_sha_equality_message`, `_tree_identity_message`, `_all_parents_equal_sha`, `_validated_update`, `_deep`) stay module-level.** They have no `self`; they're pure functions. They move to `_ops/_helpers.py` (a non-mixin module) so each mixin imports only what it uses.
 
-7. **Backends untouched.** [`memory.py`](../../reference/packages/eden-storage/src/eden_storage/memory.py), [`sqlite.py`](../../reference/packages/eden-storage/src/eden_storage/sqlite.py), [`postgres.py`](../../reference/packages/eden-storage/src/eden_storage/postgres.py) currently inherit `_StoreBase` and override the backend primitives (`_get_*`, `_iter_*`, `_atomic_operation`, `_apply_commit`, `_get_dispatch_mode`, `_get_experiment`). After the split, they still inherit `_StoreBase`. Zero LOC change to backend files. This is the strongest argument for the "name stays `_StoreBase`" decision.
+7. **Disposition doc lists 7 mixins; this plan proposes 7.** Idea / Variant / Task / Event / Experiment / Worker / Group. The disposition doc also floated a separate `_ValidationOps` mixin; **this plan rejects that split** and places each validation helper with its primary consumer (see §3.3). Surfacing as a deliberate divergence from the disposition doc.
 
-8. **Single PR, no wave-based merge cadence.** The split is mechanical and behavior-preserving; carving it into multiple PRs would require keeping the codebase in a half-refactored state across PR merges, which (a) violates the project-lifecycle "no backwards-compatibility shims in greenfield" posture from BASE.md and (b) doesn't reduce risk because any single mixin extraction depends on the abstract-base scaffolding from the same PR. The chunk still has internal waves (§8) for ordered execution and per-wave validation gates, but they land in one PR.
+8. **Backends untouched.** [`memory.py`](../../reference/packages/eden-storage/src/eden_storage/memory.py), [`sqlite.py`](../../reference/packages/eden-storage/src/eden_storage/sqlite.py), [`postgres.py`](../../reference/packages/eden-storage/src/eden_storage/postgres.py) currently inherit `_StoreBase` and override the backend primitives (`_get_*`, `_iter_*`, `_atomic_operation`, `_apply_commit`, `_get_dispatch_mode`, `_get_experiment`). After the split, they still inherit `_StoreBase`. Zero LOC change to backend files. This is the strongest argument for the "name stays `_StoreBase`" decision.
 
-9. **`_checkpoint.py` is a special downstream consumer.** It uses `_StoreBase` typing and calls `store._iter_*` / `store._get_*` / `store._apply_commit` / `store._reseed_default_event_counter` directly (see [`_checkpoint.py`](../../reference/packages/eden-storage/src/eden_storage/_checkpoint.py) lines 215, 273, 339, 366, 564, 607, 615). These calls all bind to the **abstract primitives on the core** — which stay on the core after the split. `_checkpoint.py` imports `_StoreBase` for typing; that import keeps working because `_StoreBase` is still defined in `_base.py`.
+9. **Single PR, no wave-based merge cadence.** The split is mechanical and behavior-preserving; carving it into multiple PRs would require keeping the codebase in a half-refactored state across PR merges, which (a) violates the project-lifecycle "no backwards-compatibility shims in greenfield" posture from BASE.md and (b) doesn't reduce risk because any single mixin extraction depends on the abstract-base scaffolding from the same PR. The chunk still has internal waves (§9) for ordered execution and per-wave validation gates, but they land in one PR.
 
-10. **Naming map is fixed before implementation.** §3.4 enumerates every old method → new mixin. The impl wave executes that map mechanically; deviations are surfaced for review before the impl commit.
+10. **`_checkpoint.py` is a special downstream consumer.** It uses `_StoreBase` typing and calls `store._iter_*` / `store._get_*` / `store._apply_commit` / `store._reseed_default_event_counter` directly (see [`_checkpoint.py`](../../reference/packages/eden-storage/src/eden_storage/_checkpoint.py) lines 215, 273, 339, 366, 564, 607, 615). These calls all bind to the **abstract primitives on the core** — which stay on the core after the split. `_checkpoint.py` imports `_StoreBase` for typing; that import keeps working because `_StoreBase` is still defined in `_base.py`.
+
+11. **Naming map is fixed before implementation.** §3.4 enumerates every old method → new mixin. The impl wave executes that map mechanically; deviations are surfaced for review before the impl commit.
 
 ## 3. Design
 
@@ -159,36 +165,59 @@ Final placement:
 
 The cross-mixin call from `_TaskOps._validate_evaluate_acceptance` → `self._validate_evaluation` (in `_ExperimentOps`) is fine: both mixins are sibling subclasses of `_StoreCore` and both end up on `_StoreBase`'s MRO; `self._validate_evaluation` resolves via the composite.
 
-### D.4 Naming map — old method → new mixin
+### D.4 Cross-resource helper-dependency matrix
 
-Every method in [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py) gets exactly one new home. The order is alphabetical-within-mixin so the map is searchable.
+Round-0 codex correctly flagged that the original draft hadn't enumerated which helpers cross which seams. The matrix below settles the question. Every row is a "this method calls that helper across a proposed seam" pair; the resolution column shows where the helper actually ends up (most go on `_StoreCore`, per decision #5 in §2).
 
-**`_StoreCore`** (in `_base.py`; ~150 SLOC):
+| Helper | Defined at line (current) | Callers (mixin / method) | Placement after refactor |
+|---|---:|---|---|
+| `_require_running` | [`_base.py:1516`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | TaskOps (`_insert_ideation_task`, `_insert_execution_task`, `_insert_evaluation_task`, `create_ideation_task`, `create_execution_task`, `create_evaluation_task`, `claim`); ExperimentOps would otherwise be sole owner | `_StoreCore` |
+| `_require_idea` | [`_base.py:2259`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | IdeaOps (`mark_idea_ready`); TaskOps (`_accept_execution`, `_reject_execution`) | `_StoreCore` |
+| `_require_variant` | [`_base.py:2265`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | VariantOps (`declare_variant_evaluation_error`, `integrate_variant`); TaskOps (`_accept_execution`, `_accept_evaluation`, `_reject_evaluate`) | `_StoreCore` |
+| `_require_task` | [`_base.py:2253`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | TaskOps only | `_StoreCore` (for symmetry with the other `_require_*`) |
+| `_require_no_task` | [`_base.py:2249`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | TaskOps only | `_StoreCore` (symmetry) |
+| `_find_starting_variant_for_implement_task` | [`_base.py:2189`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | TaskOps (`reclaim`, `_stage_reassign_reclaim`, `_reject_execution`); VariantOps does not call it | `_StoreCore` (the helper is a `_iter_variants` walk + filter, so it's a layered read primitive) |
+| `_validate_evaluation` / `validate_evaluation` | [`_base.py:2143`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | ExperimentOps (public `validate_evaluation` re-export); TaskOps (`_validate_evaluate_acceptance`, `_validate_evaluate_error`, `_reject_evaluate`) | `_ExperimentOps` — exception case; references `self._evaluation_schema` which is set up in `__init__`. TaskOps' call sites resolve via MRO. |
+| `resolve_worker_in_group` | [`_base.py:2519`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | GroupOps (public); TaskOps (`claim` for group-target eligibility) | `_GroupOps` — the helper is intrinsically group-resolution code (DFS over group DAG). TaskOps' call site resolves via MRO. |
+| `_validate_registry_id` | [`_base.py:2562`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | WorkerOps (worker register / reissue / verify); GroupOps (group register, member add); TaskOps (`reassign_task` for `reassigned_by`); ExperimentOps (`terminate_experiment` for `terminated_by`, `update_dispatch_mode` for `updated_by`) | `_StoreCore` — the helper is a regex check, no state; widely called |
+| `_event` | [`_base.py:2681`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | every mixin | `_StoreCore` (already named in original plan) |
+| `_ts` / `_maybe_ts` | [`_base.py:2690-2707`](../../reference/packages/eden-storage/src/eden_storage/_base.py) | every mixin | `_StoreCore` (already named in original plan) |
+
+Net effect of the matrix:
+
+- `_StoreCore` carries: `__init__`, `_Tx`-aware abstract primitives, `_event` / `_ts` / `_maybe_ts`, plus the read-side predicates `_require_running` / `_require_task` / `_require_no_task` / `_require_idea` / `_require_variant` / `_find_starting_variant_for_implement_task` / `_validate_registry_id`. Adding the predicates is ~30 SLOC over the original projection (~150 → ~180 SLOC). Still well under any threshold.
+- The seven noun mixins own only the **public ops + private helpers exclusive to them** plus their `_require_*` consumers via MRO. No mixin needs to declare a "stub" for a sibling-mixin's helper, because every cross-seam helper lives on `_StoreCore`.
+- The two exceptions (`_validate_evaluation` on ExperimentOps, `resolve_worker_in_group` on GroupOps) are intentionally on the noun mixin: each is intrinsically that resource's concern even though one cross-mixin caller exists. The MRO-resolved call site for the cross-mixin caller is a one-line `self.METHOD(...)` and pyright resolves it via the composite's MRO.
+
+### D.5 Naming map — old method → new mixin
+
+Every method in [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py) gets exactly one new home. The order is alphabetical-within-mixin so the map is searchable. Placement reflects the §D.4 dependency-matrix correction: read-side predicates that are called across mixins live on `_StoreCore`.
+
+**`_StoreCore`** (in `_base.py`; ~180 SLOC):
 
 - `__init__`
 - `experiment_id` (property)
 - `_default_event_id`
-- `_reseed_default_event_counter`
+- `_reseed_default_event_counter` (with `__func__` comparison updated to `_StoreCore._default_event_id` — see decision #1)
 - `_event`
 - `_ts`
 - `_maybe_ts`
+- `_require_running`, `_require_task`, `_require_no_task`, `_require_idea`, `_require_variant`, `_find_starting_variant_for_implement_task`, `_validate_registry_id` (per §D.4)
 - abstract primitives: `_atomic_operation`, `_get_task`, `_get_idea`, `_get_variant`, `_get_submission`, `_iter_tasks`, `_iter_ideas`, `_iter_variants`, `_iter_events`, `_get_worker`, `_get_worker_credential_hash`, `_iter_workers`, `_get_group`, `_iter_groups`, `_get_dispatch_mode`, `_get_experiment`, `_apply_commit`
 
-**`_TaskOpsMixin`** (`_ops/tasks.py`; estimated 600-700 SLOC):
+**`_TaskOpsMixin`** (`_ops/tasks.py`; estimated 600-750 SLOC; fallback split if > 800 — see §3.7):
 
 - public: `read_task`, `read_submission`, `list_tasks`, `create_task`, `create_ideation_task`, `create_execution_task`, `create_evaluation_task`, `claim`, `submit`, `accept`, `reject`, `reclaim`, `reassign_task`, `validate_acceptance`, `validate_terminal`
-- private (composite-commit / dispatch / validation): `_insert_ideation_task`, `_insert_execution_task`, `_insert_evaluation_task`, `_accept_ideation`, `_accept_execution`, `_accept_evaluation`, `_reject_ideation`, `_reject_execution`, `_reject_evaluate`, `_validate_acceptance_locked`, `_validate_ideation_acceptance`, `_validate_execution_acceptance`, `_validate_evaluate_acceptance`, `_validate_evaluate_error`, `_validate_non_no_op_variant`, `_validate_submission_ref_binding`, `_stage_reassign_reclaim`, `_reassign_event_payload`, `_targets_equal`, `_require_task`, `_require_no_task`, `_require_submission_kind_matches`, `_require_no_live_execution_task_for_idea`, `_require_no_live_evaluation_task_for_variant`
-- L-O sub-refactor target: `reassign_task` (LEN=122) — split per-state branches (pending vs claimed) into helpers so the public method stays under 100 LEN. See §3.5.
+- private (composite-commit / dispatch / validation): `_insert_ideation_task`, `_insert_execution_task`, `_insert_evaluation_task`, `_accept_ideation`, `_accept_execution`, `_accept_evaluation`, `_reject_ideation`, `_reject_execution`, `_reject_evaluate`, `_validate_acceptance_locked`, `_validate_ideation_acceptance`, `_validate_execution_acceptance`, `_validate_evaluate_acceptance`, `_validate_evaluate_error`, `_validate_non_no_op_variant`, `_validate_submission_ref_binding`, `_stage_reassign_reclaim`, `_reassign_event_payload`, `_targets_equal`, `_require_submission_kind_matches`, `_require_no_live_execution_task_for_idea`, `_require_no_live_evaluation_task_for_variant`
+- L-O sub-refactor target: `reassign_task` (LEN=122) — split per-state branches (pending vs claimed) into helpers so the public method stays under 100 LEN. See §3.6.
 
-**`_IdeaOpsMixin`** (`_ops/ideas.py`; estimated 100-150 SLOC):
+**`_IdeaOpsMixin`** (`_ops/ideas.py`; estimated 80-120 SLOC):
 
 - public: `read_idea`, `list_ideas`, `create_idea`, `mark_idea_ready`
-- private: `_require_idea`
 
-**`_VariantOpsMixin`** (`_ops/variants.py`; estimated 200-250 SLOC):
+**`_VariantOpsMixin`** (`_ops/variants.py`; estimated 180-230 SLOC):
 
 - public: `read_variant`, `list_variants`, `create_variant`, `declare_variant_evaluation_error`, `integrate_variant`
-- private: `_find_starting_variant_for_implement_task`, `_require_variant`
 
 **`_EventOpsMixin`** (`_ops/events.py`; estimated 80-120 SLOC):
 
@@ -197,12 +226,12 @@ Every method in [`reference/packages/eden-storage/src/eden_storage/_base.py`](..
 **`_ExperimentOpsMixin`** (`_ops/experiment.py`; estimated 250-300 SLOC):
 
 - public: `read_experiment`, `read_experiment_state`, `update_experiment_state`, `terminate_experiment`, `emit_policy_error`, `read_dispatch_mode`, `update_dispatch_mode`, `validate_evaluation`, `export_checkpoint`, `import_checkpoint`
-- private: `_require_running`, `_validate_evaluation`
+- private: `_validate_evaluation`
 
 **`_WorkerOpsMixin`** (`_ops/workers.py`; estimated 250-300 SLOC):
 
 - public: `register_worker`, `reissue_credential`, `verify_worker_credential`, `read_worker`, `list_workers`
-- private: `_validate_registry_id`, `_generate_credential_token`, `_hash_credential`, `_check_credential_hash`
+- private: `_generate_credential_token`, `_hash_credential`, `_check_credential_hash`
 - class constants used only by worker auth: `_PASSWORD_HASHER`, `_UNKNOWN_WORKER_DUMMY_HASH`
 
 **`_GroupOpsMixin`** (`_ops/groups.py`; estimated 200-250 SLOC):
@@ -219,9 +248,9 @@ The `_no_op_*` helpers could equally live as a private section inside `_ops/task
 
 **Module constants** stay in `_base.py`: `RESERVED_IDENTIFIERS`, `_WORKER_ID_RE`, `_LIVE_TASK_STATES`, `_DEFAULT_DISPATCH_MODE`, `_DEFAULT_EXPERIMENT_STATE`, `_METRIC_PY_TYPES`. The backend files (`memory.py`, `sqlite.py`, `postgres.py`) already import `_DEFAULT_DISPATCH_MODE` + `_DEFAULT_EXPERIMENT_STATE` from `_base`; that import keeps working.
 
-The module-level `iter_events_by_type` (test convenience at the very bottom of `_base.py`) moves to `_ops/events.py` next to `_EventOpsMixin`.
+The module-level `iter_events_by_type` (test convenience at the very bottom of `_base.py`) moves to `_ops/events.py` next to `_EventOpsMixin`. **`[__init__.py](../../reference/packages/eden-storage/src/eden_storage/__init__.py)` becomes an in-scope edit**: it currently re-exports `iter_events_by_type` from `._base` (line 10); the impl PR updates the import to `from ._ops.events import iter_events_by_type` so the public re-export at the package surface is preserved. This is the only `__init__.py` change required by the refactor; all other re-exports (`Store`, `InMemoryStore`, `SqliteStore`, `PostgresStore`, etc.) flow through unchanged paths.
 
-### D.5 L-O sub-refactor: `reassign_task` length split
+### D.6 L-O sub-refactor: `reassign_task` length split
 
 Current shape (lines 1236-1302 in `_base.py`): one public method with a docstring + branches by task state (pending vs claimed) + composite-commit staging. LEN=122 (mostly docstring + 40 lines of body); the LEN gate trips on total span including docstring.
 
@@ -235,7 +264,16 @@ This plan picks **(a) + light (b)**: shrink the docstring to ~15 lines and extra
 
 The plan does NOT take an aggressive splitting approach (one helper per state) because the current code is already factored — `_stage_reassign_reclaim` is the claimed-state composite helper — and over-splitting would make `reassign_task` harder to read for the sake of the LEN gate.
 
-### D.6 `_checkpoint.py` interactions
+### D.7 `_TaskOpsMixin` size fallback
+
+The estimate for `_TaskOpsMixin` is 600-750 SLOC after extraction. Task create/claim/submit/accept/reject/reclaim/reassign + their validators currently dominate `_base.py` — major method blocks at lines 650 (insert_task family), 875 (claim/submit), 1726 (accept/reject dispatch), 2199 (live-task guards). If the actual extraction lands the mixin over 800 SLOC, the impl PR MUST split `_TaskOpsMixin` along the create-vs-lifecycle line **in the same PR**, not as a follow-up:
+
+- `_TaskCreateOpsMixin` (`_ops/tasks_create.py`; estimated 250-350 SLOC): `create_task`, `_insert_ideation_task`, `_insert_execution_task`, `_insert_evaluation_task`, `create_ideation_task`, `create_execution_task`, `create_evaluation_task`, `_require_no_live_execution_task_for_idea`, `_require_no_live_evaluation_task_for_variant`.
+- `_TaskLifecycleOpsMixin` (`_ops/tasks_lifecycle.py`; estimated 350-450 SLOC): `claim`, `submit`, `accept`, `reject`, `reclaim`, `reassign_task`, `validate_acceptance`, `validate_terminal`, `_accept_*`, `_reject_*`, `_validate_acceptance_locked`, `_validate_*_acceptance`, `_validate_evaluate_error`, `_validate_non_no_op_variant`, `_validate_submission_ref_binding`, `_stage_reassign_reclaim`, `_reassign_event_payload`, `_targets_equal`, `_require_submission_kind_matches`, `read_task`, `read_submission`, `list_tasks` (the read APIs naturally live with the lifecycle code that produces the state they observe).
+
+`_StoreBase` then composes 8 mixins instead of 7. **Operator decision needed at impl time** (not now): which split to keep if both happen to land under 800 SLOC. Default: keep the single `_TaskOpsMixin` unless it actually crosses the threshold; over-splitting prophylactically violates the §2 principle that the chunk's correctness story is "behavior-preserving file movement, not architecture redesign". Surfacing as an enforceable fallback so the impl PR doesn't get stuck if the estimate is wrong.
+
+### D.8 `_checkpoint.py` interactions
 
 [`_checkpoint.py`](../../reference/packages/eden-storage/src/eden_storage/_checkpoint.py) is a single-module sidecar that does bulk export/import of store state for the 12b portable-checkpoint feature. It interacts with the store through:
 
@@ -244,7 +282,7 @@ The plan does NOT take an aggressive splitting approach (one helper per state) b
 
 `_checkpoint.py` does not need to change. The plan calls it out as a verification gate (the existing `test_checkpoint_storage.py` suite covers it).
 
-### D.7 Test strategy
+### D.9 Test strategy
 
 The existing [`conftest.py`](../../reference/packages/eden-storage/tests/conftest.py) parametrizes every test that takes the `make_store` fixture across `memory`, `sqlite`, and `postgres` backends. Every test under [`reference/packages/eden-storage/tests/`](../../reference/packages/eden-storage/tests/) exercises the public `Store` Protocol surface. After the split, **the same tests run unchanged** against `InMemoryStore`, `SqliteStore`, `PostgresStore` — which still subclass `_StoreBase` (now a composite). Pass/fail is the verification gate.
 
@@ -254,7 +292,7 @@ The plan does NOT add per-mixin unit tests. Reasons: (a) mixins are not standalo
 
 **Postgres-backed tests:** require `EDEN_TEST_POSTGRES_DSN` set. CI sets it in the `python-test-postgres` job; locally, the `make_store[postgres]` parametrization skips when unset. The plan's verification gates include both forms.
 
-### D.8 Imports + circular-import risk
+### D.10 Imports + circular-import risk
 
 The mixin files all import `_StoreCore` and `_Tx` from `_base.py`. `_base.py` imports the mixins to build `_StoreBase`. This is fine — Python's import order resolves the cycle because `_base.py` imports the mixins at the **bottom** of the file (after `_StoreCore` is defined), and the mixin files only need `_StoreCore` / `_Tx` (already defined by the time the import runs).
 
@@ -320,7 +358,7 @@ Alternative: extract `_StoreCore` to `_ops/_core.py` so the import dependency ru
 |---|---|---:|
 | `reference/packages/eden-storage/src/eden_storage/_base.py` | rewrite (extract mixin contents; keep `_StoreCore`, `_Tx`, constants, helpers, composite `_StoreBase`) | ~150-250 |
 | `reference/packages/eden-storage/src/eden_storage/_ops/__init__.py` | new (empty re-export aggregator if anything needs cross-import; otherwise empty) | ~10 |
-| `reference/packages/eden-storage/src/eden_storage/_ops/tasks.py` | new (`_TaskOpsMixin` + helpers) | ~600-700 |
+| `reference/packages/eden-storage/src/eden_storage/_ops/tasks.py` | new (`_TaskOpsMixin` + helpers; or split into `tasks_create.py` + `tasks_lifecycle.py` per §3.7 fallback) | ~600-750 |
 | `reference/packages/eden-storage/src/eden_storage/_ops/ideas.py` | new (`_IdeaOpsMixin`) | ~100-150 |
 | `reference/packages/eden-storage/src/eden_storage/_ops/variants.py` | new (`_VariantOpsMixin`) | ~200-250 |
 | `reference/packages/eden-storage/src/eden_storage/_ops/events.py` | new (`_EventOpsMixin` + `iter_events_by_type`) | ~80-120 |
@@ -333,6 +371,7 @@ Alternative: extract `_StoreCore` to `_ops/_core.py` so the import dependency ru
 | `reference/packages/eden-storage/src/eden_storage/postgres.py` | unchanged | (unchanged) |
 | `reference/packages/eden-storage/src/eden_storage/_checkpoint.py` | unchanged (verifies abstract-primitive contract still resolves) | (unchanged) |
 | `reference/packages/eden-storage/src/eden_storage/protocol.py` | unchanged | (unchanged) |
+| `reference/packages/eden-storage/src/eden_storage/__init__.py` | rewire `iter_events_by_type` re-export from `._base` → `._ops.events` | (small edit) |
 | `reference/packages/eden-storage/tests/*.py` | unchanged | (unchanged) |
 | `conformance/scenarios/*.py` | unchanged | (unchanged) |
 | `docs/audits/2026-05-20-phase-c-disposition.md` | annotate F-1 row "REFACTOR landed in PR #N" | (small edit) |
@@ -459,9 +498,11 @@ Reason for ordering Worker + Group first: they have the smallest cross-mixin cou
 
 - Create `_ops/tasks.py` with `_TaskOpsMixin(_StoreCore)` containing every remaining method.
 - Apply the L-O `reassign_task` LEN reduction inside the new `_TaskOpsMixin` (docstring shrink + extract `_reassign_pending_or_claimed` helper).
-- Update `_base.py`: the composite `_StoreBase(_TaskOpsMixin, _IdeaOpsMixin, _VariantOpsMixin, _EventOpsMixin, _ExperimentOpsMixin, _WorkerOpsMixin, _GroupOpsMixin, _StoreCore)`.
+- **Size check at end of extraction**: run `python3 scripts/check-complexity.py` and `uvx radon raw reference/packages/eden-storage/src/eden_storage/_ops/tasks.py`. If `tasks.py` lands at > 800 SLOC, apply the §3.7 fallback split into `_TaskCreateOpsMixin` + `_TaskLifecycleOpsMixin` (two new files instead of one) in the same wave commit before pushing forward.
+- Update `_base.py`: the composite `_StoreBase(_TaskOpsMixin, _IdeaOpsMixin, _VariantOpsMixin, _EventOpsMixin, _ExperimentOpsMixin, _WorkerOpsMixin, _GroupOpsMixin, _StoreCore)` (or `_TaskCreateOpsMixin, _TaskLifecycleOpsMixin, ...` if the §3.7 fallback fired).
+- Update `__init__.py` `iter_events_by_type` re-export path.
 - Add the module-load-time MRO assertion (§6).
-- Verification gate: full pytest passes; `_base.py` is now under 800 SLOC; the gate would now pass even without the `# slop-allow-file:` annotation. **Do not remove the annotation yet** — it goes in wave 5 with the docs.
+- Verification gate: full pytest passes; `_base.py` is now under 800 SLOC; every mixin file is under 800 SLOC; the gate would now pass even without the `# slop-allow-file:` annotation. **Do not remove the annotation yet** — it goes in wave 5 with the docs.
 
 ### Wave 5 — Docs, annotation removal, PR (one commit + push + PR)
 
