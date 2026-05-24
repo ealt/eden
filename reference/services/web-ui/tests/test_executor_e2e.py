@@ -304,7 +304,8 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             assert variant.status == "starting"
             assert variant.commit_sha is None
             assert variant.branch is not None
-            assert variant.branch.startswith("work/impl-e2e-")
+            assert variant.branch.startswith("work/")
+            assert variant.branch.endswith("-impl-e2e")
             assert variant.parent_commits == [base_sha]
             # work/* ref committed by Phase 2 of the UI flow.
             assert (

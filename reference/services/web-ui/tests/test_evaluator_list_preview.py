@@ -38,7 +38,7 @@ class TestEvaluatorListPreview:
         seed_evaluate_task(store, slug="alpha", variant_id="va")
         resp = client.get("/evaluator/")
         assert resp.status_code == 200
-        assert "work/alpha-va" in resp.text
+        assert "work/va-alpha" in resp.text
         # commit_sha is the default 40-byte "b" string; first 8 chars shown
         assert "bbbbbbbb" in resp.text
 
@@ -144,7 +144,7 @@ class TestEvaluatorListPreview:
             resp = client.get("/evaluator/")
             assert resp.status_code == 200
             # variant context still surfaces
-            assert "work/alpha-va" in resp.text
+            assert "work/va-alpha" in resp.text
             assert "executor-w" in resp.text
             # idea inline marker
             assert "(idea: read error)" in resp.text

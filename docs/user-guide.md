@@ -257,7 +257,7 @@ The `/eden-manual-ideator` skill walks you through it: lists tasks, claims, prom
 
 ## 6. Workflow 2: execution
 
-The executor turns one execution task (which references an idea) into a git commit on top of `idea.parent_commits`, pushes the commit + a canonical `work/<slug>-<variant_id>` ref to Forgejo, and records a `Variant`. The integrator later squashes the work branch into a `variant/<variant_id>-<slug>` ref.
+The executor turns one execution task (which references an idea) into a git commit on top of `idea.parent_commits`, pushes the commit + a canonical `work/<variant_id>-<slug>` ref to Forgejo, and records a `Variant`. The integrator later squashes the work branch into a `variant/<variant_id>-<slug>` ref.
 
 ### Execution via the Web UI
 
@@ -276,7 +276,9 @@ $EDEN checkout <task-id>                                   # clones forgejo at p
 # the whole branch at integration time, so intermediate commit messages
 # survive on work/* but not on the canonical variant/* lineage.
 
-$EDEN push /tmp/eden-manual/<task-id> --branch <slug> --message "..."
+$EDEN push <task-id> --message "..."
+# Pushes to the canonical `work/<variant_id>-<slug>` ref derived from
+# the claim record + task — no operator-facing branch name to pick.
 # If you committed yourself first, `push` skips the auto-commit and
 # pushes existing HEAD. A no-op variant (same tree as parent) is
 # refused at execution-submit time.

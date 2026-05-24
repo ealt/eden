@@ -15,7 +15,7 @@ Trigger phrases above.
 
 The executor takes one `execution` task (which references an idea),
 realizes the idea as a git commit on top of `idea.parent_commits`,
-pushes that commit + the canonical `work/<slug>-<variant_id>` ref to
+pushes that commit + the canonical `work/<variant_id>-<slug>` ref to
 forgejo, and records the variant.
 
 Everything below runs from the terminal. Don't ask the user to open the
@@ -94,11 +94,11 @@ git -C /tmp/eden-manual/<task-id> diff --stat
 ### Phase 6: Commit + push + submit (automatic)
 
 Ask the user briefly for a commit message (default: derive from idea
-slug, e.g. `execute: <slug>`). Use `idea.slug` as the local branch name
-to mirror the canonical work-branch shape.
+slug, e.g. `execute: <slug>`). `push` derives the canonical work-branch
+shape from the claim record + task — no `--branch` flag needed.
 
 ```bash
-$EDEN push /tmp/eden-manual/<task-id> --branch <slug> --message "<msg>"
+$EDEN push <task-id> --message "<msg>"
 ```
 
 Capture the SHA from the JSON output. Then submit:
@@ -112,11 +112,12 @@ This:
 1. Fetches origin in the workdir.
 2. Verifies commit exists + descends from declared parent_commits.
 3. Refuses no-op variants (tree-identical to `parent_commits[0]`).
-4. Creates a `Variant(starting, branch=work/<slug>-<variant_id>)`
+4. Creates a `Variant(starting, branch=work/<variant_id>-<slug>)`
    in the store. NOTE: `commit_sha` is NOT set at create_variant
    time — it's written atomically when the orchestrator accepts
    the submit (per spec ch03 §3.2 step 1).
-5. Pushes `<sha>:refs/heads/work/<slug>-<variant_id>` to forgejo.
+5. Pushes `<sha>:refs/heads/work/<variant_id>-<slug>` to forgejo
+   (idempotent — `push` above already pushed to the same ref).
 6. Submits the execution task with `status=success` and the
    `commit_sha` in the payload.
 
@@ -137,9 +138,11 @@ task_id — the user can play evaluator next via `/eden-manual-evaluator`.
 
 - **Don't pre-empt the user's code changes.** The whole value of the
   manual executor is human judgment. Wait for "done".
-- **Use `idea.slug` as the local branch name.** It matches the
-  canonical work-branch shape and avoids confusion when looking at
-  forgejo.
+- **Don't pass `--branch` (it no longer exists).** `push` always
+  pushes to the canonical `work/<variant_id>-<slug>` ref derived from
+  the claim record + task. Earlier versions of the CLI accepted
+  `--branch <slug>` and left an operator-leaking bare-slug branch on
+  Forgejo; that was removed in #169.
 - **Errors after `claim` but before `execution-submit`** leave the task
   claimed. The orchestrator's expired-claim sweeper recovers it
   automatically when `--ttl-seconds` is set; without TTL, use

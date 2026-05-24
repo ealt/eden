@@ -416,7 +416,7 @@ def seed_evaluate_task(
         "idea_id": idea_id,
         "status": "starting",
         "parent_commits": ["a" * 40],
-        "branch": f"work/{slug}-{variant_id}",
+        "branch": f"work/{variant_id}-{slug}",
         "started_at": "2026-04-24T12:00:00Z",
     }
     if variant_description is not None:

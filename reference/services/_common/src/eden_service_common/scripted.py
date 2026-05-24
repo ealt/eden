@@ -112,7 +112,7 @@ def make_implement_fn(
             author_date=_IMPL_DATE,
             committer_date=_IMPL_DATE,
         )
-        branch_short = f"work/{idea.slug}-{variant_id}"
+        branch_short = f"work/{variant_id}-{idea.slug}"
         repo.create_ref(f"refs/heads/{branch_short}", commit_sha)
         # Phase 10d follow-up B: when the local repo has an origin
         # remote (Forgejo cutover), publish the work/* ref so the

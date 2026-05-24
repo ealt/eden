@@ -25,8 +25,10 @@ Subcommands:
                                         worker_id in /tmp/eden-manual/.claims.json
     checkout <task-id> [--dest D]     — clone forgejo + check out the
                                         right ref
-    push <workdir> [--branch B] [--message M]
-                                      — git add -A + commit + push
+    push <task-id> [--workdir D] [--message M]
+                                      — git add -A + commit + push to
+                                        the canonical `work/<variant_id>-<slug>`
+                                        ref derived from the claim record
 
     ideation-submit <task-id> --ideas-file F   (or --status error)
     execution-submit <task-id> --sha SHA [--description D] (or --status error)
@@ -461,10 +463,34 @@ def cmd_checkout(env: dict[str, str], args: argparse.Namespace) -> None:
 
 
 def cmd_push(env: dict[str, str], args: argparse.Namespace) -> None:
-    workdir = Path(args.workdir).resolve()
+    # Push directly to the canonical `work/<variant_id>-<slug>` ref so
+    # no operator-leaking bare-slug branch accumulates on Forgejo (see
+    # issue #169). The branch is derived from the claim record's
+    # variant_id + the task's idea slug — both already known at this
+    # point in the executor flow.
+    claim = _get_claim(args.task_id)
+    variant_id = claim.get("variant_id")
+    if not variant_id:
+        sys.exit(
+            "error: execution claim record is missing variant_id; "
+            "reclaim the task"
+        )
+    task = _wire(env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}")
+    if task["kind"] != "execution":
+        sys.exit(
+            f"error: push is only valid for execution tasks "
+            f"(task {args.task_id} is kind={task['kind']!r})"
+        )
+    idea = _wire(
+        env, f"/v0/experiments/{_exp(env)}/ideas/{task['payload']['idea_id']}"
+    )
+    branch = _branch_name(idea["slug"], variant_id)
+
+    workdir = (
+        Path(args.workdir).resolve() if args.workdir else _workdir_for(args.task_id)
+    )
     if not (workdir / ".git").is_dir():
         sys.exit(f"error: {workdir} is not a git checkout")
-    branch = args.branch or "manual-work"
     _git("checkout", "-B", branch, cwd=workdir)
     _git("add", "-A", cwd=workdir)
     has_staged = _git("diff", "--cached", "--quiet", cwd=workdir, check=False).returncode != 0
@@ -558,7 +584,11 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
 # ----------------------------------------------------------- execution-submit
 
 def _branch_name(slug: str, variant_id: str) -> str:
-    return f"work/{slug}-{variant_id}"
+    # Field order matches the integrator's variant-branch shape
+    # (`variant/<variant_id>-<slug>`, spec ch06 §3.2) so operators
+    # reading Forgejo see consistent `<variant_id>-<slug>` ordering
+    # across both refs.
+    return f"work/{variant_id}-{slug}"
 
 
 def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
@@ -761,8 +791,8 @@ def main(argv: list[str] | None = None) -> int:
     sp.set_defaults(func=cmd_checkout)
 
     sp = sub.add_parser("push")
-    sp.add_argument("workdir")
-    sp.add_argument("--branch")
+    sp.add_argument("task_id")
+    sp.add_argument("--workdir", help="default: /tmp/eden-manual/<task_id>")
     sp.add_argument("--message")
     sp.set_defaults(func=cmd_push)
 

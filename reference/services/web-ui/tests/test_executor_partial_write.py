@@ -323,7 +323,7 @@ class TestRefCollisionGuard:
         # Pre-create the ref the route would have written so the
         # guard fires.
         child_sha = make_child_commit(bare_repo, base_sha, "coll-tip")
-        bare_repo.create_ref(f"refs/heads/work/coll-{variant_id}", child_sha)
+        bare_repo.create_ref(f"refs/heads/work/{variant_id}-coll", child_sha)
         resp = _post_form(
             signed_in_impl_client,
             f"/executor/{task_id}/submit",

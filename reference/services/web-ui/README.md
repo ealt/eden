@@ -171,7 +171,7 @@ the routes return 404.
 
 Trust model and assumption: the **user does git work in their own
 checkout out-of-band**, then pushes their tip commit to the bare
-repo (any branch — the UI creates the canonical `work/<slug>-<variant_id>`
+repo (any branch — the UI creates the canonical `work/<variant_id>-<slug>`
 ref pointing at the commit when the form is submitted). The UI
 never accepts credentials, never runs `git push`, and never
 proxies a remote. Multi-machine deployments where the user's
@@ -191,7 +191,7 @@ story.
      history does not descend from the idea's declared parents
      (per `spec/v0/03-roles.md` §3.3).
 3. **Pre-Phase-1 ref-collision guard** (status=success only):
-   `repo.ref_exists("refs/heads/work/<slug>-<variant_id>")` short-
+   `repo.ref_exists("refs/heads/work/<variant_id>-<slug>")` short-
    circuits with a form re-render and no store mutation. Branch
    uniqueness is required by §3.3 ("worker branch MUST be unique
    to this variant"); the guard turns a vanishing edge case into a
@@ -203,7 +203,7 @@ story.
    `03-roles.md` §3.2 step 1 ("variant persisted before observable
    repo writes").
 5. **Phase 2 — `repo.create_ref`** (status=success only): writes
-   `refs/heads/work/<slug>-<variant_id>` pointing at the user's
+   `refs/heads/work/<variant_id>-<slug>` pointing at the user's
    `commit_sha`. On status=error this step is skipped (no work
    branch exists).
 6. **Phase 3 — `store.submit`** with retry-before-orphan plus a
