@@ -338,6 +338,24 @@ class TestCloneUrlInstructions:
         assert "Push your tip commit" not in resp.text
         assert "/var/lib/eden/repo" not in resp.text
 
+    def test_clone_url_renders_embedded_credentials_verbatim(
+        self,
+        exec_app_with_clone_url_fixture: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        """Issue #161: when the operator configures ``--clone-url`` with
+        embedded HTTP Basic credentials (the local-demo default), the
+        draft page must render the URL verbatim — including the
+        ``eden:<password>@`` prefix — so the displayed ``git clone``
+        command works without the operator having to look up Forgejo's
+        password separately."""
+        client = exec_app_with_clone_url_fixture
+        task_id = self._claim(client, store, base_sha)
+        resp = client.get(f"/executor/{task_id}/draft")
+        assert resp.status_code == 200
+        assert "http://eden:demo-password@forgejo.example/eden/exp.git" in resp.text
+
     def test_no_clone_url_warns_about_missing_clone_endpoint(
         self,
         signed_in_impl_client: TestClient,

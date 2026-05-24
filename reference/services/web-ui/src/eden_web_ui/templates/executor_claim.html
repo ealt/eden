@@ -51,7 +51,7 @@
             <pre><code>git clone {{ clone_url }} my-checkout
 cd my-checkout
 git checkout {{ idea.parent_commits[0] }}</code></pre>
-            HTTP Basic credentials live in <code>reference/compose/.env</code> as <code>FORGEJO_REMOTE_PASSWORD</code> (username <code>eden</code>).</li>
+            The clone URL embeds HTTP Basic credentials for the <code>eden</code> Forgejo user (issue #161). Local-demo posture only — anyone with web UI access can read this password. Override <code>FORGEJO_CLONE_URL_HOST</code> in <code>.env</code> for deployments where this leakage is unacceptable.</li>
         <li>Make your changes, commit, and push your branch back to the central repo:
             <pre><code>git checkout -b my-work
 # (edit, stage, commit)

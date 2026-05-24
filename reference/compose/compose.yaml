@@ -420,7 +420,13 @@ services:
       - --credential-helper
       - /etc/eden/credential-helper.sh
       - --clone-url
-      - ${FORGEJO_CLONE_URL_HOST:-http://localhost:${FORGEJO_HOST_PORT:-3001}/eden/${EDEN_EXPERIMENT_ID:?}.git}
+      # Embed HTTP Basic credentials so the operator-facing `git clone`
+      # command works directly (issue #161). Local-demo posture: the
+      # password is rendered in the executor draft page HTML. Override
+      # FORGEJO_CLONE_URL_HOST to point at a remote where the operator
+      # already has credentials configured for deployments where this
+      # leakage is unacceptable.
+      - ${FORGEJO_CLONE_URL_HOST:-http://eden:${FORGEJO_REMOTE_PASSWORD:?}@localhost:${FORGEJO_HOST_PORT:-3001}/eden/${EDEN_EXPERIMENT_ID:?}.git}
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id

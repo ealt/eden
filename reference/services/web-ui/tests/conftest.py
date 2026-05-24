@@ -294,6 +294,31 @@ def signed_in_impl_client_with_clone_url(
         yield c
 
 
+@pytest.fixture
+def exec_app_with_clone_url_fixture(
+    store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
+) -> Iterator[TestClient]:
+    """Signed-in client whose ``--clone-url`` embeds HTTP Basic credentials
+    (the local-demo default — see issue #161)."""
+    app = make_app(
+        store=store,
+        experiment_id=EXPERIMENT_ID,
+        experiment_config=_config(),
+        worker_id=WORKER_ID,
+        session_secret=SESSION_SECRET,
+        claim_ttl_seconds=3600,
+        artifacts_dir=artifacts_dir,
+        secure_cookies=False,
+        now=_now,
+        repo=bare_repo,
+        clone_url="http://eden:demo-password@forgejo.example/eden/exp.git",
+    )
+    with TestClient(app) as c:
+        resp = c.post("/signin", follow_redirects=False)
+        assert resp.status_code == 303
+        yield c
+
+
 def seed_implement_task(
     store: InMemoryStore,
     *,
