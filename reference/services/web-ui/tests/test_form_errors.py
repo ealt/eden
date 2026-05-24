@@ -12,6 +12,7 @@ to a re-rendered draft form (for Pydantic) or a wire-error banner
 
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
@@ -100,6 +101,47 @@ class TestPydanticValidationReRenders:
         # No store mutation; claim still owned by the operator.
         assert store.list_ideas() == []
         assert store.read_task("t-uppercase-slug").state == "claimed"
+
+    def test_ideator_slug_validation_failure_leaves_no_orphan_artifact(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        artifacts_dir: Path,
+    ) -> None:
+        """Regression: pre-fix, ``_persist_idea_drafts`` wrote the
+        artifact to ``artifacts_dir/<idea_id>.md`` BEFORE constructing
+        the ``Idea``. A ValidationError on construction left the
+        artifact file on disk with no Idea pointing at it. Post-fix,
+        the artifact URI is computed (not written) before validation,
+        the Idea is constructed (validation barrier), and only then is
+        the artifact written. On a slug rejection the artifacts_dir
+        should remain empty.
+        """
+        store.create_ideation_task("t-no-leak")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/ideator/t-no-leak/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        # Sanity: no leftover state in artifacts_dir from any prior
+        # phase. (The fixture starts empty.)
+        assert list(artifacts_dir.iterdir()) == []
+        resp = signed_in_client.post(
+            "/ideator/t-no-leak/submit",
+            data={
+                "csrf_token": token,
+                "status": "success",
+                "slug": "Spanish",  # rejected by Idea.slug pattern
+                "priority": "1.0",
+                "parent_commits": "a" * 40,
+                "content": "## why\n\nbecause",
+            },
+        )
+        assert resp.status_code == 400
+        assert store.list_ideas() == []
+        # Critically: no artifact file leaked.
+        assert list(artifacts_dir.iterdir()) == []
 
     def test_ideator_underscore_slug_re_renders_with_field_error(
         self, signed_in_client: TestClient, store: InMemoryStore

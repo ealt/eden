@@ -17,6 +17,7 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from eden_contracts import Idea
@@ -364,9 +365,13 @@ def _persist_idea_drafts(
 
     for draft, row_index in zip(drafts, draft_rows, strict=True):
         idea_id = uuid.uuid4().hex
-        artifacts_uri = write_idea_artifact(
-            artifacts_dir, idea_id, draft.content
-        )
+        # Predict the artifact URI without writing the file yet, so a
+        # ValidationError on Idea construction leaves the disk clean.
+        # The Idea is built first (validation barrier), THEN the
+        # artifact is written, THEN the store is told about it.
+        artifacts_uri = (
+            Path(artifacts_dir).resolve() / f"{idea_id}.md"
+        ).as_uri()
         try:
             idea = _make_idea(
                 idea_id=idea_id,
@@ -378,6 +383,7 @@ def _persist_idea_drafts(
         except ValidationError as exc:
             errors = format_validation_errors(exc, row=row_index)
             return [], None, errors
+        write_idea_artifact(artifacts_dir, idea_id, draft.content)
         try:
             store.create_idea(idea)
         except DispatchError as exc:
@@ -476,18 +482,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         return persist_error
 
     # Phase 3: submit, with retry-before-orphan.
-    try:
-        submission = IdeaSubmission(status="success", idea_ids=tuple(idea_ids))
-    except ValidationError as exc:
-        # IdeaSubmission's fields are server-generated (status literal,
-        # idea_ids from uuid4().hex), so reaching here would mean a
-        # contracts/schema drift, not bad operator input. Surface as
-        # the wire-error page rather than 500.
-        return _render_error(
-            request,
-            f"IdeaSubmission construction failed: {exc.error_count()} "
-            "validation error(s) — surface to the developer; no operator action.",
-        )
+    submission = IdeaSubmission(status="success", idea_ids=tuple(idea_ids))
     ok, banner = _retry_submit(store, task_id, token, submission)
     if not ok:
         return _render_orphaned(request, task_id, idea_ids, banner=banner)

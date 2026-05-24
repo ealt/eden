@@ -36,9 +36,8 @@ from eden_storage import (
 )
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import ValidationError
 
-from ..forms import format_validation_errors, parse_implement_form
+from ..forms import parse_implement_form
 from ._helpers import (
     csrf_ok,
     get_session,
@@ -179,47 +178,24 @@ def _phase1_create_starting_variant(
     draft: Any,
     branch: str,
     started_at: str,
-    session: Any,
 ) -> HTMLResponse | None:
     """Phase 1: ``store.create_variant(status="starting")``.
 
-    Returns ``None`` on success. On ``ValidationError`` from the
-    ``Variant`` construction renders the draft form with field-level
-    errors — Variant fields are mostly server-side, so reaching here
-    typically means a contracts/schema drift, but the form-re-render is
-    still operator-recoverable when ``description`` (free-form text)
-    grows a constraint. On ``DispatchError`` renders the wire-error
-    banner; on any other exception (transport-shaped) renders the
-    orphan page — the variant may or may not have committed on the
-    server, and the TTL→reclaim→variant→error recovery is the same
-    either way.
+    Returns ``None`` on success. On ``DispatchError`` renders the
+    wire-error banner; on any other exception (transport-shaped)
+    renders the orphan page — the variant may or may not have
+    committed on the server, and the TTL→reclaim→variant→error
+    recovery is the same either way.
     """
-    try:
-        variant = _build_starting_variant(
-            variant_id=variant_id,
-            experiment_id=request.app.state.experiment_id,
-            idea_id=idea.idea_id,
-            parent_commits=idea.parent_commits,
-            branch=branch,
-            started_at=started_at,
-            description=draft.description,
-        )
-    except ValidationError as exc:
-        errors = format_validation_errors(exc)
-        return _render_draft(
-            request,
-            session=session,
-            task_id=task_id,
-            idea=idea,
-            variant_id=variant_id,
-            form_state={
-                "status": draft.status,
-                "commit_sha": draft.commit_sha or "",
-                "description": draft.description or "",
-            },
-            errors=errors,
-            status_code=400,
-        )
+    variant = _build_starting_variant(
+        variant_id=variant_id,
+        experiment_id=request.app.state.experiment_id,
+        idea_id=idea.idea_id,
+        parent_commits=idea.parent_commits,
+        branch=branch,
+        started_at=started_at,
+        description=draft.description,
+    )
     try:
         store.create_variant(variant)
     except DispatchError as exc:
@@ -258,29 +234,11 @@ def _phase3_submit_with_readback(
     :func:`_handle_noop_variant_fallback` which runs the chapter-06 §3.4
     compensating-delete ladder and resubmits as ``status="error"``.
     """
-    try:
-        submission = VariantSubmission(
-            status=draft.status,
-            variant_id=variant_id,
-            commit_sha=draft.commit_sha if draft.status == "success" else None,
-        )
-    except ValidationError as exc:
-        # By Phase 3 the variant + work/* ref already exist; route the
-        # operator to the orphan page rather than a form-rerender. The
-        # banner names the construction failure so a developer can
-        # debug the contracts drift.
-        return _render_orphaned(
-            request,
-            task_id=task_id,
-            variant_id=variant_id,
-            commit_sha=draft.commit_sha,
-            branch=branch if draft.status == "success" else None,
-            banner=(
-                f"VariantSubmission construction failed: "
-                f"{exc.error_count()} validation error(s)"
-            ),
-            recovery_kind="transport",
-        )
+    submission = VariantSubmission(
+        status=draft.status,
+        variant_id=variant_id,
+        commit_sha=draft.commit_sha if draft.status == "success" else None,
+    )
     try:
         outcome, banner = submit_with_readback(
             store=store, task_id=task_id, token=token, submission=submission
@@ -647,7 +605,6 @@ def _drive_submit_phases(
         draft=draft,
         branch=branch,
         started_at=started_at,
-        session=session,
     )
     if phase1_error is not None:
         return phase1_error

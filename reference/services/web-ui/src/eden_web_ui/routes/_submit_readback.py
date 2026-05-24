@@ -55,7 +55,7 @@ from eden_storage.submissions import Submission, submissions_equivalent
 # error name surfaced in operator-visible banners. Shared by every
 # web-ui route that renders one of these as a human banner. Keys are
 # the concrete exception types; values are the spec-defined
-# ``eden://error/<name>`` identifiers (chapter 7 §7 closed vocabulary).
+# ``eden://error/<name>`` identifiers (chapter 7 §9 closed vocabulary).
 WIRE_ERROR_NAMES: dict[type, str] = {
     NotFound: "eden://error/not-found",
     AlreadyExists: "eden://error/already-exists",

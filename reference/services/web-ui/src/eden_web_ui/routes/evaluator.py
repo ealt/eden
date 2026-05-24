@@ -40,9 +40,8 @@ from eden_storage import (
 )
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import ValidationError
 
-from ..forms import format_validation_errors, parse_evaluate_form
+from ..forms import parse_evaluate_form
 from ._helpers import (
     csrf_ok,
     get_session,
@@ -432,29 +431,12 @@ def _build_and_submit_evaluation(
 ) -> HTMLResponse | RedirectResponse:
     """Construct the ``EvaluationSubmission``, submit with read-back,
     and route the outcome through ``_finalize_evaluator_submit``."""
-    try:
-        submission = EvaluationSubmission(
-            status=draft.status,
-            variant_id=variant_id,
-            evaluation=dict(draft.evaluation) if draft.evaluation else None,
-            artifacts_uri=draft.artifacts_uri,
-        )
-    except ValidationError as exc:
-        # The form parser already type-checks per-metric values against
-        # ``evaluation_schema``; reaching here typically means the schema
-        # drifted from EvaluationSubmission's own constraints (e.g. an
-        # invalid ``artifacts_uri``). Re-render with field errors.
-        rerender_errors = format_validation_errors(exc)
-        return _render_draft(
-            request,
-            session=session,
-            task_id=task_id,
-            variant=variant,
-            idea=idea,
-            form_state=form_state,
-            errors=rerender_errors,
-            status_code=400,
-        )
+    submission = EvaluationSubmission(
+        status=draft.status,
+        variant_id=variant_id,
+        evaluation=dict(draft.evaluation) if draft.evaluation else None,
+        artifacts_uri=draft.artifacts_uri,
+    )
 
     outcome, banner = submit_with_readback(
         store=store,
