@@ -10,6 +10,7 @@ After running `setup-experiment.sh`, every durable substrate is a **host bind-mo
 $EDEN_EXPERIMENT_DATA_ROOT/
 ├── postgres/              # task-store-server's PostgresStore data
 ├── forgejo/                 # Forgejo's data (sqlite DB, git packs, …)
+├── forgejo-etc/           # Forgejo's config dir (app.ini, SSH host keys)
 ├── artifacts/             # web-ui --artifacts-dir (idea markdown, …)
 ├── orchestrator-repo/     # orchestrator's per-host bare clone
 ├── executor-repo/         # executor-host's per-host bare clone
@@ -107,7 +108,7 @@ cd reference/compose
 docker compose --env-file .env stop
 
 # Create the bind-mount tree.
-mkdir -p "$ROOT"/{postgres,forgejo,artifacts,orchestrator-repo,executor-repo,evaluator-repo,web-ui-repo,credentials/{orchestrator,ideator,executor,evaluator,web-ui}}
+mkdir -p "$ROOT"/{postgres,forgejo,forgejo-etc,artifacts,orchestrator-repo,executor-repo,evaluator-repo,web-ui-repo,credentials/{orchestrator,ideator,executor,evaluator,web-ui}}
 chmod -R 0777 "$ROOT"
 
 # Copy each substrate from its named volume into the new bind-mount.
@@ -212,7 +213,7 @@ done
 docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml down
 
 # 4. Verify substrate tree is still populated on the host filesystem.
-ls "$ROOT/postgres" "$ROOT/forgejo" "$ROOT/artifacts"
+ls "$ROOT/postgres" "$ROOT/forgejo" "$ROOT/forgejo-etc" "$ROOT/artifacts"
 
 # 5. Bring the stack back up against the same data root + env file.
 docker compose --env-file "$ENV_FILE" -f reference/compose/compose.yaml up -d --wait
