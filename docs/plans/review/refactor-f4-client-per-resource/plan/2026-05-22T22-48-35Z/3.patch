@@ -1,0 +1,172 @@
+--- docs/plans/review/refactor-f4-client-per-resource/plan/2026-05-22T22-48-35Z/2.md	2026-05-22 16:10:00
++++ docs/plans/review/refactor-f4-client-per-resource/plan/2026-05-22T22-48-35Z/3.md	2026-05-22 16:17:56
+@@ -1,6 +1,33 @@
+ # Refactor F-4 — `eden-wire/client.py` per-resource client split
+ 
+-**Status.** Draft round 2 (plan-stage; awaiting operator approval before impl spawn).
++**Status.** Draft round 3 (plan-stage; awaiting operator approval before impl spawn).
++
++**Round-2 review incorporated** (4 Should-fix + 1 Minor):
++
++- §5.3 dispatch row rewritten to match §7.1 option-B reversal —
++  consumer-side adapter via `eden_dispatch/_dispatch_store.py`,
++  not unions + isinstance branching. §5.3 preamble also clarified
++  to call out consumer-side adapters (in the consumer package,
++  not on `StoreClient`) as the explicit (b) disposition for
++  library packages.
++- §7.1 dispatch needs-list recounted from actual grep: **21
++  unique methods + 1 property**, not 22. Speculative
++  `read_dispatch_mode` / `read_task` removed (those names
++  appear nowhere in `eden_dispatch/`).
++- §5.4.2 false positives removed: `control-plane/tests/test_server.py`
++  is the control-plane SERVER test (TestClient), and
++  `task-store-server/tests/test_artifacts_cli.py` is a CLI test
++  (subprocess + curl-style). Neither instantiates `StoreClient`.
++- §4 intro rewritten ("51 StoreClient methods map onto 43 server
++  routes plus 8 client-only extras") — round-1's fix only landed
++  in the §4 footer, not the intro.
++- §5.5 verification-command note: single-line `rg` doesn't match
++  the multiline `from eden_wire import (…)` blocks in
++  test_lifecycle_wire.py and test_reassign_dispatch_wire.py;
++  documented the multiline-capable command (`rg --multiline -U`)
++  and noted the round-1 sites were verified manually.
++- Minor: round-1's struck-through entry named `test_schema_parity.py`;
++  actual filename is `test_wire_schema_parity.py`. Corrected.
+ 
+ **Round-1 review incorporated** (5 Should-fix + 1 Minor):
+ 
+@@ -1134,8 +1161,10 @@
+ Complete mapping from every current `StoreClient.<method>` to its
+ post-refactor accessor path. Verified by reading
+ [`reference/packages/eden-wire/src/eden_wire/client.py`](../../reference/packages/eden-wire/src/eden_wire/client.py)
+-top to bottom at HEAD `f3f7932`. **43 methods mapped** (matches
+-F-3's 43 routes — verified one-to-one in §4.1).
++top to bottom at HEAD `f3f7932`. **51 `StoreClient` methods map
++onto 43 server routes plus 8 client-only extras** (the 8 are
++enumerated in §4.1 below; verified one-to-one against F-3 in
++§4.1).
+ 
+ | Current method | New accessor path | Module |
+ |---|---|---|
+@@ -1274,19 +1303,22 @@
+ no longer satisfies the Store Protocol (§1.6). Each entry below
+ needs ONE of: (a) retype the parameter from `: Store` to
+ `: StoreClient` (when the implementation is wire-bound by
+-construction), or (b) keep `: Store` and update the in-process
+-caller's call site to pass an in-process Store instead, or (c)
+-introduce a small `_FlatStoreView` adapter at the call boundary
+-(NOT recommended; see §1.7 Alternative C).
++construction), or (b) keep `: Store` and pass through a
++**consumer-side adapter** that satisfies a narrower local
++Protocol — the integrator (§7.1 lead) and dispatch (§7.1
++follow-on) both follow this shape. **Both adapters live in the
++consumer package, NOT on `StoreClient`** — they are not
++delegation shims on the wire client surface.
+ 
+-Default disposition is **(a) retype**, except where the function
+-is genuinely transport-agnostic.
++Default disposition for service-side callers is **(a) retype to
++`: StoreClient`**. The two library-package callers (integrator +
++dispatch) use the **(b) consumer-side adapter** pattern per §7.1.
+ 
+ | File | Function(s) | Disposition |
+ |---|---|---|
+-| `reference/packages/eden-git/src/eden_git/integrator.py` | `Integrator.__init__(store: Store, …)` | Retype `: Store` to a Union of `StoreClient`, `InMemoryStore`, and `SqliteStore`. Reads `store.read_variant`, `store.integrate_variant` — both need to migrate to the composed shape for the StoreClient branch but stay flat for the in-process branches. The function body becomes branched: `isinstance(store, StoreClient)` → composed paths; else flat. **This is the messiest call site;** see §7.1 for the alternative of pushing all integrator-store calls through a thin local protocol that both shapes satisfy. |
+-| `reference/packages/eden-dispatch/src/eden_dispatch/driver.py` | functions taking `store: Store` | Same shape — retype to Union, branch by isinstance, or extract a local `IntegratorStore` Protocol with the union of needed methods. |
+-| `reference/packages/eden-dispatch/src/eden_dispatch/sweep.py` | functions taking `store: Store` | Same. |
++| `reference/packages/eden-git/src/eden_git/integrator.py` | `Integrator.__init__(store: Store, …)` | Keep `: Store` typing using a local `IntegratorStore` Protocol (§7.1 lead). Reads 4 store methods: `read_variant`, `read_idea`, `integrate_variant`, `validate_evaluation`. A `_StoreClientBridge` in `eden_git/_integrator_store.py` adapts a StoreClient via its composed sub-clients; in-process Stores satisfy the narrower Protocol structurally because they retain the flat methods. |
++| `reference/packages/eden-dispatch/src/eden_dispatch/driver.py` | functions taking `store: Store` | Keep `: Store` typing using a local `DispatchStore` Protocol (§7.1 follow-on). The dispatch package uses 21 unique store methods across all 5 files; one `_StoreClientBridge` in `eden_dispatch/_dispatch_store.py` adapts a StoreClient via composed sub-clients. |
++| `reference/packages/eden-dispatch/src/eden_dispatch/sweep.py` | functions taking `store: Store` | Same — covered by the `eden_dispatch/_dispatch_store.py` bridge. |
+ | `reference/packages/eden-dispatch/src/eden_dispatch/workers.py` | functions taking `store: Store` | Same. |
+ | `reference/packages/eden-dispatch/src/eden_dispatch/state_view.py` | functions taking `store: Store` | Same. |
+ | `reference/packages/eden-storage/src/eden_storage/protocol.py` | `class Store(Protocol)` itself | No change. Store Protocol stays flat; this is the point of Option C (§1.7). |
+@@ -1319,8 +1351,8 @@
+ | `reference/packages/eden-wire/tests/test_lifecycle_wire.py` | ~25 (terminate / policy-error / dispatch_mode read; flaky-transport indeterminate-recovery tests) |
+ | `reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py` | ~30 |
+ | `reference/packages/eden-wire/tests/test_checkpoint_wire.py` | ~15 (export + import roundtrips; indeterminate-import recovery) |
+-| ~~`reference/packages/eden-wire/tests/test_artifact_route.py`~~ | **0** — round-2 correction: this test uses `TestClient(make_app(...))` (FastAPI's test client), NOT StoreClient. Verified by reading [the file's imports](../../reference/packages/eden-wire/tests/test_artifact_route.py). Removed from the migration list. |
+-| ~~`reference/packages/eden-wire/tests/test_schema_parity.py`~~ | **0** — round-2 correction: this test is the Pydantic-↔-JSON-Schema parity check; it doesn't instantiate StoreClient. Removed from the migration list. |
++| `reference/packages/eden-wire/tests/test_artifact_route.py` | 0 — REMOVED (round-1): uses `TestClient(make_app(...))`, not StoreClient. |
++| `reference/packages/eden-wire/tests/test_wire_schema_parity.py` | 0 — REMOVED (round-1): Pydantic-↔-JSON-Schema parity check; no StoreClient instantiation. |
+ 
+ **Total wire-tests: ~245–255 call sites** (revised down from
+ round-0's ~250–260 after removing `test_artifact_route.py` and
+@@ -1341,10 +1373,10 @@
+ | `reference/services/web-ui/src/eden_web_ui/{cli.py, app.py, routes/}` | ~80 | Multiple admin routes call ~every wire method (workers, groups, dispatch_mode, lifecycle, integrator-equivalents, artifact-listing). |
+ | `reference/services/web-ui/tests/*` | ~150 | Largest test surface in the repo; admin + executor + evaluator + ideator e2e tests instantiate seed/operator/admin StoreClients per scenario. |
+ | `reference/services/control-plane/src/eden_control_plane_server/{state_sync.py, app.py, auth.py}` | ~20 | list_tasks / read_experiment_state / read_dispatch_mode for the federation sync. |
+-| `reference/services/control-plane/tests/test_server.py` | ~15 | |
++| `reference/services/control-plane/tests/test_server.py` (REMOVED) | 0 | Round-2 correction: this is the control-plane SERVER test (TestClient against the control-plane FastAPI app); no StoreClient instantiation. Verified by grepping the file for "StoreClient" — zero hits. Removed from migration list. |
+ | `reference/services/_common/src/eden_service_common/auth.py` | ~6 | StoreClient(...).whoami() probes (3 sites). |
+ | `reference/services/_common/tests/test_service_auth.py` | ~5 | |
+-| `reference/services/task-store-server/tests/test_artifacts_cli.py` | (verify; may be zero direct StoreClient calls) | |
++| `reference/services/task-store-server/tests/test_artifacts_cli.py` (REMOVED) | 0 | Round-2 correction: this is the task-store-server CLI test (subprocess + curl/jq style assertions against the spawned wire server); no StoreClient instantiation. Removed from migration list. |
+ 
+ **Total services + their tests: ~450–500 call sites.**
+ 
+@@ -1388,8 +1420,13 @@
+ ### 5.5 Public-import sites for the `Indeterminate*` exception classes
+ 
+ Round-2 correction: the round-0 list was speculative. Actual
+-`Indeterminate*`-importing files, verified by
+-`rg "from eden_wire(\.client)? import.*Indeterminate|from eden_wire import.*Indeterminate" reference conformance`:
++`Indeterminate*`-importing files, verified by single-line `rg`
++(`rg "from eden_wire(\.client)? import.*Indeterminate" reference conformance`)
++combined with manual inspection of the multiline `from eden_wire import (…)`
++blocks in test_lifecycle_wire.py and test_reassign_dispatch_wire.py
++— single-line `rg` does NOT match across newlines, so for impl,
++use `rg --multiline -U "from eden_wire(\.client)? import \([^)]*Indeterminate"`
++or simply `rg -l Indeterminate reference/packages/eden-wire/tests`:
+ 
+ | File | Import path | Classes imported |
+ |---|---|---|
+@@ -1534,17 +1571,21 @@
+ 
+ **eden-dispatch is different — much wider needs-list.** Grep
+ against `reference/packages/eden-dispatch/src/eden_dispatch/*.py`
+-reveals 22 distinct `store.<method>` call sites covering tasks,
+-ideas, variants, experiment lifecycle, dispatch state, and
+-validation: `accept`, `claim`, `create_evaluation_task`,
+-`create_execution_task`, `create_idea`, `create_ideation_task`,
+-`create_variant`, `emit_policy_error`, `list_ideas`,
+-`list_tasks`, `list_variants`, `mark_idea_ready`,
+-`read_experiment`, `read_experiment_state`, `read_idea`,
+-`read_variant`, `reclaim`, `reject`, `submit`,
+-`terminate_experiment`, `validate_terminal` (and likely
+-`read_dispatch_mode` / `read_task` via state_view — verify
+-during impl).
++(`grep -rEho "store\.[a-z_]+" eden_dispatch/*.py | sort -u`)
++reveals **21 distinct `store.<method>` method calls** plus 1
++property access (`store.experiment_id`), covering tasks, ideas,
++variants, experiment lifecycle, and validation: `accept`,
++`claim`, `create_evaluation_task`, `create_execution_task`,
++`create_idea`, `create_ideation_task`, `create_variant`,
++`emit_policy_error`, `list_ideas`, `list_tasks`, `list_variants`,
++`mark_idea_ready`, `read_experiment`, `read_experiment_state`,
++`read_idea`, `read_variant`, `reclaim`, `reject`, `submit`,
++`terminate_experiment`, `validate_terminal`. No
++`read_dispatch_mode` or `read_task` calls (round-2
++verification: those names appear neither in `state_view.py` nor
++in any other dispatch source file). The `DispatchStore` Protocol
++declares exactly the 21 methods plus the `experiment_id`
++property.
+ 
+ Two options for dispatch:
+ 
+@@ -1582,11 +1623,11 @@
+ the lock.
+ 
+ The cost of option B is one ~150-LOC `_StoreClientBridge` in
+-`eden_dispatch/_dispatch_store.py` with 22 thin methods, each a
+-1-line passthrough to `sc.<resource>.<method>(...)`. Maintenance
+-cost: trivial; every method maps to exactly one F-4 sub-client
+-accessor. If a new wire endpoint lands later, the bridge gets
+-one more method.
++`eden_dispatch/_dispatch_store.py` with 21 thin methods (plus
++the `experiment_id` property), each a 1-line passthrough to
++`sc.<resource>.<method>(...)`. Maintenance cost: trivial; every
++method maps to exactly one F-4 sub-client accessor. If a new
++wire endpoint lands later, the bridge gets one more method.
+ 
+ If the operator disagrees and wants option A for dispatch
+ (e.g., "don't proliferate adapters even one-per-package"),

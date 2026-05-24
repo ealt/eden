@@ -1,0 +1,435 @@
+--- docs/plans/review/refactor-f4-client-per-resource/plan/2026-05-22T22-48-35Z/0.md	2026-05-22 15:48:35
++++ docs/plans/review/refactor-f4-client-per-resource/plan/2026-05-22T22-48-35Z/1.md	2026-05-22 16:00:53
+@@ -1,7 +1,45 @@
+ # Refactor F-4 — `eden-wire/client.py` per-resource client split
+ 
+-**Status.** Draft (plan-stage; awaiting operator approval before impl spawn).
++**Status.** Draft round 1 (plan-stage; awaiting operator approval before impl spawn).
+ 
++**Round-0 review incorporated** (see [`docs/plans/review/refactor-f4-client-per-resource/plan/<timestamp>/0-review.md`](review/refactor-f4-client-per-resource/plan/)):
++codex flagged 1 Must-fix + 5 Should-fix + 1 Minor. Applied changes:
++
++- §7.1 integrator bridge sketch was wrong (`read_task` is not
++  called by the integrator) — now derived from grep against
++  [`integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py)
++  and lists the actual 4-method set
++  (`read_variant`, `read_idea`, `integrate_variant`,
++  `validate_evaluation`). eden-dispatch was treated as a single
++  shared Protocol; now split out as its own decision (22-method
++  surface; recommendation: option A isinstance branching, not
++  a thick bridge).
++- §6.2 `test_storeclient_no_longer_implements_store_protocol`
++  used `isinstance(sc, Store)` which would raise `TypeError`
++  (Store isn't `runtime_checkable`). Replaced with
++  `hasattr(sc, "claim")`-style absent-attribute assertions.
++- §§1.6/6.3/8 pyright-as-backstop framing: pyright catches missed
++  migrations at Wave 4 (when flat methods are removed), NOT at
++  Wave 3 (when flat methods still exist as dead code). Added an
++  explicit Wave-3 grep-based audit gate.
++- §1.1 method count corrected (51 not 43); duplicate `reassign_task`
++  row removed from §4 table; §4.1 summary recounted (43 routes ↔
++  51 client methods with 8 documented extras).
++- §§5.3-5.4 false positives removed
++  (`eden-control-plane/tests/test_store_protocol.py` is
++  ControlPlaneStore conformance, not StoreClient;
++  `eden-checkpoint/tests/` has no StoreClient sites).
++- Decision 6 / §5.2 / §5.5: clarified actual import-site surface
++  for `Indeterminate*` (2 verified eden-wire test files, not the
++  speculative external services); flagged
++  [`eden_wire/__init__.py`](../../reference/packages/eden-wire/src/eden_wire/__init__.py)
++  as a touched-file (re-exports 4 of 5 Indeterminate classes;
++  module docstring still claims Store-Protocol satisfaction).
++- §7.7 monkeypatch claim corrected — tests use injected
++  `httpx.Client(transport=MockTransport(...))`, not `_request`
++  monkeypatches; transport-injection pattern is invariant under
++  F-4.
++
+ **Tracks issue.** [ealt/eden#116](https://github.com/ealt/eden/issues/116).
+ 
+ **Predecessors.** PR #105 (Code-quality audit Phase A + C) landed
+@@ -67,10 +105,14 @@
+ - **1385 lines total** (MI ≈ 21.5, just above the file-MI gate
+   floor of 20 — one more passive accretion would trip the file-MI
+   threshold).
+-- **One class `StoreClient`** holding **43 public methods** plus
+-  5 read-back helpers (`_try_read_variant`, `_try_read_task`,
+-  `_try_read_dispatch_mode`, `_try_read_experiment_state`,
+-  `_import_recovery_probe`) and 4 module-level utilities
++- **One class `StoreClient`** holding **51 public instance methods**
++  (verified: `grep -cE '^    def [a-z]' client.py` returns 53; subtract
++  the two lifecycle entries `close` and the `experiment_id` property
++  to get 51 wire-facing methods), plus 4 read-back helpers
++  (`_try_read_variant`, `_try_read_task`, `_try_read_dispatch_mode`,
++  `_try_read_experiment_state`) and the private import-recovery probe
++  (`_import_recovery_probe` + `_parse_recovery_manifest` +
++  `_fetch_recovery_probe`), plus 4 module-level utilities
+   (`_task_targets_equal`, `_submission_to_wire`,
+   `_submission_from_wire`, `_now`, `_as_wire_datetime`).
+ - **One `# slop-allow-file:` annotation** at line 1 marking the
+@@ -217,7 +259,15 @@
+ This is the **load-bearing reason the plan can rely on type
+ checking as a backstop for missed migrations** (the operator's
+ prompt §9: "pyright will surface every still-flat-surface
+-reference"). Two failure modes pyright catches:
++reference"). **Important timing caveat (round-0 review):** pyright
++only catches missed migrations once the flat methods are actually
++removed from `StoreClient` — Wave 4 in §8. During Wave 3 the flat
++methods still exist (intentionally — see §8's coexistence rule),
++so a missed `store_client.claim(...)` site type-checks green
++through Wave 3 and only fails at Wave 4. The Wave 3 completeness
++gate is therefore a **grep-based audit**, not pyright; see §8 for
++the specific gate command. Two failure modes pyright catches at
++Wave 4:
+ 
+ 1. **Direct flat-method calls.** `store_client.claim(task_id, …)`
+    typed as `StoreClient` → "Cannot access member `claim` for
+@@ -530,14 +580,39 @@
+ ```
+ 
+ **Why.** External callers import these via
+-`from eden_wire.client import Indeterminate…`
+-(verified hits: at least
+-[`reference/packages/eden-git/src/eden_git/integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py)
+-and [`reference/packages/eden-dispatch/`](../../reference/packages/eden-dispatch/)
+-— exhaustively enumerated in §5.5).
+-Moving the import path would be a gratuitous breakage with no
+-F-4 benefit; re-export keeps every external import line valid.
++`from eden_wire.client import Indeterminate…`. Round-0 review
++narrowed the verified import-site list to two: only
++[`reference/packages/eden-wire/tests/test_checkpoint_wire.py:31`](../../reference/packages/eden-wire/tests/test_checkpoint_wire.py)
++and
++[`reference/packages/eden-wire/tests/test_wire_roundtrip.py:36`](../../reference/packages/eden-wire/tests/test_wire_roundtrip.py)
++import the `Indeterminate*` names directly from
++`eden_wire.client`. (External services like `eden_git/integrator.py`
++do not re-import these classes — they catch the exceptions by
++walking the wire client's method-level docstrings, but the
++import path itself is not load-bearing for them; verify via
++`rg "from eden_wire.client import" reference conformance` during
++impl.) Re-export still has near-zero cost and keeps the two
++test imports valid; the cost-benefit ratio favors preservation.
+ 
++Separately, [`eden_wire/__init__.py`](../../reference/packages/eden-wire/src/eden_wire/__init__.py)
++re-exports **four** of the five exception classes at the
++top-level surface (the fifth, `IndeterminateImport`, was added
++in chunk 12b but never propagated up). That file's module
++docstring also still says "`StoreClient`: httpx-backed client
++that satisfies the `Store` Protocol" — which is invalidated by
++the F-4 Protocol-break. **Wave 4 must update
++`eden_wire/__init__.py`**:
++
++- Update the module docstring to drop the "satisfies the `Store`
++  Protocol" claim.
++- Decide explicitly whether to add `IndeterminateImport` to the
++  top-level surface (recommend: yes, for symmetry with the
++  other four; flag in PR description so reviewers can object).
++- Otherwise leave the imports/exports identical.
++
++§5.2 below adds `eden_wire/__init__.py` to the touched-files
++list.
++
+ ### Decision 7 — Tests follow callers; no tests-tree-restructure in F-4
+ 
+ **Decision.** Wire-binding tests in
+@@ -1073,7 +1148,6 @@
+ | `read_group(group_id)` | `client.groups.read(group_id)` | `_client/groups.py` |
+ | `list_groups()` | `client.groups.list()` | `_client/groups.py` |
+ | `resolve_worker_in_group(worker_id, group_id)` | `client.groups.resolve_worker_in_group(worker_id, group_id)` | `_client/groups.py` |
+-| `reassign_task` — *already mapped above* | | |
+ | `read_dispatch_mode()` | `client.dispatch_mode.read()` | `_client/dispatch_mode.py` |
+ | `update_dispatch_mode(updates, *, updated_by)` | `client.dispatch_mode.update(updates, updated_by=...)` | `_client/dispatch_mode.py` |
+ | `read_experiment()` | `client.experiment_read.read()` | `_client/experiment_read.py` |
+@@ -1084,8 +1158,10 @@
+ | `export_checkpoint(stream, ...)` | `client.checkpoints.export(stream, ...)` | `_client/checkpoints.py` |
+ | `import_checkpoint(stream, *, as_experiment_id, ...)` | `client.checkpoints.import_(stream, as_experiment_id=...)` *(trailing underscore — see §7.3)* | `_client/checkpoints.py` |
+ 
+-**Total: 43 methods mapped.** No method is unmapped; no method
+-maps to two sub-clients.
++**Total: 51 methods mapped.** No method is unmapped; no method
++maps to two sub-clients. (Independently verified by `grep -cE
++'^    def [a-z]' client.py` → 53, minus `close` + the `experiment_id`
++property = 51.)
+ 
+ ### 4.1 Server-side router ↔ client-side sub-client symmetry
+ 
+@@ -1106,14 +1182,28 @@
+ | `routers/checkpoints.py` (2 routes) | `CheckpointsClient` | 2 methods (export + import) |
+ | `routers/reference.py` (3 routes) | `ReferenceClient` + `TasksClient.validate_*` | 1 method on Reference (validate_evaluation); 2 on Tasks (validate_terminal + validate_acceptance) — see §7.2 for the split rationale |
+ 
+-**Net: 43 routes ↔ 43+ methods, with 6 "client-side" extras**
+-(the 3 convenience task-creation factories, the 2 aliases on
+-EventsClient, the synthetic `update_experiment_state` stub, the
+-client-side transitive `resolve_worker_in_group` walk, and the
+-client-side `verify_worker_credential` probe). All extras exist
+-in the current monolithic client and are preserved verbatim by
+-F-4.
++**Net: 43 server routes ↔ 51 client methods.** The 8 "client-side"
++extras over the 43-route count are:
+ 
++1. 3 convenience task-creation factories
++   (`create_ideation_task` / `create_execution_task` /
++   `create_evaluation_task`) — each composes a `Task.model_validate(...)`
++   followed by `create_task(...)`; one server route, three client conveniences.
++2. 2 aliases on EventsClient (`events()` and `replay()`, both
++   forwarders for `read_range(0)`) — kept for spec-vocabulary
++   parity with chapter 8 §2.1.
++3. The synthetic `update_experiment_state` stub (raises
++   NotImplementedError; preserved for Store-Protocol-signature
++   parity — see §7.5).
++4. The client-side transitive `resolve_worker_in_group` walk
++   (repeated `read_group` calls; chapter 02 §7.2 closure
++   computed in the client, not on the wire).
++5. The client-side `verify_worker_credential` probe (one bearer-
++   swap call against `GET /whoami`; no new server route).
++
++All extras exist in the current monolithic client and are
++preserved verbatim by F-4.
++
+ ## 5. Files to touch
+ 
+ ### 5.1 New files
+@@ -1140,7 +1230,7 @@
+ | File | Change |
+ |---|---|
+ | `reference/packages/eden-wire/src/eden_wire/client.py` | Reduced to ~130–160 LOC: docstring + 5 exception re-exports + `__all__` + the slim `StoreClient` (init + lifecycle only) + `store_client` factory. Drops the `# slop-allow-file:` (line 1). |
+-| `reference/packages/eden-wire/src/eden_wire/__init__.py` | No change to public surface. `StoreClient` and the 5 exception classes still exported from `eden_wire.client`. (Verify the re-export at this level if/when `__init__.py` mentions them — current spot-check shows no top-level re-export beyond what `client.py` carries.) |
++| `reference/packages/eden-wire/src/eden_wire/__init__.py` | **Touched** (verified round-1): currently re-exports 4 of the 5 `Indeterminate*` classes at the top-level (`IndeterminateDispatchModeUpdate`, `IndeterminateIntegration`, `IndeterminateReassign`, `IndeterminateTermination`) and documents `StoreClient` as "satisfies the `Store` Protocol" in the module docstring. Wave 4 (a) updates the docstring to remove the Store-Protocol claim, (b) decides explicitly whether to add `IndeterminateImport` to the top-level re-exports (recommendation: yes, for symmetry — call out in PR description). |
+ 
+ ### 5.3 Modified files (Store-Protocol-typed callsites — Section A)
+ 
+@@ -1230,10 +1320,13 @@
+ | `reference/packages/eden-dispatch/src/eden_dispatch/*` (5 files) | ~25 | driver/sweep/workers/state_view all accept `store: Store`. Same Section-A retyping discipline applies. |
+ | `reference/packages/eden-dispatch/tests/*` (4 files) | ~30 | |
+ | `reference/packages/eden-storage/tests/*` (~12 files) | ~0 | These test the in-process Store directly; no StoreClient involvement. |
+-| `reference/packages/eden-control-plane/tests/{test_client.py, test_store_protocol.py}` | ~20 | The control-plane has its own client, not StoreClient — verify and confirm. **If `test_store_protocol.py` exercises `StoreClient` against the Protocol, that test breaks under F-4 (intentionally — see §6.2's required test update).** |
+-| `reference/packages/eden-checkpoint/tests/*` | ~5 | Verify. |
++| `reference/packages/eden-control-plane/tests/test_store_protocol.py` | 0 | **Verified round-1**: this file tests the `ControlPlaneStore` (chapter-11 lease + dispatch state) backend conformance, NOT `StoreClient`. The file imports `from eden_control_plane import ControlPlaneStore, …`; there are no StoreClient references. Removed from the migration list. |
++| `reference/packages/eden-control-plane/tests/test_client.py` | ~0 | **Verified round-1**: this file tests the `ControlPlaneClient`, a separate HTTP client for the control-plane service (not StoreClient). No F-4 migration needed unless this file also instantiates StoreClient (verify; spot-check suggests not). |
++| `reference/packages/eden-checkpoint/tests/*` | 0 | **Verified round-1**: no StoreClient references in this package's tests (verified by `rg StoreClient reference/packages/eden-checkpoint/tests/`). Removed from the migration list. |
+ 
+-**Total other packages: ~120–130 call sites.**
++**Total other packages: ~95–105 call sites** (revised down from
++round-0's ~120–130 after removing the false-positives in
++`eden-control-plane/tests/` and `eden-checkpoint/tests/`).
+ 
+ #### 5.4.4 Conformance
+ 
+@@ -1314,7 +1407,7 @@
+ 
+ | File | Test | Why |
+ |---|---|---|
+-| `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_storeclient_no_longer_implements_store_protocol`: confirm that `isinstance(StoreClient(...), Store)` is False (and that pyright would reject the assignment — covered by `assert_type` if available, else a `# type: ignore[arg-type]`-bracketed comment). | The Protocol-break is the load-bearing consequence of the surface lock (§1.6). Pinning it as a test prevents a future amendment from silently re-adding flat methods and re-establishing structural conformance without operator review. |
++| `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_storeclient_drops_flat_method_surface`: assert that the flat-surface method names are NOT attributes of a StoreClient instance — `assert not hasattr(sc, "claim")`, `assert not hasattr(sc, "create_variant")`, `assert not hasattr(sc, "integrate_variant")`, etc. (one assertion per representative method covering each sub-client). | The Protocol-break is the load-bearing consequence of the surface lock (§1.6). Pinning the absent-attributes as a runtime test prevents a future amendment from silently re-adding flat methods. **DOes NOT use `isinstance(sc, Store)`** — `Store` is a non-`runtime_checkable` Protocol (see [`protocol.py:34`](../../reference/packages/eden-storage/src/eden_storage/protocol.py)), so the isinstance call would raise `TypeError("Instance and class checks can only be used with @runtime_checkable protocols")`. The structural Protocol-break is enforced by pyright at the static level (per the Wave-4 gate in §8); the runtime test asserts the simpler invariant "these names are gone." |
+ | `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_sub_client_attributes_are_distinct_instances`: confirm `client.tasks is not client.ideas` (Decision 5 sanity-check). | Defense against an accidental "all attributes point to the same sub-client" bug if the `__init__` block is refactored later. |
+ | `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_transport_is_shared_across_sub_clients`: confirm `client.tasks._transport is client.variants._transport is client.events._transport`. | The audit's risk-prevention shape (one connection pool, one bearer, one header dict) depends on this. Test pins it so a future "let's give each sub-client its own httpx.Client" refactor surfaces. |
+ | `reference/packages/eden-wire/tests/test_wire_roundtrip.py` | `test_close_releases_transport_client`: confirm `client.close()` closes the underlying `httpx.Client` only when `owns_client` is True (i.e. when the caller didn't inject a client). | Mirrors the current implicit guarantee in `_owns_client`. Pin the contract. |
+@@ -1379,26 +1472,58 @@
+ ~10 LOC adapter wrappers + retyping the integrator's
+ `__init__` parameter.
+ 
+-**Same shape applies to** `eden-dispatch/driver.py`, `sweep.py`,
+-`workers.py`, `state_view.py` — each has a Store-typed parameter
+-and a small needs-list. Each gets its own local Protocol (one per
+-file) or shares a single `eden_dispatch/_orchestrator_store.py`
+-Protocol. Recommendation: one shared Protocol per package
+-(`eden_dispatch._orchestrator_store.OrchestratorStore`,
+-`eden_git._integrator_store.IntegratorStore`) — narrower than
+-`Store`, satisfiable by both StoreClient (via a small bridge) and
+-in-process Stores (transparently, because in-process Stores still
+-have the flat methods).
++**eden-dispatch is different — much wider needs-list.** Grep
++against `reference/packages/eden-dispatch/src/eden_dispatch/*.py`
++reveals 22 distinct `store.<method>` call sites covering tasks,
++ideas, variants, experiment lifecycle, dispatch state, and
++validation: `accept`, `claim`, `create_evaluation_task`,
++`create_execution_task`, `create_idea`, `create_ideation_task`,
++`create_variant`, `emit_policy_error`, `list_ideas`,
++`list_tasks`, `list_variants`, `mark_idea_ready`,
++`read_experiment`, `read_experiment_state`, `read_idea`,
++`read_variant`, `reclaim`, `reject`, `submit`,
++`terminate_experiment`, `validate_terminal` (and likely
++`read_dispatch_mode` / `read_task` via state_view — verify
++during impl).
+ 
+-**Bridge shape (sketch):**
++A local `OrchestratorStore` Protocol with 22 methods is
++essentially re-declaring most of `Store` — the boundary doesn't
++pay for itself. Two options for dispatch:
+ 
++- **(A) Retype each function's `store: Store` parameter to a
++  Union** `StoreClient | InMemoryStore | SqliteStore`. Each call
++  site `isinstance`-branches once per method group — workable but
++  spreads the branching across the package.
++- **(B) Keep `: Store` and provide a thicker
++  `_StoreClientBridge` in `eden_dispatch/_dispatch_store.py`
++  with all 22 methods plus the read-back exceptions.** This IS
++  a delegation shim by every meaningful definition; same
++  category as Alternative A in §1.7 just scoped to dispatch.
++  Operator must approve.
++
++**Plan recommendation: option A for eden-dispatch.** It honors
++the operator's anti-shim lock (no thick delegation), and the
++isinstance branching is mechanical (one if-else per call site).
++The cost is per-call-site branching code; the integrator's
++narrower 4-method bridge stays as the only structural exception.
++If the impl pass finds the branching too noisy, option B is the
++operator-approved fallback.
++
++**Bridge shape (sketch).** Methods derived by grep against the
++actual `Integrator.__init__(store=…)`-fed call sites
++([`integrator.py:137-138`](../../reference/packages/eden-git/src/eden_git/integrator.py),
++[`integrator.py:238`](../../reference/packages/eden-git/src/eden_git/integrator.py),
++[`integrator.py:271`](../../reference/packages/eden-git/src/eden_git/integrator.py),
++[`integrator.py:421`](../../reference/packages/eden-git/src/eden_git/integrator.py),
++[`integrator.py:592`](../../reference/packages/eden-git/src/eden_git/integrator.py)):
++
+ ```python
+ # eden_git/_integrator_store.py
+ class IntegratorStore(Protocol):
+     def read_variant(self, variant_id: str) -> Variant: ...
++    def read_idea(self, idea_id: str) -> Idea: ...
+     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None: ...
+-    def read_task(self, task_id: str) -> Task: ...
+-    # (4-6 methods total)
++    def validate_evaluation(self, evaluation: dict[str, Any]) -> None: ...
+ 
+ 
+ class _StoreClientBridge:
+@@ -1407,13 +1532,21 @@
+         self._sc = sc
+     def read_variant(self, variant_id: str) -> Variant:
+         return self._sc.variants.read(variant_id)
++    def read_idea(self, idea_id: str) -> Idea:
++        return self._sc.ideas.read(idea_id)
+     def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
+         return self._sc.variants.integrate(variant_id, variant_commit_sha)
+-    def read_task(self, task_id: str) -> Task:
+-        return self._sc.tasks.read(task_id)
+-    # ...
++    def validate_evaluation(self, evaluation: dict[str, Any]) -> None:
++        return self._sc.reference.validate_evaluation(evaluation)
+ ```
+ 
++The four methods are exhaustive — every `self._store.<…>` call
++in [`integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py)
++reduces to one of those four. The integrator does NOT call
++`read_task` (that line of the round-0 sketch was wrong); verify by
++`grep "self._store" reference/packages/eden-git/src/eden_git/integrator.py`
++before impl.
++
+ The integrator's call site changes from `Integrator(store=sc)` to
+ `Integrator(store=_StoreClientBridge(sc))` for wire-bound
+ deployments. In-process backends are passed unchanged
+@@ -1560,29 +1693,50 @@
+ httpx.Client`. The plan formalizes that direct access is the
+ documented escape hatch for streaming + per-call header swaps.
+ 
+-### 7.7 Tests that monkeypatch `StoreClient._request`
++### 7.7 Tests that inject custom `httpx.Client` instances
+ 
+-Spot-check: tests that monkeypatch `client._request = …` to inject
+-flaky-transport behavior (e.g. for read-back-ladder coverage)
+-need to retarget to `client._transport.request = …` (or
+-`client._transport.client = flaky_httpx_client`). Affected files
+-to verify:
+-
+-- `reference/packages/eden-wire/tests/test_lifecycle_wire.py`
+-  (the `flaky_sc` fixtures around lines 516, 555)
+-- `reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py`
+-  (similar patterns around lines 666, 691)
+-- `reference/packages/eden-wire/tests/test_wire_roundtrip.py`
+-  (the recovery-ladder tests around lines 481, 508, 539)
+-- `reference/packages/eden-wire/tests/test_checkpoint_wire.py`
+-  (the import recovery probe tests)
++Round-1 correction: the round-0 plan claimed the tests monkeypatch
++`StoreClient._request`. That was wrong. Verified by
++`rg '_request|monkeypatch.setattr' reference/packages/eden-wire/tests/`:
++no test in `eden-wire/tests/` mutates `_request` — every flaky-
++transport / mock-transport test uses the well-supported pattern
++of constructing an `httpx.Client(transport=httpx.MockTransport(...))`
++and passing it to `StoreClient(..., client=flaky_http_client)`.
++Example sites:
+ 
+-All are mechanical retargets: `sc._request` → `sc._transport.request`
+-or `sc._transport.client` (for the httpx-Client-level injection
+-shape, which the current tests use heavily — see the
+-`httpx.Client(transport=httpx.MockTransport(...))` pattern). The
+-shape doesn't change; the path does.
++- [`test_auth.py:269`](../../reference/packages/eden-wire/tests/test_auth.py),
++  `test_auth.py:282`, `test_auth.py:687`, `test_auth.py:714`,
++  `test_auth.py:774` — every `_exploding_handler` / `_wrong_id_handler`
++  posture.
++- [`test_checkpoint_wire.py:612`](../../reference/packages/eden-wire/tests/test_checkpoint_wire.py),
++  `test_checkpoint_wire.py:643` — the indeterminate-import probe
++  fixtures.
++- [`test_groups_wire.py:51`](../../reference/packages/eden-wire/tests/test_groups_wire.py)
++  and the parallel proxy patterns in `test_workers_wire.py`,
++  `test_lifecycle_wire.py`, `test_reassign_dispatch_wire.py`,
++  `test_wire_roundtrip.py`.
+ 
++**Implication for F-4: these tests need ZERO transport retargeting.**
++The `client=...` constructor parameter still flows into
++`ClientTransport.client` post-F-4 (see the `StoreClient.__init__`
++sketch in §3.4); the test injects an httpx.Client that wraps a
++MockTransport, the transport dataclass holds the reference, and
++every sub-client uses it via `self._transport.client.request(...)`
++internally. The only Wave-3 change in these tests is the
++call-site migration (`sc.claim(...)` → `sc.tasks.claim(...)`); the
++transport-injection pattern is invariant.
++
++The two remaining test categories that DO need retargeting:
++
++1. Any test that reaches into `sc._request` directly (verified
++   round-1: **zero hits** across `eden-wire/tests/`, services,
++   conformance). Spot-grep at impl time as defense in depth.
++2. Any test that constructs a `_FlakyClient` subclassing
++   `httpx.Client` and overriding `request` (e.g.
++   [`test_reassign_dispatch_wire.py:663,688`](../../reference/packages/eden-wire/tests/test_reassign_dispatch_wire.py)).
++   Same pattern — passes via `client=` parameter; no retargeting
++   needed.
++
+ ### 7.8 `_lineage.py`, `_submit_readback.py`, and other web-ui internals
+ 
+ [`reference/services/web-ui/src/eden_web_ui/routes/_lineage.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_lineage.py)
+@@ -1636,16 +1790,37 @@
+   composed accessor path (`sc.foo(...)` → `sc.<resource>.<method>(...)`).
+ - For Store-Protocol-typed call sites (§5.3) that flow a
+   StoreClient: retype to `: StoreClient` (default) or implement
+-  the §7.1 local-Protocol bridge (for integrator + dispatch).
++  the §7.1 local-Protocol bridge (for integrator) / isinstance
++  branching (for eden-dispatch).
+ - During this wave, the monolithic flat methods on StoreClient
+   STILL EXIST (they were left in place by Wave 2). They just
+-  stop being called. Pyright stays clean because every former
+-  call site successfully resolves to its composed form; the
+-  unused flat methods are dead but valid Python.
+-- Gate: full `uv run pytest -q` + `uv run pyright` green.
++  stop being called. **Pyright does NOT catch missed migrations
++  during this wave** because the flat methods are still
++  resolvable — `sc.claim(...)` continues to type-check green. The
++  Wave-3 completeness gate is therefore a **grep audit**, not a
++  type check:
+ 
++  ```bash
++  # Wave-3 audit gate — every match is a candidate for migration
++  # to the composed accessor. Inspect each manually before
++  # claiming Wave 3 complete.
++  rg -n '\b(sc|client|store_client|admin|operator|seed|verify|flaky_sc)\.(claim|submit|accept|reject|reclaim|create_task|create_idea|create_variant|read_task|read_idea|read_variant|read_submission|list_tasks|list_ideas|list_variants|events|replay|read_range|subscribe|reassign_task|validate_acceptance|validate_terminal|mark_idea_ready|declare_variant_evaluation_error|integrate_variant|validate_evaluation|register_worker|reissue_credential|verify_worker_credential|whoami|read_worker|list_workers|register_group|add_to_group|remove_from_group|delete_group|read_group|list_groups|resolve_worker_in_group|read_dispatch_mode|update_dispatch_mode|read_experiment|read_experiment_state|update_experiment_state|emit_policy_error|terminate_experiment|export_checkpoint|import_checkpoint|create_ideation_task|create_execution_task|create_evaluation_task)\b' reference conformance
++  ```
++
++- Gate: full `uv run pytest -q` green + Wave-3 grep audit returns
++  zero unmigrated hits in non-`_client/` source paths. `pyright`
++  also green (a dead flat-method block is valid Python, but any
++  brand-new typing error introduced by Section-A retypes
++  surfaces here).
++
+ ### Wave 4 — Remove flat methods + drop Protocol conformance + drop slop-allow (~0.25 day)
+ 
++**This is the wave that turns pyright into the structural-conformance
++backstop.** Removing the flat methods is what makes pyright start
++reporting "Cannot access member `claim` for type `StoreClient`" on
++any sites Wave 3's grep audit missed. The pyright pass at the end
++of Wave 4 is the final completeness check.
++
+ - Replace `StoreClient`'s body with the slim assembler from §3.4
+   (init + lifecycle only).
+ - Remove the `# slop-allow-file:` annotation at line 1 of
