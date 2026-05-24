@@ -35,17 +35,18 @@ WORK_ROOT="${EDEN_MANUAL_WORK_ROOT:-/tmp/eden-manual}"
 EDEN_MANUAL="${SCRIPT_DIR}/eden-manual"
 CHECKPOINTS_DIR="${COMPOSE_DIR}/checkpoints"
 
-# Authoritative state-bearing volumes (the four that contain
-# experiment data; everything else is derivative).
-FORGEJO_VOLUME="eden-reference_eden-forgejo-data"
-POSTGRES_VOLUME="eden-reference_eden-postgres-data"
-ARTIFACTS_VOLUME="eden-artifacts-data"
+# Authoritative state-bearing substrate subdirectories under
+# ${EDEN_EXPERIMENT_DATA_ROOT}/. Phase 12a-1g converted forgejo +
+# artifacts + postgres from named docker volumes to host bind-mounts;
+# checkpoint reads from / restore writes to these host paths.
+SUBSTRATE_SUBDIRS=(forgejo artifacts postgres)
 
 # Volume that compose down -v misses (issue #8). Keep this list explicit
 # and short so the operator can audit what we're nuking.
 ORPHAN_VOLUMES=(
     eden-reference_eden-repo-init-staging
 )
+
 
 NON_WORKER_SERVICES=(
     postgres
@@ -103,6 +104,34 @@ stack_running() {
 current_experiment_id() {
     if [[ -f "$ENV_FILE" ]]; then
         grep -E '^EDEN_EXPERIMENT_ID=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true
+    fi
+}
+
+# Read EDEN_EXPERIMENT_DATA_ROOT from .env (the host path that holds
+# the bind-mounted forgejo / artifacts / postgres substrate dirs).
+current_data_root() {
+    if [[ -f "$ENV_FILE" ]]; then
+        grep -E '^EDEN_EXPERIMENT_DATA_ROOT=' "$ENV_FILE" | head -n1 | cut -d= -f2-
+    fi
+}
+
+# Fail loud if a freshly-captured snapshot tarball has zero file
+# entries while the source dir actually has files. Catches the
+# issue-177 regression class where the source path resolves to
+# nothing (e.g., an auto-created empty named volume) and tar
+# silently succeeds with an empty archive. A byte-size threshold
+# is too coarse: tiny but legitimate artifacts dirs (a handful of
+# small markdown files) compress to a few hundred bytes.
+assert_snapshot_nonempty() {
+    local tarball="$1" label="$2" source_dir="$3"
+    # Source genuinely empty → empty tar is correct; skip.
+    if [[ -z "$(find "$source_dir" -type f -print -quit 2>/dev/null)" ]]; then
+        return 0
+    fi
+    local file_count
+    file_count="$(tar tzf "$tarball" 2>/dev/null | grep -cv '/$' || true)"
+    if [[ "${file_count:-0}" -lt 1 ]]; then
+        die "${label} snapshot has 0 file entries but source ${source_dir} contains files; refusing to write a silently empty checkpoint"
     fi
 }
 
@@ -264,10 +293,14 @@ cmd_checkpoint() {
     rm -rf "$ckpt_dir"
     mkdir -p "$ckpt_dir"
 
-    local exp_id pg_user pg_db
+    local exp_id pg_user pg_db data_root
     exp_id="$(current_experiment_id)"
     pg_user="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2- || echo eden)"
     pg_db="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2- || echo eden)"
+    data_root="$(current_data_root)"
+    [[ -n "$data_root" ]] || die "EDEN_EXPERIMENT_DATA_ROOT missing from .env; cannot locate substrate dirs"
+    [[ -d "${data_root}/forgejo" ]] || die "forgejo substrate dir not found: ${data_root}/forgejo"
+    [[ -d "${data_root}/artifacts" ]] || die "artifacts substrate dir not found: ${data_root}/artifacts"
 
     echo "--- pg_dump → ${ckpt_dir}/postgres.sql ---" >&2
     (cd "$COMPOSE_DIR" && \
@@ -277,24 +310,29 @@ cmd_checkpoint() {
 
     # Stop forgejo briefly for a consistent on-disk snapshot. Forgejo's own
     # `forgejo dump` would be cleaner but requires running as the right
-    # user and produces a different format; volume tar is portable.
-    echo "--- snapshotting forgejo volume (brief stop) ---" >&2
+    # user and produces a different format; bind-mount tar is portable.
+    # The source is the host bind-mount dir set up by setup-experiment
+    # (Phase 12a-1g); the prior named-volume path produced silently-empty
+    # tarballs because docker auto-created an empty volume (issue #177).
+    echo "--- snapshotting forgejo substrate (brief stop) ---" >&2
     (cd "$COMPOSE_DIR" && \
         docker compose --env-file "$ENV_FILE" stop forgejo >/dev/null)
     docker run --rm \
-        -v "${FORGEJO_VOLUME}:/data:ro" \
+        -v "${data_root}/forgejo:/data:ro" \
         -v "${ckpt_dir}:/backup" \
         alpine:3.20 \
         tar czf /backup/forgejo.tar.gz -C / data
     (cd "$COMPOSE_DIR" && \
         docker compose --env-file "$ENV_FILE" start forgejo >/dev/null)
+    assert_snapshot_nonempty "${ckpt_dir}/forgejo.tar.gz" "forgejo" "${data_root}/forgejo"
 
-    echo "--- snapshotting artifacts volume ---" >&2
+    echo "--- snapshotting artifacts substrate ---" >&2
     docker run --rm \
-        -v "${ARTIFACTS_VOLUME}:/data:ro" \
+        -v "${data_root}/artifacts:/data:ro" \
         -v "${ckpt_dir}:/backup" \
         alpine:3.20 \
         tar czf /backup/artifacts.tar.gz -C / data
+    assert_snapshot_nonempty "${ckpt_dir}/artifacts.tar.gz" "artifacts" "${data_root}/artifacts"
 
     echo "--- copying .env + experiment-config + forgejo creds ---" >&2
     cp "$ENV_FILE" "${ckpt_dir}/env"
@@ -342,9 +380,10 @@ cmd_restore() {
         die "stack is currently running; run 'eden-experiment down --purge' first"
     fi
 
-    # Wipe any volumes left over (compose down -v should have caught
-    # them; this is belt-and-braces).
-    for vol in "$FORGEJO_VOLUME" "$POSTGRES_VOLUME" "$ARTIFACTS_VOLUME" "${ORPHAN_VOLUMES[@]}"; do
+    # Wipe orphan named volume that compose down -v misses (#8).
+    # Phase 12a-1g: forgejo / artifacts / postgres are bind-mounts now,
+    # not named volumes — they're wiped in the substrate-dir step below.
+    for vol in "${ORPHAN_VOLUMES[@]}"; do
         if docker volume inspect "$vol" >/dev/null 2>&1; then
             echo "--- removing stale volume $vol ---" >&2
             docker volume rm "$vol" >/dev/null
@@ -363,16 +402,36 @@ cmd_restore() {
         cp -R "${ckpt_dir}/forgejo-creds" "${COMPOSE_DIR}/.forgejo-creds-${exp_id}"
     fi
 
-    echo "--- materializing volumes from snapshot ---" >&2
-    docker volume create "$FORGEJO_VOLUME"     >/dev/null
-    docker volume create "$ARTIFACTS_VOLUME" >/dev/null
+    local data_root; data_root="$(current_data_root)"
+    [[ -n "$data_root" ]] || die "EDEN_EXPERIMENT_DATA_ROOT missing from restored .env"
+
+    # Wipe substrate bind-mount dirs so extraction lands on a clean slate
+    # and postgres' initdb runs fresh (creating the role with the
+    # password from the restored .env). Files are typically root-owned
+    # by the substrate containers, so do the wipe inside a privileged
+    # container. Substrate dirs are chmod 0777 by setup-experiment, so
+    # the bind mount is safe to reuse.
+    echo "--- wiping substrate dirs under ${data_root} ---" >&2
+    for sub in "${SUBSTRATE_SUBDIRS[@]}"; do
+        mkdir -p "${data_root}/${sub}"
+        docker run --rm \
+            -v "${data_root}/${sub}:/data" \
+            alpine:3.20 \
+            sh -c 'find /data -mindepth 1 -delete'
+    done
+
+    # Extract forgejo + artifacts snapshots back into their bind-mount
+    # dirs. Tarball entries are rooted at `data/` (created by `tar -C /
+    # data`); we bind the destination at `/data` and extract at `/` so
+    # the entries land in the bind-mounted dir.
+    echo "--- restoring forgejo + artifacts from snapshot ---" >&2
     docker run --rm \
-        -v "${FORGEJO_VOLUME}:/data" \
+        -v "${data_root}/forgejo:/data" \
         -v "${ckpt_dir}:/backup:ro" \
         alpine:3.20 \
         sh -c 'cd / && tar xzf /backup/forgejo.tar.gz'
     docker run --rm \
-        -v "${ARTIFACTS_VOLUME}:/data" \
+        -v "${data_root}/artifacts:/data" \
         -v "${ckpt_dir}:/backup:ro" \
         alpine:3.20 \
         sh -c 'cd / && tar xzf /backup/artifacts.tar.gz'
