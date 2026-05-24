@@ -40,7 +40,11 @@ services:
       FORGEJO__server__SSH_PORT: "${FORGEJO_SSH_HOST_PORT:-2222}"
       FORGEJO__server__SSH_LISTEN_PORT: "2222"
       FORGEJO__database__DB_TYPE: sqlite3
-      FORGEJO__database__PATH: /var/lib/forgejo/data/forgejo.db
+      # NOTE: container-internal path stays `/var/lib/gitea/` — see the
+      # volume mount below for the rationale (upstream image VOLUME
+      # declarations retain Gitea's legacy paths; do not rename to
+      # match the Forgejo brand surface, see issue #129).
+      FORGEJO__database__PATH: /var/lib/gitea/data/forgejo.db
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__security__SECRET_KEY: ${FORGEJO_SECRET_KEY:?FORGEJO_SECRET_KEY must be set}
       FORGEJO__security__INTERNAL_TOKEN: ${FORGEJO_INTERNAL_TOKEN:?FORGEJO_INTERNAL_TOKEN must be set}
@@ -52,7 +56,23 @@ services:
       - "${FORGEJO_SSH_HOST_PORT:-2222}:2222"
     volumes:
       # Durable substrate (Phase 12a-1g) — see postgres above.
-      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo:/var/lib/forgejo
+      #
+      # The container target is `/var/lib/gitea`, NOT `/var/lib/forgejo`,
+      # despite this being the Forgejo image. This is intentional:
+      # the Forgejo image is a soft fork of Gitea and its Dockerfile
+      # declares `VOLUME ["/etc/gitea", "/var/lib/gitea"]` to preserve
+      # migration compatibility from Gitea deployments. Forgejo
+      # writes its data to `/var/lib/gitea/` regardless of the brand;
+      # binding a different container path (e.g. `/var/lib/forgejo`)
+      # leaves the actual data path backed by an anonymous Docker
+      # volume that does NOT survive Docker Desktop VM restarts or
+      # `docker volume prune`, silently breaking the 12a-1g durability
+      # contract. See issue #129 for the bug history.
+      #
+      # The host-side path (`$EDEN_EXPERIMENT_DATA_ROOT/forgejo`) is
+      # under our control and uses the Forgejo brand name. The
+      # container target is image-defined; do not rename it.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo:/var/lib/gitea
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
       interval: 5s
