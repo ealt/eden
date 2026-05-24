@@ -23,7 +23,7 @@ What problem this addresses or what opportunity this opens.
 Surface the operator-facing or developer-facing pain.
 -->
 
-## Proposal
+## Proposed change
 
 <!--
 The change, at the shape level. Not implementation pseudocode;

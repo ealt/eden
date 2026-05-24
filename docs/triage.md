@@ -26,7 +26,7 @@ Captures where an issue sits in the design → implementation pipeline.
 
 | Label | Meaning |
 |---|---|
-| `triage:ready` | Scope is clear; an implementer could pick this up and ship. |
+| `triage:ready` | Scope is clear; a contributor could pick this up and ship. |
 | `triage:needs-plan` | Substantive design surface remaining. Plan before implementing. |
 | `triage:in-flight` | A PR or branch is actively addressing this. |
 | `triage:deferred-future` | Tracked but not actionable now (depends on prerequisites, or is aspirational). |
