@@ -101,7 +101,7 @@ workers may claim the same kind of task.
 | **payload** | A task's role-specific inner content. |
 | **commit_sha** | The worker's tip commit on its `work/*` branch (set on the variant when the executor submits). |
 | **variant_commit_sha** | The squashed-and-integrated commit on `variant/*` (set by the integrator). |
-| **branch** | The canonical work branch name (`work/<slug>-<variant_id>`); set on the variant at create time. |
+| **branch** | The canonical work branch name (`work/<variant_id>-<slug>`); set on the variant at create time. |
 | **evaluation** | A dict shaped per the experiment's `evaluation_schema`. |
 
 ### 3.2 Task kinds
@@ -192,14 +192,14 @@ EDEN maintains three branch namespaces in the experiment's git repo:
 | Namespace | What lives there | Writer |
 |---|---|---|
 | **`main`** | The experiment's starting point. Immutable during an experiment. | Set once at `setup-experiment` time. |
-| **`work/*`** | Per-attempt executor branches; named `work/<slug>-<variant_id>`. | Executors (concurrent writes allowed). |
+| **`work/*`** | Per-attempt executor branches; named `work/<variant_id>-<slug>` (reference impl; the spec leaves naming under `work/*` implementation-defined). | Executors (concurrent writes allowed). |
 | **`variant/*`** | The canonical lineage; one commit per successfully integrated variant. | Integrator only. |
 
 | Term | What it is |
 |---|---|
 | **seed commit** / **base commit** | The single commit on `main` at experiment start. Captured as `EDEN_BASE_COMMIT_SHA` in deployment env. |
-| **work branch** | A branch in the `work/*` namespace; the executor's tip commit lives here. |
-| **variant branch** | A branch in the `variant/*` namespace; the integrator-produced squash commit. |
+| **work branch** | A branch in the `work/*` namespace (`work/<variant_id>-<slug>` in the reference impl); records what the executor *wrote* — the executor's tip commit, including any intermediate work commits. Set on the variant at create time as `variant.branch`. |
+| **variant branch** | A branch in the `variant/*` namespace (`variant/<variant_id>-<slug>`, spec ch06 §3.2); records the integrator-produced *squash* of the work branch — one commit per successfully integrated variant, with the evaluation manifest attached. Spec-authoritative naming. |
 | **evaluation manifest** | A JSON file at `.eden/variants/<variant_id>/evaluation.json` in the `variant/*` commit's tree, containing the evaluator's evaluation. Spec-authoritative path. |
 | **bare repo** | The git repository hosted on the workers' git remote of record (Forgejo in the reference deployment). |
 

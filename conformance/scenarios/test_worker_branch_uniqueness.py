@@ -18,15 +18,15 @@ def test_colliding_variant_id_rejected_so_work_branches_remain_unique(
 
     Construction per MANUAL_UI §26: drive two execute submissions
     against ideas that share a slug, with deliberately-equal
-    `variant_id` choices that — under any branch-naming scheme
-    derived from `<slug>-<variant_id>` — would produce the same
-    `refs/heads/work/<slug>-<variant_id>` ref. The first
-    `create_variant` MUST succeed; the second MUST be rejected
-    (the reference impl rejects via `eden://error/already-exists`
-    on the variant_id collision, which transitively prevents the
-    branch collision). The recorded variants observed via
-    list_variants MUST end up with no two entries sharing a `branch`
-    field — the §3.3 invariant on protocol-owned data.
+    `variant_id` choices and an explicit shared `branch` value, so
+    the §3.3 invariant collides regardless of the IUT's naming
+    convention under `work/*`. The first `create_variant` MUST
+    succeed; the second MUST be rejected (the reference impl rejects
+    via `eden://error/already-exists` on the variant_id collision,
+    which transitively prevents the branch collision). The recorded
+    variants observed via list_variants MUST end up with no two
+    entries sharing a `branch` field — the §3.3 invariant on
+    protocol-owned data.
     """
     pid_a = _seed.create_idea(wire_client, slug="collide")
     pid_b = _seed.create_idea(wire_client, slug="collide")

@@ -97,7 +97,8 @@ class TestHappyPath:
         assert variant.status == "starting"
         assert variant.commit_sha is None
         assert variant.branch is not None
-        assert variant.branch.startswith("work/alpha-")
+        assert variant.branch.startswith("work/")
+        assert variant.branch.endswith("-alpha")
         assert variant.parent_commits == [base_sha]
         assert variant.description == "alpha variant"
         # work/* ref points at child_sha.

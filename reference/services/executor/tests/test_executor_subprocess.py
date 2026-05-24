@@ -122,7 +122,7 @@ def test_success_path_creates_variant_and_ref(tmp_path: Path) -> None:
     repo = GitRepo(repo_path)
     assert repo.commit_exists(submission.commit_sha)
     refs = dict(repo.list_refs("refs/heads/work/*"))
-    assert any(name.startswith("refs/heads/work/p0-") for name in refs)
+    assert any(name.endswith("-p0") for name in refs)
 
 
 def test_subprocess_nonzero_exit_routes_to_error(tmp_path: Path) -> None:

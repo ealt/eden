@@ -202,7 +202,7 @@ class ScriptedExecutor:
 
         variant_id = self._variant_id_factory()
         outcome = self._execution_fn(task, idea)
-        branch = outcome.branch or f"work/{idea.slug}-{variant_id}"
+        branch = outcome.branch or f"work/{variant_id}-{idea.slug}"
         variant_kwargs: dict[str, Any] = {
             "variant_id": variant_id,
             "experiment_id": store.experiment_id,

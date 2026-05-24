@@ -142,7 +142,10 @@ MUST be persisted with `status == "starting"` **before** any
 repository write becomes observable. The reference flow is:
 
 1. Host generates `variant_id` and computes the canonical work-branch
-   name `work/<slug>-<variant_id>`.
+   name `work/<variant_id>-<slug>` (field order mirrors the integrator's
+   `variant/<variant_id>-<slug>` shape from chapter 06 §3.2 so operators
+   reading Forgejo see consistent `<variant_id>-<slug>` ordering across
+   both refs).
 2. Pre-Phase-1 ref-collision guard.
 3. `Store.create_variant(status="starting")` (no `commit_sha` yet).
 4. `git worktree add --detach <wt> <parent_commits[0]>`.
@@ -155,7 +158,7 @@ repository write becomes observable. The reference flow is:
      "idea_id": "idea-…",
      "idea_slug": "p0",
      "parent_commits": ["abc…", …],
-     "branch": "work/p0-variant-…",
+     "branch": "work/variant-…-p0",
      "content_path": "/abs/path/to/content.md",
      "output_path": ".eden/outcome.json"
    }

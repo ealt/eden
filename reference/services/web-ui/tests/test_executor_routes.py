@@ -127,8 +127,9 @@ class TestDraftForm:
         )
         resp = signed_in_impl_client.get(f"/executor/{task_id}/draft")
         assert resp.status_code == 200
-        # The rendered branch name is server-derived from slug + variant_id.
-        assert "work/alpha-variant-" in resp.text
+        # The rendered branch name is server-derived from variant_id + slug.
+        assert "work/variant-" in resp.text
+        assert "-alpha" in resp.text
         # The content is rendered inline because the artifact lives in
         # artifacts_dir.
         assert "why-alpha" in resp.text

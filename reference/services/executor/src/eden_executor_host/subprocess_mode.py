@@ -102,7 +102,11 @@ def _new_variant_id() -> str:
 
 
 def _branch_name(slug: str, variant_id: str) -> str:
-    return f"work/{slug}-{variant_id}"
+    # Field order matches the integrator's variant-branch shape
+    # (`variant/<variant_id>-<slug>`, spec ch06 §3.2) so operators
+    # reading Forgejo see consistent `<variant_id>-<slug>` ordering
+    # across both refs.
+    return f"work/{variant_id}-{slug}"
 
 
 def host_worktrees_subdir(*, worktrees_root: Path) -> Path:
