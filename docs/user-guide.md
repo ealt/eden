@@ -328,6 +328,16 @@ Metric values are type-checked against the schema before submission. For integer
 
 ## 8. Workflow 4: admin operations
 
+This section covers the mutating admin actions. For read-only inspection (tasks / ideas / variants / events / workers via wire API or SQL), see [`docs/observability.md`](observability.md).
+
+Boilerplate for the wire-API examples below:
+
+```bash
+ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2)
+H=(-H "Authorization: Bearer admin:$ADMIN" -H "X-Eden-Experiment-Id: <id>")
+BASE="http://localhost:8080/v0/experiments/<id>"
+```
+
 ### Reclaiming a stuck task
 
 If a worker died holding a claim and the claim has no `expires_at`, the task is stuck `claimed` forever.
@@ -335,29 +345,13 @@ If a worker died holding a claim and the claim has no `expires_at`, the task is 
 - **Web UI:** `http://localhost:8090/admin/tasks/<task-id>/` exposes a "reclaim" button (and a separate "force-reclaim, replays work" variant for already-submitted tasks).
 - **Wire API:** `POST /v0/experiments/<id>/tasks/<task-id>/reclaim` with `{"cause": "operator"}`. **Requires a worker bearer**, not admin (per spec §13.3, admin bearers MUST NOT call worker-gated endpoints). Workers' own bearers are inside the corresponding containers; in practice, use the Web UI.
 
-### Inspecting state
-
-```bash
-ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2)
-H=(-H "Authorization: Bearer admin:$ADMIN" -H "X-Eden-Experiment-Id: <id>")
-BASE="http://localhost:8080/v0/experiments/<id>"
-
-curl -s "${H[@]}" "$BASE/tasks"          | jq
-curl -s "${H[@]}" "$BASE/ideas"          | jq
-curl -s "${H[@]}" "$BASE/variants"       | jq
-curl -s "${H[@]}" "$BASE/events?cursor=0" | jq '.events'
-curl -s "${H[@]}" "$BASE/workers"        | jq
-```
-
 ### Worker registry
 
 ```bash
-curl -s "${H[@]}" "$BASE/workers"                       # list
-curl -s "${H[@]}" "$BASE/workers/<worker-id>"           # read one
 curl -s "${H[@]}" -X POST "$BASE/workers/<worker-id>/reissue-credential"  # rotate
 ```
 
-Worker IDs match `^[a-z0-9][a-z0-9_-]{0,63}$`. `admin`, `system`, `internal` are reserved.
+Worker IDs match `^[a-z0-9][a-z0-9_-]{0,63}$`. `admin`, `system`, `internal` are reserved. To list / read the registry, see [`observability.md` §2.4](observability.md#24-wire-api-raw).
 
 ### Work-ref garbage collection
 
@@ -365,41 +359,7 @@ Worker IDs match `^[a-z0-9][a-z0-9_-]{0,63}$`. `admin`, `system`, `internal` are
 
 ## 9. Workflow 5: passive observation
 
-### The Forgejo Web UI
-
-`http://localhost:3001/eden/<experiment-id>` — sign in as user `eden` (password is `FORGEJO_REMOTE_PASSWORD` in `.env`). Browse branches (`work/*`, `variant/*`, `main`), diff arbitrary commits, inspect any tree including the `.eden/variants/<id>/evaluation.json` manifests the integrator adds. Best for casual browsing.
-
-### A read-only local clone
-
-```bash
-PASS=$(grep '^FORGEJO_REMOTE_PASSWORD=' reference/compose/.env | cut -d= -f2)
-git clone "http://eden:${PASS}@localhost:3001/eden/<experiment-id>.git" /tmp/eden-readonly
-cd /tmp/eden-readonly
-git log --all --decorate --oneline --graph
-```
-
-Refresh with `git fetch --all --prune`. Never push from this clone.
-
-### The wire API
-
-For non-git state — tasks, variants, events, workers, audit. See [§8](#8-workflow-4-admin-operations) for one-liners.
-
-### The Web UI admin dashboards
-
-`http://localhost:8090/admin/` — read-only dashboards over tasks (with claim-age + claim-expired badges), variants (filterable by status), and the event log. Per-task and per-variant detail pages that cross-link to related events.
-
-### Watching live
-
-```bash
-docker compose --env-file reference/compose/.env logs -f orchestrator
-docker compose --env-file reference/compose/.env logs -f web-ui
-```
-
-Or watch the event stream:
-
-```bash
-curl -s "${H[@]}" "$BASE/events?cursor=0" | jq '.events[].type' | tail -30
-```
+Moved to [`docs/observability.md`](observability.md). That doc enumerates every surface — first-party (web UI admin dashboards, Forgejo, artifacts directory, wire API, container logs, readonly Postgres role) and bring-your-own (Adminer, Swagger UI, desktop clients).
 
 ## 10. Auth principal matrix
 

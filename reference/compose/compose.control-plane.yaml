@@ -1,0 +1,42 @@
+name: eden-reference
+
+services:
+  web-ui:
+    command:
+      - python
+      - -m
+      - eden_web_ui
+      - --task-store-url
+      - http://task-store-server:8080
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --session-secret
+      - ${EDEN_SESSION_SECRET:?EDEN_SESSION_SECRET must be set (run setup-experiment)}
+      - --artifacts-dir
+      - /var/lib/eden/artifacts
+      - --repo-path
+      - /var/lib/eden/repo
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
+      - --clone-url
+      - ${FORGEJO_CLONE_URL_HOST:-http://localhost:${FORGEJO_HOST_PORT:-3001}/eden/${EDEN_EXPERIMENT_ID:?}.git}
+      - --base-commit-sha
+      - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
+      - --worker-id
+      - ${EDEN_WEB_UI_WORKER_ID:-web-ui-1}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+      - --log-level
+      - info
+      - --control-plane-url
+      - ${EDEN_CONTROL_PLANE_URL:?EDEN_CONTROL_PLANE_URL must be set when layering compose.control-plane.yaml}
+      - --control-plane-admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
