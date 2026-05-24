@@ -58,7 +58,16 @@ ENV_FILE = COMPOSE_DIR / ".env"
 WORK_ROOT = Path(os.environ.get("EDEN_MANUAL_WORK_ROOT", "/tmp/eden-manual"))
 CLAIMS_FILE = WORK_ROOT / ".claims.json"
 CREDENTIALS_FILE = WORK_ROOT / ".credentials.json"
-ARTIFACTS_DIR = WORK_ROOT / "artifacts"
+
+# Artifacts written by the CLI MUST land on the shared substrate so
+# containerized consumers (web-ui /artifacts route, scripted workers)
+# can read them. Inside containers, the artifacts dir is bind-mounted
+# at /var/lib/eden/artifacts; on the host it lives at
+# ${EDEN_EXPERIMENT_DATA_ROOT}/artifacts. The CLI writes via the host
+# path and stamps the URI with the container-internal path so every
+# consumer (including the CLI itself, via _translate_artifacts_uri)
+# resolves the same canonical reference.
+CONTAINER_ARTIFACTS_DIR = Path("/var/lib/eden/artifacts")
 
 
 # ---------------------------------------------------------------- env / wire
@@ -76,6 +85,7 @@ def _load_env() -> dict[str, str]:
     required = (
         "EDEN_EXPERIMENT_ID",
         "EDEN_ADMIN_TOKEN",
+        "EDEN_EXPERIMENT_DATA_ROOT",
         "FORGEJO_HOST_PORT",
         "FORGEJO_REMOTE_PASSWORD",
     )
@@ -134,6 +144,35 @@ def _wire(
 
 def _exp(env: dict[str, str]) -> str:
     return env["EDEN_EXPERIMENT_ID"]
+
+
+def _host_artifacts_dir(env: dict[str, str]) -> Path:
+    """Host-side path to the artifacts bind-mount source."""
+    return Path(env["EDEN_EXPERIMENT_DATA_ROOT"]) / "artifacts"
+
+
+def _translate_artifacts_uri_to_host(env: dict[str, str], uri: str) -> Path | None:
+    """Translate a ``file://`` URI to a host-readable path, or None if not eligible.
+
+    URIs stamped by EDEN consumers reference the container-internal
+    artifacts path (``/var/lib/eden/artifacts/<name>``); the CLI runs
+    on the host where that path doesn't exist. Rewrite to the
+    bind-mount source under ``EDEN_EXPERIMENT_DATA_ROOT/artifacts/``.
+    URIs that already point at a host path (e.g. legacy
+    ``/tmp/eden-manual/artifacts/<name>``) are returned unchanged so
+    pre-fix artifacts remain readable.
+    """
+    if not uri.startswith("file://"):
+        return None
+    raw = urllib.parse.urlparse(uri).path
+    if not raw:
+        return None
+    p = Path(raw)
+    try:
+        relative = p.relative_to(CONTAINER_ARTIFACTS_DIR)
+    except ValueError:
+        return p
+    return _host_artifacts_dir(env) / relative
 
 
 # ------------------------------------------------------- worker credentials
@@ -338,7 +377,7 @@ def cmd_show(env: dict[str, str], args: argparse.Namespace) -> None:
         idea = _wire(env, f"/v0/experiments/{_exp(env)}/ideas/{idea_id}")
         out["idea"] = idea
         # Inline content if it's a file:// URI we can read.
-        content_text = _try_read_content(idea.get("artifacts_uri"))
+        content_text = _try_read_content(env, idea.get("artifacts_uri"))
         if content_text is not None:
             out["content_text"] = content_text
     elif task["kind"] == "evaluation":
@@ -348,11 +387,11 @@ def cmd_show(env: dict[str, str], args: argparse.Namespace) -> None:
     sys.stdout.write("\n")
 
 
-def _try_read_content(uri: str | None) -> str | None:
-    if not uri or not uri.startswith("file://"):
+def _try_read_content(env: dict[str, str], uri: str | None) -> str | None:
+    if not uri:
         return None
-    p = Path(urllib.parse.urlparse(uri).path)
-    if not p.is_file():
+    p = _translate_artifacts_uri_to_host(env, uri)
+    if p is None or not p.is_file():
         return None
     try:
         text = p.read_text()
@@ -537,22 +576,30 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     if not raw_ideas:
         sys.exit("error: --ideas-file contained no ideas")
 
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    host_artifacts_dir = _host_artifacts_dir(env)
+    host_artifacts_dir.mkdir(parents=True, exist_ok=True)
     idea_ids: list[str] = []
 
     # Phase 1: create_idea as drafting for each.
     for raw in raw_ideas:
         idea_id = uuid.uuid4().hex
         content = raw.get("content", "")
-        artifact_path = ARTIFACTS_DIR / f"{idea_id}.md"
-        artifact_path.write_text(content)
+        # Write the artifact bytes to the host side of the shared
+        # bind-mount, but stamp the wire URI with the container-side
+        # path so web-ui + containerized workers resolve the same
+        # canonical reference (issue #132). The CLI's own read-back
+        # (_try_read_content) translates the container path back to
+        # the host via _translate_artifacts_uri_to_host.
+        host_artifact_path = host_artifacts_dir / f"{idea_id}.md"
+        host_artifact_path.write_text(content)
+        container_artifact_path = CONTAINER_ARTIFACTS_DIR / f"{idea_id}.md"
         idea = {
             "idea_id": idea_id,
             "experiment_id": _exp(env),
             "slug": raw["slug"],
             "priority": float(raw.get("priority", 1.0)),
             "parent_commits": list(raw["parent_commits"]),
-            "artifacts_uri": f"file://{artifact_path.resolve()}",
+            "artifacts_uri": f"file://{container_artifact_path}",
             "state": "drafting",
             "created_at": _now_iso(),
         }
