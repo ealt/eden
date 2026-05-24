@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Triage label conventions
+    url: https://github.com/ealt/eden/blob/main/docs/triage.md
+    about: Label axes, application rules, and heuristics for the EDEN issue tracker.
+  - name: Contributing
+    url: https://github.com/ealt/eden/blob/main/CONTRIBUTING.md
+    about: Setup, PR workflow, and the operator-dogfooding / fresh-walkthrough disciplines.
