@@ -35,11 +35,18 @@ import time
 from typing import Any
 
 from eden_storage.errors import (
+    AlreadyExists,
     ConflictingResubmission,
+    CycleDetected,
     IllegalTransition,
     InvalidPrecondition,
     NoOpVariant,
     NotClaimed,
+    NotFound,
+    ReservedIdentifier,
+    WorkerAlreadyRegistered,
+    WorkerNotEligible,
+    WorkerNotRegistered,
     WrongClaimant,
 )
 from eden_storage.submissions import Submission, submissions_equivalent
@@ -48,12 +55,20 @@ from eden_storage.submissions import Submission, submissions_equivalent
 # error name surfaced in operator-visible banners. Shared by every
 # web-ui route that renders one of these as a human banner. Keys are
 # the concrete exception types; values are the spec-defined
-# ``eden://error/<name>`` identifiers.
+# ``eden://error/<name>`` identifiers (chapter 7 §9 closed vocabulary).
 WIRE_ERROR_NAMES: dict[type, str] = {
-    NotClaimed: "eden://error/not-claimed",
+    NotFound: "eden://error/not-found",
+    AlreadyExists: "eden://error/already-exists",
     IllegalTransition: "eden://error/illegal-transition",
     ConflictingResubmission: "eden://error/conflicting-resubmission",
     InvalidPrecondition: "eden://error/invalid-precondition",
+    WorkerNotRegistered: "eden://error/worker-not-registered",
+    WorkerNotEligible: "eden://error/worker-not-eligible",
+    WrongClaimant: "eden://error/wrong-claimant",
+    NotClaimed: "eden://error/not-claimed",
+    ReservedIdentifier: "eden://error/reserved-identifier",
+    WorkerAlreadyRegistered: "eden://error/already-exists",
+    CycleDetected: "eden://error/cycle-detected",
     NoOpVariant: "eden://error/no-op-variant",
 }
 

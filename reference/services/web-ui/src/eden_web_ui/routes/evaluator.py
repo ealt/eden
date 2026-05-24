@@ -35,8 +35,8 @@ from eden_contracts import EvaluationTask, Idea, Variant
 from eden_storage import (
     DispatchError,
     EvaluationSubmission,
-    IllegalTransition,
     InvalidPrecondition,
+    StorageError,
 )
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -208,7 +208,7 @@ async def claim(
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
-    except (IllegalTransition, InvalidPrecondition) as exc:
+    except StorageError as exc:
         banner = wire_error_banner(exc)
         return RedirectResponse(
             url=f"/evaluator/?banner={banner}", status_code=303
@@ -400,6 +400,37 @@ async def submit(
             status_code=400,
         )
 
+    return _build_and_submit_evaluation(
+        request=request,
+        store=store,
+        session=session,
+        task_id=task_id,
+        token=token,
+        variant=variant,
+        idea=idea,
+        variant_id=variant_id,
+        draft=draft,
+        form_state=form_state,
+        errors=errors,
+    )
+
+
+def _build_and_submit_evaluation(
+    *,
+    request: Request,
+    store: Any,
+    session: Any,
+    task_id: str,
+    token: str,
+    variant: Variant,
+    idea: Idea,
+    variant_id: str,
+    draft: Any,
+    form_state: dict[str, Any],
+    errors: Any,
+) -> HTMLResponse | RedirectResponse:
+    """Construct the ``EvaluationSubmission``, submit with read-back,
+    and route the outcome through ``_finalize_evaluator_submit``."""
     submission = EvaluationSubmission(
         status=draft.status,
         variant_id=variant_id,

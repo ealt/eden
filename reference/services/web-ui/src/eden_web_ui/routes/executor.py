@@ -30,9 +30,8 @@ from typing import Any
 from eden_contracts import Idea, Variant
 from eden_storage import (
     DispatchError,
-    IllegalTransition,
-    InvalidPrecondition,
     NoOpVariant,
+    StorageError,
     VariantSubmission,
 )
 from fastapi import APIRouter, Form, Request
@@ -183,10 +182,10 @@ def _phase1_create_starting_variant(
     """Phase 1: ``store.create_variant(status="starting")``.
 
     Returns ``None`` on success. On ``DispatchError`` renders the
-    error banner; on any other exception (transport-shaped) renders
-    the orphan page — the variant may or may not have committed on
-    the server, and the TTL→reclaim→variant→error recovery is the
-    same either way.
+    wire-error banner; on any other exception (transport-shaped)
+    renders the orphan page — the variant may or may not have
+    committed on the server, and the TTL→reclaim→variant→error
+    recovery is the same either way.
     """
     variant = _build_starting_variant(
         variant_id=variant_id,
@@ -463,7 +462,7 @@ async def claim(
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
-    except (IllegalTransition, InvalidPrecondition) as exc:
+    except StorageError as exc:
         banner = wire_error_banner(exc)
         return RedirectResponse(
             url=f"/executor/?banner={banner}", status_code=303
@@ -565,10 +564,38 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         if gate_response is not None:
             return gate_response
 
+    return _drive_submit_phases(
+        request=request,
+        store=store,
+        repo=repo,
+        session=session,
+        task_id=task_id,
+        token=token,
+        variant_id=variant_id,
+        idea=idea,
+        draft=draft,
+        branch=branch,
+    )
+
+
+def _drive_submit_phases(
+    *,
+    request: Request,
+    store: Any,
+    repo: Any,
+    session: Any,
+    task_id: str,
+    token: str,
+    variant_id: str,
+    idea: Idea,
+    draft: Any,
+    branch: str,
+) -> HTMLResponse | RedirectResponse:
+    """Run Phase 1 (create_variant) + Phase 2 (write/push work ref) +
+    Phase 3 (submit + read-back) and return the final response."""
     now: Callable[[], Any] = request.app.state.now
     started_at = _iso(now())
 
-    # Phase 1: create_variant as starting.
     phase1_error = _phase1_create_starting_variant(
         store=store,
         request=request,
@@ -582,7 +609,6 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     if phase1_error is not None:
         return phase1_error
 
-    # Phase 2: create_ref locally + push to origin (status=success only).
     if draft.status == "success":
         phase2_response = _phase2_publish_work_ref_or_orphan(
             request,
@@ -595,7 +621,6 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         if phase2_response is not None:
             return phase2_response
 
-    # Phase 3: submit, with retry-before-orphan + read-back.
     return _phase3_submit_with_readback(
         request=request,
         store=store,

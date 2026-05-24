@@ -29,6 +29,19 @@ _LOG_LEVELS = {
 }
 
 
+def _non_empty_str(value: str) -> str:
+    """Reject empty / whitespace-only strings as an ``argparse`` ``type=`` validator.
+
+    Used on flags whose downstream consumers (e.g. Pydantic models
+    with ``Field(min_length=1)``) would otherwise raise mid-request on
+    an empty value. Failing here surfaces a clear "argument required"
+    error at startup instead of a 500 on the first operator action.
+    """
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must be a non-empty string")
+    return value
+
+
 def add_common_arguments(
     parser: argparse.ArgumentParser, *, require_task_store_url: bool = True
 ) -> None:
@@ -41,6 +54,7 @@ def add_common_arguments(
     parser.add_argument(
         "--experiment-id",
         required=True,
+        type=_non_empty_str,
         help="Experiment identifier — must match the task-store's configured experiment.",
     )
     parser.add_argument(
