@@ -81,6 +81,21 @@ services:
       # under our control and uses the Forgejo brand name. The
       # container target is image-defined; do not rename it.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo:/var/lib/gitea
+      # Companion config bind-mount (issue #130, follow-up to #129).
+      # The container target is `/etc/gitea`, NOT `/etc/forgejo`, for
+      # the same reason as the data mount above: the upstream image's
+      # VOLUME declaration retains Gitea's legacy paths, and Forgejo
+      # writes its generated `app.ini` (plus other config state — the
+      # internal SSH host keys it derives from FORGEJO__security__*,
+      # any operator-edited overrides applied via `forgejo admin`) to
+      # `/etc/gitea/` regardless of the brand. Without this mount the
+      # config dir is backed by an anonymous Docker volume that does
+      # NOT survive Docker Desktop VM restarts or `docker volume
+      # prune`, so a `compose down` (or even `docker volume prune`)
+      # silently discards every config change. The data mount alone
+      # is not enough — Forgejo splits durable state across both
+      # directories.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/forgejo-etc:/etc/gitea
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/version"]
       interval: 5s

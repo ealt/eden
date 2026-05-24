@@ -326,6 +326,7 @@ fi
 mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/forgejo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/forgejo-etc" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo" \
@@ -341,6 +342,7 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/forgejo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/forgejo-etc" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/orchestrator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/executor-repo" \
