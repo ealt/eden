@@ -35,13 +35,14 @@ from eden_contracts import EvaluationTask, Idea, Variant
 from eden_storage import (
     DispatchError,
     EvaluationSubmission,
-    IllegalTransition,
     InvalidPrecondition,
+    StorageError,
 )
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import ValidationError
 
-from ..forms import parse_evaluate_form
+from ..forms import format_validation_errors, parse_evaluate_form
 from ._helpers import (
     csrf_ok,
     get_session,
@@ -208,7 +209,7 @@ async def claim(
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
-    except (IllegalTransition, InvalidPrecondition) as exc:
+    except StorageError as exc:
         banner = wire_error_banner(exc)
         return RedirectResponse(
             url=f"/evaluator/?banner={banner}", status_code=303
@@ -400,12 +401,60 @@ async def submit(
             status_code=400,
         )
 
-    submission = EvaluationSubmission(
-        status=draft.status,
+    return _build_and_submit_evaluation(
+        request=request,
+        store=store,
+        session=session,
+        task_id=task_id,
+        token=token,
+        variant=variant,
+        idea=idea,
         variant_id=variant_id,
-        evaluation=dict(draft.evaluation) if draft.evaluation else None,
-        artifacts_uri=draft.artifacts_uri,
+        draft=draft,
+        form_state=form_state,
+        errors=errors,
     )
+
+
+def _build_and_submit_evaluation(
+    *,
+    request: Request,
+    store: Any,
+    session: Any,
+    task_id: str,
+    token: str,
+    variant: Variant,
+    idea: Idea,
+    variant_id: str,
+    draft: Any,
+    form_state: dict[str, Any],
+    errors: Any,
+) -> HTMLResponse | RedirectResponse:
+    """Construct the ``EvaluationSubmission``, submit with read-back,
+    and route the outcome through ``_finalize_evaluator_submit``."""
+    try:
+        submission = EvaluationSubmission(
+            status=draft.status,
+            variant_id=variant_id,
+            evaluation=dict(draft.evaluation) if draft.evaluation else None,
+            artifacts_uri=draft.artifacts_uri,
+        )
+    except ValidationError as exc:
+        # The form parser already type-checks per-metric values against
+        # ``evaluation_schema``; reaching here typically means the schema
+        # drifted from EvaluationSubmission's own constraints (e.g. an
+        # invalid ``artifacts_uri``). Re-render with field errors.
+        rerender_errors = format_validation_errors(exc)
+        return _render_draft(
+            request,
+            session=session,
+            task_id=task_id,
+            variant=variant,
+            idea=idea,
+            form_state=form_state,
+            errors=rerender_errors,
+            status_code=400,
+        )
 
     outcome, banner = submit_with_readback(
         store=store,

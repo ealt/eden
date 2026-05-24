@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from eden_contracts import EvaluationSchema, TaskTarget
+from pydantic import ValidationError
 
 # Registry-id grammar per spec/v0/02-data-model.md §6.1; reused for
 # the 12a-3 `intended_executor` field's worker_id / group_id slot.
@@ -65,6 +66,39 @@ class FormErrors:
 
     def __bool__(self) -> bool:
         return bool(self.by_row) or bool(self.overall)
+
+
+def format_validation_errors(
+    exc: ValidationError,
+    *,
+    row: int = 0,
+    errors: FormErrors | None = None,
+) -> FormErrors:
+    """Translate a Pydantic ``ValidationError`` into a ``FormErrors``.
+
+    Each pydantic error's ``loc[0]`` is treated as the form field name and
+    the error's ``msg`` becomes the user-visible detail. Multi-element
+    ``loc`` tuples (e.g. ``("parent_commits", 0)``) collapse to the
+    top-level field so the template's by-field renderer picks them up.
+    Errors with an empty ``loc`` fall through to ``add_overall`` so they
+    still surface in the form-level banner.
+
+    ``row`` selects which row the errors land under (multi-row ideator
+    form). ``errors`` lets the caller accumulate into an existing
+    ``FormErrors`` instance — useful when the route already started
+    collecting non-Pydantic field errors.
+    """
+    if errors is None:
+        errors = FormErrors()
+    for err in exc.errors():
+        loc = err.get("loc") or ()
+        msg = err.get("msg") or "invalid value"
+        if loc:
+            field_name = str(loc[0])
+            errors.add(row, field_name, msg)
+        else:
+            errors.add_overall(msg)
+    return errors
 
 
 def _validate_slug(i: int, slug: str, errors: FormErrors) -> None:
@@ -172,7 +206,7 @@ def parse_idea_rows(
     contents: list[str],
     intended_executor_kinds: list[str] | None = None,
     intended_executor_ids: list[str] | None = None,
-) -> tuple[list[IdeaDraft], FormErrors]:
+) -> tuple[list[IdeaDraft], FormErrors, list[int]]:
     """Parse parallel-list form input into validated drafts + accumulated errors.
 
     Each row is one idea. Fields are validated independently so a
@@ -189,12 +223,13 @@ def parse_idea_rows(
     n = max(len(slugs), len(priorities), len(parent_commits_csv), len(contents))
     if n == 0:
         errors.add_overall("at least one idea row is required")
-        return [], errors
+        return [], errors, []
 
     kinds = intended_executor_kinds or []
     ids = intended_executor_ids or []
 
     drafts: list[IdeaDraft] = []
+    draft_rows: list[int] = []
     parsed_count = 0
     for i in range(n):
         slug = (slugs[i] if i < len(slugs) else "").strip()
@@ -227,11 +262,12 @@ def parse_idea_rows(
         )
         if draft is not None:
             drafts.append(draft)
+            draft_rows.append(i)
 
     if parsed_count == 0:
         errors.add_overall("at least one idea row must be filled in")
 
-    return drafts, errors
+    return drafts, errors, draft_rows
 
 
 @dataclass(frozen=True)

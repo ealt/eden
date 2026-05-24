@@ -27,14 +27,16 @@ from eden_storage import (
     IllegalTransition,
     InvalidPrecondition,
     NotClaimed,
+    StorageError,
     WrongClaimant,
 )
 from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import ValidationError
 
 from ..artifacts import write_idea_artifact
-from ..forms import IdeaDraft, parse_idea_rows
+from ..forms import FormErrors, IdeaDraft, format_validation_errors, parse_idea_rows
 from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
 from ._submit_readback import wire_error_banner
 
@@ -144,7 +146,7 @@ async def claim(
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
         result = store.claim(task_id, session.worker_id, expires_at=expires_at)
-    except (IllegalTransition, InvalidPrecondition) as exc:
+    except StorageError as exc:
         banner = wire_error_banner(exc)
         return RedirectResponse(url=f"/ideator/?banner={banner}", status_code=303)
     _CLAIMS[_claim_key(session.csrf, task_id)] = result.worker_id
@@ -335,38 +337,54 @@ def _persist_idea_drafts(
     store: Any,
     request: Request,
     drafts: list[Any],
-) -> tuple[list[str], HTMLResponse | None]:
+    draft_rows: list[int],
+) -> tuple[list[str], HTMLResponse | None, FormErrors | None]:
     """Phase 1+2: write artifacts, create ideas as drafting, flip to ready.
 
-    Returns ``(idea_ids, None)`` on success or ``([], error_response)``
-    on the first ``DispatchError`` from either phase. The Phase-1 / Phase-2
-    split is preserved internally so a failure in mark-ready doesn't
-    leave already-created drafting ideas dangling — recovery for those
-    is the orchestrator's ttl→reclaim→idea→error path.
+    Returns ``(idea_ids, error_response, validation_errors)``:
+
+    - ``(ids, None, None)`` on success;
+    - ``([], error_response, None)`` on a ``DispatchError`` from either
+      phase (rendered as the wire-error page);
+    - ``([], None, errors)`` on a Pydantic ``ValidationError`` raised by
+      ``Idea(**kwargs)``. The caller re-renders the draft form with the
+      per-row field errors — no store mutation has happened yet because
+      the Idea construction precedes the create_idea call.
+
+    The Phase-1 / Phase-2 split is preserved internally so a failure
+    in mark-ready doesn't leave already-created drafting ideas
+    dangling — recovery for those is the orchestrator's
+    ttl→reclaim→idea→error path. ``draft_rows`` is the parallel
+    per-draft row-index list so a ValidationError on draft N maps back
+    to its original row in the multi-row form.
     """
     idea_ids: list[str] = []
     artifacts_dir = request.app.state.artifacts_dir
     now: Callable[[], Any] = request.app.state.now
 
-    for draft in drafts:
+    for draft, row_index in zip(drafts, draft_rows, strict=True):
         idea_id = uuid.uuid4().hex
         artifacts_uri = write_idea_artifact(
             artifacts_dir, idea_id, draft.content
         )
-        idea = _make_idea(
-            idea_id=idea_id,
-            experiment_id=request.app.state.experiment_id,
-            draft=draft,
-            artifacts_uri=artifacts_uri,
-            now_iso=_iso(now()),
-        )
+        try:
+            idea = _make_idea(
+                idea_id=idea_id,
+                experiment_id=request.app.state.experiment_id,
+                draft=draft,
+                artifacts_uri=artifacts_uri,
+                now_iso=_iso(now()),
+            )
+        except ValidationError as exc:
+            errors = format_validation_errors(exc, row=row_index)
+            return [], None, errors
         try:
             store.create_idea(idea)
         except DispatchError as exc:
             return [], _render_error(
                 request,
                 f"create_idea failed for {idea_id}: {wire_error_banner(exc)}",
-            )
+            ), None
         idea_ids.append(idea_id)
 
     for idea_id in idea_ids:
@@ -376,9 +394,9 @@ def _persist_idea_drafts(
             return [], _render_error(
                 request,
                 f"mark_idea_ready failed for {idea_id}: {wire_error_banner(exc)}",
-            )
+            ), None
 
-    return idea_ids, None
+    return idea_ids, None, None
 
 
 @router.post("/{task_id}/submit", response_model=None)
@@ -415,7 +433,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     contents = [str(v) for v in form.getlist("content")]
     intended_kinds = [str(v) for v in form.getlist("intended_executor_kind")]
     intended_ids = [str(v) for v in form.getlist("intended_executor_id")]
-    drafts, errors = parse_idea_rows(
+    drafts, errors, draft_rows = parse_idea_rows(
         slugs,
         priorities,
         parents,
@@ -437,14 +455,39 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             task_id=task_id, errors=errors, form_state=form_state, slugs=slugs,
         )
 
-    idea_ids, persist_error = _persist_idea_drafts(
-        store=store, request=request, drafts=drafts,
+    idea_ids, persist_error, validation_errors = _persist_idea_drafts(
+        store=store, request=request, drafts=drafts, draft_rows=draft_rows,
     )
+    if validation_errors is not None:
+        form_state = _form_state_from_inputs(
+            slugs,
+            priorities,
+            parents,
+            contents,
+            intended_executor_kinds=intended_kinds,
+            intended_executor_ids=intended_ids,
+        )
+        return _render_idea_form_errors(
+            request=request, session=session, store=store, config=config,
+            task_id=task_id, errors=validation_errors,
+            form_state=form_state, slugs=slugs,
+        )
     if persist_error is not None:
         return persist_error
 
     # Phase 3: submit, with retry-before-orphan.
-    submission = IdeaSubmission(status="success", idea_ids=tuple(idea_ids))
+    try:
+        submission = IdeaSubmission(status="success", idea_ids=tuple(idea_ids))
+    except ValidationError as exc:
+        # IdeaSubmission's fields are server-generated (status literal,
+        # idea_ids from uuid4().hex), so reaching here would mean a
+        # contracts/schema drift, not bad operator input. Surface as
+        # the wire-error page rather than 500.
+        return _render_error(
+            request,
+            f"IdeaSubmission construction failed: {exc.error_count()} "
+            "validation error(s) — surface to the developer; no operator action.",
+        )
     ok, banner = _retry_submit(store, task_id, token, submission)
     if not ok:
         return _render_orphaned(request, task_id, idea_ids, banner=banner)
