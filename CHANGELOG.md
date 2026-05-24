@@ -24,6 +24,8 @@ Pre-fix, the web-ui's role routes (ideator / executor / evaluator) leaked two cl
 
 **Slop-gate housekeeping.** Extracted `_drive_submit_phases` (executor) and `_build_and_submit_evaluation` (evaluator) helpers from the per-route `submit()` functions to keep them under the 100-line complexity gate — both helpers are behavior-preserving.
 
+**Round-2 codex-review.** Codex round 2 flagged that `Variant` (the executor's Phase-1 construction) IS a Pydantic model and is technically reachable via `--experiment-id ""` at service startup (would fail `Field(min_length=1)` mid-request). The higher-tier codification fix lands here instead of a route-side wrap: [`reference/services/_common/src/eden_service_common/cli.py`](reference/services/_common/src/eden_service_common/cli.py) gains a `_non_empty_str` argparse validator on `--experiment-id` so an empty/whitespace value is rejected at parse time across every reference service (orchestrator, ideator-host, executor-host, evaluator-host, task-store-server, web-ui). New unit tests assert the parse-time rejection.
+
 **Follow-up surfaced (out of scope here):** the executor draft template (`executor_claim.html`) renders `commit_sha` field errors but has no renderer for the `status` radio group, so a `parse_implement_form` status rejection silently drops the field error on re-render. Pre-existing latent bug, untouched by this PR; file a follow-up when planning the executor form polish.
 
 ### Migrate Gitea → Forgejo

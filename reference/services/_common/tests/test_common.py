@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any
 
+import pytest
 from eden_contracts import EvaluationSchema
 from eden_git import GitRepo
 from eden_service_common import (
@@ -15,6 +17,7 @@ from eden_service_common import (
     make_plan_fn,
     seed_bare_repo,
 )
+from eden_service_common.cli import add_common_arguments
 
 
 def test_seed_bare_repo_produces_resolvable_head(tmp_path: Path) -> None:
@@ -163,3 +166,28 @@ def test_install_stop_handlers_is_noop_off_main_thread() -> None:
     t.start()
     t.join()
     assert errors == []
+
+
+def test_experiment_id_rejects_empty_string() -> None:
+    """``--experiment-id ""`` is rejected at parse time so downstream
+    Pydantic constructions with ``Field(min_length=1)`` can't be
+    reached with an empty value (codex-review round-2 finding on
+    issue #134)."""
+    parser = argparse.ArgumentParser()
+    add_common_arguments(parser, require_task_store_url=False)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--experiment-id", ""])
+
+
+def test_experiment_id_rejects_whitespace_only() -> None:
+    parser = argparse.ArgumentParser()
+    add_common_arguments(parser, require_task_store_url=False)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--experiment-id", "   "])
+
+
+def test_experiment_id_accepts_normal_value() -> None:
+    parser = argparse.ArgumentParser()
+    add_common_arguments(parser, require_task_store_url=False)
+    args = parser.parse_args(["--experiment-id", "exp-1"])
+    assert args.experiment_id == "exp-1"
