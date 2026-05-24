@@ -371,3 +371,35 @@ class TestCloneUrlInstructions:
         # local-fs path.
         assert "no <code>--clone-url</code> configured" in resp.text
         assert "not a URL you can push to from a workstation" in resp.text
+
+    def test_clone_url_path_shows_rev_parse_hint(
+        self,
+        signed_in_impl_client_with_clone_url: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        # Issue #163: the form must tell the operator how to obtain the
+        # commit SHA they're being asked to paste — `git rev-parse HEAD`
+        # in their worktree.
+        task_id = self._claim(
+            signed_in_impl_client_with_clone_url, store, base_sha
+        )
+        resp = signed_in_impl_client_with_clone_url.get(
+            f"/executor/{task_id}/draft"
+        )
+        assert resp.status_code == 200
+        assert "git rev-parse HEAD" in resp.text
+
+    def test_no_clone_url_path_shows_rev_parse_hint(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        # Issue #163: the rev-parse hint must appear on the no-clone-url
+        # fallback path too — that branch of the template walks the
+        # operator through the same SHA-pasting step.
+        task_id = self._claim(signed_in_impl_client, store, base_sha)
+        resp = signed_in_impl_client.get(f"/executor/{task_id}/draft")
+        assert resp.status_code == 200
+        assert "git rev-parse HEAD" in resp.text
