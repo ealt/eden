@@ -130,3 +130,55 @@ def read_variant_artifact(
     optional and may be ``None``, which short-circuits to ``None``.
     """
     return _read_inline_artifact(artifacts_uri, artifacts_dir)
+
+
+def validate_file_artifact_uri(
+    artifacts_uri: str | None, artifacts_dir: Path
+) -> str | None:
+    """Validate that an operator-supplied ``file://`` URI is readable.
+
+    Returns ``None`` if the URI is acceptable, or an operator-facing
+    error string. Acceptance rules:
+
+    - ``None`` / empty → accepted (the field is optional).
+    - Non-``file://`` schemes (``http``, ``https``, etc.) → accepted
+      without further check; remote schemes can't be probed server-side.
+    - ``file://`` URIs MUST resolve to an existing regular file under
+      ``artifacts_dir.resolve()`` (the substrate's artifact jail).
+
+    Issue #167: previously the form silently accepted any string; an
+    operator typing ``file:///eval.md`` (missing the artifacts-dir
+    prefix) escaped the jail and the resulting submission later 404'd
+    on read, with the URI locked in by the first-write-wins resubmit
+    rule.
+    """
+    if artifacts_uri is None:
+        return None
+    if not artifacts_uri:
+        return None
+    parsed = urlparse(artifacts_uri)
+    if parsed.scheme != "file":
+        return None
+    raw_path = unquote(parsed.path)
+    if not raw_path:
+        return "artifacts_uri path is empty"
+    base = artifacts_dir.resolve()
+    try:
+        resolved = Path(raw_path).resolve()
+    except OSError as exc:
+        return f"artifacts_uri could not be resolved: {exc.strerror or exc}"
+    if not resolved.is_relative_to(base):
+        return (
+            f"artifacts_uri must point to a file under {base} "
+            f"(got {resolved})"
+        )
+    if not resolved.exists():
+        return f"artifacts_uri does not exist at {resolved}"
+    if not resolved.is_file():
+        return f"artifacts_uri is not a regular file: {resolved}"
+    try:
+        with resolved.open("rb") as fh:
+            fh.read(1)
+    except OSError as exc:
+        return f"artifacts_uri is not readable: {exc.strerror or exc}"
+    return None

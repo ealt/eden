@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
@@ -328,6 +329,91 @@ class TestSubmitValidation:
         assert recorded.variant_id == variant_id
         assert recorded.evaluation == {"score": 0.875}
         assert recorded.artifacts_uri == "https://logs.example/run/42"
+
+    def test_file_uri_outside_artifacts_dir_rejected(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        """Issue #167: a ``file://`` URI escaping the artifacts jail must
+        re-render the form with an inline field-level error instead of
+        silently accepting and locking in the bad URI (first-write-wins
+        on resubmit per spec §4.2 would otherwise make this unfixable).
+        """
+        eval_id, _, _ = seed_evaluate_task(store)
+        csrf = self._claim(signed_in_client, eval_id)
+        resp = _post_form(
+            signed_in_client,
+            f"/evaluator/{eval_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("metric.score", "0.5"),
+                ("artifacts_uri", "file:///eval.md"),
+            ],
+        )
+        assert resp.status_code == 400
+        assert "artifacts_uri must point to a file under" in resp.text
+        # Submission must NOT have landed.
+        assert store.read_submission(eval_id) is None
+        # The operator's typed value is preserved on re-render.
+        assert "file:///eval.md" in resp.text
+
+    def test_file_uri_nonexistent_rejected(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        artifacts_dir: Path,
+    ) -> None:
+        """A ``file://`` URI inside the jail but pointing at a file that
+        does not exist is also rejected at submit time.
+        """
+        eval_id, _, _ = seed_evaluate_task(store)
+        csrf = self._claim(signed_in_client, eval_id)
+        ghost = artifacts_dir / "ghost.md"  # never created
+        resp = _post_form(
+            signed_in_client,
+            f"/evaluator/{eval_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("metric.score", "0.5"),
+                ("artifacts_uri", f"file://{ghost}"),
+            ],
+        )
+        assert resp.status_code == 400
+        assert "artifacts_uri does not exist" in resp.text
+        assert store.read_submission(eval_id) is None
+
+    def test_file_uri_readable_under_artifacts_dir_accepted(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        artifacts_dir: Path,
+    ) -> None:
+        """The happy-path: a ``file://`` URI to a real, readable file
+        inside ``artifacts_dir`` is accepted and the submission lands
+        with the supplied URI.
+        """
+        eval_id, variant_id, _ = seed_evaluate_task(store)
+        artifact = artifacts_dir / "eval-log.md"
+        artifact.write_text("# eval log\n")
+        csrf = self._claim(signed_in_client, eval_id)
+        resp = _post_form(
+            signed_in_client,
+            f"/evaluator/{eval_id}/submit",
+            [
+                ("csrf_token", csrf),
+                ("status", "success"),
+                ("metric.score", "0.75"),
+                ("artifacts_uri", f"file://{artifact}"),
+            ],
+        )
+        assert resp.status_code == 200
+        recorded = get_evaluate_submission(store, eval_id)
+        assert recorded.status == "success"
+        assert recorded.variant_id == variant_id
+        assert recorded.artifacts_uri == f"file://{artifact}"
 
 
 class TestIntegerWireForm:

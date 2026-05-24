@@ -48,6 +48,7 @@ from ._helpers import (
     is_htmx_request,
     read_idea_content,
     read_variant_artifact,
+    validate_file_artifact_uri,
 )
 from ._submit_readback import submit_with_readback, wire_error_banner
 
@@ -281,6 +282,43 @@ def _collect_metric_inputs(form: Any, evaluation_schema: Any) -> dict[str, str]:
     return metric_inputs
 
 
+def _parse_and_validate_evaluate_form(
+    *,
+    form: Any,
+    evaluation_schema: Any,
+    artifacts_dir: Any,
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Parse the evaluator submit form and apply the substrate-side
+    ``artifacts_uri`` readability check (issue #167).
+
+    Returns ``(draft, errors, form_state)`` where ``draft`` is the
+    validated :class:`EvaluationDraft` when parsing + URI validation
+    both succeed, else ``None`` with the corresponding :class:`FormErrors`
+    populated for re-render. ``form_state`` always carries the operator's
+    typed values so the re-rendered form preserves them.
+    """
+    status_raw = str(form.get("status") or "")
+    artifacts_uri_raw = str(form.get("artifacts_uri") or "")
+    metric_inputs = _collect_metric_inputs(form, evaluation_schema)
+    draft, errors = parse_evaluate_form(
+        evaluation_schema=evaluation_schema,
+        status_raw=status_raw,
+        metric_inputs=metric_inputs,
+        artifacts_uri_raw=artifacts_uri_raw,
+    )
+    form_state: dict[str, Any] = {
+        "status": status_raw or "success",
+        "artifacts_uri": artifacts_uri_raw,
+        "metric_values": dict(metric_inputs),
+    }
+    if draft is not None:
+        uri_error = validate_file_artifact_uri(draft.artifacts_uri, artifacts_dir)
+        if uri_error is not None:
+            errors.add(0, "artifacts_uri", uri_error)
+            draft = None
+    return draft, errors, form_state
+
+
 def _finalize_evaluator_submit(
     *,
     request: Request,
@@ -371,23 +409,11 @@ async def submit(
         )
 
     config = request.app.state.experiment_config
-    evaluation_schema = config.evaluation_schema
-
-    status_raw = str(form.get("status") or "")
-    artifacts_uri_raw = str(form.get("artifacts_uri") or "")
-    metric_inputs = _collect_metric_inputs(form, evaluation_schema)
-
-    draft, errors = parse_evaluate_form(
-        evaluation_schema=evaluation_schema,
-        status_raw=status_raw,
-        metric_inputs=metric_inputs,
-        artifacts_uri_raw=artifacts_uri_raw,
+    draft, errors, form_state = _parse_and_validate_evaluate_form(
+        form=form,
+        evaluation_schema=config.evaluation_schema,
+        artifacts_dir=request.app.state.artifacts_dir,
     )
-    form_state: dict[str, Any] = {
-        "status": status_raw or "success",
-        "artifacts_uri": artifacts_uri_raw,
-        "metric_values": dict(metric_inputs),
-    }
     if draft is None:
         return _render_draft(
             request,

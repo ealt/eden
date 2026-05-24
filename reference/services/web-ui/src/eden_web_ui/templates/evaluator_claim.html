@@ -144,7 +144,13 @@
         <p>
             <label for="artifacts_uri">artifacts_uri (optional; URI to your eval logs / output)</label><br>
             <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
+                placeholder="file:///var/lib/eden/artifacts/<filename>"
+                title="Absolute path under /var/lib/eden/artifacts/ inside the container; equivalently, ${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/<filename> on the host."
                 value="{{ form_state.artifacts_uri }}">
+            {% if errors and errors.by_row.get(0, {}).get("artifacts_uri") %}
+            <span class="field-error">{{ errors.by_row[0]["artifacts_uri"] }}</span>
+            {% endif %}
+            <br><small>Optional. For <code>file://</code> URIs, point inside the container's artifacts directory; place the file at the host bind-mount. HTTP(S) URIs to external logs are also accepted.</small>
         </p>
         <button type="submit">submit</button>
     </form>
