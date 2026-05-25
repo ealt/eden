@@ -172,6 +172,27 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
     }
 
     try:
+        # Issue #144: /admin/* in the web-ui gates on admins-group
+        # membership. Add the web-ui's worker (registered by
+        # resolve_worker_bearer during startup, completed before the
+        # listening announcement) to `admins`.
+        import contextlib
+
+        from eden_storage.errors import AlreadyExists
+        from eden_wire import StoreClient
+
+        admin = StoreClient(
+            base_url=task_store_url,
+            experiment_id=experiment_id,
+            bearer=f"admin:{admin_token}",
+        )
+        try:
+            with contextlib.suppress(AlreadyExists):
+                admin.register_group("admins")
+            admin.add_to_group("admins", "ui-admin-workers")
+        finally:
+            admin.close()
+
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             # Sign in to get a session + CSRF.
             resp = ui.post("/signin", follow_redirects=False)

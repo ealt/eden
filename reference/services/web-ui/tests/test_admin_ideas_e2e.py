@@ -197,6 +197,9 @@ def test_admin_ideas_list_and_detail_resolve_lineage(tmp_path: Path) -> None:
                 admin.register_group("orchestrators")
             admin.add_to_group("admins", "operator-e2e")
             admin.add_to_group("orchestrators", "operator-e2e")
+            # Issue #144: also add the web-ui worker to admins so its
+            # /admin/* page loads pass the route-layer gate.
+            admin.add_to_group("admins", "ui-admin-ideas")
             # Register the ideator worker for the claim/submit phase.
             _, ideator_token = admin.register_worker("ideator-e2e")
         finally:
