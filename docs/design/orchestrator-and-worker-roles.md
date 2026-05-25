@@ -63,7 +63,7 @@ Mapping examples:
 
 ### 2. Ideation-task creation: shared between auto-orchestrator and humans
 
-> **Status: resolved by Phase 12a-2.** Both the auto-orchestrator and admins-group operators can create `kind=ideation` tasks via the wire (chapter 04 §2.1 + chapter 07 §§2.1 / 13.3). The auto-orchestrator's continuous creation is driven by the policy module `eden_dispatch.policies` (default `maintain_pending(target=3)`, configured via `EDEN_IDEATION_POLICY_TARGET_PENDING` + `EDEN_IDEATION_POLICY_MAX_TOTAL`); the pre-12a-2 static-seed `--ideation-tasks N` flag was retired. The `dispatch_mode.ideation_creation` key (chapter 02 §2.5) gates the orchestrator's auto-creation; flipping it to `manual` hands the decision to operators using the same wire op.
+> **Status: resolved by Phase 12a-2.** Both the auto-orchestrator and admins-group operators can create `kind=ideation` tasks via the wire (chapter 04 §2.1 + chapter 07 §§2.1 / 13.3). The auto-orchestrator's continuous creation is driven by the policy module `eden_dispatch.policies` (default `maintain_pending(target=3)`); per issue #133 the policy is selected via the experiment config's `ideation_policy` block (chapter 02 §2.4). The `dispatch_mode.ideation_creation` key (chapter 02 §2.4) gates the orchestrator's auto-creation; flipping it to `manual` hands the decision to operators using the same wire op.
 
 Today the orchestrator pre-seeds N ideation tasks at startup and never
 creates more. This conflates "experiment planning capacity" with

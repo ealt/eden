@@ -63,10 +63,14 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE" \
     --data-root "$SMOKE_DATA_ROOT"
 
-# 12a-2 wave 7: cap lifetime ideation creation so the policy quiesces
+# Issue #133: cap lifetime ideation creation so the policy quiesces
 # after 3 variants. Same posture as smoke.sh.
-sed -i.bak 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=3/' "$ENV_FILE"
-rm -f "${ENV_FILE}.bak"
+EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+cat >>"$EXPERIMENT_CONFIG" <<'YAML'
+ideation_policy:
+  kind: fixed_total
+  total: 3
+YAML
 
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_BASE_COMMIT_SHA"

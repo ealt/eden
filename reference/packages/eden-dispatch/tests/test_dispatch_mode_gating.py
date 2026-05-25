@@ -388,36 +388,46 @@ def test_fixed_total_caps_at_total() -> None:
     assert policy(build_experiment_state_view(store)) == 0
 
 
-def test_default_policy_reads_env_vars(monkeypatch) -> None:  # noqa: ANN001
-    """``default_policy()`` reads target + max_total from the environment."""
-    monkeypatch.setenv("EDEN_IDEATION_POLICY_TARGET_PENDING", "5")
-    monkeypatch.setenv("EDEN_IDEATION_POLICY_MAX_TOTAL", "7")
+def test_default_policy_is_maintain_pending_target_three() -> None:
+    """``default_policy()`` is ``maintain_pending(target=3, max_total=None)``."""
     policy = default_policy()
     store = _make_store()
-    # No tasks yet — policy wants min(5, 7) = 5.
+    # No tasks yet — policy wants target=3.
+    assert policy(build_experiment_state_view(store)) == 3
+
+
+def test_build_policy_none_returns_default() -> None:
+    """``build_policy(None)`` matches :func:`default_policy`."""
+    from eden_dispatch import build_policy
+
+    policy = build_policy(None)
+    store = _make_store()
+    assert policy(build_experiment_state_view(store)) == 3
+
+
+def test_build_policy_maintain_pending_from_config() -> None:
+    from eden_contracts import MaintainPendingPolicyConfig
+    from eden_dispatch import build_policy
+
+    config = MaintainPendingPolicyConfig(kind="maintain_pending", target=5, max_total=7)
+    policy = build_policy(config)
+    store = _make_store()
+    # No tasks yet — policy wants min(target=5, max_total - total=7) = 5.
     assert policy(build_experiment_state_view(store)) == 5
 
 
-def test_default_policy_unbounded_when_max_total_unset(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.delenv("EDEN_IDEATION_POLICY_MAX_TOTAL", raising=False)
-    monkeypatch.setenv("EDEN_IDEATION_POLICY_TARGET_PENDING", "2")
-    policy = default_policy()
+def test_build_policy_fixed_total_from_config() -> None:
+    from eden_contracts import FixedTotalPolicyConfig
+    from eden_dispatch import build_policy
+
+    config = FixedTotalPolicyConfig(kind="fixed_total", total=2)
+    policy = build_policy(config)
     store = _make_store()
-    # No max_total → policy wants target=2 forever, regardless of total.
-    for i in range(10):
-        store.create_ideation_task(f"old-{i}")
-        # Drive past terminal so they no longer count as pending.
-        store.claim(f"old-{i}", "ideator-1")
-        store.submit(
-            f"old-{i}",
-            "ideator-1",
-            IdeaSubmission(status="success"),
-        )
-        store.accept(f"old-{i}")
-    state = build_experiment_state_view(store)
-    assert state.pending_ideation_count == 0
-    assert state.total_ideation_count == 10
-    assert policy(state) == 2
+    assert policy(build_experiment_state_view(store)) == 2
+
+    store.create_ideation_task("ideation-1")
+    store.create_ideation_task("ideation-2")
+    assert policy(build_experiment_state_view(store)) == 0
 
 
 # ----------------------------------------------------------------------

@@ -26,6 +26,7 @@ from eden_storage import (
 from .driver import run_orchestrator_iteration
 from .policies import (
     IdeationPolicy,
+    build_policy,
     default_policy,
     fixed_total,
     maintain_pending,
@@ -71,6 +72,7 @@ __all__ = [
     "TerminationPolicy",
     "VariantSubmission",
     "build_experiment_state_view",
+    "build_policy",
     "convergence_window_policy",
     "default_policy",
     "default_termination_policy",

@@ -74,9 +74,13 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --data-root "$SMOKE_DATA_ROOT" \
     --exec-mode docker
 
-# 12a-2 wave 7: cap lifetime ideation creation.
-sed -i.bak 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=3/' "$ENV_FILE"
-rm -f "${ENV_FILE}.bak"
+# Issue #133: cap lifetime ideation creation via experiment-config.
+EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+cat >>"$EXPERIMENT_CONFIG" <<'YAML'
+ideation_policy:
+  kind: fixed_total
+  total: 3
+YAML
 
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_BASE_COMMIT_SHA"

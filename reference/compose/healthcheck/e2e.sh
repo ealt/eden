@@ -91,17 +91,17 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE" \
     --data-root "$SMOKE_DATA_ROOT"
 
-# 12a-2 wave 7: the policy-driven dispatch creates UUID-suffixed task
-# ids (not the pre-12a-2 fixed ``ideation-NNNN`` shape). Set the
-# target-pending depth to 4 and cap lifetime ideation at 4 so the
-# orchestrator quiesces after 4 variants land. The e2e_drive.py
-# script discovers the task ids dynamically from the wire — it
-# can't assume ideation-0001..ideation-0004 anymore.
-sed -i.bak \
-    -e 's/^EDEN_IDEATION_POLICY_TARGET_PENDING=.*/EDEN_IDEATION_POLICY_TARGET_PENDING=4/' \
-    -e 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=4/' \
-    "$ENV_FILE"
-rm -f "${ENV_FILE}.bak"
+# The policy-driven dispatch creates UUID-suffixed task ids (not the
+# pre-12a-2 fixed ``ideation-NNNN`` shape). Cap lifetime ideation at
+# 4 via the experiment config (issue #133) so the orchestrator
+# quiesces after 4 variants land. The e2e_drive.py script discovers
+# the task ids dynamically from the wire.
+EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+cat >>"$EXPERIMENT_CONFIG" <<'YAML'
+ideation_policy:
+  kind: fixed_total
+  total: 4
+YAML
 
 echo "--- stage 1: bring up everything except forgejo + ideator-host ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait \

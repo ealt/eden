@@ -393,10 +393,16 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
 
         # Now spawn the orchestrator with NO ideation policy effect; its
         # loop runs sweep_expired_claims once per iteration, sees no
-        # other progress, and quiesces. ``MAX_TOTAL=0`` plus the
-        # already-seeded ideation tasks means the default policy
+        # other progress, and quiesces. ``maintain_pending(max_total=0)``
+        # plus the already-seeded ideation tasks means the policy
         # returns 0 every iteration — no new tasks created, no claim
         # cycle restarted.
+        orchestrator_config = tmp_path / "orchestrator-config.yaml"
+        orchestrator_config.write_text(
+            FIXTURE_CONFIG.read_text(encoding="utf-8")
+            + "\nideation_policy:\n  kind: maintain_pending\n  max_total: 0\n",
+            encoding="utf-8",
+        )
         orchestrator_log = logs_dir / "orchestrator.log"
         orchestrator = _spawn(
             [
@@ -407,15 +413,14 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 experiment_id,
                 "--repo-path",
                 str(bare_repo),
+                "--experiment-config",
+                str(orchestrator_config),
                 "--max-quiescent-iterations",
                 "2",
                 "--poll-interval",
                 "0.1",
             ],
             orchestrator_log,
-            env={
-                "EDEN_IDEATION_POLICY_MAX_TOTAL": "0",
-            },
         )
         procs_logs["orchestrator"] = (orchestrator, orchestrator_log)
         try:
