@@ -27,6 +27,8 @@ import asyncio
 import errno
 import io
 import os
+import re
+import secrets
 import stat
 import tempfile
 import time
@@ -308,6 +310,48 @@ def _build_content_disposition(raw_name: str) -> str:
     )
 
 
+# Mirror the spec/v0 §6.1 worker_id grammar from eden_storage.
+# `_persist_reissued_credentials` re-validates worker_id against this
+# pattern as a defense-in-depth guard: a malformed worker_id would
+# otherwise interpolate directly into a filesystem path. The upstream
+# `_validate_worker` already enforces this via Pydantic at import-parse
+# time, but the helper checks again so a future refactor that bypasses
+# the model layer (test fixtures, synthetic ImportResult) cannot trip a
+# path-traversal write.
+_WORKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _probe_credentials_dir_writable(credentials_dir: Path) -> None:
+    """Pre-flight check that ``credentials_dir`` is writable.
+
+    Codex review caught a partial-failure non-atomicity: the store-side
+    import commits BEFORE the persistence loop runs, so a mid-loop
+    failure (ENOSPC, EROFS, EACCES, etc.) would leave the receiver with
+    fresh credential hashes committed and only a subset of the
+    plaintexts persisted — the unpersisted tokens then die with the
+    in-memory ``ImportResult.reissued_credentials`` mapping and become
+    unrecoverable. This probe surfaces the failure BEFORE the store
+    commit so the import aborts cleanly. The probe creates the
+    directory and writes/removes a one-shot ``.eden-import-probe`` file
+    with the same atomic-create + 0o600 semantics the real loop uses.
+    """
+    credentials_dir.mkdir(parents=True, exist_ok=True)
+    probe = credentials_dir / ".eden-import-probe"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
+    try:
+        fd = os.open(probe, flags, 0o600)
+    except FileExistsError:
+        # A prior probe didn't clean up (process crash mid-import).
+        # Remove + retry so we don't perma-fail.
+        probe.unlink(missing_ok=True)
+        fd = os.open(probe, flags, 0o600)
+    try:
+        os.write(fd, b"probe")
+    finally:
+        os.close(fd)
+    probe.unlink(missing_ok=True)
+
+
 def _persist_reissued_credentials(
     credentials_dir: Path, reissued: dict[str, str]
 ) -> list[Path]:
@@ -325,34 +369,84 @@ def _persist_reissued_credentials(
 
     Each file holds the raw token plaintext (NOT the
     ``<worker_id>:<token>`` bearer; the host's bootstrap helper
-    assembles the bearer). Files are written atomically via a
-    randomly-suffixed tmp file + ``os.replace`` (the random suffix
-    is load-bearing — two concurrent import handlers targeting the
-    same worker_id MUST NOT share a tmp filename or one process's
-    in-flight write could clobber the other's, and ``os.replace``
-    could lose a write entirely). Mode is locked to ``0o600`` per
-    chapter 7 §13.5 token-storage hygiene. The directory is created
-    on first use with ``parents=True`` so a fresh deployment doesn't
-    fail when the bind-mount target hasn't been pre-populated.
-    """
-    import secrets
+    assembles the bearer). Files are created via
+    ``os.open(O_WRONLY|O_CREAT|O_EXCL, mode=0o600)`` so the mode is
+    locked at file-creation time (no chmod TOCTOU window where the
+    plaintext is briefly world-readable under a permissive umask);
+    the resulting fd is written and the path is then ``os.replace``-d
+    onto the canonical ``<worker_id>.token`` location. The
+    randomly-suffixed tmp filename is load-bearing under concurrency
+    — two import handlers targeting the same worker_id MUST NOT
+    share a tmp filename or one process's in-flight write could
+    clobber the other's. Chapter 7 §13.5 token-storage hygiene.
 
+    The caller is expected to have run
+    :func:`_probe_credentials_dir_writable` BEFORE the store commit so
+    the directory exists + is writable; this helper still calls
+    ``mkdir(parents=True, exist_ok=True)`` as a belt-and-suspenders.
+    """
     credentials_dir.mkdir(parents=True, exist_ok=True)
     persisted: list[Path] = []
     for worker_id in sorted(reissued):
+        if not _WORKER_ID_PATTERN.match(worker_id):
+            # Defense-in-depth: the upstream `_validate_worker` already
+            # rejects malformed worker_ids during import parsing, but
+            # filename construction below would silently escape the
+            # creds dir if a future refactor bypassed that check.
+            raise ValueError(
+                f"refusing to persist credential for malformed worker_id "
+                f"{worker_id!r}; pattern is {_WORKER_ID_PATTERN.pattern}"
+            )
         token = reissued[worker_id]
         path = credentials_dir / f"{worker_id}.token"
         suffix = secrets.token_hex(8)
         tmp = path.with_suffix(f"{path.suffix}.{suffix}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         try:
-            tmp.write_text(token)
-            tmp.chmod(0o600)
+            fd = os.open(tmp, flags, 0o600)
+            try:
+                os.write(fd, token.encode("ascii"))
+            finally:
+                os.close(fd)
             os.replace(tmp, path)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
         persisted.append(path)
     return persisted
+
+
+def _build_post_import_credentials_warning(
+    reissued: dict[str, str], credentials_dir_root: Path | None
+) -> str | None:
+    """Persist reissued credentials (when a dir is configured) and
+    build the operator-facing warning string. Returns ``None`` when no
+    workers were imported (no warning needed).
+
+    Factored out of ``_import_checkpoint`` to keep the route handler
+    under the complexity gate while preserving the codex-review
+    invariants: ``_persist_reissued_credentials`` runs only after the
+    pre-flight probe (the route handler's responsibility), the
+    persisted-branch warning omits per-file absolute paths, and the
+    unpersisted-branch warning enumerates worker_ids so operators
+    can drive the manual ``reissue_credential`` flow.
+    """
+    if not reissued:
+        return None
+    if credentials_dir_root is not None:
+        _persist_reissued_credentials(credentials_dir_root, reissued)
+        return (
+            f"credentials reissued and persisted for "
+            f"{len(reissued)} worker(s) under {credentials_dir_root}"
+        )
+    return (
+        "credentials reissued for "
+        f"{len(reissued)} worker(s) "
+        f"({', '.join(sorted(reissued))}) but no "
+        "checkpoint_import_credentials_dir is configured; "
+        "tokens were NOT persisted — operators must reissue "
+        "via the admin endpoint before the workers can claim"
+    )
 
 
 def _is_symlink(component: str, *, dir_fd: int) -> bool:
@@ -1618,6 +1712,25 @@ def make_app(
                 f"X-Eden-Experiment-Id header {x_eden_experiment_id!r} does "
                 f"not match the post-rewrite experiment_id {target_id!r}"
             )
+        # Pre-flight the credentials-dir probe BEFORE the store commit.
+        # If persistence would fail (read-only mount, ENOSPC, permission
+        # error) the import must abort cleanly — otherwise we'd leave
+        # the store with fresh credential hashes and the plaintexts
+        # would die in the in-memory `ImportResult.reissued_credentials`
+        # mapping with no recovery path (the operator cannot tell which
+        # workers got persisted). The probe is best-effort: a race
+        # where the dir becomes unwritable between probe and persist
+        # could still strand tokens, but the common operator-config
+        # errors (typo'd path, RO mount, missing perms) are caught
+        # cleanly here. See codex review.
+        if credentials_dir_root is not None:
+            try:
+                _probe_credentials_dir_writable(credentials_dir_root)
+            except OSError as exc:
+                raise BadRequest(
+                    f"checkpoint_import_credentials_dir is not writable: "
+                    f"{credentials_dir_root} ({exc.strerror or exc})"
+                ) from exc
         with tempfile.TemporaryDirectory(prefix="eden-checkpoint-wire-") as td:
             extract_dir = Path(td)
             try:
@@ -1642,26 +1755,11 @@ def make_app(
         # flow). When no directory is configured, the tokens stay
         # ephemeral and a warning calls that out.
         warnings: list[str] = list(result.warnings)
-        reissued = dict(result.reissued_credentials)
-        if reissued:
-            if credentials_dir_root is not None:
-                persisted_paths = _persist_reissued_credentials(
-                    credentials_dir_root, reissued
-                )
-                warnings.append(
-                    "credentials reissued and persisted for "
-                    f"{len(reissued)} worker(s): "
-                    + ", ".join(str(p) for p in persisted_paths)
-                )
-            else:
-                warnings.append(
-                    "credentials reissued for "
-                    f"{len(reissued)} worker(s) "
-                    f"({', '.join(sorted(reissued))}) but no "
-                    "checkpoint_import_credentials_dir is configured; "
-                    "tokens were NOT persisted — operators must reissue "
-                    "via the admin endpoint before the workers can claim"
-                )
+        credential_warning = _build_post_import_credentials_warning(
+            dict(result.reissued_credentials), credentials_dir_root
+        )
+        if credential_warning is not None:
+            warnings.append(credential_warning)
         # Chapter 7 §14.2 mandates 201 Created on a successful import
         # (a new experiment row is materialized). FastAPI's default
         # would be 200; an explicit JSONResponse sets the spec-pinned

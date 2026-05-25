@@ -568,7 +568,27 @@ def _apply_archive_commit(
     is true; v0 producers always set this to true (§4) so the v0
     behavior is unconditional.
     """
+    # Mint + hash credentials OUTSIDE the atomic operation: argon2id is
+    # intentionally slow (~100-500ms per hash with RFC 9106 second-
+    # choice-low-memory params), and N×hash inside `_atomic_operation`
+    # would hold the backend's BEGIN IMMEDIATE / SERIALIZABLE lock for
+    # seconds during a multi-worker import — risking HTTP timeouts and
+    # blocking concurrent writes (codex review). The minted tokens and
+    # hashes are independent of store state, so pre-computing them
+    # outside the transaction is safe: if the atomic block raises
+    # post-mint, we discard `reissued` and no observable state changes.
     reissued: dict[str, str] = {}
+    pre_hashed_credentials: dict[str, str] = {}
+    if manifest.requires_credential_reissue:
+        for worker in parsed.workers:
+            # Per `10-checkpoints.md` §8 step 4: a fresh credential per
+            # imported worker, surfaced through the implementation-
+            # defined side channel (§8 last paragraph). The reference
+            # wire binding persists each token under the per-host
+            # credentials directory.
+            token = store._generate_credential_token()
+            pre_hashed_credentials[worker.worker_id] = store._hash_credential(token)
+            reissued[worker.worker_id] = token
     with store._atomic_operation():
         if not _is_store_empty(store):
             raise ExperimentIdConflict(
@@ -589,19 +609,10 @@ def _apply_archive_commit(
             tx.submissions[task_id] = submission
         for worker in parsed.workers:
             tx.workers[worker.worker_id] = worker
-            # Per `10-checkpoints.md` §8 step 4 the importer mints a
-            # fresh credential for every imported worker atomically
-            # with the rest of the commit. The plaintext is collected
-            # into `reissued` so the caller can surface it through
-            # the implementation-defined side channel (§8 last
-            # paragraph) — the reference wire binding persists each
-            # token under the per-host credentials directory.
-            if manifest.requires_credential_reissue:
-                token = store._generate_credential_token()
-                tx.worker_credentials[worker.worker_id] = store._hash_credential(
-                    token
-                )
-                reissued[worker.worker_id] = token
+            if worker.worker_id in pre_hashed_credentials:
+                tx.worker_credentials[worker.worker_id] = pre_hashed_credentials[
+                    worker.worker_id
+                ]
         for group in parsed.groups:
             tx.groups[group.group_id] = group
         # Events are inserted verbatim. Their event_ids retain the
@@ -650,6 +661,20 @@ def _commit_import(
         raise SpecVersionMismatch(
             f"manifest spec_version={manifest.spec_version!r}, "
             f"this binding expects {CHECKPOINT_SPEC_VERSION!r}"
+        )
+    # Chapter 10 §4: "v0 producers MUST set this to true (no v0
+    # conformant flow carries credential hashes; see §6)." A producer
+    # that ships `false` is non-conformant — and silently importing
+    # without minting credentials would leave imported workers with no
+    # credential entry in the store, with no operator-visible
+    # breadcrumb. Reject the malformed manifest with a clear error so
+    # the producer / operator fixes the upstream cause.
+    if not manifest.requires_credential_reissue:
+        raise CheckpointInvalid(
+            "chapter 10 §4 violation: v0 manifest must set "
+            "`requires_credential_reissue: true`; this manifest is "
+            "non-conformant and the importer cannot safely mint "
+            "credentials for the imported workers without it."
         )
     target_id = as_experiment_id or manifest.experiment_id
     if target_id != store.experiment_id:

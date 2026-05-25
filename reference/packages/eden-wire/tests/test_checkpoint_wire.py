@@ -559,6 +559,158 @@ def test_import_no_workers_no_credentials_warning(
     assert not creds_dir.exists() or not any(creds_dir.iterdir())
 
 
+def test_import_credentials_file_mode_set_at_creation(
+    store: InMemoryStore, fresh_store_factory: Any, tmp_path: Path
+) -> None:
+    """The persisted token file is created mode 0o600 atomically via
+    `O_EXCL|O_CREAT` (NOT created-then-chmod'd) so there is no TOCTOU
+    window where the plaintext is readable to a permissive umask.
+
+    Concretely: set the process umask to 0 before the import — any
+    create-then-chmod implementation would briefly produce a 0o666
+    file. With the O_EXCL|O_CREAT|0o600 path, the file is born 0o600
+    regardless of umask.
+    """
+    import os as _os
+
+    archive_bytes = _export_with_workers(store, ["wkr-mode"])
+    saved_umask = _os.umask(0)
+    try:
+        creds_dir = tmp_path / "umask-creds"
+        receiver = fresh_store_factory()
+        receiver_app = make_app(
+            receiver,
+            admin_token=ADMIN_TOKEN,
+            checkpoint_import_credentials_dir=creds_dir,
+        )
+        receiver_client = TestClient(receiver_app)
+        resp = receiver_client.post(
+            "/v0/checkpoints/import",
+            content=archive_bytes,
+            headers={
+                "Content-Type": CHECKPOINT_MEDIA_TYPE,
+                "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        path = creds_dir / "wkr-mode.token"
+        assert (path.stat().st_mode & 0o777) == 0o600
+    finally:
+        _os.umask(saved_umask)
+
+
+def test_import_rejects_unwritable_credentials_dir(
+    store: InMemoryStore, fresh_store_factory: Any, tmp_path: Path
+) -> None:
+    """Pre-flight probe rejects an unwritable credentials_dir BEFORE the
+    store commit, so a partial-persistence failure can't leave the
+    receiver with committed credential hashes whose plaintexts are
+    lost. The unwritable path here is a file (not a dir), which makes
+    `mkdir` fail consistently across platforms.
+    """
+    archive_bytes = _export_with_workers(store, ["wkr-rw"])
+
+    not_a_dir = tmp_path / "i-am-a-file"
+    not_a_dir.write_text("blocks the credentials dir creation")
+
+    receiver = fresh_store_factory()
+    receiver_app = make_app(
+        receiver,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_import_credentials_dir=not_a_dir,
+    )
+    receiver_client = TestClient(receiver_app)
+    resp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=archive_bytes,
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    # Probe failure → 400 bad-request (not 500); store is NOT mutated.
+    assert resp.status_code == 400, resp.text
+    assert "not writable" in resp.json()["detail"].lower()
+    # Receiver store stays empty — no workers committed.
+    assert list(receiver.list_workers()) == []
+
+
+def test_import_rejects_manifest_with_reissue_flag_false(
+    fresh_store_factory: Any, tmp_path: Path
+) -> None:
+    """Chapter 10 §4 says v0 producers MUST set
+    `requires_credential_reissue: true`. A manifest that sets it false
+    is non-conformant — silently importing would leave imported
+    workers without credentials in the store, with no operator-visible
+    breadcrumb. The importer rejects it cleanly with `CheckpointInvalid`.
+    """
+    import io as _io
+    import tarfile as _tarfile
+
+    from eden_checkpoint import (
+        CHECKPOINT_FORMAT_VERSION,
+        CHECKPOINT_SPEC_VERSION,
+        DEFAULT_FILES,
+        CheckpointManifest,
+        CheckpointWriter,
+        ExporterInfo,
+        ManifestCounts,
+    )
+
+    target_id = "exp-noreissue"
+    manifest = CheckpointManifest(
+        checkpoint_format_version=CHECKPOINT_FORMAT_VERSION,
+        spec_version=CHECKPOINT_SPEC_VERSION,
+        experiment_id=target_id,
+        exported_at="2026-01-01T00:00:00.000Z",
+        exporter=ExporterInfo(
+            implementation="test-malformed/0", atomicity_mechanism="none"
+        ),
+        requires_credential_reissue=False,  # non-conformant
+        counts=ManifestCounts(
+            tasks=0, ideas=0, variants=0, submissions=0,
+            events=0, workers=0, groups=0,
+        ),
+        files=DEFAULT_FILES,
+    )
+    buf = _io.BytesIO()
+    with CheckpointWriter(buf) as writer:
+        writer.write_experiment_config("")
+        writer.write_experiment({
+            "experiment_id": target_id, "state": "running",
+            "created_at": "2026-01-01T00:00:00.000Z", "dispatch_mode": {},
+        })
+        writer.write_jsonl("tasks", ())
+        writer.write_jsonl("ideas", ())
+        writer.write_jsonl("variants", ())
+        writer.write_jsonl("submissions", ())
+        writer.write_jsonl("events", ())
+        writer.write_jsonl("workers", ())
+        writer.write_jsonl("groups", ())
+        writer.write_repo_bundle(b"")
+        writer.write_manifest(manifest)
+
+    # Confirm we built a valid archive (tarfile parse succeeds).
+    buf.seek(0)
+    _tarfile.open(fileobj=buf, mode="r:").close()
+    buf.seek(0)
+
+    receiver = fresh_store_factory(target_id)
+    receiver_app = make_app(receiver, admin_token=ADMIN_TOKEN)
+    receiver_client = TestClient(receiver_app)
+    resp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=buf.getvalue(),
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["type"] == "eden://error/checkpoint-invalid"
+    assert list(receiver.list_workers()) == []
+
+
 # ----------------------------------------------------------------------
 # StoreClient round-trip through TestClient
 # ----------------------------------------------------------------------
