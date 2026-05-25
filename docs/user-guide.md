@@ -262,7 +262,7 @@ The executor turns one execution task (which references an idea) into a git comm
 
 ### Execution via the Web UI
 
-Claim a pending execution task on the executor page. The form surfaces the idea (slug / parents / rationale, rendered inline if the artifact is reachable). You provide the `commit_sha` of your already-pushed branch; the UI does the create-variant + ref-create + submit. **You're responsible for getting the commit into Forgejo** before pasting the SHA — clone forgejo locally, edit, commit, push.
+Claim a pending execution task on the executor page. The form surfaces the idea (slug / parents / rationale, rendered inline if the artifact is reachable). You provide the `commit_sha` of your already-pushed branch; the UI does the create-variant + ref-create + submit. **You're responsible for getting the commit into Forgejo** before pasting the SHA — clone forgejo locally, edit, commit, push, then run `git rev-parse HEAD` in your worktree to print the SHA to paste.
 
 ### Execution via the CLI (full end-to-end)
 
