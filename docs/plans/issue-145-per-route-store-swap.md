@@ -84,11 +84,25 @@ These are the load-bearing design calls; §3 unpacks each.
 
 5. **Switcher state is per-session, not per-tab.** A user with two tabs open shares one session cookie; selecting experiment Y in tab A changes tab B's data on next request. The alternative (per-tab via a query param) was rejected: it duplicates state, has to be threaded through every link, and breaks the "permalink to a specific page in experiment Y" use case operators ask for. A query-param-based override (`?experiment_id=…`) is a v1 affordance, NOT v0; see §7.5.
 
-6. **`experiment_config` is fetched per-request from the active experiment.** Today the web-ui pins one `experiment_config` at startup (the YAML file path from `--experiment-config`). For multi-experiment, each experiment has its own config (objective, evaluation schema, etc.). The plan reads the active experiment's config via `store.read_experiment_config()` (a wire endpoint that already exists for evaluator schema validation) and caches it. The `--experiment-config` CLI flag becomes the fallback for the no-control-plane posture; documented in the CLI help.
+6. **`experiment_config` is loaded per-experiment from an on-disk config directory; no new wire endpoint.** Today the web-ui pins one `experiment_config` at startup (the YAML file path from `--experiment-config`). The task-store-server stores `experiment_config` text internally (set at import time per [`reference/packages/eden-storage/src/eden_storage/_checkpoint.py`](../../reference/packages/eden-storage/src/eden_storage/_checkpoint.py)) but does NOT expose it as a runtime wire read — only `read_experiment()` (runtime state) and `read_experiment_state()` are wire-exposed. Adding a `GET /v0/experiments/{E}/config` endpoint would be a spec change (Chapter 7), which this plan does not undertake (Decision 10).
+
+The plan instead introduces a per-experiment YAML directory: a new `--experiment-config-dir <path>` flag. The web-ui's resolve helper loads `<dir>/<experiment_id>.yaml` lazily on first access (cached for the process lifetime; configs are immutable post-create). The `setup-experiment.sh` script writes each experiment's YAML to this dir as part of its existing flow (and the operator can populate it manually too). Single-experiment / no-control-plane mode still accepts `--experiment-config <single-yaml>` and routes all requests through it (preserves today's behavior). The dir-vs-single distinction is operator-facing in CLI help; one-of-each-not-both validated at startup.
+
+**Why not add the wire endpoint instead.** Adding `GET .../config` is operationally cleaner (one source of truth, no filesystem coupling) but it's a normative wire amendment touching chapter 7 + JSON schemas + Pydantic models + the task-store-server's read path + conformance citation gating. That's a separate chunk; filed as a follow-up issue (§4.2). The on-disk approach is the smaller change that closes the immediate UX gap.
 
 7. **Admin-store cache mirrors the worker-store cache.** `admin_store` is `StoreClient(…, bearer="admin:<token>")`. The factory vends per-experiment admin views the same way it vends worker views; no separate JIT registration (admin auth is one bearer deployment-wide).
 
-8. **Active-experiment-must-exist check at request time; redirect on miss.** If the operator's `selected_experiment_id` no longer exists in the control plane (the experiment was unregistered while their session was open), the resolve helper detects it and redirects to `/admin/experiments/?error=stale-selection`. The session is updated to clear the stale field. Routes that would 500 on a missing experiment instead route through the redirect.
+8. **Three-state experiment-validity classification at resolve time; route accordingly.** 12c separates the control-plane registry from the task-store-server's per-experiment data (12c plan Decision 5; native creation is "control plane register first, then task-store ops" per 12c §3.5; the existing web-ui `POST /admin/experiments/register` at [`routes/admin_experiments.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_experiments.py) calls only the control plane, NOT the task-store-server). The resolve helper therefore classifies the active experiment in three states, not two:
+
+| State | Probe outcome | Resolve helper behavior |
+|---|---|---|
+| **registered + seeded** | Control plane returns the entry AND `read_experiment_state()` on the task-store-server returns 200 | Normal: return the active `experiment_id`. |
+| **registered + unseeded** | Control plane returns the entry; `read_experiment_state()` returns 404 | Return the id with a per-request flag `experiment_unseeded=True`. Routes that read (ideator listing, admin tasks) render an "experiment exists but has no tasks yet — initialize via `setup-experiment` or a checkpoint import" empty-state. Routes that write (claim, submit, create_task) refuse with a clear "experiment is not yet seeded" banner. NOT a stale-selection redirect. |
+| **unregistered** | Control plane returns 404 | Raise `StaleSelection`; redirect to `/admin/experiments/?error=stale-selection`; clear the session field. |
+
+The unseeded state is observable in practice: an operator who runs `POST /admin/experiments/register` (a 12c-shipped admin form) creates a control-plane registry entry but no task-store-server experiment until `setup-experiment.sh` / checkpoint import runs. Pre-this-plan, the unseeded state is invisible to operators because no one navigates to the experiment via the switcher. Post-this-plan, operators can hit it; misclassifying it as stale would be a silent UX regression.
+
+To minimize per-request latency, the resolve helper caches the two-probe state (control-plane present + task-store-server present) for 5 seconds (matches §3.7's `list_experiments` TTL). Cache invalidates on `POST /admin/experiments/{E}/select`. Stale cache → at-most-one wrong-state render before the next refresh; acceptable.
 
 9. **Per-route `repo` (executor's local bare clone) is also per-experiment.** Today the web-ui's `--repo-path` flag is one bare clone per process. In the multi-experiment world each experiment has its own integrator repo (one bare clone per experiment in the deployment). The executor module's `_materialize_repo` becomes a per-experiment lazy materializer: clone-if-missing under `${args.repo_path}/<experiment_id>.git`, fetch on each request. This is the only piece of the plan that materially changes the filesystem layout the web-ui deployment expects.
 
@@ -141,18 +155,59 @@ The two-line cost (resolve + factory lookup) is by design: the data dependency i
 
 ### 3.2 Credential plumbing (the load-bearing piece)
 
-Today: `cli.py` calls `resolve_worker_bearer(args, worker_id=args.worker_id, labels={"role": "web-ui"})` once, which either reads a persisted credential or registers the worker against the admin token and persists the new credential. The function returns a `bearer` string; `StoreClient` is constructed once.
+Today: `cli.py` calls `resolve_worker_bearer(args, worker_id=args.worker_id, labels={"role": "web-ui"})` once at startup, which delegates to [`eden_service_common.auth.bootstrap_worker_credential`](../../reference/services/_common/src/eden_service_common/auth.py). That function already implements three load-bearing disciplines that the JIT path MUST also use, NOT reimplement:
+
+1. **Per-`worker_id` exclusive lock** (`_bootstrap_lock`): `fcntl.flock` on `<credentials_dir>/<worker_id>.token.lock`. Serializes register / verify / reissue for two web-ui processes (or two coroutine tasks within one process) racing the same `(experiment_id, worker_id)`. Without it, a `register_worker` (idempotent — returns the existing record with NO new token on repeat per the wire client's contract at [`reference/packages/eden-wire/src/eden_wire/client.py`](../../reference/packages/eden-wire/src/eden_wire/client.py) `register_worker`) followed by a `reissue_credential` corrupts the persisted token.
+
+2. **Idempotent-register → reissue branch**: if `register_worker` returns no new `registration_token` (because the record already exists with NO token field on the response — idempotent shape per 12a-1 §D.1), follow up with `reissue_credential` to mint a fresh credential. The shared helper handles both branches; the JIT path reuses it verbatim.
+
+3. **Persisted-token verification via `/whoami`**: a persisted-but-stale token (admin reissued after our boot, etc.) gets caught by a `whoami()` probe on startup and triggers the reissue path. Same shape used per experiment in the JIT case.
 
 After this plan: a `BearerCache` object backs the `StoreFactory`. On `StoreFactory.for_experiment(Y)`:
 
 1. If the cache holds `(Y, worker_role)` → return cached StoreClient.
-2. Else, look for `${EDEN_CREDENTIAL_DIR}/<Y>/<worker_id>.cred` (a JSON file with `bearer` + metadata). If present → cache + return.
-3. Else, run the bootstrap path: probe `/v0/experiments/Y/` for existence (404 → `StaleSelection`); call `register_worker(worker_id=args.worker_id, labels={"role": "web-ui"})` against Y's registry using the deployment admin token; persist the returned bearer; cache + return.
-4. Bootstrap requires the deployment admin token. Without one (the no-admin-token posture), step 3 fails fast with `MissingAdminToken`; the resolve helper catches it and redirects to a "selected experiment isn't bootstrapped; admin must register web-ui in it" error page.
+2. Else, **delegate to a per-experiment `bootstrap_worker_credential`** call (the SAME function 12a-1 uses, called with `experiment_id=Y` and `credentials_dir=<EDEN_CREDENTIAL_DIR>/<Y>`). That function does all three of: lock, read-persisted-or-register-or-reissue, verify-via-whoami. The plan reuses the helper rather than rewriting it. Cache the result; return.
+3. **Routing for the four failure branches of `bootstrap_worker_credential`** (these are observable today in the startup-bootstrap path):
+   - `NotFound` from the task-store-server (experiment Y doesn't exist there) → bubble up; the resolve helper classifies this per Decision 8 (registered-but-unseeded vs stale).
+   - `Unauthorized` after register (admin token rejected) → raise `MissingAdminToken`-as-`AdminTokenRejected`; redirect with a clear error.
+   - `RuntimeError("admin token required")` from the helper (no admin token at all AND no persisted credential AND no usable cached token) → raise `MissingAdminToken`; redirect to the dashboard with `error=cannot-bootstrap-credential&exp=<Y>`.
+   - Transport error → raise `TaskStoreUnreachable`; redirect to the dashboard with `error=task-store-unreachable`.
 
-`EDEN_CREDENTIAL_DIR` defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/eden/web-ui/` and is operator-overridable via a new CLI flag `--credential-dir <path>`. In Compose, the dir is a bind-mount under `${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-credentials/` (same posture as the per-host credentials volumes in 12a-1g §D.3).
+**Control-plane authority for the switcher.** A second credential domain matters here that round 0 flagged: the web-ui's control-plane client today is constructed admin-token-only (see [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py) `_build_control_plane_client`). Chapter 11 §6 endpoint authority (per 12c plan §5.1) lets `list_experiments` / `read_experiment_metadata` be called by EITHER an admin bearer OR a deployment-scoped worker bearer. To keep "no admin token at runtime, but switcher still works" viable, the plan adds a deployment-scoped web-ui worker credential persisted at `<credential-dir>/control-plane/web-ui.cred`:
+
+- At startup, when `--control-plane-url` is set, the web-ui ALSO bootstraps a control-plane-scoped worker (`POST /v0/control/workers` with the admin token, `add_to_group` to a new `web-ui` group OR `dashboards`-shaped; specifics per 12c plan §5.1 chapter 11 §6 endpoint table).
+- That credential is the long-lived deployment-scoped bearer the `ControlPlaneClient` uses thereafter for read calls. Admin token is required only at bootstrap time, NOT at runtime, matching the worker-host pattern.
+- The control-plane `register_experiment` / `unregister_experiment` calls still require admin (they're admin-gated per 12c §5.1). The dashboard's admin form (12c-shipped) already handles this; this plan doesn't change it.
+
+**Posture matrix** (updated to four postures, replacing the round-0 two-state model):
+
+| Posture | Admin token | Control-plane web-ui credential | Per-experiment web-ui credentials | Switcher works? |
+|---|---|---|---|---|
+| **A (no control plane)** | optional | n/a | startup-only for the single `--experiment-id` | n/a — switcher hidden |
+| **B (control plane, admin-token at runtime)** | present | bootstrapped at startup | JIT-bootstrapped on switch | yes |
+| **C (control plane, admin-token bootstrap-only)** | bootstrap only; absent at runtime | bootstrapped at startup, persisted | persisted from a prior bootstrap; JIT path is unavailable | yes for already-credentialed experiments; redirect with `error=cannot-bootstrap-credential` for new ones |
+| **D (control plane, no admin token ever)** | absent | unbootstrapped | unbootstrapped | dashboard read fails with banner; switcher hidden |
+
+Posture B is the default Compose path. Posture C is the production posture (operators rotate the admin token out of the runtime env after first boot, matching the worker-host pattern). Posture D is the "control plane is configured but auth never set up correctly" failure mode — the plan surfaces it via banner rather than silently degrading.
+
+`EDEN_CREDENTIAL_DIR` defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/eden/web-ui/` and is operator-overridable via a new CLI flag `--credential-dir <path>`. In Compose, the dir is a bind-mount under `${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-credentials/` (same posture as the per-host credentials volumes in 12a-1g §D.3). Layout:
+
+```text
+<credential-dir>/
+  control-plane/web-ui.cred                 # posture B/C deployment-scoped
+  control-plane/web-ui.token.lock           # bootstrap lock
+  <experiment_id_1>/web-ui-1.cred           # per-experiment worker
+  <experiment_id_1>/web-ui-1.token.lock     # per-experiment bootstrap lock
+  <experiment_id_2>/web-ui-1.cred
+  ...
+```
 
 **Why JIT bootstrap, not at-startup?** The web-ui starts before any experiment exists in a fresh deployment; the registry is empty. A startup loop "for each registered experiment, bootstrap our credential" requires reading `list_experiments` before serving any request, AND requires re-running on every new experiment registration. A JIT path is simpler and correctness-equivalent.
+
+**Resolved internal contradiction (round 0 finding).** Earlier wording in §3.8 said startup `for_experiment(...)` would skip the JIT register. That was inconsistent with §3.2's "cache-miss IS JIT register". The corrected shape: startup does NOT call `for_experiment(...)` for any non-default experiment at boot. It bootstraps only:
+- The default experiment's worker credential (if `--experiment-id` is provided — preserves today's startup shape).
+- The control-plane-scoped web-ui credential (if `--control-plane-url` is provided).
+Per-non-default experiment bootstrap is exclusively JIT, gated by the first cache miss.
 
 **Failure-mode taxonomy:**
 
@@ -252,15 +307,15 @@ The CSRF token itself is unchanged.
 
 The list fetch on every page render is a perf concern (`list_experiments` once per request). Mitigation: a 5s in-process TTL cache on `list_experiments`'s result (same pattern as 12c §7.4's dashboard counts). Acceptable: a stale 5s window is invisible to operators.
 
-### 3.8 The `read_experiment_config` cold-start chicken-and-egg
+### 3.8 Startup cold-start sequence
 
 The web-ui's startup probe (`wait_for_task_store`) requires `--experiment-id`. The factory needs SOME experiment to seed its caches. The cleanest shape:
 
-- Startup: `--experiment-id` (still required) names the deployment-default. `--experiment-config` (still required in no-control-plane mode; optional in control-plane mode) seeds the config cache for the default.
-- Control-plane mode: at startup, additionally call `control_plane.list_experiments()`; for each entry, materialize a `StoreFactory.for_experiment(...)` (no JIT register yet — credentials are lazy).
-- On every request: resolve active, fetch from factory.
+- Startup ALWAYS: `--experiment-id` (still required) names the deployment-default. `bootstrap_worker_credential(experiment_id=args.experiment_id, ...)` for the default-experiment worker. `--experiment-config` (still required in no-control-plane mode; optional in control-plane mode when `--experiment-config-dir` is set) seeds the config cache for the default.
+- Startup IF `--control-plane-url` SET: ALSO bootstrap the control-plane-scoped web-ui credential (§3.2 posture B/C). Do NOT loop `list_experiments` to pre-register per-experiment workers; that's deferred to JIT on first switch.
+- On every request: `resolve_active_experiment(request)` then `store_factory.for_experiment(active_id)`; the factory does JIT bootstrap on cache miss.
 
-The deployment-default flag is preserved for two reasons: (a) cold-start needs SOMETHING for the no-selection case; (b) the no-control-plane single-experiment deployment is preserved unchanged.
+The deployment-default flag is preserved for three reasons: (a) cold-start needs SOMETHING for the no-selection case; (b) the no-control-plane single-experiment deployment is preserved unchanged; (c) the bootstrap-time admin-token / `wait_for_task_store` posture from today's startup stays load-bearing on first boot (Posture B/C in §3.2). The default-experiment lookup in the resolve helper is "fast path with no validation"; only non-default experiments traverse the three-state classification of Decision 8.
 
 ### 3.9 Alternatives considered
 
@@ -291,12 +346,12 @@ The deployment-default flag is preserved for two reasons: (a) cold-start needs S
 Code (reference impl, web-ui only — no other service touched):
 
 - New `routes/_helpers.py` helpers: `resolve_active_experiment`, `active_config`, `StaleSelection` / `MissingAdminToken` / `ControlPlaneUnreachable` exceptions.
-- New `eden_web_ui/store_factory.py` module: `StoreFactory`, `BearerCache`, `_persisted_credential_path`. (Promoted to its own module rather than buried in `app.py` because the unit tests need to drive it directly.)
+- New `eden_web_ui/store_factory.py` module: `StoreFactory`, `BearerCache`, `_persisted_credential_path`. (Integrated to its own module rather than buried in `app.py` because the unit tests need to drive it directly.)
 - New `eden_web_ui/credentials.py` module: persisted-credential read/write helpers. Mirrors `eden_service_common.resolve_worker_bearer`'s on-disk shape (12a-1 §D.2) but scoped to web-ui paths.
 - Per-route refactor (the 14 modules in §1.5): every `request.app.state.store` / `request.app.state.experiment_id` / `request.app.state.experiment_config` / `request.app.state.admin_store` lookup gets replaced with the resolve-then-factory pattern. `request.app.state.worker_id` (used by `admin/actions.py:191,307` for `actor` attribution) stays as the deployment-default until #140 lands.
 - `app.py` `make_app(...)`: drop `store`, `admin_store`, `experiment_config` parameters; add `store_factory`. Templates that read `experiment_id` from globals (`templates.env.globals["experiment_id"]`) instead read it from a `Request` context var so per-request rendering reflects the active experiment.
-- `cli.py`: build `StoreFactory` instead of one `StoreClient`. Add `--credential-dir` flag. Preserve `--experiment-id` (deployment default), `--experiment-config` (fallback config), `--task-store-url`, `--control-plane-url`, `--repo-path`, `--forgejo-url`, `--worker-id`.
-- `templates/_layout.html`: top-nav switcher dropdown widget per §3.7. Hidden when `control_plane` is None.
+- `cli.py`: build `StoreFactory` instead of one `StoreClient`. Add `--credential-dir` (per-experiment credentials) and `--experiment-config-dir` (per-experiment YAML configs per Decision 6) flags. Preserve `--experiment-id` (deployment default), `--experiment-config` (fallback for single-experiment / no-config-dir mode), `--task-store-url`, `--control-plane-url`, `--repo-path`, `--forgejo-url`, `--worker-id`. Reject startup when both `--experiment-config` and `--experiment-config-dir` are set with different values for the deployment-default experiment; allow `--experiment-config-dir` to be the only source when control-plane mode is on.
+- `templates/base.html`: top-nav switcher dropdown widget per §3.7. Hidden when `control_plane` is None.
 - `templates/admin_experiments.html`: remove the v0-limitation footer per Decision 12; add a "switch to this experiment" CTA on each row (already exists in 12c).
 - `templates/*_form.html` (every mutating form): hidden `form_experiment_id` field per §3.6.
 - Per-experiment repo materialization in `cli.py` / `app.py` per §3.5.
@@ -305,8 +360,8 @@ Tests (web-ui only):
 
 - `tests/test_store_factory.py` (new): factory caching, eviction, shared-client lifecycle, JIT credential bootstrap, persisted-credential round-trip, all failure modes from §3.2's table.
 - `tests/test_resolve_active.py` (new): session-default fallback, stale-selection redirect, missing-admin-token redirect, control-plane-unreachable redirect.
-- `tests/test_experiment_switcher.py` (existing — adds): full round-trip `select → next page renders active experiment's data`; switch-mid-form rejection per §3.6; deployment-default fallback for fresh-session.
-- Existing tests under `tests/` (~30 files) all get a shared fixture update: instead of `app.state.store = mock_store`, they construct an `app.state.store_factory` with a one-experiment cache. The change is mechanical but touches a lot of files. The plan-§5 wave shape isolates this churn to one wave.
+- `tests/test_admin_experiments_routes.py` (existing — the actual switcher-test home today; there is no `test_experiment_switcher.py`): EXTEND with full round-trip `select → next page renders active experiment's data`; switch-mid-form rejection per §3.6; deployment-default fallback for fresh-session.
+- Existing tests under `tests/` (**43 files** counted via `find reference/services/web-ui/tests -name 'test_*.py' | wc -l`, NOT 30) all get a shared fixture update: instead of `make_app(store=..., experiment_id=..., experiment_config=..., admin_store=...)` they construct via a `make_test_app(...)` helper in `conftest.py` that wires a one-experiment `StoreFactory` with the same in-memory store. The change is mechanical but touches a lot of files (notably `conftest.py`, `test_admin_routes.py`, `test_evaluator_flow.py`, `test_executor_routes.py`, `test_ideator_flow.py`, `test_security_invariants.py` all call `make_app(...)` directly). The plan-§5 wave shape isolates this churn to one wave.
 - New `tests/test_per_experiment_repo.py`: executor module's repo materialization under multi-experiment posture.
 
 Documentation:
@@ -328,6 +383,7 @@ Compose / setup:
 - **#128 (id/name rename).** Eventually re-targets all the wire-call sites this plan rewrites; mechanical retro-fit when it lands. No protocol-level conflict.
 - **#140 (operator-as-worker).** Replaces the JIT service-worker bootstrap in §3.2 with operator-session-carried bearers. The `BearerCache` interface is preserved.
 - **#141 (deployment-level workers).** Collapses the per-experiment credential dir to a single deployment credential.
+- **`GET /v0/experiments/{E}/config` wire endpoint** (the alternative considered in Decision 6). Replace the on-disk `--experiment-config-dir` with a wire read. Spec change (Chapter 7 + JSON schemas + Pydantic models + conformance citation). File a new issue at this plan's W1 alongside this plan's first PR so future maintainers see the cleaner shape on the roadmap.
 - **Multi-experiment Compose smoke.** 12c §3.8 deferred; a separate issue (TBD — file as part of this plan's first wave) covers it.
 - **Tab-scoped experiment selection** (Decision 5 / §3.6 reject-on-switch UX). v1 affordance.
 
@@ -355,7 +411,7 @@ Compose / setup:
 | File | Change | Why |
 |---|---|---|
 | `reference/services/web-ui/src/eden_web_ui/store_factory.py` (new) | `StoreFactory`, `BearerCache`, JIT bootstrap | §3.3 |
-| `reference/services/web-ui/src/eden_web_ui/credentials.py` (new) | Persisted-credential read/write | §3.2 |
+| `reference/services/web-ui/src/eden_web_ui/credentials.py` (new) | Persisted-credential read/write — delegates to `eden_service_common.auth.bootstrap_worker_credential` per-experiment; does NOT reimplement the lock or idempotent-register-then-reissue branches | §3.2 |
 | `reference/services/web-ui/src/eden_web_ui/routes/_helpers.py` | Add `resolve_active_experiment`, `active_config`, exception types | §3.1 / §3.4 |
 | `reference/services/web-ui/src/eden_web_ui/app.py` | Replace `store`/`admin_store`/`experiment_config` parameters with `store_factory`; templates read `experiment_id` from request context | §3.3 |
 | `reference/services/web-ui/src/eden_web_ui/cli.py` | Build `StoreFactory`; add `--credential-dir`; per-experiment repo materialization | §3.3 / §3.5 |
@@ -374,7 +430,7 @@ Compose / setup:
 | `reference/services/web-ui/src/eden_web_ui/routes/_lineage.py` | Functions taking `store` already do; ensure callers pass per-experiment store | §3.1 |
 | `reference/services/web-ui/src/eden_web_ui/routes/_submit_readback.py` | Same | §3.1 |
 | `reference/services/web-ui/src/eden_web_ui/routes/admin_experiments.py` | Remove v0-limitation footer copy; the dashboard's "select" CTA stays | Decision 12 |
-| `reference/services/web-ui/src/eden_web_ui/templates/_layout.html` | Top-nav switcher dropdown | §3.7 |
+| `reference/services/web-ui/src/eden_web_ui/templates/base.html` | Top-nav switcher dropdown (the existing top-nav lives here, not in `_layout.html` — there is no `_layout.html`) | §3.7 |
 | `reference/services/web-ui/src/eden_web_ui/templates/admin_experiments.html` | Remove v0-limitation footer; "switch" CTA unchanged | Decision 12 |
 | `reference/services/web-ui/src/eden_web_ui/templates/*_form.html` | Hidden `form_experiment_id` field | §3.6 |
 | `reference/services/web-ui/tests/test_store_factory.py` (new) | Factory + bearer-cache + JIT-bootstrap coverage | §6.1 |
@@ -542,7 +598,13 @@ Single-PR landing is also viable for an operator who wants to ship the whole thi
 
 9. **Naming collision between `active_experiment_id` and 12c-shipped `selected_experiment_id`.** They're not the same: `selected_experiment_id` is the session field (may be None); `active_experiment_id` is the per-request resolved value (always a string, falling back to deployment default). The plan calls the distinction out in §1 / glossary so reviewers don't conflate them.
 
-10. **Test fixture rewrite churn.** ~28 files touched in W3; merge conflicts likely if any concurrent web-ui work is in flight. Mitigation: schedule W3 with no overlapping web-ui PRs in the queue.
+10. **Test fixture rewrite churn.** 43 files touched in W3; merge conflicts likely if any concurrent web-ui work is in flight. Mitigation: schedule W3 with no overlapping web-ui PRs in the queue.
+
+11. **Misclassifying registered-but-unseeded experiments as stale.** Decision 8's three-state model handles this, but the code paths are easy to get wrong: a control-plane `read_experiment_metadata` 200 + task-store-server `read_experiment_state` 404 is a real state that the codebase hits today the moment an operator clicks "Register" on the dashboard. Mitigation: explicit fixture-driven tests in `test_resolve_active.py` for all three states; the unseeded-state render-path is tested per-route in W2 (a "looks empty but here's why" banner is a small but observable UI element on every per-experiment page).
+
+12. **Per-experiment config-dir drift from the task-store-server's internal `experiment_config` text.** The task-store-server stores `experiment_config` text at experiment-creation time (currently only via checkpoint import). The on-disk config dir (Decision 6) is a separate source; if operators hand-edit one but not the other, the web-ui's view of the experiment's objective / evaluation schema diverges from the worker hosts' view. Mitigation: document the divergence in `docs/operations/web-ui-multi-experiment.md`; the wire-endpoint follow-up (§4.2) closes it permanently. v0 accepts the divergence with documentation; v1 (the wire endpoint) makes it impossible by construction.
+
+13. **Control-plane-scoped web-ui worker registration vs. 12c's authority model.** The plan adds a deployment-scoped web-ui worker (§3.2 Posture B/C) but the existing control-plane authority table (12c plan §5.1) defines `list_experiments` / `read_experiment_metadata` as callable by any "deployment-scoped worker OR admin-token". The plan reuses that existing authority pattern — no new wire surface. But: bootstrapping that worker uses admin-token-gated `POST /v0/control/workers` (also 12c §5.1). Operators who skip bootstrap end up in Posture D (switcher hidden). Mitigation: the startup flow logs a clear warning when control-plane URL is set but no admin token AND no persisted control-plane-scoped credential is available.
 
 ## 11. Followups (out of scope)
 
