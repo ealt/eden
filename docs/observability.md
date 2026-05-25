@@ -23,7 +23,7 @@ EDEN's state lives in four substrates:
 | **Task store** (Postgres) | Tasks, ideas, variants, submissions, events, workers, groups, dispatch decisions, leases, experiment state | Host bind-mount at `${EDEN_EXPERIMENT_DATA_ROOT}/postgres/` (12a-1g) |
 | **Git remote** (Forgejo) | The experiment repo: seed commit + `work/*` (executor scratch) + `variant/*` (integrated lineage) + `main` | Host bind-mount at `${EDEN_EXPERIMENT_DATA_ROOT}/forgejo/` |
 | **Artifacts** | Worker-emitted blobs: idea content, evaluation outputs | Host bind-mount at `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` ⇄ `/var/lib/eden/artifacts/` inside web-ui; served at `GET /artifacts?uri=file://...` (session-authed). **Empty in scripted mode** — only subprocess mode writes real files. |
-| **Process logs** | Container stdout from each service | Captured by Docker's logging driver; ephemeral |
+| **Process logs** | Container stdout from each service | Captured by Docker's logging driver (`json-file`, 50MB × 5 per service); ephemeral. **Issue #109** also persists each service's JSON-line log to `${EDEN_EXPERIMENT_DATA_ROOT}/logs/<service>/<service>.jsonl` (host bind-mount; rotates at 50MB × 5; survives `compose down -v`). |
 
 Every observability tool below reads from one or more of these. The event log in the task store is the closest thing to a single source of truth — every state change of consequence emits an event, and the orchestrator's loop is driven entirely by reads against it.
 
@@ -109,6 +109,15 @@ FastAPI's `/docs`, `/openapi.json`, and `/redoc` are mounted on the task-store-s
 
 ### 2.5 Container logs
 
+Every long-running EDEN service writes JSON-lines to **two** destinations simultaneously:
+
+1. **stdout**, captured by Docker's `json-file` logging driver.
+2. **A host-side file** under `${EDEN_EXPERIMENT_DATA_ROOT}/logs/<service>/<service>.jsonl` — issue [#109](https://github.com/ealt/eden/issues/109).
+
+Both carry the same records in the same format ([`eden_service_common/logging.py`](../reference/services/_common/src/eden_service_common/logging.py)); the redundancy exists to survive the failure modes each one has alone.
+
+**Reading via docker:**
+
 ```bash
 cd reference/compose
 docker compose --env-file .env ps                    # service health snapshot
@@ -116,20 +125,40 @@ docker compose --env-file .env logs -f orchestrator  # tail one service
 docker compose --env-file .env logs --since 5m       # all services, last 5 min
 ```
 
-The orchestrator's log is the highest-signal one for "what is the system doing right now" — every dispatch decision is logged with a `decision_type` + `outcome`.
+**Reading the bind-mounted JSONL files directly:**
 
-**Log retention.** Each service's docker logging driver is set to `json-file` with `max-size: 50m` and `max-file: 5` — roughly 250MB per service before rotation. This is enough for a multi-hour debugging window. The hard limits today:
+```bash
+DATA_ROOT=$(sed -n 's/^EDEN_EXPERIMENT_DATA_ROOT=//p' reference/compose/.env)
 
-- **`docker compose stop`** preserves logs (the container is retained, only the process exits).
-- **`docker compose down`** removes containers and **deletes** their logs.
-- A SIGKILL'd container may lose the last in-flight stdout write; Python's logging module flushes on signal, so the practical risk is small but not zero.
+# Tail one service's structured log:
+tail -F "$DATA_ROOT/logs/orchestrator/orchestrator.jsonl" | jq
 
-The four-rung ladder for production-grade persistence — only **L1** is in place today:
+# Last 20 dispatch decisions across the whole experiment:
+jq -c 'select(.decision_type)' \
+    "$DATA_ROOT/logs/orchestrator/orchestrator.jsonl" | tail -20
+
+# Filter by level across all services:
+jq -c 'select(.level=="error")' "$DATA_ROOT/logs/"*"/"*.jsonl
+```
+
+The orchestrator's log is the highest-signal one for "what is the system doing right now" — every dispatch decision is logged with a `decision_type` + `outcome`. `jq` is the right tool for ad-hoc filtering; the records are flat JSON objects with stable field names (`ts`, `level`, `service`, `experiment_id`, `message`, plus per-record context keys).
+
+**Retention + crash-survival caveats.**
+
+- Docker `json-file` driver: rotates per-service at `max-size: 50m`, `max-file: 5` — roughly 250 MB per service before the oldest archive is dropped.
+- Bind-mounted JSONL: rotates at `EDEN_LOG_MAX_BYTES` (default 50 MB) × `EDEN_LOG_BACKUP_COUNT` (default 5), both override-able in the per-service environment. Backups land alongside as `<service>.jsonl.1` … `<service>.jsonl.5`.
+- **`docker compose stop`** preserves both destinations (containers retained; bind-mount is on the host).
+- **`docker compose down`** removes the containers and **deletes the docker-driver logs**, but the bind-mounted JSONL **survives**. This is the primary motivation for #109 — post-crash forensics need a copy of the logs the docker driver no longer holds.
+- **`docker compose down -v`** still does not touch the bind-mount — `-v` only drops named volumes, and the logs dir is a host bind-mount (12a-1g posture, chapter 01 §13).
+- **`rm -rf ${EDEN_EXPERIMENT_DATA_ROOT}/logs`** is the only operator action that wipes the bind-mounted JSONL. The same `rm -rf ${EDEN_EXPERIMENT_DATA_ROOT}` reset that wipes postgres / forgejo / artifacts wipes logs too.
+- A SIGKILL'd container may lose the last in-flight write to either destination. The file handler flushes after every record (the stdlib `StreamHandler.emit` default), so the practical at-risk window is the few bytes of one not-yet-flushed JSON object — not minutes of log.
+
+The four-rung ladder for production-grade persistence:
 
 | Rung | What it gives you | Status |
 |---|---|---|
-| **L1** | Bumped docker rotation (50MB × 5 per service) | In place — applies on next container recreate |
-| **L2** | Per-service file handler writing to `${EDEN_EXPERIMENT_DATA_ROOT}/logs/` (bind-mount; survives `compose down -v`) | Tracked in [#109](https://github.com/ealt/eden/issues/109) |
+| **L1** | Bumped docker rotation (50MB × 5 per service) | In place |
+| **L2** | Per-service file handler writing to `${EDEN_EXPERIMENT_DATA_ROOT}/logs/` (bind-mount; survives `compose down -v`) | In place ([#109](https://github.com/ealt/eden/issues/109)) |
 | **L3** | In-stack search UI (Loki + Promtail + Grafana overlay at `localhost:3000`) | Tracked in [#110](https://github.com/ealt/eden/issues/110) |
 | **L4** | External streaming to CloudWatch / Datadog / Grafana Cloud / etc. | Production-grade; out of scope for the reference stack — wire each service's stdout to your collector of choice |
 

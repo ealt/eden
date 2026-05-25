@@ -159,8 +159,14 @@ services:
     # stack the artifacts dir is mounted ro here too, but the
     # scripted ideator emits fake URIs so the route returns 404;
     # that's fine — see plan §6.6.
+    #
+    # EDEN_LOG_DIR (issue #109): file-handler companion to the
+    # docker json-file driver. The shared logger writes
+    # /var/lib/eden/logs/<service>.jsonl alongside stdout; the
+    # host-side bind-mount below survives `compose down -v`.
     environment:
       EDEN_READONLY_PASSWORD: ${EDEN_READONLY_PASSWORD:?EDEN_READONLY_PASSWORD must be set (run setup-experiment)}
+      EDEN_LOG_DIR: /var/lib/eden/logs
     command:
       - python
       - -m
@@ -192,6 +198,10 @@ services:
       # durability migration); the task-store-server gets ro
       # because it only reads.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts:ro
+      # Issue #109: per-service log bind-mount (writable). Survives
+      # `compose down -v`. setup-experiment.sh creates the host-side
+      # dir tree.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/task-store-server:/var/lib/eden/logs
     ports:
       # Exposed on the host for manual-UI tooling (scripts under
       # reference/scripts/manual-ui/ and the eden-manual-* skills).
@@ -288,6 +298,8 @@ services:
       # `env_max_variants_policy` factory reads this; other
       # deployment-supplied policies MAY follow the same convention.
       EDEN_TERMINATION_MAX_VARIANTS: ${EDEN_TERMINATION_MAX_VARIANTS:-}
+      # Issue #109: file-handler companion to docker json-file driver.
+      EDEN_LOG_DIR: /var/lib/eden/logs
     volumes:
       # Durable substrates (Phase 12a-1g) under the per-experiment
       # data root. The per-host bare clone survives restart so the
@@ -298,6 +310,8 @@ services:
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/orchestrator-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/orchestrator:/var/lib/eden/credentials
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      # Issue #109: per-service log bind-mount.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/orchestrator:/var/lib/eden/logs
 
   ideator-host:
     image: eden-reference:dev
@@ -326,9 +340,14 @@ services:
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --log-level
       - info
+    environment:
+      # Issue #109: file-handler companion to docker json-file driver.
+      EDEN_LOG_DIR: /var/lib/eden/logs
     volumes:
       # Durable substrate (Phase 12a-1g).
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/ideator:/var/lib/eden/credentials
+      # Issue #109: per-service log bind-mount.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/ideator-host:/var/lib/eden/logs
 
   executor-host:
     image: eden-reference:dev
@@ -361,11 +380,16 @@ services:
       - /etc/eden/credential-helper.sh
       - --log-level
       - info
+    environment:
+      # Issue #109: file-handler companion to docker json-file driver.
+      EDEN_LOG_DIR: /var/lib/eden/logs
     volumes:
       # Durable substrates (Phase 12a-1g).
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/executor-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/executor:/var/lib/eden/credentials
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      # Issue #109: per-service log bind-mount.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/executor-host:/var/lib/eden/logs
 
   evaluator-host:
     image: eden-reference:dev
@@ -394,12 +418,17 @@ services:
       - /etc/eden/experiment-config.yaml
       - --log-level
       - info
+    environment:
+      # Issue #109: file-handler companion to docker json-file driver.
+      EDEN_LOG_DIR: /var/lib/eden/logs
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
     volumes:
       # Durable substrate (Phase 12a-1g).
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/evaluator:/var/lib/eden/credentials
+      # Issue #109: per-service log bind-mount.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/evaluator-host:/var/lib/eden/logs
 
   web-ui:
     image: eden-reference:dev
@@ -452,6 +481,9 @@ services:
       - "8090"
       - --log-level
       - info
+    environment:
+      # Issue #109: file-handler companion to docker json-file driver.
+      EDEN_LOG_DIR: /var/lib/eden/logs
     configs:
       - source: eden-experiment-config
         target: /etc/eden/experiment-config.yaml
@@ -461,6 +493,8 @@ services:
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/web-ui:/var/lib/eden/credentials
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+      # Issue #109: per-service log bind-mount.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/web-ui:/var/lib/eden/logs
     ports:
       - "${WEB_UI_HOST_PORT:-8090}:8090"
     healthcheck:

@@ -137,7 +137,9 @@ echo "--- asserting expected substrate bind-mounts exist ---"
 for sub in postgres forgejo orchestrator-repo web-ui-repo executor-repo \
            evaluator-repo artifacts \
            credentials/orchestrator credentials/ideator \
-           credentials/executor credentials/evaluator credentials/web-ui; do
+           credentials/executor credentials/evaluator credentials/web-ui \
+           logs/task-store-server logs/orchestrator logs/ideator-host \
+           logs/executor-host logs/evaluator-host logs/web-ui; do
     test -d "${SMOKE_DATA_ROOT}/${sub}" || {
         echo "missing substrate directory: ${SMOKE_DATA_ROOT}/${sub}" >&2
         exit 1
@@ -306,5 +308,27 @@ test "$VARIANT_REMOTE_REFS" -ge 3 || {
     echo "expected >= 3 variant/* refs on forgejo; got $VARIANT_REMOTE_REFS" >&2
     exit 1
 }
+
+echo "--- asserting per-service log JSONL files were written ---"
+# Issue #109: every long-running service writes /var/lib/eden/logs/
+# <service>.jsonl alongside stdout. The bind-mount surfaces those
+# under ${EDEN_EXPERIMENT_DATA_ROOT}/logs/<service>/ on the host.
+# Each must exist and be non-empty after the full smoke run.
+for svc in task-store-server orchestrator ideator-host \
+           executor-host evaluator-host web-ui; do
+    log_file="${SMOKE_DATA_ROOT}/logs/${svc}/${svc}.jsonl"
+    test -s "$log_file" || {
+        echo "expected non-empty ${log_file}; got:" >&2
+        ls -la "${SMOKE_DATA_ROOT}/logs/${svc}/" >&2 || true
+        exit 1
+    }
+    # Sanity: file should parse as JSON-lines (at least the first
+    # line). `jq -e` exits non-zero on parse failure.
+    head -n1 "$log_file" | jq -e . >/dev/null || {
+        echo "first line of ${log_file} is not valid JSON" >&2
+        head -n1 "$log_file" >&2
+        exit 1
+    }
+done
 
 echo "PASS"
