@@ -337,7 +337,7 @@ def _render_idea_form_errors(
     )
 
 
-def _persist_idea_drafts(
+def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/write/create/mark-ready/slug-check pipeline; splitting fragments the row-iteration state machine across helpers without reducing logic
     *,
     store: Any,
     request: Request,
