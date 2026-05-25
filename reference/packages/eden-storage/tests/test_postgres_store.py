@@ -11,13 +11,18 @@ handling. Skipped without ``EDEN_TEST_POSTGRES_DSN``; CI's
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from collections.abc import Iterator
 
 import pytest
-from eden_contracts import EvaluationSchema
+from eden_contracts import EvaluationSchema, Variant
 from eden_storage import InvalidPrecondition, PostgresStore
+from eden_storage._postgres_views import (
+    _COMMON_COLUMN_EXPRS,
+    VARIANT_UNPACKED_VIEW,
+)
 
 _DSN = os.environ.get("EDEN_TEST_POSTGRES_DSN") or None
 
@@ -156,3 +161,197 @@ def test_event_id_counter_resumes_across_reopen(schema_dsn: str) -> None:
         assert len(all_events) > first_event_count
     finally:
         reopened.close()
+
+
+# --------------------------------------------------------------------------
+# Issue #124 — `variant_unpacked` Adminer-convenience view.
+# --------------------------------------------------------------------------
+
+
+def _insert_variant_row(conn: object, variant: Variant) -> None:
+    """Insert a Variant directly into the `variant` table.
+
+    Bypasses the state machine (we're testing the view, not the
+    lifecycle): the view's contract is "what's in `data` comes out as
+    typed columns" regardless of how the row got there.
+    """
+    payload = json.dumps(variant.model_dump(mode="json", exclude_none=True))
+    with conn.cursor() as cur:  # type: ignore[attr-defined]
+        cur.execute(
+            "INSERT INTO variant(variant_id, status, data) VALUES (%s, %s, %s)",
+            (variant.variant_id, variant.status, payload),
+        )
+
+
+def test_variant_unpacked_view_unpacks_common_columns(schema_dsn: str) -> None:
+    """The view exposes every public Variant field as a scalar column."""
+    schema = EvaluationSchema.model_validate({"score": "real"})
+    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=schema)
+    try:
+        variant = Variant(
+            variant_id="var-001",
+            experiment_id="exp-1",
+            idea_id="idea-001",
+            status="success",
+            parent_commits=["a" * 40],
+            branch="work/idea-001",
+            commit_sha="b" * 40,
+            variant_commit_sha="c" * 40,
+            artifacts_uri="file:///tmp/artifacts/var-001",
+            description="canonical test variant",
+            evaluation={"score": 0.875},
+            started_at="2026-01-01T00:00:00Z",
+            completed_at="2026-01-01T00:05:00Z",
+            executed_by="worker-exec",
+            evaluated_by="worker-eval",
+        )
+        _insert_variant_row(store._conn, variant)
+
+        with store._conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {VARIANT_UNPACKED_VIEW} WHERE variant_id = %s",
+                        (variant.variant_id,))
+            description = cur.description
+            assert description is not None
+            cols: list[str] = [str(d[0]) for d in description]
+            fetched = cur.fetchone()
+            assert fetched is not None
+            row = dict(zip(cols, fetched, strict=True))
+
+        assert row["variant_id"] == "var-001"
+        assert row["status"] == "success"
+        assert row["experiment_id"] == "exp-1"
+        assert row["idea_id"] == "idea-001"
+        assert row["branch"] == "work/idea-001"
+        assert row["commit_sha"] == "b" * 40
+        assert row["variant_commit_sha"] == "c" * 40
+        assert row["artifacts_uri"] == "file:///tmp/artifacts/var-001"
+        assert row["description"] == "canonical test variant"
+        assert row["executed_by"] == "worker-exec"
+        assert row["evaluated_by"] == "worker-eval"
+        assert row["started_at"] == "2026-01-01T00:00:00Z"
+        assert row["completed_at"] == "2026-01-01T00:05:00Z"
+        # parent_commits and evaluation are JSONB sub-trees.
+        assert row["parent_commits"] == ["a" * 40]
+        assert row["evaluation"] == {"score": 0.875}
+    finally:
+        store.close()
+
+
+def test_variant_unpacked_view_unpacks_metric_columns_with_types(
+    schema_dsn: str,
+) -> None:
+    """Per-metric columns are generated from `evaluation_schema` with declared types."""
+    schema = EvaluationSchema.model_validate(
+        {
+            "correctness": "real",
+            "effort_minutes": "integer",
+            "notes": "text",
+        }
+    )
+    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=schema)
+    try:
+        variant = Variant(
+            variant_id="var-001",
+            experiment_id="exp-1",
+            idea_id="idea-001",
+            status="success",
+            parent_commits=["a" * 40],
+            evaluation={
+                "correctness": 0.875,
+                "effort_minutes": 17,
+                "notes": "edge-case OK",
+            },
+            started_at="2026-01-01T00:00:00Z",
+        )
+        _insert_variant_row(store._conn, variant)
+
+        with store._conn.cursor() as cur:
+            cur.execute(
+                f'SELECT correctness, effort_minutes, notes '
+                f"FROM {VARIANT_UNPACKED_VIEW} WHERE variant_id = %s",
+                (variant.variant_id,),
+            )
+            description = cur.description
+            assert description is not None
+            cols = [str(d[0]) for d in description]
+            assert cols == ["correctness", "effort_minutes", "notes"]
+            fetched = cur.fetchone()
+            assert fetched is not None
+            correctness, effort_minutes, notes = fetched
+
+        # Python types reflect Postgres types: float / int / str.
+        assert isinstance(correctness, float)
+        assert correctness == pytest.approx(0.875)
+        assert isinstance(effort_minutes, int)
+        assert effort_minutes == 17
+        assert isinstance(notes, str)
+        assert notes == "edge-case OK"
+
+        # information_schema confirms the declared Postgres types.
+        with store._conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = %s "
+                "AND column_name IN ('correctness', 'effort_minutes', 'notes')",
+                (VARIANT_UNPACKED_VIEW,),
+            )
+            type_by_col = dict(cur.fetchall())
+        assert type_by_col["correctness"] == "double precision"
+        assert type_by_col["effort_minutes"] == "integer"
+        assert type_by_col["notes"] == "text"
+    finally:
+        store.close()
+
+
+def test_variant_unpacked_view_without_evaluation_schema(schema_dsn: str) -> None:
+    """When no schema is declared, the view still exists with only the common columns."""
+    store = PostgresStore("exp-1", schema_dsn)
+    try:
+        with store._conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s ORDER BY ordinal_position",
+                (VARIANT_UNPACKED_VIEW,),
+            )
+            cols = [r[0] for r in cur.fetchall()]
+        # Exactly the common columns, in order.
+        assert cols == [alias for alias, _ in _COMMON_COLUMN_EXPRS]
+    finally:
+        store.close()
+
+
+def test_variant_unpacked_view_is_replaced_on_reopen(schema_dsn: str) -> None:
+    """Reopening with a different schema (rare; only valid pre-variant) replaces the view.
+
+    The CREATE OR REPLACE VIEW invocation in PostgresStore.__init__ is
+    intentionally idempotent + replaceable: the view tracks
+    `evaluation_schema`. Walks the back-door path of dropping the
+    experiment row so the second open re-INSERTs with a different schema.
+    """
+    schema_v1 = EvaluationSchema.model_validate({"score": "real"})
+    PostgresStore("exp-1", schema_dsn, evaluation_schema=schema_v1).close()
+
+    # Reset the experiment row so __init__ accepts a different schema.
+    import psycopg
+
+    with psycopg.connect(schema_dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM experiment")
+
+    schema_v2 = EvaluationSchema.model_validate(
+        {"accuracy": "real", "label": "text"}
+    )
+    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=schema_v2)
+    try:
+        with store._conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s",
+                (VARIANT_UNPACKED_VIEW,),
+            )
+            cols = {r[0] for r in cur.fetchall()}
+        assert "score" not in cols
+        assert {"accuracy", "label"} <= cols
+    finally:
+        store.close()
+
+
