@@ -56,12 +56,18 @@ git checkout {{ idea.parent_commits[0] }}</code></pre>
             <pre><code>git checkout -b my-work
 # (edit, stage, commit)
 git push origin my-work</code></pre></li>
-        <li>Paste the resulting commit SHA below and submit. The UI fetches from origin on submit, then creates the canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit.</li>
+        <li>Print the commit SHA you just pushed:
+            <pre><code>git rev-parse HEAD</code></pre>
+            Copy the 40-character hex output and paste it into the <code>commit_sha</code> field below.</li>
+        <li>Submit. The UI fetches from origin, then creates the canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit.</li>
         {% else %}
         <li><strong>Note:</strong> this deployment has no <code>--clone-url</code> configured, so the UI can't show a clone command. Ask your operator how to obtain pushable access to the central repo
             {% if repo_path %}(the server's local clone path is <code>{{ repo_path }}</code>, but that is inside the web-ui process — not a URL you can push to from a workstation){% endif %}.</li>
         <li>Once you have access, work on a checkout with parents matching <code>parent_commits</code> above, then push your tip commit to the central repo.</li>
-        <li>Paste the resulting commit SHA below and submit. The UI will fetch from origin, then create the canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit.</li>
+        <li>Print the commit SHA you just pushed:
+            <pre><code>git rev-parse HEAD</code></pre>
+            Copy the 40-character hex output and paste it into the <code>commit_sha</code> field below.</li>
+        <li>Submit. The UI will fetch from origin, then create the canonical ref <code>refs/heads/{{ branch }}</code> pointing at your commit.</li>
         {% endif %}
     </ol>
 </section>
