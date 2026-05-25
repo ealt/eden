@@ -8,6 +8,22 @@ Per-chunk entries preserve the full implementation record: contract amendments, 
 
 ## [Unreleased]
 
+### Slug-uniqueness soft-check on idea submission (issue #121)
+
+Polish item: when an operator submits an idea whose `slug` collides with an existing idea in the same experiment, the system now surfaces an advisory warning at submission time rather than silently accepting the collision. Slug uniqueness is **not** a protocol invariant — idea identity is by `idea_id` ([`spec/v0/02-data-model.md`](spec/v0/02-data-model.md) §5.1), and variant branches embed the unique `variant_id` so collisions are harmless in lineage tracking. The check is soft: the request still succeeds 200, and operators can deliberately reuse a slug (e.g., sibling variations grouped by slug) by ignoring the warning.
+
+**Spec amendment.** [`spec/v0/07-wire-protocol.md`](spec/v0/07-wire-protocol.md) §3 documents an OPTIONAL `warnings: list[string]` field on `create_idea`'s response body, alongside the idea fields per `idea.schema.json`. Warnings are non-normative diagnostic strings; implementations MAY omit the field, and clients MUST NOT rely on its presence or contents for correctness. (Conformance does NOT assert this field — it remains a reference-impl convenience.)
+
+**Wire layer.** [`reference/packages/eden-wire/src/eden_wire/server.py`](reference/packages/eden-wire/src/eden_wire/server.py)'s `_create_idea` calls a new module-level helper `_slug_conflict_warnings(store, idea)` that scans the experiment's existing ideas (`store.list_ideas()` is single-experiment scoped) for slug matches excluding the just-created idea. When matches are present, the response body grows a `warnings` array listing the colliding `idea_id` values; when none, the field is omitted (Pydantic-equivalent `exclude_none` semantics).
+
+**eden-manual CLI.** [`reference/scripts/manual-ui/eden-manual`](reference/scripts/manual-ui/eden-manual)'s `cmd_ideation_submit` now captures the `create_idea` response, prints any per-idea warning to stderr at creation time, and includes a `warnings` array in the final JSON output when any collisions were detected.
+
+**Web UI ideator.** The web-ui's `submit_idea` route (`reference/services/web-ui/src/eden_web_ui/routes/ideator.py`) doesn't go through the wire — it calls `store.create_idea` directly — so `_persist_idea_drafts` now performs the same slug scan locally and returns a `slug_warnings` list alongside the `idea_ids`. Warnings are passed through to `_render_submitted` and rendered as a `<div class="slug-warnings" role="alert">` block on [`ideator_submitted.html`](reference/services/web-ui/src/eden_web_ui/templates/ideator_submitted.html). Pre-submit AJAX validation (an alternative shape proposed in the issue) was deferred — the post-submit warning is sufficient for the polish goal and avoids the additional HTMX wiring.
+
+**Tests.** New `TestCreateIdeaSlugWarnings` class in [`reference/packages/eden-wire/tests/test_lifecycle_wire.py`](reference/packages/eden-wire/tests/test_lifecycle_wire.py) covers three cases: unique slug → no `warnings` key; duplicate slug → `warnings` array names the prior `idea_id`; triple-collision → all prior IDs listed. New `TestSlugSoftCheck` class in [`reference/services/web-ui/tests/test_ideator_flow.py`](reference/services/web-ui/tests/test_ideator_flow.py) asserts the warning block renders on the submitted page on collision and is absent on unique-slug submissions.
+
+**Out of scope (followups):** Pre-submit AJAX warning + confirmation step in the web-ui ideator form (the issue suggested this; deferred since the post-submit warning is sufficient and the form's HTMX surface is being reworked in adjacent issues — revisit if operator feedback shows the post-submit timing is too late). `docs/user-guide.md` §5 and `.claude/skills/eden-manual-ideator/SKILL.md` Phase 4 mentions of the soft-check are intentionally omitted since the warning is self-describing and the user-guide entry would just restate the behavior. Closes #121.
+
 ### Executor-host substrate access + DooD env-var forwarding (issues #154 + #155)
 
 Backfills two Phase 12a-1f deferrals together (single PR — both touch the DooD code path and are simpler to reason about as one change).

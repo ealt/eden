@@ -180,6 +180,8 @@ On success the server returns 204 with an empty body. The single-event append is
 
 Request and response bodies match [`schemas/idea.schema.json`](schemas/idea.schema.json). `list_ideas` accepts an optional `state` query parameter. `mark-ready` has an empty request body.
 
+`create_idea` MAY include an additional advisory field `warnings: list[string]` in its response body alongside the idea fields. Warnings are non-normative diagnostic strings (e.g., a soft-check that the submitted `slug` collides with an existing idea in the same experiment — slug uniqueness is not a protocol invariant per [`02-data-model.md`](02-data-model.md) §5.1, so the request still succeeds 200). Implementations MAY omit the field; clients MUST NOT rely on its presence or contents for correctness.
+
 ## 4. Variant operations
 
 | Operation | HTTP | Path | Auth |

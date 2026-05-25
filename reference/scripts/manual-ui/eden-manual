@@ -579,6 +579,7 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     host_artifacts_dir = _host_artifacts_dir(env)
     host_artifacts_dir.mkdir(parents=True, exist_ok=True)
     idea_ids: list[str] = []
+    warnings: list[str] = []
 
     # Phase 1: create_idea as drafting for each.
     for raw in raw_ideas:
@@ -610,8 +611,16 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
             idea["intended_executor"] = raw["intended_executor"]
         if "intended_evaluator" in raw and raw["intended_evaluator"] is not None:
             idea["intended_evaluator"] = raw["intended_evaluator"]
-        _wire(env, f"/v0/experiments/{_exp(env)}/ideas", method="POST", body=idea, bearer=bearer)
+        resp = _wire(
+            env, f"/v0/experiments/{_exp(env)}/ideas",
+            method="POST", body=idea, bearer=bearer,
+        )
         idea_ids.append(idea_id)
+        # Soft-check (issue #121): wire may attach advisory `warnings`
+        # when the submitted slug collides with an existing idea.
+        for warning in (resp or {}).get("warnings", []) or []:
+            print(f"warning: idea {idea_id}: {warning}", file=sys.stderr)
+            warnings.append(f"{idea_id}: {warning}")
 
     # Phase 2: mark_ready for each.
     for iid in idea_ids:
@@ -628,11 +637,14 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
         bearer=bearer,
     )
     _drop_claim(args.task_id)
-    print(json.dumps({
+    output: dict[str, object] = {
         "task_id": args.task_id,
         "status": "success",
         "idea_ids": idea_ids,
-    }, indent=2))
+    }
+    if warnings:
+        output["warnings"] = warnings
+    print(json.dumps(output, indent=2))
 
 
 # ----------------------------------------------------------- execution-submit

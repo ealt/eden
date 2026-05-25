@@ -339,18 +339,24 @@ def _persist_idea_drafts(
     request: Request,
     drafts: list[Any],
     draft_rows: list[int],
-) -> tuple[list[str], HTMLResponse | None, FormErrors | None]:
+) -> tuple[list[str], list[str], HTMLResponse | None, FormErrors | None]:
     """Phase 1+2: write artifacts, create ideas as drafting, flip to ready.
 
-    Returns ``(idea_ids, error_response, validation_errors)``:
+    Returns ``(idea_ids, slug_warnings, error_response, validation_errors)``:
 
-    - ``(ids, None, None)`` on success;
-    - ``([], error_response, None)`` on a ``DispatchError`` from either
-      phase (rendered as the wire-error page);
-    - ``([], None, errors)`` on a Pydantic ``ValidationError`` raised by
-      ``Idea(**kwargs)``. The caller re-renders the draft form with the
-      per-row field errors — no store mutation has happened yet because
-      the Idea construction precedes the create_idea call.
+    - ``(ids, warnings, None, None)`` on success;
+    - ``([], [], error_response, None)`` on a ``DispatchError`` from
+      either phase (rendered as the wire-error page);
+    - ``([], [], None, errors)`` on a Pydantic ``ValidationError`` raised
+      by ``Idea(**kwargs)``. The caller re-renders the draft form with
+      the per-row field errors — no store mutation has happened yet
+      because the Idea construction precedes the create_idea call.
+
+    ``slug_warnings`` carries issue-#121 soft-check messages: after each
+    Idea is created, the experiment's existing ideas are scanned for
+    slug collisions; matches are reported as advisory strings. Slug
+    uniqueness is not a protocol invariant (idea identity is by
+    ``idea_id``), so warnings never block submission.
 
     The Phase-1 / Phase-2 split is preserved internally so a failure
     in mark-ready doesn't leave already-created drafting ideas
@@ -360,6 +366,7 @@ def _persist_idea_drafts(
     to its original row in the multi-row form.
     """
     idea_ids: list[str] = []
+    slug_warnings: list[str] = []
     artifacts_dir = request.app.state.artifacts_dir
     now: Callable[[], Any] = request.app.state.now
 
@@ -382,27 +389,35 @@ def _persist_idea_drafts(
             )
         except ValidationError as exc:
             errors = format_validation_errors(exc, row=row_index)
-            return [], None, errors
+            return [], [], None, errors
         write_idea_artifact(artifacts_dir, idea_id, draft.content)
         try:
             store.create_idea(idea)
         except DispatchError as exc:
-            return [], _render_error(
+            return [], [], _render_error(
                 request,
                 f"create_idea failed for {idea_id}: {wire_error_banner(exc)}",
             ), None
         idea_ids.append(idea_id)
+        # Issue #121 soft-check: warn the operator when a sibling idea
+        # in this experiment already uses the same slug.
+        for existing in store.list_ideas():
+            if existing.slug == idea.slug and existing.idea_id != idea_id:
+                slug_warnings.append(
+                    f"idea {idea_id}: slug {idea.slug!r} is already used "
+                    f"by idea {existing.idea_id!r}"
+                )
 
     for idea_id in idea_ids:
         try:
             store.mark_idea_ready(idea_id)
         except DispatchError as exc:
-            return [], _render_error(
+            return [], [], _render_error(
                 request,
                 f"mark_idea_ready failed for {idea_id}: {wire_error_banner(exc)}",
             ), None
 
-    return idea_ids, None, None
+    return idea_ids, slug_warnings, None, None
 
 
 @router.post("/{task_id}/submit", response_model=None)
@@ -461,7 +476,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             task_id=task_id, errors=errors, form_state=form_state, slugs=slugs,
         )
 
-    idea_ids, persist_error, validation_errors = _persist_idea_drafts(
+    idea_ids, slug_warnings, persist_error, validation_errors = _persist_idea_drafts(
         store=store, request=request, drafts=drafts, draft_rows=draft_rows,
     )
     if validation_errors is not None:
@@ -490,7 +505,8 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     _CLAIMS.pop(_claim_key(session.csrf, task_id), None)
     _DRAFT_BUFFERS.pop(_claim_key(session.csrf, task_id), None)
     return _render_submitted(
-        request, task_id, status="success", idea_ids=tuple(idea_ids)
+        request, task_id, status="success", idea_ids=tuple(idea_ids),
+        slug_warnings=tuple(slug_warnings),
     )
 
 
@@ -729,6 +745,7 @@ def _render_submitted(
     *,
     status: str,
     idea_ids: tuple[str, ...],
+    slug_warnings: tuple[str, ...] = (),
 ) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
         request,
@@ -737,6 +754,7 @@ def _render_submitted(
             "task_id": task_id,
             "status": status,
             "idea_ids": idea_ids,
+            "slug_warnings": slug_warnings,
         },
     )
 
