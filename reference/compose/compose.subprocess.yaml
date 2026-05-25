@@ -89,6 +89,14 @@ services:
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
 
   executor-host:
+    # Issue #154: substrate env vars threaded to the executor
+    # subprocess so agentic executors can read git / artifacts /
+    # readonly Postgres alongside their cwd-anchored worktree.
+    environment:
+      EDEN_REPO_DIR: /var/lib/eden/repo
+      EDEN_ARTIFACT_URL: http://task-store-server:8080/_reference/experiments/${EDEN_EXPERIMENT_ID:?}/artifacts/
+      EDEN_ARTIFACT_PATH_ROOT: /var/lib/eden/artifacts
+      EDEN_READONLY_STORE_URL: ${EDEN_READONLY_STORE_URL:?}
     command:
       - python
       - -m

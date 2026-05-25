@@ -125,6 +125,14 @@ class ExecArgs:
     volumes: list[VolumeMount]
     binds: list[BindMount]
     cidfile_dir: Path
+    network: str | None = None
+    """Docker network attached to spawned sibling containers via
+    ``--network`` (docker mode only). When set, substrate env keys
+    are FORWARDED into the spawned child (compose-internal hostnames
+    like ``task-store-server`` / ``postgres`` resolve from inside
+    the sibling); when ``None``, substrate env keys are suppressed
+    per the DooD posture documented at
+    [`spec/v0/reference-bindings/worker-host-subprocess.md`] §9.3."""
 
 
 def add_exec_arguments(parser: argparse.ArgumentParser) -> None:
@@ -184,6 +192,21 @@ def add_exec_arguments(parser: argparse.ArgumentParser) -> None:
             "(--exec-mode=docker only)."
         ),
     )
+    parser.add_argument(
+        "--exec-network",
+        default=os.environ.get("EDEN_EXEC_NETWORK"),
+        help=(
+            "Docker network to attach spawned sibling containers to "
+            "(--exec-mode=docker only). Required for the spawned "
+            "child to reach compose-internal hostnames (e.g. "
+            "task-store-server:8080, postgres:5432) so the Phase "
+            "12a-1f substrate env vars (EDEN_ARTIFACT_URL, "
+            "EDEN_READONLY_STORE_URL) are usable from inside the "
+            "sibling. Falls back to $EDEN_EXEC_NETWORK. When unset, "
+            "substrate env keys are suppressed in docker mode (the "
+            "URLs would not resolve from the bridge network)."
+        ),
+    )
 
 
 def resolve_exec_args(args: argparse.Namespace) -> ExecArgs:
@@ -201,12 +224,14 @@ def resolve_exec_args(args: argparse.Namespace) -> ExecArgs:
         )
     volumes = [parse_volume_spec(v) for v in (args.exec_volume or [])]
     binds = [parse_bind_spec(b) for b in (args.exec_bind or [])]
+    network = getattr(args, "exec_network", None) or None
     return ExecArgs(
         mode=mode,
         image=image,
         volumes=volumes,
         binds=binds,
         cidfile_dir=Path(args.cidfile_dir),
+        network=network,
     )
 
 
@@ -376,21 +401,35 @@ def resolve_substrate_args(
 
 
 def substrate_args_for_exec_mode(
-    substrate: SubstrateArgs, *, exec_mode: str
+    substrate: SubstrateArgs,
+    *,
+    exec_mode: str,
+    exec_network: str | None = None,
 ) -> SubstrateArgs:
-    """Suppress all substrate values when running under ``--exec-mode docker``.
+    """Suppress substrate values when DooD cannot reach compose-internal hosts.
 
-    Per 12a-1f §8.9, sibling containers started by the host docker
-    daemon are not attached to the compose project network, so the
-    in-network hostnames in ``EDEN_ARTIFACT_URL`` /
-    ``EDEN_READONLY_STORE_URL`` would not resolve from inside them.
-    The clean posture is to SUPPRESS the substrate env keys in
-    docker mode (rather than forward broken URLs) — this returns an
-    empty :class:`SubstrateArgs` for that case. The host MAY log a
-    WARN line so operators understand why substrate access is
+    Per the binding doc's §9.3 trust-boundary note, sibling containers
+    started by the host docker daemon resolve hostnames against the
+    default bridge network by default — so the compose-internal
+    hostnames in ``EDEN_ARTIFACT_URL`` / ``EDEN_READONLY_STORE_URL``
+    would not resolve from inside them, and ``EDEN_REPO_DIR`` would
+    point at a host-side filesystem path that isn't mounted into the
+    sibling.
+
+    Issue #155 introduced ``--exec-network`` to let the operator
+    attach spawned siblings to the compose project network. When
+    ``exec_network`` is set, those hostnames DO resolve from inside
+    the sibling and the substrate keys are forwarded. When
+    ``exec_network`` is ``None`` (and the operator hasn't opted into
+    a reachable network), the substrate keys are dropped — the host
+    logs a WARN so operators understand why substrate access is
     inert.
+
+    Note: ``EDEN_REPO_DIR`` still requires the operator to bind-mount
+    the bare repo into the sibling at the same path; ``--exec-bind``
+    on the compose host command line is the wiring point.
     """
-    if exec_mode == "docker":
+    if exec_mode == "docker" and exec_network is None:
         return SubstrateArgs(
             repo_dir=None,
             artifact_url=None,

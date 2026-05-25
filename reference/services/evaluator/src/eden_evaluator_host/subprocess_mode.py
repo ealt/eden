@@ -62,6 +62,11 @@ class EvaluatorSubprocessConfig:
     exec_volumes: tuple = ()
     exec_binds: tuple = ()
     cidfile_dir: Path | None = None
+    exec_network: str | None = None
+    """Compose network attached to spawned sibling containers via
+    ``--network`` (docker mode only); ``None`` means the default
+    bridge network. Required for the spawned sibling to reach
+    Phase 12a-1f substrate URLs."""
     host_id: str = ""
     worker_credential: str | None = None
     """The worker's per-worker bearer secret (the half after ``:`` in
@@ -413,6 +418,7 @@ def _maybe_wrap_for_docker(
         # Per-task evaluator subprocess does NOT read stdin —
         # same reasoning as the executor side.
         attach_stdin=False,
+        network=config.exec_network,
     )
     pk, cu = make_cidfile_callbacks(cidfile)
     return command, pk, [cu]

@@ -43,10 +43,10 @@ host-supplied environment.
 | `EDEN_WORKTREE` | (executor / evaluator only) Absolute path to the per-task git worktree (also equals cwd, redundant for convenience). |
 | `EDEN_WORKER_ID` | The host's registered `worker_id` ([chapter 2 §6](../02-data-model.md)). User code that issues wire calls of its own assembles its bearer as `f"{EDEN_WORKER_ID}:{EDEN_WORKER_CREDENTIAL}"` per [chapter 7 §13.1](../07-wire-protocol.md). Always set when the host has a registered identity; absent only when auth is disabled (in-process / test posture). |
 | `EDEN_WORKER_CREDENTIAL` | The **secret half** of the host's §13.1 bearer (the part after `:`). Forwarded as a separate env var so user code can re-assemble the bearer with `EDEN_WORKER_ID` and so the variable's role is single-purpose. Set iff the host has a credential (§13 auth enabled); absent in test posture. Treat as sensitive: do not log; do not pass through to nested processes that don't need it. |
-| `EDEN_REPO_DIR` | (ideator / evaluator only, optional) Absolute host-side path to a bare git clone of the experiment's central repo (e.g. `/var/lib/eden/repo`). Set when the host is configured with `--repo-path` (subprocess mode). Lets user code `git log` / `git show` against the full ref space (`refs/heads/work/*`, `refs/heads/variant/*`) without making one-off wire calls. See §9 for the substrate-access posture. |
-| `EDEN_ARTIFACT_URL` | (ideator / evaluator only, optional) HTTP base URL ending in `/`, e.g. `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/`, with the deployment's `experiment_id` already interpolated. User code appends a relative path and GETs the bytes under the §13.1 bearer reconstructed from `EDEN_WORKER_ID` + `EDEN_WORKER_CREDENTIAL`. Reference-only route per §9. |
-| `EDEN_ARTIFACT_PATH_ROOT` | (ideator / evaluator only, optional) Absolute host-side filesystem root the `EDEN_ARTIFACT_URL` is rooted at (e.g. `/var/lib/eden/artifacts`). User code translates a `file:///var/lib/eden/artifacts/foo.md` URI from the wire into the relative path `foo.md` by stripping this prefix, then concatenates onto `EDEN_ARTIFACT_URL`. Pair with `EDEN_ARTIFACT_URL`; both or neither. |
-| `EDEN_READONLY_STORE_URL` | (ideator / evaluator only, optional) Postgres DSN with read-only privileges, e.g. `postgresql://eden_readonly:<pwd>@postgres:5432/eden`. User code connects via any Postgres client (e.g. psycopg) and runs `SELECT` against the eden schema. Excludes credential material — see §9 for the column-grant posture. |
+| `EDEN_REPO_DIR` | (all subprocess-mode roles, optional) Absolute host-side path to a bare git clone of the experiment's central repo (e.g. `/var/lib/eden/repo`). Set when the host is configured with `--repo-path` (subprocess mode). Lets user code `git log` / `git show` against the full ref space (`refs/heads/work/*`, `refs/heads/variant/*`) without making one-off wire calls. See §9 for the substrate-access posture. |
+| `EDEN_ARTIFACT_URL` | (all subprocess-mode roles, optional) HTTP base URL ending in `/`, e.g. `http://task-store-server:8080/_reference/experiments/<experiment-id>/artifacts/`, with the deployment's `experiment_id` already interpolated. User code appends a relative path and GETs the bytes under the §13.1 bearer reconstructed from `EDEN_WORKER_ID` + `EDEN_WORKER_CREDENTIAL`. Reference-only route per §9. |
+| `EDEN_ARTIFACT_PATH_ROOT` | (all subprocess-mode roles, optional) Absolute host-side filesystem root the `EDEN_ARTIFACT_URL` is rooted at (e.g. `/var/lib/eden/artifacts`). User code translates a `file:///var/lib/eden/artifacts/foo.md` URI from the wire into the relative path `foo.md` by stripping this prefix, then concatenates onto `EDEN_ARTIFACT_URL`. Pair with `EDEN_ARTIFACT_URL`; both or neither. |
+| `EDEN_READONLY_STORE_URL` | (all subprocess-mode roles, optional) Postgres DSN with read-only privileges, e.g. `postgresql://eden_readonly:<pwd>@postgres:5432/eden`. User code connects via any Postgres client (e.g. psycopg) and runs `SELECT` against the eden schema. Excludes credential material — see §9 for the column-grant posture. |
 
 User-supplied env from a `--*-env-file` flag is also injected
 (intended for LLM API keys etc.).
@@ -482,8 +482,9 @@ Two layers, in priority order:
 
 ## 9. Substrate read-access for agent role implementations
 
-Phase 12a-1f opens three read-side substrates to the ideator
-and evaluator subprocesses so a user-supplied agentic role
+Phase 12a-1f opens three read-side substrates to the ideator,
+executor, and evaluator subprocesses (executor coverage added
+post-12a-1f by issue #154) so a user-supplied agentic role
 implementation (typically driven by an LLM) can explore
 experiment state without rounding through the wire one read
 at a time:
@@ -558,15 +559,21 @@ responsible for choosing consistent paths.
   at body-write time and breaks the descriptor-walk
   guarantee).
 - **`--exec-mode docker` (DooD) suppresses the substrate
-  env vars.** Sibling containers started by the host
-  docker daemon are not attached to the compose project
-  network, so `task-store-server:8080` /
-  `postgres:5432` would not resolve. The ideator +
-  evaluator host CLI detect `exec_mode == "docker"` and
-  drop the four substrate keys from the spawned child's
-  env (the host logs a WARN line at startup). DooD-mode
-  re-enablement is deferred to a follow-on sub-chunk that
-  adds `--network` plumbing to `wrap_command`.
+  env vars unless `--exec-network` opts in.** By default,
+  sibling containers started by the host docker daemon
+  attach to the bridge network, so `task-store-server:8080`
+  / `postgres:5432` do not resolve. The ideator, executor,
+  and evaluator host CLIs detect `exec_mode == "docker"`
+  with no `--exec-network` set and drop the four substrate
+  keys from the spawned child's env (the host logs a WARN
+  line at startup with a hint pointing at `--exec-network`).
+  Passing `--exec-network <compose-network>` (issue #155)
+  attaches the spawned sibling to a reachable network so
+  the substrate URLs resolve; the host then forwards the
+  substrate keys normally. The reference compose stack
+  defaults to `eden-reference_default`; off-host operators
+  override via `${EDEN_EXEC_NETWORK}` or substitute their
+  own compose project network name.
 
 ### 9.4 The substrates are reference-impl details
 

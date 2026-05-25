@@ -237,8 +237,12 @@ def test_host_mode_passes_through() -> None:
     assert substrate_args_for_exec_mode(sub, exec_mode="host") == sub
 
 
-def test_docker_mode_suppresses_all() -> None:
-    """Per §8.9 / §6.4: --exec-mode docker drops all four keys."""
+def test_docker_mode_no_network_suppresses_all() -> None:
+    """Docker mode without ``--exec-network`` drops all four keys.
+
+    Reason: spawned siblings attach to the default bridge network and
+    cannot resolve compose-internal hostnames.
+    """
     sub = SubstrateArgs(
         repo_dir="/repo",
         artifact_url="http://x/",
@@ -253,3 +257,39 @@ def test_docker_mode_suppresses_all() -> None:
         readonly_store_url=None,
     )
     assert suppressed.to_env() == {}
+
+
+def test_docker_mode_with_network_forwards_all() -> None:
+    """Issue #155: ``--exec-network`` un-suppresses substrate keys.
+
+    When the operator attaches the spawned sibling to the compose
+    project network, compose-internal hostnames resolve and the host
+    forwards the substrate keys.
+    """
+    sub = SubstrateArgs(
+        repo_dir="/repo",
+        artifact_url="http://x/",
+        artifact_path_root="/x",
+        readonly_store_url="postgresql://x",
+    )
+    out = substrate_args_for_exec_mode(
+        sub, exec_mode="docker", exec_network="eden-reference_default"
+    )
+    assert out == sub
+
+
+def test_host_mode_ignores_exec_network() -> None:
+    """``exec_network`` is meaningful only in docker mode; host mode
+    passes through unconditionally."""
+    sub = SubstrateArgs(
+        repo_dir="/repo",
+        artifact_url="http://x/",
+        artifact_path_root="/x",
+        readonly_store_url="postgresql://x",
+    )
+    assert (
+        substrate_args_for_exec_mode(
+            sub, exec_mode="host", exec_network="ignored"
+        )
+        == sub
+    )

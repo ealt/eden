@@ -135,6 +135,7 @@ def wrap_command(
     binds: Sequence[BindMount],
     env_keys: Iterable[str],
     attach_stdin: bool = True,
+    network: str | None = None,
 ) -> str:
     """Build the ``docker run …`` shell command that wraps ``original_command``.
 
@@ -154,6 +155,15 @@ def wrap_command(
     is closed (compose containers run with stdin closed by default,
     and `-i` makes docker run treat that EOF as a signal to detach
     before the container has a chance to do useful work).
+
+    ``network`` attaches the spawned sibling container to the named
+    docker network (``--network <name>``). When ``None`` (default)
+    docker uses its default ``bridge`` network, which does NOT
+    resolve compose-internal hostnames like ``task-store-server`` or
+    ``postgres``. Pass the compose project's network (e.g.
+    ``eden-reference_default``) when the spawned command needs to
+    reach Phase 12a-1f substrate URLs (``EDEN_ARTIFACT_URL`` /
+    ``EDEN_READONLY_STORE_URL``) from inside the sibling container.
     """
     targets = [m.target for m in volumes] + [m.target for m in binds]
     if not any(_is_under(cwd_target, t) for t in targets):
@@ -179,6 +189,8 @@ def wrap_command(
     parts += ["--label", f"eden.host={host_id}"]
     parts += ["--label", f"eden.task_id={task_id}"]
     parts += ["--label", f"eden.role={role}"]
+    if network is not None:
+        parts += ["--network", network]
     for v in volumes:
         spec = f"type=volume,source={v.name},target={v.target}"
         if v.read_only:

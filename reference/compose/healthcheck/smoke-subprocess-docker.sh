@@ -196,6 +196,25 @@ test "$IDEATION_COMPLETED" -ge 3 || {
     exit 1
 }
 
+echo "--- asserting substrate env not suppressed under DooD (issue #155) ---"
+# When --exec-mode docker is paired with --exec-network <compose-net>
+# (the docker-exec overlay does this), the worker hosts MUST forward
+# the four substrate env vars (EDEN_ARTIFACT_URL etc.) into spawned
+# siblings. The CLI logs `substrate_access_disabled_in_exec_mode_docker`
+# at WARN only when network plumbing is missing; its presence here
+# would mean we regressed compose.docker-exec.yaml's --exec-network
+# wiring or the CLI's gating logic.
+for host in ideator-host executor-host evaluator-host; do
+    if docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
+        --env-file "$ENV_FILE" logs "$host" 2>&1 \
+        | grep -q 'substrate_access_disabled_in_exec_mode_docker'; then
+        echo "$host logged substrate_access_disabled_in_exec_mode_docker — --exec-network plumbing is missing or broken" >&2
+        docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
+            --env-file "$ENV_FILE" logs --tail 60 "$host" >&2
+        exit 1
+    fi
+done
+
 echo "--- asserting no per-task orphan sibling containers (executor/evaluator) ---"
 # Per-task short-lived spawns must terminate before quiescence. The
 # ideator subprocess is long-running and still alive at this point —

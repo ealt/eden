@@ -144,20 +144,30 @@ def _run_subprocess_mode(
     # 12a-1f substrate access: thread the four substrate env
     # vars (EDEN_REPO_DIR / EDEN_ARTIFACT_URL /
     # EDEN_ARTIFACT_PATH_ROOT / EDEN_READONLY_STORE_URL) into
-    # the spawned child. Suppressed under --exec-mode docker
-    # per §6.4 / §8.9 (sibling containers can't resolve
-    # compose-internal hostnames).
+    # the spawned child. Issue #155: docker mode suppresses the
+    # keys UNLESS --exec-network forwards a reachable compose
+    # network into the spawned sibling.
     substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
-    substrate = substrate_args_for_exec_mode(substrate, exec_mode=exec_args.mode)
-    if exec_args.mode == "docker" and (
-        args.repo_path is not None
-        or args.artifact_url is not None
-        or args.readonly_store_url is not None
+    substrate = substrate_args_for_exec_mode(
+        substrate, exec_mode=exec_args.mode, exec_network=exec_args.network
+    )
+    if (
+        exec_args.mode == "docker"
+        and exec_args.network is None
+        and (
+            args.repo_path is not None
+            or args.artifact_url is not None
+            or args.readonly_store_url is not None
+        )
     ):
         log.warning(
             "substrate_access_disabled_in_exec_mode_docker",
             extra={
                 "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+                "hint": (
+                    "pass --exec-network <compose-network> to forward "
+                    "substrate URLs into spawned sibling containers"
+                ),
             },
         )
     env.update(substrate.to_env())
@@ -179,6 +189,7 @@ def _run_subprocess_mode(
         exec_volumes=tuple(exec_args.volumes),
         exec_binds=tuple(exec_args.binds),
         cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
+        exec_network=exec_args.network if exec_args.mode == "docker" else None,
         host_id=host_id,
         worker_credential=credential_secret(bearer),
     )
