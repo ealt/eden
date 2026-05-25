@@ -278,11 +278,18 @@ class ExecutionDraft:
     ``variant_id`` (from ``_CLAIMS``) and the idea's
     ``parent_commits`` to construct the ``Variant`` and
     ``VariantSubmission`` objects.
+
+    ``artifacts_uri`` is the executor's optional supporting-artifacts
+    URI (build logs, coverage reports, generated screenshots,
+    profiling captures). When set, it flows through the submission
+    onto ``Variant.executor_artifacts_uri`` per
+    ``spec/v0/03-roles.md`` §3.4.
     """
 
     status: Literal["success", "error"]
     commit_sha: str | None
     description: str | None
+    artifacts_uri: str | None = None
 
 
 def parse_implement_form(
@@ -290,6 +297,7 @@ def parse_implement_form(
     status_raw: str,
     commit_sha_raw: str,
     description_raw: str,
+    artifacts_uri_raw: str = "",
 ) -> tuple[ExecutionDraft | None, FormErrors]:
     """Parse the executor draft form into a validated draft.
 
@@ -298,7 +306,9 @@ def parse_implement_form(
     ``status == "success"`` and must be 40 lowercase hex; on
     ``status == "error"`` it is ignored. ``description`` is
     optional free-form text; the route handler trims and
-    converts the empty string to ``None``.
+    converts the empty string to ``None``. ``artifacts_uri`` is
+    optional; trimmed empty → ``None``. The wire-side Pydantic
+    layer applies the RFC 3986 URI check.
     """
     errors = FormErrors()
     status = status_raw.strip().lower()
@@ -308,6 +318,7 @@ def parse_implement_form(
 
     commit_sha_input = commit_sha_raw.strip().lower()
     description = description_raw.strip()
+    artifacts_uri = artifacts_uri_raw.strip()
 
     commit_sha: str | None = None
     if status == "success":
@@ -328,6 +339,7 @@ def parse_implement_form(
             status=status,
             commit_sha=commit_sha,
             description=description or None,
+            artifacts_uri=artifacts_uri or None,
         ),
         errors,
     )

@@ -219,8 +219,22 @@ class Store(Protocol):
         """
         ...
 
-    def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
-        """Create an ``evaluation`` task against a starting variant with commit_sha."""
+    def create_evaluation_task(
+        self,
+        task_id: str,
+        variant_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> EvaluationTask:
+        """Create an ``evaluation`` task against a starting variant with commit_sha.
+
+        Issue #165: ``target`` is the optional admin-supplied override
+        on the resulting ``task.target``. When omitted, the task
+        inherits the originating idea's ``intended_evaluator``
+        (resolved via ``variant.idea_id``); an explicit ``target`` wins
+        over the idea's hint per
+        [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md) §6.5.
+        """
         ...
 
     # ------------------------------------------------------------------

@@ -40,3 +40,8 @@ class Idea(BaseModel):
     # ``03-roles.md`` §6.2 decision-type 2. Absent (or admin-overridden
     # via ``create_task``'s body-level ``target``) means "any registered executor".
     intended_executor: Annotated[TaskTarget | None, NotNone] = None
+    # Symmetric routing hint for the evaluation task: when set, the
+    # orchestrator's evaluation_dispatch decision copies it to
+    # ``task.target`` on the evaluation task it creates from the
+    # variant (``03-roles.md`` §6.2 decision-type 3).
+    intended_evaluator: Annotated[TaskTarget | None, NotNone] = None

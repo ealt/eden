@@ -603,6 +603,13 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
             "state": "drafting",
             "created_at": _now_iso(),
         }
+        # Optional routing hints — copy through verbatim if the spec
+        # file supplies them. The wire validator enforces TaskTarget
+        # shape ({kind, id}) per spec/v0/02-data-model.md §5.1.
+        if "intended_executor" in raw and raw["intended_executor"] is not None:
+            idea["intended_executor"] = raw["intended_executor"]
+        if "intended_evaluator" in raw and raw["intended_evaluator"] is not None:
+            idea["intended_evaluator"] = raw["intended_evaluator"]
         _wire(env, f"/v0/experiments/{_exp(env)}/ideas", method="POST", body=idea, bearer=bearer)
         idea_ids.append(idea_id)
 
@@ -736,16 +743,20 @@ def cmd_execution_submit(env: dict[str, str], args: argparse.Namespace) -> None:
     _git("push", "origin", push_target, cwd=workdir)
 
     # Phase 3: submit the execution task.
+    exec_payload: dict[str, object] = {
+        "status": "success",
+        "variant_id": variant_id,
+        "commit_sha": sha,
+    }
+    if args.artifacts_uri:
+        # spec/v0/03-roles.md §3.4: optional executor-side
+        # artifacts URI; orchestrator writes it onto
+        # variant.executor_artifacts_uri at accept time.
+        exec_payload["artifacts_uri"] = args.artifacts_uri
     _wire(
         env, f"/v0/experiments/{_exp(env)}/tasks/{args.task_id}/submit",
         method="POST",
-        body={
-            "payload": {
-                "status": "success",
-                "variant_id": variant_id,
-                "commit_sha": sha,
-            },
-        },
+        body={"payload": exec_payload},
         bearer=bearer,
     )
     _drop_claim(args.task_id)
@@ -854,6 +865,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--sha")
     sp.add_argument("--description")
     sp.add_argument("--workdir", help="default: /tmp/eden-manual/<task_id>")
+    sp.add_argument("--artifacts-uri",
+                    help="optional URI pointing at executor-produced artifacts "
+                    "(build logs, screenshots, etc.) — flows onto "
+                    "variant.executor_artifacts_uri per spec/v0/03-roles.md §3.4")
     sp.add_argument("--status", choices=("success", "error"), default="success")
     sp.set_defaults(func=cmd_execution_submit)
 

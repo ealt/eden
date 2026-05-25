@@ -75,6 +75,23 @@
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
         }
       }
+    },
+    "intended_evaluator": {
+      "type": "object",
+      "description": "OPTIONAL Task.target-shaped routing hint set at idea-creation time (spec/v0/02-data-model.md §5.1). Symmetric with intended_executor: when the orchestrator's evaluation_dispatch decision creates an evaluation task from a variant produced by this idea, it MUST copy intended_evaluator to task.target.",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["worker", "group"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        }
+      }
     }
   }
 }
