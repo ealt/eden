@@ -34,6 +34,7 @@ class Variant(BaseModel):
     commit_sha: Annotated[CommitSha | None, NotNone] = None
     variant_commit_sha: Annotated[CommitSha | None, NotNone] = None
     artifacts_uri: Annotated[UriStr | None, NotNone] = None
+    executor_artifacts_uri: Annotated[UriStr | None, NotNone] = None
     description: Annotated[str | None, NotNone] = None
     evaluation: Annotated[dict[str, Any] | None, NotNone] = None
     started_at: DateTimeStr

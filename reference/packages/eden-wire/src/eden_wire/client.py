@@ -347,17 +347,24 @@ class StoreClient:
         assert isinstance(created, ExecutionTask)
         return created
 
-    def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
-        task = EvaluationTask.model_validate(
-            {
-                "task_id": task_id,
-                "kind": "evaluation",
-                "state": "pending",
-                "created_at": _now(),
-                "updated_at": _now(),
-                "payload": {"variant_id": variant_id},
-            }
-        )
+    def create_evaluation_task(
+        self,
+        task_id: str,
+        variant_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> EvaluationTask:
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "kind": "evaluation",
+            "state": "pending",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "payload": {"variant_id": variant_id},
+        }
+        if target is not None:
+            body["target"] = target.model_dump(mode="json", exclude_none=True)
+        task = EvaluationTask.model_validate(body)
         created = self.create_task(task)
         assert isinstance(created, EvaluationTask)
         return created

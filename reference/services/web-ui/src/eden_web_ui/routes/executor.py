@@ -242,6 +242,7 @@ def _phase3_submit_with_readback(
         status=draft.status,
         variant_id=variant_id,
         commit_sha=draft.commit_sha if draft.status == "success" else None,
+        artifacts_uri=draft.artifacts_uri,
     )
     try:
         outcome, banner = submit_with_readback(
@@ -675,15 +676,18 @@ def _parse_submit_form(form: Any) -> tuple[Any, Any, dict[str, str]]:
     status_raw = str(form.get("status") or "")
     commit_sha_raw = str(form.get("commit_sha") or "")
     description_raw = str(form.get("description") or "")
+    artifacts_uri_raw = str(form.get("artifacts_uri") or "")
     draft, errors = parse_implement_form(
         status_raw=status_raw,
         commit_sha_raw=commit_sha_raw,
         description_raw=description_raw,
+        artifacts_uri_raw=artifacts_uri_raw,
     )
     form_state = {
         "status": status_raw or "success",
         "commit_sha": commit_sha_raw,
         "description": description_raw,
+        "artifacts_uri": artifacts_uri_raw,
     }
     return draft, errors, form_state
 
@@ -838,7 +842,12 @@ def _csrf_failure_response(request: Request | None = None) -> HTMLResponse:
 
 
 def _empty_form_state() -> dict[str, str]:
-    return {"status": "success", "commit_sha": "", "description": ""}
+    return {
+        "status": "success",
+        "commit_sha": "",
+        "description": "",
+        "artifacts_uri": "",
+    }
 
 
 def _iso(dt: Any) -> str:

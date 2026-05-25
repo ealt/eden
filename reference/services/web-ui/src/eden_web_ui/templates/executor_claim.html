@@ -106,6 +106,14 @@ git push origin my-work</code></pre></li>
             <label for="description">description (optional)</label><br>
             <textarea id="description" name="description" rows="3" cols="60">{{ form_state.description }}</textarea>
         </p>
+        <p>
+            <label for="artifacts_uri">artifacts_uri (optional; URI for build logs / screenshots / etc.)</label><br>
+            <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
+                value="{{ form_state.artifacts_uri or '' }}">
+            {% if errors and errors.by_row.get(0, {}).get("artifacts_uri") %}
+            <span class="field-error">{{ errors.by_row[0]["artifacts_uri"] }}</span>
+            {% endif %}
+        </p>
         <p>worker branch (server-derived): <code>{{ branch }}</code></p>
         <button type="submit">submit</button>
     </form>

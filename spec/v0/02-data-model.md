@@ -224,6 +224,7 @@ An idea is the ideator's output.
 | `artifacts_uri` | yes | string (URI) | Where the ideator's output documents live. |
 | `state` | yes | string | One of `"drafting"`, `"ready"`, `"dispatched"`, `"completed"`. `"completed"` is terminal and means the executor's attempt has finished (successfully or not); the variant's `status` records the outcome (see [`04-task-protocol.md`](04-task-protocol.md) §10). |
 | `intended_executor` | no | object | OPTIONAL `Task.target`-shaped routing hint (§3.5). Names a worker or group the ideator suggests should execute this idea. When the orchestrator's `execution_dispatch` decision creates an execution task from this idea, it MUST copy `intended_executor` to `task.target` ([`03-roles.md`](03-roles.md) §6.2 decision-type 2); when omitted, the resulting task has `target` absent (open to any registered executor-class worker). Set at idea-creation time; not mutated thereafter. |
+| `intended_evaluator` | no | object | OPTIONAL `Task.target`-shaped routing hint (§3.5). Symmetric with `intended_executor`: names a worker or group the ideator suggests should evaluate variants produced from this idea. When the orchestrator's `evaluation_dispatch` decision creates an evaluation task from a variant, it MUST copy the originating idea's `intended_evaluator` to `task.target` ([`03-roles.md`](03-roles.md) §6.2 decision-type 3); when omitted, the resulting task has `target` absent (open to any registered evaluator-class worker). Set at idea-creation time; not mutated thereafter. |
 | `created_at` | yes | timestamp | When the idea was created. |
 | `created_by` | no | string (worker_id) | The ideator's `worker_id`. Written at idea-creation time by the ideator's host and preserved across the idea's terminal state. |
 
@@ -337,7 +338,7 @@ The evaluation schema is a JSON object whose keys are metric names and whose val
 
 ### 8.2 Reserved names
 
-The names `variant_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the variant object and MUST NOT appear in a evaluation schema.
+The names `variant_id`, `commit_sha`, `parent_commits`, `branch`, `status`, `artifacts_uri`, `executor_artifacts_uri`, `description`, `timestamp`, `started_at`, `completed_at` are reserved by the protocol for use on the variant object and MUST NOT appear in a evaluation schema.
 
 ## 9. Variant
 
@@ -357,7 +358,8 @@ A variant is one completed attempt.
 | `branch` | no | string | Worker branch under `work/*`. Present once the executor starts. |
 | `commit_sha` | no | string | Worker-branch tip SHA. Present once the executor completes. |
 | `variant_commit_sha` | no | string | Canonical-lineage SHA under `variant/*`. Present once the integrator has integrated the variant. |
-| `artifacts_uri` | no | string (URI) | Where the variant's artifacts live. |
+| `artifacts_uri` | no | string (URI) | Where the variant's evaluator-produced artifacts live. Written by the orchestrator at evaluation-task terminal time from the evaluator's submission ([`03-roles.md`](03-roles.md) §4.4). |
+| `executor_artifacts_uri` | no | string (URI) | Where the variant's executor-produced artifacts live (build logs, coverage reports, generated screenshots — output not appropriate to commit to the worker branch). Written by the orchestrator at execution-task terminal time from the executor's submission ([`03-roles.md`](03-roles.md) §3.4). Disjoint from `artifacts_uri`: the executor writes one, the evaluator writes the other, and the orchestrator preserves both. |
 | `description` | no | string | Human-readable summary. |
 | `metrics` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
 | `started_at` | yes | timestamp | When the executor began. |

@@ -53,7 +53,13 @@
     },
     "artifacts_uri": {
       "type": "string",
-      "format": "uri"
+      "format": "uri",
+      "description": "Where the variant's evaluator-produced artifacts live; written by the orchestrator from the evaluator submission's artifacts_uri (spec/v0/03-roles.md §4.4)."
+    },
+    "executor_artifacts_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "Where the variant's executor-produced artifacts live; written by the orchestrator from the executor submission's artifacts_uri (spec/v0/03-roles.md §3.4). Disjoint from artifacts_uri (which is evaluator-written)."
     },
     "description": {
       "type": "string"

@@ -42,11 +42,23 @@ class IdeaSubmission:
 
 @dataclass(frozen=True)
 class VariantSubmission:
-    """Executor submission result. See ``spec/v0/03-roles.md`` §3.4."""
+    """Executor submission result. See ``spec/v0/03-roles.md`` §3.4.
+
+    ``artifacts_uri`` is the executor's optional supporting-artifacts URI
+    (build logs, coverage reports, generated screenshots, etc.). At
+    execution-task terminal time the orchestrator writes this URI onto
+    the variant's ``executor_artifacts_uri`` field
+    (``spec/v0/02-data-model.md`` §9.1, ``03-roles.md`` §3.4), disjoint
+    from the evaluator-written ``artifacts_uri`` set in §4.4. Per §3.4 +
+    ``04-task-protocol.md`` §4.2, ``artifacts_uri`` is NOT part of
+    submission equivalence; only ``status``, ``variant_id``, and
+    ``commit_sha`` are.
+    """
 
     status: ImplementStatus
     variant_id: str
     commit_sha: str | None = None
+    artifacts_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +102,8 @@ def submission_to_payload(submission: Submission) -> tuple[str, dict[str, Any]]:
         }
         if submission.commit_sha is not None:
             payload["commit_sha"] = submission.commit_sha
+        if submission.artifacts_uri is not None:
+            payload["artifacts_uri"] = submission.artifacts_uri
         return "execution", payload
     if isinstance(submission, EvaluationSubmission):
         payload = {
@@ -127,6 +141,7 @@ def submission_from_payload(kind: str, payload: dict[str, Any]) -> Submission:
             status=payload["status"],
             variant_id=payload["variant_id"],
             commit_sha=payload.get("commit_sha"),
+            artifacts_uri=payload.get("artifacts_uri"),
         )
     if kind == "evaluation":
         return EvaluationSubmission(

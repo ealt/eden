@@ -723,13 +723,24 @@ class _StoreBase:
                     f"variant {variant_id!r} has no commit_sha; executor must set it first"
                 )
             self._require_no_live_evaluation_task_for_variant(variant_id)
+            # intended_evaluator flow-through (`03-roles.md` §6.2
+            # decision-type 3): when the caller does not supply an
+            # explicit task.target on the create payload, the resulting
+            # task inherits the originating idea's intended_evaluator.
+            insert_task = task
+            if task.target is None:
+                idea = self._get_idea(variant.idea_id)
+                if idea is not None and idea.intended_evaluator is not None:
+                    insert_task = _validated_update(
+                        task, target=idea.intended_evaluator
+                    )
             tx = _Tx()
-            tx.tasks[task.task_id] = _deep(task)
+            tx.tasks[insert_task.task_id] = _deep(insert_task)
             tx.events.append(
-                self._event("task.created", {"task_id": task.task_id, "kind": "evaluation"})
+                self._event("task.created", {"task_id": insert_task.task_id, "kind": "evaluation"})
             )
             self._apply_commit(tx)
-            return _deep(task)
+            return _deep(insert_task)
 
     def create_ideation_task(self, task_id: str) -> IdeationTask:
         """Create an ``ideation`` task. Emits ``task.created`` atomically."""
@@ -826,7 +837,13 @@ class _StoreBase:
             self._apply_commit(tx)
             return _deep(task)
 
-    def create_evaluation_task(self, task_id: str, variant_id: str) -> EvaluationTask:
+    def create_evaluation_task(
+        self,
+        task_id: str,
+        variant_id: str,
+        *,
+        target: TaskTarget | None = None,
+    ) -> EvaluationTask:
         """Create an ``evaluation`` task against a starting variant with ``commit_sha``.
 
         Per ``03-roles.md`` §6.4 the Store enforces at-most-one live
@@ -834,6 +851,11 @@ class _StoreBase:
         attempt raises ``AlreadyExists``. A previously-failed
         evaluation task for the same variant does NOT block a new one
         (terminal states are not live).
+
+        When ``target`` is supplied, the resulting task uses it verbatim
+        (admin override path). When ``target`` is ``None``, the task
+        inherits the originating idea's ``intended_evaluator`` (the
+        auto-orchestrator path per ``03-roles.md`` §6.2 decision-type 3).
         """
         with self._atomic_operation():
             self._require_running()
@@ -852,14 +874,25 @@ class _StoreBase:
                 )
             self._require_no_live_evaluation_task_for_variant(variant_id)
             now = self._ts()
-            task = EvaluationTask(
-                task_id=task_id,
-                kind="evaluation",
-                state="pending",
-                payload=EvaluationPayload(variant_id=variant_id),
-                created_at=now,
-                updated_at=now,
-            )
+            # Explicit caller-supplied target wins; otherwise inherit
+            # `idea.intended_evaluator` per the §6.2 decision-type 3
+            # flow-through rule.
+            effective_target: TaskTarget | None = target
+            if effective_target is None:
+                idea = self._get_idea(variant.idea_id)
+                if idea is not None:
+                    effective_target = idea.intended_evaluator
+            task_kwargs: dict[str, Any] = {
+                "task_id": task_id,
+                "kind": "evaluation",
+                "state": "pending",
+                "payload": EvaluationPayload(variant_id=variant_id),
+                "created_at": now,
+                "updated_at": now,
+            }
+            if effective_target is not None:
+                task_kwargs["target"] = effective_target
+            task = EvaluationTask(**task_kwargs)
             tx = _Tx()
             tx.tasks[task_id] = task
             tx.events.append(
@@ -1772,11 +1805,17 @@ class _StoreBase:
         # task.submitted_by was set on the submit transition (§4.1)
         # and is the canonical claimant identity for attribution.
         executor_worker_id = task.submitted_by
-        tx.variants[variant.variant_id] = _validated_update(
-            variant,
-            commit_sha=submission.commit_sha,
-            executed_by=executor_worker_id,
-        )
+        variant_updates: dict[str, Any] = {
+            "commit_sha": submission.commit_sha,
+            "executed_by": executor_worker_id,
+        }
+        if submission.artifacts_uri is not None:
+            # 03-roles §3.4: orchestrator writes the executor's
+            # submission.artifacts_uri to variant.executor_artifacts_uri
+            # (disjoint from the evaluator-written variant.artifacts_uri
+            # set in §4.4).
+            variant_updates["executor_artifacts_uri"] = submission.artifacts_uri
+        tx.variants[variant.variant_id] = _validated_update(variant, **variant_updates)
         tx.events.append(self._event("task.completed", {"task_id": task.task_id}))
         tx.events.append(
             self._event(
@@ -1828,11 +1867,25 @@ class _StoreBase:
             # the error path too. The accept and reject branches both
             # stamp it from task.submitted_by (the canonical claimant
             # identity set at §4.1 submit time).
+            error_updates: dict[str, Any] = {
+                "status": "error",
+                "completed_at": now,
+                "executed_by": task.submitted_by,
+            }
+            # 03-roles §3.4: executor_artifacts_uri is written when
+            # status ∈ {"success", "error"} (only "evaluation_error"
+            # discards artifacts; executor never emits that status, but
+            # the validation-error reject path could surface a malformed
+            # payload — same as the evaluator's reject path, drop the
+            # artifacts_uri when the payload itself was rejected).
+            if (
+                reason != "validation_error"
+                and isinstance(submission, VariantSubmission)
+                and submission.artifacts_uri is not None
+            ):
+                error_updates["executor_artifacts_uri"] = submission.artifacts_uri
             tx.variants[variant_for_error.variant_id] = _validated_update(
-                variant_for_error,
-                status="error",
-                completed_at=now,
-                executed_by=task.submitted_by,
+                variant_for_error, **error_updates
             )
             tx.events.append(
                 self._event("variant.errored", {"variant_id": variant_for_error.variant_id})
@@ -2073,12 +2126,18 @@ class _StoreBase:
         # the server's submit-time SHA-equality fast path catches the
         # literal case for any wire-side caller. spec/v0/03-roles.md
         # §3.4 explicitly permits IUT-distributed enforcement.
-        # Dry-run the variant write so an invalid commit_sha pattern
-        # surfaces as validation_error instead of crashing accept.
+        # Dry-run the variant write so an invalid commit_sha or
+        # executor_artifacts_uri surfaces as validation_error instead
+        # of crashing accept.
+        dry_run_kwargs: dict[str, Any] = {"commit_sha": submission.commit_sha}
+        if submission.artifacts_uri is not None:
+            dry_run_kwargs["executor_artifacts_uri"] = submission.artifacts_uri
         try:
-            _validated_update(variant, commit_sha=submission.commit_sha)
+            _validated_update(variant, **dry_run_kwargs)
         except ValidationError as exc:
-            return f"invalid commit_sha: {exc.errors()[0]['msg']}"
+            err = exc.errors()[0]
+            field = ".".join(str(p) for p in err.get("loc", ())) or "field"
+            return f"invalid variant update: {field}: {err['msg']}"
         return None
 
     def _validate_evaluate_acceptance(
@@ -2111,7 +2170,9 @@ class _StoreBase:
                 completed_at=self._ts(),
             )
         except ValidationError as exc:
-            return f"invalid variant update: {exc.errors()[0]['msg']}"
+            err = exc.errors()[0]
+            field = ".".join(str(p) for p in err.get("loc", ())) or "field"
+            return f"invalid variant update: {field}: {err['msg']}"
         return None
 
     def _validate_evaluate_error(
@@ -2137,7 +2198,9 @@ class _StoreBase:
                 completed_at=self._ts(),
             )
         except ValidationError as exc:
-            return f"invalid variant update: {exc.errors()[0]['msg']}"
+            err = exc.errors()[0]
+            field = ".".join(str(p) for p in err.get("loc", ())) or "field"
+            return f"invalid variant update: {field}: {err['msg']}"
         return None
 
     def validate_evaluation(self, evaluation: dict[str, Any]) -> None:

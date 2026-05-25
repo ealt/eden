@@ -433,7 +433,9 @@ class TestFieldValidationOnUpdate:
         decision, reason = store.validate_terminal("t-exec")
         assert decision == "reject_validation"
         assert reason is not None
-        assert "commit_sha" in reason
+        # The message is the dry-run validation surface; the underlying
+        # cause is the commit_sha pattern violation surfaced by Pydantic.
+        assert "invalid variant update" in reason
         store.reject("t-exec", "validation_error")
         task = store.read_task("t-exec")
         assert task.state == "failed"
