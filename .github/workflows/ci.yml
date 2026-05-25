@@ -274,6 +274,29 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-multi-orchestrator.sh
 
+  # Backfill of the Phase 12b CHANGELOG-narrated deferral (issue #152):
+  # exercises the portable-checkpoint export/import round-trip
+  # end-to-end via the Compose stack. Not required by branch
+  # protection in this PR; same posture as the other newly-added
+  # smoke jobs — bump to required-status after staying clean on main
+  # for ~2 weeks.
+  compose-smoke-checkpoint:
+    name: compose-smoke-checkpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (checkpoint round-trip)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-checkpoint.sh
+
   compose-e2e:
     name: compose-e2e
     runs-on: ubuntu-latest
