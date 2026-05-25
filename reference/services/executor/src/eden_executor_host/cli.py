@@ -153,7 +153,8 @@ def _run_subprocess_mode(
         exec_args.mode == "docker"
         and exec_args.network is None
         and (
-            args.artifact_url is not None
+            args.repo_path is not None
+            or args.artifact_url is not None
             or args.readonly_store_url is not None
         )
     ):
@@ -168,6 +169,13 @@ def _run_subprocess_mode(
             },
         )
     env.update(substrate.to_env())
+    # parse_args declares --repo-path required=True and validates
+    # --experiment-dir is set in subprocess mode; the asserts narrow
+    # types for pyright (the OR-with-is-not-None branch above
+    # teaches pyright args.repo_path may be None, even though
+    # argparse guarantees otherwise).
+    assert args.repo_path is not None
+    assert args.experiment_dir is not None
     sub_config = ExecutorSubprocessConfig(
         command=command,
         experiment_dir=Path(args.experiment_dir).resolve(),
