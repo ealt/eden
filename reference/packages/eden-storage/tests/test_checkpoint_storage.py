@@ -368,24 +368,55 @@ def test_corrupt_archive_rejected(
     assert target.read_experiment().imported_from is None
 
 
-def test_workers_inserted_with_placeholder_credentials(
+def test_workers_credentials_reissued_on_import(
     make_store: Callable[..., Store], tmp_path: Path
 ) -> None:
-    """Imported workers carry sentinel credentials; the source's plaintext is gone."""
+    """Imported workers get freshly-minted credentials atomically with the
+    import (``10-checkpoints.md`` §8 step 4); the source's plaintext is
+    gone, and the new tokens surface on ``ImportResult.reissued_credentials``.
+    """
     source = make_store("exp-creds", seed_workers=False)
-    _, source_token = source.register_worker("worker-a")
-    assert source_token is not None  # source got a fresh token
+    _, source_token_a = source.register_worker("worker-a")
+    _, source_token_b = source.register_worker("worker-b")
+    assert source_token_a is not None
+    assert source_token_b is not None
 
     archive = io.BytesIO()
     source.export_checkpoint(archive, experiment_config="x")
 
     target = make_store("exp-creds", seed_workers=False)
     archive.seek(0)
-    target.import_checkpoint(archive, extract_dir=tmp_path)
+    result = target.import_checkpoint(archive, extract_dir=tmp_path)
 
     # The source's plaintext token MUST NOT authenticate against the
     # imported store (per chapter 10 §8: receiver mints fresh creds).
-    assert target.verify_worker_credential("worker-a", source_token) is False
+    assert target.verify_worker_credential("worker-a", source_token_a) is False
+    assert target.verify_worker_credential("worker-b", source_token_b) is False
+
+    # Every imported worker carries a fresh token surfaced on the
+    # ImportResult, and each token authenticates against the imported
+    # store — the auto-reissue is atomic with the rest of the import.
+    assert set(result.reissued_credentials) == {"worker-a", "worker-b"}
+    new_token_a = result.reissued_credentials["worker-a"]
+    new_token_b = result.reissued_credentials["worker-b"]
+    assert new_token_a != source_token_a
+    assert new_token_b != source_token_b
+    assert target.verify_worker_credential("worker-a", new_token_a) is True
+    assert target.verify_worker_credential("worker-b", new_token_b) is True
+
+
+def test_empty_workers_yields_empty_reissued_credentials(
+    make_store: Callable[..., Store], tmp_path: Path
+) -> None:
+    """A checkpoint with no workers produces an empty reissued_credentials map."""
+    source = make_store("exp-no-workers", seed_workers=False)
+    archive = io.BytesIO()
+    source.export_checkpoint(archive, experiment_config="x")
+
+    target = make_store("exp-no-workers", seed_workers=False)
+    archive.seek(0)
+    result = target.import_checkpoint(archive, extract_dir=tmp_path)
+    assert dict(result.reissued_credentials) == {}
 
 
 # ----------------------------------------------------------------------

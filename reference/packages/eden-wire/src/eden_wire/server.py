@@ -308,6 +308,53 @@ def _build_content_disposition(raw_name: str) -> str:
     )
 
 
+def _persist_reissued_credentials(
+    credentials_dir: Path, reissued: dict[str, str]
+) -> list[Path]:
+    """Write the post-import per-worker tokens to ``credentials_dir``.
+
+    Per ``10-checkpoints.md`` §8 step 4 the importer mints fresh
+    credentials for every imported worker atomically with the commit;
+    this helper is the receiver-side implementation-defined side
+    channel for the reference deployment. The file layout matches
+    :func:`eden_service_common.auth.bootstrap_worker_credential`'s
+    ``<credentials_dir>/<worker_id>.token`` convention so a worker
+    host whose credentials volume is bind-mounted from
+    ``credentials_dir`` picks up the freshly-issued bearer at
+    startup with no `reissue_credential` round-trip.
+
+    Each file holds the raw token plaintext (NOT the
+    ``<worker_id>:<token>`` bearer; the host's bootstrap helper
+    assembles the bearer). Files are written atomically via a
+    randomly-suffixed tmp file + ``os.replace`` (the random suffix
+    is load-bearing — two concurrent import handlers targeting the
+    same worker_id MUST NOT share a tmp filename or one process's
+    in-flight write could clobber the other's, and ``os.replace``
+    could lose a write entirely). Mode is locked to ``0o600`` per
+    chapter 7 §13.5 token-storage hygiene. The directory is created
+    on first use with ``parents=True`` so a fresh deployment doesn't
+    fail when the bind-mount target hasn't been pre-populated.
+    """
+    import secrets
+
+    credentials_dir.mkdir(parents=True, exist_ok=True)
+    persisted: list[Path] = []
+    for worker_id in sorted(reissued):
+        token = reissued[worker_id]
+        path = credentials_dir / f"{worker_id}.token"
+        suffix = secrets.token_hex(8)
+        tmp = path.with_suffix(f"{path.suffix}.{suffix}.tmp")
+        try:
+            tmp.write_text(token)
+            tmp.chmod(0o600)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        persisted.append(path)
+    return persisted
+
+
 def _is_symlink(component: str, *, dir_fd: int) -> bool:
     """Return True iff ``component`` is a symbolic link in ``dir_fd``.
 
@@ -334,6 +381,7 @@ def make_app(
     artifacts_dir: Path | str | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
+    checkpoint_import_credentials_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
 
@@ -381,6 +429,22 @@ def make_app(
         Path(checkpoint_repo_path) if checkpoint_repo_path is not None else None
     )
     checkpoint_config_text: str = checkpoint_experiment_config or ""
+    # Per `10-checkpoints.md` §8 the importer mints fresh credentials
+    # for every imported worker atomically with the import; the
+    # implementation-defined side channel here is "write each
+    # `<worker_id>.token` file to this directory". The directory is
+    # bind-mounted into the worker hosts' per-host credentials volumes
+    # in the reference Compose deployment so the new bearers are
+    # already in place by the time the workers start. Setting this
+    # ``None`` (the unit-test default) skips the on-disk persistence;
+    # tokens are still minted (§8 step 4 is normative) but the only
+    # surfacing is the in-process Store state — operators must reissue
+    # manually via the admin endpoint.
+    credentials_dir_root: Path | None = (
+        Path(checkpoint_import_credentials_dir)
+        if checkpoint_import_credentials_dir is not None
+        else None
+    )
 
     if admin_token is not None:
         install_auth_middleware(app, admin_token=admin_token, store=store)
@@ -1566,15 +1630,38 @@ def make_app(
                 # Surface the chapter-10 §11 mismatch through the same
                 # wire vocabulary as the §1.3 header check.
                 raise ExperimentIdMismatch(str(exc)) from exc
-        # Reissue-required workers are surfaced as warnings so the
-        # operator can drive `reissue_credential` per chapter 10 §8.
+        # Per `10-checkpoints.md` §8 step 4 the import already minted
+        # fresh credentials for every imported worker atomically with
+        # the rest of the commit; the new tokens are on
+        # ``result.reissued_credentials``. The wire binding's
+        # implementation-defined side channel (§8 last paragraph) is to
+        # persist each ``<worker_id>:<token>`` bearer to the
+        # operator-configured credentials directory so the worker hosts
+        # pick it up at startup (no manual `reissue_credential` from
+        # the operator is needed for the steady-state import → resume
+        # flow). When no directory is configured, the tokens stay
+        # ephemeral and a warning calls that out.
         warnings: list[str] = list(result.warnings)
-        imported_workers = sorted(w.worker_id for w in store.list_workers())
-        if imported_workers:
-            warnings.append(
-                "credentials reissue required for imported workers: "
-                + ", ".join(imported_workers)
-            )
+        reissued = dict(result.reissued_credentials)
+        if reissued:
+            if credentials_dir_root is not None:
+                persisted_paths = _persist_reissued_credentials(
+                    credentials_dir_root, reissued
+                )
+                warnings.append(
+                    "credentials reissued and persisted for "
+                    f"{len(reissued)} worker(s): "
+                    + ", ".join(str(p) for p in persisted_paths)
+                )
+            else:
+                warnings.append(
+                    "credentials reissued for "
+                    f"{len(reissued)} worker(s) "
+                    f"({', '.join(sorted(reissued))}) but no "
+                    "checkpoint_import_credentials_dir is configured; "
+                    "tokens were NOT persisted — operators must reissue "
+                    "via the admin endpoint before the workers can claim"
+                )
         # Chapter 7 §14.2 mandates 201 Created on a successful import
         # (a new experiment row is materialized). FastAPI's default
         # would be 200; an explicit JSONResponse sets the spec-pinned

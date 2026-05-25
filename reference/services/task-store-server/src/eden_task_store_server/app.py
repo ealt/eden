@@ -132,6 +132,7 @@ def build_app(
     artifacts_dir: Path | str | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
+    checkpoint_import_credentials_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app that wraps ``store`` with the §13 auth middleware.
 
@@ -159,6 +160,15 @@ def build_app(
     entry via ``git bundle create --all`` per chapter 10 §3. When
     ``None``, the route emits an empty placeholder. Test deployments
     that don't have a paired bare repo leave this unset.
+
+    ``checkpoint_import_credentials_dir`` (issue #150) — directory the
+    checkpoint-import handler persists freshly-minted worker bearers
+    into per ``10-checkpoints.md`` §8 step 4. The reference Compose
+    deployment bind-mounts this into the worker hosts' per-host
+    credentials volumes so bearers are in place at host startup.
+    When ``None`` (in-process / TestClient default), tokens are still
+    minted by the import (§8 is normative) but the wire surface only
+    warns; operators must reissue manually via the admin endpoint.
     """
     return make_app(
         store,
@@ -167,6 +177,7 @@ def build_app(
         artifacts_dir=artifacts_dir,
         checkpoint_experiment_config=checkpoint_experiment_config,
         checkpoint_repo_path=checkpoint_repo_path,
+        checkpoint_import_credentials_dir=checkpoint_import_credentials_dir,
     )
 
 
