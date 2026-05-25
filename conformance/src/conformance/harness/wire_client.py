@@ -41,6 +41,12 @@ class WireClient:
         self.observed_problem_types: set[str] = (
             observed_problem_types if observed_problem_types is not None else set()
         )
+        # Per-worker bearer registry. The default ``Authorization``
+        # header in ``headers`` (set from ``extra_headers``) is the
+        # admin bearer; ``request(..., as_worker=<wid>)`` swaps it for
+        # the worker's registered credential for that single call.
+        # See the chapter-7 §13 per-worker bearer scheme.
+        self._worker_bearers: dict[str, str] = {}
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
@@ -56,6 +62,34 @@ class WireClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def copy_worker_bearers_from(self, other: WireClient) -> None:
+        """Mirror ``other``'s per-worker bearer registry onto this client.
+
+        Used by scenarios that spawn a second WireClient against the
+        same IUT to model two distinct client applications sharing
+        a worker identity (chapter 04 §3.3 cross-application claim).
+        """
+        self._worker_bearers.update(other._worker_bearers)
+
+    def register_worker_bearer(self, worker_id: str, bearer: str) -> None:
+        """Associate ``worker_id`` with the per-worker bearer.
+
+        Subsequent ``request(..., as_worker=worker_id)`` calls swap the
+        default ``Authorization`` header for ``Bearer <bearer>`` on
+        that single request. ``bearer`` is the §13.1 form
+        ``<principal>:<secret>``.
+        """
+        self._worker_bearers[worker_id] = bearer
+
+    def bearer_for(self, worker_id: str) -> str:
+        """Return the bearer registered for ``worker_id``.
+
+        Raises ``KeyError`` if ``worker_id`` has not been registered
+        through :meth:`register_worker_bearer` — useful for catching
+        scenarios that forgot to seed a worker's credential.
+        """
+        return self._worker_bearers[worker_id]
+
     def request(
         self,
         method: str,
@@ -65,14 +99,33 @@ class WireClient:
         params: Mapping[str, str | int] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        as_worker: str | None = None,
     ) -> httpx.Response:
         kwargs: dict[str, Any] = {}
         if json is not None:
             kwargs["json"] = json
         if params is not None:
             kwargs["params"] = params
+        request_headers: dict[str, str] = {}
         if headers is not None:
-            kwargs["headers"] = headers
+            request_headers.update(headers)
+        if as_worker is not None:
+            # Per-call bearer swap. Look up the worker's credential and
+            # override the Authorization header for this single
+            # request; the client's default header (typically the
+            # admin bearer) stays in place for other calls.
+            bearer = self._worker_bearers.get(as_worker)
+            if bearer is not None:
+                request_headers["Authorization"] = f"Bearer {bearer}"
+            else:
+                # Unknown worker — send the bearer in the form the
+                # server would reject (worker-id principal but no
+                # secret). Scenarios deliberately probing the
+                # ``unauthorized`` / ``worker-not-registered`` paths
+                # use this fallback rather than seeding a credential.
+                request_headers["Authorization"] = f"Bearer {as_worker}:not-a-real-token"
+        if request_headers:
+            kwargs["headers"] = request_headers
         if timeout is not None:
             kwargs["timeout"] = timeout
         resp = self._client.request(method, path, **kwargs)
@@ -99,6 +152,9 @@ class WireClient:
 
     def patch(self, path: str, **kwargs: Any) -> httpx.Response:
         return self.request("PATCH", path, **kwargs)
+
+    def delete(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.request("DELETE", path, **kwargs)
 
     # Path helpers --------------------------------------------------
 

@@ -164,7 +164,12 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
 
     _seed = StoreClient(base_url=base_url, experiment_id=experiment_id)
     try:
-        for _wid in ("ideator-1", "executor-1", "evaluator-1"):
+        # In auth-disabled mode (post-#148) the wire collapses every
+        # caller onto the ``anonymous`` sentinel — register that id
+        # alongside the role-specific ones the spawned hosts pass via
+        # ``--worker-id``. Production deployments enable auth and the
+        # bearer's principal is what the wire records.
+        for _wid in ("anonymous", "ideator-1", "executor-1", "evaluator-1"):
             _seed.register_worker(_wid)
     finally:
         _seed.close()

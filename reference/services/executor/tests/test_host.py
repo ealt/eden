@@ -100,7 +100,12 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
         experiment_id="exp-mp",
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
-    # 12a-1 wave 5: §3.5 step-2 registration check.
+    # 12a-1 wave 5: §3.5 step-2 registration check. In auth-disabled
+    # mode (post-#148) the wire collapses every caller onto the
+    # ``anonymous`` sentinel, so register that id alongside the
+    # role-specific ones the test sets up. Tests that need per-worker
+    # identity must enable auth and authenticate per worker.
+    store.register_worker("anonymous")
     store.register_worker("ideator-1")
     store.register_worker("executor-1")
     store.register_worker("executor-mp")

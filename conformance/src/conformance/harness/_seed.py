@@ -9,10 +9,10 @@ through the adapter or the underlying store.
 rejected by the §3.5 step-2 registration check. Tests that need a
 worker_id MUST first call :func:`register_worker` (or rely on the
 default-worker fixture that pre-registers
-:data:`DEFAULT_WORKER_IDS`). The wire's ``X-Eden-Worker-Id`` header
-substitutes for the bearer when the IUT runs with auth disabled
-(reference adapter does so by default; see
-``adapters/reference/adapter.py``).
+:data:`DEFAULT_WORKER_IDS`). The reference adapter runs auth-enabled
+(`--admin-token`); :func:`register_worker` captures the §6.3-issued
+registration token and stashes it on the ``WireClient`` so subsequent
+``as_worker=<wid>`` calls authenticate via the §13 per-worker bearer.
 """
 
 from __future__ import annotations
@@ -71,19 +71,94 @@ def register_worker(
     the same ``worker_id`` succeeds and returns the existing record.
     The response body is the worker record; the first registration
     additionally includes ``registration_token`` for bearer auth.
+
+    When the server returns a ``registration_token``, this helper
+    stashes the ``<worker_id>:<token>`` bearer on the client's
+    per-worker registry so subsequent ``as_worker=<wid>`` calls
+    authenticate as that worker.
     """
     body: dict[str, Any] = {"worker_id": worker_id}
     if labels is not None:
         body["labels"] = labels
     resp = client.post(_workers_path(client), json=body)
     resp.raise_for_status()
-    return resp.json()
+    record = resp.json()
+    token = record.get("registration_token")
+    if isinstance(token, str) and token:
+        client.register_worker_bearer(worker_id, f"{worker_id}:{token}")
+    return record
 
 
 def register_default_workers(client: WireClient) -> None:
-    """Idempotently register every id in :data:`DEFAULT_WORKER_IDS`."""
+    """Idempotently register every id in :data:`DEFAULT_WORKER_IDS`.
+
+    Also registers the auxiliary ``admins`` / ``orchestrators`` groups
+    used by the wave-3 wire surfaces (``POST /tasks`` kind-keyed
+    authority; ``terminate`` / ``reassign`` / ``dispatch_mode``
+    admins-gating) and the conventional admin / orchestrator actor
+    identities the scenario files name. The reference adapter runs
+    auth-enabled, so every group-gated route hits the chapter 07 §13.3
+    enforcement ladder; without these registrations the bulk of the
+    suite would 403 on first contact.
+    """
     for wid in DEFAULT_WORKER_IDS:
         register_worker(client, wid)
+    for wid in ADMIN_ACTOR_IDS:
+        register_worker(client, wid)
+    for wid in ORCHESTRATOR_ACTOR_IDS:
+        register_worker(client, wid)
+    # The §3.7 wire-side authority groups; chapter 07 §13.3 specifies
+    # these as the canonical names of the principal groups the wire
+    # consults. We seed them as empty and then add the actor IDs as
+    # members; ``register_group(members=[...])`` could populate them
+    # in one call but the two-step flow surfaces a clearer failure
+    # mode if a member id isn't registered first.
+    _ensure_group(client, "admins")
+    _ensure_group(client, "orchestrators")
+    for wid in ADMIN_ACTOR_IDS:
+        _ensure_group_member(client, "admins", wid)
+    for wid in ORCHESTRATOR_ACTOR_IDS:
+        _ensure_group_member(client, "orchestrators", wid)
+
+
+# Actor identities used by the conformance scenarios for admin-gated
+# operations (``terminate_experiment`` / ``reassign_task`` /
+# ``update_dispatch_mode``). All are pre-registered + added to the
+# ``admins`` group by :func:`register_default_workers`.
+ADMIN_ACTOR_IDS: tuple[str, ...] = (
+    "admin-actor",
+    "admin-eric",
+    "orchestrator",
+    "other-actor",
+)
+
+# Actor identities used by the conformance scenarios for orchestrators-
+# gated operations (``accept`` / ``reject`` / ``policy-errors`` and the
+# §6.3 attribution probes). Pre-registered + added to the
+# ``orchestrators`` group.
+ORCHESTRATOR_ACTOR_IDS: tuple[str, ...] = (
+    "orchestrator-actor",
+    "different-actor",
+)
+
+
+def _ensure_group(client: WireClient, group_id: str) -> None:
+    """Idempotently create ``group_id`` (409 already-exists is fine)."""
+    resp = client.post(_groups_path(client), json={"group_id": group_id})
+    if resp.status_code not in (200, 409):
+        resp.raise_for_status()
+
+
+def _ensure_group_member(
+    client: WireClient, group_id: str, member_id: str
+) -> None:
+    """Idempotently add ``member_id`` to ``group_id`` (409 already-member is fine)."""
+    resp = client.post(
+        _groups_path(client, group_id, "/members"),
+        json={"member_id": member_id},
+    )
+    if resp.status_code not in (200, 409):
+        resp.raise_for_status()
 
 
 def create_group(
@@ -133,8 +208,16 @@ def create_ideation_task(
     task_id: str | None = None,
     payload: dict[str, Any] | None = None,
     target: dict[str, str] | None = None,
+    actor_id: str = "admin-actor",
 ) -> str:
-    """POST /tasks for a `ideation` task. Returns the task_id."""
+    """POST /tasks for a `ideation` task. Returns the task_id.
+
+    ``POST /tasks`` with kind in {ideation, execution, evaluation} is
+    gated on ``admins`` OR ``orchestrators`` group membership (chapter
+    07 §3.7); ``actor_id`` MUST resolve to a worker in either group.
+    The default ``admin-actor`` is pre-registered into ``admins`` by
+    :func:`register_default_workers`.
+    """
     tid = task_id or fresh_task_id("ideation")
     body: dict[str, Any] = {
         "task_id": tid,
@@ -146,7 +229,7 @@ def create_ideation_task(
     }
     if target is not None:
         body["target"] = target
-    resp = client.post(client.tasks_path(), json=body)
+    resp = client.post(client.tasks_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
 
@@ -157,8 +240,12 @@ def create_evaluation_task(
     variant_id: str,
     task_id: str | None = None,
     target: dict[str, str] | None = None,
+    actor_id: str = "admin-actor",
 ) -> str:
-    """POST /tasks for an `evaluation` task referencing the given variant."""
+    """POST /tasks for an `evaluation` task referencing the given variant.
+
+    Same admins-or-orchestrators authority as ``create_ideation_task``.
+    """
     tid = task_id or fresh_task_id("eval")
     body: dict[str, Any] = {
         "task_id": tid,
@@ -170,7 +257,7 @@ def create_evaluation_task(
     }
     if target is not None:
         body["target"] = target
-    resp = client.post(client.tasks_path(), json=body)
+    resp = client.post(client.tasks_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
 
@@ -181,11 +268,14 @@ def create_execution_task(
     idea_id: str,
     task_id: str | None = None,
     target: dict[str, str] | None = None,
+    actor_id: str = "admin-actor",
 ) -> str:
     """POST /tasks for an `execution` task referencing a `ready` idea.
 
     The composite-commit invariant ([`05-event-protocol.md`](05-event-protocol.md) §2.2)
     flips the idea `ready → dispatched` atomically with this insert.
+
+    Same admins-or-orchestrators authority as ``create_ideation_task``.
     """
     tid = task_id or fresh_task_id("execution")
     body: dict[str, Any] = {
@@ -198,7 +288,7 @@ def create_execution_task(
     }
     if target is not None:
         body["target"] = target
-    resp = client.post(client.tasks_path(), json=body)
+    resp = client.post(client.tasks_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
 
@@ -213,11 +303,10 @@ def claim(
     """Claim a pending task on behalf of ``worker_id``.
 
     Per chapter 04 §3.3 the claimant identity comes from the
-    binding's authenticated principal. With the reference adapter
-    running auth-disabled, the wire reads the ``X-Eden-Worker-Id``
-    header to derive the worker_id; this helper sets that header for
-    each call so scenarios drive multi-worker behavior without a
-    full credential dance.
+    binding's authenticated principal. The reference adapter runs
+    auth-enabled, so this helper resolves ``worker_id`` to the
+    bearer registered on the client by :func:`register_worker` and
+    authenticates as that worker for this single call.
 
     Returns the claim object (``worker_id``, ``claimed_at``,
     optionally ``expires_at``).
@@ -228,7 +317,7 @@ def claim(
     resp = client.post(
         client.tasks_path(task_id, "/claim"),
         json=body,
-        headers={"X-Eden-Worker-Id": worker_id},
+        as_worker=worker_id,
     )
     resp.raise_for_status()
     return resp.json()
@@ -250,7 +339,7 @@ def submit_idea(
     return client.post(
         client.tasks_path(task_id, "/submit"),
         json={"payload": payload},
-        headers={"X-Eden-Worker-Id": worker_id},
+        as_worker=worker_id,
     )
 
 
@@ -273,7 +362,7 @@ def submit_variant(
     return client.post(
         client.tasks_path(task_id, "/submit"),
         json={"payload": payload},
-        headers={"X-Eden-Worker-Id": worker_id},
+        as_worker=worker_id,
     )
 
 
@@ -301,20 +390,52 @@ def submit_evaluation(
     return client.post(
         client.tasks_path(task_id, "/submit"),
         json={"payload": payload},
-        headers={"X-Eden-Worker-Id": worker_id},
+        as_worker=worker_id,
     )
 
 
-def accept(client: WireClient, task_id: str) -> Any:
-    return client.post(client.tasks_path(task_id, "/accept"))
+def accept(
+    client: WireClient, task_id: str, *, actor_id: str = "orchestrator-actor"
+) -> Any:
+    """POST /tasks/{task_id}/accept — orchestrators-gated.
+
+    ``actor_id`` MUST be a member of the ``orchestrators`` group;
+    :func:`register_default_workers` pre-registers
+    ``orchestrator-actor`` into that group.
+    """
+    return client.post(
+        client.tasks_path(task_id, "/accept"), as_worker=actor_id
+    )
 
 
-def reject(client: WireClient, task_id: str, *, reason: str) -> Any:
-    return client.post(client.tasks_path(task_id, "/reject"), json={"reason": reason})
+def reject(
+    client: WireClient,
+    task_id: str,
+    *,
+    reason: str,
+    actor_id: str = "orchestrator-actor",
+) -> Any:
+    """POST /tasks/{task_id}/reject — orchestrators-gated."""
+    return client.post(
+        client.tasks_path(task_id, "/reject"),
+        json={"reason": reason},
+        as_worker=actor_id,
+    )
 
 
-def reclaim(client: WireClient, task_id: str, *, cause: str) -> Any:
-    return client.post(client.tasks_path(task_id, "/reclaim"), json={"cause": cause})
+def reclaim(
+    client: WireClient,
+    task_id: str,
+    *,
+    cause: str,
+    actor_id: str = "orchestrator-actor",
+) -> Any:
+    """POST /tasks/{task_id}/reclaim — worker-gated."""
+    return client.post(
+        client.tasks_path(task_id, "/reclaim"),
+        json={"cause": cause},
+        as_worker=actor_id,
+    )
 
 
 def reassign_task(
@@ -333,17 +454,15 @@ def reassign_task(
     ``reason`` is non-empty audit text carried into the
     ``task.reassigned`` event.
 
-    With auth disabled the reference adapter reads
-    ``X-Eden-Worker-Id`` to derive the authenticated principal and
-    stamps it as ``reassigned_by`` on the emitted event. ``actor_id``
-    sets that header — pass a §6.1-grammar value
-    (``admin-actor`` matches by default).
+    Admins-gated per §13.3: ``actor_id`` MUST be a member of the
+    ``admins`` group. The server stamps ``reassigned_by`` from the
+    authenticated principal.
     """
     body: dict[str, Any] = {"new_target": new_target, "reason": reason}
     return client.post(
         client.tasks_path(task_id, "/reassign"),
         json=body,
-        headers={"X-Eden-Worker-Id": actor_id},
+        as_worker=actor_id,
     )
 
 
@@ -361,14 +480,13 @@ def update_dispatch_mode(
     ``"auto"`` or ``"manual"``; unknown keys are tolerated per §2.5
     and round-trip through.
 
-    The server stamps ``updated_by`` from the authenticated principal;
-    with auth disabled it falls back to the ``X-Eden-Worker-Id``
-    header set here.
+    Admins-gated; the server stamps ``updated_by`` from the
+    authenticated principal (the bearer registered for ``actor_id``).
     """
     return client.patch(
         client.dispatch_mode_path(),
         json=patch,
-        headers={"X-Eden-Worker-Id": actor_id},
+        as_worker=actor_id,
     )
 
 
@@ -389,7 +507,9 @@ def create_idea(
     parent_commits: list[str] | None = None,
     slug: str = "test",
     artifacts_uri: str = "file:///tmp/eden-conformance-stub",
+    actor_id: str = "test-worker",
 ) -> str:
+    """POST /ideas — worker-gated; ``actor_id`` MUST be a registered worker."""
     pid = idea_id or fresh_idea_id()
     body = {
         "idea_id": pid,
@@ -402,13 +522,18 @@ def create_idea(
         "created_at": _NOW,
         "updated_at": _NOW,
     }
-    resp = client.post(client.ideas_path(), json=body)
+    resp = client.post(client.ideas_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return pid
 
 
-def mark_idea_ready(client: WireClient, idea_id: str) -> Any:
-    return client.post(client.ideas_path(idea_id, "/mark-ready"))
+def mark_idea_ready(
+    client: WireClient, idea_id: str, *, actor_id: str = "test-worker"
+) -> Any:
+    """POST /ideas/{id}/mark-ready — worker-gated."""
+    return client.post(
+        client.ideas_path(idea_id, "/mark-ready"), as_worker=actor_id
+    )
 
 
 def create_variant(
@@ -420,7 +545,9 @@ def create_variant(
     commit_sha: str | None = None,
     status: str = "starting",
     parent_commits: list[str] | None = None,
+    actor_id: str = "impl-worker",
 ) -> str:
+    """POST /variants — worker-gated; ``actor_id`` MUST be a registered worker."""
     tid = variant_id or fresh_variant_id()
     body: dict[str, Any] = {
         "variant_id": tid,
@@ -434,7 +561,7 @@ def create_variant(
         body["branch"] = branch
     if commit_sha is not None:
         body["commit_sha"] = commit_sha
-    resp = client.post(client.variants_path(), json=body)
+    resp = client.post(client.variants_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
 
@@ -444,15 +571,24 @@ def integrate_variant(
     variant_id: str,
     *,
     variant_commit_sha: str,
+    actor_id: str = "orchestrator-actor",
 ) -> Any:
+    """POST /variants/{id}/integrate — orchestrators-gated."""
     return client.post(
         client.variants_path(variant_id, "/integrate"),
         json={"variant_commit_sha": variant_commit_sha},
+        as_worker=actor_id,
     )
 
 
-def declare_variant_evaluation_error(client: WireClient, variant_id: str) -> Any:
-    return client.post(client.variants_path(variant_id, "/declare-evaluation-error"))
+def declare_variant_evaluation_error(
+    client: WireClient, variant_id: str, *, actor_id: str = "eval-worker"
+) -> Any:
+    """POST /variants/{id}/declare-evaluation-error — worker-gated."""
+    return client.post(
+        client.variants_path(variant_id, "/declare-evaluation-error"),
+        as_worker=actor_id,
+    )
 
 
 def read_task(client: WireClient, task_id: str) -> dict[str, Any]:
@@ -620,11 +756,10 @@ def terminate_experiment(
 ) -> Any:
     """POST /v0/experiments/{E}/terminate (12a-3 wire §2.9).
 
-    The server stamps ``terminated_by`` from the authenticated
-    principal; with auth disabled the reference adapter falls back to
-    the ``X-Eden-Worker-Id`` header set here. The body MUST NOT carry
-    ``terminated_by`` (the request schema rejects unknown keys); pass
-    only ``reason``.
+    Admins-gated; the server stamps ``terminated_by`` from the
+    authenticated principal (the bearer registered for ``actor_id``).
+    The body MUST NOT carry ``terminated_by`` (the request schema
+    rejects unknown keys); pass only ``reason``.
 
     Returns the raw httpx response so the caller decides how to
     interpret status codes (e.g. 200 happy-path vs 200 idempotent
@@ -633,7 +768,7 @@ def terminate_experiment(
     return client.post(
         client.terminate_path(),
         json={"reason": reason},
-        headers={"X-Eden-Worker-Id": actor_id},
+        as_worker=actor_id,
     )
 
 

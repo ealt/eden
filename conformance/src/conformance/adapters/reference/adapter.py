@@ -8,6 +8,7 @@ durability (eden-storage's own tests do).
 from __future__ import annotations
 
 import queue
+import secrets
 import subprocess
 import sys
 import threading
@@ -23,14 +24,13 @@ from conformance.harness.adapter import IutAdapter, IutHandle
 class ReferenceAdapter(IutAdapter):
     """Spawns ``python -m eden_task_store_server`` in a subprocess.
 
-    12a-1 wave 5: runs the server with ``--admin-token`` unset so auth
-    is disabled at the wire layer. The conformance suite still exercises
-    every claim-time RBAC MUST (registration check, target eligibility,
-    claim ownership) via the Store's own enforcement — auth is the
-    binding-layer concern (per chapter 04 §3.3) and is tested separately
-    by the wire's unit tests. With auth off, the server reads
-    ``X-Eden-Worker-Id`` from the request header to derive the
-    authenticated worker_id (server.py: ``_worker_id_from_request``).
+    Runs the server with a per-test ``--admin-token`` so the §13
+    normative auth posture is active. The harness's default-workers
+    fixture registers the conventional worker_ids through the admin
+    bearer, persists the issued per-worker tokens on the
+    :class:`WireClient`, and uses ``as_worker=<wid>`` per-call to
+    swap the Authorization header (see issue #148 for the
+    pre-migration auth-disabled posture this replaced).
 
     12c wave 6: also spawns ``python -m eden_control_plane_server`` so
     a conforming reference IUT exposes both the chapter 07 §1-§14 and
@@ -50,6 +50,7 @@ class ReferenceAdapter(IutAdapter):
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
         self._control_plane: ControlPlaneSubprocess | None = None
+        self._admin_token: str | None = None
 
     def start(
         self,
@@ -57,6 +58,12 @@ class ReferenceAdapter(IutAdapter):
         experiment_config_path: Path,
         experiment_id: str,
     ) -> IutHandle:
+        # ``secrets.token_hex`` (NOT ``token_urlsafe``) — the latter's
+        # base64url alphabet can begin with ``-`` and would be parsed
+        # as an argparse flag (see the AGENTS.md subprocess-adapter
+        # lifecycle pitfall).
+        admin_token = secrets.token_hex(24)
+        self._admin_token = admin_token
         self._proc = subprocess.Popen(
             [
                 sys.executable,
@@ -70,6 +77,8 @@ class ReferenceAdapter(IutAdapter):
                 str(experiment_config_path),
                 "--subscribe-timeout",
                 str(self._SUBSCRIBE_TIMEOUT_S),
+                "--admin-token",
+                admin_token,
                 "--port",
                 "0",
                 "--host",
@@ -90,8 +99,9 @@ class ReferenceAdapter(IutAdapter):
         return IutHandle(
             base_url=f"http://127.0.0.1:{port}",
             experiment_id=experiment_id,
-            extra_headers={},
+            extra_headers={"Authorization": f"Bearer admin:{admin_token}"},
             control_plane_base_url=cp_handle.base_url,
+            admin_token=admin_token,
         )
 
     def stop(self) -> None:

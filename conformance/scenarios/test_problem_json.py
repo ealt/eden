@@ -41,7 +41,9 @@ def _assert_content_type(resp_headers) -> None:
 
 def test_problem_json_400_bad_request(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §9 — 400 returns problem+json envelope."""
-    r = wire_client.post(wire_client.tasks_path(), json={"bogus": True})
+    r = wire_client.post(
+        wire_client.tasks_path(), json={"bogus": True}, as_worker="admin-actor"
+    )
     assert r.status_code == 400
     _assert_content_type(r.headers)
     _assert_problem_envelope(400, r.json(), str(r.request.url))

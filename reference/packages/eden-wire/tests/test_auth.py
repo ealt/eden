@@ -572,11 +572,12 @@ def test_storeclient_claim_with_no_bearer_skips_preflight(
     store: InMemoryStore,
 ) -> None:
     """Auth-disabled mode (no bearer) passes through; the preflight is a no-op."""
-    # Server with admin_token=None admits anonymous + reads the
-    # X-Eden-Worker-Id header for worker identity. The client preflight
-    # short-circuits on no-bearer; the assertion is that no
-    # client-side ValueError fires for the "mismatched worker_id"
-    # path even though no bearer is configured.
+    # Server with admin_token=None admits anonymous requests; the
+    # caller-supplied worker_id is ignored at the wire and the server
+    # collapses the principal to the ``anonymous`` sentinel. The
+    # client preflight short-circuits on no-bearer (no
+    # ValueError); the server then rejects ``anonymous`` via the
+    # §3.5 registration ladder.
     store.create_ideation_task("t-noauth")
     app = make_app(store, admin_token=None)
     test_client = TestClient(app)
@@ -588,8 +589,6 @@ def test_storeclient_claim_with_no_bearer_skips_preflight(
             experiment_id=EXPERIMENT_ID,
             client=http,
         )
-        # No bearer → preflight short-circuits; server then rejects the
-        # unregistered worker via the §3.5 ladder.
         from eden_storage import WorkerNotRegistered
 
         with pytest.raises(WorkerNotRegistered):

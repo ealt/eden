@@ -116,6 +116,7 @@ def test_terminate_decision_blocks_subsequent_create_task(
             "created_at": "2026-05-01T00:00:00Z",
             "updated_at": "2026-05-01T00:00:00Z",
         },
+        as_worker="admin-actor",
     )
     assert resp.status_code == 409, resp.text
     assert resp.json()["type"] == "eden://error/illegal-transition"

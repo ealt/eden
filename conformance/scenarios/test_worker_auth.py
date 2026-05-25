@@ -14,10 +14,11 @@ This file pins the cross-application-claim MUST from plan §6.4:
   claims, client B submits — without ever exchanging an
   authentication artifact through the claim object.
 
-The conformance adapter runs the IUT with auth disabled (worker_id
-forwarded via ``X-Eden-Worker-Id``). Under auth-enabled posture the
-same MUST holds via the §13.2 bearer scheme; under auth-disabled
-the header is the equivalent identity-claim surface.
+The conformance adapter runs the IUT auth-enabled (per-worker
+bearer tokens). Two distinct WireClient instances bind to the same
+IUT and share the worker's bearer via
+``copy_worker_bearers_from``; the §13.2 bearer scheme is the
+identity-claim surface.
 """
 
 from __future__ import annotations
@@ -55,12 +56,14 @@ def test_two_clients_share_a_claim_via_worker_identity(
     claim = _seed.claim(wire_client, tid, worker_id=wid)
     assert claim["worker_id"] == wid
 
-    # Client B: a fresh WireClient pointed at the same IUT.
+    # Client B: a fresh WireClient pointed at the same IUT, sharing
+    # ``wid``'s bearer (the §13.2 cross-application identity surface).
     with WireClient(
         base_url=iut.base_url,
         experiment_id=iut.experiment_id,
         extra_headers=iut.extra_headers,
     ) as client_b:
+        client_b.copy_worker_bearers_from(wire_client)
         r = _seed.submit_idea(client_b, tid, worker_id=wid)
     assert r.status_code == 200, r.text
     task = _seed.read_task(wire_client, tid)
@@ -89,6 +92,7 @@ def test_two_clients_disagreeing_on_worker_id_rejected(
         experiment_id=iut.experiment_id,
         extra_headers=iut.extra_headers,
     ) as client_b:
+        client_b.copy_worker_bearers_from(wire_client)
         r = _seed.submit_idea(client_b, tid, worker_id=intruder)
     assert r.status_code == 403, r.text
     assert r.json().get("type") == "eden://error/wrong-claimant"

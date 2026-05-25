@@ -51,7 +51,7 @@ def _claim_concurrently(
         resp = client.post(
             client.tasks_path(task_id, "/claim"),
             json={},
-            headers={"X-Eden-Worker-Id": worker_id},
+            as_worker=worker_id,
         )
         with lock:
             results.append(resp)

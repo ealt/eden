@@ -79,7 +79,7 @@ def test_update_emits_event_with_full_state_and_diff(
     assert payload["dispatch_mode"]["evaluation_dispatch"] == "auto"
     assert payload["dispatch_mode"]["integration"] == "manual"
     # `updated_by` is stamped from the authenticated principal
-    # (X-Eden-Worker-Id header in the auth-disabled posture).
+    # (the bearer registered for ``actor_id``).
     assert payload["updated_by"] == "admin-eric"
 
 

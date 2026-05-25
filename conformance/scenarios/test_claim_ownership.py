@@ -47,7 +47,7 @@ def test_no_reclaim_while_claimed(wire_client: WireClient) -> None:
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "worker-b"},
+        as_worker="worker-b",
     )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"

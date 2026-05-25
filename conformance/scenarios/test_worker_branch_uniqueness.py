@@ -54,7 +54,7 @@ def test_colliding_variant_id_rejected_so_work_branches_remain_unique(
         "branch": shared_branch,
         "started_at": "2026-05-01T00:00:00Z",
     }
-    r = wire_client.post(wire_client.variants_path(), json=body)
+    r = wire_client.post(wire_client.variants_path(), json=body, as_worker="impl-worker")
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/already-exists"
 

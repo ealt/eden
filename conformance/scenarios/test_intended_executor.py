@@ -44,7 +44,7 @@ def _create_idea_with_intended_executor(
     }
     if intended_executor is not None:
         body["intended_executor"] = intended_executor
-    resp = client.post(client.ideas_path(), json=body)
+    resp = client.post(client.ideas_path(), json=body, as_worker="test-worker")
     resp.raise_for_status()
     return idea_id
 

@@ -180,6 +180,10 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             # task-store-server runs auth-disabled in this e2e, so
             # the registration call goes through without an admin
             # bearer).
+            # In auth-disabled mode (post-#148) the wire collapses
+            # every caller onto the ``anonymous`` sentinel, so
+            # register that id alongside ``ui-admin``.
+            seed.register_worker("anonymous")
             seed.register_worker("ui-admin")
             # Issue #144: the web-ui /admin/* middleware gates on
             # admins-group membership. Put ui-admin in admins.

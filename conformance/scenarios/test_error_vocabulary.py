@@ -17,15 +17,23 @@ pytestmark = pytest.mark.conformance
 
 CONFORMANCE_GROUP = 'Error vocabulary closure'
 
-# Chapter 7 §7 closed v0 vocabulary (post-12a-1). Split into three
-# tiers:
+# Chapter 7 §7 closed v0 vocabulary (post-12a-1, post-#148). Split
+# into three tiers:
 #
 #   * `_CORE_VOCABULARY` — types every IUT MUST emit at some point
 #     during the suite; `test_v0_vocabulary_each_observed_at_least_once`
-#     asserts that.
-#   * `_AUTH_ONLY_TYPES` — ``unauthorized`` / ``forbidden``: only
-#     elicited against an auth-enabled IUT; the reference adapter
-#     runs with auth disabled (see `adapters/reference/adapter.py`).
+#     asserts that. Includes ``unauthorized`` and ``forbidden`` since
+#     the reference adapter runs auth-enabled post-#148 (the prior
+#     `X-Eden-Worker-Id` test-fixture header is retired and the §13
+#     bearer scheme is the only auth path).
+#   * `_AUTH_DISABLED_OBSERVABLE_TYPES` — wire types that are
+#     only observable through an auth-disabled IUT. Under the §13
+#     auth-enabled posture, an unregistered worker_id has no valid
+#     bearer to present, so the wire's auth middleware 401s before
+#     the chapter 04 §3.5 step-2 ``worker-not-registered`` check ever
+#     fires. The Store-level MUST stays; it's a Store-API contract
+#     observable to in-process callers but not to a wire-only IUT
+#     running under auth.
 #   * `_IMPL_OPTIONAL_TYPES` — closed-vocab types whose surface on
 #     the wire is impl-defined per spec latitude. ``no-op-variant``
 #     is the canonical example: spec/v0/03-roles.md §3.4 allows the
@@ -37,10 +45,14 @@ CONFORMANCE_GROUP = 'Error vocabulary closure'
 # All three tiers belong to the closed v0 vocabulary
 # (``test_observed_types_are_in_v0_vocabulary``), but only `_CORE_VOCABULARY`
 # is required to be observed in any given session.
-_AUTH_ONLY_TYPES: frozenset[str] = frozenset(
+_AUTH_DISABLED_OBSERVABLE_TYPES: frozenset[str] = frozenset(
     {
-        "eden://error/unauthorized",
-        "eden://error/forbidden",
+        # Chapter 04 §3.5 step 2: under §13 auth-enabled IUTs, an
+        # unregistered worker_id cannot present a valid bearer, so the
+        # wire returns 401 ``unauthorized`` before reaching the
+        # registration check. Only auth-disabled IUTs surface this
+        # through the wire.
+        "eden://error/worker-not-registered",
     }
 )
 
@@ -82,7 +94,6 @@ _CORE_VOCABULARY: frozenset[str] = frozenset(
     {
         "eden://error/bad-request",
         "eden://error/experiment-id-mismatch",
-        "eden://error/worker-not-registered",
         "eden://error/worker-not-eligible",
         "eden://error/wrong-claimant",
         "eden://error/not-found",
@@ -93,11 +104,13 @@ _CORE_VOCABULARY: frozenset[str] = frozenset(
         "eden://error/invalid-precondition",
         "eden://error/reserved-identifier",
         "eden://error/cycle-detected",
+        "eden://error/unauthorized",
+        "eden://error/forbidden",
     }
 )
 
 _V0_VOCABULARY: frozenset[str] = (
-    _CORE_VOCABULARY | _AUTH_ONLY_TYPES | _IMPL_OPTIONAL_TYPES
+    _CORE_VOCABULARY | _AUTH_DISABLED_OBSERVABLE_TYPES | _IMPL_OPTIONAL_TYPES
 )
 
 
@@ -116,16 +129,18 @@ def test_v0_vocabulary_each_observed_at_least_once(
 ) -> None:
     """spec/v0/07-wire-protocol.md §9 — every §7 core entry is exercised by some scenario.
 
-    The auth-only types (``unauthorized`` / ``forbidden``) and the
-    impl-optional types (``no-op-variant``: spec §3.4 latitude on
-    rejection point) are scoped out of this MUST-observe assertion:
-    auth-only because the reference adapter runs auth-disabled, and
-    impl-optional because the spec explicitly permits rejecting
-    silently (variant simply does not terminalize as success). The
-    first direction —
-    every observed type is in the closed vocabulary — already covers
-    them: an auth-enabled adapter that emits one outside the table
-    fails ``test_observed_types_are_in_v0_vocabulary``.
+    The auth-disabled-observable types (``worker-not-registered``)
+    and the impl-optional types (``no-op-variant``: spec §3.4
+    latitude on rejection point; the v1+checkpoints /
+    v1+multi-experiment levels) are scoped out of this MUST-observe
+    assertion: the reference adapter runs auth-enabled, so the
+    ``worker-not-registered`` chapter 04 §3.5 step-2 check is
+    shadowed by the auth middleware's 401; impl-optional because
+    the spec explicitly permits rejecting silently / the type only
+    surfaces in a conformance level the IUT may not claim. The
+    first direction — every observed type is in the closed
+    vocabulary — already covers them: an adapter that emits one
+    outside the table fails ``test_observed_types_are_in_v0_vocabulary``.
     """
     missing = _CORE_VOCABULARY - session_observed_problem_types
     assert not missing, (
