@@ -68,7 +68,10 @@ Useful for: browsing branches (`work/*`, `variant/*`, `main`), diffing arbitrary
 
 Worker-emitted artifacts (idea content markdown, evaluation outputs) live under `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` on the host. That directory is the same bind-mount the web-ui sees as `/var/lib/eden/artifacts/` — host path and container path are two views of the same bytes.
 
-**Important caveat — scripted mode produces no artifact files.** The default Compose deployment runs the worker hosts in **scripted** mode; the scripted ideator / executor / evaluator stamp `artifacts_uri = file:///tmp/artifacts/...` onto every submission but never write those files to disk. The strings are fictional pointers. To see real artifact files in this directory, run [subprocess mode](user-guide.md#3-worker-host-modes) (`-f compose.yaml -f compose.subprocess.yaml`) — only then do the user-supplied `*_command` workers emit real bytes under `/var/lib/eden/artifacts/`.
+**Important caveat — scripted mode produces no artifact files by default.** The default Compose deployment runs the worker hosts in **scripted** mode; the scripted ideator / executor / evaluator stamp `artifacts_uri = file:///tmp/artifacts/...` onto every submission but never write those files to disk. The strings are fictional pointers. Two ways to get real artifact files:
+
+- **Subprocess mode** ([`user-guide.md` §3](user-guide.md#3-worker-host-modes), `-f compose.yaml -f compose.subprocess.yaml`) — the user-supplied `*_command` workers emit real bytes under `/var/lib/eden/artifacts/`.
+- **Scripted mode with `--emit-fixture-artifacts`** (issue #111) — each scripted host (ideator / executor / evaluator) accepts an opt-in flag that writes small placeholder files under `--artifacts-dir` and stamps real `file:///var/lib/eden/artifacts/<path>` URIs onto submissions. Useful for demos / onboarding where the artifacts substrate should be observable without an experiment config providing real worker code. Pair the flag with `--artifacts-dir` (the host's view of the same bind-mount the web-ui sees as `/var/lib/eden/artifacts/`).
 
 Three ways to read artifacts when they exist:
 

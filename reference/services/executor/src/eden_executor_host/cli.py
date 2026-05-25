@@ -81,6 +81,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="If set, fail every Nth task (1-indexed). Default: never fail.",
     )
+    parser.add_argument(
+        "--artifacts-dir",
+        default=None,
+        help=(
+            "Scripted-mode only: where to write fixture artifact "
+            "files when --emit-fixture-artifacts is set."
+        ),
+    )
+    parser.add_argument(
+        "--emit-fixture-artifacts",
+        action="store_true",
+        help=(
+            "Scripted-mode only: write small placeholder fixture "
+            "files under --artifacts-dir and stamp real "
+            "file:///var/lib/eden/artifacts/... URIs onto Variant "
+            "records (default OFF preserves the historical "
+            "no-per-variant-artifacts behavior). See issue #111."
+        ),
+    )
     # Subprocess-mode flags.
     parser.add_argument("--experiment-config", default=None)
     parser.add_argument("--experiment-dir", default=None)
@@ -102,6 +121,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 parser.error(
                     f"--{attr.replace('_', '-')} is required in --mode subprocess"
                 )
+        if args.emit_fixture_artifacts:
+            parser.error(
+                "--emit-fixture-artifacts is scripted-mode only "
+                "(subprocess mode emits real artifacts via the user-supplied "
+                "execution_command)"
+            )
+    else:
+        if args.emit_fixture_artifacts and args.artifacts_dir is None:
+            parser.error(
+                "--artifacts-dir is required when --emit-fixture-artifacts is set"
+            )
     return args
 
 
@@ -139,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
         bearer=bearer,
     ) as client:
         if args.mode == "scripted":
+            scripted_artifacts_dir = (
+                Path(args.artifacts_dir)
+                if args.emit_fixture_artifacts and args.artifacts_dir is not None
+                else None
+            )
             run_executor_loop(
                 store=client,
                 worker_id=args.worker_id,
@@ -146,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                 fail_every=args.fail_every,
                 poll_interval=args.poll_interval,
                 stop=stop,
+                artifacts_dir=scripted_artifacts_dir,
             )
         else:
             config = load_experiment_config(args.experiment_config)

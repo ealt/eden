@@ -37,7 +37,7 @@ from .subprocess_mode import (
 )
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: E501  # slop-allow: argparse builder; one add_argument per CLI flag with no branching, plus mode-specific validation at the end; splitting fragments the flat flag manifest without reducing logic.
     """Parse CLI args for the evaluator host."""
     parser = argparse.ArgumentParser(
         prog="eden-evaluator-host",
@@ -62,6 +62,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--fail-every",
         type=int,
         default=None,
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        default=None,
+        help=(
+            "Scripted-mode only: where to write fixture artifact "
+            "files when --emit-fixture-artifacts is set."
+        ),
+    )
+    parser.add_argument(
+        "--emit-fixture-artifacts",
+        action="store_true",
+        help=(
+            "Scripted-mode only: write small placeholder fixture "
+            "files under --artifacts-dir and stamp real "
+            "file:///var/lib/eden/artifacts/... URIs onto "
+            "EvaluationSubmissions (instead of the default "
+            "fictional /tmp/artifacts/... pointers). See issue #111."
+        ),
     )
     # Subprocess-mode flags.
     parser.add_argument("--experiment-dir", default=None)
@@ -112,6 +131,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 parser.error(
                     f"--{attr.replace('_', '-')} is required in --mode subprocess"
                 )
+        if args.emit_fixture_artifacts:
+            parser.error(
+                "--emit-fixture-artifacts is scripted-mode only "
+                "(subprocess mode emits real artifacts via the user-supplied "
+                "evaluation_command)"
+            )
+    else:
+        if args.emit_fixture_artifacts and args.artifacts_dir is None:
+            parser.error(
+                "--artifacts-dir is required when --emit-fixture-artifacts is set"
+            )
     return args
 
 
@@ -230,6 +260,11 @@ def main(argv: list[str] | None = None) -> int:
         bearer=bearer,
     ) as client:
         if args.mode == "scripted":
+            scripted_artifacts_dir = (
+                Path(args.artifacts_dir)
+                if args.emit_fixture_artifacts and args.artifacts_dir is not None
+                else None
+            )
             run_evaluator_loop(
                 store=client,
                 worker_id=args.worker_id,
@@ -237,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                 fail_every=args.fail_every,
                 poll_interval=args.poll_interval,
                 stop=stop,
+                artifacts_dir=scripted_artifacts_dir,
             )
         else:
             _run_subprocess_mode(

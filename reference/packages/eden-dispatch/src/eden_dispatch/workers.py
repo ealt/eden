@@ -50,6 +50,7 @@ class ExecutionOutcome:
     commit_sha: str | None = None
     branch: str | None = None
     description: str | None = None
+    artifacts_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -214,6 +215,8 @@ class ScriptedExecutor:
         }
         if outcome.description is not None:
             variant_kwargs["description"] = outcome.description
+        if outcome.artifacts_uri is not None:
+            variant_kwargs["artifacts_uri"] = outcome.artifacts_uri
         variant = Variant(**variant_kwargs)
         store.create_variant(variant)
         store.submit(
