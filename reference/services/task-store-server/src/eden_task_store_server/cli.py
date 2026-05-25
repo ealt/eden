@@ -132,6 +132,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--checkpoint-import-credentials-dir",
+        default=os.environ.get("EDEN_CHECKPOINT_IMPORT_CREDENTIALS_DIR"),
+        help=(
+            "Directory where the checkpoint-import handler persists the "
+            "fresh worker bearers minted per `10-checkpoints.md` §8 "
+            "step 4 (one `<worker_id>.token` per imported worker). The "
+            "reference Compose deployment bind-mounts this directory "
+            "into the worker hosts' per-host credentials volumes so "
+            "bearers are already in place at host startup — no manual "
+            "`reissue_credential` round-trip from the operator. When "
+            "unset (the in-process / TestClient default), tokens are "
+            "still minted (§8 is normative) but the wire response just "
+            "carries a warning that they were not persisted. Also read "
+            "from $EDEN_CHECKPOINT_IMPORT_CREDENTIALS_DIR."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="info",
         choices=["debug", "info", "warning", "error"],
@@ -227,6 +244,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         except OSError:
             experiment_config_text = None
+        credentials_dir = (
+            Path(args.checkpoint_import_credentials_dir)
+            if args.checkpoint_import_credentials_dir
+            else None
+        )
         app = build_app(
             store=store,
             admin_token=args.admin_token,
@@ -234,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             artifacts_dir=artifacts_dir,
             checkpoint_experiment_config=experiment_config_text,
             checkpoint_repo_path=args.repo_path,
+            checkpoint_import_credentials_dir=credentials_dir,
         )
         uv_config = uvicorn.Config(
             app,

@@ -361,6 +361,205 @@ def test_import_rejects_corrupt_archive(
 
 
 # ----------------------------------------------------------------------
+# Issue #150 — receiver-side auto-reissue on checkpoint import
+# ----------------------------------------------------------------------
+
+
+def _export_with_workers(
+    store: InMemoryStore, worker_ids: list[str]
+) -> bytes:
+    client, admin_bearer = _make_admin_worker_client(store)
+    for worker_id in worker_ids:
+        _register_worker(client, worker_id)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer {admin_bearer}",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.content
+
+
+def test_import_persists_reissued_credentials_to_dir(
+    store: InMemoryStore, fresh_store_factory: Any, tmp_path: Path
+) -> None:
+    """When `checkpoint_import_credentials_dir` is set, the wire layer
+    writes one `<worker_id>.token` per imported worker (mode 0600), and
+    each persisted bearer authenticates against the receiver via /whoami.
+    """
+    archive_bytes = _export_with_workers(store, ["wkr-a", "wkr-b"])
+
+    creds_dir = tmp_path / "host-creds"
+    receiver = fresh_store_factory()
+    receiver_app = make_app(
+        receiver,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_import_credentials_dir=creds_dir,
+    )
+    receiver_client = TestClient(receiver_app)
+    resp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=archive_bytes,
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["experiment_id"] == EXPERIMENT_ID
+    warnings = body["warnings"]
+    assert any("credentials reissued and persisted" in w for w in warnings)
+
+    # Files are present, owner-only, and the tokens verify against the
+    # receiver store directly.
+    for worker_id in ["wkr-a", "wkr-b"]:
+        path = creds_dir / f"{worker_id}.token"
+        assert path.is_file()
+        # 0o777 mask matches the spec/13.5 0o600 expectation; we
+        # don't pin uid/gid which would be CI-environment-dependent.
+        assert (path.stat().st_mode & 0o777) == 0o600
+        token = path.read_text()
+        assert receiver.verify_worker_credential(worker_id, token) is True
+
+
+def test_import_warns_when_no_credentials_dir(
+    store: InMemoryStore, fresh_store_factory: Any
+) -> None:
+    """When the credentials dir is unset, the import still mints fresh
+    credentials but surfaces a warning that they were NOT persisted.
+    """
+    archive_bytes = _export_with_workers(store, ["wkr-c"])
+
+    receiver = fresh_store_factory()
+    receiver_app = make_app(receiver, admin_token=ADMIN_TOKEN)
+    receiver_client = TestClient(receiver_app)
+    resp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=archive_bytes,
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    warnings = resp.json()["warnings"]
+    # Tokens were minted but NOT persisted — warning calls that out.
+    assert any(
+        "not persisted" in w.lower()
+        or "NOT persisted" in w
+        or "no checkpoint_import_credentials_dir" in w
+        for w in warnings
+    ), warnings
+
+
+def test_import_then_worker_bootstrap_reuses_persisted_bearer(
+    store: InMemoryStore, fresh_store_factory: Any, tmp_path: Path
+) -> None:
+    """End-to-end issue #150 flow: import drops `<worker_id>.token` files
+    into the persistence dir; a worker host pointed at that dir picks up
+    the bearer via :func:`bootstrap_worker_credential` without needing
+    the admin token (the pre-persisted bearer verifies via /whoami).
+    """
+    from eden_service_common.auth import bootstrap_worker_credential
+
+    archive_bytes = _export_with_workers(store, ["wkr-bootstrap"])
+
+    creds_dir = tmp_path / "shared-creds"
+    receiver = fresh_store_factory()
+    receiver_app = make_app(
+        receiver,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_import_credentials_dir=creds_dir,
+    )
+    receiver_client = TestClient(receiver_app)
+    resp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=archive_bytes,
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    # The worker host's bootstrap helper builds its own httpx.Client; we
+    # have to route those through the receiver app. The cleanest way is
+    # to patch ``httpx.Client.__init__`` to default the transport to our
+    # proxy, mirroring the test_service_auth fixture's pattern.
+    import httpx as _httpx
+
+    proxy = _proxy_to_app(receiver_client)
+    real_init = _httpx.Client.__init__
+
+    def _patched(self: Any, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("transport", proxy)
+        real_init(self, *args, **kwargs)
+
+    _httpx.Client.__init__ = _patched
+    try:
+        cred = bootstrap_worker_credential(
+            base_url="http://unused",
+            experiment_id=EXPERIMENT_ID,
+            worker_id="wkr-bootstrap",
+            credentials_dir=creds_dir,
+            # No admin token — the pre-persisted bearer should verify
+            # via /whoami without falling through to the reissue
+            # branch (which would require admin auth).
+            admin_token=None,
+        )
+    finally:
+        _httpx.Client.__init__ = real_init
+
+    assert cred.worker_id == "wkr-bootstrap"
+    # The bearer we got from bootstrap MUST be the one we persisted
+    # during the import — no rotation, no reissue round-trip.
+    persisted_token = (creds_dir / "wkr-bootstrap.token").read_text()
+    assert cred.token == persisted_token
+
+
+def test_import_no_workers_no_credentials_warning(
+    store: InMemoryStore, fresh_store_factory: Any, tmp_path: Path
+) -> None:
+    """A worker-less checkpoint emits no credential-reissue warning and
+    leaves the credentials directory empty (and not even created)."""
+    # Export without registering any workers.
+    client, admin_bearer = _make_admin_worker_client(store)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer {admin_bearer}",
+        },
+    )
+    archive_bytes = resp.content
+
+    creds_dir = tmp_path / "host-creds-empty"
+    receiver = fresh_store_factory()
+    receiver_app = make_app(
+        receiver,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_import_credentials_dir=creds_dir,
+    )
+    receiver_client = TestClient(receiver_app)
+    resp = receiver_client.post(
+        "/v0/checkpoints/import",
+        content=archive_bytes,
+        headers={
+            "Content-Type": CHECKPOINT_MEDIA_TYPE,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    warnings = resp.json()["warnings"]
+    assert not any("credentials" in w.lower() for w in warnings), warnings
+    # No workers → no files written → directory is not created.
+    assert not creds_dir.exists() or not any(creds_dir.iterdir())
+
+
+# ----------------------------------------------------------------------
 # StoreClient round-trip through TestClient
 # ----------------------------------------------------------------------
 

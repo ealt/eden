@@ -30,21 +30,26 @@ Wave 3 explicitly does NOT:
   ``file://`` URIs they won't resolve on the receiver. The
   ``checkpoint:sha256:<hex>`` rewrite contract from §7 lands in
   wave 4 alongside the wire layer's artifact substrate plumbing.
-- Mint per-worker credentials at import. Workers are inserted with
-  a placeholder credential hash; the receiver MUST run
-  ``reissue_credential`` for every imported worker before the
-  experiment can resume (the manifest's
-  ``requires_credential_reissue: true`` flag advertises this).
+
+Worker credential reissue is performed atomically with the rest of
+the import per ``10-checkpoints.md`` §8 step 4: a fresh
+registration token is minted for every imported worker inside the
+same ``_apply_commit`` transaction that inserts the worker row, so
+a failure at any step rolls back the entire import. The minted
+tokens are surfaced on ``ImportResult.reissued_credentials`` for
+the receiver's implementation-defined side channel (the reference
+deployment's wire binding persists them to a per-host credentials
+directory; the storage layer itself is substrate-agnostic).
 """
 
 from __future__ import annotations
 
-import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from eden_checkpoint import (
@@ -90,18 +95,6 @@ _REFERENCE_IMPL_TAG = "eden-reference/0.x"
 _REFERENCE_ATOMICITY = "transactional_snapshot"
 """Atomicity strategy advertised by this binding per ``10-checkpoints.md`` §6."""
 
-_IMPORT_PLACEHOLDER_CREDENTIAL_HASH_PREFIX = "$reissue-required$"
-"""Sentinel prefix on credential hashes synthesized at import time.
-
-Per ``10-checkpoints.md`` §8 the importer MUST mint a fresh credential
-for every imported worker before the experiment can resume; the
-``argon2id verify`` check on this sentinel will always fail, so a
-worker presenting the (long-since-stripped) source credential cannot
-authenticate against the imported store. The prefix is recognizable so
-ops tooling can grep for it; the suffix is randomized so two
-checkpoints round-tripped into different stores don't share a sentinel.
-"""
-
 
 @dataclass
 class ImportResult:
@@ -140,8 +133,25 @@ class ImportResult:
     of the caller-supplied ``extract_dir``."""
 
     warnings: tuple[str, ...] = field(default_factory=tuple)
-    """Free-form operator-facing strings. Reserved for credential-reissue
-    side-channel surfacing in wave 4."""
+    """Free-form operator-facing strings. The wire binding populates this
+    with credential-reissue side-channel info (e.g. on-disk persistence
+    paths) when surfacing the import result to an operator."""
+
+    reissued_credentials: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    """Per ``10-checkpoints.md`` §8 step 4: the fresh registration tokens
+    minted for every imported worker inside the import transaction.
+    Keyed by ``worker_id``; the value is the plaintext token (the
+    ``<worker_id>:<token>`` bearer format from chapter 07 §13.1 is
+    assembled by the caller). Empty when no workers were imported.
+
+    These are returned to the caller exactly once — they are NOT
+    persisted on ``ImportResult`` beyond the in-memory lifetime, so the
+    receiver's wire binding MUST consume + persist them before the
+    result is dropped (the reference wire binding writes them to a
+    per-host credentials directory; substrate-less callers / tests
+    consume directly from this field)."""
 
     _owned_tmp: TemporaryDirectory[str] | None = field(default=None, repr=False)
     """When the importer allocated the extraction dir, this attribute holds
@@ -545,13 +555,20 @@ def _apply_archive_commit(
     store: _StoreBase,
     parsed: _ParsedArchive,
     manifest: CheckpointManifest,
-) -> None:
+) -> dict[str, str]:
     """Atomic commit of a parsed + cross-ref-validated archive.
 
     Empty-check, _Tx population, _apply_commit, and event-counter
     reseed all run inside a single ``_atomic_operation`` so a
     concurrent emit cannot slip between commit and reseed.
+
+    Returns the ``{worker_id: plaintext_token}`` mapping minted for
+    every imported worker per ``10-checkpoints.md`` §8 step 4. The
+    mapping is populated only when ``manifest.requires_credential_reissue``
+    is true; v0 producers always set this to true (§4) so the v0
+    behavior is unconditional.
     """
+    reissued: dict[str, str] = {}
     with store._atomic_operation():
         if not _is_store_empty(store):
             raise ExperimentIdConflict(
@@ -572,14 +589,19 @@ def _apply_archive_commit(
             tx.submissions[task_id] = submission
         for worker in parsed.workers:
             tx.workers[worker.worker_id] = worker
-            # `register_worker` would mint a real credential; here we
-            # synthesize a sentinel so the row inserts cleanly and any
-            # subsequent `verify_worker_credential` returns False until
-            # `reissue_credential` runs.
-            tx.worker_credentials[worker.worker_id] = (
-                _IMPORT_PLACEHOLDER_CREDENTIAL_HASH_PREFIX
-                + secrets.token_hex(16)
-            )
+            # Per `10-checkpoints.md` §8 step 4 the importer mints a
+            # fresh credential for every imported worker atomically
+            # with the rest of the commit. The plaintext is collected
+            # into `reissued` so the caller can surface it through
+            # the implementation-defined side channel (§8 last
+            # paragraph) — the reference wire binding persists each
+            # token under the per-host credentials directory.
+            if manifest.requires_credential_reissue:
+                token = store._generate_credential_token()
+                tx.worker_credentials[worker.worker_id] = store._hash_credential(
+                    token
+                )
+                reissued[worker.worker_id] = token
         for group in parsed.groups:
             tx.groups[group.group_id] = group
         # Events are inserted verbatim. Their event_ids retain the
@@ -613,6 +635,7 @@ def _apply_archive_commit(
         # format. Runs inside the same atomic context as the commit so
         # a concurrent emit can't slip between commit and reseed.
         store._reseed_default_event_counter()
+    return reissued
 
 
 def _commit_import(
@@ -654,7 +677,7 @@ def _commit_import(
         ideas=parsed.ideas,
     )
 
-    _apply_archive_commit(store, parsed, manifest)
+    reissued = _apply_archive_commit(store, parsed, manifest)
 
     return ImportResult(
         experiment_id=parsed.target_id,
@@ -663,6 +686,7 @@ def _commit_import(
         artifact_digests=tuple(sorted(parsed.artifact_digests)),
         manifest=manifest,
         extract_root=extract_root,
+        reissued_credentials=MappingProxyType(reissued),
     )
 
 
