@@ -340,7 +340,13 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui"
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/orchestrator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/ideator-host" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/executor-host" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/evaluator-host" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/web-ui"
 if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
@@ -357,7 +363,14 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" 2>/dev/null
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/orchestrator" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/ideator-host" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/executor-host" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/evaluator-host" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/web-ui" 2>/dev/null
 then
     # Best-effort: the script continues. But warn the operator so a
     # follow-up "compose up postgres-permission-denied" failure
