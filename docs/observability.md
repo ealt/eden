@@ -88,6 +88,18 @@ docker exec eden-web-ui ls /var/lib/eden/artifacts/
 
 The web-ui's executor / evaluator forms inline artifacts for you automatically when the URI resolves under the `--artifacts-dir` bind. There is no `/_reference/` prefix; there is no directory-listing endpoint — only the `?uri=...` lookup form.
 
+**Multi-file `.tar.gz` artifacts (issue #120).** When an `artifacts_uri` points at a `<id>.tar.gz` file inside the artifacts dir, the bundle was produced by the Web UI's multi-file upload form (or by `eden-manual` with `--content-file`). The convention is:
+
+- A top-level `manifest.json` enumerates the bundle entries (`path`, `size`, `content_type`), versioned by a `version` int. The web-ui treats `manifest.json` as a reserved filename and excludes it from the operator-visible entry list.
+- A role-specific headline file (`idea.md`, `evaluation.md`, or `variant.md`) holds the operator's markdown body if any was provided. The evaluator/executor draft pages render it inline above the per-file link table.
+- Each entry is fetchable individually via `GET /artifacts?uri=<bundle-uri>&entry=<entry-name>` — the entry name must be a single safe basename (no slashes, no `..`), and the route only honors `entry=` when the resolved file ends in `.tar.gz`. There is no automatic unpacking on disk; bytes are streamed out of the archive on demand.
+
+Manifest inspection from the shell:
+
+```bash
+tar -xzf "${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/<id>.tar.gz" -O manifest.json | jq .
+```
+
 ### 2.4 Wire API (raw)
 
 The task-store-server speaks JSON over HTTP. Every state-mutating operation in EDEN lives here. Convenient one-liners:

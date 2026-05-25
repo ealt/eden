@@ -91,6 +91,28 @@ drafted values:
 }
 ```
 
+Issue #120: each idea may also carry `content_files` (a list of
+host-local paths) for non-markdown attachments — diagrams,
+screenshots, proto files, sample data. When `content_files` is
+non-empty the CLI bundles `content` + each attached file into
+`<idea_id>.tar.gz` with a `manifest.json` (text becomes `idea.md`
+at the bundle root). A single attached file with no `content` is
+stored as `<idea_id>.<ext>` directly:
+
+```json
+{
+  "ideas": [
+    {
+      "slug": "design-with-diagram",
+      "priority": 1.5,
+      "parent_commits": ["..."],
+      "content": "# rationale\n\nuse SVG for diagrams",
+      "content_files": ["/tmp/arch.svg"]
+    }
+  ]
+}
+```
+
 Submit:
 
 ```bash

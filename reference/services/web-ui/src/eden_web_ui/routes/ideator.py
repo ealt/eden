@@ -17,7 +17,6 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from eden_contracts import Idea
@@ -35,8 +34,13 @@ from eden_storage.submissions import submissions_equivalent
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
+from starlette.datastructures import UploadFile
 
-from ..artifacts import write_idea_artifact
+from ..artifacts import (
+    UploadedFile,
+    predict_artifact_uri,
+    write_artifact_bundle,
+)
 from ..forms import FormErrors, IdeaDraft, format_validation_errors, parse_idea_rows
 from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
 from ._submit_readback import wire_error_banner
@@ -333,12 +337,13 @@ def _render_idea_form_errors(
     )
 
 
-def _persist_idea_drafts(
+def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/write/create/mark-ready/slug-check pipeline; splitting fragments the row-iteration state machine across helpers without reducing logic
     *,
     store: Any,
     request: Request,
     drafts: list[Any],
     draft_rows: list[int],
+    uploads_per_row: dict[int, list[UploadedFile]],
 ) -> tuple[list[str], list[str], HTMLResponse | None, FormErrors | None]:
     """Phase 1+2: write artifacts, create ideas as drafting, flip to ready.
 
@@ -348,15 +353,22 @@ def _persist_idea_drafts(
     - ``([], [], error_response, None)`` on a ``DispatchError`` from
       either phase (rendered as the wire-error page);
     - ``([], [], None, errors)`` on a Pydantic ``ValidationError`` raised
-      by ``Idea(**kwargs)``. The caller re-renders the draft form with
-      the per-row field errors — no store mutation has happened yet
-      because the Idea construction precedes the create_idea call.
+      by ``Idea(**kwargs)``, OR on a multi-file bundling collision /
+      filename-rejection raised by :mod:`eden_web_ui.artifacts`. The
+      caller re-renders the draft form with the per-row field errors —
+      no store mutation has happened yet because both checks precede
+      the create_idea call.
 
     ``slug_warnings`` carries issue-#121 soft-check messages: after each
     Idea is created, the experiment's existing ideas are scanned for
     slug collisions; matches are reported as advisory strings. Slug
     uniqueness is not a protocol invariant (idea identity is by
     ``idea_id``), so warnings never block submission.
+
+    ``uploads_per_row`` carries issue-#120 multi-file attachments per
+    draft row (empty list when only text is supplied). The artifact-
+    write phase wraps text + uploads into a ``.tar.gz`` bundle when
+    multiple files are present; single-file paths stay flat.
 
     The Phase-1 / Phase-2 split is preserved internally so a failure
     in mark-ready doesn't leave already-created drafting ideas
@@ -372,13 +384,22 @@ def _persist_idea_drafts(
 
     for draft, row_index in zip(drafts, draft_rows, strict=True):
         idea_id = uuid.uuid4().hex
+        uploads = uploads_per_row.get(row_index, [])
         # Predict the artifact URI without writing the file yet, so a
         # ValidationError on Idea construction leaves the disk clean.
         # The Idea is built first (validation barrier), THEN the
         # artifact is written, THEN the store is told about it.
-        artifacts_uri = (
-            Path(artifacts_dir).resolve() / f"{idea_id}.md"
-        ).as_uri()
+        try:
+            artifacts_uri = predict_artifact_uri(
+                artifacts_dir,
+                idea_id,
+                has_text=bool(draft.content.strip()),
+                uploads=uploads,
+            )
+        except ValueError as exc:
+            errors = FormErrors()
+            errors.add(row_index, "artifact", str(exc))
+            return [], [], None, errors
         try:
             idea = _make_idea(
                 idea_id=idea_id,
@@ -390,7 +411,13 @@ def _persist_idea_drafts(
         except ValidationError as exc:
             errors = format_validation_errors(exc, row=row_index)
             return [], [], None, errors
-        write_idea_artifact(artifacts_dir, idea_id, draft.content)
+        write_artifact_bundle(
+            artifacts_dir,
+            idea_id,
+            text_content=draft.content,
+            text_filename="idea.md",
+            uploads=uploads,
+        )
         try:
             store.create_idea(idea)
         except DispatchError as exc:
@@ -454,6 +481,9 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     contents = [str(v) for v in form.getlist("content")]
     intended_kinds = [str(v) for v in form.getlist("intended_executor_kind")]
     intended_ids = [str(v) for v in form.getlist("intended_executor_id")]
+    n_rows = max(len(slugs), len(priorities), len(parents), len(contents))
+    uploads_per_row = await _collect_row_uploads(form, n_rows=n_rows)
+    has_uploads_per_row = [bool(uploads_per_row.get(i)) for i in range(n_rows)]
     drafts, errors, draft_rows = parse_idea_rows(
         slugs,
         priorities,
@@ -461,6 +491,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         contents,
         intended_executor_kinds=intended_kinds,
         intended_executor_ids=intended_ids,
+        has_uploads_per_row=has_uploads_per_row,
     )
     if errors:
         form_state = _form_state_from_inputs(
@@ -478,6 +509,7 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
 
     idea_ids, slug_warnings, persist_error, validation_errors = _persist_idea_drafts(
         store=store, request=request, drafts=drafts, draft_rows=draft_rows,
+        uploads_per_row=uploads_per_row,
     )
     if validation_errors is not None:
         form_state = _form_state_from_inputs(
@@ -808,5 +840,38 @@ def _csrf_failure_response(request: Request | None = None) -> HTMLResponse:
 
 def _bad_request(message: str) -> HTMLResponse:
     return HTMLResponse(content=message, status_code=400)
+
+
+async def _collect_row_uploads(
+    form: Any, *, n_rows: int
+) -> dict[int, list[UploadedFile]]:
+    """Pull per-row file uploads out of the multipart form.
+
+    Each idea row's file input is named ``files_<i>`` (issue #120 +
+    ``_idea_row.html``). Browsers post one part per selected file
+    under that name; ``form.getlist("files_<i>")`` returns them in
+    order. Empty-filename parts (Starlette's representation of "user
+    selected nothing for this row") are skipped so the bundler
+    doesn't see a zero-byte phantom upload.
+    """
+    out: dict[int, list[UploadedFile]] = {}
+    for i in range(n_rows):
+        files: list[UploadedFile] = []
+        for item in form.getlist(f"files_{i}"):
+            if not isinstance(item, UploadFile):
+                continue
+            if not item.filename:
+                continue
+            data = await item.read()
+            files.append(
+                UploadedFile(
+                    filename=item.filename,
+                    data=data,
+                    content_type=item.content_type,
+                )
+            )
+        if files:
+            out[i] = files
+    return out
 
 

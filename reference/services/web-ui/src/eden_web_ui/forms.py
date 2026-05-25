@@ -179,14 +179,25 @@ def _parse_idea_row(
     content: str,
     kind_raw: str,
     id_raw: str,
+    has_uploads: bool,
     errors: FormErrors,
 ) -> IdeaDraft | None:
-    """Validate one non-empty idea row; return the draft when row has no errors."""
+    """Validate one non-empty idea row; return the draft when row has no errors.
+
+    Issue #120: ``content`` is required only when no file uploads
+    are attached to the row. A row with uploads (but no markdown
+    body) is a valid multi-file artifact — the bundler stores the
+    uploads alone without a synthetic ``idea.md``.
+    """
     _validate_slug(i, slug, errors)
     priority = _parse_priority(i, priority_raw, errors)
     parents = _parse_parents(i, parents_raw, errors)
-    if not content:
-        errors.add(i, "content", "content markdown is required")
+    if not content and not has_uploads:
+        errors.add(
+            i,
+            "content",
+            "content markdown is required (or attach at least one file)",
+        )
     intended_executor = _parse_intended_executor(i, kind_raw, id_raw, errors)
     if errors.by_row.get(i):
         return None
@@ -206,6 +217,7 @@ def parse_idea_rows(
     contents: list[str],
     intended_executor_kinds: list[str] | None = None,
     intended_executor_ids: list[str] | None = None,
+    has_uploads_per_row: list[bool] | None = None,
 ) -> tuple[list[IdeaDraft], FormErrors, list[int]]:
     """Parse parallel-list form input into validated drafts + accumulated errors.
 
@@ -227,6 +239,7 @@ def parse_idea_rows(
 
     kinds = intended_executor_kinds or []
     ids = intended_executor_ids or []
+    uploads_present = has_uploads_per_row or []
 
     drafts: list[IdeaDraft] = []
     draft_rows: list[int] = []
@@ -238,12 +251,14 @@ def parse_idea_rows(
             parent_commits_csv[i] if i < len(parent_commits_csv) else ""
         ).strip()
         content = (contents[i] if i < len(contents) else "").strip()
+        has_uploads = uploads_present[i] if i < len(uploads_present) else False
 
         # Skip fully-empty rows (priority defaults to "1.0" so a true
-        # empty row has slug+parents+content all blank). The "add
-        # another row" path adds blank trailing rows; the user
-        # shouldn't be forced to fill every one before submitting.
-        if not slug and not parents_raw and not content:
+        # empty row has slug+parents+content all blank, and no
+        # uploads). The "add another row" path adds blank trailing
+        # rows; the user shouldn't be forced to fill every one
+        # before submitting.
+        if not slug and not parents_raw and not content and not has_uploads:
             continue
 
         kind_raw = (kinds[i] if i < len(kinds) else "").strip().lower() or "none"
@@ -258,6 +273,7 @@ def parse_idea_rows(
             content=content,
             kind_raw=kind_raw,
             id_raw=id_raw,
+            has_uploads=has_uploads,
             errors=errors,
         )
         if draft is not None:
