@@ -215,14 +215,16 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
         evaluator_log,
     )
     orchestrator_log = logs_dir / "orchestrator.log"
-    # Wave-4: the retired ``--ideation-tasks`` static seed is replaced
-    # by the policy-driven ``--ideation-policy``. The default policy
-    # is ``maintain_pending(target=3)``, which reads
-    # ``EDEN_IDEATION_POLICY_TARGET_PENDING`` /
-    # ``EDEN_IDEATION_POLICY_MAX_TOTAL`` from the environment. Setting
-    # ``MAX_TOTAL=3`` reproduces the pre-12a-2 fixed-seed shape this
-    # test depends on (exactly 3 ideation tasks across the experiment's
-    # lifetime), without exposing per-test policy plumbing on the CLI.
+    # The test depends on the experiment producing exactly 3 ideation
+    # tasks across its lifetime, so the orchestrator picks the
+    # ``fixed_total`` ideation policy via a config copied from the
+    # fixture with the policy block appended.
+    orchestrator_config = tmp_path / "orchestrator-config.yaml"
+    orchestrator_config.write_text(
+        FIXTURE_CONFIG.read_text(encoding="utf-8")
+        + "\nideation_policy:\n  kind: fixed_total\n  total: 3\n",
+        encoding="utf-8",
+    )
     orchestrator = _spawn(
         [
             "eden_orchestrator",
@@ -232,12 +234,10 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
             experiment_id,
             "--repo-path",
             str(bare_repo),
+            "--experiment-config",
+            str(orchestrator_config),
         ],
         orchestrator_log,
-        env={
-            "EDEN_IDEATION_POLICY_TARGET_PENDING": "3",
-            "EDEN_IDEATION_POLICY_MAX_TOTAL": "3",
-        },
     )
 
     procs_logs = {

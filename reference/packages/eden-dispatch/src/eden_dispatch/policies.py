@@ -1,9 +1,5 @@
 """Reference ideation policies for the orchestrator role.
 
-# noqa: ERA001  (the env-var defaults below appear in plan §5.7's
-# `.env.example` table; the policies module exposes the read so the
-# CLI flag default can stay a plain ``module:callable`` string.)
-
 An "ideation policy" is a ``Callable[[ExperimentStateView], int]``
 that returns the number of new ideation tasks the orchestrator should
 create on this iteration. The orchestrator invokes the policy once
@@ -11,28 +7,28 @@ per iteration when
 ``dispatch_mode.ideation_creation == "auto"``
 ([`03-roles.md`](../../../../spec/v0/03-roles.md) §6.2 / §6.4).
 
-The reference policies here are importable via the orchestrator
-service's ``--ideation-policy <module:callable>`` flag. Deployments
-that want different ideation dynamics ship their own callable matching
-:data:`IdeationPolicy` and point the flag at it.
+The reference policies here are selected via the experiment config's
+``ideation_policy`` block ([`02-data-model.md`](../../../../spec/v0/02-data-model.md) §2.4):
 
-Per [plan §3.3](../../../../docs/plans/eden-phase-12a-2-orchestrator-as-role.md):
-
-- :func:`maintain_pending` is the default — a bounded-overshoot policy
+- :func:`maintain_pending` is the default (also used when the
+  ``ideation_policy`` block is absent) — a bounded-overshoot policy
   that keeps the pending-ideation queue at a target depth. Its
   multi-instance behavior is the §6.4 ``N * T`` overshoot bound; the
   reference accepts the overshoot.
 - :func:`fixed_total` is a simple "create exactly N total ideation
   tasks across the experiment's lifetime, then stop" policy. Useful
-  for the original static-seed shape that the wave-4 CLI rework
-  replaces — operators who actually want a one-shot seed still have
-  a clear path.
+  for hypothesis-testing experiments with a fixed budget.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
+
+from eden_contracts import (
+    FixedTotalPolicyConfig,
+    IdeationPolicyConfig,
+    MaintainPendingPolicyConfig,
+)
 
 from .state_view import ExperimentStateView
 
@@ -120,52 +116,36 @@ _DEFAULT_TARGET_PENDING = 3
 
 
 def default_policy() -> IdeationPolicy:
-    """Return the reference ``maintain_pending`` policy with env-var configuration.
+    """Return the reference default ideation policy.
 
-    The reference orchestrator's ``--ideation-policy`` default points
-    here. Configuration is read from environment variables so the
-    operator can adjust shape without rewriting the policy factory:
-
-    - ``EDEN_IDEATION_POLICY_TARGET_PENDING`` — target queue depth
-      (default ``3``; matches the pre-12a-2 ``EDEN_IDEATE_TASKS=3``
-      seed shape).
-    - ``EDEN_IDEATION_POLICY_MAX_TOTAL`` — hard cap on lifetime
-      ideation-task count (default unset → unbounded). Setting this
-      converts the policy from "continuous" to "bounded total" — once
-      the cap is reached the orchestrator stops creating ideation
-      tasks regardless of pending depth. Useful as a safety ceiling
-      for runaway loops and as the wave-4 e2e-test substitute for the
-      retired ``--ideation-tasks N`` static seed.
-
-    Invalid values raise ``ValueError`` from the underlying
-    :func:`maintain_pending` factory; the orchestrator's CLI surfaces
-    that as a startup failure so the operator sees the misconfiguration
-    immediately rather than discovering it iterations later.
+    Used when the experiment config's ``ideation_policy`` block is
+    absent. Equivalent to
+    ``maintain_pending(target=3, max_total=None)`` — the open-ended
+    exploration shape that an experiment without an explicit budget
+    expects.
     """
-    target_pending = _int_env(
-        "EDEN_IDEATION_POLICY_TARGET_PENDING", _DEFAULT_TARGET_PENDING
-    )
-    max_total = _optional_int_env("EDEN_IDEATION_POLICY_MAX_TOTAL")
-    return maintain_pending(target=target_pending, max_total=max_total)
+    return maintain_pending(target=_DEFAULT_TARGET_PENDING)
 
 
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        msg = f"{name}={raw!r} is not a valid integer"
-        raise ValueError(msg) from exc
+def build_policy(config: IdeationPolicyConfig | None) -> IdeationPolicy:
+    """Materialize an :data:`IdeationPolicy` from an experiment-config block.
 
+    When ``config`` is ``None`` (no ``ideation_policy`` block in the
+    experiment config), returns :func:`default_policy`. Otherwise
+    dispatches on ``config.kind`` and constructs the matching factory
+    with the validated arguments from the config.
 
-def _optional_int_env(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return None
-    try:
-        return int(raw)
-    except ValueError as exc:
-        msg = f"{name}={raw!r} is not a valid integer"
-        raise ValueError(msg) from exc
+    Raises:
+        ValueError: if the config's per-kind arguments are invalid
+            (e.g., ``target < 1`` for ``maintain_pending``); the
+            underlying factory's validation is the source of the
+            error message.
+    """
+    if config is None:
+        return default_policy()
+    if isinstance(config, MaintainPendingPolicyConfig):
+        return maintain_pending(target=config.target, max_total=config.max_total)
+    if isinstance(config, FixedTotalPolicyConfig):
+        return fixed_total(config.total)
+    msg = f"unhandled ideation_policy kind: {config!r}"
+    raise ValueError(msg)

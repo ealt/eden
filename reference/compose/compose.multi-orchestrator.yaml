@@ -44,15 +44,17 @@ services:
       - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
       - --poll-interval
       - "1.0"
       - --max-quiescent-iterations
       - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
       - --log-level
       - info
-    environment:
-      EDEN_IDEATION_POLICY_TARGET_PENDING: ${EDEN_IDEATION_POLICY_TARGET_PENDING:-3}
-      EDEN_IDEATION_POLICY_MAX_TOTAL: ${EDEN_IDEATION_POLICY_MAX_TOTAL:-}
+    configs:
+      - source: eden-experiment-config
+        target: /etc/eden/experiment-config.yaml
     volumes:
       # Separate per-replica repo volume so neither orchestrator's git
       # state collides with the other. Per-replica clones is the

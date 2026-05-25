@@ -179,6 +179,142 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         },
         False,
     ),
+    Case(
+        "ideation_policy_maintain_pending_minimal",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"kind": "maintain_pending"},
+        },
+        True,
+    ),
+    Case(
+        "ideation_policy_maintain_pending_full",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {
+                "kind": "maintain_pending",
+                "target": 5,
+                "max_total": 100,
+            },
+        },
+        True,
+    ),
+    Case(
+        "ideation_policy_maintain_pending_unbounded_max_total",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {
+                "kind": "maintain_pending",
+                "target": 3,
+                "max_total": None,
+            },
+        },
+        True,
+    ),
+    Case(
+        "ideation_policy_fixed_total_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"kind": "fixed_total", "total": 10},
+        },
+        True,
+    ),
+    Case(
+        "ideation_policy_unknown_extra_key_tolerated",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {
+                "kind": "maintain_pending",
+                "target": 3,
+                "future_arg": "ignored",
+            },
+        },
+        True,
+    ),
+    Case(
+        "ideation_policy_bad_kind",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"kind": "round_robin"},
+        },
+        False,
+    ),
+    Case(
+        "ideation_policy_missing_kind",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"target": 3},
+        },
+        False,
+    ),
+    Case(
+        "ideation_policy_maintain_pending_target_zero",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"kind": "maintain_pending", "target": 0},
+        },
+        False,
+    ),
+    Case(
+        "ideation_policy_maintain_pending_negative_max_total",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {
+                "kind": "maintain_pending",
+                "target": 3,
+                "max_total": -1,
+            },
+        },
+        False,
+    ),
+    Case(
+        "ideation_policy_fixed_total_missing_total",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"kind": "fixed_total"},
+        },
+        False,
+    ),
+    Case(
+        "ideation_policy_fixed_total_zero",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": {"kind": "fixed_total", "total": 0},
+        },
+        False,
+    ),
+    Case(
+        "ideation_policy_null",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_policy": None,
+        },
+        False,
+    ),
 ]
 
 

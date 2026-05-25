@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Discriminator, Field
 
 from ._common import NotNone
 from .evaluation import EvaluationSchema
@@ -45,6 +45,46 @@ class DispatchMode(BaseModel):
     integration: DispatchModeValue = "auto"
 
 
+IdeationPolicyKind = Literal["maintain_pending", "fixed_total"]
+"""Named ideation-policy kinds shipped by the reference impl."""
+
+
+class MaintainPendingPolicyConfig(BaseModel):
+    """Refill the pending-ideation queue to ``target`` depth each iteration.
+
+    Optionally clamp lifetime ideation creation to ``max_total`` tasks
+    (``None`` disables the cap). Schema: see
+    ``ideation_policy`` (kind="maintain_pending") in
+    ``schemas/experiment-config.schema.json``.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["maintain_pending"]
+    target: Annotated[int, Field(ge=1)] = 3
+    max_total: Annotated[int | None, Field(ge=0)] = None
+
+
+class FixedTotalPolicyConfig(BaseModel):
+    """Create exactly ``total`` ideation tasks across the experiment's lifetime.
+
+    Schema: see ``ideation_policy`` (kind="fixed_total") in
+    ``schemas/experiment-config.schema.json``.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["fixed_total"]
+    total: Annotated[int, Field(ge=1)]
+
+
+IdeationPolicyConfig = Annotated[
+    MaintainPendingPolicyConfig | FixedTotalPolicyConfig,
+    Discriminator("kind"),
+]
+"""Discriminated union over named ideation-policy kinds (see §2.4)."""
+
+
 class ObjectiveSpec(BaseModel):
     """Scalar optimization target: expression over metrics + direction."""
 
@@ -77,3 +117,4 @@ class ExperimentConfig(BaseModel):
     evaluation_schema: EvaluationSchema
     objective: ObjectiveSpec
     dispatch_mode: Annotated[DispatchMode | None, NotNone] = None
+    ideation_policy: Annotated[IdeationPolicyConfig | None, NotNone] = None

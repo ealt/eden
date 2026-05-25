@@ -91,6 +91,8 @@ The five keys are fixed in v0:
 
 `dispatch_mode` is mutable during an experiment's lifetime: [`04-task-protocol.md`](04-task-protocol.md) §7 defines the `update_dispatch_mode` operation and the `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4).
 
+The experiment-config schema also defines an optional `ideation_policy` block selecting the named ideation-creation policy the orchestrator invokes when `dispatch_mode.ideation_creation == "auto"` ([`03-roles.md`](03-roles.md) §6.2 decision-type 1). The block is implementation-defined in the same posture as `dispatch_mode`'s unknown-key tolerance: a conforming implementation MUST accept its absence, MUST recognize the named `kind` values it documents, and SHOULD fail config validation on a `kind` it does not implement. The reference impl ships two kinds (`maintain_pending` and `fixed_total`) and defaults to `maintain_pending(target=3)` when the block is absent; see [`schemas/experiment-config.schema.json`](schemas/experiment-config.schema.json) for the per-kind argument shape.
+
 ### 2.5 Experiment lifecycle state
 
 The experiment runtime carries a `state` field independent of the declarative `experiment-config` (§2):

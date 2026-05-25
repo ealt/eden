@@ -66,6 +66,39 @@
           "description": "When 'auto', the orchestrator invokes the integrator on success variants. When 'manual', the operator drives integration via POST /variants/{T}/integrate."
         }
       }
+    },
+    "ideation_policy": {
+      "type": "object",
+      "description": "Declarative selection of the ideation-creation policy invoked by the orchestrator when dispatch_mode.ideation_creation == 'auto' (see 02-data-model.md §2.4 and 03-roles.md §6.2 decision-type 1). The policy mechanism is implementation-defined; this field selects one of the named policies a conforming reference impl ships. Two kinds are defined: 'maintain_pending' (refill the pending-ideation queue to a target depth, with an optional lifetime cap) and 'fixed_total' (create exactly N total ideation tasks across the experiment, then stop). Unknown keys are tolerated and ignored, consistent with dispatch_mode's posture (§2.4). When omitted, an implementation MAY pick its own default; the reference impl defaults to maintain_pending(target=3).",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["maintain_pending", "fixed_total"],
+          "description": "Named policy kind. Conforming implementations MUST accept the two values defined here; unrecognized kinds MUST fail config validation rather than silently fall back."
+        },
+        "target": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Target pending-ideation queue depth (kind='maintain_pending' only). Default: 3."
+        },
+        "max_total": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Optional hard cap on lifetime ideation tasks (kind='maintain_pending' only). null disables the cap; an integer value clamps lifetime ideation creation to that many tasks."
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hard cap on lifetime ideation tasks (kind='fixed_total' only). REQUIRED for fixed_total; the orchestrator creates exactly this many ideation tasks across the experiment's lifetime, then stops."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "fixed_total"}}, "required": ["kind"]},
+          "then": {"required": ["kind", "total"]}
+        }
+      ]
     }
   }
 }

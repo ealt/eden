@@ -218,16 +218,12 @@ FORGEJO_SSH_HOST_PORT="${EXISTING_FORGEJO_SSH_HOST_PORT:-2222}"
 EXISTING_WEB_UI_HOST_PORT="$(read_env_key WEB_UI_HOST_PORT "$ENV_FILE")"
 WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
 
-# 12a-2 wave 4: the pre-12a-2 EDEN_IDEATION_TASKS static-seed env is
-# retired. The orchestrator now drives ideation creation through
-# `eden_dispatch.policies:default_policy`, parameterized by
-# EDEN_IDEATION_POLICY_TARGET_PENDING (default 3) +
-# EDEN_IDEATION_POLICY_MAX_TOTAL (default unbounded). Preserved across
-# re-runs.
-EXISTING_TARGET_PENDING="$(read_env_key EDEN_IDEATION_POLICY_TARGET_PENDING "$ENV_FILE")"
-EDEN_IDEATION_POLICY_TARGET_PENDING="${EXISTING_TARGET_PENDING:-3}"
-EXISTING_MAX_TOTAL="$(read_env_key EDEN_IDEATION_POLICY_MAX_TOTAL "$ENV_FILE")"
-EDEN_IDEATION_POLICY_MAX_TOTAL="${EXISTING_MAX_TOTAL:-}"
+# Issue #133: ideation policy moved from env vars to the experiment
+# config's `ideation_policy` block. The orchestrator reads
+# /etc/eden/experiment-config.yaml at startup; `setup-experiment.sh`
+# copies the operator's YAML to that path (see below). Smoke scripts
+# that previously sed-edited EDEN_IDEATION_POLICY_* now edit the
+# experiment config YAML directly.
 # 12a-2 wave 4 / §3.8: auto-orchestrator worker_id. Multi-replica
 # deployments override per-replica.
 EXISTING_ORCH_WID="$(read_env_key EDEN_ORCHESTRATOR_WORKER_ID "$ENV_FILE")"
@@ -500,8 +496,6 @@ WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 EDEN_EXPERIMENT_DATA_ROOT=${EDEN_EXPERIMENT_DATA_ROOT}
 
 # --- 12a-2 orchestrator-role ---
-EDEN_IDEATION_POLICY_TARGET_PENDING=${EDEN_IDEATION_POLICY_TARGET_PENDING}
-EDEN_IDEATION_POLICY_MAX_TOTAL=${EDEN_IDEATION_POLICY_MAX_TOTAL}
 EDEN_ORCHESTRATOR_WORKER_ID=${EDEN_ORCHESTRATOR_WORKER_ID}
 EDEN_ADMINS_INITIAL_MEMBER=${EDEN_ADMINS_INITIAL_MEMBER}
 EDEN_WEB_UI_WORKER_ID=${EDEN_WEB_UI_WORKER_ID}

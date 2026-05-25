@@ -7,7 +7,7 @@ import importlib
 import re
 
 from eden_control_plane import ControlPlaneClient
-from eden_dispatch import IdeationPolicy, TerminationPolicy
+from eden_dispatch import IdeationPolicy, TerminationPolicy, build_policy
 from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
     StopFlag,
@@ -16,6 +16,7 @@ from eden_service_common import (
     configure_logging,
     get_logger,
     install_stop_handlers,
+    load_experiment_config,
     parse_log_level,
     resolve_admin_token,
     resolve_credentials_dir,
@@ -130,21 +131,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--ideation-policy",
-        default="eden_dispatch.policies:default_policy",
+        "--experiment-config",
+        required=True,
         help=(
-            "Importable ``module:callable`` whose call returns an "
-            "``IdeationPolicy`` (``Callable[[ExperimentStateView], int]``). "
-            "Invoked once per orchestrator iteration when "
-            "``dispatch_mode.ideation_creation == 'auto'``; the returned "
-            "count is the number of ideation tasks created this iteration. "
-            "Default: ``eden_dispatch.policies:default_policy`` "
-            "(``maintain_pending(target=3)``; mirrors the pre-12a-2 "
-            "static-seed shape under the new dispatch). The pre-12a-2 "
-            "``--ideation-tasks`` flag is retired; deployments that want "
-            "exact one-shot seeding can point this at "
-            "``eden_dispatch.policies:fixed_total`` via a thin local "
-            "wrapper (see plan §3.3)."
+            "Path to the experiment-config YAML. The orchestrator reads "
+            "the ``ideation_policy`` block from it to build the policy "
+            "callable invoked once per iteration when "
+            "``dispatch_mode.ideation_creation == 'auto'``. When the "
+            "block is absent, the reference default "
+            "(``maintain_pending(target=3)``) is used. See "
+            "``spec/v0/02-data-model.md`` §2.4 and "
+            "``schemas/experiment-config.schema.json`` for the supported "
+            "kinds (``maintain_pending`` and ``fixed_total``)."
         ),
     )
     parser.add_argument(
@@ -241,27 +239,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _resolve_ideation_policy(spec: str) -> IdeationPolicy:
-    """Import ``module:callable`` and call it to get an :data:`IdeationPolicy`.
+def _resolve_ideation_policy(experiment_config_path: str) -> IdeationPolicy:
+    """Build an :data:`IdeationPolicy` from the experiment-config YAML.
 
-    The CLI flag accepts a ``module:callable`` string (e.g.
-    ``eden_dispatch.policies:default_policy``); this helper imports
-    the module, fetches the callable, calls it with no args, and
-    returns the resulting policy. The two-step shape — caller is a
-    *factory* that returns a policy — keeps configuration (target
-    counts, ceilings) on the factory side rather than the orchestrator
-    CLI, so policies can carry their own configuration without
-    expanding the CLI surface every time a new knob lands.
-
-    Deployments that want a configured policy (e.g.
-    ``maintain_pending(target=5, max_total=100)``) wrap the factory:
-    write a local ``my_policies.py`` exposing ``def my_policy():
-    return maintain_pending(target=5, max_total=100)`` and pass
-    ``--ideation-policy my_policies:my_policy``.
+    Reads the ``ideation_policy`` block from
+    ``experiment_config_path`` and dispatches on its ``kind``
+    discriminator. When the block is absent the reference default
+    (``maintain_pending(target=3)``) is used. Per-kind argument
+    validation lives in the underlying factories; invalid values raise
+    ``ValueError`` which the CLI surfaces as a startup failure.
     """
-    return _resolve_factory_callable(
-        spec, flag="--ideation-policy"
-    )
+    config = load_experiment_config(experiment_config_path)
+    return build_policy(config.ideation_policy)
 
 
 def _resolve_termination_policy(spec: str) -> TerminationPolicy:
@@ -289,10 +278,10 @@ def _resolve_termination_policy(spec: str) -> TerminationPolicy:
 def _resolve_factory_callable(spec: str, *, flag: str):  # noqa: ANN202
     """Shared ``module:callable`` factory-call helper.
 
-    Used by both ``--ideation-policy`` and ``--termination-policy``
-    so the error-message shape and import flow stay in lockstep. The
-    return type is intentionally untyped at the helper layer — the
-    two callers narrow with their own annotations.
+    Used by ``--termination-policy`` (and historically
+    ``--ideation-policy``, retired in favor of reading from the
+    experiment config). The return type is intentionally untyped at
+    the helper layer — callers narrow with their own annotations.
     """
     if ":" not in spec:
         raise SystemExit(
@@ -363,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     stop = StopFlag()
     install_stop_handlers(stop)
 
-    ideation_policy = _resolve_ideation_policy(args.ideation_policy)
+    ideation_policy = _resolve_ideation_policy(args.experiment_config)
     termination_policy = _resolve_termination_policy(args.termination_policy)
     admin_token = resolve_admin_token(args)
 
@@ -414,7 +403,7 @@ def _run_single_experiment(
     log.info(
         "starting",
         mode="single-experiment",
-        ideation_policy=args.ideation_policy,
+        experiment_config=args.experiment_config,
         termination_policy=args.termination_policy,
         repo=args.repo_path,
         worker_id=args.worker_id,

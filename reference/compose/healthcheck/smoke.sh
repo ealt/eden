@@ -76,13 +76,17 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE" \
     --data-root "$SMOKE_DATA_ROOT"
 
-# 12a-2 wave 7: the default ideation policy maintains a pending depth
-# of 3 by default but is unbounded — without a MAX_TOTAL cap the
-# orchestrator would top up the queue every iteration and never
-# quiesce. The smoke pins the per-experiment lifetime ideation count
-# to exactly 3 so the loop quiesces after the 3 variants land.
-sed -i.bak 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=3/' "$ENV_FILE"
-rm -f "${ENV_FILE}.bak"
+# Issue #133: the default ideation policy maintains a pending depth
+# of 3 but is unbounded — without a max_total cap the orchestrator
+# would top up the queue every iteration and never quiesce. Append
+# a `fixed_total` policy to the copied experiment config so the loop
+# quiesces after exactly 3 variants land.
+EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+cat >>"$EXPERIMENT_CONFIG" <<'YAML'
+ideation_policy:
+  kind: fixed_total
+  total: 3
+YAML
 
 # Resolve the project name from compose config and assert it
 # matches the value pinned in compose.yaml. Same pattern as 10a.

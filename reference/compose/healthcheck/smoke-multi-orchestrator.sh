@@ -66,12 +66,13 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE"
 
 # Pin lifetime ideation count to 3 so the §6.4 exact-idempotent
-# decisions have a finite target to converge on.
-sed -i.bak \
-    -e 's/^EDEN_IDEATION_POLICY_TARGET_PENDING=.*/EDEN_IDEATION_POLICY_TARGET_PENDING=3/' \
-    -e 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=3/' \
-    "$ENV_FILE"
-rm -f "${ENV_FILE}.bak"
+# decisions have a finite target to converge on (issue #133).
+EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+cat >>"$EXPERIMENT_CONFIG" <<'YAML'
+ideation_policy:
+  kind: fixed_total
+  total: 3
+YAML
 
 EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_ADMIN_TOKEN"

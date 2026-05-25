@@ -246,9 +246,14 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
     # startup-to-first-claim latency; with the default 0.3s the
     # orchestrator declares quiescence before workers come online and
     # every ideation task stays pending.
-    # Wave-4: ``--ideation-tasks`` retired; policy + env-var
-    # ``EDEN_IDEATION_POLICY_MAX_TOTAL=3`` reproduces the pre-12a-2
-    # fixed-seed shape this test depends on.
+    # The fixed_total ideation policy reproduces the pre-12a-2
+    # fixed-seed shape this test depends on (exactly 3 ideation tasks).
+    orchestrator_config = tmp_path / "orchestrator-config.yaml"
+    orchestrator_config.write_text(
+        FIXTURE_CONFIG.read_text(encoding="utf-8")
+        + "\nideation_policy:\n  kind: fixed_total\n  total: 3\n",
+        encoding="utf-8",
+    )
     orchestrator = _spawn(
         [
             "eden_orchestrator",
@@ -262,12 +267,10 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             "0.5",
             "--max-quiescent-iterations",
             "20",
+            "--experiment-config",
+            str(orchestrator_config),
         ],
         orchestrator_log,
-        env={
-            "EDEN_IDEATION_POLICY_TARGET_PENDING": "3",
-            "EDEN_IDEATION_POLICY_MAX_TOTAL": "3",
-        },
     )
 
     procs_logs = {

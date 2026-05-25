@@ -261,12 +261,12 @@ services:
       - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
       - /etc/eden/credential-helper.sh
-      # 12a-2 wave 4: --ideation-tasks retired. The orchestrator now
-      # invokes `eden_dispatch.policies:default_policy` once per
-      # iteration; the policy reads
-      # EDEN_IDEATION_POLICY_TARGET_PENDING /
-      # EDEN_IDEATION_POLICY_MAX_TOTAL from the environment block
-      # below.
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      # The orchestrator reads the ideation_policy block from the
+      # experiment config to build the policy callable invoked when
+      # dispatch_mode.ideation_creation == "auto". Absent block →
+      # maintain_pending(target=3).
       # Compose-friendly quiescence: 30 iterations × 1s = 30s of
       # zero progress before the orchestrator declares the
       # experiment done. Tuned for the smoke tests where worker
@@ -290,16 +290,15 @@ services:
       - --log-level
       - info
     environment:
-      # 12a-2 wave 4: the default ideation policy reads these. An
-      # empty value (or unset) means "unbounded" for MAX_TOTAL.
-      EDEN_IDEATION_POLICY_TARGET_PENDING: ${EDEN_IDEATION_POLICY_TARGET_PENDING:-3}
-      EDEN_IDEATION_POLICY_MAX_TOTAL: ${EDEN_IDEATION_POLICY_MAX_TOTAL:-}
       # 12a-3 wave 4: per-policy configuration. The
       # `env_max_variants_policy` factory reads this; other
       # deployment-supplied policies MAY follow the same convention.
       EDEN_TERMINATION_MAX_VARIANTS: ${EDEN_TERMINATION_MAX_VARIANTS:-}
       # Issue #109: file-handler companion to docker json-file driver.
       EDEN_LOG_DIR: /var/lib/eden/logs
+    configs:
+      - source: eden-experiment-config
+        target: /etc/eden/experiment-config.yaml
     volumes:
       # Durable substrates (Phase 12a-1g) under the per-experiment
       # data root. The per-host bare clone survives restart so the

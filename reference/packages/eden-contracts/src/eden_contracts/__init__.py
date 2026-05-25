@@ -6,6 +6,10 @@ from .config import (
     DispatchMode,
     DispatchModeValue,
     ExperimentConfig,
+    FixedTotalPolicyConfig,
+    IdeationPolicyConfig,
+    IdeationPolicyKind,
+    MaintainPendingPolicyConfig,
     ObjectiveSpec,
 )
 from .evaluation import EvaluationSchema, MetricName, MetricType
@@ -74,6 +78,10 @@ __all__ = [
     "ExperimentState",
     "ExperimentTerminatedEvent",
     "FailReason",
+    "FixedTotalPolicyConfig",
+    "IdeationPolicyConfig",
+    "IdeationPolicyKind",
+    "MaintainPendingPolicyConfig",
     "ExecutionPayload",
     "ExecutionTask",
     "Group",
