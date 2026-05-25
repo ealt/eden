@@ -4,7 +4,7 @@ No blocking findings remain. One minor inconsistency is still in the plan text:
 
 **Level assessments**
 
-- **1. Missing context:** Good. The main-container contract, wrapper ownership, and duplicate-Pod story are now explicit enough for an executor to follow.
+- **1. Missing context:** Good. The main-container contract, wrapper ownership, and duplicate-Pod story are now explicit enough for an implementer to follow.
 
 - **2. Feasibility:** Good. The corrected Kubernetes Job semantics, the image-pull early-fail path, and the distroless clarification make the approach technically credible.
 
