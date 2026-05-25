@@ -42,18 +42,30 @@ def run_ideator_loop(
     ideas_per_ideation: int,
     poll_interval: float,
     stop: StopFlag,
+    artifacts_dir: Path | None = None,
 ) -> None:
     """Poll for pending ideation tasks and drive each through the scripted profile.
 
     Returns only when ``stop`` is set. If no pending tasks are visible,
     waits ``poll_interval`` seconds between polls; drains bursts without
     sleeping.
+
+    ``artifacts_dir`` (when set) opts into fixture-artifact emission:
+    each emitted idea-template writes a placeholder file under
+    ``ideas/<task_id>/<i>/content.txt`` and stamps a real
+    ``file:///var/lib/eden/artifacts/...`` URI onto the Idea.
+    ``None`` (the default) preserves the historical scripted
+    behavior (fictional ``file:///tmp/artifacts/...`` pointer, no
+    files written).
     """
+    if artifacts_dir is not None:
+        Path(artifacts_dir).mkdir(parents=True, exist_ok=True)
     ideator = ScriptedIdeator(
         worker_id=worker_id,
         ideation_fn=make_plan_fn(
             base_commit_sha=base_commit_sha,
             ideas_per_ideation=ideas_per_ideation,
+            artifacts_dir=artifacts_dir,
         ),
         idea_id_factory=_idea_id,
         now=_now_iso,

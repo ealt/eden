@@ -39,7 +39,7 @@ from .host import (
 )
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # slop-allow: argparse builder; one add_argument per CLI flag with no branching, plus mode-specific validation at the end; splitting fragments the flat flag manifest without reducing logic.
     """Parse CLI args for the ideator host."""
     parser = argparse.ArgumentParser(
         prog="eden-ideator-host",
@@ -81,7 +81,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         default=None,
-        help="Where to write content artifacts (required in --mode subprocess).",
+        help=(
+            "Where to write content artifacts. Required in --mode "
+            "subprocess. In --mode scripted, required only when "
+            "--emit-fixture-artifacts is set."
+        ),
+    )
+    parser.add_argument(
+        "--emit-fixture-artifacts",
+        action="store_true",
+        help=(
+            "Scripted-mode only: write small placeholder fixture "
+            "files under --artifacts-dir and stamp real "
+            "file:///var/lib/eden/artifacts/... URIs onto submissions "
+            "(instead of the default fictional /tmp/artifacts/... "
+            "pointers). See issue #111."
+        ),
     )
     # 12a-1f git substrate: optional clone-on-startup wiring mirroring
     # executor / evaluator. Subprocess-mode only — scripted-mode
@@ -132,12 +147,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if not args.base_commit_sha:
             parser.error("--base-commit-sha is required in --mode scripted")
         _validate_sha(args.base_commit_sha)
+        if args.emit_fixture_artifacts and args.artifacts_dir is None:
+            parser.error(
+                "--artifacts-dir is required when --emit-fixture-artifacts is set"
+            )
     else:
         for attr in ("experiment_config", "experiment_dir", "artifacts_dir"):
             if getattr(args, attr) is None:
                 parser.error(
                     f"--{attr.replace('_', '-')} is required in --mode subprocess"
                 )
+        if args.emit_fixture_artifacts:
+            parser.error(
+                "--emit-fixture-artifacts is scripted-mode only "
+                "(subprocess mode emits real artifacts via the user-supplied "
+                "ideation_command)"
+            )
     return args
 
 
@@ -370,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
         bearer=bearer,
     ) as client:
         if args.mode == "scripted":
+            scripted_artifacts_dir = (
+                Path(args.artifacts_dir)
+                if args.emit_fixture_artifacts and args.artifacts_dir is not None
+                else None
+            )
             run_ideator_loop(
                 store=client,
                 worker_id=args.worker_id,
@@ -377,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
                 ideas_per_ideation=args.ideas_per_ideation,
                 poll_interval=args.poll_interval,
                 stop=stop,
+                artifacts_dir=scripted_artifacts_dir,
             )
         else:
             _run_subprocess_mode(
