@@ -119,7 +119,57 @@ FROM worker
 ORDER BY data->>'registered_at';
 ```
 
-## 5. Attribution joins across tables
+## 5. The `variant_unpacked` convenience view
+
+For casual exploration in Adminer or psql, the task-store-server
+creates a Postgres view named `variant_unpacked` at startup that
+unpacks the `variant.data` JSON blob into typed scalar columns
+(issue #124). The base `variant` table is untouched; the view is a
+read-only convenience layer.
+
+Common columns (always present) cover every public field on the
+[`Variant`](../../reference/packages/eden-contracts/src/eden_contracts/variant.py)
+dataclass: `variant_id`, `status`, `experiment_id`, `idea_id`,
+`branch`, `commit_sha`, `variant_commit_sha`, `parent_commits`
+(JSONB array), `artifacts_uri`, `description`, `executed_by`,
+`evaluated_by`, `started_at`, `completed_at`, and `evaluation`
+(JSONB sub-object).
+
+Per-metric columns are generated from the experiment's
+`evaluation_schema`. Each declared metric becomes its own typed
+column — `integer` → Postgres `integer`, `real` → Postgres
+`double precision`, `text` → Postgres `text`. The
+[`EvaluationSchema`](../../reference/packages/eden-contracts/src/eden_contracts/evaluation.py)
+reserved-names check prevents collisions with the common-column
+space.
+
+The pre-view nested-JSON query:
+
+```sql
+SELECT
+    variant_id,
+    status,
+    (data::jsonb -> 'evaluation' ->> 'correctness')::real AS correctness
+FROM variant
+WHERE status = 'success'
+ORDER BY correctness DESC;
+```
+
+becomes:
+
+```sql
+SELECT variant_id, status, correctness
+FROM variant_unpacked
+WHERE status = 'success'
+ORDER BY correctness DESC;
+```
+
+The view is dropped and recreated on every PostgresStore open so a
+fresh experiment with a different `evaluation_schema` picks up the
+new metric columns. The `eden_readonly` role has SELECT on the
+view in addition to the underlying `variant` table.
+
+## 6. Attribution joins across tables
 
 The artifact tables carry redundant attribution fields per
 chapter 02 §3.1 / §5.1 / §9 so an agent can join without going
@@ -136,7 +186,7 @@ WHERE data->>'evaluated_by' = 'evaluator-1'
   AND status IN ('success', 'error', 'evaluation_error');
 ```
 
-## 6. Privilege boundary
+## 7. Privilege boundary
 
 The role has **NO** privilege to:
 
@@ -150,7 +200,7 @@ The role has **NO** privilege to:
   future credential-bearing column can't be accidentally
   exposed.
 
-## 7. Password rotation
+## 8. Password rotation
 
 The task-store-server's `--readonly-password` rotates the role's
 password via `ALTER ROLE … WITH PASSWORD …` on every startup.
@@ -162,7 +212,7 @@ subprocesses with the old DSN will start failing on connect —
 restart the worker hosts (`docker compose restart ideator-host
 evaluator-host`) so they pick up the new DSN.
 
-## 8. Cross-machine
+## 9. Cross-machine
 
 The DSN's `postgres:5432` host only resolves inside the compose
 network. An off-host agent substitutes the operator's

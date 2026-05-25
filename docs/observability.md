@@ -150,6 +150,8 @@ Refresh with `git fetch --all --prune`. The Forgejo Web UI (§2.2 above) covers 
 
 The task-store-server provisions an `eden_readonly` SQL role at startup, gated by `EDEN_READONLY_PASSWORD` in `.env`. It has `SELECT` on the event log, tasks, ideas, variants, submissions, workers (column-restricted; no credential hashes), groups, and migration bookkeeping. Schema reference: [`docs/operations/agent-readonly-db.md`](operations/agent-readonly-db.md).
 
+For casual variant exploration the server also creates a `variant_unpacked` view that unpacks the `variant.data` JSON blob into typed scalar columns — one per public `Variant` field plus one per metric declared in the experiment's `evaluation_schema`. Operators in Adminer write `SELECT * FROM variant_unpacked WHERE correctness > 0.7` instead of nested JSON traversals on the base table. See [§5 of the readonly substrate doc](operations/agent-readonly-db.md#5-the-variant_unpacked-convenience-view).
+
 Connect with `psql`:
 
 ```bash

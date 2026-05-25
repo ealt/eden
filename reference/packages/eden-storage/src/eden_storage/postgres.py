@@ -45,7 +45,7 @@ from eden_contracts import (
     Worker,
 )
 
-from . import _postgres_schema
+from . import _postgres_schema, _postgres_views
 from ._base import (
     _DEFAULT_DISPATCH_MODE,
     _DEFAULT_EXPERIMENT_STATE,
@@ -86,6 +86,16 @@ When a future schema bump adds a new table, this list MUST be
 extended explicitly (the route deliberately does NOT use
 ``ALTER DEFAULT PRIVILEGES`` because that would silently expose
 any future credential-bearing column added to a new table).
+"""
+
+_READONLY_GRANT_VIEWS: tuple[str, ...] = (
+    _postgres_views.VARIANT_UNPACKED_VIEW,
+)
+"""Operator-convenience views the readonly role gets SELECT on (issue #124).
+
+Postgres views require an explicit SELECT GRANT in addition to the
+underlying table's GRANT — having SELECT on ``variant`` is not enough
+to query ``variant_unpacked``.
 """
 
 
@@ -397,6 +407,28 @@ def _grant_readonly_safe_set(
             ).format(schema=schema_ident, role=role_ident)
         )
 
+    # Issue #124: operator-convenience views over the variant table.
+    # The view's owner (the bootstrap connection) already has SELECT on
+    # `variant`, so granting SELECT on the view alone is sufficient for
+    # `eden_readonly` to query it.
+    for view in _READONLY_GRANT_VIEWS:
+        qualified = f"{schema_name}.{view}"
+        view_exists = cur.execute(
+            "SELECT to_regclass(%s) IS NOT NULL", (qualified,)
+        ).fetchone()
+        if not view_exists or not view_exists[0]:
+            # View not yet created (e.g. a partial bootstrap); skip.
+            # `ensure_variant_unpacked_view` runs in PostgresStore
+            # __init__ before any readonly provision in normal flows.
+            continue
+        cur.execute(
+            sql.SQL("GRANT SELECT ON {schema}.{view} TO {role}").format(
+                schema=schema_ident,
+                view=sql.Identifier(view),
+                role=role_ident,
+            )
+        )
+
 
 def _scalar(conn: Any, query: str) -> Any:
     """Run ``query`` and return the first column of the first row."""
@@ -462,6 +494,12 @@ class PostgresStore(_StoreBase):
         self._in_txn = False
         _postgres_schema.ensure_schema(self._conn)
         self._initialize_experiment(experiment_id, evaluation_schema)
+        # Issue #124: Adminer-convenience view over `variant.data`. Uses
+        # `self._evaluation_schema` so a reopen with no schema arg picks
+        # up the one persisted in `_initialize_experiment` above.
+        _postgres_views.ensure_variant_unpacked_view(
+            self._conn, self._evaluation_schema
+        )
         # Resume the default event-id counter from the persisted seq —
         # same logic as sqlite.py.
         if event_id_factory is None:
