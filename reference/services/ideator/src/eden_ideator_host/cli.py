@@ -39,7 +39,7 @@ from .host import (
 )
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # slop-allow: argparse builder; one add_argument per CLI flag with no branching, plus mode-specific validation at the end; splitting fragments the flat flag manifest without reducing logic.
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: E501  # slop-allow: argparse builder; one add_argument per CLI flag with no branching, plus mode-specific validation at the end; splitting fragments the flat flag manifest without reducing logic.
     """Parse CLI args for the ideator host."""
     parser = argparse.ArgumentParser(
         prog="eden-ideator-host",
