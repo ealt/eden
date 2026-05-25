@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}EDEN — admin control workers{% endblock %}
+{% block main %}
+<h1>deployment-scoped workers</h1>
+
+<p class="lead">
+    Deployment-wide worker registry (chapter 11 §6), distinct from
+    the per-experiment registry at
+    <a href="/admin/workers/">/admin/workers/</a>.
+    (<a href="/admin/">back to admin</a>)
+</p>
+
+{% if outcome %}
+<div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
+{% endif %}
+
+{% if membership_transport_errors %}
+<div class="banner banner-warn">
+    {{ membership_transport_errors }} group-membership lookup(s) failed
+    during this render; the "groups" column below may be incomplete.
+    Refresh to retry.
+</div>
+{% endif %}
+
+<section>
+    <h2>register a new worker</h2>
+    <form method="post" action="/admin/control/workers/">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p>
+            <label>worker_id
+                <input type="text" name="worker_id" required maxlength="64"
+                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
+                       title="lowercase alphanumeric, hyphen, underscore; first char non-hyphen; max 64 chars">
+            </label>
+        </p>
+        <p>
+            <label>labels (one <code>key=value</code> per line; <code>#</code> comments ok)
+                <textarea name="labels" rows="4" cols="50"
+                          placeholder="role=ideator&#10;model=claude-opus-4-7"></textarea>
+            </label>
+        </p>
+        <p>
+            <button type="submit">register</button>
+        </p>
+    </form>
+</section>
+
+<section>
+    <h2>registered workers ({{ rows | length }})</h2>
+    <form method="get" action="/admin/control/workers/" class="filters">
+        <label>filter (worker_id or label substring)
+            <input type="text" name="q" value="{{ q }}" maxlength="64">
+        </label>
+        <button type="submit">filter</button>
+        {% if q %}
+        <a href="/admin/control/workers/">clear filter</a>
+        {% endif %}
+    </form>
+
+    {% if rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>worker_id</th>
+                <th>registered_at</th>
+                <th>registered_by</th>
+                <th>labels</th>
+                <th>groups</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+            <tr>
+                <td><a href="/admin/control/workers/{{ r.worker_id }}/"><code>{{ r.worker_id }}</code></a></td>
+                <td>{{ r.registered_at }}</td>
+                <td>{% if r.registered_by %}<code>{{ r.registered_by }}</code>{% else %}—{% endif %}</td>
+                <td>{% if r.labels_preview %}{{ r.labels_preview }}{% else %}—{% endif %}</td>
+                <td>
+                    {% for gid in r.groups_preview %}<a href="/admin/control/groups/{{ gid }}/"><code>{{ gid }}</code></a>{% if not loop.last %}, {% endif %}{% endfor %}
+                    {% if r.groups_more %}<span class="muted">+{{ r.groups_more }}</span>{% endif %}
+                    {% if not r.groups_preview and not r.groups_more %}—{% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>no workers match these filters.</p>
+    {% endif %}
+</section>
+{% endblock %}

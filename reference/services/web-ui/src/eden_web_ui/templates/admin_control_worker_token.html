@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}EDEN — deployment worker {{ worker.worker_id }} credential{% endblock %}
+{% block main %}
+<h1>deployment worker <code>{{ worker.worker_id }}</code></h1>
+
+{% if action == "register" and token %}
+<div class="banner banner-ok">
+    worker registered. <strong>The token below is shown only once —
+    save it now.</strong>
+</div>
+{% elif action == "register" and not token %}
+<div class="banner banner-warn">
+    a worker with this id already existed; no new token was issued.
+    Use "reissue credential" on the detail page if you actually need
+    a fresh credential.
+</div>
+{% elif action == "reissue" %}
+<div class="banner banner-ok">
+    credential reissued. <strong>The previous credential is now invalid;
+    the new token below is shown only once — save it now.</strong>
+</div>
+{% endif %}
+
+<dl>
+    <dt>worker_id</dt><dd><code>{{ worker.worker_id }}</code></dd>
+    <dt>scope</dt><dd><code>{{ worker.experiment_id }}</code> (deployment)</dd>
+    <dt>registered_at</dt><dd>{{ worker.registered_at }}</dd>
+    <dt>registered_by</dt><dd>{% if worker.registered_by %}<code>{{ worker.registered_by }}</code>{% else %}—{% endif %}</dd>
+    <dt>labels</dt><dd>{% if labels_preview %}{{ labels_preview }}{% else %}—{% endif %}</dd>
+</dl>
+
+{% if token %}
+<section>
+    <h2>registration token</h2>
+    <p class="warn">
+        <strong>This is the only time you will see this credential.</strong>
+        Workers authenticate by sending the bearer
+        <code>{{ worker.worker_id }}:&lt;token&gt;</code>. Persist it on
+        the worker's host (typically
+        <code>&lt;credentials_dir&gt;/{{ worker.worker_id }}.token</code>)
+        before navigating away.
+    </p>
+    <pre id="worker-token-wrap"><code class="token">{{ token }}</code></pre>
+    <button type="button" id="copy-token">copy to clipboard</button>
+    <span id="copy-status" class="muted"></span>
+    <script>
+    (function () {
+        var btn = document.getElementById('copy-token');
+        var wrap = document.getElementById('worker-token-wrap');
+        var tok = wrap ? wrap.querySelector('code.token') : null;
+        var status = document.getElementById('copy-status');
+        if (!btn || !tok) { return; }
+        btn.addEventListener('click', function () {
+            var value = tok.textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(value).then(function () {
+                    status.textContent = 'copied.';
+                }, function () {
+                    status.textContent = 'copy failed; select manually.';
+                });
+            } else {
+                var range = document.createRange();
+                range.selectNodeContents(tok);
+                var sel = window.getSelection();
+                if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+                status.textContent = 'selected. press cmd/ctrl-C to copy.';
+            }
+        });
+    })();
+    </script>
+</section>
+{% endif %}
+
+<p>
+    <a href="/admin/control/workers/{{ worker.worker_id }}/">view detail &raquo;</a>
+    &middot;
+    <a href="/admin/control/workers/">back to deployment workers</a>
+</p>
+{% endblock %}

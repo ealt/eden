@@ -8,6 +8,25 @@ Per-chunk entries preserve the full implementation record: contract amendments, 
 
 ## [Unreleased]
 
+### Backfill: /admin/control/workers + /admin/control/groups deployment-scoped pages (issue #146)
+
+Backfills the Phase 12c CHANGELOG-narrated deferral ("Deployment-scoped worker/group registry admin pages not shipped: the chapter 11 §6 registry remains admin-only via direct API calls"). Operators administering deployment-level workers / groups no longer need raw `curl` against the control plane.
+
+**Routes.** New package [`reference/services/web-ui/src/eden_web_ui/routes/admin/control/`](reference/services/web-ui/src/eden_web_ui/routes/admin/control/) with two modules:
+
+- [`workers.py`](reference/services/web-ui/src/eden_web_ui/routes/admin/control/workers.py) — `GET /admin/control/workers/` (list + filter + group-membership column), `POST /admin/control/workers/` (register), `GET /admin/control/workers/{worker_id}/` (detail), `POST /admin/control/workers/{worker_id}/reissue-credential`. Token-page renders the one-shot `registration_token` (Cache-Control: no-store).
+- [`groups.py`](reference/services/web-ui/src/eden_web_ui/routes/admin/control/groups.py) — `GET /admin/control/groups/` (list + transitive-worker counts), `POST /admin/control/groups/` (register with optional initial members), `GET /admin/control/groups/{group_id}/` (detail + transitive closure), `POST .../members` (add), `POST .../members/{member_id}/remove`, `POST .../delete`. Reuses [`admin_groups.walk_transitive_workers`](reference/services/web-ui/src/eden_web_ui/routes/admin_groups.py) for the DAG walk — it only needs `read_group` + `read_worker`, both of which `ControlPlaneClient` exposes.
+
+Both modules mirror the existing per-experiment `/admin/workers/` + `/admin/groups/` patterns: server-side Jinja, auth-first POST (`get_session` runs before CSRF), closed-allowlist banners surfaced via `?ok=` / `?warn=` / `?error=` query params.
+
+**Templates.** Five new files — [`admin_control_workers.html`](reference/services/web-ui/src/eden_web_ui/templates/admin_control_workers.html), [`admin_control_worker_detail.html`](reference/services/web-ui/src/eden_web_ui/templates/admin_control_worker_detail.html), [`admin_control_worker_token.html`](reference/services/web-ui/src/eden_web_ui/templates/admin_control_worker_token.html), [`admin_control_groups.html`](reference/services/web-ui/src/eden_web_ui/templates/admin_control_groups.html), [`admin_control_group_detail.html`](reference/services/web-ui/src/eden_web_ui/templates/admin_control_group_detail.html). Each carries a "deployment-scoped" banner + a back-link to the per-experiment counterpart so operators can tell which registry they are viewing.
+
+**Wiring.** [`app.py`](reference/services/web-ui/src/eden_web_ui/app.py) registers the new router only when `make_app(control_plane=...)` is set (same gate as `/admin/experiments/`); the control plane client carries the admin bearer at startup ([`cli._build_control_plane_client`](reference/services/web-ui/src/eden_web_ui/cli.py)), so admin-gated reads + writes go through one client. [`base.html`](reference/services/web-ui/src/eden_web_ui/templates/base.html) gains two new top-nav links ("deployment workers" / "deployment groups") behind the same `control_plane_enabled` flag that surfaces "experiments".
+
+**Tests.** New [`test_admin_control_workers_routes.py`](reference/services/web-ui/tests/test_admin_control_workers_routes.py) + [`test_admin_control_groups_routes.py`](reference/services/web-ui/tests/test_admin_control_groups_routes.py) following the `test_admin_experiments_routes.py` shape — a thin `_StoreBackedClient` adapter wraps an `InMemoryControlPlaneStore` and ducktypes as `ControlPlaneClient` for the routes. Covers auth-first redirects, CSRF failure → 403, list / register / detail / reissue / membership flows, reserved-identifier + cross-registry collision branches, and the `control_plane=None` → 404 wiring gate.
+
+**Admin gating.** Follows the existing `/admin/experiments/` posture: route handlers gate on `get_session` only; the deployment-level admins-group enforcement lives in the wire layer (chapter 7 §15 `_enforce_admin`). Issue #144 will add an additional web-ui-side check across every `/admin/*` route; this PR does not pre-empt that work. Closes #146.
+
 ### Slug-uniqueness soft-check on idea submission (issue #121)
 
 Polish item: when an operator submits an idea whose `slug` collides with an existing idea in the same experiment, the system now surfaces an advisory warning at submission time rather than silently accepting the collision. Slug uniqueness is **not** a protocol invariant — idea identity is by `idea_id` ([`spec/v0/02-data-model.md`](spec/v0/02-data-model.md) §5.1), and variant branches embed the unique `variant_id` so collisions are harmless in lineage tracking. The check is soft: the request still succeeds 200, and operators can deliberately reuse a slug (e.g., sibling variations grouped by slug) by ignoring the warning.

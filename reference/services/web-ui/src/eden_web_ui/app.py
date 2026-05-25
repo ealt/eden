@@ -34,6 +34,7 @@ from .routes import evaluator as evaluator_routes
 from .routes import executor as executor_routes
 from .routes import ideator as ideator_routes
 from .routes import index as index_routes
+from .routes.admin import control as admin_control_routes
 from .sessions import SessionCodec
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -64,6 +65,7 @@ def _register_routers(
     app.include_router(artifacts_routes.router)
     if control_plane is not None:
         app.include_router(admin_experiments_routes.router)
+        app.include_router(admin_control_routes.router)
     if repo is not None:
         app.include_router(executor_routes.router)
 
@@ -87,18 +89,12 @@ def make_app(
 ) -> FastAPI:
     """Construct the FastAPI app.
 
-    ``now`` is injected so tests can pin time deterministically; the
-    CLI passes a real wall-clock factory. ``repo`` gates the
-    executor module: when ``None`` the ``/executor/*`` routes
-    are not registered and the navigation hides the entry.
-
-    ``admin_store`` is a separate ``Store`` instance bearing the
-    deployment admin credential, used by the worker / group admin
-    modules for admin-gated wire operations (register, reissue,
-    add-member, remove-member, delete). When ``None``, the modules
-    render their normal templates with mutation controls disabled
-    and short-circuit any POST with ``?error=admin-disabled``. See
-    plan §D.3 for the four-posture matrix.
+    ``now`` is injected so tests can pin time deterministically.
+    ``repo`` gates the executor module (None → routes unregistered).
+    ``admin_store`` is a separate ``Store`` bearing the deployment
+    admin credential for admin-gated wire ops; ``None`` → mutation
+    controls render disabled and POSTs 303 to ``?error=admin-disabled``
+    (plan §D.3 four-posture matrix).
     """
     app = FastAPI(title="EDEN reference Web UI", version="0.0.1")
     app.mount(
