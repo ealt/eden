@@ -52,6 +52,7 @@ _COMMON_COLUMN_EXPRS: list[tuple[str, str]] = [
     ("variant_commit_sha", "data::jsonb ->> 'variant_commit_sha'"),
     ("parent_commits", "data::jsonb -> 'parent_commits'"),
     ("artifacts_uri", "data::jsonb ->> 'artifacts_uri'"),
+    ("executor_artifacts_uri", "data::jsonb ->> 'executor_artifacts_uri'"),
     ("description", "data::jsonb ->> 'description'"),
     ("executed_by", "data::jsonb ->> 'executed_by'"),
     ("evaluated_by", "data::jsonb ->> 'evaluated_by'"),
