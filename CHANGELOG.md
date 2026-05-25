@@ -72,9 +72,9 @@ Two symmetric additive fields surfaced during the 2026-05-22 manual demo session
 
 ### What this does NOT cover
 
-- **Web-UI ideator form `intended_evaluator` input** — the existing `intended_executor` plumbing is a per-row parallel-list form surface (~100 lines across `forms.py`, `routes/ideator.py`, and `ideator_claim.html`). Mirroring it for `intended_evaluator` is mechanically straightforward but out of scope for this PR; the CLI path (`eden-manual ideation-submit`) supports it today. Follow-up: #202.
-- **Variant.artifacts_uri rename to `evaluator_artifacts_uri`** — issue #164 recommended Option B with both fields renamed for clarity. This PR took the additive path (new `executor_artifacts_uri` field only; existing `artifacts_uri` retains evaluator-written semantics) to keep spec/manifest/checkpoint disruption contained. A follow-up rename would touch `06-integrator.md` §4 (manifest field name), `10-checkpoints.md` (export rewrites), and 5+ test fixtures. Follow-up: #203.
-- **Conformance scenarios for `VariantSubmission.artifacts_uri` → `Variant.executor_artifacts_uri`** — the wire surface is exercised by reference storage tests; a dedicated conformance scenario would assert the field round-trips through `read_variant` for any IUT. Follow-up: #204.
+- **Web-UI ideator form `intended_evaluator` input** — the existing `intended_executor` plumbing is a per-row parallel-list form surface (~100 lines across `forms.py`, `routes/ideator.py`, and `ideator_claim.html`). Mirroring it for `intended_evaluator` is mechanically straightforward but out of scope for this PR; the CLI path (`eden-manual ideation-submit`) supports it today. Follow-up: #205.
+- **Variant.artifacts_uri rename to `evaluator_artifacts_uri`** — issue #164 recommended Option B with both fields renamed for clarity. This PR took the additive path (new `executor_artifacts_uri` field only; existing `artifacts_uri` retains evaluator-written semantics) to keep spec/manifest/checkpoint disruption contained. A follow-up rename would touch `06-integrator.md` §4 (manifest field name), `10-checkpoints.md` (export rewrites), and 5+ test fixtures. Follow-up: #206.
+- **Conformance scenarios for `VariantSubmission.artifacts_uri` → `Variant.executor_artifacts_uri`** — the wire surface is exercised by reference storage tests; a dedicated conformance scenario would assert the field round-trips through `read_variant` for any IUT. Follow-up: #207.
 
 ### Codify demo lessons into permanent process
 
