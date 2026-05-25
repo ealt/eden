@@ -181,6 +181,9 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             # the registration call goes through without an admin
             # bearer).
             seed.register_worker("ui-admin")
+            # Issue #144: the web-ui /admin/* middleware gates on
+            # admins-group membership. Put ui-admin in admins.
+            seed.register_group("admins", members=["ui-admin"])
             seed.create_ideation_task("t-ideation-1")
         finally:
             seed.close()

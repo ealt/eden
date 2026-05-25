@@ -200,6 +200,9 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
             with contextlib.suppress(AlreadyExists):
                 admin.register_group("admins")
             admin.add_to_group("admins", "member-w")
+            # Issue #144: also add the web-ui worker to admins so its
+            # /admin/* page loads pass the route-layer gate.
+            admin.add_to_group("admins", "ui-admin-groups")
         finally:
             admin.close()
 

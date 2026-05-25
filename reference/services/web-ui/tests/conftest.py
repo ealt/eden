@@ -50,7 +50,7 @@ def store() -> InMemoryStore:
     # check, so every worker_id the web-ui tests hand to `claim` must
     # exist in the registry. Register the conventional ids here so
     # each test starts with a fresh-but-seeded store.
-    for wid in (
+    test_workers = (
         WORKER_ID,  # "ui-w"
         "ui-w-other",
         "another-worker",
@@ -66,8 +66,15 @@ def store() -> InMemoryStore:
         "other-worker",
         "w-1",
         "worker-other",
-    ):
+    )
+    for wid in test_workers:
         store.register_worker(wid)
+    # Issue #144: the web-ui /admin/* middleware gates on admins-group
+    # membership. The default test posture mirrors the setup-experiment
+    # script, which seeds an admins group and adds the web-ui worker to
+    # it. Tests that exercise the non-admin posture explicitly use the
+    # ``store_non_admin`` fixture.
+    store.register_group("admins", members=list(test_workers))
     return store
 
 

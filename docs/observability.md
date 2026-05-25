@@ -56,6 +56,7 @@ Notes:
 
 - These are read views over the wire API. Filter changes do not mutate state.
 - Reclaim / reassign / terminate / dispatch-mode toggles do mutate, behind CSRF + the same authorization model as the wire API.
+- **Auth.** Every `/admin/*` page load requires the signed-in session's worker to be a transitive member of the `admins` group; non-admin sessions get a 403 forbidden page from the route-layer middleware (issue #144). The `setup-experiment.sh` script seeds the `admins` group with the web-ui's worker so the default Compose deployment already meets this requirement. Sign-ups created after a deployment is up are not added to `admins` by default and will hit the 403 page until an existing admin adds them via `/admin/groups/admins/`.
 - `/admin/experiments/` is only mounted when the web-ui is started with `--control-plane-url`. The default Compose stack omits this flag; the route returns 404 ("page does not exist") until a control-plane-server is wired up. To enable it on the demo stack, run a sibling control-plane container and recreate the web-ui with the [`compose.control-plane.yaml`](../reference/compose/compose.control-plane.yaml) overlay — see [§3.4](#34-enabling-the-multi-experiment-control-plane).
 
 ### 2.2 Forgejo Web UI (`http://localhost:3001`)

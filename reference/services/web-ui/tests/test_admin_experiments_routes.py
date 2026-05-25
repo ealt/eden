@@ -87,7 +87,13 @@ def cp_client(cp_store: InMemoryControlPlaneStore) -> ControlPlaneClient:
 
 @pytest.fixture
 def store() -> InMemoryStore:
-    return InMemoryStore(experiment_id=EXPERIMENT_ID)
+    s = InMemoryStore(experiment_id=EXPERIMENT_ID)
+    # Issue #144: the /admin/* middleware gates on admins-group
+    # membership; signed_in_client posts /signin as WORKER_ID so
+    # WORKER_ID must be a member of the `admins` group.
+    s.register_worker(WORKER_ID)
+    s.register_group("admins", members=[WORKER_ID])
+    return s
 
 
 @pytest.fixture

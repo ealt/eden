@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .middleware import AdminGateMiddleware
 from .routes import admin as admin_routes
 from .routes import admin_artifacts as admin_artifacts_routes
 from .routes import admin_experiments as admin_experiments_routes
@@ -44,6 +45,27 @@ def _now_factory() -> Callable[[], datetime]:
         return datetime.now(UTC)
 
     return _now
+
+
+def _register_routers(
+    app: FastAPI,
+    *,
+    control_plane: ControlPlaneClient | None,
+    repo: GitRepo | None,
+) -> None:
+    app.include_router(index_routes.router)
+    app.include_router(auth_routes.router)
+    app.include_router(ideator_routes.router)
+    app.include_router(evaluator_routes.router)
+    app.include_router(admin_routes.router)
+    app.include_router(admin_workers_routes.router)
+    app.include_router(admin_groups_routes.router)
+    app.include_router(admin_artifacts_routes.router)
+    app.include_router(artifacts_routes.router)
+    if control_plane is not None:
+        app.include_router(admin_experiments_routes.router)
+    if repo is not None:
+        app.include_router(executor_routes.router)
 
 
 def make_app(
@@ -106,19 +128,8 @@ def make_app(
     app.state.base_commit_sha = base_commit_sha
     app.state.control_plane = control_plane
 
-    app.include_router(index_routes.router)
-    app.include_router(auth_routes.router)
-    app.include_router(ideator_routes.router)
-    app.include_router(evaluator_routes.router)
-    app.include_router(admin_routes.router)
-    app.include_router(admin_workers_routes.router)
-    app.include_router(admin_groups_routes.router)
-    app.include_router(admin_artifacts_routes.router)
-    app.include_router(artifacts_routes.router)
-    if control_plane is not None:
-        app.include_router(admin_experiments_routes.router)
-    if repo is not None:
-        app.include_router(executor_routes.router)
+    app.add_middleware(AdminGateMiddleware)
+    _register_routers(app, control_plane=control_plane, repo=repo)
 
     @app.get("/healthz", include_in_schema=False)
     async def _healthz() -> dict[str, str]:
