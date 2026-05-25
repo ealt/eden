@@ -240,6 +240,14 @@ The ideator turns an `ideation` task into one or more `Idea` records. An idea na
 
 Sign in to `http://localhost:8090/`. Navigate to the ideator page. The form lets you draft N ideas with slugs / priorities / parent_commits / rationale, then submit. The Web UI walks the spec's three-phase write (`create_idea(drafting)` × N → `mark_ready` × N → `submit`).
 
+Each idea row accepts an optional markdown body **plus** any number of file uploads (issue #120). The bundler picks the right shape automatically:
+
+- text only → stored as `<idea_id>.md` (the existing single-file shape);
+- one file, no text → stored as `<idea_id>.<ext>`;
+- text + one-or-more files OR two-or-more files → wrapped server-side into `<idea_id>.tar.gz` with a top-level `manifest.json` enumerating each entry's path, size, and content-type. The evaluator's draft page renders the manifest as a per-file link table, and an inline `idea.md` (when present in the bundle) is shown as the headline above the table.
+
+When you attach files, the text body is optional — uploads alone are a valid artifact. **Browser file inputs do not survive "add another row"**, so finalize file selections in the same submission as the row's text and metadata.
+
 ### Ideation via the CLI (`eden-manual`)
 
 ```bash
@@ -249,6 +257,22 @@ $EDEN list-tasks --kind ideation --state pending
 $EDEN claim <task-id> --worker-id eden-manual    # registers worker on first use
 # Author an ideas JSON file (see the skill or just emit a `{"ideas": [...]}`)
 $EDEN ideation-submit <task-id> --ideas-file /path/to/ideas.json --status success
+```
+
+Each idea entry in the JSON file may include `content_files` (a list of host-local paths) alongside `content` (issue #120). Same single-file vs `.tar.gz` selection as the Web UI:
+
+```json
+{
+  "ideas": [
+    {
+      "slug": "design-with-diagram",
+      "priority": 1.5,
+      "parent_commits": ["a1b2..."],
+      "content": "# rationale\n\nuse SVG ...",
+      "content_files": ["/tmp/arch.svg", "/tmp/sample-data.json"]
+    }
+  ]
+}
 ```
 
 The CLI auto-registers `eden-manual` in the worker registry on first claim and persists the credential at `/tmp/eden-manual/.credentials.json` (mode 0600). On a fresh `/tmp` it'll re-register via `reissue_credential`.

@@ -25,8 +25,17 @@
         </tbody>
     </table>
 </section>
-<form action="/ideator/{{ task_id }}/submit" method="post" class="idea-form">
+<form action="/ideator/{{ task_id }}/submit" method="post" enctype="multipart/form-data" class="idea-form">
     <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+    <p class="form-note">
+        Each idea row accepts an optional markdown body + any number of
+        file attachments. Single file (text-only OR one upload) is
+        stored as-is; mixed text + files (or multiple files) are wrapped
+        server-side into a <code>.tar.gz</code> bundle with a
+        <code>manifest.json</code>.
+        <strong>File selections do not survive "add another row"</strong>
+        — finalize uploads in the same submission as the row's text.
+    </p>
     <fieldset>
         <legend>ideas</legend>
         <div id="idea-rows">

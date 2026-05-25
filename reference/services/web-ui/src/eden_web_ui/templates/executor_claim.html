@@ -38,9 +38,14 @@
     {% if content %}
     <h3>content</h3>
     <pre class="content">{{ content }}</pre>
+    {% elif idea_manifest %}
+    <p class="content-note">idea is a multi-file bundle; see the per-file links below.</p>
     {% else %}
     <p class="content-note">content not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
     {% endif %}
+    {% with manifest=idea_manifest, bundle_uri=idea.artifacts_uri, bundle_label="idea" %}
+        {% include "_artifact_manifest.html" %}
+    {% endwith %}
 </section>
 
 <section class="instructions">

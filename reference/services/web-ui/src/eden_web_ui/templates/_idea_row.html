@@ -15,9 +15,19 @@
         <input type="text" name="parent_commits" value="{{ row.parent_commits }}">
         {% if row_errs.get("parent_commits") %}<span class="field-error">{{ row_errs["parent_commits"] }}</span>{% endif %}
     </label>
-    <label>content (markdown)
+    <label>content (markdown, optional when files are attached)
         <textarea name="content" rows="6">{{ row.content }}</textarea>
         {% if row_errs.get("content") %}<span class="field-error">{{ row_errs["content"] }}</span>{% endif %}
+    </label>
+    {# Issue #120: optional multi-file attachments per row.
+       The field is indexed by row so getlist("files_<i>") picks up
+       only this row's uploads. Note: browsers don't preserve file
+       input state across the "add another row" round-trip, so the
+       user must finalize all uploads in the same submission as
+       this row's text/metadata. #}
+    <label>attach files (optional)
+        <input type="file" name="files_{{ i }}" multiple>
+        {% if row_errs.get("artifact") %}<span class="field-error">{{ row_errs["artifact"] }}</span>{% endif %}
     </label>
     {# 12a-3: optional routing hint. The orchestrator's
        execution_dispatch decision copies this to the resulting

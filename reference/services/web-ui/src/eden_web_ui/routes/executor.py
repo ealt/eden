@@ -43,6 +43,7 @@ from ._helpers import (
     get_session,
     is_htmx_request,
     read_idea_content,
+    read_idea_manifest,
 )
 from ._submit_readback import submit_with_readback, wire_error_banner
 
@@ -752,6 +753,7 @@ def _render_draft(
 ) -> HTMLResponse:
     artifacts_dir = request.app.state.artifacts_dir
     content = read_idea_content(idea, artifacts_dir)
+    idea_manifest = read_idea_manifest(idea, artifacts_dir)
     branch = _branch_name(idea.slug, variant_id)
     repo_path = getattr(request.app.state.repo, "path", None)
     clone_url = getattr(request.app.state, "clone_url", None)
@@ -763,6 +765,7 @@ def _render_draft(
             "task_id": task_id,
             "idea": idea,
             "content": content,
+            "idea_manifest": idea_manifest,
             "branch": branch,
             "repo_path": repo_path,
             "clone_url": clone_url,

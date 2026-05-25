@@ -27,7 +27,9 @@ request surface.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
@@ -40,14 +42,18 @@ from eden_storage import (
 )
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.datastructures import UploadFile
 
+from ..artifacts import UploadedFile, write_artifact_bundle
 from ..forms import parse_evaluate_form
 from ._helpers import (
     csrf_ok,
     get_session,
     is_htmx_request,
     read_idea_content,
+    read_idea_manifest,
     read_variant_artifact,
+    read_variant_artifact_manifest,
 )
 from ._submit_readback import submit_with_readback, wire_error_banner
 
@@ -370,25 +376,12 @@ async def submit(
             f"task-store transport failure: {exc.__class__.__name__}",
         )
 
-    config = request.app.state.experiment_config
-    evaluation_schema = config.evaluation_schema
-
-    status_raw = str(form.get("status") or "")
-    artifacts_uri_raw = str(form.get("artifacts_uri") or "")
-    metric_inputs = _collect_metric_inputs(form, evaluation_schema)
-
-    draft, errors = parse_evaluate_form(
-        evaluation_schema=evaluation_schema,
-        status_raw=status_raw,
-        metric_inputs=metric_inputs,
-        artifacts_uri_raw=artifacts_uri_raw,
+    draft, errors, form_state = _parse_evaluator_submit_form(
+        form,
+        request=request,
+        uploaded=await _collect_uploads(form, field_name="artifact_files"),
     )
-    form_state: dict[str, Any] = {
-        "status": status_raw or "success",
-        "artifacts_uri": artifacts_uri_raw,
-        "metric_values": dict(metric_inputs),
-    }
-    if draft is None:
+    if draft is None or errors:
         return _render_draft(
             request,
             session=session,
@@ -413,6 +406,127 @@ async def submit(
         form_state=form_state,
         errors=errors,
     )
+
+
+def _parse_evaluator_submit_form(
+    form: Any,
+    *,
+    request: Request,
+    uploaded: list[UploadedFile],
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Read the evaluator submit form and produce ``(draft, errors, form_state)``.
+
+    Pulled out of :func:`submit` so the route handler stays under
+    the 100-line slop-prevention cap (issue #120 + the bundling
+    branch added ~30 lines). The draft's ``artifacts_uri`` is
+    rewritten to point at a freshly-bundled artifact when the
+    operator supplied text/uploads instead of an explicit URI.
+    """
+    config = request.app.state.experiment_config
+    evaluation_schema = config.evaluation_schema
+
+    status_raw = str(form.get("status") or "")
+    artifacts_uri_raw = str(form.get("artifacts_uri") or "")
+    artifact_text_raw = str(form.get("artifact_text") or "")
+    metric_inputs = _collect_metric_inputs(form, evaluation_schema)
+
+    draft, errors = parse_evaluate_form(
+        evaluation_schema=evaluation_schema,
+        status_raw=status_raw,
+        metric_inputs=metric_inputs,
+        artifacts_uri_raw=artifacts_uri_raw,
+    )
+    form_state: dict[str, Any] = {
+        "status": status_raw or "success",
+        "artifacts_uri": artifacts_uri_raw,
+        "artifact_text": artifact_text_raw,
+        "metric_values": dict(metric_inputs),
+    }
+    if draft is None:
+        return None, errors, form_state
+
+    written_uri, bundle_error = _maybe_bundle_evaluator_artifact(
+        request=request,
+        artifacts_uri_raw=artifacts_uri_raw,
+        artifact_text_raw=artifact_text_raw,
+        uploaded=uploaded,
+    )
+    if bundle_error is not None:
+        from ..forms import FormErrors
+
+        new_errors = errors or FormErrors()
+        new_errors.add(0, "artifact", bundle_error)
+        return None, new_errors, form_state
+    if written_uri is not None:
+        draft = replace(draft, artifacts_uri=written_uri)
+        form_state["artifacts_uri"] = written_uri
+    return draft, errors, form_state
+
+
+def _maybe_bundle_evaluator_artifact(
+    *,
+    request: Request,
+    artifacts_uri_raw: str,
+    artifact_text_raw: str,
+    uploaded: list[UploadedFile],
+) -> tuple[str | None, str | None]:
+    """Decide whether to write a new bundled artifact.
+
+    Returns ``(uri, error)``:
+
+    - ``(None, None)`` if the operator supplied an explicit
+      ``artifacts_uri`` OR provided neither text nor uploads — no
+      new artifact is written.
+    - ``(uri, None)`` on a successful write — the caller pins
+      ``draft.artifacts_uri`` to ``uri``.
+    - ``(None, msg)`` on a bundling collision / filename rejection
+      — the caller turns ``msg`` into a per-field form error.
+    """
+    if artifacts_uri_raw.strip():
+        return None, None
+    if not (artifact_text_raw.strip() or uploaded):
+        return None, None
+    try:
+        uri = write_artifact_bundle(
+            request.app.state.artifacts_dir,
+            f"eval-{uuid.uuid4().hex}",
+            text_content=artifact_text_raw,
+            text_filename="evaluation.md",
+            uploads=uploaded,
+        )
+    except ValueError as exc:
+        return None, str(exc)
+    return uri, None
+
+
+async def _collect_uploads(
+    form: Any, *, field_name: str
+) -> list[UploadedFile]:
+    """Pull all ``UploadFile`` entries for ``field_name`` from ``form``.
+
+    Browser file inputs with ``multiple`` post one part per selected
+    file, all under the same field name; ``form.getlist(field_name)``
+    returns them in order. Drops empty-filename entries (which is
+    how Starlette represents "user selected nothing") so the
+    bundler doesn't treat the absence-of-uploads as a single empty
+    upload. Body bytes are read here so callers see plain bytes
+    objects.
+    """
+    out: list[UploadedFile] = []
+    for item in form.getlist(field_name):
+        if not isinstance(item, UploadFile):
+            continue
+        if not item.filename:
+            continue
+        data = await item.read()
+        out.append(
+            UploadedFile(
+                filename=item.filename,
+                data=data,
+                content_type=item.content_type,
+            )
+        )
+    return out
 
 
 def _build_and_submit_evaluation(
@@ -466,6 +580,7 @@ def _empty_form_state(request: Request) -> dict[str, Any]:
     return {
         "status": "success",
         "artifacts_uri": "",
+        "artifact_text": "",
         "metric_values": {name: "" for name in config.evaluation_schema.root},
     }
 
@@ -483,7 +598,11 @@ def _render_draft(
 ) -> HTMLResponse:
     artifacts_dir = request.app.state.artifacts_dir
     idea_content = read_idea_content(idea, artifacts_dir)
+    idea_manifest = read_idea_manifest(idea, artifacts_dir)
     variant_artifact_inline = read_variant_artifact(variant.artifacts_uri, artifacts_dir)
+    variant_artifact_manifest = read_variant_artifact_manifest(
+        variant.artifacts_uri, artifacts_dir
+    )
     config = request.app.state.experiment_config
     metric_schema_items = list(config.evaluation_schema.root.items())
     return request.app.state.templates.TemplateResponse(
@@ -495,7 +614,9 @@ def _render_draft(
             "variant": variant,
             "idea": idea,
             "idea_content": idea_content,
+            "idea_manifest": idea_manifest,
             "variant_artifact_inline": variant_artifact_inline,
+            "variant_artifact_manifest": variant_artifact_manifest,
             "metric_schema_items": metric_schema_items,
             "form_state": form_state,
             "errors": errors,

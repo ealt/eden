@@ -1,0 +1,33 @@
+{# Renders a bundle's manifest as a per-entry link table.
+
+    Inputs:
+      - manifest: dict with {"version": int, "entries": [{path, size, content_type}, ...]}
+      - bundle_uri: the .tar.gz file:// URI; each entry link routes
+        through /artifacts?uri=<bundle>&entry=<entry-name>
+      - bundle_label: short label for the "📦 bundle" header (e.g. "idea", "evaluation")
+#}
+{% if manifest and manifest.entries %}
+<section class="artifact-bundle">
+    <h3>📦 bundled {{ bundle_label or "artifact" }} ({{ manifest.entries | length }} files)</h3>
+    <table class="bundle-entries">
+        <thead>
+            <tr>
+                <th>path</th>
+                <th>size (bytes)</th>
+                <th>content-type</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for entry in manifest.entries %}
+            <tr>
+                <td>
+                    <a href="/artifacts?uri={{ bundle_uri | urlencode }}&amp;entry={{ entry.path | urlencode }}" target="_blank" rel="noopener"><code>{{ entry.path }}</code></a>
+                </td>
+                <td>{{ entry.size }}</td>
+                <td><code>{{ entry.content_type or "—" }}</code></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}

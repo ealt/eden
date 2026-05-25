@@ -43,6 +43,9 @@
     {% if variant_artifact_inline %}
     <pre class="content">{{ variant_artifact_inline }}</pre>
     {% endif %}
+    {% with manifest=variant_artifact_manifest, bundle_uri=variant.artifacts_uri, bundle_label="variant artifact" %}
+        {% include "_artifact_manifest.html" %}
+    {% endwith %}
     {% endif %}
 </section>
 
@@ -72,9 +75,14 @@
     {% if idea_content %}
     <h3>idea content</h3>
     <pre class="content">{{ idea_content }}</pre>
+    {% elif idea_manifest %}
+    <p class="content-note">idea is a multi-file bundle; see the per-file links below.</p>
     {% else %}
     <p class="content-note">idea content not rendered inline (artifact is outside the configured artifacts_dir, exceeds 1 MiB, or is not a <code>file://</code> URI).</p>
     {% endif %}
+    {% with manifest=idea_manifest, bundle_uri=idea.artifacts_uri, bundle_label="idea" %}
+        {% include "_artifact_manifest.html" %}
+    {% endwith %}
 </section>
 
 <section class="instructions">
@@ -95,7 +103,7 @@
         <div class="banner banner-error">{{ msg }}</div>
     {% endfor %}
     {% endif %}
-    <form action="/evaluator/{{ task_id }}/submit" method="post">
+    <form action="/evaluator/{{ task_id }}/submit" method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
         <fieldset>
             <legend>status</legend>
@@ -141,11 +149,36 @@
             </p>
             {% endfor %}
         </fieldset>
-        <p>
-            <label for="artifacts_uri">artifacts_uri (optional; URI to your eval logs / output)</label><br>
-            <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
-                value="{{ form_state.artifacts_uri }}">
-        </p>
+        <fieldset class="artifact-bundle-uploads">
+            <legend>artifact (optional)</legend>
+            <p>
+                <label for="artifact_text">notes / eval log (markdown)</label><br>
+                <textarea id="artifact_text" name="artifact_text" rows="6" cols="60">{{ form_state.artifact_text or "" }}</textarea>
+            </p>
+            <p>
+                <label for="artifact_files">attach files</label><br>
+                <input type="file" id="artifact_files" name="artifact_files" multiple>
+                <small>
+                    text + uploads → wrapped server-side into a
+                    <code>.tar.gz</code> with a top-level
+                    <code>manifest.json</code>. Single file (text-only OR
+                    one upload) is stored directly.
+                </small>
+            </p>
+            <p>
+                <label for="artifacts_uri">or paste an existing <code>artifacts_uri</code> (URI to your eval logs / output)</label><br>
+                <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
+                    value="{{ form_state.artifacts_uri }}">
+                <small>
+                    when set, text / uploads above are ignored. Use this
+                    when you've already written your eval output somewhere
+                    the web-ui can reach.
+                </small>
+            </p>
+            {% if errors and errors.by_row.get(0, {}).get("artifact") %}
+            <span class="field-error">{{ errors.by_row[0]["artifact"] }}</span>
+            {% endif %}
+        </fieldset>
         <button type="submit">submit</button>
     </form>
 </section>
