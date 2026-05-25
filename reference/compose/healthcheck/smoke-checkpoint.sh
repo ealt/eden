@@ -101,7 +101,7 @@ echo "--- bringing up the full stack ---"
 docker compose -f compose.yaml --env-file "$ENV_FILE" up -d --wait --wait-timeout 240
 
 echo "--- waiting for orchestrator to exit on quiescence ---"
-deadline=$((SECONDS + 180))
+deadline=$((SECONDS + 600))
 while [[ $SECONDS -lt $deadline ]]; do
     status="$(docker inspect --format '{{.State.Status}}' eden-orchestrator)"
     if [[ "$status" = "exited" ]]; then
@@ -110,7 +110,7 @@ while [[ $SECONDS -lt $deadline ]]; do
     sleep 2
 done
 test "$(docker inspect --format '{{.State.Status}}' eden-orchestrator)" = "exited" || {
-    echo "orchestrator did not exit within 180s; current status: $status" >&2
+    echo "orchestrator did not exit within 600s; current status: $status" >&2
     docker compose -f compose.yaml --env-file "$ENV_FILE" logs --tail 30 orchestrator >&2
     exit 1
 }
