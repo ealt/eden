@@ -1,0 +1,7 @@
+Two minor plan-level inconsistencies remain. They don’t reopen the design, but I would fix them before calling the document fully converged.
+
+1. [docs/plans/issue-143-non-admin-default-signup.md](/Users/ericalt/Documents/eden-worktrees/issue-143-plan/docs/plans/issue-143-non-admin-default-signup.md:71) cites `_enforce_admin` at `server.py:465`, but the current dispatcher surface there is `_enforce_in_any_group`, not `_enforce_admin`; see [server.py](/Users/ericalt/Documents/eden-worktrees/issue-143-plan/reference/packages/eden-wire/src/eden_wire/server.py:452). The auth-disabled-posture point is valid, but the concrete code reference is wrong and should be corrected so the plan stays anchored to a real helper.
+
+2. [docs/plans/issue-143-non-admin-default-signup.md](/Users/ericalt/Documents/eden-worktrees/issue-143-plan/docs/plans/issue-143-non-admin-default-signup.md:418) still says “§D.4.2 says retain `admin_store` ONLY for sign-up / reissue.” That’s now stale relative to the authority matrix and naming map, which correctly keep `admin_store` for `register_worker`, `reissue_credential`, `register_group`, and `delete_group`.
+
+Other than those two cleanup items, I don’t have remaining concerns at the missing-context, feasibility, alternatives, completeness, or edge-case/risk levels. After those are scrubbed, I’d consider the plan converged.

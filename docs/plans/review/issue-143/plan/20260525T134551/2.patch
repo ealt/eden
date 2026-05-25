@@ -1,0 +1,67 @@
+--- docs/plans/review/issue-143/plan/20260525T134551/1.md	2026-05-25 13:53:11
++++ docs/plans/issue-143-non-admin-default-signup.md	2026-05-25 13:55:41
+@@ -212,7 +212,7 @@
+   - A worker NOT in `admins` (a freshly-registered non-admin worker) is forbidden (403 `eden://error/forbidden`) on `add_to_group(admins, X)`.
+   - The deployment admin can `add_to_group(admins, X)` (bootstrap path, unchanged).
+   - Symmetric assertions for `remove_from_group`.
+-  - The `delete_group` operation follows the same dual-gate; one positive test on a non-reserved group is sufficient (reserved groups can't be deleted per §7.5).
++  - (`delete_group` is NOT included; it stays admin-principal-only per §D.1.)
+ 
+ Cites chapter 07 §13.3 (which carries the new MUST). Group: `Workers and groups`. Belongs to v1+roles. No level expansion needed.
+ 
+@@ -227,7 +227,8 @@
+ | Web-UI behavior: every session = `web-ui-1`, transitively admin | Per-operator session bearer (per #140); admin authority by `admins`-group membership | Issue #143 |
+ | `EDEN_ADMINS_INITIAL_MEMBER` (setup-experiment env var, default `operator`) | Same variable, but bound to the operator's worker name / id from #140's setup flow | Bootstrap operator is the initial admin |
+ | `web-ui-1 ∈ admins` (setup-experiment seeding) | (retired — `web-ui-1` is service-only, not in `admins`) | §D.3 step 1 |
+-| Wire `add_to_group / remove_from_group / delete_group` admin-principal-gated | admin-OR-`admins`-group-gated | §D.1 spec amendment |
++| Wire `add_to_group / remove_from_group` admin-principal-gated | admin-OR-`admins`-group-gated (dual-gate) | §D.1 spec amendment |
++| Wire `delete_group / register_group / register_worker / reissue_credential` admin-principal-gated | unchanged — stay admin-principal-only | §D.1 |
+ | `app.state.admin_store` used for `add_to_group` calls | `app.state.store` (session bearer) used; `admin_store` retained ONLY for `register_worker` / `reissue_credential` on sign-up | §D.4.2 wire-bearer shift |
+ | (new) Web-UI `require_admin(request, session)` helper | n/a | §D.4.1 route guard |
+ | (new) Profile-page "Groups" section | n/a | §D.4.3 |
+@@ -241,7 +242,7 @@
+ Per CLAUDE.md "No backwards-compatibility shims in greenfield / pre-external-user projects":
+ 
+ - **No deprecation shim for `web-ui-1 ∈ admins`.** The setup-experiment step is removed in the same PR; fresh experiments don't seed it; existing experiments running against the old shape continue to work (web-ui-1 in admins is harmless extra membership) but won't gain the new sign-up flow until they re-bootstrap.
+-- **No compat path for the old wire gating.** The §13.3 amendment is forward-compatible (it strictly widens the accepted caller set), so existing IUTs don't break; no shim needed.
++- **No compat path for the old wire gating.** The §13.3 amendment widens the accepted caller set for `add_to_group / remove_from_group` (existing admin-principal callers continue to work; the new admin-group-worker caller is now also accepted). The spec change is non-breaking for existing IUTs on the bootstrap path, but the new MUST in §13.3 (and the new conformance scenario in §D.8) makes any IUT that REJECTS an admin-group-worker caller non-conforming at v1+roles after this amendment lands. Per CLAUDE.md's pre-external-user posture: that scope change is acceptable; the reference impl is the only IUT today and it ships the dual-gate alongside the spec change in the same PR. Third-party IUTs (none yet) absorb the change at their next conformance pass.
+ - **No "transitional" hidden flag** to leave web-ui-1 in admins for a deprecation window. Either you've migrated to per-user sessions (Model B) or you haven't.
+ - **Operators of in-flight experiments** re-run `setup-experiment` against a fresh data root if they want the new shape (per [`docs/operations/experiment-data-durability.md`](../operations/experiment-data-durability.md)).
+ 
+@@ -251,7 +252,7 @@
+ 
+ **Spec (3 files):**
+ 
+-- [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) — extract `add_to_group / remove_from_group / delete_group` from admin-gated bullet; add "admin-OR-`admins`-group-gated" classification; amend wire-dispatcher prose.
++- [`spec/v0/07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) — extract `add_to_group / remove_from_group` from admin-gated bullet; add "admin-OR-`admins`-group-gated" classification; restate the classification framework (lift the group-gate-only-attaches-to-worker-gated restriction; introduce the "admin-OR-worker" principal class); amend wire-dispatcher prose. `delete_group` STAYS in the admin-gated bullet (no change).
+ - [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) — append sentence to §7.5 reserved-name table row for `admins`.
+ - [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md) — add scenario row under Workers-and-groups group.
+ 
+@@ -259,14 +260,16 @@
+ 
+ - [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) — drop the `web-ui-1 → admins` seeding (L763-783, step 6 portion); rebind `EDEN_ADMINS_INITIAL_MEMBER` to the operator name pulled from #140's bootstrap surface (final variable name TBD by #140's resolution); rewrite the comment block at L243-247.
+ 
+-**Web UI (5 files):**
++**Web UI (8 files):**
+ 
+ - [`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py) — add `require_admin(request, session)` helper.
+ - [`reference/services/web-ui/src/eden_web_ui/routes/admin_groups.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_groups.py) — route `add_to_group / remove_from_group` through session bearer instead of `admin_store`; add self-protection guard on `/admin/groups/admins/`; add `require_admin` call.
+ - [`reference/services/web-ui/src/eden_web_ui/routes/admin_workers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_workers.py) — add `require_admin` call (every admin route under `/admin/workers/*`).
++- [`reference/services/web-ui/src/eden_web_ui/routes/admin_artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_artifacts.py) — add `require_admin` call (every admin route under `/admin/artifacts/*`).
++- [`reference/services/web-ui/src/eden_web_ui/routes/admin_experiments.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_experiments.py) — add `require_admin` call (every admin route under `/admin/experiments/*`); this is the control-plane-admin surface and the guard applies on top of the existing `app.state.control_plane is not None` gating.
+ - [`reference/services/web-ui/src/eden_web_ui/routes/admin/*.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin/) — add `require_admin` call to every handler in `index.py`, `observability.py`, `actions.py`, `work_refs.py` (these are the chunk-12a-1b-split admin sub-package; each handler already calls `get_session`, gain a `require_admin` after).
+ - [`reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html`](../../reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html) — "Promote operator to admin" affordance; per-member revoke button; confirm modal; self-protection rail; non-admin nav-link hidden.
+-- [`reference/services/web-ui/src/eden_web_ui/templates/base.html`](../../reference/services/web-ui/src/eden_web_ui/templates/base.html) — hide the "Admin" nav entry when `session.worker_id ∉ admins`. The template already has `admin_enabled` from `app.state.admin_store is not None`; gain a parallel `is_admin_session` set per-request.
++- [`reference/services/web-ui/src/eden_web_ui/templates/base.html`](../../reference/services/web-ui/src/eden_web_ui/templates/base.html) — hide the "Admin" nav entry AND the "Experiments" nav entry (the control-plane cross-experiment dashboard link at L20-23) when `session.worker_id ∉ admins`. The template already has `admin_enabled` from `app.state.admin_store is not None` and `control_plane_enabled` from `app.state.control_plane is not None`; gain a parallel `is_admin_session` set per-request from `app.state.store.resolve_worker_in_group(session.worker_id, "admins")` and AND it with the existing flags for the nav-link rendering.
+ - (And the Profile-page template for the "Groups" section — owned by #140; #143 adds the admins-badge line.)
+ 
+ **CLI (1 file):**
+@@ -414,7 +417,7 @@
+ 
+ ### 10.7 Existing admin route handlers' `admin_store`-shape mutations
+ 
+-Today every `admin_*` route handler invokes `app.state.admin_store.<mutation>`. Under §D.4.2 the mutation calls shift to `app.state.store` (session bearer) for `add_to_group / remove_from_group / delete_group`. The shift is per-endpoint, not whole-handler — some routes call multiple wire endpoints, only the membership-mutation ones shift. Audit each handler in `admin_groups.py` to find the affected lines. For handlers that bundle a `register_group` + `add_to_group` (the group-create flow), the `register_group` stays on `admin_store` and the `add_to_group` shifts to `store`. Two distinct calls under the same handler, with two different bearers.
++Today every `admin_*` route handler invokes `app.state.admin_store.<mutation>`. Under §D.4.2 the mutation calls shift to `app.state.store` (session bearer) for `add_to_group / remove_from_group` ONLY. `delete_group / register_group / register_worker / reissue_credential` stay on `admin_store` (admin-principal-gated at the wire per §D.1; the web-ui's proxy bearer is the only available admin-principal credential in a session-only world). The shift is per-endpoint, not whole-handler — some routes call multiple wire endpoints, only the dual-gated membership-mutation ones shift. Audit each handler in `admin_groups.py` to find the affected lines. For handlers that bundle a `register_group` + `add_to_group` (the group-create flow), the `register_group` stays on `admin_store` and the `add_to_group` shifts to `store`. Two distinct calls under the same handler, with two different bearers.
+ 
+ ### 10.8 CLI's existing `eden-manual` worker identity
+ 
