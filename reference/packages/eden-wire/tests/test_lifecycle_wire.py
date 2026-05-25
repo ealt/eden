@@ -615,3 +615,87 @@ class TestIntendedExecutorWireFlow:
         out = resp.json()
         # The store applied the idea's intended_executor to task.target.
         assert out["target"] == {"kind": "worker", "id": "executor-a"}
+
+
+# ----------------------------------------------------------------------
+# Slug-uniqueness soft-check on create_idea (issue #121)
+# ----------------------------------------------------------------------
+
+
+class TestCreateIdeaSlugWarnings:
+    """create_idea returns an advisory `warnings` array (issue #121)
+    when the submitted slug collides with an existing idea in the same
+    experiment. Slug uniqueness is not a protocol invariant — both
+    submissions still succeed 200.
+    """
+
+    def _post_idea(
+        self, client: TestClient, worker_id: str, token: str, *, idea_id: str, slug: str
+    ) -> httpx.Response:
+        return client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}/ideas",
+            headers=_worker_headers(worker_id, token),
+            json={
+                "idea_id": idea_id,
+                "experiment_id": EXPERIMENT_ID,
+                "slug": slug,
+                "priority": 0.0,
+                "parent_commits": ["a" * 40],
+                "artifacts_uri": "s3://b/",
+                "state": "drafting",
+                "created_at": "2026-05-01T00:00:00Z",
+            },
+        )
+
+    def test_unique_slug_has_no_warnings(self, store: InMemoryStore) -> None:
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        token = _register_worker(client, "ideator-a")
+        resp = self._post_idea(
+            client, "ideator-a", token, idea_id="idea-1", slug="alpha"
+        )
+        assert resp.status_code == 200, resp.text
+        # No warnings key on the unique-slug submission.
+        assert "warnings" not in resp.json()
+
+    def test_duplicate_slug_returns_advisory_warning(
+        self, store: InMemoryStore
+    ) -> None:
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        token = _register_worker(client, "ideator-a")
+        first = self._post_idea(
+            client, "ideator-a", token, idea_id="idea-1", slug="alpha"
+        )
+        assert first.status_code == 200, first.text
+        assert "warnings" not in first.json()
+        second = self._post_idea(
+            client, "ideator-a", token, idea_id="idea-2", slug="alpha"
+        )
+        # Soft-check: second submission still succeeds.
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["idea_id"] == "idea-2"
+        assert "warnings" in body
+        joined = " ".join(body["warnings"])
+        assert "alpha" in joined
+        assert "idea-1" in joined
+
+    def test_warning_lists_all_prior_collisions(
+        self, store: InMemoryStore
+    ) -> None:
+        app = make_app(store, admin_token=ADMIN_TOKEN)
+        client = TestClient(app)
+        token = _register_worker(client, "ideator-a")
+        for n in (1, 2):
+            r = self._post_idea(
+                client, "ideator-a", token, idea_id=f"idea-{n}", slug="alpha"
+            )
+            assert r.status_code == 200, r.text
+        third = self._post_idea(
+            client, "ideator-a", token, idea_id="idea-3", slug="alpha"
+        )
+        assert third.status_code == 200
+        joined = " ".join(third.json()["warnings"])
+        assert "idea-1" in joined
+        assert "idea-2" in joined

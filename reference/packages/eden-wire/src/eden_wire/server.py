@@ -904,11 +904,16 @@ def make_app(
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
         store.create_idea(idea)
-        # §3: response body matches idea.schema.json; return the
-        # stored idea so the caller sees what landed.
-        return store.read_idea(idea.idea_id).model_dump(
+        # §3: response body is the idea per idea.schema.json with an
+        # OPTIONAL advisory `warnings` array (issue #121). Warnings are
+        # non-normative — clients MUST NOT rely on them for correctness.
+        body = store.read_idea(idea.idea_id).model_dump(
             mode="json", exclude_none=True
         )
+        warnings = _slug_conflict_warnings(store, idea)
+        if warnings:
+            body["warnings"] = warnings
+        return body
 
     @app.get(f"{base}/ideas")
     async def _list_ideas(
@@ -1869,6 +1874,27 @@ def _artifact_response_headers(path: str) -> dict[str, str]:
         "Content-Disposition": _build_content_disposition(raw_name),
         "X-Content-Type-Options": "nosniff",
     }
+
+
+def _slug_conflict_warnings(store: Store, idea: Idea) -> list[str]:
+    """Soft-check (issue #121): return advisory warnings for slug collisions.
+
+    Slug uniqueness is not a protocol invariant — idea identity is by
+    ``idea_id`` (spec/v0/02-data-model.md §5.1) and variant branches
+    embed the unique ``variant_id`` so collisions are harmless in
+    lineage. This helper surfaces collisions to operators at idea-
+    creation time so a duplicate slug isn't noticed only when browsing
+    ``/admin/ideas/``.
+    """
+    matches = [
+        other.idea_id
+        for other in store.list_ideas()
+        if other.slug == idea.slug and other.idea_id != idea.idea_id
+    ]
+    if not matches:
+        return []
+    quoted = ", ".join(f"{mid!r}" for mid in matches)
+    return [f"slug {idea.slug!r} is already used by idea(s) {quoted}"]
 
 
 def _submission_to_wire(submission: Submission) -> dict[str, Any]:

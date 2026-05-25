@@ -9,5 +9,13 @@
 {% for pid in idea_ids %}<li><code>{{ pid }}</code></li>{% endfor %}
 </ul>
 {% endif %}
+{% if slug_warnings %}
+<div class="slug-warnings" role="alert">
+  <p><strong>warnings:</strong></p>
+  <ul>
+  {% for w in slug_warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
 <p><a href="/ideator/">back to ideator</a></p>
 {% endblock %}

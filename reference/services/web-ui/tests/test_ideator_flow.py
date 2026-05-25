@@ -78,6 +78,71 @@ class TestHappyPath:
         assert store.list_ideas() == []
 
 
+class TestSlugSoftCheck:
+    """Issue #121: when an ideator submits an idea whose slug collides
+    with an existing idea in the experiment, the submitted page surfaces
+    an advisory warning. Submission still succeeds — slug uniqueness is
+    not a protocol invariant.
+    """
+
+    def _seed_ready_idea(self, store: InMemoryStore, *, idea_id: str, slug: str) -> None:
+        from eden_contracts import Idea
+        store.create_idea(
+            Idea.model_validate(
+                {
+                    "idea_id": idea_id,
+                    "experiment_id": EXPERIMENT_ID,
+                    "slug": slug,
+                    "priority": 0.0,
+                    "parent_commits": ["a" * 40],
+                    "artifacts_uri": "file:///tmp/seed.md",
+                    "state": "drafting",
+                    "created_at": "2026-05-01T00:00:00Z",
+                }
+            )
+        )
+        store.mark_idea_ready(idea_id)
+
+    def test_duplicate_slug_surfaces_warning_on_success_page(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        self._seed_ready_idea(store, idea_id="idea-prior", slug="dup-slug")
+        store.create_ideation_task("t-dup")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/ideator/t-dup/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        form = _draft_form("dup-slug") | {"csrf_token": token}
+        resp = signed_in_client.post("/ideator/t-dup/submit", data=form)
+        assert resp.status_code == 200
+        # Submission still succeeded.
+        assert store.read_task("t-dup").state == "submitted"
+        assert len(store.list_ideas(state="ready")) == 2
+        # Warning rendered on the success page.
+        body = resp.text
+        assert "warnings" in body.lower()
+        assert "dup-slug" in body
+        assert "idea-prior" in body
+
+    def test_unique_slug_does_not_render_warnings_block(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        store.create_ideation_task("t-uniq")
+        token = get_csrf(signed_in_client)
+        signed_in_client.post(
+            "/ideator/t-uniq/claim",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        form = _draft_form("unique-slug") | {"csrf_token": token}
+        resp = signed_in_client.post("/ideator/t-uniq/submit", data=form)
+        assert resp.status_code == 200
+        # No warnings block on the unique-slug submission.
+        assert 'class="slug-warnings"' not in resp.text
+
+
 class TestValidationRecovery:
     def test_invalid_form_re_renders_with_errors_and_input_preserved(
         self, signed_in_client: TestClient, store: InMemoryStore
