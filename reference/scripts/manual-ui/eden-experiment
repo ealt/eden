@@ -170,6 +170,15 @@ cmd_up() {
         [[ -d "$seed_from" ]] || die "--seed-from path is not a directory: $seed_from"
         setup_args+=(--seed-from "$seed_from")
     fi
+    # Manual-UI default is NON_WORKER_SERVICES only — the auto-host
+    # workers (ideator-1 / executor-1 / evaluator-1) won't come up,
+    # so skip pre-registering them in the worker registry (issue #142).
+    # When --with-workers is set, fall back to the default
+    # pre-registration so the wave-5 reassign-route unknown-target
+    # check has a populated registry to validate against.
+    if [[ -z "$with_workers" ]]; then
+        setup_args+=(--no-auto-host-workers)
+    fi
     echo "--- running setup-experiment ---" >&2
     bash "$SETUP_SCRIPT" "${setup_args[@]}"
 

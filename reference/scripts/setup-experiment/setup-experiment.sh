@@ -34,6 +34,7 @@ Usage:
                       [--ideas-per-ideation <N>]
                       [--exec-mode {host,docker}]
                       [--seed-from <host-dir>]
+                      [--no-auto-host-workers]
 
 Generates `reference/compose/.env` and copies <config.yaml> to
 `reference/compose/experiment-config.yaml`, then seeds the bare
@@ -83,6 +84,7 @@ ARG_IDEAS_PER_IDEATION=""
 ARG_EXEC_MODE="host"
 ARG_SEED_FROM=""
 ARG_DATA_ROOT=""
+ARG_NO_AUTO_HOST_WORKERS=""
 
 require_value() {
     # Validate that a flag's value is present, since `set -u` would
@@ -107,6 +109,7 @@ while [[ $# -gt 0 ]]; do
         --exec-mode)            require_value "$1" "$#"; ARG_EXEC_MODE="$2";         shift 2 ;;
         --seed-from)            require_value "$1" "$#"; ARG_SEED_FROM="$2";         shift 2 ;;
         --data-root)            require_value "$1" "$#"; ARG_DATA_ROOT="$2";         shift 2 ;;
+        --no-auto-host-workers) ARG_NO_AUTO_HOST_WORKERS="1";                        shift ;;
         -h|--help)              usage; exit 0 ;;
         --*)                    echo "unknown flag: $1" >&2; usage; exit 2 ;;
         *)
@@ -778,16 +781,29 @@ esac
 # The set of worker_ids is the reference deployment's known shape;
 # operators with different worker_id schemes register theirs the same
 # way (admin-gated POST /workers).
-for wid in ideator-1 executor-1 evaluator-1; do
-    rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
-        "{\"worker_id\":\"${wid}\"}")
-    case "$rc" in
-        200) ;;
-        *) echo "register_worker(${wid}) failed: http=$rc" >&2; exit 1 ;;
-    esac
-done
+#
+# --no-auto-host-workers skips this block for fully-manual experiments
+# that won't run the auto-host services (`compose up` without the
+# *_host services). Tradeoff: without pre-registration, an operator
+# who later reassigns a task to one of these auto-host worker_ids
+# *before* that host has self-registered will get the reassign route's
+# `error=unknown-target`; for fully-manual flows that's the right
+# failure mode (the host isn't coming).
+if [[ -z "$ARG_NO_AUTO_HOST_WORKERS" ]]; then
+    for wid in ideator-1 executor-1 evaluator-1; do
+        rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
+            "{\"worker_id\":\"${wid}\"}")
+        case "$rc" in
+            200) ;;
+            *) echo "register_worker(${wid}) failed: http=$rc" >&2; exit 1 ;;
+        esac
+    done
+    bootstrap_summary="worker hosts pre-registered"
+else
+    bootstrap_summary="auto-host workers NOT pre-registered (--no-auto-host-workers)"
+fi
 
-echo "--- bootstrap complete: admins + orchestrators groups; initial admin = ${EDEN_ADMINS_INITIAL_MEMBER}; web-ui admin = ${EDEN_WEB_UI_WORKER_ID}; worker hosts pre-registered ---" >&2
+echo "--- bootstrap complete: admins + orchestrators groups; initial admin = ${EDEN_ADMINS_INITIAL_MEMBER}; web-ui admin = ${EDEN_WEB_UI_WORKER_ID}; ${bootstrap_summary} ---" >&2
 
 # If the operator passed a custom --env-file path, echo a
 # next-step that uses an absolute path so they don't have to

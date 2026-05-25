@@ -115,6 +115,7 @@ Flags (all optional except the positional config):
 | `--ideas-per-ideation <N>` | `1` | How many ideas each subprocess-mode ideation task asks for. |
 | `--exec-mode host\|docker` | `host` | `docker` wraps each subprocess-mode `*_command` in a sibling container via DooD (host docker socket). |
 | `--seed-from <host-dir>` | empty seed | See above. |
+| `--no-auto-host-workers` | off (auto-hosts pre-registered) | Skip pre-registering the `ideator-1` / `executor-1` / `evaluator-1` worker IDs in the registry. Use when running a fully-manual experiment where the auto-host services won't come up — avoids phantom workers in `/admin/workers/`. Tradeoff: reassigning a task to one of those worker IDs returns `error=unknown-target` until the corresponding host self-registers (which never happens in fully-manual flows). The manual-UI wrapper (`eden-experiment up` without `--with-workers`) passes this automatically. |
 
 Re-running setup is **idempotent**: existing secrets (`EDEN_ADMIN_TOKEN`, `POSTGRES_PASSWORD`, `EDEN_SESSION_SECRET`, `FORGEJO_*`) are read back from `.env` and preserved. Run it again to pick up config edits.
 
