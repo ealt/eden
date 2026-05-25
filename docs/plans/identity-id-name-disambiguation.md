@@ -68,8 +68,8 @@ goes into §11 (risks) before execution starts.
    not a per-worker identity); no `worker_id` is allocated for it.
 6. **Name mutability is deferred.** Whether `name` can change after
    create is a design choice (probably yes for human-error recovery)
-   that this plan does NOT pin down. File a follow-up if needed; see
-   §8.
+   that this plan does NOT pin down. The deferred decision is tracked
+   in §11.2; no implementation work in this chunk depends on it.
 
 ## 3. Survey — every entity that today uses an id as a label
 
@@ -81,9 +81,16 @@ truth; spec sections in this table assume the v0 lineage.
 
 | Entity | Today's id | Today's operator view | Desired view |
 |---|---|---|---|
-| **Experiment** | `experiment_id` operator-typed at `setup-experiment --experiment-id`; primary key on `experiment` table ([`reference/packages/eden-storage/src/eden_storage/_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py)); embedded in every `/v0/experiments/{E}/...` path and `X-Eden-Experiment-Id` header. Default in fixtures: `manual-ui`. | Operator sees their typed string in URLs, web-UI titles, `.env` (`EDEN_EXPERIMENT_ID`), data-root path. | Opaque `exp_<ULID>` everywhere wire-shaped; operator-supplied `Experiment.name` rendered in titles, lists, and dashboards. Wire/path still uses opaque id. |
-| **Worker** | `worker_id` operator-typed at `register_worker`; grammar `^[a-z0-9][a-z0-9_-]{0,63}$` per [`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) §6.1; reserved `admin` / `system` / `internal` ([`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)). PK on `worker` table. Used as bearer principal per [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13. Reference deployment seeds: `operator`, `orchestrator`, `web-ui-1`, `ideator-host-1`, `executor-host-1`, `evaluator-host-1`. | Operator sees the chosen id in worker lists, registration responses, bearer tokens, every event payload (`task.claimed.data.worker_id`, etc.), every attribution field. | Opaque `wkr_<ULID>` in all wire/storage surfaces. `Worker.name` is the operator-supplied display label (e.g., `"Eric (laptop)"` or `"executor host 1"`). Pickers render `name (wkr_…)`. |
-| **Group** | `group_id` operator-typed at `register_group`; same grammar as worker; reserved `admins` / `orchestrators`. PK on `worker_group` table. Targeted by `Task.target.id` (when `kind=="group"`) and `Idea.intended_executor.id` / `Idea.intended_evaluator.id`. | Operator sees `admins`, `orchestrators`, and any operator-created group ids directly in admin UI, in task `target` fields, in idea routing hints. | Opaque `grp_<ULID>`. `Group.name` is the operator-supplied display label. Reserved groups (`admins`, `orchestrators`) auto-created at setup-experiment with system-minted opaque ids and `name == "admins"` / `name == "orchestrators"`. |
+| **Experiment** | `experiment_id` operator-typed at `setup-experiment --experiment-id`; primary key on the task-store `experiment` table ([`reference/packages/eden-storage/src/eden_storage/_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py)); also the key on the control-plane registry entry returned by `register_experiment` / `list_experiments` / `read_experiment_metadata` ([`spec/v0/11-control-plane.md`](../spec/v0/11-control-plane.md) §2.1-§2.2; [`reference/packages/eden-control-plane/src/eden_control_plane/models.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/models.py)). Embedded in every `/v0/experiments/{E}/...` task-store path and `/v0/control/experiments/{E}` control-plane path. Default in fixtures: `manual-ui`. | Operator sees their typed string in URLs, web-UI titles, control-plane experiment lists, `.env` (`EDEN_EXPERIMENT_ID`), and data-root path. | Opaque `exp_<ULID>` everywhere wire-shaped; operator-supplied `Experiment.name` rendered in titles, lists, and dashboards. Task-store and control-plane registry surfaces both carry the opaque id; the control-plane registry also carries the optional display name so cross-experiment views can render it without ad-hoc task-store reads. |
+| **Worker** | `worker_id` operator-typed at `register_worker`; grammar `^[a-z0-9][a-z0-9_-]{0,63}$` per [`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) §6.1; reserved `admin` / `system` / `internal` ([`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py)). PK on the per-experiment `worker` table, and separately on the deployment-scoped control-plane registry (`control_plane_workers`) for chapter-11 bootstrap + lease ownership ([`reference/packages/eden-control-plane/src/eden_control_plane/postgres.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/postgres.py)). Used as bearer principal per [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13. Reference deployment seeds: `operator`, `orchestrator`, `web-ui-1`, `ideator-host-1`, `executor-host-1`, `evaluator-host-1`, `auto-orchestrator-1`. | Operator sees the chosen id in worker lists, registration responses, bearer tokens, every event payload (`task.claimed.data.worker_id`, etc.), every attribution field, and the control-plane's deployment-scoped worker registry. | Opaque `wkr_<ULID>` in all wire/storage surfaces. `Worker.name` is the operator-supplied display label (e.g., `"Eric (laptop)"` or `"executor host 1"`). Pickers render `name (wkr_…)`. The deployment-scoped control-plane registry uses the same opaque-id/name split. |
+| **Group** | `group_id` operator-typed at `register_group`; same grammar as worker; reserved `admins` / `orchestrators`. PK on the per-experiment `worker_group` table and on the deployment-scoped control-plane group registry (`control_plane_groups`). Targeted by `Task.target.id` (when `kind=="group"`), `Idea.intended_executor.id` / `Idea.intended_evaluator.id`, and the control-plane lease authority gate on the deployment-scoped `orchestrators` group. | Operator sees `admins`, `orchestrators`, and any operator-created group ids directly in admin UI, control-plane admin views, task `target` fields, and idea routing hints. | Opaque `grp_<ULID>`. `Group.name` is the operator-supplied display label. Reserved groups (`admins`, `orchestrators`) auto-created at setup-experiment and in the control-plane bootstrap with system-minted opaque ids and `name == "admins"` / `name == "orchestrators"`. |
+
+The chapter-11 `RegisteredExperiment` projection is not a fourth rename
+target; it is the deployment-scoped projection of the same Experiment
+identity and therefore rides the Experiment row above. `ExperimentLease`
+likewise does not introduce a new human-named entity: its `holder`
+field is covered by the Worker row, and its `lease_id` /
+`holder_instance` are already opaque in §3.2.
 
 ### 3.2 Already-opaque ids (no change)
 
@@ -248,7 +255,7 @@ rejects ill-formed names with 422 `eden://error/invalid-name`.
 Names are **not** subject to the kebab-case / opaque-id grammar; they
 are free-form display strings.
 
-**Open question deferred to impl review:** Should names be unique within
+**Open question deferred to impl review (tracked in §11.1):** Should names be unique within
 an experiment for a given entity kind? The recommendation is **no** —
 the issue explicitly states "names MAY collide". Soft-checking at
 create-time (like slug [#121](https://github.com/ealt/eden/issues/121))
@@ -305,6 +312,7 @@ called out.
 | [`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) | §3 (tasks) | `target.id`: a worker_id or group_id. | `target.id`: an opaque `wkr_*` or `grp_*` id. `target.kind` disambiguates. |
 | [`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) | §5 (ideas) | `intended_executor.id` / `intended_evaluator.id`: worker_id or group_id. | Same shape, opaque ids. |
 | [`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) | §9 (variants) | `executed_by`, `evaluated_by`: worker_id. | Opaque `wkr_*` id. |
+| [`spec/v0/03-roles.md`](../spec/v0/03-roles.md) | §1-§4 (role inputs/outputs), §6.3, §6.5, §6.6 | Role contracts refer to operator-typed `worker_id`, reserved `admins` / `orchestrators` group literals, and `payload.experiment_id` / routing targets without the opaque-id split. | Update the role contracts and authority text in the same spec wave: claimant / attribution ids are opaque, `admins` / `orchestrators` are reserved names resolved to opaque group ids, and the chapter-11 lease holder continues to be an opaque worker id. |
 | [`spec/v0/04-task-protocol.md`](../spec/v0/04-task-protocol.md) | §3 (claim), §4 (submit) | `worker_id` parameter is the kebab-grammar id. | `worker_id` parameter is the opaque `wkr_*` id. State-machine semantics unchanged. |
 | [`spec/v0/04-task-protocol.md`](../spec/v0/04-task-protocol.md) | §6 (reassign), §7 (dispatch-mode) | `admins`-group membership check is by group id. | Check is against the deployment's reserved-name-`admins` group (whose system-minted opaque id is looked up at startup). |
 | [`spec/v0/05-event-protocol.md`](../spec/v0/05-event-protocol.md) | Event payloads | `worker_id` fields are kebab-grammar strings. | Opaque `wkr_*` ids. `experiment_id` in envelope is opaque `exp_*`. |
@@ -312,9 +320,11 @@ called out.
 | [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) | §6 (workers), §7 (groups) | Body: `{worker_id, labels?}` → `{worker_id, registration_token}`. | Body: `{name?, labels?}` → `{worker_id, name?, registration_token, …}`. Server mints `worker_id`. New `GET /workers?name=<n>` query (0..N matches). Symmetric for groups. |
 | [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) | §13 (auth) | Bearer principal = `admin` or `<worker_id>` (kebab grammar). | Bearer principal = `admin` (literal) or `<wkr_*>` (opaque). Format unchanged. |
 | [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) | §14 (checkpoint) | Checkpoint manifest carries `experiment_id`; import takes `as_experiment_id` optional override. | Same shape; manifest's `experiment_id` is opaque `exp_*`. On import without override, the receiving store generates a fresh `exp_*` (the export's id is preserved as `imported_from.source_experiment_id` for provenance, NOT reused as a primary key). This is a small but normative behavior change; call out in chapter 10. |
+| [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) | §15 (control-plane endpoints) | `POST /v0/control/experiments` and the deployment-scoped worker/group registry all take or return operator-typed ids, and experiment-registry payloads have no `name` field. | Control-plane experiment create/list/read shapes carry opaque `exp_*` ids plus optional `name`; deployment-scoped worker/group registry endpoints switch to server-minted opaque ids with optional names exactly like the per-experiment registry. |
 | [`spec/v0/09-conformance.md`](../spec/v0/09-conformance.md) | §4 (v1+roles scope), §5 (group index) | Scenarios reference operator-typed ids in prose where helpful. | Update prose; the IUT contract (§6) still presents opaque ids, so scenarios that today expect a particular `worker_id` string need rewriting to register-then-use-the-returned-id. |
 | [`spec/v0/10-checkpoints.md`](../spec/v0/10-checkpoints.md) | §7 (`checkpoint:sha256:` URIs), §10 (import provenance) | `Experiment.imported_from` carries `{checkpoint_exported_at, checkpoint_format_version}`. | Add `source_experiment_id: opaque-id?` field carrying the export-side `exp_*`. v0 lineage; pre-rename checkpoints are not importable (per §6). |
-| [`spec/v0/11-control-plane.md`](../spec/v0/11-control-plane.md) | §2 (experiment registry), §4 (leases) | `Experiment` registry projection keys on `experiment_id`. `Lease.holder` is a worker_id. | Same shape; opaque ids. |
+| [`spec/v0/08-storage.md`](../spec/v0/08-storage.md) | §8 (registry scope), §9.1-§9.4 (worker/group registry ops) | Store contract still names operator-supplied `worker_id` / `group_id`, idempotent re-register-on-same-id, and no name field. | Update the storage contract to the opaque-id/name split in the same spec wave: register ops mint ids, `read_*` / `list_*` return optional names, and the reserved-name / lookup-by-name behavior is pinned here alongside chapter 02. |
+| [`spec/v0/11-control-plane.md`](../spec/v0/11-control-plane.md) | §2.1-§2.3 (experiment registry), §4.2-§4.7 (leases), §6 (deployment-scoped registry) | Experiment-registry entries key on typed `experiment_id`; deployment-scoped workers/groups use typed ids; `Lease.holder` is a typed worker id; the registry entry has no display name. | Same shape, but ids are opaque. Add optional experiment / worker / group `name` fields to the deployment-scoped registry where the object is operator-facing; `Lease.holder` becomes opaque `wkr_*`; reserved groups move from id-space to name-space here too. |
 
 ### 5.2 JSON Schemas
 
@@ -328,6 +338,9 @@ called out.
 | [`spec/v0/schemas/variant.schema.json`](../spec/v0/schemas/variant.schema.json) | `executed_by` / `evaluated_by` use kebab grammar. | Use opaque `wkr_*` grammar. |
 | [`spec/v0/schemas/event.schema.json`](../spec/v0/schemas/event.schema.json) | Envelope `experiment_id`; payloads carry `worker_id` for attribution events. | Envelope `experiment_id` is `exp_*`; payload attribution fields use `wkr_*`. |
 | Wire request/response schemas under [`spec/v0/schemas/wire/`](../spec/v0/schemas/wire/) | Register-worker / register-group request bodies require operator-supplied `worker_id` / `group_id`. | Drop the required `worker_id` / `group_id` from create-request bodies; add optional `name`. Response carries the system-minted opaque id. |
+| [`spec/v0/schemas/checkpoint-manifest.schema.json`](../spec/v0/schemas/checkpoint-manifest.schema.json) | `experiment_id` is any non-empty string and import prose says the receiver reuses it unless overridden. | Tighten to the opaque `exp_*` grammar and add the provenance behavior from §5.1/§10 (`source_experiment_id` on the imported runtime object; receiver mints a fresh id when no override is supplied). |
+| [`spec/v0/schemas/lease.schema.json`](../spec/v0/schemas/lease.schema.json) | `experiment_id` is any non-empty string; `holder` matches the legacy worker-id grammar. | Tighten `experiment_id` to `exp_*` and `holder` to `wkr_*`. `lease_id` / `holder_instance` stay as-is. |
+| Control-plane wire / registry schemas | **Not yet authored.** Chapter 07 §15 and chapter 11 §2 / §6 currently rely on prose + JSON examples; there is no normative JSON Schema for `register_experiment`, `RegisteredExperiment`, or the deployment-scoped worker/group registry payloads. | Author these schemas in the rename wave (under `spec/v0/schemas/wire/`) so the control-plane rename participates in the same schema-parity discipline as the task-store wire. Without these files, the control-plane `experiment_id` / `worker_id` / `group_id` rename would be missing the schema leg of the four-way lock. |
 
 ### 5.3 Pydantic models (eden-contracts)
 
@@ -370,13 +383,20 @@ The `WorkerRegistration` / `GroupRegistration` response shapes gain the minted `
 
 `reissue_credential(worker_id)` is unchanged in shape — takes an opaque `wkr_*`. The bootstrap recovery flow in [`spec/v0/02-data-model.md`](../spec/v0/02-data-model.md) §6.3 / [`12a-1` plan](eden-phase-12a-1-worker-identity.md) §D.1 keeps the same `verify_worker_credential` / `reissue_credential` / first-run `register_worker` ladder; the only change is that first-run `register_worker` mints rather than takes an id.
 
-### 5.5 Wire surface (eden-wire)
+Deployment-scoped control-plane storage under [`reference/packages/eden-control-plane/src/eden_control_plane/`](../../reference/packages/eden-control-plane/src/eden_control_plane/):
 
-[`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py) endpoints:
+| Surface | Change |
+|---|---|
+| [`store.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/store.py) | `register_experiment` / `register_worker` / `register_group` signatures switch from caller-supplied ids to minted opaque ids + optional names. The registry entry and worker/group read/list methods return the new `name` fields. |
+| [`postgres.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/postgres.py) | `control_plane_experiments` gains `name TEXT`; `control_plane_workers` / `control_plane_groups` gain `name TEXT`; add name indexes for the `?name=` lookup paths. Lease rows keep the same shape but validate `experiment_id` / `holder` against the opaque grammars. |
+| [`memory.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/memory.py) | Mirror the same field additions and id-mint semantics as Postgres. |
+
+### 5.5 Wire surface (eden-wire + control plane)
+
+Task-store wire binding in [`reference/packages/eden-wire/src/eden_wire/`](../../reference/packages/eden-wire/src/eden_wire/):
 
 | Endpoint | Today | After |
 |---|---|---|
-| `POST /v0/experiments` | Body carries `experiment_id`. | Body carries `name?`, `config`, etc. Response carries minted `experiment_id`. (Issue body lists this as an existing endpoint; today the experiment is created via setup-experiment, NOT this wire op — chapter 11's control plane is where this lands. This plan defers the chapter 11 wire change to land alongside #128's spec amendment, but the control plane impl is on its own track.) |
 | `POST /v0/experiments/{E}/workers` | Body: `{worker_id, labels?}` required. | Body: `{name?, labels?}`. Response: `{worker_id, name?, registration_token, ...}`. |
 | `GET /v0/experiments/{E}/workers` | Returns all workers sorted by `worker_id`. | Same shape; add `?name=<n>` query (case-sensitive, exact match) returning 0..N matches. |
 | `GET /v0/experiments/{E}/workers/{W}` | Path-param is the kebab id. | Path-param is the opaque `wkr_*`. |
@@ -389,6 +409,25 @@ The `WorkerRegistration` / `GroupRegistration` response shapes gain the minted `
 | `POST /v0/experiments/{E}/tasks/{T}/claim` / `submit` | Bearer principal is kebab worker_id. | Bearer principal is opaque `wkr_*` or literal `"admin"`. |
 
 **Bearer parser** ([`reference/packages/eden-wire/src/eden_wire/auth.py`](../../reference/packages/eden-wire/src/eden_wire/auth.py)): the principal grammar check becomes "either the literal `admin` or matches the opaque `wkr_*` grammar". No format-shape change (`<principal>:<secret>`); the only difference is the regex.
+
+Companion wire-model / client / test surfaces that must move with the endpoint handlers:
+
++ [`reference/packages/eden-wire/src/eden_wire/models.py`](../../reference/packages/eden-wire/src/eden_wire/models.py) — request/response Pydantic types for register-worker / worker-registration / whoami / register-group / add-group-member and any checkpoint or auth-shaped response that carries the renamed fields.
++ [`reference/packages/eden-wire/src/eden_wire/client.py`](../../reference/packages/eden-wire/src/eden_wire/client.py) — `register_worker`, `register_group`, `read_*`, `list_*`, `verify_worker_credential`, `whoami`, checkpoint import/export, and any helper that hardcodes the old request bodies or grammar checks.
++ [`reference/packages/eden-wire/tests/test_wire_schema_parity.py`](../../reference/packages/eden-wire/tests/test_wire_schema_parity.py) — wire schema ↔ Pydantic parity for the rename-affected request/response models.
++ Endpoint-behavior tests under [`reference/packages/eden-wire/tests/`](../../reference/packages/eden-wire/tests/) — at minimum `test_workers_wire.py`, `test_groups_wire.py`, `test_auth.py`, `test_checkpoint_wire.py`, and `test_wire_roundtrip.py`.
+
+Control-plane wire binding in [`reference/packages/eden-control-plane/src/eden_control_plane/`](../../reference/packages/eden-control-plane/src/eden_control_plane/) plus [`reference/services/control-plane/src/eden_control_plane_server/`](../../reference/services/control-plane/src/eden_control_plane_server/):
+
+| Surface | Change |
+|---|---|
+| `POST /v0/control/experiments` / `GET /v0/control/experiments` / `GET /v0/control/experiments/{E}` | Experiment-registry create/list/read shift to opaque `exp_*` ids and carry optional `name`. Add `?name=<n>` lookup on the list route so cross-experiment admin views can resolve the display name without bespoke task-store calls. |
+| `/v0/control/workers*` / `/v0/control/groups*` | Deployment-scoped registry mirrors the per-experiment rename: create bodies take `name?`, server mints opaque ids, reads/lists return optional names, and reserved groups move to name-space. |
+| [`models.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/models.py) | Add the `name` field to `RegisteredExperiment`, `Worker`, and `Group` payloads where operator-facing. Tighten `experiment_id` / `holder` to opaque grammars. |
+| [`client.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/client.py) | Update control-plane request bodies, response parsing, and any helper that still assumes caller-supplied ids. |
+| [`app.py`](../../reference/services/control-plane/src/eden_control_plane_server/app.py), [`auth.py`](../../reference/services/control-plane/src/eden_control_plane_server/auth.py), [`cli.py`](../../reference/services/control-plane/src/eden_control_plane_server/cli.py) | Server request validation, bearer grammar, list filters, and operator-facing CLI / log text must reflect the opaque-id/name split. |
+| [`reference/services/orchestrator/src/eden_orchestrator/control_plane_bootstrap.py`](../../reference/services/orchestrator/src/eden_orchestrator/control_plane_bootstrap.py) | Deployment-scoped worker bootstrap and `orchestrators`-group membership must switch from caller-picked ids to name-supplied / id-returned create semantics while preserving the persisted-id credential path. |
+| Tests under [`reference/packages/eden-control-plane/tests/`](../../reference/packages/eden-control-plane/tests/) and [`reference/services/control-plane/tests/`](../../reference/services/control-plane/tests/) | Update Pydantic, client, store, and server tests for the renamed fields and the new `name` field on experiment-registry payloads. |
 
 ### 5.6 Web UI
 
@@ -411,7 +450,8 @@ Route handlers under [`admin_workers.py`](../../reference/services/web-ui/src/ed
 |---|---|
 | [`reference/scripts/manual-ui/`](../../reference/scripts/manual-ui/) wrapper scripts | Subcommands that take `--worker-id <id>` continue to do so (the operator can still type the opaque id if they want), but operator-facing helpers like `eden register-worker` accept `--name <name>` and emit the minted opaque id back. |
 | [`.claude/skills/eden-manual-ideator/SKILL.md`](../../.claude/skills/eden-manual-ideator/SKILL.md), `-executor`, `-evaluator`, `-experiment` | Update examples: register-then-use the returned `worker_id`, rather than hardcoding `executor-host-1` etc. The skills' Claude-driving prompts already do most ops by reading from `.eden/credentials/`; the change is to display names alongside ids when listing. |
-| Convenience subcommands `list-workers` / `list-groups` (downstream; [#128](https://github.com/ealt/eden/issues/128) issue body §"Downstream consumers") | Not in this plan; file follow-up after the rename lands. |
+| Service CLIs under [`reference/services/`](../../reference/services/) and shared flag helpers in [`reference/services/_common/src/eden_service_common/cli.py`](../../reference/services/_common/src/eden_service_common/cli.py) | `--worker-id` / `--experiment-id` flags keep their names, but every help string, bootstrap path, and env-var description must state that these are minted opaque ids. The rename also affects the control-plane bootstrap flags on the orchestrator and web UI (`--control-plane-url`, `--control-plane-admin-token`) because those flows hit the deployment-scoped registry. |
+| Convenience subcommands `list-workers` / `list-groups` (downstream; [#128](https://github.com/ealt/eden/issues/128) issue body §"Downstream consumers") | Not in this plan; tracked in §11.6 after the rename lands. |
 
 ### 5.8 Setup-experiment + compose env
 
@@ -420,7 +460,7 @@ Route handlers under [`admin_workers.py`](../../reference/services/web-ui/src/ed
 | [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) | Mints opaque `exp_*` / `wkr_*` / `grp_*` ids. Writes them to `.env` alongside the deployment admin token. Names are operator-supplied via flags (`--name`, `--worker-name <role> <name>`, etc.) or defaulted to the role label for auto-host workers. |
 | `.env.example` | `EDEN_EXPERIMENT_ID` becomes `exp_*` opaque. `EDEN_ORCHESTRATOR_WORKER_ID` / `EDEN_ADMINS_INITIAL_MEMBER` / `EDEN_WEB_UI_WORKER_ID` become opaque `wkr_*` ids written by setup-experiment (NOT hand-edited; the file becomes a generated-and-checked-in artifact rather than a hand-curated template). |
 | `EDEN_EXPERIMENT_DATA_ROOT/<experiment_id>/` path layout | Path segment is the opaque `exp_*` id. Per [#178](https://github.com/ealt/eden/issues/178)'s substrate-migration audit discipline, the rename PR audits every reference to the old typed-id path. |
-| Forgejo repo path (`eden/{EDEN_EXPERIMENT_ID}.git`) | Path is the opaque id. Operator-typed mnemonic disappears from URLs; this is a real operator-UX cost (people who liked typing `manual-ui` in URLs lose that). The plan accepts it; the user-guide §6 mitigates by documenting the `name`-based lookup `GET /v0/experiments?name=`. |
+| Forgejo repo path (`eden/{EDEN_EXPERIMENT_ID}.git`) | Path is the opaque id. Operator-typed mnemonic disappears from URLs; this is a real operator-UX cost (people who liked typing `manual-ui` in URLs lose that). The plan accepts it; the user-guide §6 mitigates by documenting the `name`-based lookup on the control-plane registry (`GET /v0/control/experiments?name=`) and any UI redirect that resolves name → canonical opaque-id URL. |
 | `/var/lib/eden/credentials/<worker_id>.token` | Filename is the opaque id; no change in shape. |
 
 ### 5.9 Observability + docs
@@ -433,7 +473,8 @@ Route handlers under [`admin_workers.py`](../../reference/services/web-ui/src/ed
 | [`docs/operations/agent-readonly-db.md`](../operations/agent-readonly-db.md) | Document `worker.name` column; `worker.worker_id` is now opaque. |
 | [`docs/observability.md`](../observability.md) §2.1 (admin routes table) | Mention name-vs-id display conventions per §4.5. |
 | [`docs/prds/eden-experiment-platform.md`](../prds/eden-experiment-platform.md) §3 (controller responsibilities) | Resolve the open question on operator-supplied vs system-minted experiment ids: system-minted is now load-bearing per §3 here. |
-| Operations docs referencing reserved-id literals | Replace `admins` / `orchestrators` / `admin` references with the new shape: reserved names; the deployment-admin bearer principal stays `admin`. |
+| Operations docs referencing reserved-id literals | Replace `admins` / `orchestrators` / `admin` references with the new shape: reserved names; the deployment-admin bearer principal stays `admin`. This includes `docs/operations/dispatch-mode.md`, `multi-orchestrator.md`, `reassign.md`, and any playbook that still shows typed worker ids in curl examples. |
+| Active planning / design docs and roadmap cross-references | Audit `docs/roadmap.md`, active `docs/plans/`, and `docs/design/` pages that still embed `register_worker(worker_id=...)`, literal `admins` / `orchestrators` ids, or mnemonic experiment ids in examples. Historical `docs/archive/` pages stay historical, but any current doc that links to them must make it explicit when the linked artifact is pre-rename. |
 
 ### 5.10 Conformance suite
 
@@ -441,12 +482,12 @@ Route handlers under [`admin_workers.py`](../../reference/services/web-ui/src/ed
 
 | Pattern | Change |
 |---|---|
-| Hardcoded `worker_id` strings (e.g., `"executor-host-1"`) | Replace with `worker_id = await harness.register_worker(name="executor-host-1")` — register-then-use. |
-| Hardcoded `group_id` strings (`"admins"`, `"orchestrators"`) | Resolve at fixture-setup time via `?name=` lookup; the test asserts existence + canonical name, not a literal id. |
+| Hardcoded `worker_id` strings (e.g., `"executor-host-1"`) | Replace with `worker_id = await harness.register_worker(name="executor-host-1")` — register-then-use. This applies both to the task-store scenarios and to the control-plane `test_deployment_scoped_registry.py` / lease / multi-experiment scenarios that currently seed typed deployment-scoped ids. |
+| Hardcoded `group_id` strings (`"admins"`, `"orchestrators"`) | Resolve at fixture-setup time via `?name=` lookup; the test asserts existence + canonical name, not a literal id. This applies to both the per-experiment and deployment-scoped registry harnesses. |
 | Reserved-value rejection tests | Update to expect rejection in name-space (`register_worker(name="admin")` → 422) rather than id-space. |
 | Bearer-format assertion tests | Update grammar expectations: principal matches `wkr_*` or literal `"admin"`. |
 | Conformance-citation tool ([`conformance/src/conformance/tools/check_citations.py`](../../conformance/src/conformance/tools/check_citations.py)) | No tool change; the §-citations in the test docstrings stay valid (chapter 02 §6 / §7 still exist post-rename — just with updated grammar). Verify after spec amendment that every cited section's MUST tokens survive. |
-| Adapter implementations ([`conformance/src/conformance/adapters/`](../../conformance/src/conformance/adapters/)) | The reference adapter rides the wire rename; non-reference IUTs need to ship their own opaque-id minter on their side of the IUT contract. |
+| Harness / adapter implementations ([`conformance/src/conformance/harness/`](../../conformance/src/conformance/harness/), [`conformance/src/conformance/adapters/`](../../conformance/src/conformance/adapters/)) | The reference task-store adapter, the control-plane harness client, and any helper that still posts `{worker_id, group_id}` bodies all ride the rename. Non-reference IUTs need to ship their own opaque-id minter on their side of the IUT contract. |
 
 ## 6. Backwards-compatibility posture
 
@@ -464,10 +505,14 @@ The "first external user" threshold has not been crossed, so the operator pain o
 
 ## 7. Chunked execution plan
 
-Five waves. Each wave is its own PR, gated by validation that the
-chunk passes locally before push (the literal commands in [`AGENTS.md`](../../AGENTS.md)
-"Commands" table, per the CLAUDE.md "Commands are the literal pre-push
-validation gate" pitfall).
+Five execution waves, but **one atomic rename PR**. The waves below are
+review slices / commit boundaries inside that PR, not independently
+merged PRs. That posture is load-bearing for rename discipline: the repo
+must not sit on `main` in a multi-PR partial-rename state where spec,
+schemas, wire, storage, control-plane, UI, and conformance disagree for
+days. Every wave is still locally validated before push (the literal
+commands in [`AGENTS.md`](../../AGENTS.md) "Commands" table, per the
+CLAUDE.md "Commands are the literal pre-push validation gate" pitfall).
 
 ### Wave 1 — Spec amendments + grammar definition
 
@@ -488,25 +533,32 @@ PR shape: design-doc-shaped; no impl changes.
 + `python3 scripts/spec-xref-check.py` — every `§N.M` cross-reference still resolves.
 + Grep `^[a-z0-9]\[a-z0-9_-\]{0,63}` — the old kebab grammar appears nowhere outside `docs/archive/` and existing `docs/plans/` (archived plans don't ride the rename).
 
-**Cascade:** Wave 1 alone moves no impl; the spec is the source of truth. Conforming impls catch up in the following waves. After Wave 1 merges, downstream issues are unblocked at the spec level (the wire shapes they reference are pinned).
+**Cascade:** Wave 1 alone does NOT unblock downstream identity work. The
+cluster-identity dependents stay blocked until the full atomic rename PR
+(through Wave 5) merges; no downstream issue should plan or land against
+the half-renamed intermediate branch state.
 
 ### Wave 2 — JSON Schemas + Pydantic + storage backends in lockstep
 
 PR shape: code-heavy; schema-parity tests are the validation backstop.
 
-+ Update [`spec/v0/schemas/*.schema.json`](../spec/v0/schemas/) per §5.2.
++ Update [`spec/v0/schemas/*.schema.json`](../spec/v0/schemas/) per §5.2, including `checkpoint-manifest.schema.json`, `lease.schema.json`, and the not-yet-authored control-plane wire / registry schemas needed to close the schema-parity loop.
 + Update [`reference/packages/eden-contracts/src/eden_contracts/_common.py`](../../reference/packages/eden-contracts/src/eden_contracts/_common.py) per §5.3 (new opaque-id type aliases; new `DisplayName` type).
 + Update all `eden-contracts` models per §5.3.
 + Update [`eden-storage/_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py) + `_postgres_schema.py` per §5.4 — add `name` column to `experiment`, `worker`, `worker_group` tables; new indexes.
 + Update [`eden-storage/protocol.py`](../../reference/packages/eden-storage/src/eden_storage/protocol.py) signatures: `register_worker(name?, labels?) → WorkerRegistration` (minted id), `register_group(name?, members?) → GroupRegistration` (minted id). Implement opaque-id minting (ULID).
 + Reserved-name enforcement in storage: raise `ReservedIdentifier` for `register_worker(name in {"admin", "system", "internal"})` and `register_group(name in {"admins", "orchestrators"})` after setup-experiment's initial mint.
++ Update [`reference/packages/eden-wire/src/eden_wire/models.py`](../../reference/packages/eden-wire/src/eden_wire/models.py) and the control-plane Pydantic layer in [`reference/packages/eden-control-plane/src/eden_control_plane/models.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/models.py) so every schema-touched rename field has its model-side pair in the same wave.
++ Update [`reference/packages/eden-control-plane/src/eden_control_plane/{store.py,memory.py,postgres.py}`](../../reference/packages/eden-control-plane/src/eden_control_plane/store.py) per §5.4 — deployment-scoped registry/lease backends add `name` columns/fields and opaque-id minting where required.
 
 **Validation gates:**
 
 + `uv run pytest reference/packages/eden-contracts/tests/test_schema_parity.py` — schema ↔ model parity passes.
++ `uv run pytest reference/packages/eden-wire/tests/test_wire_schema_parity.py` — wire schema ↔ model parity passes.
 + `uv run pytest -q` — full reference suite passes (this is the big one; many tests reference the kebab grammar).
 + `pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json` — schemas valid.
 + `python3 scripts/check-rename-discipline.py` — passes (the rename-discipline script catches the specific legacy patterns; this wave will extend its allowlist or its baseline as the kebab grammar is retired).
++ `uv run pytest -q reference/packages/eden-control-plane/tests/test_models.py` — control-plane Pydantic / round-trip guards pass until the new schemas also gain parity tests.
 
 **Cascade:** Wave 2 lands the data-shape change. After this merges, the wire surface (Wave 3) can build on the in-place storage shape.
 
@@ -514,15 +566,17 @@ PR shape: code-heavy; schema-parity tests are the validation backstop.
 
 PR shape: medium-heavy; wires the new id-mint flow end-to-end.
 
-+ Update [`eden-wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py): create endpoints drop the required `worker_id` / `group_id`; add `?name=` query support; return minted ids.
++ Update [`eden-wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py) and [`eden-wire/client.py`](../../reference/packages/eden-wire/src/eden_wire/client.py): create endpoints drop the required `worker_id` / `group_id`; add `?name=` query support; return minted ids; client helpers ride the new request/response bodies.
 + Update [`eden-wire/auth.py`](../../reference/packages/eden-wire/src/eden_wire/auth.py): bearer principal grammar checks accept the literal `"admin"` or `wkr_*` opaque.
++ Update the control-plane wire stack — [`reference/packages/eden-control-plane/src/eden_control_plane/client.py`](../../reference/packages/eden-control-plane/src/eden_control_plane/client.py), [`reference/services/control-plane/src/eden_control_plane_server/{app.py,auth.py,cli.py}`](../../reference/services/control-plane/src/eden_control_plane_server/app.py), and [`reference/services/orchestrator/src/eden_orchestrator/control_plane_bootstrap.py`](../../reference/services/orchestrator/src/eden_orchestrator/control_plane_bootstrap.py) — to match the chapter-11 rename surfaces and the new control-plane experiment `name` field.
 + Update [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh): mint `exp_*` for the experiment, `wkr_*` for `operator` / `orchestrator` / `web-ui-1` / `ideator-host-1` / `executor-host-1` / `evaluator-host-1`, `grp_*` for `admins` / `orchestrators` (with names equal to the reserved literals). Write all minted ids to `.env`.
 + Update [`reference/compose/.env.example`](../../reference/compose/.env.example): the file now describes what setup-experiment will write rather than serving as a hand-edit template. Document the rename in a comment block at the top.
-+ Update worker-host bootstrap services to consume the opaque `EDEN_*_WORKER_ID` env vars unchanged in shape (the change is that the values are now opaque).
++ Update worker-host bootstrap services and CLIs to consume the opaque `EDEN_*_WORKER_ID` env vars unchanged in shape (the change is that the values are now opaque), including the control-plane bootstrap path.
 
 **Validation gates:**
 
 + `uv run pytest -q` — full reference suite passes.
++ `uv run pytest -q reference/packages/eden-wire/tests reference/packages/eden-control-plane/tests reference/services/control-plane/tests` — task-store wire and control-plane wire/tests pass under the renamed shapes.
 + `bash reference/compose/healthcheck/smoke.sh` — Compose smoke passes (post-rename Forgejo repo path, post-rename worker registrations).
 + `bash reference/compose/healthcheck/smoke-checkpoint.sh` — checkpoint round-trip works under the new manifest shape; `imported_from.source_experiment_id` is stamped.
 + `bash reference/compose/healthcheck/e2e.sh` — end-to-end Web-UI walkthrough.
@@ -543,14 +597,16 @@ PR shape: UI / docs-heavy.
 + `bash reference/compose/healthcheck/e2e.sh` — UI walkthrough end-to-end.
 + Visual smoke: open the admin worker list locally, verify name-id rendering.
 
-**Cascade:** Wave 4 lands the operator-facing UX. Cluster-`identity` follow-ups (#140, #143, #144) can now reference `worker_name` in their plans without ambiguity.
+**Cascade:** Wave 4 lands the operator-facing UX inside the rename PR
+branch. Downstream issues still stay blocked until Wave 5 closes
+conformance and the full atomic rename PR merges.
 
 ### Wave 5 — Conformance scenarios + adapter
 
 PR shape: tests-heavy.
 
-+ Update [`conformance/scenarios/`](../../conformance/scenarios/) per §5.10. Replace hardcoded ids with register-then-use; update reserved-value rejection assertions.
-+ Update [`conformance/src/conformance/adapters/reference/adapter.py`](../../conformance/src/conformance/adapters/reference/adapter.py) to ride the wire rename.
++ Update [`conformance/scenarios/`](../../conformance/scenarios/) per §5.10. Replace hardcoded ids with register-then-use; update reserved-value rejection assertions; include the control-plane v1+multi-experiment scenarios (`test_experiment_registry.py`, `test_deployment_scoped_registry.py`, lease / multi-experiment scenarios) because they also assert renamed wire-visible ids.
++ Update [`conformance/src/conformance/adapters/reference/adapter.py`](../../conformance/src/conformance/adapters/reference/adapter.py) and [`conformance/src/conformance/harness/control_plane_client.py`](../../conformance/src/conformance/harness/control_plane_client.py) to ride the task-store and control-plane wire renames.
 + Update [`conformance/src/conformance/tools/check_citations.py`](../../conformance/src/conformance/tools/check_citations.py) — only if the spec amendment moved a §-citation (unlikely; the rename preserves section structure).
 
 **Validation gates:**
@@ -558,13 +614,24 @@ PR shape: tests-heavy.
 + `uv run pytest -q conformance/` — full suite passes against the reference impl.
 + `uv run python conformance/src/conformance/tools/check_citations.py` — every scenario cites a real spec section.
 
-**Cascade:** Wave 5 closes the rename. After merge, the cluster-identity-foundation milestone is complete; chunks #140 / #141 / #143 / #144 can plan against the post-rename shape.
+**Cascade:** Wave 5 closes the rename. Only after the full atomic rename
+PR merges is the cluster-identity-foundation milestone complete; chunks
+#140 / #141 / #143 / #144 then plan against the post-rename shape with
+no mixed-name intermediate state left on `main`.
 
 ### Wave ordering rationale
 
-Waves 1-2 are tightly coupled (spec + schemas + Pydantic are the schema-parity-test-gated invariant); Wave 3 builds on the storage shape; Wave 4 + Wave 5 can land in either order after Wave 3, with the recommendation that Wave 4 lands first so the conformance updates in Wave 5 ride the validated wire shape.
+Waves 1-2 are tightly coupled (spec + schemas + Pydantic are the
+schema-parity-test-gated invariant); Wave 3 builds on the storage
+shape; Wave 4 + Wave 5 can be reviewed in either order after Wave 3,
+with the recommendation that Wave 4 lands first inside the branch so
+the conformance updates in Wave 5 ride the validated wire shape.
 
-Each wave is its own PR. A single mega-PR is rejected for blast-radius reasons (any one wave's failures rolling back the whole rename). A bigger split (e.g., one wave per spec chapter) is rejected as friction without value — the chunks are coupled enough that a finer split forces dependencies on still-unmerged work.
+The coupling is exactly why the merge unit is one PR, not five. A finer
+split forces downstream work to depend on still-unmerged rename
+surfaces; a coarser split at the review level makes the PR too hard to
+reason about. The wave structure is the compromise: one atomic merge
+unit, five internally reviewable slices.
 
 ## 8. Cascade dependents
 
@@ -573,17 +640,17 @@ Per the issue body's "Downstream consumers" section and cluster
 
 | Issue | Unblocked after | What it builds on this plan |
 |---|---|---|
-| [#140](https://github.com/ealt/eden/issues/140) — Operator identity as a registered worker (Model B) | **Wave 4** | The web UI / eden-manual sign-in flow needs a `worker_name` field distinct from `worker_id`; the operator types their preferred display name, the system mints their opaque id. |
-| [#141](https://github.com/ealt/eden/issues/141) — Worker registry as deployment-level infrastructure | **Wave 3** | Deployment-scoped registry needs opaque worker ids so that one human's `worker_id` doesn't depend on which experiment they registered against. The rename makes the deployment-scoped move clean. |
-| [#143](https://github.com/ealt/eden/issues/143) — Web UI sign-ups non-admin by default | **Wave 4** (sequenced after #140) | The `admins` group's reserved name + opaque id is the basis for the admin-promotion flow (operator promotes another operator by adding their `wkr_*` to the `admins` `grp_*`). |
-| [#144](https://github.com/ealt/eden/issues/144) — `/admin/*` route admins-group enforcement | **Wave 4** | The route guard checks membership in the reserved-name `admins` group (resolved at startup to the opaque `grp_*`); the rename is what makes the reserved-name lookup canonical. |
+| [#140](https://github.com/ealt/eden/issues/140) — Operator identity as a registered worker (Model B) | **After the atomic rename PR (Waves 1-5)** | The web UI / eden-manual sign-in flow needs a `worker_name` field distinct from `worker_id`; the operator types their preferred display name, the system mints their opaque id. |
+| [#141](https://github.com/ealt/eden/issues/141) — Worker registry as deployment-level infrastructure | **After the atomic rename PR (Waves 1-5)** | Deployment-scoped registry needs opaque worker ids so that one human's `worker_id` doesn't depend on which experiment they registered against. The rename makes the deployment-scoped move clean. |
+| [#143](https://github.com/ealt/eden/issues/143) — Web UI sign-ups non-admin by default | **After the atomic rename PR (Waves 1-5)**, sequenced after [#140](https://github.com/ealt/eden/issues/140) | The `admins` group's reserved name + opaque id is the basis for the admin-integration flow (operator integrates another operator by adding their `wkr_*` to the `admins` `grp_*`). |
+| [#144](https://github.com/ealt/eden/issues/144) — `/admin/*` route admins-group enforcement | **After the atomic rename PR (Waves 1-5)** | The route guard checks membership in the reserved-name `admins` group (resolved at startup to the opaque `grp_*`); the rename is what makes the reserved-name lookup canonical. |
 
 Downstream consumers that the issue body flags but that fall **outside cluster `identity`**:
 
-+ Executor / group **picker UI** in ideator draft + admin `create-execution-task` + admin `reassign`. Unblocked by Wave 4; file as a follow-up issue once the rename lands.
-+ `list-workers` / `list-groups` **eden-manual subcommands** for terminal operators. Unblocked by Wave 3; file as a follow-up.
++ Executor / group **picker UI** in ideator draft + admin `create-execution-task` + admin `reassign`. Unblocked by the merged rename PR; tracked in §11.6 as a downstream follow-up.
++ `list-workers` / `list-groups` **eden-manual subcommands** for terminal operators. Unblocked by the merged rename PR; tracked in §11.6 as a downstream follow-up.
 + Experiment-name display in `/admin/experiments/`. Already covered by Wave 4.
-+ Renaming after create. Open design choice (yes/no); file as small follow-up if a real need emerges.
++ Renaming after create. Open design choice (yes/no); tracked in §11.2 if a real need emerges.
 
 ## 9. Conformance impact summary
 
@@ -597,7 +664,7 @@ assertions in [`conformance/scenarios/`](../../conformance/scenarios/) that need
 | `spec/v0/02-data-model.md §7.3` (reserved groups) | `register_group(group_id="admins")` rejected. | `register_group(name="admins")` rejected after setup-experiment's initial mint (collision-with-reserved). |
 | `spec/v0/04-task-protocol.md §3.5` (target enforcement) | Target id is operator-typed; check matches `claim.worker_id` against `target.id` literally. | Target id is opaque; check is unchanged in shape, the strings are now opaque. |
 | `spec/v0/07-wire-protocol.md §13` (auth principal grammar) | Principal matches kebab grammar OR literal `"admin"`. | Principal matches `wkr_*` opaque grammar OR literal `"admin"`. |
-| `spec/v0/10-checkpoints.md §10` (import provenance) | `imported_from` carries `{checkpoint_exported_at, checkpoint_format_version}`. | Add `source_experiment_id: opaque-id?`. New scenario: import without `as_experiment_id` mints a fresh `exp_*` and stamps the source for provenance. |
+| `spec/v0/10-checkpoints.md §10` (import provenance) | `imported_from` carries `{checkpoint_exported_at, checkpoint_format_version}`. | Add `source_experiment_id: opaque-id?`. New scenario: import without `as_experiment_id` mints a fresh `exp_*` and stamps the source for provenance; this is wire-observable via the import response and `read_experiment`, so it stays inside chapter 09 §6 scope. |
 
 Conformance scenarios live in chapter 9 §5 groups; the rename keeps
 groups intact. The CI citation-checker
@@ -616,23 +683,28 @@ identifier MUST is canonically restated only in chapter 02; chapter 07
 | **Migration mistakes — schema-parity gap.** A field gets the rename on one side (e.g., Pydantic) but not the other (JSON Schema), and the gap goes undetected. | The schema-parity test in [`eden-contracts/tests/test_schema_parity.py`](../../reference/packages/eden-contracts/tests/test_schema_parity.py) is the backstop. New tests under `tests/cases.py` add an opaque-id accept case and a kebab-id reject case for every renamed field. The CI parity job catches drift; the AGENTS.md "Adding or extending a JSON Schema + Pydantic binding" discipline is re-read during Wave 2. |
 | **Wave-2 storage migration mistakes** — column adds but indexes forgotten; the `?name=` query becomes O(N) under load. | Wave 2 explicitly enumerates the index changes; reviewers check the DDL changes match the index list in §5.4. The smoke scripts exercise the registry endpoints, but they don't load-test — the v0 indexes are precautionary for the post-rename steady state. |
 | **Operator UX regression** — `EDEN_EXPERIMENT_ID` was a mnemonic operators could remember; opaque ids in path segments aren't memorable. | User-guide §6 documents the `?name=` lookup pattern. The CLI gets a `--name` flag where operators can refer to entities by their display name. Operators who want to bookmark URLs can use the name-resolved redirect (`GET /experiments?name=X` returning the canonical opaque-id URL). |
-| **Setup-experiment idempotency under re-run** — running setup-experiment a second time today is idempotent on `experiment_id`; minting opaque ids breaks idempotency without care. | Setup-experiment writes the minted ids to `.env`; on re-run, it reads existing ids and re-uses them. The "fresh experiment" path is via the documented `wipe + setup-experiment` flow ([`docs/operations/experiment-data-durability.md`](../operations/experiment-data-durability.md)). The eden-manual-experiment skill's "fresh experiment" recipe rides this. |
+| **Setup-experiment idempotency under re-run** — running setup-experiment a second time today is idempotent on `experiment_id`; minting opaque ids breaks idempotency without care. | Setup-experiment writes the minted ids to `.env`; on re-run, it reads existing ids and re-uses them. The "fresh experiment" path is via the documented `wipe + setup-experiment` flow ([`docs/operations/experiment-data-durability.md`](../operations/experiment-data-durability.md)). The eden-manual-experiment skill's "fresh experiment" recipe rides this. The same rule applies to the control-plane bootstrap rows keyed by the opaque ids. |
 | **Pre-rename WIP feature branches** rebase pain. | Land the rename in a quiet window (no other multi-branch work in flight); the day-of-merge announcement lists which open branches need to rebase. |
 | **Chapter 09 §6 IUT-contract over-promise** — the rename is wire-observable, but the conformance-suite scope is bounded. | Per the AGENTS.md "Conformance-plan MUSTs must be filtered through the IUT contract" pitfall, every spec MUST in §5.1 is checked against the chapter 09 §6 IUT contract before drafting a conformance scenario in Wave 5. Off-wire MUSTs (none expected here — the rename is wire-shaped) stay out of scope. |
-| **Spec inter-chapter restatement drift** (per AGENTS.md pitfall) — chapter 02 §6 and chapter 07 §13 both currently restate the worker-id grammar. The rename amends both. | Wave 1 grep-checks for restatement: the new opaque-id grammar is restated in chapter 02 §1 as the canonical source; chapter 07 §13 defers to it via cross-reference rather than restating. |
+| **Spec inter-chapter restatement drift** (per AGENTS.md pitfall) — chapter 02 §6 and chapter 07 §13 both currently restate the worker-id grammar, and chapter 03 / chapter 08 / chapter 11 also restate the identity-bearing surfaces. | Wave 1 grep-checks every restatement chapter: chapter 02 §1 is the canonical grammar source; chapters 03, 04, 07, 08, 09, and 11 defer to it or update their inline restatements in the same PR. |
 | **Setup-experiment seed-time race** — minting opaque ids for `admins` / `orchestrators` groups before workers exist is fine, but the rename PR has to atomically update the seed-order (group create → worker register → membership add). | Setup-experiment's existing seed-order is preserved; only the create-call shapes change. The smoke script exercises this. |
 | **The "schedule wipe" risk** — `EDEN_EXPERIMENT_DATA_ROOT/<old-id>/` directories abandoned in operators' filesystems. | User-guide documents the cleanup recipe (`rm -rf "$EDEN_EXPERIMENT_DATA_ROOT/manual-ui"`). Setup-experiment refuses to mint over an existing data root with the new opaque id (defensive). |
 
 ## 11. Open questions
 
-The recommendation is to resolve each before Wave 1 starts.
+This section is the tracking bucket for every deferred / follow-up item
+called out earlier in the plan. The recommendation is to resolve the
+decision items before Wave 1 starts and to keep the downstream
+follow-ups here until they have their own issue / plan.
 
 1. **Should `name` be unique within an entity-kind per experiment?**
    Recommendation: **no** (issue body's explicit position). Soft-check
-   (warn-on-collision) is a polish follow-up post-rename; file with the
-   slug-soft-check follow-up pattern from #121.
+   (warn-on-collision) is a polish follow-up post-rename; tracked here
+   until it gets its own issue, using the slug-soft-check pattern from
+   [#121](https://github.com/ealt/eden/issues/121).
 2. **Should `name` be mutable after create?** Recommendation: **defer**;
-   file as a follow-up. The rename plan doesn't require an answer.
+   tracked here as a downstream follow-up. The rename plan doesn't
+   require an answer.
 3. **Opaque-id suffix format — ULID vs UUIDv7?** Recommendation: **ULID**
    per §4.1; document the rationale in the spec amendment.
 4. **Should `experiment_id` be globally unique across all deployments
@@ -643,6 +715,14 @@ The recommendation is to resolve each before Wave 1 starts.
    `name == "admin"`?** Recommendation: 422
    `eden://error/reserved-name`. Document the error vocabulary in
    chapter 07 §13.
+6. **Downstream picker / convenience-list surfaces.** The executor/group
+   picker UI and the `list-workers` / `list-groups` terminal helpers are
+   intentionally out of scope for this rename PR. They are tracked here
+   (and in §8) until separate issues are filed after the cutover lands.
+7. **Emergency pre-rename checkpoint import rescue.** If a real operator
+   need appears before the cutover is complete, track the exception here
+   rather than silently expanding the rename PR to include migration
+   tooling.
 
 If any of these questions resolves differently after operator review,
 update the plan body before Wave 1 starts. The plan-stage PR is the
@@ -664,7 +744,7 @@ Before this plan PR merges:
 ## 13. Stop conditions
 
 + **Naming-model decision deadlocks** (option A vs B vs C, prefix choice, or suffix format): surface for operator decision before finalizing.
-+ **Codex-review hits 6+ rounds**: surface to operator; consider scoping smaller (e.g., spinning the experiment rename out of cluster `identity` and into its own follow-up).
++ **Codex-review hits 6+ rounds**: surface to operator; consider scoping smaller (e.g., spinning the experiment rename out of cluster `identity` and into its own subsequent chunk, tracked in §11 before execution resumes).
 + **Cascade dependency surprises**: if a downstream cluster-identity issue (#140 / #141 / #143 / #144) reveals a shape this plan doesn't accommodate, pause Wave 1 and amend.
 
 ---
