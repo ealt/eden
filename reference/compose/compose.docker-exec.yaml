@@ -59,6 +59,14 @@ services:
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
       - ${EDEN_CIDFILES_DIR_HOST:?}
+      # Issue #155: attach the spawned ideator sibling to the compose
+      # project network so substrate URLs (EDEN_ARTIFACT_URL,
+      # EDEN_READONLY_STORE_URL) resolve from inside the sibling.
+      # Without this, docker defaults to the bridge network and the
+      # compose-internal hostnames don't resolve — the worker host
+      # CLI suppresses the substrate keys.
+      - --exec-network
+      - ${EDEN_EXEC_NETWORK:-eden-reference_default}
       - --log-level
       - info
     group_add:
@@ -124,6 +132,11 @@ services:
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
       - ${EDEN_CIDFILES_DIR_HOST:?}
+      # Issue #155: attach the spawned executor sibling to the
+      # compose project network so substrate URLs resolve from
+      # inside it (see ideator-host above for full rationale).
+      - --exec-network
+      - ${EDEN_EXEC_NETWORK:-eden-reference_default}
       - --log-level
       - info
     group_add:
@@ -183,6 +196,11 @@ services:
       - ${EDEN_EXPERIMENT_DIR_HOST:?}:/etc/eden/experiment-dir:ro
       - --cidfile-dir
       - ${EDEN_CIDFILES_DIR_HOST:?}
+      # Issue #155: attach the spawned evaluator sibling to the
+      # compose project network so substrate URLs resolve from
+      # inside it (see ideator-host above for full rationale).
+      - --exec-network
+      - ${EDEN_EXEC_NETWORK:-eden-reference_default}
       - --log-level
       - info
     group_add:

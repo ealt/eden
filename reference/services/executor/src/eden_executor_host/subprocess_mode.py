@@ -71,6 +71,11 @@ class ExecutorSubprocessConfig:
     exec_binds: tuple = ()
     cidfile_dir: Path | None = None
     """Where per-spawn cidfiles are written. Required in docker mode."""
+    exec_network: str | None = None
+    """Compose network attached to spawned sibling containers via
+    ``--network`` (docker mode only); ``None`` means the default
+    bridge network. Required for the spawned sibling to reach
+    Phase 12a-1f substrate URLs."""
     host_id: str = ""
     """Container hostname used as the ``eden.host=`` label."""
     worker_credential: str | None = None
@@ -543,6 +548,7 @@ def _maybe_wrap_for_docker(
         # leaving `-i` set would make docker run exit early on
         # the worker host's closed stdin.
         attach_stdin=False,
+        network=config.exec_network,
     )
     pk, cu = make_cidfile_callbacks(cidfile)
     return command, pk, [cu]

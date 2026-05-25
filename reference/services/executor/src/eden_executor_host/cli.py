@@ -10,6 +10,7 @@ from eden_service_common import (
     StopFlag,
     add_common_arguments,
     add_exec_arguments,
+    add_substrate_arguments,
     configure_logging,
     credential_secret,
     ensure_repo_clone,
@@ -21,7 +22,10 @@ from eden_service_common import (
     reap_orphaned_containers,
     require_command,
     resolve_exec_args,
+    resolve_substrate_args,
     resolve_worker_bearer,
+    strip_reserved_substrate_keys,
+    substrate_args_for_exec_mode,
     wait_for_task_store,
 )
 from eden_wire import StoreClient
@@ -95,6 +99,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=float, default=0.1)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     add_exec_arguments(parser)
+    # Issue #154: executor host gains the 12a-1f substrate-access
+    # env flags (mirroring ideator + evaluator) so agentic executors
+    # can read git / artifacts / the readonly Postgres substrate
+    # alongside their cwd-anchored per-task worktree.
+    add_substrate_arguments(parser)
     args = parser.parse_args(argv)
     if args.mode == "subprocess":
         for attr in ("experiment_config", "experiment_dir"):
@@ -103,6 +112,86 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     f"--{attr.replace('_', '-')} is required in --mode subprocess"
                 )
     return args
+
+
+def _run_subprocess_mode(
+    args: argparse.Namespace,
+    *,
+    log,  # noqa: ANN001 — _CtxAdapter
+    client: StoreClient,
+    bearer: str | None,
+    stop: StopFlag,
+) -> None:
+    """Drive the subprocess-mode executor loop end-to-end."""
+    config = load_experiment_config(args.experiment_config)
+    command = require_command(config, "execution_command")
+    env: dict[str, str] = {}
+    if args.execution_env_file:
+        user_env = parse_env_file(args.execution_env_file)
+        # The host owns the four 12a-1f substrate keys; strip them
+        # from the user env BEFORE merging so a user file can NEVER
+        # reintroduce keys the host suppressed (e.g. under
+        # --exec-mode docker without --exec-network) or selectively
+        # configured. Mirrors ideator / evaluator.
+        env.update(strip_reserved_substrate_keys(dict(user_env)))
+    try:
+        exec_args = resolve_exec_args(args)
+    except ValueError as exc:
+        raise SystemExit(f"eden-executor-host: {exc}") from exc
+    host_id = socket.gethostname()
+    if exec_args.mode == "docker":
+        reap_orphaned_containers(role="executor", host=host_id)
+    # Issue #154: thread the four 12a-1f substrate env vars into the
+    # spawned execution_command. Issue #155: docker mode forwards
+    # them only when --exec-network attaches the spawned sibling to
+    # a reachable compose network.
+    substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
+    substrate = substrate_args_for_exec_mode(
+        substrate, exec_mode=exec_args.mode, exec_network=exec_args.network
+    )
+    if (
+        exec_args.mode == "docker"
+        and exec_args.network is None
+        and (
+            args.artifact_url is not None
+            or args.readonly_store_url is not None
+        )
+    ):
+        log.warning(
+            "substrate_access_disabled_in_exec_mode_docker",
+            extra={
+                "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+                "hint": (
+                    "pass --exec-network <compose-network> to forward "
+                    "substrate URLs into spawned sibling containers"
+                ),
+            },
+        )
+    env.update(substrate.to_env())
+    sub_config = ExecutorSubprocessConfig(
+        command=command,
+        experiment_dir=Path(args.experiment_dir).resolve(),
+        env=env,
+        repo_path=Path(args.repo_path).resolve(),
+        worktrees_root=Path(args.worktrees_dir),
+        task_deadline=args.execution_task_deadline,
+        shutdown_deadline=args.execution_shutdown_deadline,
+        exec_mode=exec_args.mode,
+        exec_image=exec_args.image,
+        exec_volumes=tuple(exec_args.volumes),
+        exec_binds=tuple(exec_args.binds),
+        cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
+        exec_network=exec_args.network if exec_args.mode == "docker" else None,
+        host_id=host_id,
+        worker_credential=credential_secret(bearer),
+    )
+    run_executor_subprocess_loop(
+        store=client,
+        worker_id=args.worker_id,
+        config=sub_config,
+        poll_interval=args.poll_interval,
+        stop=stop,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,40 +237,8 @@ def main(argv: list[str] | None = None) -> int:
                 stop=stop,
             )
         else:
-            config = load_experiment_config(args.experiment_config)
-            command = require_command(config, "execution_command")
-            env = {}
-            if args.execution_env_file:
-                env.update(parse_env_file(args.execution_env_file))
-            try:
-                exec_args = resolve_exec_args(args)
-            except ValueError as exc:
-                raise SystemExit(f"eden-executor-host: {exc}") from exc
-            host_id = socket.gethostname()
-            if exec_args.mode == "docker":
-                reap_orphaned_containers(role="executor", host=host_id)
-            sub_config = ExecutorSubprocessConfig(
-                command=command,
-                experiment_dir=Path(args.experiment_dir).resolve(),
-                env=env,
-                repo_path=Path(args.repo_path).resolve(),
-                worktrees_root=Path(args.worktrees_dir),
-                task_deadline=args.execution_task_deadline,
-                shutdown_deadline=args.execution_shutdown_deadline,
-                exec_mode=exec_args.mode,
-                exec_image=exec_args.image,
-                exec_volumes=tuple(exec_args.volumes),
-                exec_binds=tuple(exec_args.binds),
-                cidfile_dir=exec_args.cidfile_dir if exec_args.mode == "docker" else None,
-                host_id=host_id,
-                worker_credential=credential_secret(bearer),
-            )
-            run_executor_subprocess_loop(
-                store=client,
-                worker_id=args.worker_id,
-                config=sub_config,
-                poll_interval=args.poll_interval,
-                stop=stop,
+            _run_subprocess_mode(
+                args, log=log, client=client, bearer=bearer, stop=stop
             )
     log.info("executor host exited")
     return 0

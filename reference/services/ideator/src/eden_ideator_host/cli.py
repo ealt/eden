@@ -216,21 +216,31 @@ def _build_subprocess_env(
     # EDEN_ARTIFACT_PATH_ROOT / EDEN_READONLY_STORE_URL into the spawned
     # child's env so agentic ideators can read git / artifacts / the
     # Postgres readonly substrate without making per-query wire
-    # round-trips. Per §6.4 / §8.9 of the plan, these keys are
-    # SUPPRESSED in --exec-mode docker because sibling containers can't
-    # resolve compose-internal hostnames (no --network plumbing in
-    # wrap_command yet).
+    # round-trips. Issue #155: --exec-mode docker SUPPRESSES the keys
+    # UNLESS the operator passed --exec-network (which attaches the
+    # spawned sibling to a network where the compose-internal
+    # hostnames resolve).
     substrate = resolve_substrate_args(args, repo_dir=args.repo_path)
-    substrate = substrate_args_for_exec_mode(substrate, exec_mode=exec_args.mode)
-    if exec_args.mode == "docker" and (
-        args.repo_path is not None
-        or args.artifact_url is not None
-        or args.readonly_store_url is not None
+    substrate = substrate_args_for_exec_mode(
+        substrate, exec_mode=exec_args.mode, exec_network=exec_args.network
+    )
+    if (
+        exec_args.mode == "docker"
+        and exec_args.network is None
+        and (
+            args.repo_path is not None
+            or args.artifact_url is not None
+            or args.readonly_store_url is not None
+        )
     ):
         log.warning(
             "substrate_access_disabled_in_exec_mode_docker",
             extra={
                 "see": "spec/v0/reference-bindings/worker-host-subprocess.md §9",
+                "hint": (
+                    "pass --exec-network <compose-network> to forward "
+                    "substrate URLs into spawned sibling containers"
+                ),
             },
         )
     env.update(substrate.to_env())
@@ -259,6 +269,8 @@ def _build_docker_wrap_factory(
     cidfile_dir = exec_args.cidfile_dir
     assert image is not None  # guaranteed by resolve_exec_args
 
+    network = exec_args.network
+
     def _ideator_wrap_factory():
         cidfile = make_cidfile_path(cidfile_dir=cidfile_dir, role="ideator")
         wrapped = wrap_command(
@@ -272,6 +284,7 @@ def _build_docker_wrap_factory(
             volumes=volumes,
             binds=binds,
             env_keys=env_keys,
+            network=network,
         )
         post_kill, cleanup = make_cidfile_callbacks(cidfile)
         return wrapped, post_kill, [cleanup]

@@ -247,6 +247,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 - [12a-1c](plans/eden-phase-12a-1c-task-transparency.md) — Task transparency + lineage navigation — **shipped 2026-05-18** (see [CHANGELOG](../CHANGELOG.md))
 - [12a-1d](https://github.com/ealt/eden/pull/81) — Rename `rationale` → `content` for idea markdown body — **shipped 2026-05-14** (see [CHANGELOG](../CHANGELOG.md))
 - [12a-1f](plans/eden-phase-12a-1f-substrate-access.md) — Substrate read access for ideator + evaluator agents — **shipped 2026-05-16** (see [CHANGELOG](../CHANGELOG.md))
+- [12a-1f followup](https://github.com/ealt/eden/issues/154) — Executor-host substrate access + DooD env-var forwarding (closes #154 + #155) — **shipped 2026-05-24** (see [CHANGELOG](../CHANGELOG.md))
 - [12a-1g](plans/eden-phase-12a-1g-experiment-durability.md) — Experiment durability (spec invariant + Compose bind-mounts) — **shipped 2026-05-14** (see [CHANGELOG](../CHANGELOG.md))
 - [12a-1g hotfix](https://github.com/ealt/eden/pull/94) — container-side rm in smoke-script teardown — **shipped 2026-05-15** (see [CHANGELOG](../CHANGELOG.md))
 - [12a-1h](plans/eden-phase-12a-1h-cli-port.md) — Port eden-manual CLI to post-12a-1 auth + no-op variant design — **shipped 2026-05-14** (see [CHANGELOG](../CHANGELOG.md))

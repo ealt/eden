@@ -154,6 +154,24 @@ def test_wrap_command_quotes_user_command(tmp_path: Path) -> None:
     assert parts[-1] == tricky
 
 
+def test_wrap_command_network_flag_absent_by_default(tmp_path: Path) -> None:
+    """Without ``network=``, no ``--network`` flag is emitted."""
+    out = wrap_command(**_common_wrap_kwargs(tmp_path / "cid"))
+    parts = shlex.split(out)
+    assert "--network" not in parts
+
+
+def test_wrap_command_network_flag_emitted(tmp_path: Path) -> None:
+    """Issue #155: ``network=<name>`` emits ``--network <name>``."""
+    out = wrap_command(
+        **_common_wrap_kwargs(tmp_path / "cid"),
+        network="eden-reference_default",
+    )
+    parts = shlex.split(out)
+    idx = parts.index("--network")
+    assert parts[idx + 1] == "eden-reference_default"
+
+
 def test_wrap_command_ideator_only_bind(tmp_path: Path) -> None:
     """Ideator has no volume mounts (cwd = experiment-dir bind)."""
     cidfile = tmp_path / "cid"
