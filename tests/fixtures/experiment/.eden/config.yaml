@@ -7,3 +7,13 @@ evaluation_schema:
 objective:
   expr: "score"
   direction: "maximize"
+# fixed_total(3) makes the smoke deterministic: the orchestrator creates
+# exactly 3 ideation tasks then quiesces, so the smoke's quiescence-wait
+# is finite. Without this, the default maintain_pending(target=3) keeps
+# the queue at depth 3 indefinitely and the smoke times out.
+# (#215 / #133 retired the EDEN_IDEATION_POLICY_MAX_TOTAL env var that
+# previously pinned this; smoke{,-checkpoint}.sh now rely on the
+# fixture-config value.)
+ideation_policy:
+  kind: fixed_total
+  total: 3
