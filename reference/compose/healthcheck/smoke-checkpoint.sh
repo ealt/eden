@@ -87,9 +87,6 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
     --env-file "$ENV_FILE" \
     --data-root "$SMOKE_DATA_ROOT"
 
-# Same quiescence pin as smoke.sh: cap ideation at 3 so the
-# orchestrator loop terminates after the 3 variants land.
-sed -i.bak 's/^EDEN_IDEATION_POLICY_MAX_TOTAL=.*/EDEN_IDEATION_POLICY_MAX_TOTAL=3/' "$ENV_FILE"
 rm -f "${ENV_FILE}.bak"
 
 EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
