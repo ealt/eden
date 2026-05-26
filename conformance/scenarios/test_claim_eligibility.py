@@ -28,15 +28,30 @@ CONFORMANCE_GROUP = 'Claim eligibility'
 def test_unregistered_claim_returns_worker_not_registered(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/04-task-protocol.md §3.5 step 2 — unregistered worker → 403 worker-not-registered."""
+    """spec/v0/04-task-protocol.md §3.5 step 2 — unregistered worker → auth rejection.
+
+    Auth-enabled IUTs (the post-#148 reference adapter) reject an
+    unregistered worker_id at the wire's auth middleware with 401
+    ``eden://error/unauthorized`` — the chapter 04 §3.5 step-2
+    ``worker-not-registered`` check is never reached because the
+    bearer for an unregistered worker_id cannot pass the §13
+    credential verification. Auth-disabled IUTs route the
+    unregistered worker_id through to the Store and surface 403
+    ``eden://error/worker-not-registered``. Both shapes are
+    spec-compliant for the §3.5 step-2 MUST; the suite accepts
+    either.
+    """
     tid = _seed.create_ideation_task(wire_client)
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "never-registered"},
+        as_worker="never-registered",
     )
-    assert r.status_code == 403, r.text
-    assert r.json().get("type") == "eden://error/worker-not-registered"
+    assert r.status_code in (401, 403), r.text
+    assert r.json().get("type") in (
+        "eden://error/unauthorized",
+        "eden://error/worker-not-registered",
+    ), r.text
 
 
 def test_null_target_permits_any_registered_worker(wire_client: WireClient) -> None:
@@ -73,7 +88,7 @@ def test_worker_target_mismatch_returns_worker_not_eligible(
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": other},
+        as_worker=other,
     )
     assert r.status_code == 403, r.text
     assert r.json().get("type") == "eden://error/worker-not-eligible"
@@ -108,7 +123,7 @@ def test_group_target_non_member_returns_worker_not_eligible(
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": outside},
+        as_worker=outside,
     )
     assert r.status_code == 403, r.text
     assert r.json().get("type") == "eden://error/worker-not-eligible"
@@ -130,14 +145,26 @@ def test_target_check_precedes_registration_check_for_state(
     _seed.claim(wire_client, tid, worker_id=wid)
 
     # An unregistered second claim against the now-claimed task
-    # surfaces illegal-transition (state), not worker-not-registered.
+    # surfaces the state precondition first.
+    # - Auth-enabled IUTs reject at the wire's auth middleware with
+    #   401 ``unauthorized`` before ever reaching the §3.5 ladder
+    #   (the unregistered worker_id has no valid bearer).
+    # - Auth-disabled IUTs route the unregistered worker_id through;
+    #   the §3.5 step-0 state check fires first and returns 409
+    #   ``illegal-transition``.
+    # Either ordering is spec-compliant for the documented §3.5 step
+    # ordering (state before registration); the assertion is that the
+    # registration check does NOT precede the state check.
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "never-registered-2"},
+        as_worker="never-registered-2",
     )
-    assert r.status_code == 409, r.text
-    assert r.json().get("type") == "eden://error/illegal-transition"
+    assert r.status_code in (401, 409), r.text
+    assert r.json().get("type") in (
+        "eden://error/unauthorized",
+        "eden://error/illegal-transition",
+    ), r.text
 
 
 # ---------------------------------------------------------------------

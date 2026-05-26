@@ -374,16 +374,13 @@ class StoreClient:
 
         Per chapter 04 §3.3, authentication is a binding-layer concern
         and the §4.1 / §3.5 enforcement runs against the authenticated
-        ``worker_id``. The server in auth-enabled mode reads the
-        principal from the bearer and ignores any forwarded
-        ``X-Eden-Worker-Id`` header; without this client-side check, a
-        caller passing a mismatched ``worker_id`` would be silently
-        re-bound to the bearer's identity at the server. The check is
-        a no-op when no bearer is set (auth-disabled / TestClient
-        posture) or when the bearer principal is ``admin``: admin
-        bearers cannot reach worker-gated routes — the §13.3
-        dispatcher 403s them — so any disagreement is rejected at the
-        wire instead.
+        ``worker_id``. Without this client-side check, a caller
+        passing a mismatched ``worker_id`` would be silently re-bound
+        to the bearer's identity at the server. The check is a no-op
+        when no bearer is set (auth-disabled / TestClient posture) or
+        when the bearer principal is ``admin``: admin bearers cannot
+        reach worker-gated routes — the §13.3 dispatcher 403s them —
+        so any disagreement is rejected at the wire instead.
         """
         if self._bearer is None:
             return
@@ -409,10 +406,8 @@ class StoreClient:
         # Per §2.3 + §13: the server takes the claimant worker_id from
         # the authenticated bearer, not the request body. The
         # ``worker_id`` parameter survives on the client API for
-        # symmetry with the in-process Store contract; the client
-        # forwards it through ``X-Eden-Worker-Id`` so test deployments
-        # without auth still see the right caller (auth-enabled
-        # deployments ignore the header in favor of the bearer).
+        # symmetry with the in-process Store contract; the wire layer
+        # ignores it and uses the bearer's principal.
         self._assert_bearer_matches_worker_id(worker_id)
         body: dict[str, Any] = {}
         if expires_at is not None:
@@ -421,7 +416,6 @@ class StoreClient:
             "POST",
             f"{self._base}/tasks/{task_id}/claim",
             json=body,
-            extra_headers={"X-Eden-Worker-Id": worker_id},
         )
         return TaskClaim.model_validate(resp.json())
 
@@ -430,15 +424,14 @@ class StoreClient:
     ) -> None:
         # Per §2.4 + §13: server forwards the authenticated worker_id
         # to Store.submit; client passes the same identity for
-        # symmetry. ``X-Eden-Worker-Id`` carries the value when auth
-        # is disabled (test posture); under §13 auth the bearer wins.
+        # symmetry with the in-process Store contract. The wire layer
+        # derives the actor from the bearer's principal.
         self._assert_bearer_matches_worker_id(worker_id)
         payload = _submission_to_wire(submission)
         self._request(
             "POST",
             f"{self._base}/tasks/{task_id}/submit",
             json={"payload": payload},
-            extra_headers={"X-Eden-Worker-Id": worker_id},
         )
 
     def accept(self, task_id: str) -> None:

@@ -81,7 +81,7 @@ def test_non_member_rejected_by_target_eligibility(wire_client: WireClient) -> N
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": bystander},
+        as_worker=bystander,
     )
     assert r.status_code == 403, r.text
     assert r.json().get("type") == "eden://error/worker-not-eligible"

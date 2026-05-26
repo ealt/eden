@@ -68,7 +68,7 @@ def test_at_most_one_live_execution_task_per_idea(
         "created_at": "2026-05-01T00:00:00Z",
         "updated_at": "2026-05-01T00:00:00Z",
     }
-    resp = wire_client.post(wire_client.tasks_path(), json=body)
+    resp = wire_client.post(wire_client.tasks_path(), json=body, as_worker="admin-actor")
     assert resp.status_code >= 400, resp.text
     err = resp.json()["type"]
     assert err in {
@@ -112,7 +112,7 @@ def test_at_most_one_live_evaluation_task_per_variant(
         "created_at": "2026-05-01T00:00:00Z",
         "updated_at": "2026-05-01T00:00:00Z",
     }
-    resp = wire_client.post(wire_client.tasks_path(), json=body)
+    resp = wire_client.post(wire_client.tasks_path(), json=body, as_worker="admin-actor")
     assert resp.status_code >= 400, resp.text
     err = resp.json()["type"]
     assert err in {

@@ -66,6 +66,18 @@ def test_imported_terminated_experiment_rejects_create_task(
     )
     assert import_resp.status_code == 201, import_resp.text
 
+    # The receiver has no default-worker fixture applied (the
+    # checkpoint-import receiver fixture is deliberately empty). To
+    # exercise the §2.5 reject path we need a worker on the receiver
+    # in the ``admins`` group — the §3.7 wire-side gate runs BEFORE
+    # the terminated-experiment guard. Register one against the
+    # receiver's admin bearer.
+    _seed.register_worker(receiver_wire_client, "post-import-admin")
+    _seed._ensure_group(receiver_wire_client, "admins")
+    _seed._ensure_group_member(
+        receiver_wire_client, "admins", "post-import-admin"
+    )
+
     # Attempt to create a task on the now-terminated receiver.
     resp = receiver_wire_client.post(
         receiver_wire_client.tasks_path(),
@@ -77,6 +89,7 @@ def test_imported_terminated_experiment_rejects_create_task(
             "created_at": "2026-05-01T00:00:00Z",
             "updated_at": "2026-05-01T00:00:00Z",
         },
+        as_worker="post-import-admin",
     )
     assert resp.status_code == 409
     assert resp.json()["type"] == "eden://error/illegal-transition"

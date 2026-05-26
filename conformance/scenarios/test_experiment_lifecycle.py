@@ -65,6 +65,7 @@ def test_create_task_rejected_after_terminate(
             "created_at": "2026-05-01T00:00:00Z",
             "updated_at": "2026-05-01T00:00:00Z",
         },
+        as_worker="admin-actor",
     )
     assert resp.status_code == 409
     assert resp.json()["type"] == "eden://error/illegal-transition"
@@ -90,7 +91,7 @@ def test_claim_rejected_after_terminate(
     resp = wire_client.post(
         wire_client.tasks_path(task_id, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "test-worker"},
+        as_worker="test-worker",
     )
     assert resp.status_code == 409
     assert resp.json()["type"] == "eden://error/illegal-transition"
@@ -140,7 +141,7 @@ def test_terminate_body_rejects_terminated_by_field(
     resp = wire_client.post(
         wire_client.terminate_path(),
         json={"reason": "x", "terminated_by": "spoofed-id"},
-        headers={"X-Eden-Worker-Id": "admin-actor"},
+        as_worker="admin-actor",
     )
     assert resp.status_code == 400
     assert resp.json()["type"] == "eden://error/bad-request"

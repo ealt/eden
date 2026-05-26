@@ -479,14 +479,14 @@ def make_app(
         Returns the authenticated worker_id on success so the caller
         can stamp attribution fields (``reassigned_by`` / ``updated_by``).
         Returns the literal ``"anonymous"`` when auth is disabled (test
-        posture) — equivalent to the existing ``X-Eden-Worker-Id``
-        fallback in ``_worker_id_from_request``.
+        posture) — group-membership enforcement is a no-op in that
+        mode and the attribution stamp collapses to the sentinel.
 
         Raises :class:`Forbidden` (403 ``eden://error/forbidden``) on
         membership miss.
         """
         if admin_token is None:
-            return request.headers.get("X-Eden-Worker-Id", "anonymous")
+            return "anonymous"
         principal = require_worker(request)
         assert principal.worker_id is not None
         for gid in group_ids:
@@ -1918,11 +1918,10 @@ def _worker_id_from_request(request: Request) -> str:
     on worker-gated routes (§13.3) with :class:`Forbidden`.
 
     When auth is disabled (test / in-process default), there is no
-    principal on ``request.state``; this helper returns the
-    ``X-Eden-Worker-Id`` header value if present, otherwise the
-    sentinel ``"anonymous"``. The sentinel exists so tests that don't
-    care about identity can still drive claim / submit, while tests
-    that DO care can opt in by setting the header explicitly.
+    principal on ``request.state``; this helper returns the sentinel
+    ``"anonymous"``. Tests that need per-worker identity MUST opt
+    into auth-enabled mode by passing ``admin_token`` to
+    :func:`make_app` and authenticating with per-worker bearers.
     """
     principal = getattr(request.state, "principal", None)
     if principal is not None:
@@ -1932,8 +1931,8 @@ def _worker_id_from_request(request: Request) -> str:
             )
         assert principal.worker_id is not None
         return principal.worker_id
-    # Auth disabled — read the test-only override header, otherwise sentinel.
-    return request.headers.get("X-Eden-Worker-Id", "anonymous")
+    # Auth disabled — collapse all callers onto the sentinel.
+    return "anonymous"
 
 
 # The pre-12a-1 reference shared-token middleware has been removed in

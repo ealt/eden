@@ -32,12 +32,20 @@ class IutHandle:
     surface it as the same value as `base_url`; IUTs that don't
     support v1+multi-experiment leave it `None` and the
     multi-experiment scenarios skip.
+
+    `admin_token` is the §13.1 admin secret the harness uses to
+    register workers / groups against an auth-enabled IUT.
+    Adapters that surface auth via a different mechanism (e.g. a
+    custom Authorization header in ``extra_headers``) MAY leave it
+    ``None``; the harness then falls back to the bearer carried in
+    ``extra_headers`` for admin-class operations.
     """
 
     base_url: str
     experiment_id: str
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     control_plane_base_url: str | None = None
+    admin_token: str | None = None
 
 
 @runtime_checkable

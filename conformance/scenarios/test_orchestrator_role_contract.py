@@ -99,7 +99,7 @@ def test_orchestrator_authority_does_not_impersonate_claimant(
     # reflect the original claimant.
     accept_resp = wire_client.post(
         wire_client.tasks_path(tid, "/accept"),
-        headers={"X-Eden-Worker-Id": "different-actor"},
+        as_worker="different-actor",
     )
     accept_resp.raise_for_status()
     final = _seed.read_task(wire_client, tid)
@@ -134,7 +134,7 @@ def test_executed_by_is_claimant_not_acceptor(
     # ``executed_by`` to the claimant.
     accept_resp = wire_client.post(
         wire_client.tasks_path(exec_tid, "/accept"),
-        headers={"X-Eden-Worker-Id": "orchestrator-actor"},
+        as_worker="orchestrator-actor",
     )
     accept_resp.raise_for_status()
     variant = _seed.read_variant(wire_client, variant_id)

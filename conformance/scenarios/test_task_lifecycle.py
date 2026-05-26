@@ -99,7 +99,7 @@ def test_terminal_completed_rejects_writes(wire_client: WireClient) -> None:
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "worker-a"},
+        as_worker="worker-a",
     )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
@@ -129,7 +129,7 @@ def test_terminal_failed_rejects_writes(wire_client: WireClient) -> None:
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "worker-a"},
+        as_worker="worker-a",
     )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
@@ -192,7 +192,7 @@ def test_claim_rejected_when_not_pending(wire_client: WireClient) -> None:
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "worker-b"},
+        as_worker="worker-b",
     )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"

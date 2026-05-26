@@ -47,11 +47,17 @@ def store() -> InMemoryStore:
     schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
     store = InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
     # 12a-1 wave 5: Store.claim's §3.5 step-2 registration check
-    # requires every claimant to exist in the registry. Pre-register
-    # the worker ids the round-trip scenarios use; the wire surface
-    # itself is auth-disabled so the claim still goes through whatever
-    # the client passes as worker_id.
+    # requires every claimant to exist in the registry. The wire
+    # surface is auth-disabled here, so the wire's
+    # ``_worker_id_from_request`` collapses every caller onto the
+    # ``anonymous`` sentinel — register that one id so the
+    # claim/submit roundtrip paths pass the §3.5 check. (Tests that
+    # need distinct claimants enable auth inline; see
+    # ``test_wrong_claimant``.) The legacy w / w1 / etc. ids are
+    # also registered for any direct-against-Store call sites that
+    # bypass the wire entirely.
     for wid in (
+        "anonymous",
         "w",
         "w1",
         "w2",
@@ -201,13 +207,65 @@ class TestErrorEnvelopeRoundtrip:
         with pytest.raises(IllegalTransition):
             store_client.claim("p1", "w2")
 
-    def test_wrong_claimant(self, store_client: StoreClient) -> None:
-        store_client.create_ideation_task("p2")
-        store_client.claim("p2", "w1")
+    def test_wrong_claimant(self) -> None:
+        # WrongClaimant requires two distinct authenticated identities.
+        # Auth-disabled mode collapses every caller onto the
+        # ``anonymous`` sentinel, so the wrong-claimant guard cannot
+        # fire there; this test builds a per-claimant StoreClient pair
+        # against an auth-enabled app so the §13 bearer principal is
+        # what the server sees. Uses a dedicated fresh store so the
+        # registry is empty and ``register_worker`` issues fresh
+        # credentials (the shared ``store`` fixture pre-registers
+        # ids without tokens for the auth-disabled path).
+        schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
+        local_store = InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
+        admin_token = "test-wrong-claimant-token"
+        app = make_app(
+            local_store,
+            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+            subscribe_poll_interval=0.02,
+            admin_token=admin_token,
+        )
+        client = TestClient(app, base_url="http://wire.test")
+        admin_sc = StoreClient(
+            "http://wire.test",
+            EXPERIMENT_ID,
+            client=client,
+            bearer=f"admin:{admin_token}",
+        )
+        _, w1_token = admin_sc.register_worker("w1")
+        _, w2_token = admin_sc.register_worker("w2")
+        _, creator_token = admin_sc.register_worker("creator")
+        assert w1_token is not None
+        assert w2_token is not None
+        assert creator_token is not None
+        # ``creator`` issues ``POST /tasks`` for kind=ideation — that
+        # route requires admins-or-orchestrators group membership
+        # (chapter 07 §3.7), so register the group and pull
+        # ``creator`` in.
+        admin_sc.register_group("admins", members=["creator"])
+        creator_sc = StoreClient(
+            "http://wire.test",
+            EXPERIMENT_ID,
+            client=client,
+            bearer=f"creator:{creator_token}",
+        )
+        w1_sc = StoreClient(
+            "http://wire.test",
+            EXPERIMENT_ID,
+            client=client,
+            bearer=f"w1:{w1_token}",
+        )
+        w2_sc = StoreClient(
+            "http://wire.test",
+            EXPERIMENT_ID,
+            client=client,
+            bearer=f"w2:{w2_token}",
+        )
+        creator_sc.create_ideation_task("p2")
+        w1_sc.claim("p2", "w1")
         with pytest.raises(WrongClaimant):
-            store_client.submit(
-                "p2", "w2", IdeaSubmission(status="success")
-            )
+            w2_sc.submit("p2", "w2", IdeaSubmission(status="success"))
 
     def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
         store_client.create_ideation_task("p3")
@@ -258,16 +316,13 @@ class TestResponseCodes:
 
     def test_submit_returns_200(self, client: Client, store_client: StoreClient) -> None:
         store_client.create_ideation_task("sc1")
-        claim = store_client.claim("sc1", "w")
-        # The worker_id is taken from the authenticated bearer (§13);
-        # this test does not enable auth, so we forward it via the
-        # X-Eden-Worker-Id header (the wire's anonymous-mode override).
+        # In auth-disabled mode every caller collapses to the
+        # ``anonymous`` sentinel, so claim and submit both run as
+        # the same principal and the §4.1 claim-match passes.
+        store_client.claim("sc1", "w")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/sc1/submit",
-            headers={
-                "X-Eden-Experiment-Id": EXPERIMENT_ID,
-                "X-Eden-Worker-Id": claim.worker_id,
-            },
+            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
             json={"payload": {"kind": "ideation", "status": "success"}},
         )
         assert resp.status_code == 200

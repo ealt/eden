@@ -193,6 +193,7 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             experiment_id=experiment_id,
         )
         try:
+            seed.register_worker("anonymous")  # auth-disabled wire collapse
             seed.register_worker("ui-w")
             seed.create_ideation_task("t-ui-1")
         finally:
@@ -367,6 +368,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             experiment_id=experiment_id,
         )
         try:
+            seed.register_worker("anonymous")  # auth-disabled wire collapse
             seed.register_worker("ui-w")
             seed.create_ideation_task("t-strand")
         finally:

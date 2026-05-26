@@ -195,20 +195,15 @@ def make_app(
 
     def _enforce_worker(request: Request) -> Principal:
         if admin_token is None:
-            # Permit a non-normative X-Eden-Worker-Id header for tests
-            # that need a non-admin identity without configuring auth.
-            return Principal(
-                kind="worker",
-                worker_id=request.headers.get("X-Eden-Worker-Id", "anonymous"),
-            )
+            # Test / in-process posture: collapse to the anonymous
+            # sentinel. Tests that need per-worker identity must
+            # configure ``admin_token`` and authenticate via bearer.
+            return Principal(kind="worker", worker_id="anonymous")
         return require_worker(request)
 
     def _get_principal(request: Request) -> Principal:
         if admin_token is None:
-            return Principal(
-                kind="worker",
-                worker_id=request.headers.get("X-Eden-Worker-Id", "anonymous"),
-            )
+            return Principal(kind="worker", worker_id="anonymous")
         principal = getattr(request.state, "principal", None)
         if not isinstance(principal, Principal):
             raise Unauthorized("no authenticated principal on request.state")

@@ -226,6 +226,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             experiment_id=experiment_id,
         )
         try:
+            seed.register_worker("anonymous")  # auth-disabled wire collapse
             seed.register_worker("ui-impl")
             artifact_path = artifacts_dir / "p-impl.md"
             artifact_path.write_text("content")

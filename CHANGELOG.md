@@ -136,6 +136,36 @@ Backfills the Phase 12b deferral that left receiver-side credential reissue as m
 
 **Deployment posture.** The new flag is opt-in: the reference compose stack leaves `--checkpoint-import-credentials-dir` unset by default (so post-import in the existing compose layout still surfaces the manual-reissue warning), and operators wire the flag against their own credentials substrate when their deployment is ready for it. The wire-layer mechanism is complete and exercised by tests; the deployment-side credentials-dir layout decision (shared dir vs per-host with sidecar import-dir, plus a parallel `bootstrap_worker_credential` extension to consult both) is a deployment-substrate concern operators decide independently of the wire-side machinery.
 
+### Retire `X-Eden-Worker-Id` test-fixture header (closes #148)
+
+Backfill of a Phase 12a-1 deferral: the pre-12a-1b `X-Eden-Worker-Id`
+header was the wire's auth-disabled-mode worker-id source for the
+conformance harness (~25 scenario files) and the eden-wire
+roundtrip tests. The full retirement migrates the reference
+conformance adapter to spawn the task-store-server with
+`--admin-token` enabled, has the harness's `default_workers`
+fixture register the conventional worker ids (plus `admins` /
+`orchestrators` group memberships for the admin / orchestrator
+actor identities the scenarios name) through the admin bearer,
+and stashes each issued §6.3 registration token on
+[`WireClient`](conformance/src/conformance/harness/wire_client.py)
+so per-call `as_worker=<wid>` swaps the Authorization header for
+that worker's bearer. The scenario files drop their
+`headers={"X-Eden-Worker-Id": …}` callsites in favor of the new
+`as_worker=` kwarg. The wire server's
+`_worker_id_from_request` and `_enforce_in_any_group` fallbacks no
+longer read the header (auth-disabled mode collapses every caller
+onto the `anonymous` sentinel); the
+[`StoreClient`](reference/packages/eden-wire/src/eden_wire/client.py)
+stops sending the header on `claim` / `submit`; the
+[control-plane app](reference/services/control-plane/src/eden_control_plane_server/app.py)
+drops the parallel fallback. The eden-wire `test_wrong_claimant`
+roundtrip case spawns an auth-enabled mini-fixture inline because
+distinguishing claimants requires distinct authenticated
+identities. No spec change; internal cleanup with no
+contract-coverage impact (wave-5 RBAC scenarios already exercise
+the §13.3 ladder).
+
 ### Rationalize executor 3-branch-per-variant flow to 2
 
 Closes #169. Discovered during the 2026-05-22 manual demo: a single executor → evaluator → integrator cycle left **three** branches on Forgejo for one variant — `<slug>` (operator-leaking artifact from the eden-manual CLI's `push` step), `work/<slug>-<variant_id>` (the canonical executor branch), and `variant/<variant_id>-<slug>` (the integrator's squash). The bare-slug branch was redundant (same SHA as `work/*`) and never cleaned up. The two surviving branches also had mirrored field orders — `work/<slug>-<variant_id>` vs `variant/<variant_id>-<slug>` — so operators reading Forgejo had to mentally parse which prefix was which.

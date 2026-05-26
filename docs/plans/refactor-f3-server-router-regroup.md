@@ -851,7 +851,7 @@ when `admin_token is None` (test posture).
 | `GET /tasks` | 646 | none | none |
 | `GET /tasks/{id}` | 661 | none | none |
 | `GET /tasks/{id}/submission` | 673 | none | none |
-| `POST /tasks/{id}/claim` | 702 | `enforce_worker`; `_worker_id_from_request` | sentinel `worker_id = "anonymous"` or `X-Eden-Worker-Id` header |
+| `POST /tasks/{id}/claim` | 702 | `enforce_worker`; `_worker_id_from_request` | sentinel `worker_id = "anonymous"` (the test-fixture header was retired by issue #148) |
 | `POST /tasks/{id}/submit` | 730 | `enforce_worker`; `_worker_id_from_request` | same as above |
 | `POST /tasks/{id}/accept` | 755 | `enforce_in_any_group(orchestrators)` | bypass |
 | `POST /tasks/{id}/reject` | 773 | `enforce_in_any_group(orchestrators)` | bypass |
@@ -907,9 +907,9 @@ when `admin_token is None` (test posture).
    introduce an `enforce_either` helper — adding one is feature-
    creep beyond F-3's scope.
 3. **`_worker_id_from_request` semantics preserved.** The helper
-   stays at module scope in `_dependencies.py`; both the test-mode
-   `X-Eden-Worker-Id` header fallback AND the `"anonymous"`
-   sentinel are preserved.
+   stays at module scope in `_dependencies.py`; the `"anonymous"`
+   sentinel for auth-disabled mode is preserved (the prior
+   test-fixture header fallback was retired by issue #148).
 4. **The `whoami` route is the only direct `require_worker`
    call.** All other worker-gated routes go through
    `enforce_worker`. Don't unify.

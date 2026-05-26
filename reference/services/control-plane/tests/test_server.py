@@ -333,12 +333,12 @@ def test_reissue_credential_returns_new_token(client_noauth: TestClient) -> None
 
 
 def test_whoami_returns_worker_id(client_noauth: TestClient) -> None:
-    r = client_noauth.get(
-        "/v0/control/whoami",
-        headers={"X-Eden-Worker-Id": "auto-orchestrator-1"},
-    )
+    # Auth-disabled posture: every caller collapses to the
+    # ``anonymous`` sentinel (per-worker identity requires an
+    # auth-enabled deployment with per-worker bearers).
+    r = client_noauth.get("/v0/control/whoami")
     assert r.status_code == 200
-    assert r.json() == {"worker_id": "auto-orchestrator-1"}
+    assert r.json() == {"worker_id": "anonymous"}
 
 
 def test_register_group_and_membership(client_noauth: TestClient) -> None:

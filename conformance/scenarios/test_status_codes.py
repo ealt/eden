@@ -21,7 +21,7 @@ def test_create_task_returns_200(wire_client: WireClient) -> None:
         "created_at": "2026-05-01T00:00:00Z",
         "updated_at": "2026-05-01T00:00:00Z",
     }
-    r = wire_client.post(wire_client.tasks_path(), json=body)
+    r = wire_client.post(wire_client.tasks_path(), json=body, as_worker="admin-actor")
     assert r.status_code == 200
 
 
@@ -42,8 +42,8 @@ def test_create_duplicate_task_returns_409_already_exists(
         "created_at": "2026-05-01T00:00:00Z",
         "updated_at": "2026-05-01T00:00:00Z",
     }
-    wire_client.post(wire_client.tasks_path(), json=body)
-    r = wire_client.post(wire_client.tasks_path(), json=body)
+    wire_client.post(wire_client.tasks_path(), json=body, as_worker="admin-actor")
+    r = wire_client.post(wire_client.tasks_path(), json=body, as_worker="admin-actor")
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/already-exists"
 
@@ -62,7 +62,7 @@ def test_claim_non_pending_returns_409(wire_client: WireClient) -> None:
     r = wire_client.post(
         wire_client.tasks_path(tid, "/claim"),
         json={},
-        headers={"X-Eden-Worker-Id": "worker-b"},
+        as_worker="worker-b",
     )
     assert r.status_code == 409
     assert r.json().get("type") == "eden://error/illegal-transition"
@@ -109,8 +109,14 @@ def test_integrate_different_sha_returns_409(wire_client: WireClient) -> None:
 
 def test_bad_request_body_returns_400(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §9 — malformed body returns 400 bad-request."""
+    # The body lacks ``kind`` so the §3.7 kind-keyed authority branch
+    # falls through to the worker-gated default; send as a worker so
+    # the request reaches the schema validator. The validator then
+    # rejects the malformed body with 400.
     r = wire_client.post(
-        wire_client.tasks_path(), json={"this": "is not a valid task body"}
+        wire_client.tasks_path(),
+        json={"this": "is not a valid task body"},
+        as_worker="test-worker",
     )
     assert r.status_code == 400
     assert r.json().get("type") == "eden://error/bad-request"
