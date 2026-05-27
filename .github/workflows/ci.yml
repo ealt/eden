@@ -19,13 +19,35 @@ on:
 # which never creates the check and leaves it Pending forever, deadlocking
 # the merge). So gating here is safe for the 12 required contexts.
 #
-# Gating applies to `pull_request` ONLY. On push-to-main and merge_group
-# every job runs unconditionally (the `github.event_name != 'pull_request'`
-# clause), giving a full post-merge safety net that catches any gating
-# mistake while it's still revertable. PR checks are the only pre-merge
-# gate (no merge queue, 0 required reviews), so filters are deliberately
-# biased toward over-inclusion: a false positive wastes minutes, a false
-# negative skips validation.
+# Every downstream gate has the shape:
+#
+#   if: >-
+#     !cancelled() && (
+#     needs.changes.result != 'success' ||
+#     needs.changes.outputs.run_all == 'true' ||
+#     needs.changes.outputs.<bucket> == 'true' )
+#
+# The three OR clauses, in order, are the safety design:
+#
+#   1. `needs.changes.result != 'success'` — FAIL-SAFE. If the detector
+#      job errors, every gated job runs the FULL suite rather than
+#      green-skipping. A false negative (skipping validation a change
+#      needed) is the dangerous mode here, because PR checks are the only
+#      pre-merge gate (no merge queue, 0 required reviews). Issue #225
+#      additionally makes `changes` a required check; this clause is the
+#      in-workflow belt to that branch-protection suspenders.
+#   2. `run_all` — true when the event is NOT a pull_request (push-to-main
+#      / merge_group get the full suite as a post-merge safety net) OR the
+#      workflow file itself changed (a PR editing a job definition must run
+#      that job to validate the edit). Computed in the `gate` step below so
+#      it survives a skipped/failed filter step.
+#   3. the per-job bucket(s) — the actual path-based gating.
+#
+# `!cancelled()` is required because using `needs.changes.result` forces
+# the gate to opt out of the default "skip on failed dependency" behavior;
+# without it a manual cancel wouldn't propagate. Filters are biased toward
+# over-inclusion: a false positive wastes minutes, a false negative skips
+# validation.
 
 jobs:
   changes:
@@ -42,12 +64,12 @@ jobs:
       contracts: ${{ steps.filter.outputs.contracts }}
       compose: ${{ steps.filter.outputs.compose }}
       conformance: ${{ steps.filter.outputs.conformance }}
-      workflow: ${{ steps.filter.outputs.workflow }}
+      run_all: ${{ steps.gate.outputs.run_all }}
     steps:
       # No checkout needed: on pull_request, dorny/paths-filter lists changed
       # files via the GitHub API (needs pull-requests: read). The step is
-      # skipped on push / merge_group, where every downstream gate runs full
-      # regardless of these outputs.
+      # skipped on push / merge_group, where `run_all` is true regardless of
+      # these outputs.
       - uses: dorny/paths-filter@v3
         id: filter
         if: github.event_name == 'pull_request'
@@ -84,13 +106,32 @@ jobs:
             workflow:
               - '.github/workflows/ci.yml'
 
+      # `run_all` collapses two "run the whole suite" triggers into one
+      # output: (a) the event is not a pull_request — push-to-main and
+      # merge_group get the full post-merge safety net; (b) the workflow
+      # file itself changed — a PR editing a job definition must run that
+      # job to validate the edit, so a workflow-only PR runs everything.
+      # This step has no `if:`, so it runs on every event; on non-PR events
+      # the filter step is skipped and its `workflow` output is empty, which
+      # the event_name check below already covers.
+      - id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ] \
+             || [ "${{ steps.filter.outputs.workflow }}" = "true" ]; then
+            echo "run_all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
   docs-lint:
     name: docs-lint
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.docs == 'true'
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.docs == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -111,11 +152,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.docs == 'true' ||
       needs.changes.outputs.spec == 'true' ||
       needs.changes.outputs.python == 'true' ||
-      needs.changes.outputs.compose == 'true'
+      needs.changes.outputs.compose == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -132,8 +175,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.python == 'true'
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -153,8 +198,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.schemas == 'true'
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.schemas == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -181,8 +228,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.python == 'true'
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -203,8 +252,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.python == 'true'
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -225,9 +276,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.python == 'true' ||
-      needs.changes.outputs.spec == 'true'
+      needs.changes.outputs.spec == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -252,9 +305,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.spec == 'true' ||
-      needs.changes.outputs.contracts == 'true'
+      needs.changes.outputs.contracts == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -278,13 +333,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: changes
-    # `workflow` is included here so a workflow-only change still runs one
-    # representative compose smoke as an end-to-end self-test of the gating.
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true' ||
-      needs.changes.outputs.workflow == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -304,9 +358,11 @@ jobs:
     timeout-minutes: 15
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -331,9 +387,11 @@ jobs:
     timeout-minutes: 25
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -377,9 +435,11 @@ jobs:
     timeout-minutes: 15
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -399,9 +459,11 @@ jobs:
     timeout-minutes: 20
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -427,9 +489,11 @@ jobs:
     timeout-minutes: 20
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -449,9 +513,11 @@ jobs:
     timeout-minutes: 20
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.compose == 'true' ||
-      needs.changes.outputs.python == 'true'
+      needs.changes.outputs.python == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -482,9 +548,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
       needs.changes.outputs.python == 'true' ||
-      needs.changes.outputs.spec == 'true'
+      needs.changes.outputs.spec == 'true' )
     services:
       postgres:
         image: postgres:16.6-alpine
@@ -526,8 +594,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.conformance == 'true'
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.conformance == 'true' )
     steps:
       - uses: actions/checkout@v4
 
