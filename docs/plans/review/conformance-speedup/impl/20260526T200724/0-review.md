@@ -1,0 +1,11 @@
+**Findings**
+
+- `Risk` [conformance/src/conformance/harness/plugin.py](/Users/ericalt/Documents/eden-worktrees/conformance-speedup/conformance/src/conformance/harness/plugin.py:64), [plugin.py](/Users/ericalt/Documents/eden-worktrees/conformance-speedup/conformance/src/conformance/harness/plugin.py:79): the aggregate only ships a worker’s observations at worker `pytest_sessionfinish`, but the controller folds data on every `pytest_testnodedown`, including xdist’s crash path. In xdist 3.8.0, `pytest_testnodedown` is invoked both from clean `workerfinished` and from `worker_errordown`; on the crash path `workeroutput` may be missing or partial. That means a worker that crashes after completing some tests can lose already-observed problem types, and the controller will assert closure on a partial union. Usually the run is already red, but the closure failure becomes misleading noise, and a late crash/restart can theoretically surface as a spurious vocabulary failure. Suggested fix: treat `error is not None` or a missing `_WORKEROUTPUT_OBSERVED_KEY` as “aggregate incomplete”, stash that fact, and skip the controller-side closure assertion (or emit a note instead of asserting) when any worker did not finish cleanly.
+
+**Assessment**
+
+Normal-path aggregation looks correct. `pytest_testnodedown` runs before controller `pytest_sessionfinish`, zero-observation workers are handled, and mutating `session.exitstatus` in `pytest_sessionfinish` does reliably fail the run under pytest 9.0.3.
+
+I did not find other parallel-safety problems across the suite. The only session-scoped mutable fixture is `session_observed_problem_types`; everything else is per-test with `tmp_path`, random `experiment_id`, `:memory:` storage, and `--port 0`. I also verified `check_citations.py` still passes, so skipping the two closure tests on xdist workers does preserve chapter-9 §5 citation coverage, and the closed-vocabulary table appears faithfully moved into `harness/error_vocabulary.py`. Putting that table in `harness/` is reasonable because both the scenario and the harness plugin need it, and it does not introduce any reference-impl directionality leak.
+
+I would not block merge on the current diff, but I would fix the crashed-worker/incomplete-union case soon because it is the one real robustness gap in the xdist path.

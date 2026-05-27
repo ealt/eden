@@ -1,0 +1,60 @@
+--- docs/plans/review/conformance-speedup/impl/20260526T200724/0.md	2026-05-26 20:07:52
++++ docs/plans/review/conformance-speedup/impl/20260526T200724/1.md	2026-05-26 20:13:20
+@@ -1,30 +1,38 @@
+ # Implementation Review: conformance-speedup
+ 
+-## Contract (planless chunk)
++(See 0.md for the contract, file list, and change summary.)
+ 
+-No `docs/plans/` plan — this is a CI/test-harness tooling chunk. The contract is the task brief + the CHANGELOG `[Unreleased]` "Conformance suite parallelization (`pytest-xdist`)" entry + PR #229.
++## Round 1 — addressing Codex round-0 feedback
+ 
+-**Goal:** parallelize the EDEN conformance suite (longest single CI job) with `pytest-xdist` while preserving correctness, especially the one cross-test shared-state surface (the chapter-7 §7 error-vocabulary closure).
++**Issue addressed (Risk):** crashed-worker / incomplete-union case in the
++xdist closure aggregation. `pytest_testnodedown` fires on BOTH the clean
++shutdown path and the crash path (`worker_errordown`); on a crash
++`workeroutput` may be missing/partial, so the controller could assert
++closure over a partial union and emit a misleading "core type never
++observed" failure on top of the already-red run.
+ 
+-## Implementation files (actual branch diff: `62c4405..HEAD`)
++**Fix** (`conformance/src/conformance/harness/plugin.py`):
+ 
+-| File | Action | Purpose |
+-|---|---|---|
+-| `conformance/pyproject.toml` | Modified | Add `pytest-xdist>=3.6` dep |
+-| `.github/workflows/ci.yml` | Modified | conformance job → `uv run pytest -q conformance/ -n auto` |
+-| `conformance/src/conformance/harness/error_vocabulary.py` | Created | Shared §7 closed-vocab tables + `out_of_vocabulary` / `unobserved_core` checks |
+-| `conformance/src/conformance/harness/plugin.py` | Modified | xdist cross-worker aggregation of observed problem types + controller-side closure assertion at session-finish |
+-| `conformance/scenarios/test_error_vocabulary.py` | Modified | Use shared module; skip both closure tests on xdist workers (assert in-process under serial) |
+-| `AGENTS.md` | Modified | Commands-table rows updated for `-n auto` |
+-| `CHANGELOG.md` / `docs/roadmap.md` | Modified | Chunk-completion record |
+-| `uv.lock` | Modified | Lock xdist + execnet |
++- New controller stash flag `CONTROLLER_AGGREGATE_INCOMPLETE_KEY` (init
++  `False` in `pytest_configure`).
++- `pytest_testnodedown` sets the flag when `error is not None` OR the
++  worker's `workeroutput` lacks `_WORKEROUTPUT_OBSERVED_KEY` (a cleanly
++  finished worker always writes the key, even with an empty list). It
++  still folds in whatever the worker did report — observations can only
++  add real types, never invent a missing one.
++- Controller `pytest_sessionfinish` skips the closure assertion when the
++  flag is set, printing a yellow "closure NOT asserted: a worker did not
++  finish cleanly" note instead. The worker crash already fails the run.
+ 
+-## Change summary
++**Verification:**
+ 
+-- The per-scenario `iut` fixture (function-scoped) spawns a fresh in-memory task-store-server + control-plane subprocess on random ports; the suite is boot-bound, not compute-bound, and has no inherently-serial long pole — ideal for xdist.
+-- `session_observed_problem_types` (session-scoped stash, populated by every scenario's `WireClient`) is the ONLY cross-test accumulator. Only `test_error_vocabulary.py` reads it. Under xdist it is per-worker, so the "every core type observed at least once" direction fails on a naive `-n auto`.
+-- Fix: aggregate each worker's observed types to the controller (`pytest_sessionfinish` worker → `workeroutput`; `pytest_testnodedown` controller → union stash) and assert BOTH closure directions over the union at controller `pytest_sessionfinish`, setting `session.exitstatus = TESTS_FAILED` on violation (without clobbering a pre-existing failure). The two scenario tests skip on workers (`hasattr(config, "workerinput")`), assert in-process under serial.
++- Clean-worker incomplete-coverage subset still exits non-zero with the
++  missing-types diagnostic (flag stays `False`).
++- A deliberate `os._exit(1)` worker-crash probe under `-n 2` exits
++  non-zero, prints the yellow "closure NOT asserted" note, and emits NO
++  spurious missing-types failure (the failure is the crashed worker).
++- ruff + pyright clean.
+ 
+ ## Review Status
+ 
+-Round 0 — awaiting initial review.
++Round 1 — awaiting re-review.

@@ -641,7 +641,12 @@ jobs:
         run: uv sync --frozen
 
       - name: Run conformance suite
-        run: uv run pytest -q conformance/
+        # `-n auto` parallelizes the per-scenario subprocess spawn across
+        # the runner's CPUs (each scenario boots its own in-memory
+        # task-store-server + control-plane subprocess on random ports).
+        # The chapter 07 §7 vocabulary-closure assertion spans the whole
+        # run, so it is aggregated across workers in the harness plugin.
+        run: uv run pytest -q conformance/ -n auto
 
       - name: Verify directionality (no reference imports outside adapters/reference/)
         run: |
