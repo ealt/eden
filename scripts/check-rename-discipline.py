@@ -63,6 +63,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Adding a path here is a deliberate act: it carves out an exception.
 ALLOWLIST_PATHS: tuple[str, ...] = (
     "docs/archive/",
+    "docs/audits/",  # frozen-in-time disposition records (same shape as CHANGELOG)
     "docs/plans/eden-phase-",
     "docs/plans/review/",
     "CHANGELOG.md",  # historical per-chunk completion record; preserves pre-rename verbatim text
