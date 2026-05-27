@@ -143,17 +143,18 @@ The `▸`/`▾` affordance toggles a `<details>` block spanning the row (same pr
 preview uses — repurposed, not added). **No inline content preview.** The expansion is
 navigation-only.
 
-**Scoped to surfaces the web-ui module already exposes** (verified during round-0 revision — only
-`/admin/tasks/{id}/` and `/admin/workers/{id}/` are per-id *detail* pages today; ideas/variants
-have *index* pages only; artifacts are served by `GET /artifacts`). The links are:
+**Scoped to surfaces the web-ui module already exposes** (verified against source; round-2 review
+corrected an earlier grep miss — the per-id idea/variant detail routes exist, their decorators
+are just split across two lines). The links are:
 
 - **task** → `/admin/tasks/<task_id>/` (existing `lineage_link`, per-id detail page).
 - **creator** → `/admin/workers/<created_by>/` (existing per-id detail page).
-- **idea** → display `idea_id` (copyable), linked to the admin ideas index
-  `/admin/ideas/` (no per-id idea-detail page exists today). The bulk of idea context is reachable
-  from the task detail page already.
-- **variant** (evaluator only) → display `variant_id` + `variant.branch`, linked to the admin
-  variants index `/admin/variants/`.
+- **idea** → `/admin/ideas/<idea_id>/` (existing per-id detail page,
+  [observability.py:489](../../reference/services/web-ui/src/eden_web_ui/routes/admin/observability.py);
+  template `admin_idea_detail.html`).
+- **variant** (evaluator only) → `/admin/variants/<variant_id>/` (existing per-id detail page,
+  [observability.py:301](../../reference/services/web-ui/src/eden_web_ui/routes/admin/observability.py);
+  template `admin_variant_detail.html`); also display `variant.branch` as text.
 - **artifacts** → **artifact-shape-aware** "view content" links, covering **both** shapes the
   `serve_artifact` route supports
   ([`artifacts.py:119`](../../reference/services/web-ui/src/eden_web_ui/routes/artifacts.py),
@@ -166,9 +167,10 @@ have *index* pages only; artifacts are served by `GET /artifacts`). The links ar
     `entry`). This branch must not be dropped — many ideas/variants are single-file artifacts, not
     bundles.
 
-  **No hardcoded `idea.md`** — the artifact model has no guaranteed single-file name. If the URI
-  is absent / non-`file://` / the manifest is empty or unreadable, render "(no artifacts)" /
-  "(artifacts unavailable)".
+  **No hardcoded `idea.md`** — the artifact model has no guaranteed single-file name. A non-`file://`
+  URI (e.g. `http`/`https`) is rendered as a **direct external link** (parity with the existing
+  admin detail templates), not "(artifacts unavailable)". Only an absent URI / unreadable manifest
+  renders "(no artifacts)" / "(artifacts unavailable)".
 
 **Deliberately deferred (not in this issue):** a browser-facing Forgejo *browse* URL for the
 parent commit / work branch. The current CLI exposes only an in-network `--forgejo-url` and an
@@ -267,9 +269,10 @@ refresh to retry." Each increments independently in the row-builder.
   eligibility resolution with per-render group memoization, used by both row-builders.
 - CSS for chips / disabled-button / expand affordance in
   [`static/style.css`](../../reference/services/web-ui/src/eden_web_ui/static/style.css).
-- Per-route tests (sort, filter tri-state, group toggle, eligibility flag + disabled button,
-  ineligible-claim regression) and one e2e test driving the ineligible-claim path asserting a
-  clean banner (no 500).
+- Per-route tests (sort, filter tri-state, group toggle, eligibility flag + disabled button); a
+  forged/direct-POST regression asserting an ineligible claim returns a 303 banner-redirect (no
+  500); and one rendered-page e2e asserting ineligible rows show the disabled button + tooltip
+  (§Wave 3).
 - Docs: `eden-manual-executor` / `eden-manual-evaluator` SKILL.md walkthrough updates;
   `docs/user-guide.md` §6/§7 list-page UX note; CHANGELOG `[Unreleased]` + roadmap flip; review
   record under `docs/plans/review/issue-137/`.
@@ -452,9 +455,6 @@ side than when one list lands a wave ahead).
   work-branch references *clickable* links to a repo browser (today they render as text). No
   browse-URL surface exists in the web-ui CLI (only in-network `--forgejo-url` / informational
   `--clone-url`); adding one widens past web-ui-only and is deferred per §D.3.
-- **Per-id idea / variant admin detail pages** — the expansion links to the admin *index* pages
-  today because no per-id idea-detail or variant-detail page exists. If those land, the expansion
-  links tighten to the per-id surfaces.
 
 Each deferral above is narrated here; the impl PR files a tracking issue for any that survive to
 merge and references it in the CHANGELOG entry (AGENTS.md deferral-tracking rule).
@@ -469,9 +469,9 @@ merge and references it in the CHANGELOG entry (AGENTS.md deferral-tracking rule
 | `reference/services/web-ui/src/eden_web_ui/templates/executor_list.html` | full redesign |
 | `reference/services/web-ui/src/eden_web_ui/templates/evaluator_list.html` | full redesign |
 | `reference/services/web-ui/src/eden_web_ui/static/style.css` | chips / disabled button / expand affordance |
-| `reference/services/web-ui/tests/test_executor_routes.py` | sort / filter / group / eligibility / ineligible-claim regression |
+| `reference/services/web-ui/tests/test_executor_routes.py` | sort / filter / group / eligibility-flag + disabled-button render; forged/direct-POST ineligible-claim regression (no 500) |
 | `reference/services/web-ui/tests/test_evaluator_routes.py` | symmetric |
-| `reference/services/web-ui/tests/` (e2e) | ineligible-claim clean-banner e2e |
+| `reference/services/web-ui/tests/` (e2e) | rendered-page e2e: ineligible row shows disabled button + tooltip (no clickable claim path) |
 | `.claude/skills/eden-manual-executor/SKILL.md` | list-tasks walkthrough |
 | `.claude/skills/eden-manual-evaluator/SKILL.md` | list-tasks walkthrough |
 | `docs/user-guide.md` | §6/§7 list-page UX note |
