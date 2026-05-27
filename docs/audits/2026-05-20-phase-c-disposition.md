@@ -224,7 +224,7 @@ and defensible.)
 | ID | Function | LEN | CC | Disposition |
 |---|---|---:|---:|---|
 | **L-D** | `eden-wire/server.py:325 make_app` | 1458 | 5 | **REFACTOR** (covered by F-3) — **resolved 2026-05-27** (issue #115; `make_app` ~95 LOC, exception handlers extracted to module scope) |
-| **L-E** | `control-plane/app.py:121 make_app` | 415 | 2 | **REFACTOR** (symmetric APIRouter regroup; only 8 nested handlers — proportionally smaller) — **deferred** to a separate chunk per F-3 plan §7.9 (still carries its `# slop-allow`) |
+| **L-E** | `control-plane/app.py:121 make_app` | 415 | 2 | **REFACTOR** (symmetric APIRouter regroup; only 8 nested handlers — proportionally smaller) — **deferred** to a separate chunk per F-3 plan §7.9 (issue #235; still carries its `# slop-allow`) |
 | **L-F** | `eden-wire/server.py:1664 make_app._serve_artifact` | 117 | 14 | **REFACTOR** (covered by F-3 — `_serve_artifact` moves to its own module) — **resolved 2026-05-27** (issue #115; artifact primitives moved to `_artifact_fd.py`, handler in `routers/reference.py`) |
 
 ### §4.3 — service main / loop / handler bodies (21 entries) — case-by-case
