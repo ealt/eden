@@ -81,6 +81,11 @@ jobs:
               - '*.md'
               - '**/*.md'
               - 'docs/**'
+              # docs-lint auto-discovers this config (no --config override);
+              # the ISSUE_TEMPLATE dir holds the .yml that rename-discipline
+              # scans (its .md siblings already match '**/*.md').
+              - '.markdownlint.json'
+              - '.github/ISSUE_TEMPLATE/**'
             spec:
               - 'spec/**'
             schemas:
@@ -98,6 +103,10 @@ jobs:
             compose:
               - 'reference/compose/**'
               - 'reference/scripts/**'
+              # The compose image build context is the repo root (`../..`),
+              # so the root .dockerignore directly shapes every compose
+              # smoke / e2e image build.
+              - '.dockerignore'
             conformance:
               - 'conformance/**'
               - 'reference/packages/**'
@@ -114,6 +123,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'pyproject.toml'
               - 'uv.lock'
+              - '.python-version'
 
       # `run_all` collapses the "run the whole suite" triggers into one
       # output: (a) the event is not a pull_request — push-to-main and
