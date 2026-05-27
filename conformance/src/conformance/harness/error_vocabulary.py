@@ -36,7 +36,7 @@ AUTH_DISABLED_OBSERVABLE_TYPES: frozenset[str] = frozenset(
 # latitude, or that only surface in a conformance level the IUT MAY
 # decline (v1+checkpoints, v1+multi-experiment). In-vocabulary, but
 # not required-to-observe in any given session.
-IMPL_OPTIONAL_TYPES: frozenset[str] = frozenset(
+IUT_OPTIONAL_TYPES: frozenset[str] = frozenset(
     {
         # spec/v0/03-roles.md §3.4 — no-op rejection MAY surface at
         # submit, at accept (no wire envelope), or both.
@@ -80,7 +80,7 @@ CORE_VOCABULARY: frozenset[str] = frozenset(
 
 # The full closed v0 vocabulary (chapter 07 §7).
 V0_VOCABULARY: frozenset[str] = (
-    CORE_VOCABULARY | AUTH_DISABLED_OBSERVABLE_TYPES | IMPL_OPTIONAL_TYPES
+    CORE_VOCABULARY | AUTH_DISABLED_OBSERVABLE_TYPES | IUT_OPTIONAL_TYPES
 )
 
 

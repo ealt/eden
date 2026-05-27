@@ -157,7 +157,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
             reporter.write_sep("=", "error-vocabulary closure (xdist aggregate)", red=True)
             for line in failures:
                 reporter.write_line(line, red=True)
-        # Promote to a failing session exit code without clobbering an
+        # Convert OK status to TESTS_FAILED without clobbering an
         # already-failing status from real test failures.
         if session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
