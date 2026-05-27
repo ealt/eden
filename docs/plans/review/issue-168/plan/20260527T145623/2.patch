@@ -1,0 +1,85 @@
+--- docs/plans/review/issue-168/plan/20260527T145623/1.md	2026-05-27 15:05:24
++++ docs/plans/issue-168-hierarchical-artifacts-substrate.md	2026-05-27 15:07:51
+@@ -270,18 +270,32 @@
+ name; it does not change any wire field. Templates that reference the literal
+ `idea.md` (grep `templates/`) must switch too — part of the same lockstep.
+ 
+-### D.4 URI shape after the change
++### D.4 URI shape after the change — two asymmetric CLI sites
+ 
+-`eden-manual` stamps the container-internal path
+-(`CONTAINER_ARTIFACTS_DIR / name`, [`eden-manual:351`](../../reference/scripts/manual-ui/eden-manual)).
+-After the change a stamped idea URI becomes
+-`file:///var/lib/eden/artifacts/ideas/<idea_id>/content.md`. The host-translate
+-helper `_translate_artifacts_uri_to_host`
+-([`eden-manual:157-178`](../../reference/scripts/manual-ui/eden-manual)) uses
+-`relative_to(CONTAINER_ARTIFACTS_DIR)` then re-joins onto the host dir — it
+-handles nested paths transparently (it walks the whole relative path, not just
+-the basename). No change needed there; verify with a nested-path unit case.
++The CLI has **two** places that touch the artifact path, and they have opposite
++nested-path-readiness. Conflating them is the trap.
++
++1. **Write-side URI stamping — MUST change.** `eden-manual` stamps the URI as
++   `f"file://{CONTAINER_ARTIFACTS_DIR / host_path.name}"`
++   ([`eden-manual:351,358,405`](../../reference/scripts/manual-ui/eden-manual))
++   — **basename only** (`host_path.name`). That is correct only for the flat
++   layout. With nesting, the stamp must use the **full relative path** under the
++   host artifacts dir, i.e. `CONTAINER_ARTIFACTS_DIR / <rel-path-from-host-root>`,
++   so a stamped idea URI becomes
++   `file:///var/lib/eden/artifacts/ideas/<idea_id>/content.md`. This is **not**
++   just "write the file somewhere deeper" — the URI-construction lines change in
++   lockstep with the write path. (Three stamp sites — text, single-file, bundle.)
++2. **Read-side host translation — already nested-safe, no change.**
++   `_translate_artifacts_uri_to_host`
++   ([`eden-manual:157-178`](../../reference/scripts/manual-ui/eden-manual)) uses
++   `relative_to(CONTAINER_ARTIFACTS_DIR)` then re-joins onto the host dir — it
++   walks the whole relative path, not just the basename, so nested URIs
++   round-trip. Verify with a nested-path unit case but expect no edit.
+ 
++The asymmetry (read-side ready, write-side not) is exactly what makes this easy
++to miss — the implementer who reads `_translate_artifacts_uri_to_host` first may
++conclude "the CLI already handles nesting" and overlook the basename-only stamp.
++
+ ### D.5 Spec binding update
+ 
+ [`worker-host-subprocess.md`](../../spec/v0/reference-bindings/worker-host-subprocess.md)
+@@ -303,9 +317,10 @@
+ 
+ **In scope:**
+ 
+-- One shared Python path-builder in
+-  [`eden_web_ui/artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py);
+-  web-UI ideator + evaluator routes write hierarchical.
++- One shared Python path-builder + bundle writer in
++  [`eden_service_common`](../../reference/services/_common/src/eden_service_common/)
++  (§D.1); `eden_web_ui.artifacts` delegates to it; web-UI ideator + evaluator
++  routes and the ideator subprocess host write hierarchical through it.
+ - The hand-mirrored path change in
+   [`eden-manual`](../../reference/scripts/manual-ui/eden-manual)
+   `_write_artifact_for_role`.
+@@ -538,15 +553,17 @@
+ Single impl PR (scope is small-to-medium, ~3–5 days per the issue; no
+ multi-wave split needed). Internal sequence:
+ 
+-**Wave 1 — path-builder + Python writers.**
++**Wave 1 — shared helper + Python writers.**
+ 
+-- Add `entity_artifact_dir()` + thread entity-scoped base through
+-  `write_artifact_bundle` / `predict_artifact_uri`.
+-- Update web-UI ideator + evaluator routes; unify text filename to
+-  `content.md`.
+-- Audit/route the subprocess ideator host; decide the shared-helper home
+-  (avoid the import cycle — §9).
+-- Path-builder unit test (three mappings + evaluator no-overwrite).
++- Add the path-builder + relocated bundle writer to `eden_service_common`
++  (home + interface already decided in §D.1: target dir + filename policy, not
++  the old `artifact_id`-deriving shape). Add the §D.2 `O_EXCL` guard.
++- `eden_web_ui.artifacts` delegates to the `_common` helper (keep public names).
++- Update web-UI ideator + evaluator routes; unify the idea text filename to
++  `content.md` and update `IDEA_BUNDLE_HEADLINE` (§D.3 lockstep).
++- Route the subprocess ideator host through the `_common` helper.
++- Path-builder unit test (three `(role,id)→dir` mappings, full §D.2 filename
++  policy per branch, no-overwrite/`O_EXCL` assertion).
+ 
+ *Gate:* `uv run ruff check . && uv run pyright && uv run pytest -q`
+ (web-UI + ideator package suites green).
