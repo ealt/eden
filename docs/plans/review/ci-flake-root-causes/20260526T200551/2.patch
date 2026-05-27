@@ -1,0 +1,74 @@
+--- docs/plans/review/ci-flake-root-causes/20260526T200551/1.md	2026-05-26 20:16:22
++++ docs/plans/ci-flake-root-causes.md	2026-05-26 20:19:06
+@@ -146,17 +146,26 @@
+ ([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) line 316) — no
+ new transport.
+ 
+-**Precise definition of "progress"** (to avoid a partial-livelock where one
+-counter advances while the experiment is wedged): progress = `completed`
+-strictly increased **or** `open_tasks + in_flight` strictly decreased since
+-the previous heartbeat. A heartbeat where only `iteration` advances (same
+-task counts) is **not** progress — that is the stuck signature. The smoke
+-quiescence-wait asserts on this delta, not on `iteration` alone. On timeout,
+-the script dumps the heartbeat series, so the failure report says "stuck at
+-4 open / 0 completed for 120 s" vs "completing ~1 task / 8 s, just slow" —
+-turning every future timeout into a self-diagnosing failure. This is the
+-single highest-leverage change: it does not *prevent* the next quiescence
+-break, but it makes every one legible in the CI log without a local repro.
++**Precise definition of "progress"** (to avoid *both* a partial-livelock —
++one counter advancing while the experiment is wedged — *and* a false-stuck
++verdict on a healthy long-running task): progress is **any task/idea/variant
++lifecycle transition since the previous heartbeat**, not a change in the
++aggregate counts. This distinction matters because the real lifecycle is
++`created → claimed → submitted → completed` and a worker claims a task well
++before it submits
++([`workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)):
++a task can be legitimately mid-flight for minutes with `completed` flat and
++`open_tasks + in_flight` unchanged. So **`last_transition_age_s`** (reset on
++any state transition, tracked via a monotonic event cursor) is the *primary*
++stuck/healthy authority; the count fields are diagnostic context, not the
++gate. The stuck signature is `iteration` advancing while
++`last_transition_age_s` keeps climbing. On timeout, the script dumps the
++heartbeat series, so the failure report says "no lifecycle transition for
++120 s — stuck at 4 open / 0 completed" vs "last transition 6 s ago,
++completing steadily — just slow" — turning every future timeout into a
++self-diagnosing failure. This is the single highest-leverage change: it does
++not *prevent* the next quiescence break, but it makes every one legible in
++the CI log without a local repro.
+ 
+ **3.2 — Smoke/setup config-validation guard so the next #215 fails loud
+ *before bring-up* (effort: S–M, ~half day).** The reason #215 blasted 12
+@@ -180,14 +189,25 @@
+ ([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) line ~79). #215
+ broke that wiring — the appended/expected policy no longer took effect — and
+ nothing checked. **Fix: validate at the smoke/setup layer, not in the
+-orchestrator.** After `setup-experiment` produces the resolved experiment
+-config the smoke will run, assert it resolves to a *terminating* policy
+-(the `fixed_total` cap is present and effective) and fail fast with a clear
+-message if it doesn't. A pre-bring-up `smoke.sh: resolved ideation policy is
+-not terminating (expected fixed_total cap; got …)` converts a 75-minute
+-cross-branch outage into a one-line, one-branch failure on the PR that
+-introduced the drift — while leaving open-ended policies valid everywhere
+-else.
++orchestrator.** Assert the resolved experiment config the smoke will run
++resolves to a *terminating* policy (the `fixed_total` cap is present and
++effective) and fail fast with a clear message if it doesn't.
++
++**Validation timing is load-bearing: validate the *final* config, after any
++per-script mutation, immediately before `compose up`.** Several scripts
++append the terminating `fixed_total` block *after* `setup-experiment`
++returns
++([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) line ~84,
++[`smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh),
++[`smoke-multi-orchestrator.sh`](../../reference/compose/healthcheck/smoke-multi-orchestrator.sh)).
++A guard that runs right after `setup-experiment` would bless the
++pre-mutation config and miss exactly the drift it exists to catch — so the
++check must run on the post-append, pre-bring-up config (a natural home in the
++shared helper's `eden_smoke_setup`, §6, after the script's overlay/append
++step). A pre-bring-up `smoke.sh: resolved ideation policy is not terminating
++(expected fixed_total cap; got …)` converts a 75-minute cross-branch outage
++into a one-line, one-branch failure on the PR that introduced the drift —
++while leaving open-ended policies valid everywhere else.
+ 
+ **3.3 — Make the 180 s a function of observed progress, not a magic
+ constant (effort: S, folds into 3.1).** Replace the fixed

@@ -1,0 +1,518 @@
+# CI flake root causes — inventory + fix plan
+
+**Status.** Draft (plan-stage; no impl in this PR).
+
+**Scope.** Inventory every CI failure the team hit over the four weeks
+2026-04-29 → 2026-05-26, separate genuine flakes from real failures, and
+name the **root-cause** fix for each flake category. Explicitly *not* in
+scope: retries, `continue-on-error`, `pytest.mark.flaky`, or any
+symptom-masking (see [§7 Anti-goals](#7-anti-goals)).
+
+**Predecessors.** None. This plan reads the current CI surface
+([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)) and the
+seven smoke scripts under
+[`reference/compose/healthcheck/`](../../reference/compose/healthcheck/).
+
+---
+
+## 1. Headline finding
+
+**The CI "flakes" are not random noise — they are three time-clustered
+events plus one genuine external-infra flake.** Over four weeks there were
+**84 failed workflow runs**. After classifying every one by log signature
+(§2), the failures that look like "flakes" collapse into a small number of
+distinct, datable incidents:
+
+| Incident | Hits | Window | Verdict |
+|---|---|---|---|
+| `EDEN_IDEATION_POLICY` retirement broke smoke quiescence | 12 of 14 quiescence-timeouts | 2026-05-25 20:13–21:27 (single 75-min window, blast across ≥9 branches incl. `main` ×2) | **Real regression masquerading as a flake** (#215 → fixed #224) |
+| 12a-1g bind-mount substrate cleanup `EACCES` | 9 | 2026-05-13 → 2026-05-15 | **Real bug, fixed forward (#94) but incompletely propagated** |
+| codeberg.org registry `50x` on `forgejo` image pull | 4 | 2026-05-24 23:05 → 2026-05-25 05:25 (~6 h outage) | **Genuine external-infra flake** |
+| Genuinely slow/stuck quiescence (unrelated to #215) | 2 of 14 | 2026-05-04 | **Diagnosis gap** (slow-vs-stuck indistinguishable) |
+
+The remaining failures break down precisely (full table in §2.2, every run
+ID bucketed in [Appendix A](#appendix-a-auditable-run-id-buckets)): **50 are
+legitimate CI-gate catches during dev iteration** — `rename-discipline`
+(16), `pytest` assertions (15), `ruff` (12), `markdownlint` (5),
+`complexity-gate` (1), one Dockerfile `uv sync` break (1) — plus **5
+`variant.integrated` WIP-assertion failures** on the 12b checkpoint branch
+(real, resolved before 12b merged) and **1 indeterminate single
+`compose-smoke-manual-mode` assertion**. These are the gate doing its job;
+they are **not** flakes and this plan does not touch them. They are
+accounted for here only to keep the inventory complete (28 flake-suspect +
+56 non-flake = 84).
+
+**Consequence for chunking:** this is *not* "~7 independent flake fixes."
+It is **one masked-regression class (highest value), one
+incomplete-fix-propagation cleanup, and one external-infra hardening** —
+plus a cross-cutting structural fix (§6) that prevents the next masked
+regression from blasting across every branch the way #215 did.
+
+---
+
+## 2. Methodology + full inventory
+
+### 2.1 How the data was gathered
+
+- `gh run list --limit 400 --created '>=2026-04-29'` → 392 runs (303 success,
+  84 failure, 5 in-flight).
+- **Rerun-passed detection** (`attempt > 1` with `conclusion == success`):
+  the cleanest flake signal — a run that failed, then passed on re-run with
+  no code change. Only **2** in four weeks (both diagnosed below).
+- For all 84 failed runs, `gh run view <id> --json jobs` → which *jobs*
+  failed; then `gh run view <id> --log-failed` grepped for a fixed set of
+  error signatures to classify each run. The **exact signature regex set**
+  and the **full run-ID-by-bucket listing** are preserved in
+  [Appendix A](#appendix-a-auditable-run-id-buckets) so the classification is
+  reproducible end-to-end — no run is left unclassified.
+
+### 2.2 Per-signature tally (all 84 failed runs)
+
+| Signature | Count | Flake? | Root-cause section |
+|---|---|---|---|
+| `rename-discipline` lint | 16 | No — real gate catch | — |
+| `pytest` assertion (dev iteration) | 15 | No — real, on feature branches | — |
+| **quiescence-timeout** (orchestrator did not exit in 180 s) | 14 | **Mixed** — 12 regression, 2 genuine | [§3](#3-quiescence-timeout-highest-value), [§5](#5-masked-bugs-failures-weve-been-treating-as-transient) |
+| `ruff` lint | 12 | No — real gate catch | — |
+| **bind-mount cleanup `EACCES`** | 9 | **Was real bug; latent** | [§4](#4-bind-mount-cleanup-eacces) |
+| `variant.integrated` count assertion | 6 | Mostly real (12b WIP); 1 suspect | [§5](#5-masked-bugs-failures-weve-been-treating-as-transient) |
+| `markdownlint` | 5 | No — real gate catch | — |
+| **codeberg `50x` image pull** | 4 | **Yes — external infra** | [§4b](#4b-codeberg-image-pull-50x) |
+| `complexity-gate` lint | 1 | No — real gate catch | — |
+| Dockerfile `uv sync --frozen` break | 1 | No — real (conformance member; fixed) | — |
+| `compose-smoke-manual-mode` assertion (single, indeterminate) | 1 | No — single, non-recurring | — |
+
+Total = 84 (16+15+14+12+9+6+5+4+1+1+1). The 6 `variant.integrated`
+assertions split 5 real-WIP (12b branch, resolved before merge) + 1 suspect
+(see §5). The two formerly-"unclassified" runs are now dispositioned:
+`26417766872` was a `complexity-gate` violation and `25944794932` a single
+`compose-smoke-manual-mode` assertion — neither is a flake.
+
+### 2.3 The two rerun-passed (cleanest) flakes
+
+1. **Run 26375298092** (branch `impl/issue-130-forgejo-etc-bind-mount`,
+   2026-05-24): `compose-smoke` + `compose-smoke-multi-orchestrator` failed
+   on attempt 1 with `forgejo Error received unexpected HTTP status: 502 Bad
+   Gateway`, passed on attempt 2. → **codeberg pull flake** (§4b).
+2. **Run 25231197462** (branch `codify-phase-11-lessons`, 2026-05-01):
+   `python-test` failed on attempt 1 in the orchestrator subprocess-e2e
+   test — "expected 3 successful variants, got 0" — and passed on attempt 2.
+   (The log's test name predates a vocab rename; the behavior is the
+   subprocess-e2e timing flake.) This is the `eden#39` PIPE-buffer/stall
+   area (closed), whose fix is
+   already documented in AGENTS.md (the `_spawn` / `_read_port_announcement`
+   / `_dump_logs` shape). Single occurrence post-fix; tracked as residual in
+   §5, not a standalone chunk.
+
+---
+
+## 3. Quiescence-timeout (highest value)
+
+**Signature.** `orchestrator did not exit within 180s; current status:
+running`, followed by a `docker compose logs --tail 30 orchestrator` dump
+and `exit 1`. Source:
+[`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) lines 167–185
+(and the equivalent block copy-pasted into the other six scripts).
+
+**What actually happened (the 12 of 14).** On 2026-05-25, PR **#215**
+(title: "Fix #133: surface ideation policy in experiment config") retired the
+`EDEN_IDEATION_POLICY` env var and moved the policy into experiment config.
+The fixture/compose wiring fell out of sync, so the orchestrator's ideation
+policy kept topping up the work queue every iteration — the experiment
+**never quiesced**. Every branch that ran CI in the next ~75 minutes
+(including `main` twice) hit the 180 s wall and reported it as a
+`compose-smoke*` failure. PR **#224** ("Fix smoke quiescence after #215
+retired `EDEN_IDEATION_POLICY` env var") fixed it. The 12 failures were
+**one regression with a wide blast radius**, not 12 flakes.
+
+**The 2 of 14 (2026-05-04, `audit-and-tooling`).** Genuine slow-or-stuck:
+the orchestrator was still `running` at 180 s with no config regression in
+play. Whether it was *slow* (would have finished at 200 s) or *stuck*
+(deadlock / lost task) is **unknowable from the log** — the `--tail 30`
+dump shows only the last few poll iterations.
+
+### Root-cause fixes
+
+**3.1 — Orchestrator progress heartbeat (effort: M, ~1 day).** The 180 s
+deadline with a tail-30 dump makes "slow" and "stuck" indistinguishable —
+exactly the AGENTS.md "CI log is a hint; local stack is ground truth"
+trap, but here we can't even re-run locally to reproduce a timing-sensitive
+stall. Fix: have the orchestrator loop emit a structured
+`orchestrator.progress` heartbeat each iteration carrying
+`{iteration, open_tasks, in_flight, completed, last_transition_age_s}`. This
+rides the **existing** JSONL service logger
+([`logging.py`](../../reference/services/_common/src/eden_service_common/logging.py))
+and lands in the per-service host log files the smoke already asserts exist
+([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) line 316) — no
+new transport.
+
+**Precise definition of "progress"** (to avoid *both* a partial-livelock —
+one counter advancing while the experiment is wedged — *and* a false-stuck
+verdict on a healthy long-running task): progress is **any task/idea/variant
+lifecycle transition since the previous heartbeat**, not a change in the
+aggregate counts. This distinction matters because the real lifecycle is
+`created → claimed → submitted → completed` and a worker claims a task well
+before it submits
+([`workers.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/workers.py)):
+a task can be legitimately mid-flight for minutes with `completed` flat and
+`open_tasks + in_flight` unchanged. So **`last_transition_age_s`** (reset on
+any state transition, tracked via a monotonic event cursor) is the *primary*
+stuck/healthy authority; the count fields are diagnostic context, not the
+gate. The stuck signature is `iteration` advancing while
+`last_transition_age_s` keeps climbing. On timeout, the script dumps the
+heartbeat series, so the failure report says "no lifecycle transition for
+120 s — stuck at 4 open / 0 completed" vs "last transition 6 s ago,
+completing steadily — just slow" — turning every future timeout into a
+self-diagnosing failure. This is the single highest-leverage change: it does
+not *prevent* the next quiescence break, but it makes every one legible in
+the CI log without a local repro.
+
+**3.2 — Smoke/setup config-validation guard so the next #215 fails loud
+*before bring-up* (effort: S–M, ~half day).** The reason #215 blasted 12
+runs is that a misconfigured ideation policy fails *silently* — the
+orchestrator runs forever and the only symptom is a 180 s timeout three
+minutes later.
+
+**Important scoping correction:** the guard must **not** be a generic
+orchestrator-startup rejection of open-ended policies. An open-ended /
+top-up ideation policy is a *valid, supported* deployment mode — it is the
+default policy
+([`policies.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/policies.py)),
+and the Compose deployment explicitly runs long-lived sessions via
+`EDEN_MAX_QUIESCENT_ITERATIONS`
+([`compose.yaml`](../../reference/compose/compose.yaml)). Rejecting it at
+startup would break real product behavior to catch a test-fixture drift.
+
+What actually makes the smoke finite today is that `setup-experiment` /
+`smoke.sh` **append a terminating `fixed_total` policy to the copied
+experiment config**
+([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) line ~79). #215
+broke that wiring — the appended/expected policy no longer took effect — and
+nothing checked. **Fix: validate at the smoke/setup layer, not in the
+orchestrator.** Assert the resolved experiment config the smoke will run
+resolves to a *terminating* policy (the `fixed_total` cap is present and
+effective) and fail fast with a clear message if it doesn't.
+
+**Validation timing is load-bearing: validate the *final* config, after any
+per-script mutation, immediately before `compose up`.** Several scripts
+append the terminating `fixed_total` block *after* `setup-experiment`
+returns
+([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) line ~84,
+[`smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh),
+[`smoke-multi-orchestrator.sh`](../../reference/compose/healthcheck/smoke-multi-orchestrator.sh)).
+A guard that runs right after `setup-experiment` would bless the
+pre-mutation config and miss exactly the drift it exists to catch — so the
+check must run on the post-append, pre-bring-up config (a natural home in the
+shared helper's `eden_smoke_setup`, §6, after the script's overlay/append
+step). A pre-bring-up `smoke.sh: resolved ideation policy is not terminating
+(expected fixed_total cap; got …)` converts a 75-minute cross-branch outage
+into a one-line, one-branch failure on the PR that introduced the drift —
+while leaving open-ended policies valid everywhere else.
+
+**3.3 — Make the 180 s a function of observed progress, not a magic
+constant (effort: S, folds into 3.1).** Replace the fixed
+`deadline=$((SECONDS + 180))` with "extend the deadline whenever the
+heartbeat shows a state transition; only fail when progress has stalled for
+T seconds." A genuinely slow-but-progressing experiment stops being a flake;
+a truly stuck one fails *faster* than 180 s.
+
+---
+
+## 4. Bind-mount cleanup `EACCES`
+
+**Signature.** During teardown, `rm: cannot remove
+'/tmp/eden-smoke-*/…': Permission denied` on every file under the
+bind-mount substrate, then `exit 1`. The smoke *assertions had already
+passed* — the script failed in cleanup.
+
+**Root cause.** Phase 12a-1g migrated worker repo storage from named docker
+volumes to host bind-mounts under `${EDEN_EXPERIMENT_DATA_ROOT}`. Container
+processes write those files as uids the host runner doesn't match
+(`postgres=70`, `forgejo/eden=1000`) in mode-0755 subdirs, so the host's
+`rm -rf` hits `EACCES`. All 9 occurrences fall in the 2026-05-13 → 05-15
+window — the migration window.
+
+**Status.** Fixed forward by **PR #94** ("container-side rm in smoke-script
+teardown", shipped 2026-05-15): a sibling `alpine` container runs as root to
+`find /cleanup -mindepth 1 -delete`, then the host `rmdir`s the now-empty
+root, all behind `|| true` so cleanup can't mask the real exit code. This is
+a correct root-cause fix.
+
+**Why it's still on the list — incomplete propagation (effort: S, ~half
+day).** The fix did **not** reach all seven smoke scripts. Audit of the
+cleanup functions:
+
+| Script | root-container delete? |
+|---|---|
+| `smoke.sh` | yes |
+| `smoke-checkpoint.sh` | yes |
+| `smoke-subprocess.sh` | yes |
+| `smoke-subprocess-docker.sh` | yes |
+| `e2e.sh` | yes |
+| `smoke-manual-mode.sh` | **no** |
+| `smoke-multi-orchestrator.sh` | **no** |
+
+The gap is deeper than a missing teardown. `smoke-manual-mode.sh` and
+`smoke-multi-orchestrator.sh` call
+[`setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)
+**without `--data-root`**, so they default to a *persistent* host path
+`$HOME/.eden/experiments/<id>` (setup-experiment's documented default) —
+whereas `smoke.sh` passes `--data-root "$SMOKE_DATA_ROOT"` (a per-run
+`mktemp -d`). Their cleanup then does only `docker compose down -v` + `rm -f
+$ENV_FILE` and never touches that persistent data root at all. On CI's fresh
+runners this is invisible (the runner is discarded); on a contributor laptop
+it leaks container-owned trees under `$HOME/.eden` across runs and, because
+those are exactly the `postgres=70` / `eden=1000` files from #94, a later
+`rm` of them reproduces the `EACCES` failure. This is the AGENTS.md
+"substrate migration needs a same-PR audit of every consumer of the old
+surface" pitfall (#178) recurring at the script layer.
+
+**Fix (Chunk B): two steps, not one.** (1) Migrate both scripts to a per-run
+`mktemp` `SMOKE_DATA_ROOT` passed via `--data-root`, matching `smoke.sh`, so
+they stop writing to persistent `$HOME/.eden`. (2) *Then* the #94
+root-container teardown applies. Both steps land naturally in the shared
+helper of §6 — the durable fix is to stop copy-pasting setup/teardown across
+seven scripts entirely.
+
+### 4b. codeberg image pull `50x`
+
+**Signature.** `forgejo Pulling … Error received unexpected HTTP status:
+502 Bad Gateway` (also seen as 504). The `forgejo` service image is
+[`codeberg.org/forgejo/forgejo:11-rootless`](../../reference/compose/compose.yaml)
+(line 35). All 4 occurrences cluster in a ~6 h window 2026-05-24 23:05 →
+2026-05-25 05:25 — a codeberg.org registry outage that caught one `main` run
+and three PR runs.
+
+**Why it's a true flake, not a bug.** Nothing in our code changed; an
+external single-homed registry was down. This is the one category where the
+failure is genuinely outside our control — so the fix is *resilience*, not a
+code correction.
+
+### Root-cause fix
+
+**4b.1 — Mirror the forgejo image to a registry we control + pin by digest
+(effort: M, ~1 day).** codeberg.org is a single point of failure for every
+`compose-*` job. Three layers, in order of impact:
+
+1. **Mirror + pin — registry-of-record is GHCR.** Re-tag
+   `codeberg.org/forgejo/forgejo:11-rootless` into GHCR under the repo
+   (`ghcr.io/ealt/forgejo:11-rootless@sha256:…`) and reference it from
+   `compose.yaml` **by digest**. GHCR is the chosen target (not deferred):
+   it shares GitHub's uptime/SLA with the runners, the repo already has GHCR
+   push rights via `GITHUB_TOKEN`, and it removes codeberg from the hot path.
+   Docker Hub is *not* the choice (anonymous-pull rate limits on shared CI
+   IPs are their own flake source). Digest-pinning also closes a
+   supply-chain drift gap (the floating `:11-rootless` tag can move under
+   us). **Update procedure / owner (so we don't trade one drift for
+   another):** the mirror+digest is refreshed by a small documented script
+   (`reference/compose/scripts/mirror-forgejo.sh`, re-pull → re-tag → push →
+   emit new digest) run on Forgejo minor bumps; track the bump cadence as a
+   recurring item and record the owning role in the chunk's PR. (A Renovate
+   `docker` manager rule watching the upstream tag is a viable automation if
+   the repo adopts Renovate later; out of scope for this chunk.)
+2. **Pre-warm the cache in CI.** Add a `docker pull` (of the pinned digest)
+   as an early workflow step *before* `compose up`, so an image-registry
+   blip surfaces as a clear, isolated "pull failed" step rather than a
+   confusing mid-`compose up` 502. Optionally `actions/cache` the saved
+   image tarball keyed on the digest.
+3. **(Optional) bounded pull retry on the pre-warm step only.** A *single*
+   `docker pull` retry on the dedicated pre-warm step is **not** a
+   test-retry and does not violate §7 — it is image-fetch resilience, scoped
+   to the network operation, never wrapping the smoke assertions. Decide in
+   review whether (1)+(2) suffice; if the mirror is on GHCR, retry is likely
+   unnecessary.
+
+---
+
+## 5. Masked bugs (failures we've been treating as transient)
+
+Per the task's requirement to surface "this is actually a bug, not a flake":
+
+- **#215 quiescence regression (12 hits) — the poster child.** Already fixed
+  (#224), but the *pattern* will recur: any future change to ideation
+  policy, variant caps, or quiescence wiring can silently make the orchestrator
+  never quiesce, and the only symptom is a 180 s timeout. The §3.2
+  smoke/setup config-validation guard is the durable fix; without it, the
+  next config drift produces another cross-branch outage. **This is the
+  strongest "masked bug" signal
+  in the dataset: 12 reruns/failures all tracing to one silent
+  never-quiesce.**
+- **Multi-orchestrator over-integration — `expected exactly 3
+  variant.integrated; got 4` (run 25830615663, 2026-05-13).** One occurrence,
+  but it is a *correctness* smell, not a timing one: two orchestrators
+  integrating the same lineage would produce a 4th integration. Worth a
+  focused look at the multi-orchestrator lease/CAS path before it is dismissed
+  as noise — if reproducible, it is a real concurrency bug, not a flake. File
+  as an investigation issue (§8).
+- **`variant.integrated … got 0` on `impl/phase-12b-*` (5 hits).** These are
+  real WIP failures during the 12b checkpoint chunk (import not yet producing
+  integrations), already resolved by the time 12b merged — listed for
+  completeness, not action.
+- **orchestrator subprocess-e2e timing flake (1 post-fix hit, §2.3).** The
+  `eden#39` stall class. The documented fix landed; the single residual
+  occurrence (2026-05-01) may predate full propagation. Action: confirm the
+  `_spawn`/file-redirect drainer pattern is used in *every* multi-subprocess
+  test, not just the orchestrator e2e ones (one-time audit, effort S).
+
+---
+
+## 6. Cross-cutting root cause: no shared smoke helper
+
+The seven smoke scripts each **re-implement** setup, env-file generation,
+the quiescence-wait loop, and teardown. There is **no shared library**
+(`grep -l 'source' *.sh` finds none). This is the structural reason the #94
+cleanup fix reached five scripts but not two, and the reason the §3
+quiescence-wait block (the 180 s constant + tail-30 dump) is copy-pasted
+seven times. Every per-script fix in §3/§4 will drift again the next time a
+script is added unless the shared logic is extracted.
+
+**Fix: extract `reference/compose/healthcheck/lib.sh` (effort: M, ~1.5–2
+days).** A sourced helper providing the full common surface — not just
+`cleanup()`:
+
+- `eden_smoke_setup` — `mktemp` data root + `--data-root` wiring (the §4
+  fix) + env-file generation, parameterized by the **overlay-specific
+  compose file set** each script layers (`-f compose.yaml -f
+  compose.subprocess.yaml …`), since the scripts differ in which overlays
+  they bring up.
+- `eden_smoke_wait_quiescent` — the heartbeat-aware progress wait from §3.1.
+- `eden_smoke_teardown` — the #94 root-container delete behind `|| true`.
+- The bash-3.2-safe array / parallel-array helpers AGENTS.md already
+  mandates.
+
+Each script keeps its own **script-specific assertions and diagnostics**
+(the manual-mode flip drill, the multi-orchestrator cardinality checks,
+etc.) — the helper owns lifecycle, not test logic. Then a CI lint fails if a
+`healthcheck/*.sh` defines its own `cleanup()`/teardown instead of calling
+the shared one — the mechanical guardrail that makes the next §4-style drift
+impossible (AGENTS.md "a hook beats a preference you have to remember").
+
+---
+
+## 7. Anti-goals
+
+These are explicitly **out of scope** and must not appear in any chunk:
+
+- **No `continue-on-error`** on any job. (None exists today — keep it that
+  way.)
+- **No automatic retry-on-failure** of test jobs or smoke scripts. The only
+  retry permitted anywhere is a *bounded `docker pull` retry on the
+  image-pre-warm step* (§4b.1.3), which is network-fetch resilience, never a
+  test re-run.
+- **No `pytest.mark.flaky`** / rerun plugins.
+- **No raising the 180 s wall to "just wait longer."** §3.3 replaces the
+  magic constant with progress-based extension; bumping the constant would
+  mask a stuck orchestrator.
+
+Every item above addresses a *root cause*: a real regression (§3.2), an
+incomplete fix (§4), a single-homed dependency (§4b), or the structural
+duplication that lets fixes drift (§6).
+
+---
+
+## 8. Recommended chunking + sequencing
+
+Ordered by cycle-time impact (highest first). Each chunk is independently
+shippable.
+
+1. **Chunk A — Quiescence legibility + guard (§3.1, §3.2, §3.3).**
+   *Highest value.* 14 of the period's failures were quiescence-timeouts and
+   the class is guaranteed to recur. The heartbeat + progress-based wait +
+   smoke/setup config-validation guard turn the next occurrence from a silent
+   75-minute cross-branch outage into a one-line failure on the offending PR.
+   Effort: M (~1.5–2 days). Depends on nothing.
+2. **Chunk B — Shared smoke helper (§6) + per-run data-root migration +
+   #94-teardown propagation across all seven scripts (§4).** Do this *second*
+   so Chunk A's heartbeat-aware wait lands in the shared `lib.sh` rather than
+   being written once and copy-pasted. Closes the bind-mount `EACCES` latent
+   recurrence (and the `$HOME/.eden` persistent-data-root leak in the two
+   `--data-root`-less scripts) and installs the anti-drift CI lint. Effort:
+   M (~1.5–2 days). Soft-depends on A (wants A's wait function to extract).
+3. **Chunk C — forgejo image mirror + pin + pre-warm (§4b).** Removes the one
+   genuine external-infra flake. Independent of A/B; can run in parallel.
+   Effort: M (~1 day). Registry-of-record is GHCR (decided in §4b.1); the
+   only impl-time confirmation is the exact upstream digest to pin.
+4. **Chunk D — Investigation issues, not code (§5).** File: (i)
+   multi-orchestrator over-integration investigation, (ii) subprocess-e2e
+   drainer-pattern audit. Effort: S. No merge dependency.
+
+**Parallelism:** A and C are independent and can run concurrently; B should
+follow A. Critical path is A → B (~3–4 days); C is off the critical path.
+
+---
+
+## 9. Validation gates
+
+Plan-stage validation (this PR):
+
+```text
+npx --yes markdownlint-cli2@0.14.0 "docs/plans/ci-flake-root-causes.md"
+python3 scripts/check-rename-discipline.py
+```
+
+Per-chunk impl validation (when each chunk lands) is the literal AGENTS.md
+"Commands" quartet — `ruff` / `pyright` / full `pytest -q` / the affected
+`smoke*.sh` scripts — **not** a narrowed subset (AGENTS.md "the Commands
+section is the literal pre-push validation gate"). Chunk A and B must run
+**all seven** smoke scripts locally, since the whole point is cross-script
+consistency.
+
+---
+
+## 10. Chunk tracking
+
+**Status: not yet filed.** AGENTS.md's deferral-tracking rule fires at
+*chunk-completion review* — the moment work is deferred *out of a shipped
+PR* with a CHANGELOG entry. This is a plan-stage doc proposing future work,
+so the trigger has not fired yet; there is no shipped CHANGELOG entry to
+attach issues to. The chunk-tracking issues below are filed **when the plan
+is approved and the chunks are scheduled** (or immediately, if the operator
+wants them filed now — the bodies are pre-drafted from §3/§4/§6 above). Each
+chunk then carries its own deferral-tracking obligations when *it* ships.
+
+| Chunk | Tracking issue | Labels (proposed) |
+|---|---|---|
+| A — heartbeat + progress wait + smoke config-validation guard | *to file* | `enhancement`, `priority:1-near-term` |
+| B — shared `lib.sh` + per-run data roots + anti-drift lint | *to file* | `enhancement`, `priority:1-near-term` |
+| C — forgejo image mirror/pin (GHCR) + CI pre-warm | *to file* | `enhancement`, `priority:1-near-term` |
+| D(i) — multi-orchestrator over-integration investigation | *to file* | `bug`, `priority:2-planned`, `triage:needs-plan` |
+| D(ii) — subprocess-e2e drainer-pattern audit | *to file* | `enhancement`, `priority:2-planned` |
+
+This section (and the PR description) is updated with real issue numbers the
+moment they are filed, so the plan never *claims* tracking it doesn't have.
+
+---
+
+## Appendix A: auditable run-ID buckets
+
+Every one of the 84 failed runs (window 2026-04-29 → 2026-05-26), bucketed by the signature it matched. This makes the §2 classification reproducible: re-fetch any run with `gh run view <id> --log-failed` and confirm it matches the bucket's regex.
+
+**Signature regexes** (first match wins, in this order):
+
+```text
+codeberg-pull-50x        : received unexpected HTTP status: 50[24] | Bad Gateway
+bindmount-cleanup-eacces : rm: cannot remove.*Permission denied
+quiescence-timeout       : did not exit within 180s | exit on quiescence.*running
+docker-build-uvsync      : Failed to determine installation plan | did not complete successfully: exit code
+integrated-count-assert  : variant\.integrated.*got [0-9] | expected .* variant
+rename-discipline-lint   : check-rename-discipline | pre-rename | rename-discipline
+markdown-lint            : markdownlint | MD0[0-9][0-9]
+ruff-lint                : ruff | would reformat
+complexity-gate-lint     : complexity gate found violations
+pytest-assert            : FAILED | AssertionError | assert (after the above)
+manual-mode-assert       : compose-smoke-manual-mode exit 1 with no other signature
+```
+
+**Buckets** (run IDs):
+
+- `codeberg-pull-50x` (4): 26384815872, 26383880398, 26383876799, 26375277374
+- `quiescence-timeout` (14): 26420448440, 26419877204, 26419851623, 26419708109, 26419656177, 26419574276, 26419547387, 26419545140, 26419541804, 26419504102, 26419044679, 26418044042, 25349329643, 25348918573
+- `bindmount-cleanup-eacces` (9): 25899536913, 25898981612, 25898751737, 25898491117, 25898434526, 25898154523, 25891256895, 25889330587, 25888846163
+- `integrated-count-assert` (6): 26086344770, 26081696873, 26081437160, 26078264486, 26054482454, 25830615663
+- `rename-discipline-lint` (16): 26485542861, 26475975613, 26475973550, 26419253636, 26419236762, 26419206246, 26419201119, 26419115869, 26419105942, 26419102423, 26419065893, 26368739176, 26316787919, 26315637726, 26195976288, 25519731979
+- `ruff-lint` (12): 26419042742, 26418043620, 26417814385, 26385031114, 26379404919, 26188542694, 26140753572, 26079503103, 26078869185, 26078714473, 25944482071, 25140238893
+- `markdown-lint` (5): 26475967601, 26419441205, 26419423922, 26376135829, 25522022727
+- `pytest-assert` (15): 26486063442, 26485591071, 26381503943, 25948115718, 25943993486, 25890931859, 25890150323, 25889233763, 25888812033, 25133338385, 25133059120, 25132855462, 25132645166, 25132465477, 25132202485
+- `complexity-gate-lint` (1): 26417766872
+- `docker-build-uvsync` (1): 25230777892
+- `manual-mode-assert` (1): 25944794932
