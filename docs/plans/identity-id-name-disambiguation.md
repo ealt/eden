@@ -616,7 +616,7 @@ PR shape: tests-heavy.
 
 **Cascade:** Wave 5 closes the rename. Only after the full atomic rename
 PR merges is the cluster-identity-foundation milestone complete; chunks
-#140 / #141 / #143 / #144 then plan against the post-rename shape with
+\#140 / #141 / #143 / #144 then plan against the post-rename shape with
 no mixed-name intermediate state left on `main`.
 
 ### Wave ordering rationale
