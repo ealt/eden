@@ -294,7 +294,7 @@ nested-path-readiness. Conflating them is the trap.
    round-trip. Verify with a nested-path unit case but expect no edit.
 
 The asymmetry (read-side ready, write-side not) is exactly what makes this easy
-to miss — the implementer who reads `_translate_artifacts_uri_to_host` first may
+to miss — the developer who reads `_translate_artifacts_uri_to_host` first may
 conclude "the CLI already handles nesting" and overlook the basename-only stamp.
 
 ### D.5 Spec binding update
