@@ -7,8 +7,9 @@ three reference backends. Error types and submission dataclasses
 live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 """
 
-from ._base import RESERVED_IDENTIFIERS, iter_events_by_type
+from ._base import RESERVED_IDENTIFIERS
 from ._checkpoint import ImportResult
+from ._ops.events import iter_events_by_type
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,

@@ -43,16 +43,14 @@ from __future__ import annotations
 
 import copy
 import itertools
-import math
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from eden_contracts import (
-    DispatchMode,
     EvaluationPayload,
     EvaluationSchema,
     EvaluationTask,
@@ -60,7 +58,6 @@ from eden_contracts import (
     ExecutionPayload,
     ExecutionTask,
     Experiment,
-    ExperimentState,
     FailReason,
     Group,
     Idea,
@@ -523,12 +520,35 @@ class _StoreCore:
         """
         raise NotImplementedError
 
+    def _validate_evaluation(self, evaluation: dict[str, Any]) -> None:
+        """Abstract stub; real body on ``_ExperimentOpsMixin`` (plan §D.4).
 
+        The evaluation-schema validator references the
+        experiment-scoped ``self._evaluation_schema``, so its body
+        lives on ``_ExperimentOpsMixin``. Declared here so cross-mixin
+        callers (``_TaskOpsMixin``'s acceptance validators) resolve
+        under pyright; MRO routes to the real implementation.
+        """
+        raise NotImplementedError
+
+
+from ._ops.events import _EventOpsMixin  # noqa: E402
+from ._ops.experiment import _ExperimentOpsMixin  # noqa: E402
 from ._ops.groups import _GroupOpsMixin  # noqa: E402
+from ._ops.ideas import _IdeaOpsMixin  # noqa: E402
+from ._ops.variants import _VariantOpsMixin  # noqa: E402
 from ._ops.workers import _WorkerOpsMixin  # noqa: E402
 
 
-class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
+class _StoreBase(
+    _IdeaOpsMixin,
+    _VariantOpsMixin,
+    _EventOpsMixin,
+    _ExperimentOpsMixin,
+    _WorkerOpsMixin,
+    _GroupOpsMixin,
+    _StoreCore,
+):
     """Shared transaction/validation/event logic for every store backend.
 
     Subclasses implement the backend primitives listed at module-top.
@@ -573,21 +593,7 @@ class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
                 raise NotFound(f"task {task_id!r}")
             return _deep(task)
 
-    def read_idea(self, idea_id: str) -> Idea:
-        """Return a snapshot of the current idea, or raise ``NotFound``."""
-        with self._atomic_operation():
-            idea = self._get_idea(idea_id)
-            if idea is None:
-                raise NotFound(f"idea {idea_id!r}")
-            return _deep(idea)
 
-    def read_variant(self, variant_id: str) -> Variant:
-        """Return a snapshot of the current variant, or raise ``NotFound``."""
-        with self._atomic_operation():
-            variant = self._get_variant(variant_id)
-            if variant is None:
-                raise NotFound(f"variant {variant_id!r}")
-            return _deep(variant)
 
     def read_submission(self, task_id: str) -> Submission | None:
         """Return the committed submission for a task, or ``None`` if not submitted.
@@ -613,53 +619,10 @@ class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
         with self._atomic_operation():
             return [_deep(task) for task in self._iter_tasks(kind=kind, state=state)]
 
-    def list_ideas(self, *, state: str | None = None) -> list[Idea]:
-        """Return snapshots of ideas matching an optional ``state`` filter."""
-        with self._atomic_operation():
-            return [_deep(p) for p in self._iter_ideas(state=state)]
 
-    def list_variants(self, *, status: str | None = None) -> list[Variant]:
-        """Return snapshots of variants matching an optional ``status`` filter."""
-        with self._atomic_operation():
-            return [_deep(t) for t in self._iter_variants(status=status)]
 
-    def events(self) -> list[Event]:
-        """Return an ordered snapshot of the full event log.
 
-        Every returned event is a deep copy; mutation of the return
-        value cannot rewrite log entries. Equivalent to ``replay()``;
-        retained as the pre-Phase-6 convenience name.
-        """
-        return self.replay()
 
-    def replay(self) -> list[Event]:
-        """Return every event for this experiment in log order.
-
-        Chapter 8 §2.1 / §4.4. Every returned event is a deep copy.
-        """
-        with self._atomic_operation():
-            return [_deep(e) for e in self._iter_events()]
-
-    def read_range(self, cursor: int | None = None) -> list[Event]:
-        """Return events after ``cursor`` in log order (chapter 8 §2.1).
-
-        ``cursor`` is the **cumulative** count of events the caller
-        has already consumed — i.e. the total number of events the
-        caller has observed, not the size of its last chunk. A
-        caller polling in a loop advances ``cursor`` by the length
-        of each returned chunk; passing the size of the last chunk
-        alone would skip everything the caller has already read past
-        that point.
-
-        The reference backends' log order is total (chapter 8 §2.2),
-        so indexing by cumulative count is stable. A ``None`` cursor
-        (or ``0``) is equivalent to ``replay()``.
-        """
-        with self._atomic_operation():
-            events = [_deep(e) for e in self._iter_events()]
-        if cursor is None or cursor <= 0:
-            return events
-        return events[cursor:]
 
     # ------------------------------------------------------------------
     # Task lifecycle — creation
@@ -1456,334 +1419,26 @@ class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
     # Dispatch mode (12a-2)
     # ------------------------------------------------------------------
 
-    def read_dispatch_mode(self) -> DispatchMode:
-        """Return the experiment's current dispatch_mode (every key).
-
-        Defaults to all-``auto`` on the four operational keys and
-        ``"manual"`` on ``termination`` for a freshly-initialized
-        experiment ([`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §2.4). Unknown keys persisted by older writes are returned via
-        the model's ``extra="allow"`` carry-through.
-        """
-        with self._atomic_operation():
-            return DispatchMode.model_validate(self._get_dispatch_mode())
-
-    def read_experiment(self) -> Experiment:
-        """Return the experiment runtime object (state + created_at).
-
-        Per [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §2.5. The runtime object is distinct from the declarative
-        ``experiment-config``; it carries only observed runtime state.
-        """
-        with self._atomic_operation():
-            return _deep(self._get_experiment())
-
-    def read_experiment_state(self) -> ExperimentState:
-        """Return the experiment's current lifecycle state.
-
-        Defaults to ``"running"`` on a freshly-initialized experiment;
-        becomes ``"terminated"`` after :meth:`terminate_experiment` or
-        the policy-driven termination branch commits the transition.
-        """
-        with self._atomic_operation():
-            return self._get_experiment().state
-
-    def update_experiment_state(self, new_state: ExperimentState) -> Experiment:
-        """Internal primitive: atomically update the experiment lifecycle state.
-
-        Not a public wire op in v0 (per
-        [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
-        §8.3). Used by :meth:`terminate_experiment` and the
-        orchestrator's policy-driven termination branch
-        ([`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md)
-        §6.2 decision-type 0). v0 defines exactly one legal transition
-        (``"running" → "terminated"``); other values raise
-        ``IllegalTransition``.
-
-        This method does NOT emit ``experiment.terminated`` on its own
-        — composite commit with the appropriate event is the caller's
-        responsibility. Use :meth:`terminate_experiment` for the
-        normal public-op shape.
-        """
-        if new_state not in ("running", "terminated"):
-            raise InvalidPrecondition(
-                f"experiment.state value {new_state!r} is not "
-                "'running' or 'terminated'"
-            )
-        with self._atomic_operation():
-            current = self._get_experiment()
-            if current.state == new_state:
-                return _deep(current)
-            if not (current.state == "running" and new_state == "terminated"):
-                raise IllegalTransition(
-                    f"cannot transition experiment state "
-                    f"{current.state!r} → {new_state!r}"
-                )
-            tx = _Tx()
-            tx.experiment_state = new_state
-            self._apply_commit(tx)
-            return _validated_update(current, state=new_state)
-
-    def terminate_experiment(
-        self, *, reason: str, terminated_by: str
-    ) -> Experiment:
-        """Atomically commit the ``running → terminated`` lifecycle transition.
-
-        Per [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
-        §8.1: the state field update and the ``experiment.terminated``
-        event are a single transaction. Idempotent on the terminated
-        state — a second call returns success without committing a
-        second transition and without appending a second event; the
-        winning caller's ``reason`` (the first commit) is the one
-        recorded.
-
-        Authority enforcement (caller in ``admins``) is the binding's
-        responsibility; the Store trusts ``terminated_by`` as data.
-        Composite-commits the state update and the event per
-        [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
-        §2.
-        """
-        self._validate_registry_id(terminated_by, kind="actor")
-        with self._atomic_operation():
-            current = self._get_experiment()
-            if current.state == "terminated":
-                # §8.1 idempotency: success, no second event, prior
-                # reason preserved.
-                return _deep(current)
-            tx = _Tx()
-            tx.experiment_state = "terminated"
-            tx.events.append(
-                self._event(
-                    "experiment.terminated",
-                    {"reason": reason, "terminated_by": terminated_by},
-                )
-            )
-            self._apply_commit(tx)
-            return _validated_update(current, state="terminated")
-
-    def emit_policy_error(
-        self,
-        *,
-        policy_kind: str,
-        error_type: str,
-        error_message: str,
-    ) -> None:
-        """Append an ``experiment.policy_error`` event (12a-3).
-
-        Per [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md)
-        §6.2 decision-type 0 fault-tolerance: when an orchestrator
-        policy callable raises, the orchestrator MUST emit a
-        registered ``experiment.policy_error`` event so operators see
-        the failure in the admin event log. The event is registered
-        but EXEMPT from the §2 transactional invariant (no
-        protocol-owned state mutation pairs with it).
-        """
-        if not policy_kind:
-            raise InvalidPrecondition("policy_kind MUST be non-empty")
-        if not error_type:
-            raise InvalidPrecondition("error_type MUST be non-empty")
-        with self._atomic_operation():
-            tx = _Tx()
-            tx.events.append(
-                self._event(
-                    "experiment.policy_error",
-                    {
-                        "policy_kind": policy_kind,
-                        "error_type": error_type,
-                        "error_message": error_message,
-                    },
-                )
-            )
-            self._apply_commit(tx)
 
 
-    def update_dispatch_mode(
-        self,
-        updates: DispatchMode | dict[str, str],
-        *,
-        updated_by: str,
-    ) -> DispatchMode:
-        """Atomically merge ``updates`` into the experiment's dispatch_mode.
 
-        Spec: [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
-        §7 + [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
-        §3.4. Omitted keys are preserved; unknown keys in ``updates``
-        round-trip through (§2.5 tolerance). When no key actually
-        changes value, NO event fires (the spec records changes, not
-        idempotent no-ops).
-        """
-        self._validate_registry_id(updated_by, kind="actor")
-        if isinstance(updates, DispatchMode):
-            update_map = updates.model_dump(mode="json", exclude_none=True)
-        else:
-            update_map = dict(updates)
-        # Reject values that are not in the closed value-set; tolerate
-        # unknown keys per §2.5 but keep the value-grammar strict.
-        for key, value in update_map.items():
-            if value not in {"auto", "manual"}:
-                raise InvalidPrecondition(
-                    f"dispatch_mode.{key} value {value!r} is not 'auto' or 'manual'"
-                )
-        with self._atomic_operation():
-            current = dict(self._get_dispatch_mode())
-            changed: dict[str, str] = {}
-            for key, value in update_map.items():
-                if current.get(key) != value:
-                    changed[key] = value
-            if not changed:
-                # No-op flip: no event, no write. The committed state
-                # is exactly what we read.
-                return DispatchMode.model_validate(current)
-            new_state = {**current, **changed}
-            tx = _Tx()
-            tx.dispatch_mode = new_state
-            tx.events.append(
-                self._event(
-                    "experiment.dispatch_mode_changed",
-                    {
-                        "dispatch_mode": new_state,
-                        "changed": changed,
-                        "updated_by": updated_by,
-                    },
-                )
-            )
-            self._apply_commit(tx)
-            return DispatchMode.model_validate(new_state)
+
+
+
+
 
     # ------------------------------------------------------------------
     # Idea store
     # ------------------------------------------------------------------
 
-    def create_idea(self, idea: Idea) -> None:
-        """Persist a new idea in ``drafting``. Emits ``idea.drafted``."""
-        with self._atomic_operation():
-            if self._get_idea(idea.idea_id) is not None:
-                raise AlreadyExists(f"idea {idea.idea_id!r}")
-            if idea.experiment_id != self._experiment_id:
-                raise InvalidPrecondition(
-                    f"idea experiment_id {idea.experiment_id!r} "
-                    f"does not match store experiment {self._experiment_id!r}"
-                )
-            if idea.state != "drafting":
-                raise InvalidPrecondition(
-                    f"new idea must start in 'drafting', not {idea.state!r}"
-                )
-            tx = _Tx()
-            tx.ideas[idea.idea_id] = _deep(idea)
-            tx.events.append(
-                self._event("idea.drafted", {"idea_id": idea.idea_id})
-            )
-            self._apply_commit(tx)
 
-    def mark_idea_ready(self, idea_id: str) -> None:
-        """Transition an idea ``drafting → ready``. Emits ``idea.ready``."""
-        with self._atomic_operation():
-            idea = self._require_idea(idea_id)
-            if idea.state != "drafting":
-                raise IllegalTransition(
-                    f"cannot mark idea ready from state {idea.state!r}"
-                )
-            tx = _Tx()
-            tx.ideas[idea_id] = _validated_update(idea, state="ready")
-            tx.events.append(self._event("idea.ready", {"idea_id": idea_id}))
-            self._apply_commit(tx)
 
     # ------------------------------------------------------------------
     # Variant store
     # ------------------------------------------------------------------
 
-    def create_variant(self, variant: Variant) -> None:
-        """Persist a new variant in ``starting``. Emits ``variant.started``."""
-        with self._atomic_operation():
-            if self._get_variant(variant.variant_id) is not None:
-                raise AlreadyExists(f"variant {variant.variant_id!r}")
-            if variant.status != "starting":
-                raise InvalidPrecondition(
-                    f"new variant must start in 'starting', not {variant.status!r}"
-                )
-            if variant.experiment_id != self._experiment_id:
-                raise InvalidPrecondition(
-                    f"variant experiment_id {variant.experiment_id!r} "
-                    f"does not match store experiment {self._experiment_id!r}"
-                )
-            tx = _Tx()
-            tx.variants[variant.variant_id] = _deep(variant)
-            tx.events.append(
-                self._event(
-                    "variant.started",
-                    {"variant_id": variant.variant_id, "idea_id": variant.idea_id},
-                )
-            )
-            self._apply_commit(tx)
 
-    def declare_variant_evaluation_error(self, variant_id: str) -> None:
-        """Retry-exhausted: ``starting → evaluation_error`` (``05-event-protocol.md`` §2.2).
 
-        Writes ``completed_at`` atomically; MUST NOT set metrics or
-        artifacts_uri (``03-roles.md`` §4.4).
-        """
-        with self._atomic_operation():
-            variant = self._require_variant(variant_id)
-            if variant.status != "starting":
-                raise IllegalTransition(
-                    f"cannot declare evaluation_error from variant status {variant.status!r}"
-                )
-            now = self._ts()
-            tx = _Tx()
-            tx.variants[variant_id] = _validated_update(
-                variant, status="evaluation_error", completed_at=now
-            )
-            tx.events.append(self._event("variant.evaluation_errored", {"variant_id": variant_id}))
-            self._apply_commit(tx)
-
-    def integrate_variant(self, variant_id: str, variant_commit_sha: str) -> None:
-        """Integrator integration: write ``variant_commit_sha`` and emit ``variant.integrated``.
-
-        Per ``08-storage.md`` §1.7: ``variant_commit_sha`` is the one
-        post-terminal write permitted on a variant; it must be written
-        atomically with its event.
-
-        **Same-value idempotency** (``07-wire-protocol.md`` §5): a
-        repeated call whose ``variant_commit_sha`` equals the value
-        already stored on the variant is a no-op and MUST NOT append a
-        second ``variant.integrated`` event. This rule lets an HTTP-
-        mediated caller retry a transport-indeterminate
-        ``integrate_variant`` request without risking double-commit;
-        the same-value branch also keeps direct-``Store`` callers
-        and wire-mediated callers on identical contracts.
-
-        A repeated call with a **different** ``variant_commit_sha``
-        raises ``InvalidPrecondition`` — the chapter 6 §1.2 sole-
-        writer rule has been violated and operator intervention is
-        required. The caller (e.g. ``Integrator``) maps this to an
-        ``AtomicityViolation`` rather than compensating the ref.
-        """
-        with self._atomic_operation():
-            variant = self._require_variant(variant_id)
-            if variant.status != "success":
-                raise InvalidPrecondition(
-                    f"variant {variant_id!r} must be in 'success' to integrate, "
-                    f"not {variant.status!r}"
-                )
-            if variant.variant_commit_sha is not None:
-                if variant.variant_commit_sha == variant_commit_sha:
-                    return
-                raise InvalidPrecondition(
-                    f"variant {variant_id!r} is already integrated with a "
-                    f"different variant_commit_sha "
-                    f"({variant.variant_commit_sha!r} != {variant_commit_sha!r})"
-                )
-            tx = _Tx()
-            tx.variants[variant_id] = _validated_update(
-                variant, variant_commit_sha=variant_commit_sha
-            )
-            tx.events.append(
-                self._event(
-                    "variant.integrated",
-                    {"variant_id": variant_id, "variant_commit_sha": variant_commit_sha},
-                )
-            )
-            self._apply_commit(tx)
 
     # ------------------------------------------------------------------
     # Internal dispatch — accept/reject helpers
@@ -2236,47 +1891,7 @@ class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
             return f"invalid variant update: {field}: {err['msg']}"
         return None
 
-    def validate_evaluation(self, evaluation: dict[str, Any]) -> None:
-        """Validate evaluation against the registered schema.
 
-        Public entry point for both submit-time (``08-storage.md`` §4)
-        and integration-time (``06-integrator.md`` §2) validation.
-        Raises ``InvalidPrecondition`` on violation; no-op when the
-        store was constructed without an ``evaluation_schema``.
-        """
-        self._validate_evaluation(evaluation)
-
-    def _validate_evaluation(self, evaluation: dict[str, Any]) -> None:
-        """Validate evaluation against the registered schema (``08-storage.md`` §4)."""
-        if self._evaluation_schema is None:
-            return
-        schema = self._evaluation_schema.root
-        for key, value in evaluation.items():
-            if key not in schema:
-                raise InvalidPrecondition(
-                    f"evaluation key {key!r} is not in the experiment's evaluation_schema"
-                )
-            if value is None:
-                continue
-            mtype = schema[key]
-            # Reject bools for integer/real per spec §1.3 (bool is a separate domain).
-            if isinstance(value, bool):
-                raise InvalidPrecondition(
-                    f"evaluation key {key!r} is bool; declared type is {mtype!r}"
-                )
-            expected = _METRIC_PY_TYPES[mtype]
-            if not isinstance(value, expected):
-                raise InvalidPrecondition(
-                    f"evaluation key {key!r} value {value!r} is not of declared type {mtype!r}"
-                )
-            # Non-finite floats (NaN, +inf, -inf) fail JSON round-trip
-            # and can't be stored in the event log or evaluation manifest. The
-            # ``real`` type in the evaluation schema implies "finite IEEE
-            # 754 double" per the spec's JSON grounding.
-            if mtype == "real" and not math.isfinite(value):
-                raise InvalidPrecondition(
-                    f"evaluation key {key!r} value {value!r} is not finite"
-                )
 
     # ------------------------------------------------------------------
     # Require-or-raise helpers
@@ -2379,63 +1994,6 @@ class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
     # Portable-checkpoint export / import (12b, `10-checkpoints.md`)
     # ------------------------------------------------------------------
 
-    def export_checkpoint(
-        self,
-        stream: Any,
-        *,
-        experiment_config: str | bytes = "",
-        repo_bundle: bytes = b"",
-        exporter_info: Any | None = None,
-    ) -> Any:
-        """Write a portable-checkpoint archive of the store's state.
-
-        Delegates to :func:`eden_storage._checkpoint.export_checkpoint`;
-        see that function's docstring for the full contract. Runs inside
-        :meth:`_atomic_operation` so the snapshot is transactionally
-        consistent per ``spec/v0/10-checkpoints.md`` §6.
-
-        Returns the :class:`CheckpointManifest` written into the archive.
-        """
-        from ._checkpoint import export_checkpoint as _export
-
-        return _export(
-            self,
-            stream,
-            experiment_config=experiment_config,
-            repo_bundle=repo_bundle,
-            exporter_info=exporter_info,
-        )
-
-    def import_checkpoint(
-        self,
-        stream: Any,
-        *,
-        as_experiment_id: str | None = None,
-        extract_dir: Any | None = None,
-    ) -> Any:
-        """Bulk-insert a portable-checkpoint archive into the store.
-
-        Delegates to :func:`eden_storage._checkpoint.import_checkpoint`;
-        see that function's docstring for the full contract. The store
-        MUST be empty (chapter 10 §11 collision rule) and the manifest's
-        ``spec_version`` MUST match this binding's
-        :data:`CHECKPOINT_SPEC_VERSION`. Returns an
-        :class:`ImportResult` carrying the substrate-external pieces the
-        caller must wire (experiment_config text, git bundle path,
-        artifact digests).
-        """
-        from ._checkpoint import import_checkpoint as _import
-
-        return _import(
-            self,
-            stream,
-            as_experiment_id=as_experiment_id,
-            extract_dir=extract_dir,
-        )
 
 
-def iter_events_by_type(events: Iterable[Event], type_: str) -> Iterator[Event]:
-    """Yield events whose ``type`` equals ``type_``. Convenience for tests."""
-    for event in events:
-        if event.type == type_:
-            yield event
+
