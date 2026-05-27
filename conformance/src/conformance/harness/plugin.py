@@ -12,9 +12,12 @@ import shutil
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    from _pytest.terminal import TerminalReporter
 
 from .adapter import IutAdapter, IutHandle
 from .error_vocabulary import out_of_vocabulary, unobserved_core
@@ -30,6 +33,12 @@ OBSERVED_PROBLEM_TYPES_KEY = pytest.StashKey[set[str]]()
 # to assert the chapter 07 §7 vocabulary closure across a distributed
 # (pytest-xdist) run. See `pytest_testnodedown` / `pytest_sessionfinish`.
 CONTROLLER_OBSERVED_UNION_KEY = pytest.StashKey[set[str]]()
+# Set True on the controller if any worker did NOT finish cleanly (crash
+# path, or `workeroutput` missing our key). When set, the cross-worker
+# union is partial, so the controller skips the closure assertion rather
+# than emit a misleading "core type never observed" failure on top of the
+# already-red run.
+CONTROLLER_AGGREGATE_INCOMPLETE_KEY = pytest.StashKey[bool]()
 
 _WORKEROUTPUT_OBSERVED_KEY = "eden_observed_problem_types"
 
@@ -47,6 +56,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.stash[OBSERVED_PROBLEM_TYPES_KEY] = set()
     config.stash[CONTROLLER_OBSERVED_UNION_KEY] = set()
+    config.stash[CONTROLLER_AGGREGATE_INCOMPLETE_KEY] = False
 
 
 def _is_xdist_worker(config: pytest.Config) -> bool:
@@ -68,12 +78,24 @@ def pytest_testnodedown(node: object, error: object) -> None:
     before the controller's ``pytest_sessionfinish``. ``workeroutput``
     carries the worker's accumulated ``observed_problem_types`` (written
     in the worker's ``pytest_sessionfinish`` below).
+
+    xdist invokes this on BOTH the clean shutdown path and the
+    crash path (``worker_errordown``). On a crash ``error`` is set and
+    ``workeroutput`` may be missing or partial, so the union would be
+    incomplete — flag it so the controller skips the closure assertion
+    rather than report a spurious "core type never observed" failure.
     """
-    workeroutput = getattr(node, "workeroutput", None) or {}
-    observed = workeroutput.get(_WORKEROUTPUT_OBSERVED_KEY, [])
     config = getattr(node, "config", None)
-    if config is not None:
-        config.stash[CONTROLLER_OBSERVED_UNION_KEY].update(observed)
+    if config is None:
+        return
+    workeroutput = getattr(node, "workeroutput", None) or {}
+    if error is not None or _WORKEROUTPUT_OBSERVED_KEY not in workeroutput:
+        config.stash[CONTROLLER_AGGREGATE_INCOMPLETE_KEY] = True
+        # Still fold in whatever this worker did report — it can only
+        # add real observations, never invent a missing one.
+    config.stash[CONTROLLER_OBSERVED_UNION_KEY].update(
+        workeroutput.get(_WORKEROUTPUT_OBSERVED_KEY, [])
+    )
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
@@ -95,6 +117,22 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     if not _is_distributed(config):
         # Serial run: test_error_vocabulary.py asserted the closure.
         return
+    if config.stash[CONTROLLER_AGGREGATE_INCOMPLETE_KEY]:
+        # A worker did not finish cleanly — the union is partial, so the
+        # closure would be a misleading failure on top of the real one.
+        # The worker crash already fails the run.
+        reporter = cast(
+            "TerminalReporter | None",
+            config.pluginmanager.getplugin("terminalreporter"),
+        )
+        if reporter is not None:
+            reporter.write_line(
+                "error-vocabulary closure NOT asserted: a worker did not "
+                "finish cleanly, so the cross-worker observation union is "
+                "incomplete.",
+                yellow=True,
+            )
+        return
 
     union = set(config.stash[CONTROLLER_OBSERVED_UNION_KEY])
     failures: list[str] = []
@@ -111,8 +149,6 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
             f"never observed during the run: {sorted(missing)}"
         )
     if failures:
-        from _pytest.terminal import TerminalReporter
-
         reporter = cast(
             "TerminalReporter | None",
             config.pluginmanager.getplugin("terminalreporter"),
