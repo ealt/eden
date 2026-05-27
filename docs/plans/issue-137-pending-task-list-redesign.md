@@ -100,7 +100,7 @@ Default collapsed row — 5 columns + expand affordance:
 
 | Column | Source (executor) | Source (evaluator) | Behavior |
 |---|---|---|---|
-| **slug** | `idea.slug` | `idea.slug` (via `variant.idea_id`) | prominent; links to expand; sortable |
+| **slug** | `idea.slug` | `idea.slug` (via `variant.idea_id`) | prominent; sortable (header is the sort link). Expansion is via the dedicated ▸ toggle, not the slug cell |
 | **priority** | `idea.priority` | `idea.priority` | sortable; **default sort key DESC** |
 | **target** | `task.target` | `task.target` | filterable; renders `any` / `worker:<id>` / `group:<id>` |
 | **created by** | `idea.created_by` | `idea.created_by` | filterable + groupable |
@@ -114,34 +114,61 @@ Degraded rows (idea read failed / idea unavailable / variant unavailable) keep t
 graceful-render behavior from the current row-builders
 ([executor.py:411-452](../../reference/services/web-ui/src/eden_web_ui/routes/executor.py),
 [evaluator.py:79-142](../../reference/services/web-ui/src/eden_web_ui/routes/evaluator.py)): when
-`idea is None`, the slug/priority/created_by cells render `—` / `(idea unavailable)` and the row
-is sorted to the bottom (treat missing priority as `-inf`, missing slug as empty). The page-level
-`read_failed_count` warning banner is preserved.
+`idea is None`, the slug/priority/created_by cells render `—` / `(idea unavailable)`. Degraded
+rows always sort to the bottom **regardless of direction** — achieved by partitioning, not a
+sentinel value (see §D.2). The page-level read-failure warning banner is preserved (§D.6).
 
 ### D.2 Sort
 
 - Default: `(idea.priority DESC, task.created_at ASC)` — highest-priority first, ties broken by
   oldest first.
-- Column headers (`slug`, `priority`, `created by`) are links that set `?sort=<key>&dir=<asc|desc>`.
-  Clicking the active column flips direction.
-- Sort is applied in Python in the route handler **after** the rows are built, on a stable key,
-  so degraded rows land deterministically at the bottom.
-- Allowed `sort` values are an explicit allow-list (`priority`, `slug`, `created`); an unknown or
-  absent value falls back to the default. No user input reaches a comparator unchecked.
+- **Sortable columns: `slug` and `priority` only.** Their headers are links that set
+  `?sort=<key>&dir=<asc|desc>`; clicking the active column flips direction. `created_at` is **not**
+  a user-selectable sort axis — it is always the implicit secondary tiebreak under every primary
+  sort. `created_by` is filterable/groupable (§D.4), **not** sortable. This removes the
+  column-header-vs-allow-list ambiguity flagged in plan-review round 0.
+- Allowed `sort` values are an explicit allow-list (`priority`, `slug`); unknown or absent → the
+  default. No user input reaches a comparator unchecked (also closes the reflected-`?sort=` href
+  injection surface).
+- **Direction-safe degraded-row placement.** Sorting partitions rows into *present* (idea
+  resolved) and *degraded* (idea unavailable / read-failed). Only present rows go through the
+  comparator (keyed on the chosen axis + the `created_at` tiebreak, with `dir` applied); degraded
+  rows are concatenated **after**, in stable original order, for both `asc` and `desc`. No
+  `-inf`/`""` sentinel — sentinels move degraded rows to the top under ascending sorts, which is
+  why partitioning is used instead.
 
 ### D.3 Click-to-expand context row (replaces inline preview)
 
 The `▸`/`▾` affordance toggles a `<details>` block spanning the row (same primitive the current
 preview uses — repurposed, not added). **No inline content preview.** The expansion is
-navigation-only and holds the six context surfaces, each a link:
+navigation-only.
 
-- **task** → `/admin/tasks/<task_id>/` (the existing `lineage_link`)
-- **idea** → idea detail surface (`idea_id`)
-- **parent ref** → parent commit on Forgejo (executor: `idea.parent_commits[0]`)
-- **variant** (evaluator only) → `variant_id` + variant branch / commit on Forgejo
-- **creator** → `/admin/workers/<created_by>/`
-- **artifacts** → per-file "view content" links (per #138's landed surface): `idea.md` for
-  executor; the variant artifact for evaluator
+**Scoped to surfaces the web-ui module already exposes** (verified during round-0 revision — only
+`/admin/tasks/{id}/` and `/admin/workers/{id}/` are per-id *detail* pages today; ideas/variants
+have *index* pages only; artifacts are served by `GET /artifacts`). The links are:
+
+- **task** → `/admin/tasks/<task_id>/` (existing `lineage_link`, per-id detail page).
+- **creator** → `/admin/workers/<created_by>/` (existing per-id detail page).
+- **idea** → display `idea_id` (copyable), linked to the admin ideas index
+  `/admin/ideas/` (no per-id idea-detail page exists today). The bulk of idea context is reachable
+  from the task detail page already.
+- **variant** (evaluator only) → display `variant_id` + `variant.branch`, linked to the admin
+  variants index `/admin/variants/`.
+- **artifacts** → **artifact-shape-aware** per-entry "view content" links. The row-builder reads
+  the artifact *manifest* (executor:
+  [`_read_artifact_manifest`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py);
+  evaluator: `read_variant_artifact_manifest`) and emits one `GET /artifacts?...` link per actual
+  manifest entry. **No hardcoded `idea.md`** — the artifact model allows direct-file and
+  upload-only bundles with no guaranteed single-file name; if the manifest is empty or unreadable,
+  render "(no artifacts)" / "(artifacts unavailable)".
+
+**Deliberately deferred (not in this issue):** a browser-facing Forgejo *browse* URL for the
+parent commit / work branch. The current CLI exposes only an in-network `--forgejo-url` and an
+informational `--clone-url` ([`cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py)) —
+there is **no browser browse-URL contract**, and adding one would widen scope past web-ui-only
+(§2.1). The parent-commit SHA is shown as text in the expansion for cross-reference; linking it to
+a repo browser is a §11 followup. This was the round-0 over-reach: the original draft promised
+Forgejo browse links that no surface backs.
 
 Multiple rows may be expanded simultaneously (no accordion exclusivity — native `<details>`
 gives this for free). No JS required for the baseline.
@@ -151,11 +178,33 @@ gives this for free). No JS required for the baseline.
 Filter chips above the table, all driven by query params:
 
 - **"Eligible for me"** (`?eligible=1`, **default ON**) — show only tasks the session's worker can
-  claim. Eligibility per task: `target is None` OR (`target.kind=="worker"` AND
-  `target.id==session.worker_id`) OR (`target.kind=="group"` AND
-  `store.resolve_worker_in_group(session.worker_id, target.id)`). When OFF (`?eligible=0`), all
-  pending tasks show regardless of eligibility, and ineligible rows get a **disabled** claim
-  button with a tooltip (D.5).
+  claim. The predicate mirrors the **full** §3.5 claim ladder
+  ([`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) §3.5), which checks
+  *registration first, then target* — not target-match alone:
+
+  ```text
+  eligible(task) := registered(session.worker_id)
+                    AND ( task.target is None
+                          OR (target.kind=="worker" AND target.id==session.worker_id)
+                          OR (target.kind=="group"  AND resolve_worker_in_group(session.worker_id, target.id)) )
+  ```
+
+  **Registration is resolved once per render**, not per row: the handler calls
+  `store.read_worker(session.worker_id)` once and caches the boolean. If the session worker is not
+  registered, *every* row is ineligible (matching the ladder's step-2 `WorkerNotRegistered`).
+  (In practice a signed-in worker is registered, but the projection must not assume it — the
+  ladder doesn't.) Group resolution is memoized by `group_id` across rows (§2.3).
+- **Error model (corrected in round-0 revision).** `StoreClient.resolve_worker_in_group` does
+  **not** raise on an unknown worker/group — it `read_worker`s first and returns `False` on
+  `NotFound`, and a dangling group ref is skipped; only **transport / auth errors propagate**
+  ([`client.py:692`](../../reference/packages/eden-wire/src/eden_wire/client.py)). So the
+  row-builder catches only the *transport-shaped* exception around the eligibility resolution and
+  treats it as **"eligibility unknown"** — render the row with a disabled claim button + an
+  "eligibility unknown" note, and increment a **separate** eligibility-resolution warning counter
+  (§D.6). It does **not** catch `NotFound` (that is a legitimate `False`, not an error), and it
+  must not collapse a real transport outage into "ineligible-and-hidden".
+- When the filter is OFF (`?eligible=0`), all pending tasks show regardless of eligibility, and
+  ineligible rows get a **disabled** claim button with a tooltip (D.5).
 - **Target tri-state** (`?target=all|targeted|untargeted`, default `all`) — both / only tasks with
   a target / only free-pool (null-target) tasks.
 - **Group by creator** (`?group=1`, default OFF) — wraps rows in a `<details>` per unique
@@ -176,6 +225,19 @@ pass.
   `WorkerNotEligible` / `WorkerNotRegistered`) and renders the banner-redirect. The impl adds a
   **regression test** asserting an ineligible POST returns a 303 banner-redirect, not a 500. No
   handler code change.
+
+### D.6 Warning banners — content-read vs eligibility-resolution are separate counters
+
+The current pages show one warning counter — "N idea read(s) failed" (executor) / "N variant/idea
+read(s) failed" (evaluator)
+([executor_list.html:6](../../reference/services/web-ui/src/eden_web_ui/templates/executor_list.html),
+[evaluator_list.html:6](../../reference/services/web-ui/src/eden_web_ui/templates/evaluator_list.html)).
+This redesign adds a **second** failure mode (eligibility-resolution transport failure, §D.4). Do
+**not** fold it into the existing read-failure counter — the copy would lie ("idea read failed"
+when the idea read fine but the *eligibility* probe timed out). Keep two counters with two banner
+lines: the existing read-failure warning (unchanged copy) and a new
+"N task eligibility check(s) could not be resolved; those rows are shown as not-claimable —
+refresh to retry." Each increments independently in the row-builder.
 
 ## 4. Scope
 
@@ -243,7 +305,7 @@ against [`docs/glossary.md`](../glossary.md) (artifact-noun discipline; gerund t
 
 | Kind | New identifier | Rationale / glossary check |
 |---|---|---|
-| query param | `sort` ∈ {`priority`,`slug`,`created`} | column keys; `created` = `task.created_at` |
+| query param | `sort` ∈ {`priority`,`slug`} | the two sortable columns; `created_at` is the implicit always-on secondary tiebreak, not a selectable axis (§D.2) |
 | query param | `dir` ∈ {`asc`,`desc`} | sort direction |
 | query param | `eligible` ∈ {`0`,`1`} | matches the "Eligible for me" chip |
 | query param | `target` ∈ {`all`,`targeted`,`untargeted`} | tri-state target filter |
@@ -323,14 +385,16 @@ side than when one list lands a wave ahead).
   decisions §2.3), a list with many group-targeted tasks fans out into many `read_group`
   round-trips and the page feels slow. **Mitigation:** memoize by `group_id` per render; null /
   worker targets cost zero calls. Watch this in the e2e wave.
-- **Eligibility resolution must not raise into a 500.** `resolve_worker_in_group` can raise on
-  transport failure or an unregistered worker. The row-builder must treat a resolution error as
-  **"not eligible, surface degraded"** (render the row with a disabled button + an "eligibility
-  unknown" note) rather than letting it propagate — mirroring the existing per-row
-  `read_failed`/transport-shaped handling. A naive `try` that swallows everything risks hiding a
-  real outage; narrow to the transport/`NotFound` shapes per the AGENTS.md "narrow exception
-  handling on store reads" pitfall, and increment the page-level warning counter on transport
-  errors.
+- **Eligibility resolution must not raise into a 500 — and must not mis-handle `NotFound`.**
+  `resolve_worker_in_group` returns `False` (not raises) for an unknown worker/group; only
+  transport/auth errors propagate (verified at
+  [`client.py:692`](../../reference/packages/eden-wire/src/eden_wire/client.py), §D.4). So the
+  row-builder catches **only the transport-shaped exception** around the eligibility probe and
+  renders the row as **"eligibility unknown"** (disabled button + note + the §D.6 counter). It
+  must **not** catch `NotFound` (a legitimate `False`) and must **not** collapse a real transport
+  outage into "ineligible-and-hidden" — that would silently hide claimable work during an outage
+  (the AGENTS.md "narrow exception handling on store reads" pitfall: distinguish definitive
+  result from transport-indeterminate).
 - **Sort over degraded rows.** Missing `priority`/`slug` (idea unavailable) must sort
   deterministically (bottom), never crash the comparator on `None`. Explicit sentinel keys.
 - **Query-param injection into hrefs.** Sort/filter values are echoed into the page as link hrefs;
@@ -369,6 +433,13 @@ side than when one list lands a wave ahead).
   `ORDER BY (priority DESC, created_at ASC)` into the store query (touches `postgres.py` +
   `sqlite.py` + the `Store` contract); deliberately deferred (§2.1).
 - **Ideator list parity** — only if a later operator session finds the ideator list crowded.
+- **Browser-facing Forgejo browse-URL contract** — to make the expansion's parent-commit /
+  work-branch references *clickable* links to a repo browser (today they render as text). No
+  browse-URL surface exists in the web-ui CLI (only in-network `--forgejo-url` / informational
+  `--clone-url`); adding one widens past web-ui-only and is deferred per §D.3.
+- **Per-id idea / variant admin detail pages** — the expansion links to the admin *index* pages
+  today because no per-id idea-detail or variant-detail page exists. If those land, the expansion
+  links tighten to the per-id surfaces.
 
 Each deferral above is narrated here; the impl PR files a tracking issue for any that survive to
 merge and references it in the CHANGELOG entry (AGENTS.md deferral-tracking rule).
