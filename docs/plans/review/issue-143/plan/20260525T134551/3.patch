@@ -1,0 +1,20 @@
+--- docs/plans/review/issue-143/plan/20260525T134551/2.md	2026-05-25 13:56:05
++++ docs/plans/issue-143-non-admin-default-signup.md	2026-05-25 13:56:51
+@@ -53,7 +53,7 @@
+ 
+ (a) **Trust the web UI as a proxy.** Keep wire `add_to_group` admin-principal-gated. Web-UI route handler performs a session-level `resolve_worker_in_group(session.worker_id, "admins")` check; if it passes, the handler issues the wire call using `app.state.admin_store` (deployment admin bearer, already plumbed). Net: the web-ui service holds an admin-grade credential indefinitely; the operator's session bearer doesn't.
+ 
+-(b) **Dual-gate at the wire.** Amend chapter 07 §13.3 so `add_to_group / remove_from_group / delete_group` accept **either** the deployment admin principal OR a worker principal whose `worker_id` resolves into `admins`. Net: any admin-group member can promote / demote via their own session bearer; the web-ui no longer needs to hold a deployment admin credential for the promotion path. CLI gets the same shape for free.
++(b) **Dual-gate at the wire.** Amend chapter 07 §13.3 so `add_to_group / remove_from_group` accept **either** the deployment admin principal OR a worker principal whose `worker_id` resolves into `admins`. (`delete_group` stays admin-principal-only — see the per-operation breakdown below for why deletion is asymmetric with member-graph mutations.) Net: any admin-group member can promote / demote via their own session bearer; the web-ui no longer needs to hold a deployment admin credential for the promotion path. CLI gets the same shape for free.
+ 
+ **Recommendation: option (b).** Reasons:
+ 
+@@ -229,7 +229,7 @@
+ | `web-ui-1 ∈ admins` (setup-experiment seeding) | (retired — `web-ui-1` is service-only, not in `admins`) | §D.3 step 1 |
+ | Wire `add_to_group / remove_from_group` admin-principal-gated | admin-OR-`admins`-group-gated (dual-gate) | §D.1 spec amendment |
+ | Wire `delete_group / register_group / register_worker / reissue_credential` admin-principal-gated | unchanged — stay admin-principal-only | §D.1 |
+-| `app.state.admin_store` used for `add_to_group` calls | `app.state.store` (session bearer) used; `admin_store` retained ONLY for `register_worker` / `reissue_credential` on sign-up | §D.4.2 wire-bearer shift |
++| `app.state.admin_store` used for `add_to_group / remove_from_group` calls | `app.state.store` (session bearer) used for those two ops; `admin_store` retained for the operations that stay admin-principal-only at the wire (`register_worker`, `reissue_credential`, `register_group`, `delete_group`, control-plane ops via `app.state.control_plane`) | §D.4.2 wire-bearer shift; §D.4.0 authority matrix |
+ | (new) Web-UI `require_admin(request, session)` helper | n/a | §D.4.1 route guard |
+ | (new) Profile-page "Groups" section | n/a | §D.4.3 |
+ | (new) CLI `eden-manual admins {list,promote,revoke}` subcommand-group | n/a | §D.6 |
