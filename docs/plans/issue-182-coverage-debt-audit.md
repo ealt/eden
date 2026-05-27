@@ -196,7 +196,7 @@ Waves are grouped by **stack configuration** so each wave shares one bring-up (t
 
 - Seed the full §4 surface inventory into #182's body as the live checklist (one line per surface, grouped by wave).
 - Bring up a clean base stack via `eden-experiment up <fixture-config> --experiment-id <id>`; confirm reproducible bring-up and that the manual skills (`eden-manual-*`) drive the lifecycle.
-- Confirm the recording template (§5) and the issue-filing label set (`type:*` / `triage:*` / `priority:*` / `cluster:*`) are ready, so the *first real finding* files cleanly against the template — no dummy/trial issue is filed (that would cut against the issue-per-surprise rule §2.3).
+- Confirm the recording template (§5) and the issue-filing label set (`type:*` / `triage:*` / `priority:*` / `cluster:*`) are ready, so the *first real finding* files cleanly against the template — no dummy/placeholder issue is filed (that would cut against the issue-per-surprise rule §2.3).
 
 **Gate:** checklist posted to #182; clean base stack reproducibly up; recording template + label set confirmed ready.
 
