@@ -1,5 +1,3 @@
-# slop-allow-file: F-1 _StoreBase mixin split deferred to issue #114
-
 """Backend-agnostic transition logic shared by every ``Store`` backend.
 
 Every EDEN store backend — in-memory, SQLite, a future Postgres or
@@ -10,14 +8,25 @@ validation. Factoring that logic out of any one backend and sharing
 it is the only way to make "passes the same conformance suite"
 mean what it says.
 
-``_StoreBase`` owns:
+This module owns the shared core; the per-resource public operations
+live in the ``_ops/`` mixin family (issue #114, plan
+``docs/plans/refactor-f1-storebase-split.md``):
 
-- The public method surface (``claim``, ``submit``, ``accept``,
-  ``reject``, ``reclaim``, ``create_*``, ``read_*``, ``list_*``,
-  ``events``, ``validate_acceptance``, ``validate_terminal``,
-  ``create_idea``, ``mark_idea_ready``, ``create_variant``,
-  ``declare_variant_evaluation_error``, ``integrate_variant``).
-- All validation, composite-commit staging, and event construction.
+- ``_StoreCore`` — ``__init__``, the event-id factory, the
+  ``_event`` / ``_ts`` / ``_maybe_ts`` helpers, the cross-resource
+  read-side predicates (``_require_*`` /
+  ``_find_starting_variant_for_implement_task`` /
+  ``_validate_registry_id``), and the backend-primitive declarations
+  every backend overrides. Each mixin in ``_ops/`` inherits this class.
+- ``_StoreBase`` — the composite that flattens the mixin MRO atop
+  ``_StoreCore``. It owns no methods of its own; the public surface
+  (``claim``, ``submit``, ``accept``, ``reject``, ``reclaim``,
+  ``create_*``, ``read_*``, ``list_*``, ``events``,
+  ``validate_acceptance``, ``validate_terminal``, ``create_idea``,
+  ``mark_idea_ready``, ``create_variant``,
+  ``declare_variant_evaluation_error``, ``integrate_variant``, the
+  worker/group registries, and the experiment-lifecycle ops) is
+  inherited from the mixins. Backends subclass ``_StoreBase``.
 
 Subclasses own:
 

@@ -48,12 +48,27 @@ the `complexity-gate` CI job for the mechanism.
 
 | ID | File | SLOC | MI | Disposition |
 |---|---|---:|---:|---|
-| **F-1** | `reference/packages/eden-storage/src/eden_storage/_base.py` | 1638 | 0.00 | **REFACTOR** (M-5 mixin split — see below; large blast radius) |
+| **F-1** | `reference/packages/eden-storage/src/eden_storage/_base.py` | 1638 | 0.00 | **DONE** — mixin split landed (issue [#114](https://github.com/ealt/eden/issues/114); `_base.py` now 235 SLOC, gate-clean without annotation). Final shape diverged from the proposal below: 8 mixins under `_ops/` + a `_StoreCore` core. |
 | **F-2** | `reference/services/web-ui/src/eden_web_ui/routes/admin.py` | 1239 | 5.12 | **REFACTOR** (M-1; already approved) |
 | **F-3** | `reference/packages/eden-wire/src/eden_wire/server.py` | 1211 | 38.53 | **REFACTOR** (H-1 APIRouter regroup; PR #103 merged so coordination concern is gone) |
 | **F-4** | `reference/packages/eden-wire/src/eden_wire/client.py` | 861 | 21.54 | **REFACTOR** (per-resource client split: tasks / variants / ideas / experiment / dispatch / workers / groups) |
 
 ### F-1 detail — `_base.py` mixin split
+
+**Landed** (issue [#114](https://github.com/ealt/eden/issues/114), plan
+[`docs/plans/refactor-f1-storebase-split.md`](../plans/refactor-f1-storebase-split.md)).
+The executed shape diverged from the original sketch below in three
+deliberate ways, recorded in the plan: (1) the proposed `_ValidationOps`
+mixin was **rejected** — each `_validate_*` helper co-locates with its
+consumer; (2) workers and groups split into the **separate** files
+`_ops/workers.py` and `_ops/groups.py` rather than one file; (3) `_TaskOps` crossed the
+800-SLOC gate, so the plan §3.7 fallback split it into
+`_ops/tasks_create.py` + `_ops/tasks_lifecycle.py`. Net: 8 mixins
+(`_TaskCreateOpsMixin`, `_TaskLifecycleOpsMixin`, `_IdeaOpsMixin`,
+`_VariantOpsMixin`, `_EventOpsMixin`, `_ExperimentOpsMixin`,
+`_WorkerOpsMixin`, `_GroupOpsMixin`) atop a `_StoreCore` core, composed by
+`_StoreBase` (235 SLOC, gate-clean). Cross-resource read predicates and
+the two split-body helpers' stubs live on `_StoreCore`. Original sketch:
 
 `_StoreBase` has 105 methods covering all backend-agnostic state-machine
 logic. Proposed split into 7 mixins, each in its own file under
@@ -238,7 +253,7 @@ patterns are:
 | **L-L** | `web-ui/cli.py:214 main` | 143 | 11 | **REFACTOR** (extract `_build_runtime(args)` helper) |
 | **L-M** | `eden-wire/client.py:1141 _import_recovery_probe` | 141 | 19 | **REFACTOR** (extract `_probe_remote_id`, `_classify_probe_outcome`) — covered by F-4 client split |
 | **L-N** | `executor/subprocess_mode.py:488 _run_subprocess` | 131 | 11 | **REFACTOR** (extract `_build_env`, `_run_and_capture`) |
-| **L-O** | `eden-storage/_base.py:1148 reassign_task` | 122 | 11 | **REFACTOR** (within F-1's `_TaskOps` mixin: split per-kind reassign branches) |
+| **L-O** | `eden-storage/_base.py:1148 reassign_task` | 122 | 11 | **DONE** (#114) — `reassign_task` now lives on `_TaskLifecycleOpsMixin` at 67 LEN / CC 6, inside the function-length threshold. The pre-existing `_stage_reassign_reclaim` / `_reassign_event_payload` extractions already factored it under the gate; per plan §D.6 no further per-state split was added (over-splitting an already-factored method for the LEN gate harms readability). |
 | **L-P** | `orchestrator/lease_manager.py:228 refresh` | 119 | 14 | **REFACTOR** (extract `_compute_targets`, `_apply_refresh`) — added by 12c |
 | **L-Q** | `evaluator/subprocess_mode.py:303 _run_subprocess` | 118 | 11 | **REFACTOR** (mirrors L-N) |
 | **L-R** | `evaluator/cli.py:153 main` | 116 | 11 | **REFACTOR** (mirrors L-J) |
