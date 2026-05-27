@@ -1,0 +1,20 @@
+--- docs/plans/review/issue-122/plan/20260527T150037/3.md	2026-05-27 15:20:48
++++ docs/plans/issue-122-baseline-variant.md	2026-05-27 15:21:53
+@@ -116,7 +116,7 @@
+ 
+ - `variant.started` payload: `idea_id` becomes optional, absent for `kind == "baseline"`. The payload MUST carry `kind` for baselines (see §D.7 — required, not merely recommended, so event-only subscribers get an explicit signal rather than inferring from a missing `idea_id`).
+ - Direct-success override create emits, atomically, `variant.started` **then** `variant.succeeded` (the same pair the normal start→evaluate→succeed flow produces, collapsed to one transaction). The `variant.succeeded` payload requirements (e.g. does it reference an evaluation task id?) MUST be checked against [`reference/packages/eden-contracts/src/eden_contracts/event.py`](../../reference/packages/eden-contracts/src/eden_contracts/event.py) and the §3 event payload definitions — for a baseline with no evaluation task, any task-id field must be optional/absent. Pin the exact payload shape during impl; do not assume (AGENTS.md "check event.py before assuming a field exists").
+-- The default-path baseline emits `variant.started` at create and `variant.succeeded` later via the normal evaluation-acceptance path — no new event semantics there beyond the optional `idea_id`.
++- The default-path baseline emits `variant.started` at create (with the required `kind` and absent `idea_id`) and `variant.succeeded` later via the normal evaluation-acceptance path — no new event semantics beyond the optional `idea_id` / required `kind`.
+ 
+ [`07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) §4 `create_variant` body gains the documented baseline shape (kind, optional idea_id, optional terminal status+evaluation) and the per-kind authority note.
+ 
+@@ -286,7 +286,7 @@
+ 
+ ## 9. Files to touch
+ 
+-**Spec (10 files):**
++**Spec (9 files):**
+ 
+ - [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) — §9.1 `kind` row; new §9.4 baseline semantics; §2 (new §2.7) `baseline` config block; §2.4 integration-decision predicate carve; §2.5 termination-drain carve; §2.5 runtime object gains `base_commit_sha`; §10 invariant-2 carve.
+ - [`spec/v0/10-checkpoints.md`](../../spec/v0/10-checkpoints.md) — `base_commit_sha` joins the exported/imported experiment-runtime state (§D.11); the baseline variant itself already round-trips as a variant.

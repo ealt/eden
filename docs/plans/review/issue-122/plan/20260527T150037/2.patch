@@ -1,0 +1,145 @@
+--- docs/plans/review/issue-122/plan/20260527T150037/1.md	2026-05-27 15:11:09
++++ docs/plans/issue-122-baseline-variant.md	2026-05-27 15:17:38
+@@ -93,7 +93,7 @@
+   - Compute a **deterministic** baseline `variant_id` (e.g. `baseline` or `baseline-<experiment_id>`) so concurrent orchestrator instances / loop iterations converge on the same record and re-runs are idempotent.
+   - If `baseline.metrics` is **absent** (default path): `create_variant(kind="baseline", status="starting", commit_sha=<seed>, parent_commits=[<seed>], started_at=now)`. The existing `evaluation_dispatch` decision then picks it up.
+   - If `baseline.metrics` is **present** (override path): `create_variant(kind="baseline", status="success", commit_sha=<seed>, parent_commits=[<seed>], evaluation=<metrics>, completed_at=now, started_at=now)` (see §D.4 for the precondition relaxation, authority, and events).
+-  - Wrap in `try/except AlreadyExists: pass` for idempotency (deterministic id ⇒ second create is a no-op; in multi mode the loop re-encounters the experiment every iteration, so the create MUST be cheap-and-idempotent, not re-run unconditionally — gate it on a `list_variants` check or rely on the `AlreadyExists` fast path).
++  - **Idempotency by verified read-back, not blind `AlreadyExists`.** A bare `try/except AlreadyExists: pass` is unsafe: an unrelated row at the deterministic id, or a config-shape change across restarts, would silently suppress the baseline while looking healthy. Instead: read the deterministic-id variant first; if absent, create it; if present, **verify** it is `kind == "baseline"` with the expected `commit_sha == base_commit_sha` and a compatible status, else **fail loudly** (config/seed drift is an operator error, not a no-op). In multi mode the loop re-encounters the experiment every iteration, so this read-back-then-maybe-create must be cheap (one `read_variant`/`list_variants`) and must not re-emit events when the baseline already exists.
+ - **Placement.** A dedicated `ensure_baseline_variant(store, experiment_id, config)` helper that reads `base_commit_sha` from the store, invoked from both the single-experiment startup path ([`loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py) / [`cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)) and the per-experiment branch of [`multi_loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/multi_loop.py). Kept small to stay under the complexity gate.
+ 
+ ### D.3 No-op rule exception (`03-roles.md` §3.3, §4.2)
+@@ -161,7 +161,10 @@
+ - **Event payloads** ([`05-event-protocol.md`](../../spec/v0/05-event-protocol.md) §3, [`event.py`](../../reference/packages/eden-contracts/src/eden_contracts/event.py)) — `variant.started` (and any other event carrying `idea_id`) makes `idea_id` optional for baselines (§D.4.3).
+ - **Integrator + manifest** ([`reference/packages/eden-git/src/eden_git/integrator.py`](../../reference/packages/eden-git/src/eden_git/integrator.py), [`_manifest.py`](../../reference/packages/eden-git/src/eden_git/_manifest.py)) — the manifest requires `idea_id` ([`06-integrator.md`](../../spec/v0/06-integrator.md) §4.2). Because baselines are **never integrated** (§D.5), the integrator never builds a manifest for one — so no manifest change is needed, *provided the skip in §D.5 is airtight*. Add a defensive assertion (integrator rejects `kind == "baseline"`) so a regression in the skip surfaces loudly rather than producing a manifest with a null `idea_id`.
+ - **Web-UI lineage + admin observability** ([`reference/services/web-ui/src/eden_web_ui/routes/_lineage.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_lineage.py), [`routes/admin/observability.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin/observability.py)) — these read **all** variants (including the baseline) and currently key off `idea_id` (e.g. grouping a variant under its idea node). They need null-safe handling: render a baseline as a root node (no parent idea) rather than crashing or mis-grouping. This is also exactly the rendering the issue's lineage-tree motivation wants. Audit every `variant.idea_id` access in the web-ui and make it null-safe for baselines.
++- **Evaluation-task target inheritance** ([`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py) — the evaluation-dispatch path) — when the orchestrator dispatches an `evaluation` task for a variant, it currently falls back through `variant.idea_id` to the originating idea's `intended_evaluator` to seed the task `target`. A baseline has no `idea_id`, so the contract needs an explicit "untargeted evaluation task" rule: a `kind == "baseline"` variant's evaluation task is created with no `intended_evaluator`-derived target (any registered evaluator may claim it). Add a unit test asserting baseline evaluation dispatch does not attempt an `idea_id` lookup. (The reference impl may already behave acceptably via a null-guard, but the contract must state it.)
+ 
++Because making `idea_id` optional risks new null leaks in event-only consumers, **`kind` is REQUIRED (not merely recommended) on the `variant.started` payload for baselines** — subscribers that previously keyed off `idea_id` presence get an explicit `kind == "baseline"` signal instead of inferring from a missing field.
++
+ These surfaces are in scope for this chunk (they break otherwise); they are not deferrable.
+ 
+ ### D.8 Experiment config: `baseline` block (`02-data-model.md` §2, schema, contracts)
+@@ -182,6 +185,18 @@
+ - [`docs/user-guide.md`](../user-guide.md) §2: document the `baseline` config block in the experiment-config field table + a short example.
+ - [`tests/fixtures/experiment/.eden/config.yaml`](../../tests/fixtures/experiment/.eden/config.yaml): default-on means no change is strictly required; optionally add an explicit `baseline:` block as a representative example (decide during impl based on smoke determinism — §8.4).
+ - [`CHANGELOG.md`](../../CHANGELOG.md) `[Unreleased]` entry + [`docs/roadmap.md`](../roadmap.md) line per the AGENTS.md chunk-completion discipline.
++
++### D.11 `base_commit_sha` propagation (cost of the experiment-field decision)
++
++Adding `base_commit_sha` to the experiment runtime object (§D.2) is the right multi-experiment-mode answer, but a new experiment-runtime field touches every place experiment state is serialized or persisted — exactly the "same-PR audit of every consumer of the substrate surface" discipline AGENTS.md mandates. The surface:
++
++- **Spec.** [`10-checkpoints.md`](../../spec/v0/10-checkpoints.md) — `base_commit_sha` is part of the exported/imported experiment-runtime state. (The baseline *variant* already round-trips as a variant; this is about the experiment object's own field.)
++- **Contract model.** [`experiment.py`](../../reference/packages/eden-contracts/src/eden_contracts/experiment.py) gains the field (schema-parity against `experiment.schema.json`).
++- **Checkpoint serializer/importer.** [`_checkpoint.py`](../../reference/packages/eden-storage/src/eden_storage/_checkpoint.py) export + import path.
++- **Every backend.** `memory.py` / `sqlite.py` / `postgres.py` + `_schema.py` / `_postgres_schema.py` persist the field (column or experiment-blob, per backend representation).
++- **Tests + conformance seed.** `test_checkpoint_wire.py` round-trip assertion; `conformance/.../harness/_seed.py` populates it at registration.
++
++**Note the redundancy bound:** once the baseline variant exists, `base_commit_sha` is recoverable from it (`baseline.commit_sha`), so on checkpoint *import* the orchestrator's `ensure_baseline_variant` read-back (§D.2) finds the already-imported baseline and does not need the field. The field is load-bearing only for the *initial* creation of the baseline before any baseline variant exists. It is still carried on the experiment object for consistency and for the lineage-tree visualization. If review judges the propagation cost too high relative to that narrow window, the fallback is to NOT store the field and instead have repo-init/setup-experiment create the baseline directly at seed time (where the SHA is known) — but that path needs an orchestrators-group credential at setup time, which the bootstrap admin bearer cannot supply (glossary §2). Surfaced here as the main scope/complexity tradeoff for plan-PR review.
+ 
+ ## 5. Naming map (old → new)
+ 
+@@ -190,7 +205,7 @@
+ | Variant data model / schema / contract | `Variant.kind` (`"baseline"` \| absent) | **new** field |
+ | Experiment config | `baseline` block (`enabled`, `metrics`) | **new** optional block |
+ | Orchestrator | `ensure_baseline_variant(...)` helper | **new** |
+-| Orchestrator CLI/env | `--base-commit-sha` / `EDEN_BASE_COMMIT_SHA` (orchestrator now consumes it) | **new** consumer of an existing env var |
++| Experiment runtime object | `base_commit_sha` (store field on `experiment.schema.json`, written at registration, read by both orchestrator modes) | **new** field (§D.2) |
+ | Contracts | `BaselineConfig` model | **new** |
+ | Glossary | "baseline variant" entry; "task kind" / "variant kind" sub-entries | **new / disambiguation** |
+ | Conformance | `CONFORMANCE_GROUP = "Baseline variant"` | **new** group |
+@@ -219,6 +234,7 @@
+ - A `kind == "baseline"` variant in `success` without `variant_commit_sha` is **not** integratable: `integrate_variant` on it returns `eden://error/invalid-precondition`, writes no `variant_commit_sha`, emits no `variant.integrated`. (Cite [`06-integrator.md`](../../spec/v0/06-integrator.md) §2.)
+ - Override-path metrics validation: `create_variant(kind="baseline", status="success", evaluation=<bad metrics>)` is rejected against `evaluation_schema`; `<good metrics>` accepted. (Cite [`02-data-model.md`](../../spec/v0/02-data-model.md) §9.2.)
+ - `idea_id` conditional requirement: `create_variant` without `idea_id` is rejected unless `kind == "baseline"`. (Cite [`02-data-model.md`](../../spec/v0/02-data-model.md) §9.4 / §10 invariant 2.)
++- **Per-`kind` authority (§D.4.1):** `create_variant(kind="baseline")` by an ordinary (non-orchestrators-group) worker is rejected with the auth error; by an orchestrators-group principal it is accepted. Both the positive and negative case are wire-observable and normative. (Cite [`07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) §4.)
+ 
+ **Not wire-observable (explicitly deferred / out of scope):**
+ 
+@@ -247,7 +263,7 @@
+ A baseline adds one `evaluation` `task.completed` and one variant that is **not** integrated. Two distinct blast radii, and round-0 review showed the first cut understated the second:
+ 
+ - **Compose smokes assert lower-bounds** (`≥3 variant.integrated`, `≥9 task.completed`, `≥3 ideation-task task.completed`, per AGENTS.md Commands). Adding a baseline only *increases* `task.completed` and leaves `variant.integrated` unchanged, so the `≥` assertions should still hold — but with `parallel_variants: 1` the baseline evaluation competes for the single evaluation slot and could perturb quiescence timing. Run all four smokes (`smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `e2e.sh`) and watch for ordering/quiescence regressions, not just counts.
+-- **Orchestrator e2e tests assert EXACT counts** — `test_e2e.py` and `test_subprocess_e2e.py` expect exactly 3 variants / 9 tasks ([`reference/services/orchestrator/tests/test_e2e.py`](../../reference/services/orchestrator/tests/test_e2e.py), [`test_subprocess_e2e.py`](../../reference/services/orchestrator/tests/test_subprocess_e2e.py)). A default-on baseline **will break these** (one extra variant, one extra evaluation task). These tests are in scope: update the expected counts to account for the baseline (and assert the baseline is present + not integrated as a bonus), OR disable the baseline in those fixtures. Decide per-test during impl; the exact-count update is the default since the feature is default-on.
++- **Orchestrator e2e tests assert EXACT counts AND iterate variant bodies** — `test_e2e.py` and `test_subprocess_e2e.py` expect exactly 3 variants / 9 tasks ([`reference/services/orchestrator/tests/test_e2e.py`](../../reference/services/orchestrator/tests/test_e2e.py), [`test_subprocess_e2e.py`](../../reference/services/orchestrator/tests/test_subprocess_e2e.py)). The blast radius is broader than the totals: these tests' loop bodies assume **every** `success` variant is integrated (asserts `variant_commit_sha`) and has an `idea_id` (calls `store.read_idea(variant.idea_id)`). A baseline breaks the loop body, not just the count. These tests are in scope: they must **partition baseline vs ordinary** variants before asserting `variant_commit_sha` / `read_idea`, and update the expected counts (and assert the baseline is present + not integrated). OR disable the baseline in those fixtures. Decide per-test during impl; the partition+count update is the default since the feature is default-on.
+ 
+ If smokes prove flaky under the baseline, the fallback is `baseline: {enabled: false}` in the relevant fixture config plus a dedicated baseline-on smoke/e2e variant. (AGENTS.md: the smokes are the literal pre-push gate; narrowed pytest subsets are not. This is the strongest argument for re-confirming decision 2 (default-on vs opt-in) at plan-PR review — opt-in collapses both blast radii to zero.)
+ 
+@@ -269,9 +285,10 @@
+ 
+ ## 9. Files to touch
+ 
+-**Spec (9 files):**
++**Spec (10 files):**
+ 
+ - [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) — §9.1 `kind` row; new §9.4 baseline semantics; §2 (new §2.7) `baseline` config block; §2.4 integration-decision predicate carve; §2.5 termination-drain carve; §2.5 runtime object gains `base_commit_sha`; §10 invariant-2 carve.
++- [`spec/v0/10-checkpoints.md`](../../spec/v0/10-checkpoints.md) — `base_commit_sha` joins the exported/imported experiment-runtime state (§D.11); the baseline variant itself already round-trips as a variant.
+ - [`spec/v0/03-roles.md`](../../spec/v0/03-roles.md) — §3.3 + §4.2 no-op exception.
+ - [`spec/v0/04-task-protocol.md`](../../spec/v0/04-task-protocol.md) — §4.3 note on direct-`success` baseline create.
+ - [`spec/v0/05-event-protocol.md`](../../spec/v0/05-event-protocol.md) — `variant.started` `idea_id` optional + `kind` for baselines; direct-success `variant.started`+`variant.succeeded` composite; baseline-event task-id fields optional (§D.4.3).
+@@ -295,9 +312,17 @@
+ 
+ **Storage (2 files):**
+ 
+-- [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py) — `create_variant` precondition relaxation + authority + baseline metrics validation + start/succeed event emission; `base_commit_sha` persisted on the experiment object at registration; surface it on `read_experiment`.
++- [`reference/packages/eden-storage/src/eden_storage/_base.py`](../../reference/packages/eden-storage/src/eden_storage/_base.py) — `create_variant` precondition relaxation + authority + baseline metrics validation + start/succeed event emission; `base_commit_sha` persisted on the experiment object at registration; surface it on `read_experiment`; untargeted baseline evaluation-task dispatch (§D.7).
+ - [`reference/packages/eden-storage/src/eden_storage/protocol.py`](../../reference/packages/eden-storage/src/eden_storage/protocol.py) — docstring update for the baseline create contract.
++
++**`base_commit_sha` propagation surface (§D.11 — the cost of the experiment-field decision; a new experiment field touches every place experiment-runtime state is serialized/persisted, per AGENTS.md "substrate migrations need a same-PR audit of every consumer"):**
+ 
++- [`reference/packages/eden-contracts/src/eden_contracts/experiment.py`](../../reference/packages/eden-contracts/src/eden_contracts/experiment.py) — add `base_commit_sha` to the experiment-runtime contract model (pairs with `experiment.schema.json`).
++- [`reference/packages/eden-storage/src/eden_storage/_checkpoint.py`](../../reference/packages/eden-storage/src/eden_storage/_checkpoint.py) — checkpoint export/import carries `base_commit_sha`.
++- [`reference/packages/eden-storage/src/eden_storage/memory.py`](../../reference/packages/eden-storage/src/eden_storage/memory.py), [`sqlite.py`](../../reference/packages/eden-storage/src/eden_storage/sqlite.py), [`postgres.py`](../../reference/packages/eden-storage/src/eden_storage/postgres.py), [`_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_schema.py), [`_postgres_schema.py`](../../reference/packages/eden-storage/src/eden_storage/_postgres_schema.py) — persist the new experiment field in each backend (column or experiment-blob field per the backend's representation; audit which).
++- [`reference/packages/eden-wire/tests/test_checkpoint_wire.py`](../../reference/packages/eden-wire/tests/test_checkpoint_wire.py) + experiment-shape tests — assert `base_commit_sha` round-trips through checkpoint export/import and `read_experiment`.
++- [`conformance/src/conformance/harness/_seed.py`](../../conformance/src/conformance/harness/_seed.py) — the conformance seed helper sets `base_commit_sha` when registering experiments (so the new field is populated in conformance runs).
++
+ **Wire (1 file):**
+ 
+ - [`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py) — `POST /variants` per-`kind` authority enforcement (orchestrators-group for `kind=baseline`); `read_experiment` response carries `base_commit_sha`.
+@@ -342,16 +367,16 @@
+ Single impl PR, sequenced internally. Each wave has a gate that must pass before the next.
+ 
+ **Wave 1 — Spec + schemas.**
+-Author §9.4, the `kind` row, the `baseline` config block, the no-op exception, the integration/termination carves, the §1.7 relaxation + authority note, the event-model amendment (`05-event-protocol.md`), the `experiment.base_commit_sha` field, the §5 conformance row. Update all three JSON schemas.
++Author §9.4, the `kind` row, the `baseline` config block, the no-op exception, the integration/termination carves, the §1.7 relaxation + authority note, the event-model amendment (`05-event-protocol.md`), the `experiment.base_commit_sha` field + its checkpoint propagation (`10-checkpoints.md`), the §5 conformance row. Update all three JSON schemas.
+ Gate: `markdownlint-cli2`, `python3 scripts/spec-xref-check.py`, `check-jsonschema --check-metaschema spec/v0/schemas/*.schema.json`, `check-jsonschema --schemafile experiment-config.schema.json tests/fixtures/.../config.yaml`, `python3 scripts/check-rename-discipline.py`.
+ 
+ **Wave 2 — Contracts + schema-parity.**
+ Add `kind` + conditional `idea_id` to `Variant`; `BaselineConfig` + `baseline` to `ExperimentConfig`; `base_commit_sha` to the experiment-object model; `variant.started` event payload change; fixtures in `cases.py` for variant / config / event / experiment.
+ Gate: `uv run pytest reference/packages/eden-contracts/tests/test_schema_parity.py`, `uv run ruff check .`, `uv run pyright`.
+ 
+-**Wave 3 — Storage + wire + dispatch + orchestrator (both modes).**
+-`create_variant` relaxation + per-`kind` authority + metrics validation + start/succeed events; `base_commit_sha` persisted at registration + on `read_experiment`; wire authority enforcement; integration-skip; `state_view` count carves; `ensure_baseline_variant` in **both** `loop.py` and `multi_loop.py`; `_experiment_is_drained_terminated` baseline exclusion; repo-init/setup-experiment records the seed. Add a run-to-termination test **with a baseline present** in both single and multi mode (§8.1). Update the exact-count e2e tests (§8.4).
+-Gate: `uv run pytest -q` (full suite), `uv run ruff check .`, `uv run pyright`, `python3 scripts/check-complexity.py`.
++**Wave 3 — Storage + wire + dispatch + orchestrator (both modes) + `base_commit_sha` propagation.**
++`create_variant` relaxation + per-`kind` authority + metrics validation + start/succeed events; verified-read-back `ensure_baseline_variant` in **both** `loop.py` and `multi_loop.py`; `_experiment_is_drained_terminated` baseline exclusion; integration-skip; `state_view` count carves; untargeted baseline evaluation-dispatch; wire authority enforcement. Plus the full `base_commit_sha` propagation (§D.11): experiment contract model, all backends + schemas, checkpoint export/import, repo-init/setup-experiment records the seed, conformance seed populates it. Add a run-to-termination test **with a baseline present** in both single and multi mode (§8.1), a checkpoint round-trip test for `base_commit_sha`, and partition+count updates to the exact-count e2e tests (§8.4).
++Gate: `uv run pytest -q` (full suite), `EDEN_TEST_POSTGRES_DSN=… uv run pytest -q reference/packages/eden-storage/tests` (postgres backend, since a new experiment column is added), `uv run ruff check .`, `uv run pyright`, `python3 scripts/check-complexity.py`.
+ 
+ **Wave 3.5 — Web-UI null-safety + integrator guard.**
+ `idea_id`-null handling in `_lineage.py` + `observability.py` (baseline renders as a root node); defensive `kind == "baseline"` reject in the integrator.
+@@ -390,7 +415,9 @@
+ - **Termination deadlock from a non-integrated baseline (§8.1).** Highest-severity. The carve must reach **three** code paths (`driver._integrate_successful_variants`, `multi_loop._experiment_is_drained_terminated`, any `loop.py` quiescence check) — not just the §2.5 spec text. Mitigated by run-to-termination tests in both single and multi mode. If any path is missed, that mode hangs at termination — silent and severe. Multi-experiment mode is the easiest to miss.
+ - **Privilege hole on baseline creation (§D.4.1).** `create_variant` is worker-auth; without the orchestrators-group carve any worker could fabricate a passing baseline with chosen metrics. Mitigated by the per-`kind` authority rule + a conformance/unit test that a non-orchestrator worker is rejected.
+ - **`idea_id`-optional blast radius (§D.7).** Event payloads, web-ui lineage, and admin observability all assume `idea_id` is present; a baseline with null `idea_id` would crash or mis-render them. Mitigated by the enumerated null-safety audit. The integrator is protected by the never-integrate skip + a defensive assertion.
+-- **Multi-experiment seed-SHA source (§D.2).** A process-level env var cannot carry a per-experiment seed; the fix is `experiment.base_commit_sha` in the store. New schema field + registration write + read path. If the registration write is missed, `baseline.enabled` experiments fail fast (acceptable) rather than silently skipping.
++- **Multi-experiment seed-SHA source (§D.2).** A process-level env var cannot carry a per-experiment seed; the fix is `experiment.base_commit_sha` in the store. If the registration write is missed, `baseline.enabled` experiments fail fast (acceptable) rather than silently skipping.
++- **`base_commit_sha` propagation completeness (§D.11).** A new experiment-runtime field silently degrades anything that serializes experiment state and isn't updated — most dangerously a checkpoint that drops the field, producing a 0-byte-equivalent gap on import (cf. the #177 empty-tarball regression). Mitigated by the enumerated propagation list + a checkpoint round-trip test. This is the single largest scope cost the field decision incurs; the §D.11 fallback (create-at-setup, no field) is the lever if review wants to trim it.
++- **False-idempotency on baseline creation (§D.2).** A blind `AlreadyExists: pass` could leave an experiment without a valid baseline (wrong row at the deterministic id / config drift) while looking healthy. Mitigated by the verified read-back (kind + seed-SHA + status check, else fail loudly).
+ - **Schema-parity drift on conditional-required `idea_id` (§8.6).** JSON-Schema if/then vs Pydantic validator are easy to desynchronize; the `schema-parity` job catches it only if fixtures cover the edges. Mitigated by fixture density.
+ - **Smoke perturbation under `parallel_variants: 1` (§8.4).** The baseline evaluation competes for the evaluation slot; quiescence timing could shift. Lower-bound count assertions should hold, but ordering-sensitive smokes need a full run. Fallback: fixture suppression + a dedicated baseline-on smoke.
+ - **Orchestrator seed-SHA wiring (§8.3).** New surface; fail-fast when missing avoids a silently-skipped baseline. Compose env plumbing must reach the orchestrator container.
+@@ -405,10 +432,11 @@
+ | Spec amendments (§9.4, config block, no-op/integration/termination carves, event-model amendment, `base_commit_sha`, authority rule, conformance row) | ~1.5 days |
+ | Schemas + contracts + schema-parity fixtures (conditional-required `idea_id` is the long pole) | ~1 day |
+ | Storage + wire authority + dispatch + orchestrator (both modes) + run-to-termination tests | ~2 days |
++| `base_commit_sha` propagation (checkpoints, all backends + schemas, contract model, conformance seed, round-trip test) | ~1 day |
+ | Web-UI `idea_id`-null safety + integrator guard | ~0.5 day |
+-| Conformance scenarios + exact-count e2e updates | ~1 day |
++| Conformance scenarios (incl. auth cases) + exact-count e2e partition/updates | ~1 day |
+ | Docs + smokes + full validation | ~0.5 day |
+ | Codex-review iterations (plan + impl) | ~1 day |
+-| **Total** | **~7.5 days** |
++| **Total** | **~8.5 days** |
+ 
+-Higher than the issue's "~1 week" estimate because round-0 codex-review surfaced the multi-experiment mode, the authority hole, the event-model amendment, and the `idea_id`-consumer blast radius — none of which the issue's "medium" sizing accounted for. The conditional-required `idea_id` parity surface and the three-path termination-drain carve are the dominant risk variables; the rest is mechanical. If the operator flips decision 2 to opt-in (§8.4), the e2e/smoke updates and some default-on risk collapse, trimming ~0.5–1 day.
++Higher than the issue's "~1 week" estimate because codex-review surfaced surfaces the issue's "medium" sizing did not account for: the multi-experiment mode, the `create_variant` authority hole, the event-model amendment, the `idea_id`-consumer blast radius, and the `base_commit_sha` propagation surface (checkpoints + every backend). The conditional-required `idea_id` parity, the three-path termination-drain carve, and `base_commit_sha` propagation completeness are the dominant risk variables; the rest is mechanical. If the operator flips decision 2 to opt-in (§8.4), the e2e/smoke updates and some default-on risk collapse (~0.5–1 day); if review takes the §D.11 create-at-setup fallback, the `base_commit_sha` propagation collapses (~1 day) — these are the two biggest scope levers.
