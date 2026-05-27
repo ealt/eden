@@ -280,4 +280,4 @@ bash reference/compose/healthcheck/smoke-logging.sh               # the new surf
 | Codex-review iterations (plan + impl) | ~0.75 day |
 | **Total** | **~3 days** |
 
-The dominant variable is Loki/Alloy config tuning — the Alloy component graph + label promotion + retention need a live bring-up to validate, and Grafana provisioning paths are finicky. Image version selection (§2.6) should be locked early.
+The dominant variable is Loki/Alloy config tuning — the Alloy component graph + label promotion + retention need a live bring-up to validate, and Grafana provisioning paths are finicky. <!-- rename-discipline:cite --> Image version selection (§2.6) should be locked early.
