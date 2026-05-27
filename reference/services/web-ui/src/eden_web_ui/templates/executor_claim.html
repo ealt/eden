@@ -84,7 +84,7 @@ git push origin my-work</code></pre></li>
         <div class="banner banner-error">{{ msg }}</div>
     {% endfor %}
     {% endif %}
-    <form action="/executor/{{ task_id }}/submit" method="post">
+    <form action="/executor/{{ task_id }}/submit" method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
         <fieldset>
             <legend>status</legend>
@@ -111,14 +111,39 @@ git push origin my-work</code></pre></li>
             <label for="description">description (optional)</label><br>
             <textarea id="description" name="description" rows="3" cols="60">{{ form_state.description }}</textarea>
         </p>
-        <p>
-            <label for="artifacts_uri">artifacts_uri (optional; URI for build logs / screenshots / etc.)</label><br>
-            <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
-                value="{{ form_state.artifacts_uri or '' }}">
+        <fieldset class="artifact-bundle-uploads">
+            <legend>artifact (optional; build logs / screenshots / etc.)</legend>
+            <p>
+                <label for="artifact_text">notes / build log (markdown)</label><br>
+                <textarea id="artifact_text" name="artifact_text" rows="6" cols="60">{{ form_state.artifact_text or "" }}</textarea>
+            </p>
+            <p>
+                <label for="artifact_files">attach files</label><br>
+                <input type="file" id="artifact_files" name="artifact_files" multiple>
+                <small>
+                    text + uploads → wrapped server-side into a
+                    <code>.tar.gz</code> with a top-level
+                    <code>manifest.json</code>. Single file (text-only OR
+                    one upload) is stored directly.
+                </small>
+            </p>
+            <p>
+                <label for="artifacts_uri">or paste an existing <code>artifacts_uri</code> (URI to your build logs / output)</label><br>
+                <input type="text" id="artifacts_uri" name="artifacts_uri" size="60"
+                    value="{{ form_state.artifacts_uri or '' }}">
+                <small>
+                    when set, text / uploads above are ignored. Use this
+                    when you've already written your artifact somewhere
+                    the web-ui can reach.
+                </small>
+            </p>
+            {% if errors and errors.by_row.get(0, {}).get("artifact") %}
+            <span class="field-error">{{ errors.by_row[0]["artifact"] }}</span>
+            {% endif %}
             {% if errors and errors.by_row.get(0, {}).get("artifacts_uri") %}
             <span class="field-error">{{ errors.by_row[0]["artifacts_uri"] }}</span>
             {% endif %}
-        </p>
+        </fieldset>
         <p>worker branch (server-derived): <code>{{ branch }}</code></p>
         <button type="submit">submit</button>
     </form>
