@@ -45,15 +45,12 @@ import copy
 import itertools
 import math
 import re
-import secrets
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
 from eden_contracts import (
     DispatchMode,
     EvaluationPayload,
@@ -91,7 +88,6 @@ from ._ops._helpers import (
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,
-    CycleDetected,
     IllegalTransition,
     InvalidPrecondition,
     NoOpVariant,
@@ -517,7 +513,22 @@ class _StoreCore:
             )
 
 
-class _StoreBase(_StoreCore):
+    def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
+        """Abstract stub; real body on ``_GroupOpsMixin`` (plan §D.4).
+
+        Declared on the core so cross-mixin callers (notably
+        ``_TaskOpsMixin.claim``) resolve the call under pyright; the
+        composed backend's MRO routes to ``_GroupOpsMixin``'s
+        implementation.
+        """
+        raise NotImplementedError
+
+
+from ._ops.groups import _GroupOpsMixin  # noqa: E402
+from ._ops.workers import _WorkerOpsMixin  # noqa: E402
+
+
+class _StoreBase(_WorkerOpsMixin, _GroupOpsMixin, _StoreCore):
     """Shared transaction/validation/event logic for every store backend.
 
     Subclasses implement the backend primitives listed at module-top.
@@ -2330,393 +2341,32 @@ class _StoreBase(_StoreCore):
     # Worker registry (12a-1)
     # ------------------------------------------------------------------
 
-    def register_worker(
-        self,
-        worker_id: str,
-        *,
-        labels: dict[str, str] | None = None,
-        registered_by: str | None = None,
-    ) -> tuple[Worker, str | None]:
-        """Register ``worker_id`` for this experiment.
 
-        Returns ``(worker, registration_token)``. On first registration
-        the second element is the freshly-minted plaintext token (≥256
-        bits); on idempotent re-registration of an existing
-        ``worker_id`` it is ``None`` and the existing record is
-        returned unchanged. The plaintext token is returned ONLY by
-        this call and ``reissue_credential``; subsequent reads MUST NOT
-        return it.
 
-        Raises ``ReservedIdentifier`` for ``admin`` / ``system`` /
-        ``internal`` or any id that violates the §6.1 grammar from
-        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md).
-        """
-        self._validate_registry_id(worker_id, kind="worker")
-        with self._atomic_operation():
-            existing = self._get_worker(worker_id)
-            if existing is not None:
-                return (_deep(existing), None)
-            # §7.1 disjoint-namespaces: a group with the same id MUST
-            # NOT exist. Otherwise the resolver in §7.2 can't tell
-            # whether a string in `Group.members` resolves through the
-            # worker registry (leaf) or the group registry (recursive
-            # descent).
-            if self._get_group(worker_id) is not None:
-                raise AlreadyExists(
-                    f"id {worker_id!r} is already registered as a group; "
-                    f"worker / group namespaces MUST be disjoint per "
-                    f"chapter 02 §7.1"
-                )
-            token = self._generate_credential_token()
-            credential_hash = self._hash_credential(token)
-            # Build via dict so optional fields whose value is None are
-            # omitted entirely. The `NotNone` validators on Worker
-            # reject explicit-null inputs (mirroring the JSON-schema
-            # absent-vs-null distinction in `_common.py`).
-            worker_data: dict[str, Any] = {
-                "worker_id": worker_id,
-                "experiment_id": self._experiment_id,
-                "registered_at": self._ts(),
-            }
-            if registered_by is not None:
-                worker_data["registered_by"] = registered_by
-            if labels:
-                worker_data["labels"] = dict(labels)
-            worker = Worker.model_validate(worker_data)
-            tx = _Tx()
-            tx.workers[worker_id] = _deep(worker)
-            tx.worker_credentials[worker_id] = credential_hash
-            self._apply_commit(tx)
-            return (_deep(worker), token)
 
-    def reissue_credential(self, worker_id: str) -> str:
-        """Mint a fresh credential for ``worker_id``; invalidates the prior one.
 
-        Returns the new plaintext registration token. Atomic with the
-        write that replaces the stored hash. Raises ``NotFound`` if
-        ``worker_id`` is not registered.
-        """
-        with self._atomic_operation():
-            worker = self._get_worker(worker_id)
-            if worker is None:
-                raise NotFound(f"worker {worker_id!r}")
-            token = self._generate_credential_token()
-            credential_hash = self._hash_credential(token)
-            tx = _Tx()
-            # The wire-visible Worker shape is unchanged on reissue —
-            # only the credential hash rotates. Stage an empty Worker
-            # delta keyed off the existing record so a backend that
-            # binds credential rotation to the row update commits both
-            # in one statement; backends that store creds separately
-            # ignore the workers-side stage and apply only the
-            # credential update.
-            tx.workers[worker_id] = _deep(worker)
-            tx.worker_credentials[worker_id] = credential_hash
-            self._apply_commit(tx)
-            return token
-
-    def verify_worker_credential(
-        self, worker_id: str, registration_token: str
-    ) -> bool:
-        """Return ``True`` iff ``registration_token`` is the current credential.
-
-        Returns ``False`` for unknown ``worker_id`` (rather than
-        raising) so binding-layer callers can collapse "no such
-        worker" and "wrong secret" into a single unauthorized outcome
-        without leaking which arm hit. The unknown-worker branch
-        verifies against a class-level dummy hash so the two failure
-        modes incur the same argon2id cost — a timing oracle MUST NOT
-        be able to distinguish "worker absent" from "secret wrong".
-        """
-        with self._atomic_operation():
-            stored = self._get_worker_credential_hash(worker_id)
-            if stored is None:
-                # Constant-time defence: run verify against a dummy
-                # hash so the unknown-worker path takes the same time
-                # as a wrong-secret check. Discard the result.
-                self._check_credential_hash(
-                    registration_token, self._UNKNOWN_WORKER_DUMMY_HASH
-                )
-                return False
-            return self._check_credential_hash(registration_token, stored)
-
-    def read_worker(self, worker_id: str) -> Worker:
-        """Return the wire-visible Worker, or raise ``NotFound``."""
-        with self._atomic_operation():
-            worker = self._get_worker(worker_id)
-            if worker is None:
-                raise NotFound(f"worker {worker_id!r}")
-            return _deep(worker)
-
-    def list_workers(self) -> list[Worker]:
-        """Return all registered workers (deep copies, sorted by ``worker_id``)."""
-        with self._atomic_operation():
-            return [_deep(w) for w in self._iter_workers()]
 
     # ------------------------------------------------------------------
     # Group registry (12a-1)
     # ------------------------------------------------------------------
 
-    def register_group(
-        self,
-        group_id: str,
-        *,
-        members: Iterable[str] | None = None,
-        created_by: str | None = None,
-    ) -> Group:
-        """Register a new group, optionally with initial members.
 
-        Cycles are detected at write time per
-        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §7.3; a mutation that would close a cycle raises ``CycleDetected``.
-        ``register_group`` of an existing ``group_id`` raises
-        ``AlreadyExists`` (groups are not idempotent on re-register —
-        unlike workers, group creation is operator-driven and a second
-        call most likely indicates a config mistake).
-        """
-        self._validate_registry_id(group_id, kind="group")
-        # §7 "group is a recursively-resolved set": dedup the input
-        # members in stable order so the durable store's
-        # `(group_id, member_id)` uniqueness constraint never sees a
-        # duplicate (chapter 02 §7 + R9-1). Preserves first-occurrence
-        # order so the resolver's walk is deterministic.
-        member_list: list[str] = []
-        seen: set[str] = set()
-        for member in members or ():
-            if member in seen:
-                continue
-            seen.add(member)
-            member_list.append(member)
-        for member in member_list:
-            self._validate_registry_id(member, kind="member")
-        with self._atomic_operation():
-            if self._get_group(group_id) is not None:
-                raise AlreadyExists(f"group {group_id!r}")
-            # §7.1 disjoint-namespaces: a worker with the same id MUST
-            # NOT exist. See the symmetric check in register_worker.
-            if self._get_worker(group_id) is not None:
-                raise AlreadyExists(
-                    f"id {group_id!r} is already registered as a worker; "
-                    f"worker / group namespaces MUST be disjoint per "
-                    f"chapter 02 §7.1"
-                )
-            group_data: dict[str, Any] = {
-                "group_id": group_id,
-                "experiment_id": self._experiment_id,
-                "members": member_list,
-                "created_at": self._ts(),
-            }
-            if created_by is not None:
-                group_data["created_by"] = created_by
-            group = Group.model_validate(group_data)
-            self._require_no_cycle_after({group_id: group})
-            tx = _Tx()
-            tx.groups[group_id] = _deep(group)
-            self._apply_commit(tx)
-            return _deep(group)
 
-    def add_to_group(self, group_id: str, member_id: str) -> Group:
-        """Add ``member_id`` to ``group_id``. Idempotent on already-member."""
-        self._validate_registry_id(member_id, kind="member")
-        with self._atomic_operation():
-            group = self._get_group(group_id)
-            if group is None:
-                raise NotFound(f"group {group_id!r}")
-            if member_id in group.members:
-                return _deep(group)
-            new_members = [*group.members, member_id]
-            updated = _validated_update(group, members=new_members)
-            self._require_no_cycle_after({group_id: updated})
-            tx = _Tx()
-            tx.groups[group_id] = _deep(updated)
-            self._apply_commit(tx)
-            return _deep(updated)
 
-    def remove_from_group(self, group_id: str, member_id: str) -> Group:
-        """Remove ``member_id`` from ``group_id``. Idempotent on absent member."""
-        with self._atomic_operation():
-            group = self._get_group(group_id)
-            if group is None:
-                raise NotFound(f"group {group_id!r}")
-            if member_id not in group.members:
-                return _deep(group)
-            new_members = [m for m in group.members if m != member_id]
-            updated = _validated_update(group, members=new_members)
-            tx = _Tx()
-            tx.groups[group_id] = _deep(updated)
-            self._apply_commit(tx)
-            return _deep(updated)
 
-    def delete_group(self, group_id: str) -> None:
-        """Delete ``group_id``.
 
-        Other groups that reference it as a member retain the dangling
-        reference; resolution simply treats the missing id as ``False``
-        per §7.1.
-        """
-        with self._atomic_operation():
-            if self._get_group(group_id) is None:
-                raise NotFound(f"group {group_id!r}")
-            tx = _Tx()
-            tx.group_deletes.add(group_id)
-            self._apply_commit(tx)
 
-    def read_group(self, group_id: str) -> Group:
-        """Return the group, or raise ``NotFound``."""
-        with self._atomic_operation():
-            group = self._get_group(group_id)
-            if group is None:
-                raise NotFound(f"group {group_id!r}")
-            return _deep(group)
-
-    def list_groups(self) -> list[Group]:
-        """Return all groups (deep copies, sorted by ``group_id``)."""
-        with self._atomic_operation():
-            return [_deep(g) for g in self._iter_groups()]
-
-    def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
-        """Return ``True`` iff ``worker_id`` is transitively in ``group_id``.
-
-        Implements [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §7.2: a worker is a member of a group if it appears directly in
-        ``members``, or appears in any group that is itself a member
-        (transitive closure). Cycles cannot exist (§7.3 forbids them at
-        write time), so a topo-walk over the group DAG is safe.
-
-        Per §7.1 "a reference to a non-existent worker / group
-        resolves to membership=false", short-circuit when the
-        candidate ``worker_id`` is not itself a registered worker:
-        an unregistered name in some group's ``members`` does NOT
-        make that name a member, even though the literal §7.2 first
-        bullet would otherwise admit it. Dangling group references
-        in ``members`` are likewise skipped (the walk just doesn't
-        descend through them).
-        """
-        with self._atomic_operation():
-            if self._get_worker(worker_id) is None:
-                return False
-            visited: set[str] = set()
-            stack: list[str] = [group_id]
-            while stack:
-                current = stack.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
-                group = self._get_group(current)
-                if group is None:
-                    # Dangling reference; treat as empty membership.
-                    continue
-                if worker_id in group.members:
-                    return True
-                for member in group.members:
-                    if self._get_group(member) is not None and member not in visited:
-                        stack.append(member)
-            return False
 
     # ------------------------------------------------------------------
     # Registry helpers
     # ------------------------------------------------------------------
 
 
-    def _generate_credential_token(self) -> str:
-        """Mint a fresh ≥256-bit registration token (URL-safe hex).
 
-        ``secrets.token_hex(32)`` returns 64 hex chars / 256 bits of
-        entropy. Hex is chosen over urlsafe_b64 so the token is safe to
-        place after the ``:`` in the bearer format from
-        [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
-        §13.1 without escape handling — the bearer parser splits on the
-        first colon, and hex contains no ``:`` characters.
-        """
-        return secrets.token_hex(32)
 
-    # argon2id PasswordHasher with the RFC 9106 SECOND-CHOICE-LOW-MEMORY
-    # parameters (`time_cost=3, memory_cost=64 MiB, parallelism=4`) —
-    # argon2-cffi's defaults as of v23. The slow-KDF properties are
-    # cited as the spec posture in chapter 07 §13.1 and chapter 08 §7.
-    _PASSWORD_HASHER = PasswordHasher()
 
-    # Dummy hash computed once at class-load so the unknown-worker
-    # branch of ``verify_worker_credential`` can perform a real
-    # argon2id verify against it (constant-time compared to a hit;
-    # see §13.4 / chunk-review item #4).
-    _UNKNOWN_WORKER_DUMMY_HASH: str = _PASSWORD_HASHER.hash("eden-unknown-worker-dummy")
 
-    def _hash_credential(self, registration_token: str) -> str:
-        """Return an argon2id-encoded hash of ``registration_token``.
 
-        Per chapter 07 §13.1 / chapter 08 §7, the reference backend
-        uses argon2id as the credential KDF. The encoded form is the
-        standard PHC string (carries algorithm, params, salt, and
-        digest together) so a single column stores everything needed
-        for verification.
-        """
-        return self._PASSWORD_HASHER.hash(registration_token)
-
-    def _check_credential_hash(self, registration_token: str, stored: str) -> bool:
-        """Verify ``registration_token`` against ``stored`` (argon2id encoded).
-
-        Returns ``True`` on match, ``False`` otherwise.
-        ``argon2-cffi``'s verify is itself constant-time (the only
-        timing-meaningful difference is the brief decode-fail path for
-        a malformed ``stored``; legitimate hashes always reach the KDF
-        comparison).
-        """
-        try:
-            return self._PASSWORD_HASHER.verify(stored, registration_token)
-        except VerifyMismatchError:
-            return False
-        except Exception:
-            # Malformed stored encoding (corrupted record, wrong
-            # column type, etc.). Treat as mismatch rather than
-            # propagate; the credential check contract is binary.
-            return False
-
-    def _require_no_cycle_after(self, staged_groups: dict[str, Group]) -> None:
-        """Raise ``CycleDetected`` if ``staged_groups`` would close a cycle.
-
-        ``staged_groups`` is the post-mutation membership for any groups
-        about to be written; persisted groups not in ``staged_groups``
-        are read from the store. The DFS treats edges as
-        group → group-member; a worker member is a leaf.
-        """
-
-        def members_of(gid: str) -> list[str]:
-            if gid in staged_groups:
-                return list(staged_groups[gid].members)
-            persisted = self._get_group(gid)
-            return list(persisted.members) if persisted is not None else []
-
-        def dfs(
-            node: str,
-            visited: set[str],
-            on_stack: set[str],
-        ) -> bool:
-            if node in on_stack:
-                return True
-            if node in visited:
-                return False
-            visited.add(node)
-            on_stack.add(node)
-            for member in members_of(node):
-                # Only traverse member ids that name another GROUP,
-                # not a worker. A worker member is a leaf in this
-                # graph; no group-id edges leave it.
-                is_group = (
-                    member in staged_groups or self._get_group(member) is not None
-                )
-                if is_group and dfs(member, visited, on_stack):
-                    return True
-            on_stack.discard(node)
-            return False
-
-        # DFS from every staged group looking for a back-edge to itself
-        # or to another node we're currently exploring (a cycle).
-        for start in staged_groups:
-            if dfs(start, set(), set()):
-                raise CycleDetected(
-                    f"group mutation on {start!r} would introduce a cycle"
-                )
 
     # ------------------------------------------------------------------
     # Event + timestamp helpers
