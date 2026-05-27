@@ -194,11 +194,15 @@ jobs:
     name: complexity-gate
     runs-on: ubuntu-latest
     needs: changes
+    # `compose` is included because radon scans all of reference/ — which
+    # includes reference/compose/healthcheck/e2e_drive.py, a .py file that
+    # lives in the compose bucket, not the python bucket.
     if: >-
       !cancelled() && (
       needs.changes.result != 'success' ||
       needs.changes.outputs.run_all == 'true' ||
-      needs.changes.outputs.python == 'true' )
+      needs.changes.outputs.python == 'true' ||
+      needs.changes.outputs.compose == 'true' )
     steps:
       - uses: actions/checkout@v4
 
@@ -247,11 +251,17 @@ jobs:
     name: python-lint
     runs-on: ubuntu-latest
     needs: changes
+    # `compose` is included because `ruff check .` lints the whole repo —
+    # including reference/compose/healthcheck/e2e_drive.py, a .py file that
+    # lives in the compose bucket, not the python bucket. (pyright's
+    # explicit include list excludes reference/compose, so python-typecheck
+    # does not need this.)
     if: >-
       !cancelled() && (
       needs.changes.result != 'success' ||
       needs.changes.outputs.run_all == 'true' ||
-      needs.changes.outputs.python == 'true' )
+      needs.changes.outputs.python == 'true' ||
+      needs.changes.outputs.compose == 'true' )
     steps:
       - uses: actions/checkout@v4
 
