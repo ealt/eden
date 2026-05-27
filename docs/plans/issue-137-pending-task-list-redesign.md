@@ -154,13 +154,21 @@ have *index* pages only; artifacts are served by `GET /artifacts`). The links ar
   from the task detail page already.
 - **variant** (evaluator only) → display `variant_id` + `variant.branch`, linked to the admin
   variants index `/admin/variants/`.
-- **artifacts** → **artifact-shape-aware** per-entry "view content" links. The row-builder reads
-  the artifact *manifest* (executor:
-  [`_read_artifact_manifest`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py);
-  evaluator: `read_variant_artifact_manifest`) and emits one `GET /artifacts?...` link per actual
-  manifest entry. **No hardcoded `idea.md`** — the artifact model allows direct-file and
-  upload-only bundles with no guaranteed single-file name; if the manifest is empty or unreadable,
-  render "(no artifacts)" / "(artifacts unavailable)".
+- **artifacts** → **artifact-shape-aware** "view content" links, covering **both** shapes the
+  `serve_artifact` route supports
+  ([`artifacts.py:119`](../../reference/services/web-ui/src/eden_web_ui/routes/artifacts.py),
+  params `uri` and `entry`):
+  - **Bundle** (`.tar.gz`) → read the manifest (executor:
+    [`_read_artifact_manifest`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py);
+    evaluator: `read_variant_artifact_manifest`) and emit one
+    `GET /artifacts?uri=<bundle>&entry=<name>` link per manifest entry.
+  - **Direct file** (non-bundle `file://` URI) → emit a single `GET /artifacts?uri=<uri>` link (no
+    `entry`). This branch must not be dropped — many ideas/variants are single-file artifacts, not
+    bundles.
+
+  **No hardcoded `idea.md`** — the artifact model has no guaranteed single-file name. If the URI
+  is absent / non-`file://` / the manifest is empty or unreadable, render "(no artifacts)" /
+  "(artifacts unavailable)".
 
 **Deliberately deferred (not in this issue):** a browser-facing Forgejo *browse* URL for the
 parent commit / work branch. The current CLI exposes only an in-network `--forgejo-url` and an
@@ -356,12 +364,16 @@ side than when one list lands a wave ahead).
 
 ### Wave 3 — Server-side regression + e2e
 
-- Add a regression test: ineligible-worker POST to `/executor/<id>/claim` (and evaluator) returns
-  303 banner-redirect with the `worker-not-eligible` banner, **not** 500 (locks in §1.1.1; no
-  handler change).
-- Add one e2e test driving the "claim ineligible task with filter OFF" path through the rendered
-  page asserting the banner renders cleanly. Follow the multi-subprocess log-drain discipline in
-  AGENTS.md (file-redirect, not undrained `PIPE`) if it spawns the stack.
+- Add a route-level regression test: a **forged/direct POST** to `/executor/<id>/claim` (and
+  evaluator) from an ineligible worker returns a 303 banner-redirect with the
+  `worker-not-eligible` banner, **not** 500 (locks in §1.1.1; no handler change). This is a direct
+  POST because the rendered page disables the button for ineligible rows (§D.5) — the test models a
+  stale page / non-browser client, which is exactly the path the server must still handle.
+- Add one e2e test asserting the **rendered-page UX**, not a click: with `?eligible=0`, an
+  ineligible row renders the claim button **`disabled` with the tooltip** (there is no clickable
+  claim path for it — that is the contract). The "no 500" server-side guarantee is covered by the
+  forged-POST regression above, not by a rendered click. Follow the multi-subprocess log-drain
+  discipline in AGENTS.md (file-redirect, not undrained `PIPE`) if it spawns the stack.
 - **Gate:** `uv run pytest -q` full suite + `uv run pytest -q conformance/ -n auto` (regression
   only — no conformance change expected). If the e2e drives the Compose stack, run the relevant
   smoke per AGENTS.md "literal validation gate" rule.
@@ -395,8 +407,11 @@ side than when one list lands a wave ahead).
   outage into "ineligible-and-hidden" — that would silently hide claimable work during an outage
   (the AGENTS.md "narrow exception handling on store reads" pitfall: distinguish definitive
   result from transport-indeterminate).
-- **Sort over degraded rows.** Missing `priority`/`slug` (idea unavailable) must sort
-  deterministically (bottom), never crash the comparator on `None`. Explicit sentinel keys.
+- **Sort over degraded rows.** Missing `priority`/`slug` (idea unavailable) must land
+  deterministically at the bottom for **both** sort directions, never crash the comparator on
+  `None`. Achieved by **partitioning** present vs degraded rows and concatenating degraded last in
+  stable order (§D.2) — not by `-inf`/`""` sentinel keys, which flip to the top under ascending
+  sorts.
 - **Query-param injection into hrefs.** Sort/filter values are echoed into the page as link hrefs;
   allow-list every param value (§D.2) so an attacker-supplied `?sort=` can't reflect into markup.
 - **`complexity-gate` regression.** `list_pending` already does try/except transport handling;
