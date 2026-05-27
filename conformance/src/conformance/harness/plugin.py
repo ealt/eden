@@ -12,10 +12,12 @@ import shutil
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from .adapter import IutAdapter, IutHandle
+from .error_vocabulary import out_of_vocabulary, unobserved_core
 from .event_cursor import EventLog
 from .wire_client import WireClient
 
@@ -24,6 +26,12 @@ _DEFAULT_EXPERIMENT_CONFIG = _FIXTURES_DIR / "minimal-experiment.yaml"
 _DEFAULT_ADAPTER = "conformance.adapters.reference.adapter:ReferenceAdapter"
 
 OBSERVED_PROBLEM_TYPES_KEY = pytest.StashKey[set[str]]()
+# Controller-side union of every worker's observed problem types, used
+# to assert the chapter 07 §7 vocabulary closure across a distributed
+# (pytest-xdist) run. See `pytest_testnodedown` / `pytest_sessionfinish`.
+CONTROLLER_OBSERVED_UNION_KEY = pytest.StashKey[set[str]]()
+
+_WORKEROUTPUT_OBSERVED_KEY = "eden_observed_problem_types"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -38,6 +46,85 @@ def pytest_configure(config: pytest.Config) -> None:
         "conformance_meta: harness self-validation. Not part of any conformance level.",
     )
     config.stash[OBSERVED_PROBLEM_TYPES_KEY] = set()
+    config.stash[CONTROLLER_OBSERVED_UNION_KEY] = set()
+
+
+def _is_xdist_worker(config: pytest.Config) -> bool:
+    """True when this process is a pytest-xdist worker (not the controller)."""
+    return hasattr(config, "workerinput")
+
+
+def _is_distributed(config: pytest.Config) -> bool:
+    """True when the run is distributed across workers (``-n>0``)."""
+    # `dist` is "no" for a serial run and the scheduling mode (e.g.
+    # "load") when xdist is driving workers.
+    return str(config.getoption("dist", "no")) != "no"
+
+
+def pytest_testnodedown(node: object, error: object) -> None:
+    """Controller-side: fold a finished worker's observed types into the union.
+
+    xdist calls this on the controller as each worker shuts down,
+    before the controller's ``pytest_sessionfinish``. ``workeroutput``
+    carries the worker's accumulated ``observed_problem_types`` (written
+    in the worker's ``pytest_sessionfinish`` below).
+    """
+    workeroutput = getattr(node, "workeroutput", None) or {}
+    observed = workeroutput.get(_WORKEROUTPUT_OBSERVED_KEY, [])
+    config = getattr(node, "config", None)
+    if config is not None:
+        config.stash[CONTROLLER_OBSERVED_UNION_KEY].update(observed)
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Worker: publish observed types. Controller: assert the §7 closure.
+
+    Under pytest-xdist the per-test vocabulary-closure scenarios skip
+    (they would only see their own worker's partial accumulator), so
+    the closure is asserted here on the controller over the cross-worker
+    union. Serial runs assert in the scenarios themselves and this hook
+    is a no-op.
+    """
+    config = session.config
+    if _is_xdist_worker(config):
+        # Hand this worker's observations to the controller.
+        config.workeroutput[_WORKEROUTPUT_OBSERVED_KEY] = sorted(  # type: ignore[attr-defined]
+            config.stash[OBSERVED_PROBLEM_TYPES_KEY]
+        )
+        return
+    if not _is_distributed(config):
+        # Serial run: test_error_vocabulary.py asserted the closure.
+        return
+
+    union = set(config.stash[CONTROLLER_OBSERVED_UNION_KEY])
+    failures: list[str] = []
+    extras = out_of_vocabulary(union)
+    if extras:
+        failures.append(
+            "spec/v0/07-wire-protocol.md §9 — observed `type` URIs outside "
+            f"the §7 closed vocabulary: {sorted(extras)}"
+        )
+    missing = unobserved_core(union)
+    if missing:
+        failures.append(
+            "spec/v0/07-wire-protocol.md §9 — §7 core vocabulary entries "
+            f"never observed during the run: {sorted(missing)}"
+        )
+    if failures:
+        from _pytest.terminal import TerminalReporter
+
+        reporter = cast(
+            "TerminalReporter | None",
+            config.pluginmanager.getplugin("terminalreporter"),
+        )
+        if reporter is not None:
+            reporter.write_sep("=", "error-vocabulary closure (xdist aggregate)", red=True)
+            for line in failures:
+                reporter.write_line(line, red=True)
+        # Promote to a failing session exit code without clobbering an
+        # already-failing status from real test failures.
+        if session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

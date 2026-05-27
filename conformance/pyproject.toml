@@ -23,6 +23,13 @@ dependencies = [
     "pytest>=8.0",
     "pytest-ordering>=0.6",
     "pytest-json-report>=1.5",
+    # pytest-xdist parallelizes the per-scenario subprocess spawn (each
+    # scenario boots a fresh task-store-server + control-plane subprocess
+    # against in-memory storage on random ports), which is the suite's
+    # dominant cost. The error-vocabulary closure assertion spans the
+    # whole run, so it is aggregated across workers in the harness plugin
+    # (see `harness/plugin.py` + `harness/error_vocabulary.py`).
+    "pytest-xdist>=3.6",
     "aiohttp>=3.9,<4",
     "pyyaml>=6.0",
 ]
