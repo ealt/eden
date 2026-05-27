@@ -1,4 +1,4 @@
-# Issue #143 — Web UI sign-ups non-admin by default; admins promote via `admins` group membership
+# Issue #143 — Web UI sign-ups non-admin by default; admins integrate via `admins` group membership
 
 GitHub: [#143](https://github.com/ealt/eden/issues/143).
 
@@ -11,9 +11,9 @@ Today the web UI is itself a single registered worker (`worker_id=web-ui-1`). Ev
 
 Both are added explicitly at [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) L740-783. The consequence is that **every web UI user is transitively an admin** — admin-gated wire ops succeed for any signed-in browser session because the bearer says `web-ui-1` and `web-ui-1 ∈ admins`. CLI users under the auto-registered `eden-manual` are NOT in `admins`, so CLI lacks the symmetry.
 
-Issue [#140](https://github.com/ealt/eden/issues/140) (operator identity as a registered worker, "Model B") is the strict prerequisite that fixes the principal half: each operator registers their own `Worker` record, the session cookie carries their per-user bearer, and `web-ui-1` becomes a service-only worker used for the web-ui's own auto-actions. Once #140 lands, the web-ui session bearer IS the operator's bearer; what's left is the **authorization** question — who in that population is an admin? — and the operator-facing flow that promotes / demotes.
+Issue [#140](https://github.com/ealt/eden/issues/140) (operator identity as a registered worker, "Model B") is the strict prerequisite that fixes the principal half: each operator registers their own `Worker` record, the session cookie carries their per-user bearer, and `web-ui-1` becomes a service-only worker used for the web-ui's own auto-actions. Once #140 lands, the web-ui session bearer IS the operator's bearer; what's left is the **authorization** question — who in that population is an admin? — and the operator-facing flow that integrates / demotes.
 
-This issue codifies the privilege model on top of #140 and ships the operator-facing promotion surface. The intent: **web UI sign-ups are non-admin by default**, admins are explicitly admitted by membership in `admins`, the operator who runs `setup-experiment` is the bootstrap admin, and subsequent admins are promoted by an existing admin via the wire or the web UI.
+This issue codifies the privilege model on top of #140 and ships the operator-facing integration surface. The intent: **web UI sign-ups are non-admin by default**, admins are explicitly admitted by membership in `admins`, the operator who runs `setup-experiment` is the bootstrap admin, and subsequent admins are integrated by an existing admin via the wire or the web UI.
 
 ## 2. Decisions captured before drafting
 
@@ -21,9 +21,9 @@ These were settled in [#143](https://github.com/ealt/eden/issues/143)'s issue bo
 
 1. **Default is non-admin.** A new operator who signs up via the web UI gets a fresh `Worker` record that is NOT added to `admins`. Admin authority is opt-in by an existing admin, never implicit.
 2. **Single initial admin.** `setup-experiment` seeds **one** admin: the operator running the bootstrap. The `web-ui-1` service worker is NOT added to `admins` under the new model — its previous admin membership was a Phase-9-shaped shortcut that this issue retires.
-3. **Promotion is explicit and symmetric.** Any existing admin can promote another registered operator by adding them to the `admins` group; demotion is by removal. Both flows exist on the web UI (`/admin/groups/admins/`) and the CLI (the wire endpoint).
+3. **Integration is explicit and symmetric.** Any existing admin can integrate another registered operator by adding them to the `admins` group; demotion is by removal. Both flows exist on the web UI (`/admin/groups/admins/`) and the CLI (the wire endpoint).
 4. **No role-based access control beyond admin / non-admin.** Read-only-observer / evaluator-only / etc. are deferred until use cases emerge.
-5. **No audit-trail UI in scope.** Wire emits `group.member_added` / `group.member_removed` events today (chapter 05 §3); a dedicated promotion-audit page is a separate concern.
+5. **No audit-trail UI in scope.** Wire emits `group.member_added` / `group.member_removed` events today (chapter 05 §3); a dedicated integration-audit page is a separate concern.
 6. **Pre-external-user posture.** Migration is by re-bootstrap. No deprecation shim for the "web-ui-1 in admins" pattern — it's removed in lockstep with the setup-experiment change. Operators of in-flight experiments re-run setup against a fresh data root per [`docs/operations/experiment-data-durability.md`](../operations/experiment-data-durability.md).
 
 These five decisions are NOT up for re-litigation in codex-review unless review surfaces a load-bearing contradiction with a spec MUST or with the #140 plan.
@@ -47,19 +47,19 @@ If #140 has not merged when this plan reaches impl, **do not start implementatio
 
 This is the load-bearing spec amendment.
 
-Today (chapter 07 §13.3): `add_to_group / remove_from_group / delete_group / register_group` are **admin-principal-gated** — only the literal `admin:` bearer can call them. That means an "existing admin" (a worker whose `worker_id` is a member of `admins`) cannot promote anyone using their session bearer; they would have to hold the deployment admin token, which #140's Model B explicitly retires for human operators.
+Today (chapter 07 §13.3): `add_to_group / remove_from_group / delete_group / register_group` are **admin-principal-gated** — only the literal `admin:` bearer can call them. That means an "existing admin" (a worker whose `worker_id` is a member of `admins`) cannot integrate anyone using their session bearer; they would have to hold the deployment admin token, which #140's Model B explicitly retires for human operators.
 
 Two possible shapes:
 
 (a) **Trust the web UI as a proxy.** Keep wire `add_to_group` admin-principal-gated. Web-UI route handler performs a session-level `resolve_worker_in_group(session.worker_id, "admins")` check; if it passes, the handler issues the wire call using `app.state.admin_store` (deployment admin bearer, already plumbed). Net: the web-ui service holds an admin-grade credential indefinitely; the operator's session bearer doesn't.
 
-(b) **Dual-gate at the wire.** Amend chapter 07 §13.3 so `add_to_group / remove_from_group` accept **either** the deployment admin principal OR a worker principal whose `worker_id` resolves into `admins`. (`delete_group` stays admin-principal-only — see the per-operation breakdown below for why deletion is asymmetric with member-graph mutations.) Net: any admin-group member can promote / demote via their own session bearer; the web-ui no longer needs to hold a deployment admin credential for the promotion path. CLI gets the same shape for free.
+(b) **Dual-gate at the wire.** Amend chapter 07 §13.3 so `add_to_group / remove_from_group` accept **either** the deployment admin principal OR a worker principal whose `worker_id` resolves into `admins`. (`delete_group` stays admin-principal-only — see the per-operation breakdown below for why deletion is asymmetric with member-graph mutations.) Net: any admin-group member can integrate / demote via their own session bearer; the web-ui no longer needs to hold a deployment admin credential for the integration path. CLI gets the same shape for free.
 
 **Recommendation: option (b).** Reasons:
 
-- Symmetry with the issue body: "An existing admin can promote another registered operator by adding them to the `admins` group" reads most naturally as the existing admin's bearer carrying the authority, not the web-ui proxying.
+- Symmetry with the issue body: "An existing admin can integrate another registered operator by adding them to the `admins` group" reads most naturally as the existing admin's bearer carrying the authority, not the web-ui proxying.
 - Removes the "web-ui service holds a deployment admin credential" footgun. Under (a), every web-ui deployment is one bug away from leaking admin authority to non-admin sessions; under (b) the only thing web-ui-1 carries is its own worker bearer.
-- CLI parity: a CLI user who is in `admins` can promote others without exporting the deployment admin token to their shell.
+- CLI parity: a CLI user who is in `admins` can integrate others without exporting the deployment admin token to their shell.
 - Bootstrap remains intact: setup-experiment still calls `add_to_group` with the deployment admin bearer to seed the initial admin (chicken-and-egg case where there is no admin-group member yet). The dual-gate accepts both, so bootstrap doesn't change.
 
 Spec amendment shape (§13.3 classification framework). The current framework (chapter 07 §13.3) has three principal-class classifications — **admin-gated**, **worker-gated**, **either** — and a separate, optional **group-gate** that only attaches to worker-gated endpoints (the dispatcher's existing `_check_authorization` in [`reference/packages/eden-wire/src/eden_wire/auth.py`](../../reference/packages/eden-wire/src/eden_wire/auth.py) enforces this attach-shape). Adding "admin-OR-`admins`-group-gated" is not a new bullet on the summary list — it is a restatement of the framework. The amendment:
@@ -84,7 +84,7 @@ Operations that stay admin-principal-only at the wire (NOT shifted to dual-gate)
 
 - Restate the classification framework opening paragraph to introduce the "admin-OR-worker" principal-class option and to lift the "group-gate attaches only to worker-gated endpoints" restriction (see §D.1.1 above for the framework re-statement; the spec prose mirrors that).
 - Extract `add_to_group / remove_from_group` from the "admin-gated — registry mutations" bullet. (`delete_group` STAYS in the admin-gated bullet — see §D.1's rationale for the asymmetry.)
-- New bullet: "**admin-OR-`admins`-group-gated** — `add_to_group`, `remove_from_group`. Either the deployment admin principal OR a worker principal whose `worker_id` resolves into the experiment's `admins` group ([`02-data-model.md`](02-data-model.md) §7.5) MAY call these. The dual-gate permits operator-promotion of peers without exposing the deployment admin credential to operator sessions, and preserves the bootstrap path (the initial admin is seeded by the deployment admin before any admin-group member exists)."
+- New bullet: "**admin-OR-`admins`-group-gated** — `add_to_group`, `remove_from_group`. Either the deployment admin principal OR a worker principal whose `worker_id` resolves into the experiment's `admins` group ([`02-data-model.md`](02-data-model.md) §7.5) MAY call these. The dual-gate permits operator-integration of peers without exposing the deployment admin credential to operator sessions, and preserves the bootstrap path (the initial admin is seeded by the deployment admin before any admin-group member exists)."
 - Wire-dispatcher prose paragraph (after the existing "for group-gated worker endpoints" bullet) gains a new bullet: "For admin-OR-group-gated endpoints, accepts the request if EITHER the principal class is `admin` OR the principal is a worker whose id resolves into the named group via `Store.resolve_worker_in_group`. The check is atomic with the rest of the request handler."
 
 **[`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §7.5**:
@@ -121,7 +121,7 @@ The current web-ui `/admin/*` surface is not a single permission class. Each han
 Two consequences this matrix forces the plan to acknowledge:
 
 1. **The single `require_admin` route guard is necessary but NOT sufficient.** It correctly blocks non-admin sessions from every `/admin/*` surface, but it does NOT distinguish experiment-admin from deployment-admin from control-plane-admin authority. Mutations that proxy through `app.state.admin_store` or `app.state.control_plane` inherit those clients' deployment-wide authority on any successful POST. An experiment admin who can access `/admin/workers/register` becomes a deployment-admin proxy: they can call `register_worker` against the deployment via the web-ui's bearer. This is the trust-delegation footgun §10.3 acknowledges; this plan does NOT eliminate it. The mitigations in scope are:
-    - Document the trust delegation in `docs/user-guide.md` §8 (the admin-promotion subsection): "promoting an operator to `admins` grants them deployment-admin authority via the web-ui's bearer, NOT just experiment-admin authority." Operators should understand the privilege they are granting.
+    - Document the trust delegation in `docs/user-guide.md` §8 (the admin-integration subsection): "integrating an operator to `admins` grants them deployment-admin authority via the web-ui's bearer, NOT just experiment-admin authority." Operators should understand the privilege they are granting.
     - Surface a deployment-admin-tagged banner / badge on every UI mutation that proxies through `admin_store` or `control_plane` so the operator sees they are about to exercise deployment-wide authority.
     - Codify the trust-delegation footgun as a follow-up issue (`#NEW-split-deployment-admin-surface`) — a future shape that splits the deployment-admin operations out of the experiment-admin UI surface. Not in scope for #143.
 2. **Routes guarded by `require_admin` but proxying through `admin_store` / `control_plane` keep using those clients.** The §D.4.2 wire-bearer shift to session bearer applies ONLY to `add_to_group / remove_from_group` (the dual-gated wire endpoints from §D.1). Other admin-store-proxied mutations (`register_worker`, `reissue_credential`, `register_group`, `delete_group`, control-plane ops) keep using `admin_store` / `control_plane` per the existing pattern.
@@ -154,24 +154,24 @@ This is the [#NEW-admin-route-gating] check the issue body references. It is **l
 
 [`reference/services/web-ui/src/eden_web_ui/routes/admin_groups.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_groups.py) and [`reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html`](../../reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html) already exist (chunk 12a-1b). The page already supports `list / detail / register / mutate / delete`. The new work is UX polish:
 
-- **Add a "Promote" affordance.** The current "Add member" form takes a generic `member_id`. On the `/admin/groups/admins/` detail page specifically, the form heading should read "Promote operator to admin" and the input label "Worker name (or id)". The wire call is unchanged (`POST /v0/.../groups/admins/members` with `member_id: <id>`).
-- **Confirm-before-promote.** A confirm checkbox or modal — "I confirm I want to grant admin authority to <worker_name>." Mirrors the existing terminate-experiment confirmation pattern (`admin_dispatch_mode.html`).
+- **Add a "Integrate" affordance.** The current "Add member" form takes a generic `member_id`. On the `/admin/groups/admins/` detail page specifically, the form heading should read "Integrate operator to admin" and the input label "Worker name (or id)". The wire call is unchanged (`POST /v0/.../groups/admins/members` with `member_id: <id>`).
+- **Confirm-before-integrate.** A confirm checkbox or modal — "I confirm I want to grant admin authority to <worker_name>." Mirrors the existing terminate-experiment confirmation pattern (`admin_dispatch_mode.html`).
 - **Symmetric demote affordance.** A "Revoke admin" button per member row. Confirmation modal. Wire: `DELETE /v0/.../groups/admins/members/<id>`. The current `admin_group_detail.html` already lists members; add the per-row revoke button.
-- **Self-protection rail (transitive-aware).** The page MUST NOT allow the signed-in admin to perform a `remove_from_group` mutation that would cause their own `worker_id` to NO LONGER resolve into `admins` after the call. The naive check (`member_id == session.worker_id`) is insufficient because membership is transitive (§7.2): an admin who is in `admins` via a nested group `G` could call `remove_from_group(admins, G)`, dropping themselves indirectly. The correct check uses `Store.resolve_worker_in_group(session.worker_id, "admins")` against a tentative post-mutation membership view. **Implementation must NOT duplicate `Store.resolve_worker_in_group` semantics in a route-local walk** (semantic-drift hazard: dangling identifiers, deleted nested groups, cycle-defense behavior, and any future §7.2 traversal-rule changes would diverge). Two acceptable shapes: (a) the store gains a `would_resolve_after_remove(worker_id, group_id, member_id)` probe (preferred — single source of truth); (b) the route handler reuses the existing `Store.resolve_worker_in_group` after constructing a transient `Store` view with the simulated post-mutation membership. The parity tests required: direct self-revoke, nested-group self-revoke, dangling member ids (members that name non-existent workers / groups), and self-revoke through a nested group that itself contains another nested group two levels deep. On rejected: redirect with `?error=self-revoke-forbidden` and an explanatory banner ("this removal would drop your own admin authority — promote another admin first, or have them revoke you").
+- **Self-protection rail (transitive-aware).** The page MUST NOT allow the signed-in admin to perform a `remove_from_group` mutation that would cause their own `worker_id` to NO LONGER resolve into `admins` after the call. The naive check (`member_id == session.worker_id`) is insufficient because membership is transitive (§7.2): an admin who is in `admins` via a nested group `G` could call `remove_from_group(admins, G)`, dropping themselves indirectly. The correct check uses `Store.resolve_worker_in_group(session.worker_id, "admins")` against a tentative post-mutation membership view. **Implementation must NOT duplicate `Store.resolve_worker_in_group` semantics in a route-local walk** (semantic-drift hazard: dangling identifiers, deleted nested groups, cycle-defense behavior, and any future §7.2 traversal-rule changes would diverge). Two acceptable shapes: (a) the store gains a `would_resolve_after_remove(worker_id, group_id, member_id)` probe (preferred — single source of truth); (b) the route handler reuses the existing `Store.resolve_worker_in_group` after constructing a transient `Store` view with the simulated post-mutation membership. The parity tests required: direct self-revoke, nested-group self-revoke, dangling member ids (members that name non-existent workers / groups), and self-revoke through a nested group that itself contains another nested group two levels deep. On rejected: redirect with `?error=self-revoke-forbidden` and an explanatory banner ("this removal would drop your own admin authority — integrate another admin first, or have them revoke you").
 - **Wire bearer**: under §D.1 dual-gate, the wire call uses the session bearer (the admin's worker bearer), NOT `app.state.admin_store`. This is a semantic shift from the existing admin_groups.py — today's mutations route through `admin_store`; with the dual-gate, all `add_to_group / remove_from_group` route through `app.state.store` with the session bearer. Refactor the relevant handler logic to use `request.app.state.store` for these calls (the bearer is the session's per-request store; #140's plan introduces a `request_store(request)` helper or equivalent for binding the session bearer to a per-request StoreClient).
 
 #### D.4.3 Profile-page integration
 
 Issue #140 owns `/profile/`. #143 adds one section: **"Groups."** Lists the operator's transitive group memberships, with `admins` highlighted ("you are an admin" badge) when present. Implementation: the page reads `list_groups` (either-gated) and filters by membership via `resolve_worker_in_group(session.worker_id, group_id)` for each (depth caps from chunk 12a-1b: depth ≤10, breadth ≤1000). For non-admins, the admin nav link is hidden.
 
-Cross-link: a "Promote / revoke other operators" link next to the admin badge points to `/admin/groups/admins/`.
+Cross-link: a "Integrate / revoke other operators" link next to the admin badge points to `/admin/groups/admins/`.
 
 #### D.4.4 Sign-up flow — what changes (relative to #140)
 
 Issue #140 introduces the sign-up form. #143 imposes **two constraints** on it:
 
 1. **MUST NOT add the new worker to any group.** The wire `register_worker` call by itself does not add to any group (verified — the §6.1 endpoint is registry-only). The sign-up handler MUST NOT follow registration with an `add_to_group` call. The constraint is "trust but verify" — codify as a unit test of the sign-up handler that asserts no `add_to_group` is invoked.
-2. **The first sign-up is NOT promoted to admin by side-effect.** Even on a fresh deployment with an empty `admins` group, the first sign-up is non-admin. The deployment is unusable for admin ops until setup-experiment seeds an admin or the operator manually promotes via the deployment admin bearer. (The setup-experiment seed handles this on the standard path.)
+2. **The first sign-up is NOT integrated to admin by side-effect.** Even on a fresh deployment with an empty `admins` group, the first sign-up is non-admin. The deployment is unusable for admin ops until setup-experiment seeds an admin or the operator manually integrates via the deployment admin bearer. (The setup-experiment seed handles this on the standard path.)
 
 ### D.5 Why `register_worker` stays admin-principal-gated
 
@@ -192,16 +192,16 @@ The existing `eden-manual` CLI does not need new commands for #143. Under #140's
 Two CLI ergonomics touches in scope (both small, both nice-to-have):
 
 1. **`eden-manual whoami` surfaces admin flag.** If `resolve_worker_in_group(self, "admins")` returns true, the CLI prints "you are an admin" in addition to the existing worker_id + worker_name. Mirrors the Profile page's admin badge.
-2. **`eden-manual admins list` / `eden-manual admins promote <id-or-name>` / `eden-manual admins revoke <id-or-name>`** — thin wrappers over `list_groups / add_to_group(admins) / remove_from_group(admins)`. The CLI already has the wire plumbing; this is one new subcommand-group covering three operations.
+2. **`eden-manual admins list` / `eden-manual admins integrate <id-or-name>` / `eden-manual admins revoke <id-or-name>`** — thin wrappers over `list_groups / add_to_group(admins) / remove_from_group(admins)`. The CLI already has the wire plumbing; this is one new subcommand-group covering three operations.
 
 The CLI work is **bundled** in this plan (single PR) per CLAUDE.md "small impl changes alongside spec/UI changes." If the CLI scope grows in implementation, split into a follow-up.
 
 ### D.7 Docs
 
 - [`docs/user-guide.md`](../../docs/user-guide.md) §10 (auth principal matrix): rewrite to reflect Model B. The "Web-UI session can" column becomes "Operator session can (non-admin / admin)" with the per-row distinction. The bottom paragraph ("The Web UI is itself a worker (`worker_id=web-ui-1`) …") is replaced with the new model: per-user sessions; `web-ui-1` is service-only; admin authority comes from `admins`-group membership.
-- [`docs/user-guide.md`](../../docs/user-guide.md) §8 (admin operations): new subsection "Promoting an operator to admin / revoking admin authority." Covers the web UI flow + the CLI flow + the wire endpoint. Includes a "first admin" note pointing at setup-experiment's seeding.
-- [`docs/observability.md`](../../docs/observability.md) §2.1 (admin routes): one-line clarification — `/admin/groups/admins/` is the promotion surface.
-- [`.claude/skills/eden-manual-experiment/SKILL.md`](../../.claude/skills/eden-manual-experiment/SKILL.md): one bullet in the setup walk-through — "the operator running setup-experiment is the initial admin; subsequent admins are promoted via `/admin/groups/admins/`."
+- [`docs/user-guide.md`](../../docs/user-guide.md) §8 (admin operations): new subsection "Integrating an operator to admin / revoking admin authority." Covers the web UI flow + the CLI flow + the wire endpoint. Includes a "first admin" note pointing at setup-experiment's seeding.
+- [`docs/observability.md`](../../docs/observability.md) §2.1 (admin routes): one-line clarification — `/admin/groups/admins/` is the integration surface.
+- [`.claude/skills/eden-manual-experiment/SKILL.md`](../../.claude/skills/eden-manual-experiment/SKILL.md): one bullet in the setup walk-through — "the operator running setup-experiment is the initial admin; subsequent admins are integrated via `/admin/groups/admins/`."
 - [`AGENTS.md`](../../AGENTS.md): no Current-phase change (#143 is a planless-shaped feature on top of #140); CHANGELOG entry suffices.
 
 ### D.8 Conformance
@@ -233,7 +233,7 @@ The plan introduces / renames the following identifiers. Per CLAUDE.md and [`doc
 | `app.state.admin_store` used for `add_to_group / remove_from_group` calls | `app.state.store` (session bearer) used for those two ops; `admin_store` retained for the operations that stay admin-principal-only at the wire (`register_worker`, `reissue_credential`, `register_group`, `delete_group`, control-plane ops via `app.state.control_plane`) | §D.4.2 wire-bearer shift; §D.4.0 authority matrix |
 | (new) Web-UI `require_admin(request, session)` helper | n/a | §D.4.1 route guard |
 | (new) Profile-page "Groups" section | n/a | §D.4.3 |
-| (new) CLI `eden-manual admins {list,promote,revoke}` subcommand-group | n/a | §D.6 |
+| (new) CLI `eden-manual admins {list,integrate,revoke}` subcommand-group | n/a | §D.6 |
 | (new) Conformance scenario `test_admin_or_group_gated_membership_mutation.py` | n/a | §D.8 |
 
 No EDEN role / verb / kind / artifact identifiers are introduced or renamed; the canonical role pattern in [`docs/glossary.md`](../../docs/glossary.md) is unchanged. The `check-rename-discipline.py` allowlist needs no update.
@@ -246,7 +246,7 @@ Per CLAUDE.md "No backwards-compatibility shims in greenfield / pre-external-use
 - **No compat path for the old wire gating.** The §13.3 amendment widens the accepted caller set for `add_to_group / remove_from_group` (existing admin-principal callers continue to work; the new admin-group-worker caller is now also accepted). The spec change is non-breaking for existing IUTs on the bootstrap path, but the new MUST in §13.3 (and the new conformance scenario in §D.8) makes any IUT that REJECTS an admin-group-worker caller non-conforming at v1+roles after this amendment lands. Per CLAUDE.md's pre-external-user posture: that scope change is acceptable; the reference impl is the only IUT today and it ships the dual-gate alongside the spec change in the same PR. Third-party IUTs (none yet) absorb the change at their next conformance pass.
 - **No "transitional" hidden flag** to leave web-ui-1 in admins for a deprecation window. Either you've migrated to per-user sessions (Model B) or you haven't.
 - **Operators of in-flight experiments** re-run `setup-experiment` against a fresh data root if they want the new shape (per [`docs/operations/experiment-data-durability.md`](../operations/experiment-data-durability.md)).
-- **Partial-upgrade failure mode to call out in the migration text.** An operator who upgrades the *code* (the new web-ui + dispatcher) WITHOUT re-bootstrapping the *registry* (the existing experiment's `admins` group membership) signs in under #140's per-user identity, and that identity does not match any pre-existing seeded admin worker_id. The new `require_admin` guard then 403s every `/admin/*` page even though the deployment "used to work." This is NOT a broken auth stack; it is an identity-shape mismatch. The fix is to either (a) re-bootstrap (`setup-experiment` against a fresh data root) or (b) one-shot add the new operator's worker_id to the existing experiment's `admins` group using the deployment admin bearer (`curl -H "Authorization: Bearer admin:$EDEN_ADMIN_TOKEN" -d '{"member_id":"<new-id>"}' …/groups/admins/members`). Surface this exact symptom and both fixes in `docs/user-guide.md` §8's promotion subsection AND in the CHANGELOG entry so operators don't mis-diagnose the 403 as a wire-stack regression.
+- **Partial-upgrade failure mode to call out in the migration text.** An operator who upgrades the *code* (the new web-ui + dispatcher) WITHOUT re-bootstrapping the *registry* (the existing experiment's `admins` group membership) signs in under #140's per-user identity, and that identity does not match any pre-existing seeded admin worker_id. The new `require_admin` guard then 403s every `/admin/*` page even though the deployment "used to work." This is NOT a broken auth stack; it is an identity-shape mismatch. The fix is to either (a) re-bootstrap (`setup-experiment` against a fresh data root) or (b) one-shot add the new operator's worker_id to the existing experiment's `admins` group using the deployment admin bearer (`curl -H "Authorization: Bearer admin:$EDEN_ADMIN_TOKEN" -d '{"member_id":"<new-id>"}' …/groups/admins/members`). Surface this exact symptom and both fixes in `docs/user-guide.md` §8's integration subsection AND in the CHANGELOG entry so operators don't mis-diagnose the 403 as a wire-stack regression.
 
 The cleanup of `web-ui-1`'s admin role + the route-level admin guard land together. Partial states (admin-route guard without dual-gated wire, or vice versa) are non-goals.
 
@@ -270,13 +270,13 @@ The cleanup of `web-ui-1`'s admin role + the route-level admin guard land togeth
 - [`reference/services/web-ui/src/eden_web_ui/routes/admin_artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_artifacts.py) — add `require_admin` call (every admin route under `/admin/artifacts/*`).
 - [`reference/services/web-ui/src/eden_web_ui/routes/admin_experiments.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin_experiments.py) — add `require_admin` call (every admin route under `/admin/experiments/*`); this is the control-plane-admin surface and the guard applies on top of the existing `app.state.control_plane is not None` gating.
 - [`reference/services/web-ui/src/eden_web_ui/routes/admin/*.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin/) — add `require_admin` call to every handler in `index.py`, `observability.py`, `actions.py`, `work_refs.py` (these are the chunk-12a-1b-split admin sub-package; each handler already calls `get_session`, gain a `require_admin` after).
-- [`reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html`](../../reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html) — "Promote operator to admin" affordance; per-member revoke button; confirm modal; self-protection rail; non-admin nav-link hidden.
+- [`reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html`](../../reference/services/web-ui/src/eden_web_ui/templates/admin_group_detail.html) — "Integrate operator to admin" affordance; per-member revoke button; confirm modal; self-protection rail; non-admin nav-link hidden.
 - [`reference/services/web-ui/src/eden_web_ui/templates/base.html`](../../reference/services/web-ui/src/eden_web_ui/templates/base.html) — hide the "Admin" nav entry AND the "Experiments" nav entry (the control-plane cross-experiment dashboard link at L20-23) when `session.worker_id ∉ admins`. The template already has `admin_enabled` from `app.state.admin_store is not None` and `control_plane_enabled` from `app.state.control_plane is not None`; gain a parallel `is_admin_session` set per-request from `app.state.store.resolve_worker_in_group(session.worker_id, "admins")` and AND it with the existing flags for the nav-link rendering.
 - (And the Profile-page template for the "Groups" section — owned by #140; #143 adds the admins-badge line.)
 
 **CLI (1 file):**
 
-- [`reference/packages/eden-cli/src/eden_cli/`](../../reference/packages/eden-cli/src/) (or wherever `eden-manual` lives) — add `admins {list,promote,revoke}` subcommand-group; surface admin flag in `whoami`.
+- [`reference/packages/eden-cli/src/eden_cli/`](../../reference/packages/eden-cli/src/) (or wherever `eden-manual` lives) — add `admins {list,integrate,revoke}` subcommand-group; surface admin flag in `whoami`.
 
 **Conformance (1 file):**
 
@@ -284,7 +284,7 @@ The cleanup of `web-ui-1`'s admin role + the route-level admin guard land togeth
 
 **Docs (3 files):**
 
-- [`docs/user-guide.md`](../../docs/user-guide.md) — §10 matrix rewrite; new §8 subsection on promotion.
+- [`docs/user-guide.md`](../../docs/user-guide.md) — §10 matrix rewrite; new §8 subsection on integration.
 - [`docs/observability.md`](../../docs/observability.md) — one-line clarification in §2.1.
 - [`.claude/skills/eden-manual-experiment/SKILL.md`](../../.claude/skills/eden-manual-experiment/SKILL.md) — initial-admin bullet in setup walk-through.
 
@@ -328,14 +328,14 @@ The operator runs through this scenario once locally before the PR is ready for 
 2. Bring up Compose stack; sign in to web UI as the operator.
 3. Confirm: Profile page shows "admin" badge; `/admin/*` pages load.
 4. Open an incognito browser; sign up as a new operator "bob"; confirm: Profile page does NOT show admin badge; `/admin/*` returns 403; nav-link for Admin is hidden.
-5. As the original operator (first browser), go to `/admin/groups/admins/` → promote `bob`.
+5. As the original operator (first browser), go to `/admin/groups/admins/` → integrate `bob`.
 6. In Bob's browser, refresh; confirm: Profile shows admin badge; `/admin/*` accessible.
 7. As Bob, attempt to revoke self → expect self-protection error.
 8. As Bob, revoke the original operator → original operator's next page load shows non-admin Profile + 403 on admin pages.
-9. As Bob, re-promote original operator (so the deployment still has multiple admins for the rest of the smoke).
-10. CLI: `eden-manual --worker-id bob admins list` → returns `[bob, <original operator>]`. `eden-manual --worker-id bob admins revoke <original-operator>` → 200. `eden-manual --worker-id <original-operator> admins promote bob` → 403 (no longer admin).
+9. As Bob, re-integrate original operator (so the deployment still has multiple admins for the rest of the smoke).
+10. CLI: `eden-manual --worker-id bob admins list` → returns `[bob, <original operator>]`. `eden-manual --worker-id bob admins revoke <original-operator>` → 200. `eden-manual --worker-id <original-operator> admins integrate bob` → 403 (no longer admin).
 
-Document this scenario in a `docs/operations/admin-promotion-walkthrough.md` follow-up if the manual scenario stays useful operationally; otherwise leave it in the PR description for the reviewer.
+Document this scenario in a `docs/operations/admin-integration-walkthrough.md` follow-up if the manual scenario stays useful operationally; otherwise leave it in the PR description for the reviewer.
 
 ## 9. Verification gates
 
@@ -399,7 +399,7 @@ Mitigations explicitly NOT shipped in this issue (deferred):
 - A "split deployment-admin operations out of the experiment-admin UI surface" refactor — track as follow-up issue `#NEW-split-deployment-admin-surface`. The natural shape: deployment-admin pages move under `/admin/deployment/` (or similar) and require an additional check (e.g. only the bootstrap operator's worker, or a separately-supplied per-session deployment-admin token).
 - A documented banner / tag on every deployment-admin-tagged action in the UI so the operator sees the privilege expansion at the point of action.
 
-The plan's in-scope mitigations are (a) document explicitly in `docs/user-guide.md` §8 ("promoting an operator to `admins` grants deployment-wide authority through the web-ui's bearer, not just experiment-level"), and (b) add a "deployment-wide operation" banner to the relevant POST forms. The specific templates that gain the banner: `admin_worker_token.html` (reissue), `admin_workers.html` (register form), `admin_groups.html` (register form), `admin_group_detail.html` (delete-group form only — promote / revoke do NOT need the banner because they are experiment-scope under §D.1's dual-gate), and `admin_experiments.html` (every control-plane mutation form). If template enumeration drifts at impl time, downgrade banner-on-templates-not-yet-listed to a follow-up issue rather than shipping partial coverage. The full split-out is deferred.
+The plan's in-scope mitigations are (a) document explicitly in `docs/user-guide.md` §8 ("integrating an operator to `admins` grants deployment-wide authority through the web-ui's bearer, not just experiment-level"), and (b) add a "deployment-wide operation" banner to the relevant POST forms. The specific templates that gain the banner: `admin_worker_token.html` (reissue), `admin_workers.html` (register form), `admin_groups.html` (register form), `admin_group_detail.html` (delete-group form only — integrate / revoke do NOT need the banner because they are experiment-scope under §D.1's dual-gate), and `admin_experiments.html` (every control-plane mutation form). If template enumeration drifts at impl time, downgrade banner-on-templates-not-yet-listed to a follow-up issue rather than shipping partial coverage. The full split-out is deferred.
 
 Net posture: "we already have this trust-delegation footgun pre-#143 (every web-ui session was deployment-admin); this issue narrows it from EVERY web-ui session to ADMIN web-ui sessions but does not eliminate it. Eliminating it requires the split-out refactor, which is out of scope."
 
@@ -423,17 +423,17 @@ Today every `admin_*` route handler invokes `app.state.admin_store.<mutation>`. 
 
 ### 10.8 CLI's existing `eden-manual` worker identity
 
-Today's CLI auto-registers `eden-manual` on first use and is NOT in `admins`. Under #140 this auto-register path goes away. #143's CLI changes (the `admins` subcommand-group) assume the operator has registered explicitly. If the operator runs `eden-manual admins promote …` without a registered worker_id, the CLI should error with a clear "register first" message — same shape #140 sets up.
+Today's CLI auto-registers `eden-manual` on first use and is NOT in `admins`. Under #140 this auto-register path goes away. #143's CLI changes (the `admins` subcommand-group) assume the operator has registered explicitly. If the operator runs `eden-manual admins integrate …` without a registered worker_id, the CLI should error with a clear "register first" message — same shape #140 sets up.
 
 ## 11. Risks / things to watch
 
 - **#140's exact shape is in flux.** This plan assumes Model B's session-bearer surface, the Profile page, and the operator-name-driven setup-experiment variable exist. If #140's plan resolves any of these differently (e.g., session-bearer-on-cookie vs in-memory-only; profile-page route under `/me/` instead of `/profile/`; operator-name env var name), #143 inherits the variants. The plan deliberately defers final naming to #140's surface (§5 naming map column).
 - **Spec §13.3 amendment review.** Codex-review may push back on introducing a third classification ("admin-OR-group-gated") to the wire spec. Recommendation: hold the line; the alternative (option (a) in §D.1, web-ui proxying) is worse on the trust-delegation axis and asymmetric with CLI. If review surfaces a cleaner shape (e.g., shifting `add_to_group` to plain `admins`-group-gated and adding a one-time deployment-bootstrap path to seed the first admin without going through `admins`-group-gating), evaluate against the bootstrap chicken-and-egg.
 - **Dispatcher implementation symmetry.** §10.4 calls out the either-branch evaluation requirement. Conformance scenario covers the misordering case; impl-time codex pass should verify the dispatcher code matches the spec prose. If the existing dispatcher is structured around "admin-gated vs worker-gated" as an exclusive choice, the dual-gate may require restructuring `_check_authorization` in `eden_wire/server.py`. The restructure is small (one new branch) but needs a careful unit test.
-- **Self-protection rail false-positives.** §D.4.2's "can't revoke self" is a simple rule but could surprise an operator who legitimately wants to step down. Workaround documented in §10.2. If review pushes back, the alternative is a "confirm with extra friction" modal instead of an outright forbid. The plan picks "forbid" for v0; the operator can post-process by promoting someone first.
+- **Self-protection rail false-positives.** §D.4.2's "can't revoke self" is a simple rule but could surprise an operator who legitimately wants to step down. Workaround documented in §10.2. If review pushes back, the alternative is a "confirm with extra friction" modal instead of an outright forbid. The plan picks "forbid" for v0; the operator can post-process by integrating someone first.
 - **`/admin/groups/admins/` is one of many admin pages.** The route guard (§D.4.1) must be applied to every admin handler — `/admin/workers/`, `/admin/groups/<G>/`, `/admin/work-refs/`, `/admin/tasks/<T>/reassign`, `/admin/dispatch_mode`, `/admin/events`, `/admin/experiments/*`, `/admin/artifacts/`, plus the chunk-12a-1b-split subpackage. A missed handler is a latent privilege-escalation. Codification: a unit test that enumerates every `/admin/*` route from `app.routes` and verifies each returns 403 for a non-admin session. Mechanical, catches future regression too.
 - **Conformance scenario citation grounding.** Per the AGENTS.md "three-legged traceability" pitfall, the new scenario's docstring MUST cite a real MUST in §13.3 (the amendment introduces one — "the dispatcher MUST accept the request if either …"). Verify with `check_citations.py` before push.
-- **Migration friction.** Existing experiments running the pre-#143 shape continue to work (web-ui-1 in admins is harmless extra membership); new sign-up flow only activates on fresh setups. If a deployed experiment depends on the "every web-ui session is admin" implicit behavior — and someone re-runs setup or re-bootstraps — they lose admin access until promoting their operator. Document in the user-guide §8 promotion subsection and the CHANGELOG.
+- **Migration friction.** Existing experiments running the pre-#143 shape continue to work (web-ui-1 in admins is harmless extra membership); new sign-up flow only activates on fresh setups. If a deployed experiment depends on the "every web-ui session is admin" implicit behavior — and someone re-runs setup or re-bootstraps — they lose admin access until integrating their operator. Document in the user-guide §8 integration subsection and the CHANGELOG.
 
 ## 12. Sequence within the chunk
 
@@ -444,11 +444,11 @@ Execution shape (single impl PR, no multi-wave split needed at this scope):
 3. **Wire dispatcher second.** Implement the dual-gate branch in `eden_wire/server.py`. Add unit test covering both branches + the denial case.
 4. **Setup-experiment third.** Drop `web-ui-1 → admins` step; rebind `EDEN_ADMINS_INITIAL_MEMBER`.
 5. **Web-UI route guard fourth.** Add `require_admin` to `_helpers.py`; call from every `/admin/*` handler; add the enumeration-test that catches future-added handlers without the guard.
-6. **`/admin/groups/admins/` UX polish fifth.** Promote / revoke affordances, self-protection rail, wire-bearer shift to session-store.
+6. **`/admin/groups/admins/` UX polish fifth.** Integrate / revoke affordances, self-protection rail, wire-bearer shift to session-store.
 7. **Profile-page Groups section sixth.** Layered on #140's profile route.
-8. **CLI changes seventh.** `whoami` admin flag + `admins {list,promote,revoke}` subcommands.
+8. **CLI changes seventh.** `whoami` admin flag + `admins {list,integrate,revoke}` subcommands.
 9. **Conformance scenario eighth.** Author + run `check_citations.py`.
-10. **Docs ninth.** §10 matrix + §8 promotion subsection + observability one-liner + SKILL.md.
+10. **Docs ninth.** §10 matrix + §8 integration subsection + observability one-liner + SKILL.md.
 11. **Validation gates.** Run the full validation suite per §9. Address any failures. Re-run smokes after fixes.
 12. **Manual smoke walkthrough.** Run §8 manual scenario locally once.
 13. **Codex-review to convergence (plan + impl).** Iterate until no substantive findings remain.
@@ -457,13 +457,13 @@ Execution shape (single impl PR, no multi-wave split needed at this scope):
 ## 13. Out of scope (followups)
 
 - **Multi-tier RBAC.** Read-only-observer, evaluator-only, integrator-only, etc. Defer until use cases emerge.
-- **Promotion-event audit-trail UI.** The events fire today (`group.member_added` / `group.member_removed`); a dedicated audit page is a separate concern.
+- **Integration-event audit-trail UI.** The events fire today (`group.member_added` / `group.member_removed`); a dedicated audit page is a separate concern.
 - **Web-ui credential isolation hardening.** The trust-delegation footgun (§10.3) is acknowledged and unmitigated; a future issue can revisit.
 - **Self-signup token / unauthenticated `register_worker`.** §D.5 deferred.
 - **`reissue_credential` widening to self-rotate.** Belongs to #140 if it ships there; #143 doesn't require it.
-- **CLI `admins {list,promote,revoke}` UX expansion.** The plan covers the minimum surface; richer CLI (e.g., interactive admin selection, batch promotion) is post-MVP.
+- **CLI `admins {list,integrate,revoke}` UX expansion.** The plan covers the minimum surface; richer CLI (e.g., interactive admin selection, batch integration) is post-MVP.
 - **Last-admin protection at the wire.** §10.2 rejects this; an empty `admins` group remains permitted by the spec.
-- **#128 final naming resolution.** This plan accepts either kebab-case `worker_id` or `worker_name` in the promotion form; #128's resolution determines which.
+- **#128 final naming resolution.** This plan accepts either kebab-case `worker_id` or `worker_name` in the integration form; #128's resolution determines which.
 
 ## 14. Estimated effort
 
