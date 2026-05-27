@@ -50,7 +50,7 @@ the `complexity-gate` CI job for the mechanism.
 |---|---|---:|---:|---|
 | **F-1** | `reference/packages/eden-storage/src/eden_storage/_base.py` | 1638 | 0.00 | **DONE** — mixin split landed (issue [#114](https://github.com/ealt/eden/issues/114); `_base.py` now 235 SLOC, gate-clean without annotation). Final shape diverged from the proposal below: 8 mixins under `_ops/` + a `_StoreCore` core. |
 | **F-2** | `reference/services/web-ui/src/eden_web_ui/routes/admin.py` | 1239 | 5.12 | **REFACTOR** (M-1; already approved) |
-| **F-3** | `reference/packages/eden-wire/src/eden_wire/server.py` | 1211 | 38.53 | **REFACTOR** (H-1 APIRouter regroup; PR #103 merged so coordination concern is gone) |
+| **F-3** | `reference/packages/eden-wire/src/eden_wire/server.py` | 1211 | 38.53 | **REFACTOR** (H-1 APIRouter regroup; PR #103 merged so coordination concern is gone) — **resolved 2026-05-27** (issue #115; per-resource `routers/` split, `make_app` ~95 LOC) |
 | **F-4** | `reference/packages/eden-wire/src/eden_wire/client.py` | 861 | 21.54 | **REFACTOR** (per-resource client split: tasks / variants / ideas / experiment / dispatch / workers / groups) |
 
 ### F-1 detail — `_base.py` mixin split
@@ -223,9 +223,9 @@ and defensible.)
 
 | ID | Function | LEN | CC | Disposition |
 |---|---|---:|---:|---|
-| **L-D** | `eden-wire/server.py:325 make_app` | 1458 | 5 | **REFACTOR** (covered by F-3) — post-refactor will be ~50 LOC |
-| **L-E** | `control-plane/app.py:121 make_app` | 415 | 2 | **REFACTOR** (symmetric APIRouter regroup; only 8 nested handlers — proportionally smaller) |
-| **L-F** | `eden-wire/server.py:1664 make_app._serve_artifact` | 117 | 14 | **REFACTOR** (covered by F-3 — `_serve_artifact` moves to its own module) |
+| **L-D** | `eden-wire/server.py:325 make_app` | 1458 | 5 | **REFACTOR** (covered by F-3) — **resolved 2026-05-27** (issue #115; `make_app` ~95 LOC, exception handlers extracted to module scope) |
+| **L-E** | `control-plane/app.py:121 make_app` | 415 | 2 | **REFACTOR** (symmetric APIRouter regroup; only 8 nested handlers — proportionally smaller) — **deferred** to a separate chunk per F-3 plan §7.9 (still carries its `# slop-allow`) |
+| **L-F** | `eden-wire/server.py:1664 make_app._serve_artifact` | 117 | 14 | **REFACTOR** (covered by F-3 — `_serve_artifact` moves to its own module) — **resolved 2026-05-27** (issue #115; artifact primitives moved to `_artifact_fd.py`, handler in `routers/reference.py`) |
 
 ### §4.3 — service main / loop / handler bodies (21 entries) — case-by-case
 

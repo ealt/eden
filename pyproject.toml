@@ -99,7 +99,12 @@ convention = "google"
 # Wire adapters are thin facades over the Store Protocol; the
 # protocol method docstrings are authoritative. B008 is the
 # standard FastAPI pattern for Body/Header/Query defaults.
+# server.py + the per-resource APIRouter modules (F-3, issue #115) are
+# thin FastAPI-handler facades over the Store Protocol; the protocol
+# method docstrings are authoritative and B008 is the standard FastAPI
+# pattern for Body/Header/Query defaults.
 "reference/packages/eden-wire/src/eden_wire/server.py" = ["D", "B008"]
+"reference/packages/eden-wire/src/eden_wire/routers/*.py" = ["D", "B008"]
 "reference/packages/eden-wire/src/eden_wire/client.py" = ["D102"]
 # Control-plane backends — methods are documented in the Store Protocol
 # (store.py); re-docstringing them on each concrete impl is noise.

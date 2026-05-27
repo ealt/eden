@@ -602,3 +602,64 @@ class TestIndeterminateIntegration:
 def test_experiment_id_mismatch_error_type() -> None:
     """ExperimentIdMismatch is exposed at the wire binding entry."""
     assert ExperimentIdMismatch.__name__ == "ExperimentIdMismatch"
+
+
+def test_multi_app_isolation() -> None:
+    """Two ``make_app`` instances in one process share no router state.
+
+    F-3 (issue #115) threads dependencies through a per-``make_app``
+    ``RouterDeps`` instead of module-level state (Decision 2 alt-B was
+    rejected precisely to keep this guarantee). This test pins it: an
+    event created against app A's store MUST NOT appear in app B's event
+    log, and vice versa.
+    """
+    schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
+    store_a = InMemoryStore("exp-iso-a", evaluation_schema=schema)
+    store_b = InMemoryStore("exp-iso-b", evaluation_schema=schema)
+
+    client_a = TestClient(
+        make_app(store_a, subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT),
+        base_url="http://wire-a.test",
+    )
+    client_b = TestClient(
+        make_app(store_b, subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT),
+        base_url="http://wire-b.test",
+    )
+    sc_a = StoreClient("http://wire-a.test", "exp-iso-a", client=client_a)
+    sc_b = StoreClient("http://wire-b.test", "exp-iso-b", client=client_b)
+
+    sc_a.create_ideation_task("iso-a-1")
+
+    events_a = sc_a.read_range()
+    events_b = sc_b.read_range()
+    assert len(events_a) >= 1
+    assert events_b == [], "app B saw app A's events — router state leaked"
+
+    # The reverse direction, to rule out one-way coupling.
+    sc_b.create_ideation_task("iso-b-1")
+    sc_b.create_ideation_task("iso-b-2")
+    assert len(sc_b.read_range()) == 2
+    assert len(sc_a.read_range()) == 1
+
+
+def test_path_segment_scoping_no_shadow(client: Client) -> None:
+    """``GET {base}/events`` is not shadowed by ``GET {base}`` (Decision 5).
+
+    Include order is non-load-bearing only because ``{experiment_id}``
+    defaults to single-segment matching, so ``GET /v0/experiments/{id}``
+    cannot shadow the sub-resource ``GET /v0/experiments/{id}/events``.
+    This test fails loudly if a future change introduces a greedy
+    ``{...:path}`` param that overlaps the experiment-read route: the
+    events path would then resolve to the experiment object (which has a
+    ``state`` field and no ``events``/``cursor`` fields).
+    """
+    resp = client.get(
+        f"/v0/experiments/{EXPERIMENT_ID}/events",
+        headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Events shape, NOT the experiment-read shape.
+    assert "events" in body
+    assert "cursor" in body
+    assert "state" not in body

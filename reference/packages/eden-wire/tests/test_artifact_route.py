@@ -93,7 +93,7 @@ def test_unauth_request_never_touches_filesystem(
     ``Path.resolve``-only sentinel would silently pass even if the
     handler regressed to a pre-auth ``os.open``.
     """
-    from eden_wire import server as srv
+    from eden_wire import _artifact_fd as artifact_fd
 
     calls: list[str] = []
 
@@ -105,8 +105,8 @@ def test_unauth_request_never_touches_filesystem(
         calls.append("os.fstat")
         raise AssertionError("os.fstat touched before auth!")
 
-    monkeypatch.setattr(srv, "_open_artifact_fd", _fail_open)
-    monkeypatch.setattr(srv.os, "fstat", _fail_fstat)
+    monkeypatch.setattr(artifact_fd, "_open_artifact_fd", _fail_open)
+    monkeypatch.setattr(artifact_fd.os, "fstat", _fail_fstat)
 
     app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=artifacts)
     client = TestClient(app)
@@ -279,9 +279,9 @@ def test_operational_oserror_propagates_to_5xx(
     """
     import errno as _errno
 
-    from eden_wire import server as srv
+    from eden_wire import _artifact_fd as artifact_fd
 
-    original_open = srv.os.open
+    original_open = artifact_fd.os.open
 
     def _open_with_eio(*args, **kwargs):
         # Only fail on the terminal `O_RDONLY` open so the walk
@@ -289,11 +289,11 @@ def test_operational_oserror_propagates_to_5xx(
         # propagates. Intermediate `O_PATH|O_DIRECTORY` opens
         # succeed.
         flags = args[1] if len(args) > 1 else kwargs.get("flags")
-        if flags == srv._FILE_FLAGS:
+        if flags == artifact_fd._FILE_FLAGS:
             raise OSError(_errno.EIO, "simulated infrastructure failure")
         return original_open(*args, **kwargs)
 
-    monkeypatch.setattr(srv.os, "open", _open_with_eio)
+    monkeypatch.setattr(artifact_fd.os, "open", _open_with_eio)
 
     app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=artifacts)
     client = TestClient(app, raise_server_exceptions=False)
