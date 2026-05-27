@@ -86,7 +86,7 @@ def _force_variant_success(
     Mirrors the same shortcut ``test_integrator.py`` uses — these
     tests exercise the integrator's flow, not the full task lifecycle.
     """
-    from eden_storage._base import _validated_update
+    from eden_storage._ops._helpers import _validated_update
 
     variant = store.read_variant(variant_id)
     updated = _validated_update(

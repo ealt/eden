@@ -172,7 +172,7 @@ def _force_variant_success(
     the full dispatch harness. This is a test-only shortcut; production
     code MUST go via ``submit`` + ``accept``.
     """
-    from eden_storage._base import _validated_update
+    from eden_storage._ops._helpers import _validated_update
 
     inner = store
     variant = inner.read_variant(variant_id)
@@ -571,7 +571,7 @@ class TestPromotionPreconditions:
             commit_sha=commit,
         )
         # Overwrite to the non-success status.
-        from eden_storage._base import _validated_update
+        from eden_storage._ops._helpers import _validated_update
 
         variant = store.read_variant("variant-1")
         store._variants["variant-1"] = _validated_update(variant, status=status)  # type: ignore[attr-defined]
@@ -954,7 +954,7 @@ class TestCorruptVariantTreeRejected:
         )
         # Repoint variant.variant_commit_sha to match (simulating externally-
         # consistent corruption).
-        from eden_storage._base import _validated_update
+        from eden_storage._ops._helpers import _validated_update
 
         variant = store.read_variant("variant-1")
         store._variants["variant-1"] = _validated_update(  # type: ignore[attr-defined]
