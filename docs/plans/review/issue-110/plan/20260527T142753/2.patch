@@ -1,0 +1,68 @@
+--- docs/plans/review/issue-110/plan/20260527T142753/1.md	2026-05-27 14:37:06
++++ docs/plans/issue-110-loki-grafana-overlay.md	2026-05-27 14:40:05
+@@ -72,7 +72,7 @@
+ Notes:
+ 
+ - **Loki + Alloy are internal-only except Grafana's host port.** Loki is reached by Alloy and Grafana over the compose network (`http://loki:3100`); no host port. Grafana is the only host-exposed surface, at `${GRAFANA_HOST_PORT:-3000}`. Grafana's canonical port is 3000; the override knob handles the rare local collision (and respects [`reference/compose/README.md`](../../reference/compose/README.md)'s "avoid well-known ports" note — the *default* of 3000 is Grafana's well-known port, which operators expect, but it's overridable). Alloy's HTTP server (debug UI + readiness) is on `:12345`; not host-exposed by default (an operator can add a port mapping to inspect Alloy's component graph if debugging).
+-- **Alloy run command.** Alloy needs an explicit `run` argument: `command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data", "--server.http.listen-addr=0.0.0.0:12345"]`. The `--storage.path` is the rw bind-mount that holds the file-tail positions (Alloy's equivalent of Promtail's `positions.yaml`).
++- **Alloy run command.** Alloy needs an explicit `run` argument: `command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data", "--server.http.listen-addr=0.0.0.0:12345", "--disable-reporting"]`. The `--storage.path` is the rw bind-mount that holds the file-tail positions (Alloy's equivalent of Promtail's `positions.yaml`). **`--disable-reporting` is deliberate:** Alloy enables anonymous usage reporting (an outbound phone-home) by default; a local reference stack should not silently make outbound calls, so the flag is on. Document the choice in the overlay comment.
+ - **Healthchecks.** `loki`: `GET /ready`. `grafana`: `GET /api/health`. `alloy`: `GET /-/ready` on `:12345`. All `CMD`/argv form, `wget --spider` consistent with the existing forgejo healthcheck pattern (confirm `wget` is present in each image at impl time; fall back to the image's own health convention otherwise).
+ - **`depends_on`.** `alloy` and `grafana` depend on `loki: service_healthy`. The overlay's services do NOT `depends_on` any base-stack service (the JSONL files Alloy tails are created by setup-experiment + the base services; if a base service hasn't written yet, Alloy simply has no lines to ship — not an error).
+ - **Grafana durable storage: none.** Grafana's own DB (dashboards, users) is fully reconstructed from provisioning on every start, so it gets no bind-mount. This keeps Grafana stateless and avoids a fourth uid/permission surface. (The pre-provisioned dashboard + datasource are repo-tracked; nothing operator-created needs to survive.)
+@@ -95,7 +95,7 @@
+ ```
+ 
+ - **`loki-config.yaml`** — single-binary / monolithic mode, `filesystem` object store under `/loki` (the bind-mount), tsdb index. Set a finite `retention_period` (e.g. 168h) + `compactor` retention so a long-lived demo's disk doesn't grow unbounded. `auth_enabled: false` (single-tenant; this is a local demo).
+-- **`alloy-config.alloy`** — Alloy River-syntax pipeline: `local.file_match "eden"` with `path_targets = [{__path__ = "/var/lib/eden/logs/**/*.jsonl"}]` (the read-only bind-mount path inside the Alloy container) → `loki.source.file "eden"` (tails matched files) → `loki.process "eden"` stages `stage.json` (extract `level`/`service`/`experiment_id`/`ts`), `stage.timestamp` (use the record `ts`), `stage.labels` (promote `service`/`level`/`experiment_id` — all low-cardinality; path-derived `service` fallback if a record lacks the field) → `loki.write "default"` pushing to `http://loki:3100/loki/api/v1/push`. **Glob excludes rotated backups:** match `*.jsonl` only (not `*.jsonl.1`…`.5`) so rotated files aren't re-ingested; Alloy's `--storage.path=/var/lib/alloy/data` (the rw bind-mount) holds file-tail positions across restart.
++- **`alloy-config.alloy`** — Alloy River-syntax pipeline: `local.file_match "eden"` with `path_targets = [{__path__ = "/var/lib/eden/logs/**/*.jsonl"}]` (the read-only bind-mount path inside the Alloy container) → `loki.source.file "eden"` (tails matched files) → `loki.process "eden"` stages `stage.json` (extract `level`/`service`/`experiment_id`/`ts`), `stage.timestamp` (use the record `ts`), `stage.labels` (promote `service`/`level`/`experiment_id` — all low-cardinality; path-derived `service` fallback if a record lacks the field) → `loki.write "default"` pushing to `http://loki:3100/loki/api/v1/push`. **Glob excludes rotated backups:** match `*.jsonl` only (not `*.jsonl.1`…`.5`) so rotated files aren't re-ingested; Alloy's `--storage.path=/var/lib/alloy/data` (the rw bind-mount) holds file-tail positions across restart. (The `local.file_match` + `loki.source.file` two-component split is the standard Alloy idiom — globbing lives in `local.file_match`, which feeds `targets` into `loki.source.file`; it is not redundant. Confirm against the pinned Alloy version's component reference at impl time.)
+ - **`grafana/provisioning/datasources/loki.yaml`** — Loki datasource at `http://loki:3100`, `isDefault: true`.
+ - **`grafana/provisioning/dashboards/dashboards.yaml`** — a file provider loading `/var/lib/grafana/dashboards`.
+ - **`grafana/dashboards/eden-explore.json`** — a starter dashboard: a logs panel with a LogQL query scoped to EDEN services (`{service=~".+"}` or `{experiment_id="$experiment_id"}`), a `service` template variable (multi-select), a `level` filter, and a time picker. Kept deliberately small (one logs panel + variables); operators extend in Grafana's Explore view.
+@@ -113,8 +113,10 @@
+ docker compose -f compose.yaml -f compose.logging.yaml -f compose.logging-infra.yaml --env-file .env up -d --wait
+ ```
+ 
+-It re-declares the `alloy` service to (a) add the `/var/run/docker.sock:/var/run/docker.sock:ro` mount + `group_add: ["${EDEN_DOCKER_GID}"]`, and (b) point Alloy at an extended config (`alloy-config-infra.alloy`) that adds `discovery.docker` + `loki.source.docker` components for the `postgres` / `forgejo` containers alongside the file-tail pipeline. Isolating the socket-requiring path in its own overlay is the AGENTS.md "any deployment mode that needs new privilege goes in its own compose overlay" discipline — the default `compose.logging.yaml` never touches the socket, matching how `compose.docker-exec.yaml` isolates the same privilege. The infra overlay reuses `EDEN_DOCKER_GID` (already populated by `setup-experiment.sh --exec-mode docker`); document that operators not in docker mode must set it via the same one-line probe the docker-exec overlay requires. Cross-reference the `compose.docker-exec.yaml` socket-trust note.
++It re-declares the `alloy` service to (a) add the `/var/run/docker.sock:/var/run/docker.sock:ro` mount + `group_add: ["${EDEN_LOGGING_DOCKER_GID:?set EDEN_LOGGING_DOCKER_GID to the gid of /var/run/docker.sock as seen from inside a container — see compose.logging-infra.yaml header}"]`, and (b) point Alloy at an extended config (`alloy-config-infra.alloy`) that adds `discovery.docker` + `loki.source.docker` components for the `postgres` / `forgejo` containers alongside the file-tail pipeline. Isolating the socket-requiring path in its own overlay is the AGENTS.md "any deployment mode that needs new privilege goes in its own compose overlay" discipline — the default `compose.logging.yaml` never touches the socket, matching how `compose.docker-exec.yaml` isolates the same privilege.
+ 
++  **Fail-fast on the gid (round-1 catch).** This overlay deliberately uses a *dedicated* required var `${EDEN_LOGGING_DOCKER_GID:?...}`, NOT the docker-exec overlay's `EDEN_DOCKER_GID`. The reason: `setup-experiment.sh` writes `EDEN_DOCKER_GID=0` by default (it's only probed to the real gid under `--exec-mode docker`), so reusing it would let the infra overlay come up with a plausible-but-wrong gid 0 and then fail at runtime with confusing docker-socket permission errors. A distinct `:?`-guarded var forces the operator to supply the correct probed gid (the one-line probe documented in the overlay header — same probe-from-inside-a-container technique as docker-exec, NOT a host-side `stat`) and fails loud at `compose config`/`up` time if it's missing. Cross-reference the `compose.docker-exec.yaml` socket-trust note.
++
+ ### 3.5 Docs
+ 
+ Per the issue's "Documentation updates required", plus the natural homes:
+@@ -131,8 +133,8 @@
+ 
+ - New overlay `reference/compose/compose.logging.yaml` (3 services: loki, alloy, grafana).
+ - New config dir `reference/compose/logging/` (loki config + Alloy `.alloy` config; Grafana datasource/dashboard provisioning + one starter dashboard).
+-- Optional second overlay `reference/compose/compose.logging-infra.yaml` + `logging/alloy-config-infra.alloy` (socket-gated postgres/forgejo stdout capture; §3.4).
+-- `reference/compose/.env.example` — `EDEN_GRAFANA_ADMIN_PASSWORD` + `GRAFANA_HOST_PORT`.
++- Optional second overlay `reference/compose/compose.logging-infra.yaml` + `logging/alloy-config-infra.alloy` (socket-gated postgres/forgejo stdout capture; §3.4), with a `${EDEN_LOGGING_DOCKER_GID:?}` fail-fast contract.
++- `reference/compose/.env.example` — `EDEN_GRAFANA_ADMIN_PASSWORD` + `GRAFANA_HOST_PORT` (+ a commented `EDEN_LOGGING_DOCKER_GID` with the one-line probe, documented as required only for the infra overlay).
+ - `reference/scripts/setup-experiment/setup-experiment.sh` — generate the Grafana password (idempotent); create + chmod the `loki/` and `alloy/` subdirs.
+ - New `reference/compose/healthcheck/smoke-logging.sh` + `compose-smoke-logging` CI job (path-gated, non-required).
+ - Docs: `observability.md`, `user-guide.md`, `reference/compose/README.md`, `AGENTS.md`, `CHANGELOG.md`, `docs/roadmap.md`.
+@@ -167,6 +169,7 @@
+ | `compose.logging.yaml` / `compose.logging-infra.yaml` | overlay files | `compose.<concern>.yaml` (matches `compose.subprocess.yaml`, `compose.docker-exec.yaml`, `compose.control-plane.yaml`, `compose.multi-orchestrator.yaml`) |
+ | `loki` / `alloy` / `grafana` | compose service names | upstream tool names, lowercase (matches `forgejo`, `postgres`) |
+ | `EDEN_GRAFANA_ADMIN_PASSWORD` | env var (secret) | `EDEN_<THING>_<ROLE>` (matches `EDEN_READONLY_PASSWORD`, `EDEN_ADMIN_TOKEN`, `EDEN_SESSION_SECRET`) |
++| `EDEN_LOGGING_DOCKER_GID` | env var (infra-overlay required) | `EDEN_<CONCERN>_<THING>` — distinct from docker-exec's `EDEN_DOCKER_GID` so the infra overlay fails fast instead of inheriting the default `0` (§3.4) |
+ | `GRAFANA_HOST_PORT` | env var (port knob) | `<SERVICE>_HOST_PORT` (matches `FORGEJO_HOST_PORT`, `TASK_STORE_HOST_PORT`, `POSTGRES_HOST_PORT`, `WEB_UI_HOST_PORT`) |
+ | `${EDEN_EXPERIMENT_DATA_ROOT}/loki/`, `/alloy/` | data-root subdirs | `<DATA_ROOT>/<substrate>/` (matches `postgres/`, `forgejo/`, `artifacts/`) — but classified DERIVED, not durable |
+ | `smoke-logging.sh` | healthcheck script | `smoke-<concern>.sh` (matches `smoke-subprocess.sh`, `smoke-checkpoint.sh`, `smoke-multi-orchestrator.sh`) |
+@@ -214,10 +217,15 @@
+ 
+ Author `reference/compose/healthcheck/smoke-logging.sh` (mirrors `smoke-checkpoint.sh` shape: preflight tool check, `mktemp -d` data root + `trap` cleanup incl. the sibling-container root-owned-file delete, setup-experiment, bring up base+subprocess+logging overlays, wait for a few EDEN log lines to exist, assert Loki `/ready` + a LogQL query returns ≥1 EDEN line + Grafana `/api/health` ok + Loki datasource provisioned + dashboard present). Add the `compose-smoke-logging` job to `.github/workflows/ci.yml`, gated on the `compose` paths-filter bucket, `bash` 3.2-safe, non-required status.
+ 
++**`compose.logging-infra.yaml` validation (round-1 catch).** The privileged infra overlay is a shipped deliverable, so it MUST have a catch point — otherwise its `group_add` / socket-mount / alternate-config wiring drifts silently. Two-tier:
++
++- **Always (no socket needed):** a static merge gate `EDEN_LOGGING_DOCKER_GID=0 docker compose -f compose.yaml -f compose.logging.yaml -f compose.logging-infra.yaml --env-file .env config >/dev/null` — proves the three-file merge resolves and the `:?`-guarded gid var is wired (a dummy gid is fine for `config`, which doesn't start containers). Add this line to `smoke-logging.sh` (it runs even on socket-less CI).
++- **When a docker socket is reachable (local; not lean CI):** the `smoke-logging.sh` ending extends to optionally probe the real gid, layer the infra overlay, and assert a postgres/forgejo log line reaches Loki. Gate this tail behind a `docker info` socket-reachability check so it no-ops cleanly where the socket isn't available.
++
+ **Validation gate:**
+ 
+ ```bash
+-bash reference/compose/healthcheck/smoke-logging.sh   # exits 0
++bash reference/compose/healthcheck/smoke-logging.sh   # exits 0; includes the infra-overlay static merge gate
+ ```
+ 
+ ### Wave 3 — docs + completion records

@@ -1,0 +1,10 @@
+No remaining substantive concerns.
+
+The round-2 changes close the issues I was tracking:
+
+- `compose.logging-infra.yaml` now has an explicit validation path, with both the always-run three-file `compose config` merge gate and the socket-gated runtime tail path in `smoke-logging.sh`. That fixes the prior completeness gap around the privileged overlay drifting untested. [docs/plans/issue-110-loki-grafana-overlay.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-110-loki/docs/plans/issue-110-loki-grafana-overlay.md:220)
+- The dedicated `${EDEN_LOGGING_DOCKER_GID:?…}` contract is the right correction. It avoids inheriting docker-exec’s misleading default and makes the failure mode explicit at compose-evaluation time. [docs/plans/issue-110-loki-grafana-overlay.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-110-loki/docs/plans/issue-110-loki-grafana-overlay.md:116) [docs/plans/issue-110-loki-grafana-overlay.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-110-loki/docs/plans/issue-110-loki-grafana-overlay.md:172)
+- `--disable-reporting` addresses the Alloy phone-home concern cleanly and intentionally. [docs/plans/issue-110-loki-grafana-overlay.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-110-loki/docs/plans/issue-110-loki-grafana-overlay.md:75)
+- The `local.file_match` + `loki.source.file` explanation is now clear and no longer reads like accidental indirection. [docs/plans/issue-110-loki-grafana-overlay.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-110-loki/docs/plans/issue-110-loki-grafana-overlay.md:98)
+
+Overall assessment: the plan looks converged. The architecture choice is sound, the privilege split is disciplined, and the validation/story for both default and privileged overlays is now complete enough to hand off to implementation. The remaining uncertainties are implementation-time verification items the plan already calls out explicitly, not plan-stage gaps.
