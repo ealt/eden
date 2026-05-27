@@ -77,8 +77,17 @@ from eden_contracts import (
     Variant,
     Worker,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
+from ._ops._helpers import (
+    _all_parents_equal_sha,
+    _deep,
+    _no_op_check_inputs,
+    _resolve_trees,
+    _sha_equality_message,
+    _tree_identity_message,
+    _validated_update,
+)
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,
@@ -194,42 +203,8 @@ class _Tx:
     imported_from_update: tuple[ImportProvenance | None] | None = None
 
 
-def _validated_update[M: BaseModel](model: M, **changes: Any) -> M:
-    """Return a copy of ``model`` with ``changes`` applied and re-validated.
-
-    Replaces Pydantic's ``model_copy(update=...)``, which does **not**
-    re-run validators. Without re-validation a caller could stamp an
-    invalid ``commit_sha``, ``artifacts_uri``, or ``metrics`` shape
-    onto a stored variant. Re-validating on every update is how every
-    backend honors ``03-roles.md`` §3.4, §4.4 and ``08-storage.md``
-    §3.
-
-    Passing ``None`` for a field removes it (matches the ``NotNone``
-    rule on optional typed fields in ``eden_contracts._common``:
-    absent is permitted, explicit null is not).
-    """
-    data = model.model_dump(mode="json", exclude_none=True)
-    for key, value in changes.items():
-        if value is None:
-            data.pop(key, None)
-        elif isinstance(value, BaseModel):
-            data[key] = value.model_dump(mode="json", exclude_none=True)
-        else:
-            data[key] = value
-    return type(model).model_validate(data)
 
 
-def _deep[M: BaseModel](model: M) -> M:
-    """Return a deep copy of a Pydantic model.
-
-    Used to insulate readers (``read_*``, ``list_*``, ``events``)
-    from in-place mutation of stored values, and to insulate the
-    store from mutation of caller-supplied values at ``create_*``
-    time. Backends whose read path inherently rehydrates a fresh
-    instance (e.g. SQLite's JSON round-trip) still go through
-    ``_deep`` for uniformity.
-    """
-    return model.model_copy(deep=True)
 
 
 # ----------------------------------------------------------------------
@@ -239,91 +214,32 @@ def _deep[M: BaseModel](model: M) -> M:
 # ----------------------------------------------------------------------
 
 
-def _no_op_check_inputs(
-    task: Task,
-    submission: Submission,
-    get_idea: Callable[[str], Idea | None],
-) -> tuple[str, list[str]] | None:
-    """Return ``(commit_sha, parent_commits)`` when the §3.3 check should run.
-
-    Returns ``None`` (silently skip the check) when the submission
-    shape, idea attachment, or parent list rules out a no-op tree
-    comparison.
-    """
-    if not isinstance(submission, VariantSubmission):
-        return None
-    if submission.status != "success":
-        return None
-    if submission.commit_sha is None:
-        return None
-    assert isinstance(task, ExecutionTask)
-    idea = get_idea(task.payload.idea_id)
-    if idea is None or not idea.parent_commits:
-        return None
-    return submission.commit_sha, list(idea.parent_commits)
 
 
-def _all_parents_equal_sha(sha: str, parents: list[str]) -> bool:
-    """True when ``sha`` is byte-equal to every parent (Layer 1 fast path)."""
-    return all(p == sha for p in parents)
 
 
-def _resolve_trees(
-    resolver: Callable[[str], str | None],
-    sha: str,
-    parents: list[str],
-) -> tuple[str, list[str]] | None:
-    """Run the tree resolver against ``sha`` + every parent.
-
-    Returns ``(submission_tree, parent_trees)`` when every resolver
-    call yields a non-``None`` tree. Returns ``None`` when the
-    resolver raises or returns ``None`` for any SHA — Layer 2 is
-    silently disabled for this submission in that case (Layer 1's
-    fast path still applies).
-    """
-    try:
-        sub_tree = resolver(sha)
-    except Exception:  # noqa: BLE001 — resolver is binding-supplied; contain errors
-        return None
-    if sub_tree is None:
-        return None
-    parent_trees: list[str] = []
-    for p in parents:
-        try:
-            t = resolver(p)
-        except Exception:  # noqa: BLE001
-            return None
-        if t is None:
-            return None
-        parent_trees.append(t)
-    return sub_tree, parent_trees
 
 
-def _sha_equality_message(task_id: str, sha: str) -> str:
-    return (
-        f"execution submission for task {task_id!r} has "
-        f"commit_sha={sha!r} equal to every parent_commit; the "
-        "variant tree is identical to the parent tree (no-op). "
-        "spec/v0/03-roles.md §3.3 non-no-op invariant."
-    )
 
 
-def _tree_identity_message(task_id: str, sha: str, sub_tree: str) -> str:
-    return (
-        f"execution submission for task {task_id!r} has "
-        f"commit_sha={sha!r} whose tree {sub_tree!r} is identical "
-        "to the tree of every parent_commit; the variant "
-        "contributes no change. spec/v0/03-roles.md §3.3 "
-        "non-no-op invariant."
-    )
 
 
-class _StoreBase:
-    """Shared transaction/validation/event logic for every store backend.
+class _StoreCore:
+    """Abstract core shared by every store backend.
 
-    Subclasses implement the backend primitives listed at module-top.
-    The public surface here is the union of everything ``protocol.Store``
-    declares.
+    Owns ``__init__``, the event-id factory, the ``_event`` /
+    ``_ts`` / ``_maybe_ts`` helpers, the cross-resource read-side
+    predicates (``_require_*`` / ``_find_starting_variant_for_implement_task``
+    / ``_validate_registry_id``), and the backend-primitive
+    declarations every backend overrides (``_get_*`` / ``_iter_*`` /
+    ``_atomic_operation`` / ``_apply_commit`` / ``_get_dispatch_mode``
+    / ``_get_experiment``). Each per-resource mixin in ``_ops/``
+    inherits this class so its method bodies resolve ``self._get_*``
+    / ``self._event`` / ``self._apply_commit`` against these
+    declarations; the composite ``_StoreBase`` flattens the mixin
+    MRO atop it. See
+    [`docs/plans/refactor-f1-storebase-split.md`](../../../../docs/plans/refactor-f1-storebase-split.md)
+    (issue #114).
     """
 
     def __init__(
@@ -380,7 +296,7 @@ class _StoreBase:
         across the init-time / reseed-time access.
         """
         factory = self._event_id_factory
-        if getattr(factory, "__func__", None) is not _StoreBase._default_event_id:
+        if getattr(factory, "__func__", None) is not _StoreCore._default_event_id:
             return
         max_seen = 0
         for event in self._iter_events():
@@ -397,10 +313,6 @@ class _StoreBase:
     def experiment_id(self) -> str:
         """The experiment this store is scoped to."""
         return self._experiment_id
-
-    # ------------------------------------------------------------------
-    # Backend primitives (subclasses MUST override)
-    # ------------------------------------------------------------------
 
     def _atomic_operation(self) -> AbstractContextManager[None]:
         """Return a context manager providing atomic-operation semantics.
@@ -510,6 +422,133 @@ class _StoreBase:
         ``_atomic_operation`` exits without an exception.
         """
         raise NotImplementedError
+
+    def _event(self, type_: str, data: dict[str, Any]) -> Event:
+        return Event(
+            event_id=self._event_id_factory(),
+            type=type_,
+            occurred_at=self._ts(),
+            experiment_id=self._experiment_id,
+            data=data,
+        )
+
+    def _ts(self) -> str:
+        dt = self._now()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    def _maybe_ts(self, value: datetime | str | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        else:
+            value = value.astimezone(UTC)
+        return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    def _require_running(self) -> None:
+        """Raise :class:`IllegalTransition` if the experiment is terminated.
+
+        Called from every ``create_task`` entry point and from
+        :meth:`claim` to enforce the terminated-experiment guard per
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §2.5 and [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
+        §2 / §3.5 step 0. Already-claimed tasks may still complete;
+        the guard applies only to new claim and create-task attempts.
+        """
+        state = self._get_experiment().state
+        if state != "running":
+            raise IllegalTransition(
+                f"experiment {self._experiment_id!r} is "
+                f"{state!r}; new tasks and claims are forbidden "
+                "(02-data-model.md §2.5)"
+            )
+
+    def _require_task(self, task_id: str) -> Task:
+        task = self._get_task(task_id)
+        if task is None:
+            raise NotFound(f"task {task_id!r}")
+        return task
+
+    def _require_no_task(self, task_id: str) -> None:
+        if self._get_task(task_id) is not None:
+            raise AlreadyExists(f"task {task_id!r}")
+
+    def _require_idea(self, idea_id: str) -> Idea:
+        idea = self._get_idea(idea_id)
+        if idea is None:
+            raise NotFound(f"idea {idea_id!r}")
+        return idea
+
+    def _require_variant(self, variant_id: str) -> Variant:
+        variant = self._get_variant(variant_id)
+        if variant is None:
+            raise NotFound(f"variant {variant_id!r}")
+        return variant
+
+    def _find_starting_variant_for_implement_task(self, task: Task) -> Variant | None:
+        assert isinstance(task, ExecutionTask)
+        for variant in self._iter_variants():
+            if (
+                variant.idea_id == task.payload.idea_id
+                and variant.status == "starting"
+            ):
+                return variant
+        return None
+
+    def _validate_registry_id(self, value: str, *, kind: str) -> None:
+        """Reject reserved or grammar-violating ids.
+
+        ``kind`` differentiates "worker", "group", "member" only for
+        the error message; all three share the §6.1 grammar.
+        """
+        if value in RESERVED_IDENTIFIERS:
+            raise ReservedIdentifier(
+                f"{kind} id {value!r} is reserved by the protocol"
+            )
+        if not _WORKER_ID_RE.fullmatch(value):
+            raise InvalidPrecondition(
+                f"{kind} id {value!r} does not match the §6.1 grammar"
+            )
+
+
+class _StoreBase(_StoreCore):
+    """Shared transaction/validation/event logic for every store backend.
+
+    Subclasses implement the backend primitives listed at module-top.
+    The public surface here is the union of everything ``protocol.Store``
+    declares.
+    """
+
+
+
+
+
+    # ------------------------------------------------------------------
+    # Backend primitives (subclasses MUST override)
+    # ------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     # ------------------------------------------------------------------
     # Public read API
@@ -1546,23 +1585,6 @@ class _StoreBase:
             )
             self._apply_commit(tx)
 
-    def _require_running(self) -> None:
-        """Raise :class:`IllegalTransition` if the experiment is terminated.
-
-        Called from every ``create_task`` entry point and from
-        :meth:`claim` to enforce the terminated-experiment guard per
-        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §2.5 and [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
-        §2 / §3.5 step 0. Already-claimed tasks may still complete;
-        the guard applies only to new claim and create-task attempts.
-        """
-        state = self._get_experiment().state
-        if state != "running":
-            raise IllegalTransition(
-                f"experiment {self._experiment_id!r} is "
-                f"{state!r}; new tasks and claims are forbidden "
-                "(02-data-model.md §2.5)"
-            )
 
     def update_dispatch_mode(
         self,
@@ -2249,15 +2271,6 @@ class _StoreBase:
     # Require-or-raise helpers
     # ------------------------------------------------------------------
 
-    def _find_starting_variant_for_implement_task(self, task: Task) -> Variant | None:
-        assert isinstance(task, ExecutionTask)
-        for variant in self._iter_variants():
-            if (
-                variant.idea_id == task.payload.idea_id
-                and variant.status == "starting"
-            ):
-                return variant
-        return None
 
     def _require_no_live_execution_task_for_idea(self, idea_id: str) -> None:
         """Raise ``AlreadyExists`` if a live execution task already targets ``idea_id``.
@@ -2309,27 +2322,9 @@ class _StoreBase:
                 f"{expected.__name__}, got {type(submission).__name__}"
             )
 
-    def _require_no_task(self, task_id: str) -> None:
-        if self._get_task(task_id) is not None:
-            raise AlreadyExists(f"task {task_id!r}")
 
-    def _require_task(self, task_id: str) -> Task:
-        task = self._get_task(task_id)
-        if task is None:
-            raise NotFound(f"task {task_id!r}")
-        return task
 
-    def _require_idea(self, idea_id: str) -> Idea:
-        idea = self._get_idea(idea_id)
-        if idea is None:
-            raise NotFound(f"idea {idea_id!r}")
-        return idea
 
-    def _require_variant(self, variant_id: str) -> Variant:
-        variant = self._get_variant(variant_id)
-        if variant is None:
-            raise NotFound(f"variant {variant_id!r}")
-        return variant
 
     # ------------------------------------------------------------------
     # Worker registry (12a-1)
@@ -2622,20 +2617,6 @@ class _StoreBase:
     # Registry helpers
     # ------------------------------------------------------------------
 
-    def _validate_registry_id(self, value: str, *, kind: str) -> None:
-        """Reject reserved or grammar-violating ids.
-
-        ``kind`` differentiates "worker", "group", "member" only for
-        the error message; all three share the §6.1 grammar.
-        """
-        if value in RESERVED_IDENTIFIERS:
-            raise ReservedIdentifier(
-                f"{kind} id {value!r} is reserved by the protocol"
-            )
-        if not _WORKER_ID_RE.fullmatch(value):
-            raise InvalidPrecondition(
-                f"{kind} id {value!r} does not match the §6.1 grammar"
-            )
 
     def _generate_credential_token(self) -> str:
         """Mint a fresh ≥256-bit registration token (URL-safe hex).
@@ -2741,33 +2722,8 @@ class _StoreBase:
     # Event + timestamp helpers
     # ------------------------------------------------------------------
 
-    def _event(self, type_: str, data: dict[str, Any]) -> Event:
-        return Event(
-            event_id=self._event_id_factory(),
-            type=type_,
-            occurred_at=self._ts(),
-            experiment_id=self._experiment_id,
-            data=data,
-        )
 
-    def _ts(self) -> str:
-        dt = self._now()
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        else:
-            dt = dt.astimezone(UTC)
-        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-    def _maybe_ts(self, value: datetime | str | None) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            return value
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        else:
-            value = value.astimezone(UTC)
-        return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     # ------------------------------------------------------------------
     # Portable-checkpoint export / import (12b, `10-checkpoints.md`)
