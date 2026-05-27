@@ -224,6 +224,8 @@ Formalizes black-box scenarios that any component can run against itself.
 
 **Chunks:** 11a + 11b one chunk (harness needs first scenarios to validate itself); 11c one; 11d one.
 
+- [conformance-speedup](https://github.com/ealt/eden/pull/229) — Parallelize the conformance suite with `pytest-xdist` (`-n auto`; ~8min → ~2min) — **shipped 2026-05-26** (see [CHANGELOG](../CHANGELOG.md))
+
 **Non-goals:** multi-experiment scenarios (Phase 12); k8s-specific tests (Phase 13).
 
 **Exit:** **met** — reference impl passes the full v1+roles+integrator suite; the suite under [`conformance/`](../conformance/) is documented as the conformance contract for `eden-protocol/v0` (chapter 9 § 1 levels v1, v1+roles, v1+roles+integrator).
