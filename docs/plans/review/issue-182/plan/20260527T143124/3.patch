@@ -1,0 +1,70 @@
+--- docs/plans/review/issue-182/plan/20260527T143124/2.md	2026-05-27 15:02:52
++++ docs/plans/issue-182-coverage-debt-audit.md	2026-05-27 15:06:37
+@@ -86,8 +86,9 @@
+ | **Task reassign** | `GET /admin/tasks/{id}/reassign`, `POST /admin/tasks/{id}/reassign` | `admin/actions.py:task_reassign_form` / `task_reassign` | target none/worker/group + **required reason** |
+ | Create-execution-task | `POST /admin/ideas/{idea_id}/create-execution-task` (form on `GET /admin/ideas/{id}/`) | `admin/actions.py:create_execution_task` | manual idea→execution-task |
+ | Terminate-experiment | `POST /admin/experiment/terminate` | `admin/actions.py:terminate_experiment` | experiment lifecycle terminal |
+-| **Experiments dashboard** | `GET /admin/experiments/`, `POST /admin/experiments/register`, `POST /admin/experiments/{id}/unregister`, `POST /admin/experiments/{id}/select` | `admin_experiments.py` | **register + select + unregister** (only `select` partially exercised in demo); register/unregister gated on control-plane being configured |
+ 
++**Note — `/admin/experiments/` is NOT a base-stack surface.** The experiments dashboard (`admin_experiments.py`) and the `/admin/control/*` pages mount **only when the web-ui is started with a control plane** (`if control_plane is not None:` in [`app.py`](../../reference/services/web-ui/src/eden_web_ui/app.py)); the base template hides the nav link unless `control_plane_enabled`, and the route **404s on the default stack** ([`docs/observability.md`](../observability.md) §2.1). It is therefore inventoried under §4.3 (control-plane stack), not here. On the base stack, the auditor should confirm the documented 404 (expected, not a bug).
++
+ ### 4.2 Base host-mode stack — wire + data-lifecycle (no full UI)
+ 
+ | Surface | Endpoint / command | Location | What to verify |
+@@ -105,7 +106,8 @@
+ 
+ | Surface | Endpoint(s) | What to verify |
+ |---|---|---|
+-| Experiment registry | `POST/GET /v0/control/experiments`, `GET/DELETE /v0/control/experiments/{E}` | register / list / read / unregister |
++| **`/admin/experiments/` UI** | `GET /admin/experiments/`, `POST /admin/experiments/register`, `POST /admin/experiments/{id}/unregister`, `POST /admin/experiments/{id}/select` | `admin_experiments.py` — **register + select + unregister** (only `select` partially exercised in demo). Control-plane-gated (404s on base stack) |
++| Experiment registry (wire) | `POST/GET /v0/control/experiments`, `GET/DELETE /v0/control/experiments/{E}` | register / list / read / unregister |
+ | **Lease ops** | `POST /v0/control/experiments/{E}/leases`, `POST /v0/control/leases/{L}/renew`, `POST /v0/control/leases/{L}/release`, `GET /v0/control/leases[?holder=]` | acquire → renew → release; expiry hand-off; list/filter |
+ | Control whoami | `GET /v0/control/whoami` | authenticated worker identity |
+ | Deployment-scoped workers | `POST/GET /v0/control/workers`, `GET /v0/control/workers/{W}`, `POST …/reissue-credential` | register / list / detail / reissue |
+@@ -201,7 +203,7 @@
+ ### Wave 1 — Base-stack per-experiment admin UI (§4.1)
+ 
+ - Drive a full ideator→executor→evaluator→integrator lifecycle as the *carrier* to populate tasks/variants/ideas/refs in varied states (claimed, submitted, integrated, orphaned).
+-- Walk every §4.1 surface: signin/signout session flow, authenticated `/artifacts` reader, dashboard, observability pages, the `/admin/artifacts/` listing, work-refs (list + CAS delete on a real orphan ref), dispatch-mode (toggle all 4 keys), groups (register/detail/add/remove/delete), workers (register/detail/reissue-credential), task reclaim, task reassign (none/worker/group + reason), create-execution-task, terminate-experiment, experiments register/select/unregister.
++- Walk every §4.1 surface: signin/signout session flow, authenticated `/artifacts` reader, dashboard, observability pages, the `/admin/artifacts/` listing, work-refs (list + CAS delete on a real orphan ref), dispatch-mode (toggle all 4 keys), groups (register/detail/add/remove/delete), workers (register/detail/reissue-credential), task reclaim, task reassign (none/worker/group + reason), create-execution-task, terminate-experiment. Confirm `/admin/experiments/` 404s on the base stack (documented; it moves to Wave 3 where the control plane is enabled).
+ 
+ **Gate:** every §4.1 surface ticked or `blocked by #__`; per-session comment posted; all surprises filed + triaged.
+ 
+@@ -218,7 +220,7 @@
+ ### Wave 3 — Control-plane stack (§4.3)
+ 
+ - **Concrete bring-up** (per [`docs/observability.md`](../observability.md) §3.4): run the control-plane-server as a sibling container on the `eden-reference_default` network, then recreate `web-ui` with the [`compose.control-plane.yaml`](../../reference/compose/compose.control-plane.yaml) overlay so `--control-plane-url` is set and the `/admin/experiments/` + `/admin/control/*` routes register. The control-plane routes do NOT exist on the default stack — this overlay is the gate.
+-- Walk the lease primitive (acquire → renew → release → expiry hand-off + list/filter), the deployment-scoped worker/group registry (wire `/v0/control/*` + `/admin/control/workers/` + `/admin/control/groups/` UI incl. reissue), `GET /v0/control/whoami`, and multi-experiment side-by-side (two experiments registered + leased, port/data-root isolation; cross-ref #147).
++- Walk the `/admin/experiments/` dashboard (register + select + unregister — now reachable), the lease primitive (acquire → renew → release → expiry hand-off + list/filter), the deployment-scoped worker/group registry (wire `/v0/control/*` + `/admin/control/workers/` + `/admin/control/groups/` UI incl. reissue), `GET /v0/control/whoami`, and multi-experiment side-by-side (two experiments registered + leased, port/data-root isolation; cross-ref #147).
+ 
+ **Gate:** every §4.3 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.
+ 
+@@ -246,7 +248,7 @@
+ ## Surfaces audited (live checklist)  — illustrative; Wave 0 seeds the full §4 inventory
+ 
+ ### Wave 1 — base-stack admin UI
+-- [ ] `/signin` + `/signout` session flow (good/bad creds, unauth redirect) — date, notes / bugs filed: #__
++- [ ] `/signin` + `/signout` session flow (no-credential "continue as <worker_id>"; unauth→303 redirect) — date, notes / bugs filed: #__
+ - [ ] `GET /artifacts` authenticated reader (path-traversal guard) — date, notes / bugs filed: #__
+ - [ ] `/admin/work-refs/` (list + CAS delete) — date, notes / bugs filed: #__
+ - [ ] `/admin/dispatch-mode/` (all 4 keys) — date, notes / bugs filed: #__
+@@ -254,7 +256,7 @@
+ - [ ] `/admin/workers/<id>/reissue-credential` — date, notes / bugs filed: #__
+ - [ ] admin reclaim + reassign (UI) — date, notes / bugs filed: #__
+ - [ ] create-execution-task + terminate-experiment (UI) — date, notes / bugs filed: #__
+-- [ ] `/admin/experiments/` register + select + unregister — date, notes / bugs filed: #__
++- [ ] confirm `/admin/experiments/` 404s on base stack (control-plane-gated; walked in Wave 3) — date, notes / bugs filed: #__
+ ### Wave 2 — base-stack wire + data lifecycle + CLIs + observability
+ - [ ] reclaim/reassign (wire; reassign needs `admins`-group worker bearer) — …
+ - [ ] Adminer BYO workflow + postgres readonly role at `:5433` — …
+@@ -262,8 +264,9 @@
+ - [ ] `setup-experiment.sh` flag surface (`--exec-mode` / `--data-root` / `--no-auto-host-workers` / …) — …
+ - [ ] `eden-experiment up/down/reset/status` lifecycle — …
+ - [ ] `eden-manual` role CLI subcommands — …
+-- [ ] observability §4.6: Forgejo Web UI, container logs, read-only clone, Swagger UI, desktop clients — …
++- [ ] observability §4.6: Forgejo Web UI, raw wire API + Swagger UI, container logs, read-only clone, desktop clients — …
+ ### Wave 3 — control-plane
++- [ ] `/admin/experiments/` register + select + unregister (now reachable) — …
+ - [ ] `/v0/control/*` lease primitive (acquire/renew/release/list + whoami) — …
+ - [ ] `/v0/control/experiments` + deployment-scoped workers/groups (wire) — …
+ - [ ] `/admin/control/workers/` pages (list/register/detail/reissue) — …
