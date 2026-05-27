@@ -200,10 +200,22 @@ Filter chips above the table, all driven by query params:
   ```
 
   **Registration is resolved once per render**, not per row: the handler calls
-  `store.read_worker(session.worker_id)` once and caches the boolean. If the session worker is not
-  registered, *every* row is ineligible (matching the ladder's step-2 `WorkerNotRegistered`).
+  `store.read_worker(session.worker_id)` once and caches the result. `read_worker` is itself a wire
+  call (`GET /workers/{worker_id}`) that can raise, so it has its own 3-outcome ladder — never let
+  it escape as a 500:
+  - **succeeds** → `registered=True`.
+  - **`NotFound`** → `registered=False`; *every* row is ineligible (matching the §3.5 step-2
+    `WorkerNotRegistered` outcome). The eligible-for-me filter then yields an empty list and the
+    page renders a "you are not registered for this experiment" note.
+  - **transport / auth failure** → eligibility is **unknown for the whole page**: render every row
+    with a disabled claim button + the "eligibility unknown" note and bump the §D.6
+    eligibility-resolution warning counter once (page-level, not per-row). Do **not** short-circuit
+    to "all ineligible" silently and do **not** 500 — this mirrors the group-probe error model
+    above (distinguish definitive result from transport-indeterminate).
+
   (In practice a signed-in worker is registered, but the projection must not assume it — the
-  ladder doesn't.) Group resolution is memoized by `group_id` across rows (§2.3).
+  ladder doesn't.) Group resolution is memoized by `group_id` across rows (§2.3); the registration
+  read happens before any group probe, so a registration-unknown page skips group probes entirely.
 - **Error model (corrected in round-0 revision).** `StoreClient.resolve_worker_in_group` does
   **not** raise on an unknown worker/group — it `read_worker`s first and returns `False` on
   `NotFound`, and a dangling group ref is skipped; only **transport / auth errors propagate**
