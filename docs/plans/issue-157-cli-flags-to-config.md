@@ -1,0 +1,549 @@
+# Issue #157 — Integrate deployment CLI flags to experiment-config fields
+
+## 1. Context
+
+[Issue #157](https://github.com/ealt/eden/issues/157) audited the orchestrator / worker-host / web-ui CLI surface and identified eight flags whose values **two operators driving two experiments in the same deployment would plausibly want different values for**, yet today live as deployment-wide CLI flags rather than per-experiment config:
+
+| Service | Flag | Current default |
+|---|---|---|
+| orchestrator | `--max-quiescent-iterations` | `3` (Compose overrides to `30` via `EDEN_MAX_QUIESCENT_ITERATIONS`) |
+| orchestrator | `--termination-policy` | `eden_dispatch.termination:default_termination_policy` (= `never_terminate`) |
+| orchestrator | `--lease-duration-seconds` | `30` |
+| ideator-host | `--ideas-per-ideation` | `1` |
+| ideator-host | `--ideation-task-deadline` | `120.0` |
+| executor-host | `--execution-task-deadline` | `600.0` |
+| evaluator-host | `--evaluation-task-deadline` | `300.0` |
+| web-ui | `--claim-ttl-seconds` | `3600` |
+
+Issue #157 names #133 ([impl branch](https://github.com/ealt/eden/pull/215) — `impl/issue-133-ideation-policy-config`) as the template: surface a deployment-wide CLI flag as a typed block in `experiment-config.yaml`, validated by both the JSON Schema and the Pydantic `eden-contracts` binding. This chunk is the bulk audit follow-up to that template.
+
+**Status of #133 at plan-authoring time:** PR #215 is open against `main` (`b9202a7` "Fix #133: surface ideation policy in experiment config"). The plan assumes #133 lands before impl-start; if it has not, the impl PR rebases against `main` once it does. The mechanical shape #133 establishes — a discriminated-union YAML block, a Pydantic `IdeationPolicyConfig` union, a `build_policy()` factory in `eden-dispatch`, and the orchestrator dropping `--ideation-policy` entirely — is the reference template every integration below mirrors.
+
+**Per-flag recommendation summary.** The issue acknowledges three of the eight are debatable. The plan stakes a recommendation per flag with rationale, expecting codex-review and operator review to push back per-flag during this plan PR:
+
+| Flag | Recommended disposition | Rationale |
+|---|---|---|
+| `--termination-policy` | **Integrate** | Already the explicit cousin of `ideation_policy` — same module:callable factory shape, same "policy decision the experiment owner picks" framing. #214 names it as the natural co-integration with per-experiment ideation. |
+| `--max-quiescent-iterations` | **Integrate** | The Compose comment at [`compose.yaml:270-278`](../../reference/compose/compose.yaml) names this as per-experiment ("Manual-UI sessions want a much higher value"); the deployment override exists because it's an experiment-shape parameter today wearing deployment clothes. |
+| `--ideation-task-deadline` / `--execution-task-deadline` / `--evaluation-task-deadline` | **Integrate** | The `*_command` strings these deadlines bound are *already* in the experiment config (under `extra="allow"`). The deadline travels with the command. The issue's "arguably worker-host SLA" framing is true at the host-implementation level but the workload-shape question (LLM evaluator at 10min vs deterministic eval at 5s) is experiment-level. The three worker-hosts already load `--experiment-config` in their subprocess-mode entry points, so the field-read is one line per host. |
+| `--ideas-per-ideation` | **Defer to follow-up issue** | The default Compose deployment runs the ideator host in scripted mode ([`compose.yaml:316-380`](../../reference/compose/compose.yaml)) — and the scripted ideator does NOT load an experiment-config at all (it has no `--experiment-config` argument; [`cli.py:131-134`](../../reference/services/ideator/src/eden_ideator_host/cli.py) requires only `--base-commit-sha` in scripted mode). Today the value flows via the `EDEN_IDEAS_PER_IDEATION` env var that setup-experiment plumbs into compose, and the scripted ideator's `fixtures/experiment/ideation.py` reads it directly. Integrating to experiment-config means either (a) scripted mode learns to load an experiment-config too (a deeper refactor), or (b) only subprocess mode reads the field (asymmetric — silently ignored in the default deployment). Neither is small. File a follow-up issue; out of scope here. |
+| `--lease-duration-seconds` | **Keep as deployment flag** | Per chapter 11 §4.3 the lease is the contract between an orchestrator replica and the control plane. Experiments don't observe it; orchestrator-replica operators do. Integrating it would force the control-plane to decide whose lease semantics win when replicas hold leases for differently-configured experiments. Out of scope per issue §"Decision". |
+| `--claim-ttl-seconds` | **Keep as deployment flag** | UX preference for the web-ui's manual-claim survival window — not a protocol-shaping parameter. Issue §"Decision" agrees. Out of scope. |
+
+**Net scope: 5 of the 8 flags integrate; 3 stay or defer.** The plan codifies the recommendation now and surfaces it for codex / operator review; the deferred / excluded flags can be re-litigated in follow-ups if the rationale doesn't hold.
+
+**Orchestrator scope narrowed to single-experiment mode.** The orchestrator's multi-experiment loop ([`multi_loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/multi_loop.py)) has NO `--experiment-config` argument today — it constructs per-experiment runtime via the chapter-11 control-plane registry's `config_uri`, and #214 is the issue that wires per-experiment configs through that registry. This chunk therefore integrates `termination_policy` and `max_quiescent_iterations` only on the **single-experiment** branch of the orchestrator (the `args.control_plane_url is None` branch at [`cli.py:370-379`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)). In multi-experiment mode, the existing `--termination-policy` and `--max-quiescent-iterations` CLI flags **stay** until #214 lands the per-experiment config-resolution plumbing — at which point those flags drop and the multi-experiment loop calls `build_termination_policy(per_experiment_config)` per held lease. The asymmetry is documented in the orchestrator CLI help text and in the operator playbook; it's acknowledged as temporary and closed by #214.
+
+## 2. Decisions captured before drafting
+
+Listed here so codex-review can see what was deliberate vs. proposable:
+
+1. **CLI removal per integrated flag, with one deliberate exception.** Per CLAUDE.md ("No backwards-compatibility shims in greenfield / pre-external-user projects") and #133's precedent (which **dropped** `--ideation-policy` entirely), the three worker-host deadline flags (`--ideation-task-deadline`, `--execution-task-deadline`, `--evaluation-task-deadline`) are **removed from the CLI** in this chunk. The experiment-config field becomes the only knob. **Exception:** the orchestrator's `--termination-policy` and `--max-quiescent-iterations` stay registered on the argparser because the multi-experiment-mode branch still uses them (deferred to #214 per decision 4). In single-experiment-mode the experiment-config field takes precedence and the CLI value triggers a startup warning if a non-default is supplied (see §3.4) — not silent. Issue #157's "fall back to the flag" wording is superseded by either "removed entirely" (deadlines) or "precedence-wins-with-warning" (the two orchestrator flags) — clean break in both cases, just shaped by the orchestrator's dual single/multi-experiment surface.
+
+2. **Termination policy YAML shape mirrors ideation policy: declarative discriminated union, not `module:callable`.** Today's `--termination-policy <module:callable>` is operationally hostile (operators ship a Python module just to wrap `max_wall_time_policy(timedelta(hours=2))`). The YAML field declares the policy by name + parameters; the orchestrator's `build_termination_policy(config)` factory maps to the five shipped reference policies (`never_terminate`, `max_variants`, `max_wall_time`, `convergence_window`, `target_condition`). Custom callables are out of the YAML surface — operators who genuinely need an arbitrary Python callable ship their own `eden-dispatch` distribution (the security posture #133 took).
+
+3. **Each integrated field is *required* in the YAML iff the corresponding `dispatch_mode` key is `auto`.** Specifically: `termination_policy` is required when `dispatch_mode.termination == "auto"` (parity with the existing dispatch-mode design); `max_quiescent_iterations` and the three `*_task_deadline` fields are optional with reference defaults (the values used today). Validation is enforced on both schema and Pydantic sides; missing-when-required surfaces as a `ValidationError` at config-load time, not silent defaults.
+
+4. **Service load discipline — narrowed.** Every service in scope for a integrated field already loads the experiment-config YAML at startup *on the path the integration uses*: subprocess-mode ideator-host, executor-host, evaluator-host, web-ui, and **single-experiment-mode orchestrator** (post-#133). Two paths are explicitly out-of-scope because they don't load the config: scripted-mode ideator (no `--experiment-config` arg today — that's why `ideas_per_ideation` defers) and multi-experiment-mode orchestrator (uses the chapter-11 registry's `config_uri` — that's #214). The plan does not refactor either out-of-scope path; the new fields land additively and the new behavior turns on only where config-loading already exists.
+
+5. **`termination_policy.duration` is a validated string, not a raw `timedelta`.** A local sanity check confirms that Pydantic models with `ConfigDict(strict=True)` REJECT ISO-8601 duration strings like `"PT2H"` when bound to a `timedelta` field (strict mode allows only `timedelta` instances or integer seconds; `TypeAdapter(timedelta).validate_python("PT2H")` works in lax mode but the codebase keeps strict on every contracts model). The fix: introduce a `DurationStr` type alias in [`reference/packages/eden-contracts/src/eden_contracts/_common.py`](../../reference/packages/eden-contracts/src/eden_contracts/_common.py) that validates as a string + `AfterValidator(_parse_iso_duration)` (parallel to the existing `DateTimeStr` / `UriStr` pattern that validates the format on top of a string), and a matching schema-side `format: "duration"` registered in the test conftest's `FormatChecker` (parallel to `date-time`). The factory `build_termination_policy()` converts the validated string to `timedelta` at the boundary via the same parser, so callers downstream see a `timedelta`.
+
+6. **Cross-field `termination_policy required when dispatch_mode.termination == "auto"` is enforced on BOTH sides** (schema + Pydantic) per the repo's schema↔model parity discipline. Schema-side: `allOf[if-then]` over `dispatch_mode.termination`. Pydantic-side: `@model_validator(mode="after")` on `ExperimentConfig`. The parity fixtures cover the four cases (`auto` + present → accept; `auto` + absent → reject; `manual` + present → accept-and-ignore; `manual` + absent → accept). This matches how the existing `dispatch_mode` cross-field semantics are encoded.
+
+7. **Conformance scope unchanged.** The integrated fields are all implementation-defined per chapter 03 §6 (orchestrator decision-type contracts are specified; the policies that drive them are not normative). The JSON Schema gains the new field shapes (additive); chapter 09 §5 conformance group index does NOT gain a new row. Wire conformance (chapter 7) is unaffected — the wire never exposes these fields directly.
+
+These seven decisions are NOT up for re-litigation in codex-review unless review surfaces a load-bearing contradiction with another spec MUST or a CLAUDE.md discipline.
+
+## 3. Design
+
+### 3.1 Schema additions (`spec/v0/schemas/experiment-config.schema.json`)
+
+Five new optional top-level fields, additive to the schema #133 leaves behind. The discriminated-union shape mirrors #133's `ideation_policy` pattern (with `kind` as the discriminator + per-kind parameters; unknown kinds rejected; `allOf`-`if`-`then` gates per-kind requirements).
+
+```jsonc
+{
+  "properties": {
+    // … existing parallel_variants, evaluation_schema, objective,
+    //    dispatch_mode, ideation_policy (from #133) …
+
+    "termination_policy": {
+      "type": "object",
+      "description": "Declarative selection of the termination policy invoked by the orchestrator when dispatch_mode.termination == 'auto' (see 02-data-model.md §2.4 and 03-roles.md §6.2 decision-type 0). Cousin of ideation_policy. The five named kinds are the reference policies; conforming implementations MUST accept the listed kinds. Unknown kinds MUST fail config validation rather than silently fall back. When dispatch_mode.termination == 'auto' the field is required (enforced by an experiment-config-level allOf-if-then over dispatch_mode.termination); when 'manual' (the default) the field is ignored.",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["never_terminate", "max_variants", "max_wall_time", "convergence_window", "target_condition"]},
+        "target": {"type": "integer", "minimum": 1, "description": "kind='max_variants' only — hard ceiling on attempted variants."},
+        "duration": {"type": "string", "format": "duration", "minLength": 1, "description": "kind='max_wall_time' only — ISO 8601 duration string (e.g. 'PT2H'). MUST parse as a positive (> 0) timedelta; the FormatChecker rejects unparseable strings and zero/negative durations. The orchestrator's build_termination_policy() factory parses to timedelta at the boundary."},
+        "metric": {"type": "string", "minLength": 1, "description": "kind in {'convergence_window', 'target_condition'} — evaluation key to read."},
+        "window": {"type": "integer", "minimum": 1, "description": "kind='convergence_window' only — trailing window of integrated variants."},
+        "threshold": {"type": "number", "description": "kind='target_condition' only — comparison threshold."},
+        "direction": {"enum": ["maximize", "minimize"], "description": "kind in {'convergence_window', 'target_condition'} — direction of optimization. Defaults to 'maximize'."}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "max_variants"}},      "required": ["kind"]}, "then": {"required": ["kind", "target"]}},
+        {"if": {"properties": {"kind": {"const": "max_wall_time"}},     "required": ["kind"]}, "then": {"required": ["kind", "duration"]}},
+        {"if": {"properties": {"kind": {"const": "convergence_window"}},"required": ["kind"]}, "then": {"required": ["kind", "metric", "window"]}},
+        {"if": {"properties": {"kind": {"const": "target_condition"}},  "required": ["kind"]}, "then": {"required": ["kind", "metric", "threshold"]}}
+      ]
+    },
+
+    "max_quiescent_iterations": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "Orchestrator quiescence budget — exit after N consecutive no-progress iterations (see 03-roles.md §3.1). MUST be >= 2; N=1 risks exiting while a worker is mid-submit. When omitted, the reference orchestrator uses 3 (the manual-UI Compose stack overrides to 30 — see operator playbook). Implementation-defined: the spec defines the orchestrator's quiescent-exit shape but not the exact iteration count. Read only in single-experiment-mode orchestrator startup; multi-experiment-mode keeps the existing --max-quiescent-iterations CLI flag pending #214."
+    },
+
+    "ideation_task_deadline": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Seconds the ideator host waits for a single ideation_command invocation to produce its idea-list payload. Default: 120.0. Implementation-defined; bounds the per-task worker-host SLA."
+    },
+
+    "execution_task_deadline": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Seconds the executor host waits for a single execution_command invocation to write its variant. Default: 600.0."
+    },
+
+    "evaluation_task_deadline": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Seconds the evaluator host waits for a single evaluation_command invocation to produce its metrics. Default: 300.0."
+    }
+  }
+}
+```
+
+All five fields are top-level optional fields (the existing `extra="allow"` posture keeps unknown additions tolerated). The `duration` field uses `format: "duration"` validated by both sides:
+
+- **Schema side** — a `FormatChecker` handler registered in [`reference/packages/eden-contracts/tests/conftest.py`](../../reference/packages/eden-contracts/tests/conftest.py) parallel to the existing `date-time` / `uri` handlers (per AGENTS.md's "Format assertions on both sides" discipline). The handler uses the same parser the Pydantic side calls (no two-source-of-truth for "what counts as a valid duration").
+- **Pydantic side** — a new `DurationStr` type alias in [`reference/packages/eden-contracts/src/eden_contracts/_common.py`](../../reference/packages/eden-contracts/src/eden_contracts/_common.py), modeled on `DateTimeStr`: `Annotated[str, AfterValidator(_parse_iso_duration), Field(min_length=1)]`. The validator's body wraps `pydantic.TypeAdapter(timedelta).validate_python(value)` — TypeAdapter on a bare `timedelta` (not bound to a `strict=True` model) accepts ISO-8601 strings; the conversion result is discarded by the validator (which keeps the string as the storage shape) and re-computed at the factory boundary in §3.3. Specifying duration as a string in the YAML is operator-friendlier than three numeric fields (`hours` + `minutes` + `seconds`).
+
+**Why a string-typed `duration` instead of a raw `timedelta` field?** A `timedelta` field on a `ConfigDict(strict=True)` model rejects ISO-8601 strings like `"PT2H"` — strict mode allows only `datetime.timedelta` instances or integer seconds. The contracts package keeps every model strict. The validated-string approach matches the existing `DateTimeStr` / `UriStr` pattern (string-typed with `AfterValidator`) and keeps schema↔model parity trivial: both sides validate as a string with a format check.
+
+**Why the discriminated-union for `termination_policy` and not for the three scalar fields?** The three remaining scalar fields (`max_quiescent_iterations`, `*_task_deadline`) are single-semantic parameters — no "policy" choice; just a number. Discriminated-union shape would be overkill.
+
+### 3.2 Pydantic binding (`reference/packages/eden-contracts/src/eden_contracts/config.py`)
+
+Five additions to `ExperimentConfig`. The discriminated-union for `TerminationPolicyConfig` mirrors the `IdeationPolicyConfig` shape #133 lands:
+
+```python
+# In _common.py — new validated-string type for ISO 8601 durations.
+def _parse_iso_duration(value: str) -> str:
+    # Validates that `value` is a parseable ISO 8601 duration AND positive;
+    # raises ValueError otherwise. Returns the original string unchanged
+    # (the storage shape stays string for round-trip parity with the JSON
+    # Schema's string-typed `duration` field).
+    delta = TypeAdapter(timedelta).validate_python(value)
+    if delta.total_seconds() <= 0:
+        raise ValueError(f"duration must be positive (got {value!r} = {delta!r})")
+    return value
+
+DurationStr = Annotated[str, AfterValidator(_parse_iso_duration), Field(min_length=1)]
+
+# In config.py — discriminated union, parallel to IdeationPolicyConfig.
+class NeverTerminateConfig(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    kind: Literal["never_terminate"]
+
+class MaxVariantsTerminationConfig(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    kind: Literal["max_variants"]
+    target: Annotated[int, Field(ge=1)]
+
+class MaxWallTimeTerminationConfig(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    kind: Literal["max_wall_time"]
+    duration: DurationStr  # validated ISO 8601 duration string, converted at factory boundary.
+
+class ConvergenceWindowTerminationConfig(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    kind: Literal["convergence_window"]
+    metric: Annotated[str, Field(min_length=1)]
+    window: Annotated[int, Field(ge=1)]
+    direction: Direction = "maximize"
+
+class TargetConditionTerminationConfig(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+    kind: Literal["target_condition"]
+    metric: Annotated[str, Field(min_length=1)]
+    threshold: float
+    direction: Direction = "maximize"
+
+TerminationPolicyConfig = Annotated[
+    NeverTerminateConfig | MaxVariantsTerminationConfig
+    | MaxWallTimeTerminationConfig | ConvergenceWindowTerminationConfig
+    | TargetConditionTerminationConfig,
+    Field(discriminator="kind"),
+]
+
+# In ExperimentConfig:
+class ExperimentConfig(BaseModel):
+    # … existing fields …
+    termination_policy: Annotated[TerminationPolicyConfig | None, NotNone] = None
+    max_quiescent_iterations: Annotated[int | None, NotNone, Field(ge=2)] = None
+    ideation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
+    execution_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
+    evaluation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
+
+    @model_validator(mode="after")
+    def _termination_required_when_auto(self) -> "ExperimentConfig":
+        # Mirrors the JSON Schema's allOf-if-then over dispatch_mode.termination.
+        # Both sides reject; parity fixtures cover the four cases.
+        if (self.dispatch_mode and self.dispatch_mode.termination == "auto"
+                and self.termination_policy is None):
+            raise ValueError("termination_policy is required when dispatch_mode.termination == 'auto'")
+        return self
+```
+
+Schema↔model parity is enforced by the existing parity test ([`reference/packages/eden-contracts/tests/test_schema_parity.py`](../../reference/packages/eden-contracts/tests/test_schema_parity.py)) — the schema side also gets the matching `allOf-if-then` so both sides reject the cross-field violation. New fixtures land in `tests/cases.py` per AGENTS.md's "Adding or extending a JSON Schema + Pydantic binding" discipline — for each field, at least one accept and one reject fixture per constraint (kind-required, parameter-required-per-kind, minimum/maximum, format, cross-field-required). For `termination_policy`, the round-trip test (`tests/test_roundtrip.py`) covers each discriminant variant.
+
+The cross-field `termination_policy required when dispatch_mode.termination == "auto"` rule is enforced **on both sides** (per §2 decision 6): JSON Schema-side `allOf` with an `if-then` over `dispatch_mode.termination`, AND Pydantic-side `@model_validator(mode="after")`. The parity test will fail if the two sides disagree — that's the gate. The four parity fixtures: `auto + policy-present` (accept on both); `auto + policy-absent` (reject on both); `manual + policy-present` (accept on both — `termination_policy` is ignored at runtime but schema-valid); `manual + policy-absent` (accept on both — the default shape).
+
+### 3.3 Factory: `eden_dispatch.build_termination_policy()`
+
+Mirror #133's `build_policy()` for ideation. New function in [`reference/packages/eden-dispatch/src/eden_dispatch/termination.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/termination.py):
+
+```python
+def build_termination_policy(config: TerminationPolicyConfig | None) -> TerminationPolicy:
+    """Map a declarative TerminationPolicyConfig to a callable TerminationPolicy.
+
+    Pre-dispatch_mode.termination='auto' shipment, this returns
+    never_terminate when config is None — same default as the retired
+    --termination-policy flag.
+    """
+    if config is None or config.kind == "never_terminate":
+        return never_terminate
+    if config.kind == "max_variants":
+        return max_variants_policy(target=config.target)
+    if config.kind == "max_wall_time":
+        # config.duration is the validated ISO 8601 string; convert at the
+        # boundary so the policy-callable layer sees a timedelta.
+        duration = TypeAdapter(timedelta).validate_python(config.duration)
+        return max_wall_time_policy(duration=duration)
+    if config.kind == "convergence_window":
+        return convergence_window_policy(
+            metric=config.metric, window=config.window, direction=config.direction,
+        )
+    if config.kind == "target_condition":
+        return target_condition_policy(
+            metric=config.metric, threshold=config.threshold, direction=config.direction,
+        )
+    raise ValueError(f"unknown termination_policy kind: {config.kind!r}")
+```
+
+The four reference policies (`max_variants_policy`, `max_wall_time_policy`, `convergence_window_policy`, `target_condition_policy`) are unchanged. The deprecated `env_max_variants_policy` factory + `EDEN_TERMINATION_MAX_VARIANTS` env var are **removed** — their purpose was bridging the pre-12a-3 config-field-removal to the post-12a-3 callable shape; this chunk restores the config-field shape (under a different name) and the env-var bridge is no longer needed. Removing it tightens the surface.
+
+### 3.4 Service CLI changes
+
+**Orchestrator** ([`reference/services/orchestrator/src/eden_orchestrator/cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)) — **single-experiment branch only**:
+
+- In the `args.control_plane_url is None` branch ([`cli.py:370-379`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)):
+  - Read `config.termination_policy` from the loaded experiment-config (already loaded post-#133 via `args.experiment_config`); call `build_termination_policy(config.termination_policy)`. The result supersedes whatever `args.termination_policy` would have produced.
+  - Read `config.max_quiescent_iterations` with `or 3` fallback (the existing reference default).
+  - **Startup-warning** if `args.termination_policy != "eden_dispatch.termination:default_termination_policy"` (the argparse default) OR `args.max_quiescent_iterations != 3`. Log a single `WARN orchestrator_cli_flag_ignored flag=<name> value=<value> reason=experiment-config field takes precedence in single-experiment mode` line per non-default flag at startup, before the loop begins. This avoids the silent no-op the previous draft would have produced — operators see exactly which CLI value is being ignored.
+- In the multi-experiment branch (`args.control_plane_url is not None`):
+  - `--termination-policy` and `--max-quiescent-iterations` are still consulted — the existing `_resolve_termination_policy()` factory-callable resolution stays in place. #214 closes this gap by wiring per-experiment configs through the control-plane registry.
+- CLI surface result: the two flags stay registered on the argparser (because multi-experiment mode still uses them). Their help text is amended to read "In single-experiment mode the experiment-config field of the same name takes precedence; a non-default CLI value triggers a startup-warning and is ignored. In --control-plane-url multi-experiment mode the CLI value is consulted (deferred to #214)."
+- `_resolve_termination_policy()` and the `_resolve_factory_callable` helper stay (multi-experiment mode still uses them); #214 retires them.
+- The `--lease-duration-seconds` flag stays (per §1 disposition).
+- The `--ideation-policy` flag is already dropped by #133 (its scope is broader than this chunk).
+
+**Ideator-host** ([`reference/services/ideator/src/eden_ideator_host/cli.py`](../../reference/services/ideator/src/eden_ideator_host/cli.py)):
+
+- Drop `--ideation-task-deadline` argparse entry (line 120) — subprocess-mode only path. The flag is removed unconditionally; in scripted mode there's no subprocess deadline to gate.
+- In `_run_subprocess_mode` after `load_experiment_config(args.experiment_config)`, read `config.ideation_task_deadline` (default 120.0); plumb into the existing `subprocess_config(task_deadline=…)` call.
+- **`--ideas-per-ideation` stays unchanged** (out of scope per §1; the scripted-mode default-Compose path doesn't load an experiment-config; integration needs a deeper refactor in a follow-up issue).
+
+**Executor-host** ([`reference/services/executor/src/eden_executor_host/cli.py`](../../reference/services/executor/src/eden_executor_host/cli.py)):
+
+- Drop `--execution-task-deadline` argparse entry (line 96).
+- After `load_experiment_config(args.experiment_config)`, read `config.execution_task_deadline` (default 600.0); plumb into `ExecutorSubprocessConfig(task_deadline=…)`.
+
+**Evaluator-host** ([`reference/services/evaluator/src/eden_evaluator_host/cli.py`](../../reference/services/evaluator/src/eden_evaluator_host/cli.py)):
+
+- Drop `--evaluation-task-deadline` argparse entry (line 100).
+- After `load_experiment_config(args.experiment_config)`, read `config.evaluation_task_deadline` (default 300.0); plumb into `EvaluatorSubprocessConfig(task_deadline=…)`.
+
+**Web-ui** (no change): `--claim-ttl-seconds` stays per §1 disposition.
+
+### 3.5 Compose + setup-experiment changes
+
+- [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml):
+  - **Single-experiment orchestrator (`orchestrator` service):** The default Compose stack runs the orchestrator without `--control-plane-url`, so it's single-experiment-mode. Drop the orchestrator's `--termination-policy ${EDEN_TERMINATION_POLICY:-…}` and `--max-quiescent-iterations ${EDEN_MAX_QUIESCENT_ITERATIONS:-30}` lines (lines 281-289). Drop the `EDEN_TERMINATION_MAX_VARIANTS` env-var (line 300). Quiescence + termination flow from the experiment-config YAML.
+  - **Worker hosts:** No deadline flags currently appear in compose files (verified by `grep -n "ideation-task-deadline\|execution-task-deadline\|evaluation-task-deadline" reference/compose/*.yaml` = no matches; today's deployment relies on the argparse defaults). The argparse drops in §3.4 still happen; the compose touch is just confirming no stray flag remained.
+- [`reference/compose/compose.multi-orchestrator.yaml`](../../reference/compose/compose.multi-orchestrator.yaml): The multi-orchestrator overlay spins up a second orchestrator with the SAME single-experiment loop (no `--control-plane-url`). Drop `--max-quiescent-iterations` (line 49). The orchestrator-2 reads the same experiment-config-supplied values as orchestrator-1.
+- [`reference/compose/compose.control-plane.yaml`](../../reference/compose/compose.control-plane.yaml): **No orchestrator service defined here today** — the overlay only overrides `web-ui` to attach `--control-plane-url` ([`compose.control-plane.yaml:39-42`](../../reference/compose/compose.control-plane.yaml)). There is no compose deployment that currently runs the multi-experiment orchestrator loop; that's why §3.4 keeps the CLI flags on the multi-experiment branch — the only consumers today are the orchestrator service unit tests (`test_subprocess_e2e.py`, `test_e2e.py`) and #214 (which will add the multi-experiment compose surface alongside the control-plane-registry plumbing). This bullet is a *clarification*, not an edit.
+- [`reference/compose/.env.example`](../../reference/compose/.env.example): Drop `EDEN_TERMINATION_POLICY` / `EDEN_TERMINATION_MAX_VARIANTS` / `EDEN_MAX_QUIESCENT_ITERATIONS` entries (they were used by the single-experiment orchestrator path that this chunk converts). Document the smoke-script-managed YAML inject.
+- **setup-experiment.sh**: **No change** (out of scope per §1's `ideas_per_ideation` deferral). The script keeps its existing `--ideas-per-ideation` flag → `EDEN_IDEAS_PER_IDEATION` env-var plumbing unchanged. Listed here to be explicit that this file is **not** in the §9 "files to touch" inventory.
+- Smoke scripts ([`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) / [`smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh) / [`smoke-subprocess.sh`](../../reference/compose/healthcheck/smoke-subprocess.sh) / [`smoke-subprocess-docker.sh`](../../reference/compose/healthcheck/smoke-subprocess-docker.sh) / [`smoke-multi-orchestrator.sh`](../../reference/compose/healthcheck/smoke-multi-orchestrator.sh) / [`e2e.sh`](../../reference/compose/healthcheck/e2e.sh) / [`smoke-checkpoint.sh`](../../reference/compose/healthcheck/smoke-checkpoint.sh)): each smoke script today copies the fixture experiment-config and appends an `ideation_policy:` block (per #133's pattern); extend that append loop to also add `max_quiescent_iterations: 30` (matches the previous compose-level default) plus appropriate `*_task_deadline` values for the smoke's workload shape. The `e2e.sh` smoke that wants a higher quiescence budget for manual-UI steps sets `max_quiescent_iterations: 3000` (or similar) via the YAML.
+
+### 3.6 Spec prose updates
+
+- [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md) §2 (Experiment config): add the five new fields to the field table. Same prose discipline as #133's `ideation_policy` addition (`02-data-model.md §2.4`).
+- [`spec/v0/03-roles.md`](../../spec/v0/03-roles.md) §6.2 decision-type 0 (termination): swap the "deployment-supplied termination policy callable" phrasing to "the experiment-config-supplied `termination_policy` (§2 of chapter 02), mapped by the implementation to a `TerminationPolicy` callable". Keep the existing "implementation-defined" caveat: a conforming impl MAY accept additional policy kinds beyond the five named.
+- [`spec/v0/03-roles.md`](../../spec/v0/03-roles.md) §3.1 (orchestrator main loop): add one-line cross-reference to `max_quiescent_iterations` for the quiescent-exit shape.
+- No conformance-chapter (§09) changes — these fields are all implementation-defined per the chapter 03 §6 framing.
+
+### 3.7 Docs
+
+- [`docs/user-guide.md`](../user-guide.md) §2 experiment-config table: add five rows for the new fields. Add a worked-example YAML block at the end of §2 showing one experiment with all five fields populated (and the existing `ideation_policy` block from #133 for contrast).
+- [`docs/operations/experiment-lifecycle.md`](../operations/experiment-lifecycle.md): the existing operator playbook for `--termination-policy` migration moves from "set the env-var + point the orchestrator at the right factory" to "add a `termination_policy` block to the experiment config". Three worked recipes (`max_variants`, `max_wall_time`, `convergence_window`) — one each, replacing the current `module:callable` examples.
+- [`docs/glossary.md`](../glossary.md): add a "termination_policy" entry under the "Lifecycle and termination" section + a brief note that the four reference policy kinds (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) round-trip the pre-12a-3 schema fields' semantics under a new shape.
+- [`CHANGELOG.md`](../../CHANGELOG.md) `[Unreleased]`: chunk-completion entry per the AGENTS.md discipline.
+- [`docs/roadmap.md`](../roadmap.md): one-line entry under the appropriate phase pointing at this plan + the eventual PR.
+
+## 4. Scope
+
+In scope:
+
+- 5 new fields in `spec/v0/schemas/experiment-config.schema.json` (`termination_policy` discriminated-union + 4 scalars: `max_quiescent_iterations`, `ideation_task_deadline`, `execution_task_deadline`, `evaluation_task_deadline`).
+- New `DurationStr` validated-string type alias in `eden-contracts._common`; matching `duration` `FormatChecker` handler registered in the schema-parity conftest.
+- Corresponding Pydantic additions in `eden-contracts` (incl. parity-test fixtures, round-trip fixtures, cross-field validator + matching schema-side `allOf-if-then` for `termination_policy` required-when-`dispatch_mode.termination='auto'`).
+- New factory `build_termination_policy()` in `eden-dispatch`; removal of `env_max_variants_policy()` + the `EDEN_TERMINATION_MAX_VARIANTS` env-var bridge.
+- **Orchestrator single-experiment branch**: reads `config.termination_policy` and `config.max_quiescent_iterations` from the loaded experiment-config (post-#133); these supersede the CLI flags. The CLI flags stay registered on the argparser because multi-experiment mode still uses them (deferred to #214); help text amended to spell out the precedence.
+- Ideator-host CLI drops `--ideation-task-deadline`; subprocess-mode reads from config.
+- Executor-host CLI drops `--execution-task-deadline`; subprocess-mode reads from config.
+- Evaluator-host CLI drops `--evaluation-task-deadline`; subprocess-mode reads from config.
+- `compose.yaml` and `compose.multi-orchestrator.yaml` drop the single-experiment orchestrator's `--termination-policy` / `--max-quiescent-iterations` lines + `EDEN_TERMINATION_*` / `EDEN_MAX_QUIESCENT_ITERATIONS` env-vars.
+- Every smoke script's experiment-config-YAML append loop gains the new field shapes.
+- Spec prose updates in chapters 02 + 03.
+- User-guide + operations doc + glossary + CHANGELOG + roadmap updates.
+
+Out of scope (deferred):
+
+- `--ideas-per-ideation` integration. The default Compose ideator runs in scripted mode, which doesn't load an experiment-config (`--experiment-config` is subprocess-mode-only at [`cli.py:72-75`](../../reference/services/ideator/src/eden_ideator_host/cli.py)). Today the value flows via `EDEN_IDEAS_PER_IDEATION` env var to the scripted ideator's `fixtures/ideation.py`. Integrating requires either (a) teaching scripted mode to load an experiment-config, or (b) accepting asymmetric behavior (silently ignored in scripted; honored in subprocess). Both are non-trivial; file a follow-up issue at chunk-completion review. The chunk leaves the existing CLI flag + env-var wiring untouched.
+- `--lease-duration-seconds` integration. Stays a deployment flag per §1.
+- `--claim-ttl-seconds` integration. Stays a deployment flag per §1.
+- Per-experiment config resolution in multi-experiment mode — that's [#214](https://github.com/ealt/eden/issues/214)'s surface; this chunk's `build_termination_policy(config)` factory is the shared hook #214 will call per-experiment.
+- Removal of `--termination-policy` / `--max-quiescent-iterations` from the multi-experiment orchestrator path — depends on #214.
+- A "deployment defaults" file (e.g. `deployment-defaults.yaml`) that supplies per-experiment-field defaults. Out of scope; raise as a separate issue if a real deployment surfaces the need.
+- Hot-reload of policies / deadlines mid-experiment. Same out-of-scope posture as #133's note: set at experiment creation, restart-orchestrator to pick up changes.
+- Conformance-suite scenarios asserting any of the new field shapes. Not normative — implementation-defined per chapter 03 §6.
+
+## 5. Naming map
+
+Per [`docs/glossary.md`](../glossary.md) — fields use the artifact noun (gerund-as-noun for tasks) in snake_case; never verb-on-verb. All proposed names already conform.
+
+| Old surface (deployment knob) | New surface (experiment-config field) |
+|---|---|
+| `--termination-policy <module:callable>` CLI flag (orchestrator, single-exp) | `termination_policy: {kind: …, …}` block |
+| `--termination-policy <module:callable>` CLI flag (orchestrator, multi-exp) | (unchanged this chunk; #214 removes) |
+| `EDEN_TERMINATION_POLICY` env var (single-exp compose) | (retired) |
+| `EDEN_TERMINATION_MAX_VARIANTS` env var + `env_max_variants_policy()` factory | `termination_policy.kind = "max_variants"` + `target: N` |
+| `--max-quiescent-iterations <N>` CLI flag (orchestrator, single-exp) | `max_quiescent_iterations: <N>` scalar |
+| `--max-quiescent-iterations <N>` CLI flag (orchestrator, multi-exp) | (unchanged this chunk; #214 removes) |
+| `EDEN_MAX_QUIESCENT_ITERATIONS` env var (single-exp compose) | (retired) |
+| `--ideation-task-deadline <S>` CLI flag (ideator-host) | `ideation_task_deadline: <S>` scalar |
+| `--execution-task-deadline <S>` CLI flag (executor-host) | `execution_task_deadline: <S>` scalar |
+| `--evaluation-task-deadline <S>` CLI flag (evaluator-host) | `evaluation_task_deadline: <S>` scalar |
+| (intermediate during plan-draft) `*-deadline` | `*_task_deadline` — explicitly named with the gerund-as-noun task-kind prefix so the field name itself anchors to the spec's `ideation` / `execution` / `evaluation` task-kind vocabulary. The current CLI flag `--ideation-task-deadline` already follows the pattern; the YAML field preserves it. |
+| New validated-string type | `DurationStr` (parallel to `DateTimeStr` / `UriStr`) in `_common.py`. |
+
+Vocabulary check against the glossary canon: all five field names are gerund-or-noun-rooted (`termination_policy`, `ideation_*`, `execution_*`, `evaluation_*`) with no verb-on-verb shape. The discriminator string values (`never_terminate`, `max_variants`, `max_wall_time`, `convergence_window`, `target_condition`) preserve the existing function names exactly so the schema↔code lookup is mechanical.
+
+**Rename-discipline citation guard.** `scripts/check-rename-discipline.py` does not currently include any of these identifiers in its retire-list; this plan adds none. The script is unaffected by this chunk.
+
+## 6. Migration / cleanup
+
+Per CLAUDE.md's no-backwards-compat-shims-in-pre-user posture:
+
+- **Single-experiment-mode deployments that today pass a non-default `--termination-policy` or `--max-quiescent-iterations` on the CLI** see the experiment-config field take precedence AND get a startup-WARN log line per non-default flag (§3.4) — not silent. The flag stays registered on the argparser (because the multi-experiment branch still uses it), but its value is announced as ignored at startup. Operators read the warning, move the value into the experiment-config YAML, and remove the CLI flag.
+- **Worker-host deployments that today pass `--ideation-task-deadline` / `--execution-task-deadline` / `--evaluation-task-deadline` on the CLI break** at the next host start. The break is immediate and loud (argparse "unrecognized arguments" error) rather than silent. No backwards-compat fallback per CLAUDE.md.
+- **`EDEN_TERMINATION_POLICY` + `EDEN_TERMINATION_MAX_VARIANTS` + `EDEN_MAX_QUIESCENT_ITERATIONS` env vars are retired from the single-experiment compose path.** `.env.example` no longer documents them; existing operator `.env` files carrying them are ignored at compose-up (compose doesn't error on unknown env entries; the orchestrator just doesn't read them — and now logs the WARN for the corresponding CLI default-override).
+- **No compose overlay today deploys the multi-experiment orchestrator** (`compose.control-plane.yaml` only redefines `web-ui`); the CLI flags persist for the multi-experiment branch only to keep test invocations and #214's future plumbing working. No compose edit needed for the multi-experiment surface.
+- **Smoke scripts ship updated experiment-config YAML inline.** No "transition period" where some smokes use the old shape and some the new; one PR flips them all.
+- **No CHANGELOG migration note for end users** — EDEN has no external user deployments. The CHANGELOG `[Unreleased]` entry calls out the flag retirements + the per-experiment shape but doesn't write a migration recipe (no one to migrate).
+- **Documentation:** `docs/operations/experiment-lifecycle.md` is the only operator-playbook surface that documents the `--termination-policy` flag; rewrite it to use the YAML shape (with worked examples for each of the five policy kinds) and a brief note that multi-experiment-mode keeps the CLI flag pending #214.
+
+The single-experiment "abort if both the flag and the YAML field are set" question is answered by precedence + WARN — the YAML wins; the CLI flag override surfaces a visible startup log line. This is the smallest-surface clean break given that the flag has to stay registered for multi-experiment mode.
+
+## 7. Conformance impact
+
+None. The five integrated fields are all implementation-defined per chapter 03 §6 (orchestrator decision-type contracts are specified, but the policies that drive them are not; worker-host SLA-style deadlines are not protocol surface). No new conformance-chapter §5 group row; no new scenario citations; the existing `check_citations.py` passes unchanged.
+
+The audit that matters: chapter 02 §2 (experiment-config schema overview) gains five new field entries in its description table — same shape as #133's `ideation_policy` addition. The schema parity test ([`reference/packages/eden-contracts/tests/test_schema_parity.py`](../../reference/packages/eden-contracts/tests/test_schema_parity.py)) is the mechanical gate that keeps schema + Pydantic + the conformance-relevant invariants in lockstep; no new conformance scenarios.
+
+Wire conformance (chapter 7) is unaffected: none of the integrated fields appear on the wire (they shape orchestrator / host behavior, not request/response payloads).
+
+## 8. Chunked execution plan
+
+Single impl PR is fine for the surface area (similar scale to #133). The wave-internal order matters for landing-on-green:
+
+**Wave 1 — schema + Pydantic + factory (no service wiring yet):**
+
+1. `eden-contracts/_common.py` — add `DurationStr` validated-string type + `_parse_iso_duration` helper.
+2. `eden-contracts/tests/conftest.py` — register the `duration` `FormatChecker` handler so the schema-parity test validates the format identically on both sides (per AGENTS.md's "Format assertions on both sides" rule).
+3. `spec/v0/schemas/experiment-config.schema.json` — add five new fields (incl. `format: "duration"` on `termination_policy.duration` + the cross-field `allOf-if-then` for required-when-`dispatch_mode.termination='auto'`).
+4. `eden-contracts/config.py` — add `TerminationPolicyConfig` discriminated union + four scalar fields to `ExperimentConfig` + `@model_validator` for the cross-field rule.
+5. `eden-contracts/tests/cases.py` + `test_schema_parity.py` + `test_roundtrip.py` + `test_format_coverage.py` — fixtures per AGENTS.md's schema-parity discipline (accept + reject pairs per constraint per field; round-trip pair per `termination_policy` variant; `duration` format-coverage row).
+6. `eden-dispatch` — add `build_termination_policy()`; remove `env_max_variants_policy()` and `EDEN_TERMINATION_MAX_VARIANTS` env-var support.
+
+**Validation gate at end of wave 1:** `uv run pytest -q reference/packages/eden-contracts` + `uv run pytest -q reference/packages/eden-dispatch` + `pipx run check-jsonschema --check-metaschema spec/v0/schemas/experiment-config.schema.json` + `uv run ruff check` + `uv run pyright`. Wave 1 lands the schema + binding + factory in a state where existing services still pass their own flags (the new fields are optional and unused). PR can compile and pass these tests before service wiring.
+
+**Wave 2 — service wiring + CLI flag removal:**
+
+1. Orchestrator (single-experiment branch only): read `config.termination_policy` and `config.max_quiescent_iterations`; call `build_termination_policy()`. Keep the CLI flags registered (multi-experiment branch still uses them); amend help text to spell out the precedence. Audit every service test that constructs an orchestrator CLI invocation.
+2. Ideator-host / executor-host / evaluator-host: drop the three deadline flags from argparse; read from `config` in `_run_subprocess_mode`. Audit per-service tests for the dropped flags.
+
+**Validation gate at end of wave 2:** Full `uv run pytest -q` (every existing service test that constructs a CLI invocation needs auditing — the dropped flags become "unrecognized arguments" failures).
+
+**Wave 3 — Compose + smoke-script reconciliation:**
+
+1. `compose.yaml` + `compose.multi-orchestrator.yaml` + `.env.example` — drop the single-experiment orchestrator's `--termination-policy` / `--max-quiescent-iterations` + corresponding env-vars. (Worker-host deadline flags do not appear in compose files today, confirmed by grep — no compose edit needed for those.)
+2. `compose.control-plane.yaml` — no edit; it does not define an orchestrator service today.
+3. Every smoke script's experiment-config-YAML append loop gains the new field shapes (incl. `max_quiescent_iterations: 30` matching the old Compose-level default).
+
+**Validation gate at end of wave 3:** The full smoke set per AGENTS.md "Commands" — `smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `smoke-manual-mode.sh`, `smoke-multi-orchestrator.sh`, `smoke-checkpoint.sh`, `e2e.sh`. **All seven are load-bearing for this chunk** because the CLI-flag removal touches every service the smokes spin up; a smoke that still passes the dropped flag fails loud.
+
+**Wave 4 — docs + CHANGELOG + roadmap:**
+
+1. Spec prose updates (`02-data-model.md` §2 + `03-roles.md` §3.1 + §6.2).
+2. `docs/user-guide.md` §2 + `docs/operations/experiment-lifecycle.md` + `docs/glossary.md`.
+3. `CHANGELOG.md` `[Unreleased]` chunk-completion entry; `docs/roadmap.md` one-liner; AGENTS.md "Current phase" paragraph update if appropriate (probably not — this chunk doesn't move a phase).
+
+**Final validation gate:** the literal "Commands" section of AGENTS.md, in order, end-to-end. Including `markdownlint-cli2` for every touched markdown; `spec-xref-check.py`; `check-rename-discipline.py`; full `pytest`; full `conformance/`; the seven smokes.
+
+## 9. Files to touch
+
+**Spec + schema (3 files):**
+
+- [`spec/v0/schemas/experiment-config.schema.json`](../../spec/v0/schemas/experiment-config.schema.json)
+- [`spec/v0/02-data-model.md`](../../spec/v0/02-data-model.md)
+- [`spec/v0/03-roles.md`](../../spec/v0/03-roles.md)
+
+**Pydantic + dispatch (7 files):**
+
+- [`reference/packages/eden-contracts/src/eden_contracts/_common.py`](../../reference/packages/eden-contracts/src/eden_contracts/_common.py) — add `DurationStr` validated-string type + `_parse_iso_duration`.
+- [`reference/packages/eden-contracts/src/eden_contracts/config.py`](../../reference/packages/eden-contracts/src/eden_contracts/config.py) — add `TerminationPolicyConfig` discriminated union + four scalar fields + cross-field validator.
+- [`reference/packages/eden-contracts/tests/conftest.py`](../../reference/packages/eden-contracts/tests/conftest.py) — register the `duration` `FormatChecker` handler (per AGENTS.md format-on-both-sides discipline).
+- [`reference/packages/eden-contracts/tests/cases.py`](../../reference/packages/eden-contracts/tests/cases.py) — accept + reject fixtures per new field.
+- [`reference/packages/eden-contracts/tests/test_roundtrip.py`](../../reference/packages/eden-contracts/tests/test_roundtrip.py) — round-trip pair per discriminant variant of `TerminationPolicyConfig`.
+- [`reference/packages/eden-contracts/tests/test_format_coverage.py`](../../reference/packages/eden-contracts/tests/test_format_coverage.py) — extend the format-coverage gate to include `duration`.
+- [`reference/packages/eden-dispatch/src/eden_dispatch/termination.py`](../../reference/packages/eden-dispatch/src/eden_dispatch/termination.py) — add `build_termination_policy()`; remove `env_max_variants_policy()`.
+
+**Service CLIs (4 files):**
+
+- [`reference/services/orchestrator/src/eden_orchestrator/cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)
+- [`reference/services/ideator/src/eden_ideator_host/cli.py`](../../reference/services/ideator/src/eden_ideator_host/cli.py)
+- [`reference/services/executor/src/eden_executor_host/cli.py`](../../reference/services/executor/src/eden_executor_host/cli.py)
+- [`reference/services/evaluator/src/eden_evaluator_host/cli.py`](../../reference/services/evaluator/src/eden_evaluator_host/cli.py)
+
+**Service tests** (audit each that constructs a CLI invocation against any dropped flag):
+
+- `reference/services/orchestrator/tests/test_*.py`
+- `reference/services/ideator/tests/test_*.py`
+- `reference/services/executor/tests/test_*.py`
+- `reference/services/evaluator/tests/test_*.py`
+
+**Compose + smokes (10 files):**
+
+- [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml)
+- [`reference/compose/compose.multi-orchestrator.yaml`](../../reference/compose/compose.multi-orchestrator.yaml)
+- [`reference/compose/.env.example`](../../reference/compose/.env.example)
+- [`reference/compose/healthcheck/smoke.sh`](../../reference/compose/healthcheck/smoke.sh)
+- [`reference/compose/healthcheck/smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh)
+- [`reference/compose/healthcheck/smoke-subprocess.sh`](../../reference/compose/healthcheck/smoke-subprocess.sh)
+- [`reference/compose/healthcheck/smoke-subprocess-docker.sh`](../../reference/compose/healthcheck/smoke-subprocess-docker.sh)
+- [`reference/compose/healthcheck/smoke-multi-orchestrator.sh`](../../reference/compose/healthcheck/smoke-multi-orchestrator.sh)
+- [`reference/compose/healthcheck/smoke-checkpoint.sh`](../../reference/compose/healthcheck/smoke-checkpoint.sh)
+- [`reference/compose/healthcheck/e2e.sh`](../../reference/compose/healthcheck/e2e.sh)
+
+(Not in the touch list, listed for clarity:
+[`reference/compose/compose.control-plane.yaml`](../../reference/compose/compose.control-plane.yaml) does not currently define an orchestrator service; no edit needed. [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) keeps its `--ideas-per-ideation` flag plumbing untouched per §1's deferral.)
+
+**Docs (5 files):**
+
+- [`docs/user-guide.md`](../user-guide.md)
+- [`docs/operations/experiment-lifecycle.md`](../operations/experiment-lifecycle.md)
+- [`docs/glossary.md`](../glossary.md)
+- [`CHANGELOG.md`](../../CHANGELOG.md)
+- [`docs/roadmap.md`](../roadmap.md)
+
+Approximate diff size: ~120 lines schema, ~140 lines Pydantic + tests, ~70 lines factory + factory-tests, ~80 lines service-CLI deletions/additions (mostly deletions), ~60 lines Compose/setup-experiment cleanup, ~110 lines smoke-script appends, ~180 lines spec/docs/CHANGELOG. Total ~760 lines added, ~280 lines removed; net additive ~480 lines.
+
+## 10. Verification gates
+
+Run before any push from impl branch — literally per AGENTS.md "Commands":
+
+```text
+uv sync
+uv run ruff check .
+uv run pyright
+uv run pytest -q
+uv run pytest -q conformance/
+uv run python conformance/src/conformance/tools/check_citations.py
+npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"
+pipx run 'check-jsonschema==0.29.4' --check-metaschema spec/v0/schemas/*.schema.json
+pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/experiment-config.schema.json tests/fixtures/experiment/.eden/config.yaml
+python3 scripts/spec-xref-check.py
+python3 scripts/check-rename-discipline.py
+python3 scripts/check-complexity.py
+bash reference/compose/healthcheck/smoke.sh
+bash reference/compose/healthcheck/smoke-subprocess.sh
+bash reference/compose/healthcheck/smoke-subprocess-docker.sh
+bash reference/compose/healthcheck/smoke-manual-mode.sh
+bash reference/compose/healthcheck/smoke-multi-orchestrator.sh
+bash reference/compose/healthcheck/smoke-checkpoint.sh
+bash reference/compose/healthcheck/e2e.sh
+```
+
+All seven smoke scripts are load-bearing because the orchestrator + every worker host's CLI surface changes; a smoke that doesn't reconcile its experiment-config-YAML append loop will fail loud either at setup-experiment time or orchestrator-startup time.
+
+The schema↔Pydantic parity test in `reference/packages/eden-contracts/tests/test_schema_parity.py` is the mechanical guard against the most common bug-class on this surface: forgetting to teach one side about a new field. The `tests/cases.py` fixture audit (per AGENTS.md "Adding or extending a JSON Schema + Pydantic binding") gates that for every new field there is at least one accept + one reject case per constraint.
+
+## 11. Risks / things to watch
+
+- **Rebase ordering against #133.** PR #215 ("Fix #133: surface ideation policy in experiment config") is the direct prerequisite — it lands the `--experiment-config`-required orchestrator surface, the `IdeationPolicyConfig` discriminated-union, and the `build_policy()` factory pattern this chunk extends. If #215 hasn't merged at impl-start, rebase impl branch against `main` after #215 lands. Do NOT start impl against the current `main` — too much surface drift to absorb cleanly mid-PR.
+
+- **Cross-field `dispatch_mode.termination == "auto"` ↔ `termination_policy` required validation lands on both sides** (schema `allOf`-`if`-`then` over `dispatch_mode.termination` AND Pydantic `@model_validator(mode="after")` on `ExperimentConfig` — see §3.2 and §2 decision 6). Parity-test discipline applies — both sides must reject the same fixtures and accept the same fixtures across the four cases (`auto`/`manual` × `present`/`absent`). The risk is forgetting to add the schema-side `allOf-if-then` and ending up with the Pydantic-only enforcement the previous draft proposed; the parity test fails loud if the two sides disagree.
+
+- **Smoke-script YAML-append-loop scale.** Every smoke today copies the fixture experiment-config and appends an `ideation_policy:` block. This chunk extends each append loop with five more fields (`termination_policy`, four scalars). The append-loop is hand-written bash heredoc; risk of typo or yaml-indentation slip. Mitigation: factor the append loop into a small bash helper sourced by every smoke, so the YAML shape lives in one place. Same posture as the `setup-experiment.sh` helpers already do for `.env` writes.
+
+- **Manual-UI Compose `max_quiescent_iterations` budget.** Today's [`compose.yaml:270-278`](../../reference/compose/compose.yaml) sets `EDEN_MAX_QUIESCENT_ITERATIONS:-30` with an explicit comment that manual-UI sessions want a much higher value. After integration, the experiment-config YAML carries `max_quiescent_iterations: 30` as the default smoke value, and manual-UI experiments are expected to set a high value (3600+ for a human-paced session) in their own YAML. The retired `EDEN_MAX_QUIESCENT_ITERATIONS` deployment-default is replaced by per-experiment authoring. Document this swap explicitly in `docs/operations/experiment-lifecycle.md` so the manual-UI operator workflow doesn't silently break.
+
+- **Cherry-pick contamination from impl branch into the plan PR.** Per the [`AGENTS.md`](../../AGENTS.md) pitfall on cherry-pick contamination from dev-only workarounds: the impl branch's WIP commits during smoke-debugging may bump `max_quiescent_iterations` for manual testing, and that bumped value is now in the YAML rather than an env-var — easier to accidentally cherry-pick into a real PR branch. Discipline: scrub WIP commits before squash/merge.
+
+- **`env_max_variants_policy()` removal is a real surface drop.** That factory + the `EDEN_TERMINATION_MAX_VARIANTS` env-var was the bridge from pre-12a-3 schema fields to the post-12a-3 callable shape. After this chunk it's gone. If a deployment was using it (none in `main`, but a downstream fork might), they need to migrate to `termination_policy: {kind: "max_variants", target: N}` in YAML. Document explicitly in CHANGELOG.
+
+- **`DurationStr` format-handler parity.** Both sides validate the ISO-8601 duration string by calling `pydantic.TypeAdapter(timedelta).validate_python(value)` — the Pydantic side via `AfterValidator` on the `DurationStr` alias, the schema side via the `FormatChecker` handler registered in `tests/conftest.py`. Sharing the same call ensures bit-for-bit parity. Accept fixture: `"PT2H"`. Reject fixtures: `"2h"` (not ISO 8601), `"PT0S"` (zero-duration — the underlying `max_wall_time_policy` factory rejects non-positive durations; surface the validation at the config boundary too). The schema-parity test asserts both sides agree per case.
+
+- **Reference test e2e timing.** The orchestrator/ideator/executor/evaluator e2e tests at [`reference/services/orchestrator/tests/test_subprocess_e2e.py`](../../reference/services/orchestrator/tests/test_subprocess_e2e.py) construct deeply argv-dependent CLI invocations. Every test that today passes any of the dropped flags will fail loud on impl branch; audit all `test_*.py` files in the four affected services systematically. Don't catch this at smoke time — catch it in wave 2's `uv run pytest -q` gate.
+
+- **`build_termination_policy()` vs `build_policy()` naming.** #133 names the ideation factory `build_policy()` (not `build_ideation_policy()`). For symmetry this chunk could call the termination factory `build_termination_policy()` (asymmetric — namespacing the new one but not the existing one), or rename #133's `build_policy()` → `build_ideation_policy()` in lockstep (cleaner but rebases #133's work). Recommendation: take the asymmetric name now (`build_termination_policy()`), file a follow-up issue for the rename to symmetric pair (`build_ideation_policy()` / `build_termination_policy()`). The rename is mechanical and not blocking.
+
+- **Naming asymmetry across `*_task_deadline` vs `max_quiescent_iterations`.** Three of the four scalar fields use the `<task-kind>_task_deadline` pattern; the fourth uses `max_quiescent_iterations` with no role/kind prefix. The asymmetry is real — `max_quiescent_iterations` is an orchestrator-loop budget, not a per-task budget, so prefixing with `orchestrator_` would be misleading (it's already implicitly orchestrator-only). The unprefixed name reads cleaner and matches the existing CLI flag spelling. Accept the asymmetry; document in the spec prose that this field is the orchestrator's quiescent-exit budget (per chapter 03 §3.1).
+
+## 12. Sequence within the chunk
+
+1. **Rebase against `main` at impl-start.** Especially against #215 ("Fix #133"). Resolve any conflicts in `experiment-config.schema.json`, `config.py`, the orchestrator CLI, and the smoke scripts.
+2. **Wave 1 — schema + Pydantic + factory.** Land in a state where `uv run pytest -q` passes with the new fields wired but unused.
+3. **Wave 2 — service wiring.** Drop CLI flags; read from config; full pytest passes.
+4. **Wave 3 — Compose + smokes.** All seven smokes pass locally.
+5. **Wave 4 — docs.** Spec prose, user-guide, operations playbook, glossary, CHANGELOG, roadmap.
+6. **Codex-review to convergence.** Plan PR's codex-review (this PR) iterates 3-5 rounds; impl PR's codex-review iterates separately. Issues to expect: per-flag disposition pushback (see §1's debate-flagged rows); discriminated-union variant exhaustiveness on `termination_policy`; cross-field validator scope.
+7. **Open impl PR.** Body: per-flag disposition summary, file list with one-line description, validation-gate checklist, codex round count.
+
+The plan PR and impl PR are separate surfaces; operator merges each after codex convergence.
+
+## 13. Out of scope (followups to file as issues if not already)
+
+- **Per-experiment config resolution in multi-experiment mode.** Tracked in [#214](https://github.com/ealt/eden/issues/214). This chunk's `build_termination_policy(config)` factory is the shared hook #214 will call per-experiment; same posture as #133's `build_policy(config)`.
+- **Symmetric naming `build_policy()` → `build_ideation_policy()`.** New follow-up issue; file at chunk-completion review per AGENTS.md deferral-tracking discipline.
+- **Deployment-level defaults file** (`deployment-defaults.yaml`) that supplies per-experiment-field defaults across all experiments in a deployment. Conceptually clean but no concrete operator demand; file as an issue if/when a deployment surfaces the need.
+- **Integration of `--lease-duration-seconds` and `--claim-ttl-seconds`.** Both held back per §1 disposition. If the disposition is wrong, file follow-up issues.
+- **Custom callable `termination_policy.kind: "custom"` with a `module:callable` parameter** for advanced deployments that want arbitrary Python callables. Out of scope per #133's security posture; revisit if a real deployment surfaces it.
+
+## 14. Estimated effort
+
+| Activity | Estimate |
+|---|---|
+| Wave 1 (schema + Pydantic + factory) | ~1 day |
+| Wave 2 (service CLI drops + per-service test audit) | ~0.75 day |
+| Wave 3 (Compose + smoke YAML-append loops) | ~0.5 day |
+| Wave 4 (docs + CHANGELOG + roadmap) | ~0.5 day |
+| Validation gates (full Commands gate, including 7 smokes) | ~0.5 day |
+| Codex-review iterations (plan PR + impl PR, ~2-3 rounds each) | ~1 day |
+| **Total** | **~4.25 days** |
+
+Comparable to #133's effort: #133 was one flag + one schema block + one factory + one orchestrator-CLI rewire + smoke YAML-append loops; this chunk is 1.5 schema blocks + 4 service-CLI rewires + a larger smoke-loop edit + more doc surface. Codex-review is the dominant variable.
