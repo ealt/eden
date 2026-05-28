@@ -8,6 +8,26 @@ Per-chunk entries preserve the full implementation record: contract amendments, 
 
 ## [Unreleased]
 
+### Refactor F-1: split `eden-storage._StoreBase` into a mixin family (issue #114)
+
+Code-quality follow-up from the Phase-A audit ([`docs/audits/2026-05-20-phase-c-disposition.md`](docs/audits/2026-05-20-phase-c-disposition.md) §1 F-1). The 1,638-SLOC `_base.py` monolith (MI 0.00, carried under a `# slop-allow-file:` annotation deferring the split to #114) is split into a thin core plus a per-resource mixin family. **Behavior-preserving by construction** — no spec, schema, wire, or `Store`-Protocol change; the only observable difference is internal file layout.
+
+**Shape.** [`_base.py`](reference/packages/eden-storage/src/eden_storage/_base.py) is now 235 SLOC: module constants, the `_Tx` dataclass, the abstract `_StoreCore` (owns `__init__`, the event-id factory, `_event`/`_ts`/`_maybe_ts`, the cross-resource read-side predicates `_require_*` / `_find_starting_variant_for_implement_task` / `_validate_registry_id`, the backend-primitive declarations, and abstract stubs for the two split-body helpers), and the composite `_StoreBase`. Eight mixins live under [`_ops/`](reference/packages/eden-storage/src/eden_storage/_ops/):
+
+- `_TaskCreateOpsMixin` ([`tasks_create.py`](reference/packages/eden-storage/src/eden_storage/_ops/tasks_create.py), 258 SLOC) and `_TaskLifecycleOpsMixin` ([`tasks_lifecycle.py`](reference/packages/eden-storage/src/eden_storage/_ops/tasks_lifecycle.py), 715 SLOC) — the combined `_TaskOpsMixin` measured 955 SLOC, over the 800 file gate, so the plan §3.7 fallback split fired (create vs lifecycle).
+- `_IdeaOpsMixin`, `_VariantOpsMixin`, `_EventOpsMixin`, `_ExperimentOpsMixin`, `_WorkerOpsMixin`, `_GroupOpsMixin` (45 / 78 / 21 / 176 / 90 / 142 SLOC).
+- Module-free pure helpers in [`_helpers.py`](reference/packages/eden-storage/src/eden_storage/_ops/_helpers.py).
+
+Each mixin inherits `_StoreCore` so method bodies resolve `self._get_*` / `self._event` / `self._apply_commit` under pyright; `_StoreBase` flattens the mixin MRO. A module-load-time `assert _StoreBase.__mro__[1:10] == (...)` guard (plan §6/§8.1) fails loud on any future bases reorder. The composite-commit invariant (one `_Tx` per public method, one `self._apply_commit(tx)`, deterministic field-walk order) is preserved unchanged across all three backends.
+
+**Backends untouched.** `InMemoryStore` / `SqliteStore` / `PostgresStore` still subclass `_StoreBase` verbatim (zero LOC change); `_checkpoint.py` still binds to the abstract primitives (now on `_StoreCore`) and imports `_StoreBase` / `_Tx` from `_base` unchanged.
+
+**Plan deviations (surfaced for review).** (1) The disposition doc's proposed `_ValidationOps` mixin was rejected — each `_validate_*` helper co-locates with its consumer (plan §D.3). (2) **L-O** (`reassign_task`, audit LEN=122) closes here: the method now measures 67 LEN / CC 6 on `_TaskLifecycleOpsMixin`, already inside the threshold thanks to the pre-existing `_stage_reassign_reclaim` / `_reassign_event_payload` helpers; per plan §D.6 no cosmetic per-state split was added. (3) The wave-1 `_validated_update` re-export from `_base` was retired (it became a dead `# noqa: F401` shim once `_base` stopped using the helper — counter to BASE.md's no-greenfield-shims posture); the 4 in-repo eden-git test import sites now reference the helper's canonical home `eden_storage._ops._helpers`.
+
+**Acceptance.** The `# slop-allow-file:` annotation on `_base.py` is removed and `python3 scripts/check-complexity.py` passes without it. Storage suite: 571 passed across `memory` + `sqlite` + `postgres` (`EDEN_TEST_POSTGRES_DSN` set), full pyright clean, conformance suite + Compose smoke green.
+
+**What this does NOT cover.** **M-4** (extract the `_apply_commit` `_Tx`-walk into a shared backend-hook helper) → issue #230; **L-4** (reduce `_validate_non_no_op_variant` CC=17 readability) → issue #231. Both are independent audit items, never in F-1's scope. No per-mixin unit tests are added (the Protocol-level parametrized suite is the conformance contract; per-mixin tests would create a second source of truth that drifts — plan §3.9). F-3 (#115) and F-4 (#116) are sibling Phase-C refactors with separate plans.
+
 ### Backfill: /admin/control/workers + /admin/control/groups deployment-scoped pages (issue #146)
 
 Backfills the Phase 12c CHANGELOG-narrated deferral ("Deployment-scoped worker/group registry admin pages not shipped: the chapter 11 §6 registry remains admin-only via direct API calls"). Operators administering deployment-level workers / groups no longer need raw `curl` against the control plane.
