@@ -1,0 +1,97 @@
+--- docs/plans/review/issue-182/plan/20260527T143124/1.md	2026-05-27 14:39:52
++++ docs/plans/issue-182-coverage-debt-audit.md	2026-05-27 15:02:44
+@@ -65,13 +65,15 @@
+ 
+ This is the audit's coverage contract. Each surface below was located in the current tree; the exact route / endpoint / handler / template is named so the auditor drives the real thing, not an approximation. Grouped by the stack configuration that exercises it (drives the wave structure in §10).
+ 
++**Authoritative cross-check.** [`docs/observability.md`](../observability.md) is the repo's own enumeration of operator/observability surfaces ("enumerates every surface," §intro; [`docs/user-guide.md`](../user-guide.md) points auditors there). §4 below MUST be reconciled against it before Wave 0 seeds the checklist — every surface observability.md documents (§2 first-party, §3 bring-your-own) is either inventoried here or explicitly marked already-covered (§4.7). The §4.6 group captures the observability surfaces that aren't admin-UI routes.
++
+ ### 4.1 Base host-mode stack — per-experiment admin UI
+ 
+ All under [`reference/services/web-ui/src/eden_web_ui/routes/`](../../reference/services/web-ui/src/eden_web_ui/routes/). Auth: every route runs `get_session()` (missing → 303 to `/signin`); POST routes check CSRF; worker-registry writes route through `app.state.admin_store` (disabled-control behavior when admin bearer is `None`).
+ 
+ | Surface | Route(s) | Handler | Notes |
+ |---|---|---|---|
+-| **Session flow** | `GET /signin`, `POST /signin`, `POST /signout` | `routes/auth.py:signin_form` / `signin_submit` / `signout` | the gate every other surface depends on; drive sign-in (good + bad credential), sign-out, and the unauthenticated→303-redirect path |
++| **Session flow** | `GET /signin`, `POST /signin`, `POST /signout` | `routes/auth.py:signin_form` / `signin_submit` / `signout` | the gate every other surface depends on. NB there are **no per-user accounts / no credential check** (Phase 9 §1): `GET /signin` renders a single "continue as `<worker_id>`" button, `POST /signin` always mints a session for the configured `worker_id`, `POST /signout` clears the cookie. Drive sign-in → sign-out → the unauthenticated→303-redirect path (do NOT look for a bad-credential branch — there isn't one) |
+ | **Authenticated artifact reader** | `GET /artifacts?…` | `routes/artifacts.py:serve_artifact` | serves an artifact-bundle entry (distinct from the `/admin/artifacts/` *listing*); exercise path-traversal guard (`_safe_entry_name`) + content-type handling |
+ | Admin dashboard | `GET /admin/` | `admin/index.py:index` | cross-tab counts, recent events |
+ | Observability (read-only) | `GET /admin/tasks/`, `/admin/tasks/{id}/`, `/admin/variants/`, `/admin/variants/{id}/`, `/admin/events/`, `/admin/ideas/`, `/admin/ideas/{id}/`, `/admin/experiment/` | `admin/observability.py` | filters, lineage, inline content |
+@@ -108,7 +110,8 @@
+ | Control whoami | `GET /v0/control/whoami` | authenticated worker identity |
+ | Deployment-scoped workers | `POST/GET /v0/control/workers`, `GET /v0/control/workers/{W}`, `POST …/reissue-credential` | register / list / detail / reissue |
+ | Deployment-scoped groups | `POST/GET /v0/control/groups`, `GET /v0/control/groups/{G}`, `POST …/members`, `DELETE …/members/{W}`, `DELETE /v0/control/groups/{G}` | full member lifecycle |
+-| **`/admin/control/*` UI** | `admin/control/workers.py`, `admin/control/groups.py` (workers list/register/detail/reissue; groups list/register/detail/add/remove/delete) | the deployment-scoped pages added by 0b67b1d (#146) |
++| **`/admin/control/workers/` UI** | `GET /admin/control/workers/`, `POST /admin/control/workers/`, `GET /admin/control/workers/{id}/`, `POST /admin/control/workers/{id}/reissue-credential` | `admin/control/workers.py` — deployment-scoped worker pages added by 0b67b1d (#146) |
++| **`/admin/control/groups/` UI** | `GET /admin/control/groups/`, `POST /admin/control/groups/`, `GET /admin/control/groups/{id}/`, `POST …/members`, `POST …/members/{mid}/remove`, `POST …/delete` | `admin/control/groups.py` — deployment-scoped group pages added by 0b67b1d (#146) |
+ | **Multi-experiment side-by-side** | two experiments registered + leased simultaneously | port isolation (`FORGEJO_HOST_PORT`/`WEB_UI_HOST_PORT`), data-root isolation; cross-ref #147 for the smoke gap |
+ 
+ ### 4.4 Deployment-mode overlays + failure injection
+@@ -129,7 +132,19 @@
+ | **`eden-experiment` lifecycle** | `up`, `down [--purge]`, `reset`, `status` (checkpoint/restore/list-checkpoints covered in §4.2) | [`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment) | clean bring-up/teardown; `reset` round-trip; `status` accuracy; `down --purge` data removal |
+ | **`eden-manual` role CLI** | `list-tasks`, `show`, `claim`, `checkout`, `push`, `ideation-submit`, `execution-submit`, `evaluation-submit`, `creds` | [`reference/scripts/manual-ui/eden-manual`](../../reference/scripts/manual-ui/eden-manual) + the `eden-manual-*` skills | the skill-driven happy paths (partially exercised in demo); note any flag/error-text gaps surfaced while driving the lifecycle carrier |
+ 
+-### 4.6 Surfaces deliberately treated as already-covered (cross-reference, don't re-walk)
++### 4.6 Observability surfaces (per [`docs/observability.md`](../observability.md) — not admin-UI routes)
++
++These are documented operator/observability surfaces that aren't HTTP admin routes. Exercised on the base stack (Wave 2) except where a surface needs another stack. The artifacts reader (§2.3), readonly Postgres role + Adminer (§2.7/§3.1), and control-plane enablement (§3.4) are inventoried elsewhere (§4.1/§4.2/§4.3) and cross-referenced here, not duplicated.
++
++| Surface | observability.md ref | What to verify |
++|---|---|---|
++| **Forgejo Web UI** (`http://localhost:3001`) | §2.2 | browse the canonical repo / branches / commits as the operator would; the documented login + read path works |
++| **Wire API raw + Swagger UI** | §2.4, §3.2 | the raw wire endpoints documented for direct `curl`, and the BYO Swagger-UI sibling-container workflow against the OpenAPI doc |
++| **Container logs** | §2.5 | `docker compose logs` per-service + cross-experiment dispatch-decision filters render the documented structured JSON |
++| **Read-only local clone of Forgejo** | §2.6 | clone the remote read-only and inspect refs as documented |
++| **Desktop DB / HTTP clients** | §3.3, §3.5 | the documented `localhost:5433` readonly-DB and HTTP-client connection recipes (cross-ref the readonly role §4.2) |
++
++### 4.7 Surfaces deliberately treated as already-covered (cross-reference, don't re-walk)
+ 
+ - Ideator / executor / evaluator / integrator happy-path lifecycle through UI/CLI/skill — exercised in the 2026-05-23 demo. The audit *re-walks the lifecycle only as the carrier* needed to populate task/variant/ref state for the untested surfaces above; surprises noticed in passing are still filed, but the lifecycle itself is not the audit target.
+ 
+@@ -196,8 +211,9 @@
+ - Adminer + Postgres readonly role: follow [`docs/observability.md`](../observability.md) §3.1 to attach a BYO `adminer:4` sibling container, plus a direct desktop-client connect to `localhost:5433` as `eden_readonly`; confirm `SELECT` + the `variant_unpacked` view work and `worker.credential_hash` is blocked. (No "no Adminer" issue — the BYO posture is documented and intentional.)
+ - `eden-experiment checkpoint` then `restore` round-trip (post-#177 non-empty assertion); cross-ref #152 for the wire checkpoint/import smoke rather than re-walking it.
+ - The §4.5 bootstrap/lifecycle CLI flag surfaces walked while standing up / tearing down this wave's stack: `setup-experiment.sh` flags, `eden-experiment up/down/reset/status`, `eden-manual` subcommands.
++- The §4.6 observability surfaces (per [`docs/observability.md`](../observability.md)): Forgejo Web UI, raw wire + Swagger UI, container logs, read-only Forgejo clone, desktop DB/HTTP clients.
+ 
+-**Gate:** every §4.2 + §4.5 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.
++**Gate:** every §4.2 + §4.5 + §4.6 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.
+ 
+ ### Wave 3 — Control-plane stack (§4.3)
+ 
+@@ -224,10 +240,10 @@
+ 
+ ## 11. Tracking format
+ 
+-Per the issue, #182's body grows a **live checklist** (seeded in Wave 0 from §4):
++Per the issue, #182's body grows a **live checklist**. The sample below is **illustrative, not exhaustive** — Wave 0 seeds the checklist from the *full* §4 inventory (every row of §4.1–§4.6), one line per surface, reconciled against [`docs/observability.md`](../observability.md). The sample shows the shape and the load-bearing surfaces:
+ 
+ ```markdown
+-## Surfaces audited (live checklist)
++## Surfaces audited (live checklist)  — illustrative; Wave 0 seeds the full §4 inventory
+ 
+ ### Wave 1 — base-stack admin UI
+ - [ ] `/signin` + `/signout` session flow (good/bad creds, unauth redirect) — date, notes / bugs filed: #__
+@@ -239,15 +255,19 @@
+ - [ ] admin reclaim + reassign (UI) — date, notes / bugs filed: #__
+ - [ ] create-execution-task + terminate-experiment (UI) — date, notes / bugs filed: #__
+ - [ ] `/admin/experiments/` register + select + unregister — date, notes / bugs filed: #__
+-### Wave 2 — base-stack wire + data lifecycle + CLIs
++### Wave 2 — base-stack wire + data lifecycle + CLIs + observability
+ - [ ] reclaim/reassign (wire; reassign needs `admins`-group worker bearer) — …
+ - [ ] Adminer BYO workflow + postgres readonly role at `:5433` — …
+ - [ ] `eden-experiment checkpoint` + `restore` round-trip (post-#177) — …
+ - [ ] `setup-experiment.sh` flag surface (`--exec-mode` / `--data-root` / `--no-auto-host-workers` / …) — …
+ - [ ] `eden-experiment up/down/reset/status` lifecycle — …
++- [ ] `eden-manual` role CLI subcommands — …
++- [ ] observability §4.6: Forgejo Web UI, container logs, read-only clone, Swagger UI, desktop clients — …
+ ### Wave 3 — control-plane
+-- [ ] `/v0/control/*` lease primitive — …
+-- [ ] `/admin/control/*` deployment-scoped pages — …
++- [ ] `/v0/control/*` lease primitive (acquire/renew/release/list + whoami) — …
++- [ ] `/v0/control/experiments` + deployment-scoped workers/groups (wire) — …
++- [ ] `/admin/control/workers/` pages (list/register/detail/reissue) — …
++- [ ] `/admin/control/groups/` pages (list/register/detail/add/remove/delete) — …
+ - [ ] multi-experiment side-by-side — …
+ ### Wave 4 — overlays + failure injection
+ - [ ] subprocess mode e2e — …

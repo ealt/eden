@@ -1,0 +1,148 @@
+--- docs/plans/review/issue-182/plan/20260527T143124/0.md	2026-05-27 14:36:44
++++ docs/plans/issue-182-coverage-debt-audit.md	2026-05-27 14:39:36
+@@ -20,7 +20,7 @@
+ 
+ The issue's surface table is a *starting point* (the issue says so explicitly). Mapping each row against the current tree surfaced three corrections that this plan bakes in — consistent with the "verify before claiming a UX/code bug" discipline:
+ 
+-- **No Adminer service exists.** The issue lists "Postgres readonly role + Adminer connection." The reference Compose stack ships **no Adminer service** (confirmed: no `adminer` service in [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml)). What exists is a **Postgres readonly role**, provisioned by `ensure_readonly_role()` ([`reference/packages/eden-storage/src/eden_storage/postgres.py`](../../reference/packages/eden-storage/src/eden_storage/postgres.py)) when task-store-server is passed `--readonly-password`. The audit exercises the readonly role **at the wire** (connect with the readonly DSN, confirm `SELECT` works and the `worker.credential_hash` column is blocked); the "Adminer" half is itself a finding to file (either Adminer was never shipped → correct the issue/doc, or it's a desired-but-missing surface → file as a gap). Out of scope to *add* Adminer here.
++- **Adminer is a documented bring-your-own workflow, not a built-in service.** The issue lists "Postgres readonly role + Adminer connection." The reference Compose stack ships **no `adminer` service** in [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) — but that is *by design*, not a gap: [`docs/observability.md`](../observability.md) §3.1 documents Adminer as a BYO sibling container (`docker run --rm -d --name eden-demo-adminer --network eden-reference_default … adminer:4`) attached to the EDEN network and pointed at the **Postgres readonly role** (`eden_readonly` / `EDEN_READONLY_PASSWORD` on `localhost:5433`), provisioned by `ensure_readonly_role()` ([`reference/packages/eden-storage/src/eden_storage/postgres.py`](../../reference/packages/eden-storage/src/eden_storage/postgres.py)) when task-store-server is passed `--readonly-password`. So the surface to audit is the **documented Adminer BYO workflow itself** (follow observability.md §3.1 verbatim; confirm `SELECT` works, the `variant_unpacked` view is present, and `worker.credential_hash` is blocked) — *not* a bogus "no Adminer service" issue. Out of scope to *add* Adminer as a built-in Compose service; the BYO posture is intentional.
+ - **`eden-experiment restore` is no longer blocked.** The issue lists it "Blocked on #177." #177 is fixed; [`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment) now carries `assert_snapshot_nonempty()` and a `restore` subcommand. This row is **unblocked** and in-scope for this audit.
+ - **Reclaim/reassign live at two layers.** The issue writes `POST /tasks/<id>/reclaim` loosely. Reality: the **wire** endpoints are `POST /v0/experiments/{E}/tasks/{T}/reclaim` (body `{"cause": …}`) and `POST /v0/experiments/{E}/tasks/{T}/reassign` (body `{"new_target": …, "reason": …}`) in [`reference/packages/eden-wire/src/eden_wire/server.py`](../../reference/packages/eden-wire/src/eden_wire/server.py); the **UI** wrappers are `POST /admin/tasks/{task_id}/reclaim` and `/reassign` in [`reference/services/web-ui/src/eden_web_ui/routes/admin/actions.py`](../../reference/services/web-ui/src/eden_web_ui/routes/admin/actions.py). The audit drives **both** layers (UI happy path + a direct-wire pass to confirm `cause=operator`, the `reason` audit string, and `reassigned_by` principal-stamping).
+ 
+@@ -58,7 +58,7 @@
+ - Fixing any bug the audit surfaces (each fix is separate, individually-tracked work).
+ - Adding new tests or CI smoke jobs (separate issues; cross-reference existing #152 / #147 / #156).
+ - Refactoring untested surfaces.
+-- Adding Adminer (the missing surface is a *finding*, not a deliverable here).
++- Adding a built-in Adminer Compose service (the BYO posture in [`docs/observability.md`](../observability.md) §3.1 is intentional; the audit *exercises* that documented workflow rather than replacing it).
+ - Spec / schema / Pydantic / wire-binding changes (the audit *reads* these to judge correctness; any change is a filed issue, executed elsewhere).
+ 
+ ## 4. Surface inventory (verified against the tree)
+@@ -71,6 +71,8 @@
+ 
+ | Surface | Route(s) | Handler | Notes |
+ |---|---|---|---|
++| **Session flow** | `GET /signin`, `POST /signin`, `POST /signout` | `routes/auth.py:signin_form` / `signin_submit` / `signout` | the gate every other surface depends on; drive sign-in (good + bad credential), sign-out, and the unauthenticated→303-redirect path |
++| **Authenticated artifact reader** | `GET /artifacts?…` | `routes/artifacts.py:serve_artifact` | serves an artifact-bundle entry (distinct from the `/admin/artifacts/` *listing*); exercise path-traversal guard (`_safe_entry_name`) + content-type handling |
+ | Admin dashboard | `GET /admin/` | `admin/index.py:index` | cross-tab counts, recent events |
+ | Observability (read-only) | `GET /admin/tasks/`, `/admin/tasks/{id}/`, `/admin/variants/`, `/admin/variants/{id}/`, `/admin/events/`, `/admin/ideas/`, `/admin/ideas/{id}/`, `/admin/experiment/` | `admin/observability.py` | filters, lineage, inline content |
+ | Artifacts listing | `GET /admin/artifacts/` | `admin_artifacts.py` | directory listing of artifacts-dir |
+@@ -80,17 +82,17 @@
+ | **Workers (per-experiment)** | `GET /admin/workers/`, `POST /admin/workers/`, `GET /admin/workers/{id}/`, `POST /admin/workers/{id}/reissue-credential` | `admin_workers.py` | **reissue-credential** renders one-shot token (`admin_worker_token.html`) |
+ | **Task reclaim** | `POST /admin/tasks/{id}/reclaim` | `admin/actions.py:task_reclaim` | claimed/submitted → pending |
+ | **Task reassign** | `GET /admin/tasks/{id}/reassign`, `POST /admin/tasks/{id}/reassign` | `admin/actions.py:task_reassign_form` / `task_reassign` | target none/worker/group + **required reason** |
+-| Create-execution-task | (form on `GET /admin/ideas/{id}/`) | `admin/actions.py` | manual idea→execution-task |
+-| Terminate-experiment | `admin/actions.py` (terminate) | `admin/actions.py` | experiment lifecycle terminal |
++| Create-execution-task | `POST /admin/ideas/{idea_id}/create-execution-task` (form on `GET /admin/ideas/{id}/`) | `admin/actions.py:create_execution_task` | manual idea→execution-task |
++| Terminate-experiment | `POST /admin/experiment/terminate` | `admin/actions.py:terminate_experiment` | experiment lifecycle terminal |
+ | **Experiments dashboard** | `GET /admin/experiments/`, `POST /admin/experiments/register`, `POST /admin/experiments/{id}/unregister`, `POST /admin/experiments/{id}/select` | `admin_experiments.py` | **register + select + unregister** (only `select` partially exercised in demo); register/unregister gated on control-plane being configured |
+ 
+ ### 4.2 Base host-mode stack — wire + data-lifecycle (no full UI)
+ 
+ | Surface | Endpoint / command | Location | What to verify |
+ |---|---|---|---|
+-| **Reclaim (wire)** | `POST /v0/experiments/{E}/tasks/{T}/reclaim` body `{"cause":"operator"}` | `eden-wire/server.py` (`_reclaim`) | `cause=operator` accepted; task → pending |
+-| **Reassign (wire)** | `POST /v0/experiments/{E}/tasks/{T}/reassign` body `{"new_target":…,"reason":…}` | `eden-wire/server.py` (`_reassign_task`) | `reason` recorded; `reassigned_by` stamped from authenticated principal; `admins`-group-gated |
+-| **Postgres readonly role** | connect with readonly DSN (task-store-server `--readonly-password`) | `eden-storage/postgres.py:ensure_readonly_role` | `SELECT` works on non-worker tables; `worker.credential_hash` column blocked; **no Adminer → file finding** |
++| **Reclaim (wire)** | `POST /v0/experiments/{E}/tasks/{T}/reclaim` body `{"cause":"operator"}` | `eden-wire/server.py` (`_reclaim`) | **worker-gated** (any registered worker bearer); `cause=operator` accepted; task → pending |
++| **Reassign (wire)** | `POST /v0/experiments/{E}/tasks/{T}/reassign` body `{"new_target":…,"reason":…}` | `eden-wire/server.py` (`_reassign_task`) | **gated to a worker in the `admins` group — NOT the bootstrap `admin:<token>` bearer** (that gets 403); must mint/reissue a worker bearer first (see the `ADMIN_WORKER_BEARER` pattern in [`smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh)). Verify `reason` recorded + `reassigned_by` stamped from the authenticated principal |
++| **Adminer BYO + Postgres readonly role** | follow [`docs/observability.md`](../observability.md) §3.1 (BYO `adminer:4` sibling container) **and** a direct desktop-client connect to `localhost:5433` as `eden_readonly` | `eden-storage/postgres.py:ensure_readonly_role` (provisioned via task-store-server `--readonly-password`) | Adminer attaches + queries; `SELECT` works on non-worker tables + the `variant_unpacked` view; `worker.credential_hash` column blocked. Audit the *documented workflow*, not a "no Adminer" gap |
+ | **Checkpoint** | `eden-experiment checkpoint <name> [--force]` | `manual-ui/eden-experiment` (`cmd_checkpoint`) | non-empty postgres.sql / forgejo.tar.gz / artifacts.tar.gz (post-#177) |
+ | **Restore** | `eden-experiment restore <name>` | `manual-ui/eden-experiment` (`cmd_restore`) | `assert_snapshot_nonempty()` passes; round-trips to a recovered stack (unblocked since #177) |
+ | Wire checkpoint/import | `POST /v0/experiments/{id}/checkpoint`, `/v0/checkpoints/import` | covered by smoke-checkpoint.sh / #152 | cross-ref, don't re-file |
+@@ -117,8 +119,18 @@
+ | **Docker-exec mode (e2e, operator-driven)** | bring up `… + compose.docker-exec.yaml` (DooD); drive a lifecycle; confirm sibling-container spawns + no orphans | [`compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml); smoke ref `smoke-subprocess-docker.sh` |
+ | **`reissue_credential` recovery** | force a worker bearer mismatch at startup (delete/corrupt the persisted `<credentials_dir>/<worker_id>.token`, or rotate the admin token), restart the worker host, confirm `bootstrap_worker_credential()` detects the 401 on `whoami` and recovers via admin-gated reissue (NOT fresh-register) | [`reference/services/_common/src/eden_service_common/auth.py`](../../reference/services/_common/src/eden_service_common/auth.py) (`bootstrap_worker_credential`, §8.2 no-fall-through rule) |
+ 
+-### 4.5 Surfaces deliberately treated as already-covered (cross-reference, don't re-walk)
++### 4.5 Bootstrap / lifecycle CLIs (cross-cutting — exercised during every wave's bring-up, but audited as first-class surfaces)
+ 
++The operator guide ([`docs/user-guide.md`](../user-guide.md)) names the Web UI, Forgejo, `setup-experiment.sh`, and `eden-manual` as the primary operator workflows. The bring-up CLIs are walked incidentally to stand each wave's stack up, but the audit treats their **operator-facing flag surface** as a first-class target (a confusing flag, a missing default, an unhelpful error is a finding):
++
++| Surface | Command / flags | Location | What to verify |
++|---|---|---|---|
++| **`setup-experiment.sh`** | `--experiment-id`, `--exec-mode {host\|docker}`, `--data-root`, `--env-file`, `--seed-from`, `--ideas-per-ideation`, `--admin-token`, `--postgres-password`, `--no-auto-host-workers` | [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) | each flag's documented effect; idempotent re-run; `--no-auto-host-workers` actually skips pre-registration; error messages on bad input |
++| **`eden-experiment` lifecycle** | `up`, `down [--purge]`, `reset`, `status` (checkpoint/restore/list-checkpoints covered in §4.2) | [`reference/scripts/manual-ui/eden-experiment`](../../reference/scripts/manual-ui/eden-experiment) | clean bring-up/teardown; `reset` round-trip; `status` accuracy; `down --purge` data removal |
++| **`eden-manual` role CLI** | `list-tasks`, `show`, `claim`, `checkout`, `push`, `ideation-submit`, `execution-submit`, `evaluation-submit`, `creds` | [`reference/scripts/manual-ui/eden-manual`](../../reference/scripts/manual-ui/eden-manual) + the `eden-manual-*` skills | the skill-driven happy paths (partially exercised in demo); note any flag/error-text gaps surfaced while driving the lifecycle carrier |
++
++### 4.6 Surfaces deliberately treated as already-covered (cross-reference, don't re-walk)
++
+ - Ideator / executor / evaluator / integrator happy-path lifecycle through UI/CLI/skill — exercised in the 2026-05-23 demo. The audit *re-walks the lifecycle only as the carrier* needed to populate task/variant/ref state for the untested surfaces above; surprises noticed in passing are still filed, but the lifecycle itself is not the audit target.
+ 
+ ## 5. Audit protocol (per-surface discipline)
+@@ -167,29 +179,30 @@
+ 
+ - Seed the full §4 surface inventory into #182's body as the live checklist (one line per surface, grouped by wave).
+ - Bring up a clean base stack via `eden-experiment up <fixture-config> --experiment-id <id>`; confirm reproducible bring-up and that the manual skills (`eden-manual-*`) drive the lifecycle.
+-- Confirm the recording template (§5) and issue-filing labels are ready.
++- Confirm the recording template (§5) and the issue-filing label set (`type:*` / `triage:*` / `priority:*` / `cluster:*`) are ready, so the *first real finding* files cleanly against the template — no dummy/trial issue is filed (that would cut against the issue-per-surprise rule §2.3).
+ 
+-**Gate:** checklist posted to #182; clean base stack reproducibly up; one trial issue-file to confirm the labels/cross-ref shape.
++**Gate:** checklist posted to #182; clean base stack reproducibly up; recording template + label set confirmed ready.
+ 
+ ### Wave 1 — Base-stack per-experiment admin UI (§4.1)
+ 
+ - Drive a full ideator→executor→evaluator→integrator lifecycle as the *carrier* to populate tasks/variants/ideas/refs in varied states (claimed, submitted, integrated, orphaned).
+-- Walk every §4.1 surface: dashboard, observability pages, artifacts, work-refs (list + CAS delete on a real orphan ref), dispatch-mode (toggle all 4 keys), groups (register/detail/add/remove/delete), workers (register/detail/reissue-credential), task reclaim, task reassign (none/worker/group + reason), create-execution-task, terminate-experiment, experiments register/select/unregister.
++- Walk every §4.1 surface: signin/signout session flow, authenticated `/artifacts` reader, dashboard, observability pages, the `/admin/artifacts/` listing, work-refs (list + CAS delete on a real orphan ref), dispatch-mode (toggle all 4 keys), groups (register/detail/add/remove/delete), workers (register/detail/reissue-credential), task reclaim, task reassign (none/worker/group + reason), create-execution-task, terminate-experiment, experiments register/select/unregister.
+ 
+ **Gate:** every §4.1 surface ticked or `blocked by #__`; per-session comment posted; all surprises filed + triaged.
+ 
+ ### Wave 2 — Base-stack wire + data-lifecycle (§4.2)
+ 
+-- Direct-wire reclaim (`cause=operator`) and reassign (verify `reason` + `reassigned_by` stamping, `admins`-gating) via `curl`.
+-- Postgres readonly role at the wire: connect with the readonly DSN, confirm `SELECT` works and `worker.credential_hash` is blocked; file the no-Adminer finding.
++- Direct-wire reclaim via `curl` (worker-gated; `cause=operator`) and reassign via `curl` — reassign requires a **worker bearer in the `admins` group**, not the bootstrap `admin:<token>` (which 403s on that route). First reissue/mint that worker bearer (the `ADMIN_WORKER_BEARER` pattern in [`smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh)), then verify `reason` + `reassigned_by` stamping.
++- Adminer + Postgres readonly role: follow [`docs/observability.md`](../observability.md) §3.1 to attach a BYO `adminer:4` sibling container, plus a direct desktop-client connect to `localhost:5433` as `eden_readonly`; confirm `SELECT` + the `variant_unpacked` view work and `worker.credential_hash` is blocked. (No "no Adminer" issue — the BYO posture is documented and intentional.)
+ - `eden-experiment checkpoint` then `restore` round-trip (post-#177 non-empty assertion); cross-ref #152 for the wire checkpoint/import smoke rather than re-walking it.
++- The §4.5 bootstrap/lifecycle CLI flag surfaces walked while standing up / tearing down this wave's stack: `setup-experiment.sh` flags, `eden-experiment up/down/reset/status`, `eden-manual` subcommands.
+ 
+-**Gate:** every §4.2 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.
++**Gate:** every §4.2 + §4.5 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.
+ 
+ ### Wave 3 — Control-plane stack (§4.3)
+ 
+-- Bring up the control-plane server + web-ui with `control_plane` configured.
+-- Walk the lease primitive (acquire → renew → release → expiry hand-off + list/filter), the deployment-scoped worker/group registry (wire + `/admin/control/*` UI incl. reissue), control whoami, and multi-experiment side-by-side (two experiments registered + leased, port/data-root isolation; cross-ref #147).
++- **Concrete bring-up** (per [`docs/observability.md`](../observability.md) §3.4): run the control-plane-server as a sibling container on the `eden-reference_default` network, then recreate `web-ui` with the [`compose.control-plane.yaml`](../../reference/compose/compose.control-plane.yaml) overlay so `--control-plane-url` is set and the `/admin/experiments/` + `/admin/control/*` routes register. The control-plane routes do NOT exist on the default stack — this overlay is the gate.
++- Walk the lease primitive (acquire → renew → release → expiry hand-off + list/filter), the deployment-scoped worker/group registry (wire `/v0/control/*` + `/admin/control/workers/` + `/admin/control/groups/` UI incl. reissue), `GET /v0/control/whoami`, and multi-experiment side-by-side (two experiments registered + leased, port/data-root isolation; cross-ref #147).
+ 
+ **Gate:** every §4.3 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.
+ 
+@@ -203,7 +216,7 @@
+ 
+ ### Wave 5 — Sweep, triage, close
+ 
+-- Final sweep: grep the route tree (`reference/services/web-ui/.../routes/`) + the wire server + the control-plane app against the §4 checklist; tick any surface walked-in-passing, file any surface discovered but not in §4 (and add it to the checklist retroactively).
++- Final sweep against the §4 checklist, covering **all** surface kinds — not just HTTP routes: (a) the web-ui route tree (`reference/services/web-ui/.../routes/`, including `auth.py` + `artifacts.py`), (b) the wire server + control-plane app endpoints, **and** (c) the operator CLI/deployment surfaces — `setup-experiment.sh` flags, `eden-experiment` subcommands, `eden-manual` subcommands, and the compose overlays (`compose.subprocess.yaml` / `compose.docker-exec.yaml` / `compose.control-plane.yaml` / `compose.multi-orchestrator.yaml`). Tick any surface walked-in-passing; file + retroactively add any surface discovered but not in §4.
+ - Confirm every filed issue carries triage / priority / cluster labels.
+ - Post a final summary comment on #182 (total surfaces walked, total issues filed, coverage %, deferred surfaces with reasons) and close #182.
+ 
+@@ -217,17 +230,21 @@
+ ## Surfaces audited (live checklist)
+ 
+ ### Wave 1 — base-stack admin UI
++- [ ] `/signin` + `/signout` session flow (good/bad creds, unauth redirect) — date, notes / bugs filed: #__
++- [ ] `GET /artifacts` authenticated reader (path-traversal guard) — date, notes / bugs filed: #__
+ - [ ] `/admin/work-refs/` (list + CAS delete) — date, notes / bugs filed: #__
+ - [ ] `/admin/dispatch-mode/` (all 4 keys) — date, notes / bugs filed: #__
+ - [ ] `/admin/groups/<id>/` (add/remove/delete) — date, notes / bugs filed: #__
+ - [ ] `/admin/workers/<id>/reissue-credential` — date, notes / bugs filed: #__
+-- [ ] admin reclaim (`cause=operator`) — date, notes / bugs filed: #__
+-- [ ] admin reassign (worker/group + reason) — date, notes / bugs filed: #__
++- [ ] admin reclaim + reassign (UI) — date, notes / bugs filed: #__
++- [ ] create-execution-task + terminate-experiment (UI) — date, notes / bugs filed: #__
+ - [ ] `/admin/experiments/` register + select + unregister — date, notes / bugs filed: #__
+-### Wave 2 — base-stack wire + data lifecycle
+-- [ ] reclaim/reassign (wire) — …
+-- [ ] postgres readonly role + (no-)Adminer finding — …
+-- [ ] `eden-experiment restore` (post-#177) — …
++### Wave 2 — base-stack wire + data lifecycle + CLIs
++- [ ] reclaim/reassign (wire; reassign needs `admins`-group worker bearer) — …
++- [ ] Adminer BYO workflow + postgres readonly role at `:5433` — …
++- [ ] `eden-experiment checkpoint` + `restore` round-trip (post-#177) — …
++- [ ] `setup-experiment.sh` flag surface (`--exec-mode` / `--data-root` / `--no-auto-host-workers` / …) — …
++- [ ] `eden-experiment up/down/reset/status` lifecycle — …
+ ### Wave 3 — control-plane
+ - [ ] `/v0/control/*` lease primitive — …
+ - [ ] `/admin/control/*` deployment-scoped pages — …
